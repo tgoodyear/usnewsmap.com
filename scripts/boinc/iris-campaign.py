@@ -76,6 +76,9 @@ def prepare(dataset: Path, out: Path, image: str):
             if provenance.get("for_scoring") is not True or "public domain" not in provenance["source_license"]:
                 raise ValueError("expected public-domain newspaper evaluation image")
             with Image.open(path) as picture:
+                if picture.format != "JPEG":
+                    raise ValueError(f"{crop_id}: pilot input must be JPEG")
+                picture.verify()
                 width, height = picture.size
             job = {
                 "v": 1, "crop_id": crop_id, "doc_id": provenance["page_id"],

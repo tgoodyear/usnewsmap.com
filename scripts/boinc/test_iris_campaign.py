@@ -2,11 +2,12 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 import xml.etree.ElementTree as ET
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def load(name, filename):
@@ -180,6 +181,30 @@ class IrisCampaignTest(unittest.TestCase):
             for image in ("image:latest", "ghcr.io/tgoodyear/usnm-boinc-worker:iris"):
                 with self.assertRaises(ValueError):
                     campaign.prepare(root, root / "out", image)
+            self.assertFalse((root / "out").exists())
+
+    def test_preparation_rejects_non_jpeg_before_staging_any_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "images").mkdir()
+            data = b"png image bytes"
+            (root / "images/crop.png").write_bytes(data)
+            row = {
+                "crop_id": "pub-overproof-ca-001", "image": "images/crop.png",
+                "image_sha256": campaign.sha(data),
+                "provenance": {"for_scoring": True, "source_license": "public domain"},
+            }
+            (root / "dataset.json").write_text(json.dumps({
+                "evaluation_only": True, "crops": [row] * 100,
+            }))
+            image = MagicMock()
+            image.open.return_value.__enter__.return_value.format = "PNG"
+            with patch.dict(sys.modules, {"PIL": SimpleNamespace(Image=image)}):
+                with self.assertRaisesRegex(ValueError, "must be JPEG"):
+                    campaign.prepare(
+                        root, root / "out",
+                        "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "a" * 64,
+                    )
             self.assertFalse((root / "out").exists())
 
     def test_input_output_templates_match_worker_filenames(self):
