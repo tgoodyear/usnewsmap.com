@@ -11,12 +11,15 @@ campaigns server-side; attachment does not guarantee work. No WSL, Podman or CUD
 .\scripts\boinc\setup_windows_volunteer.ps1
 .EXAMPLE
 .\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc
+.EXAMPLE
+.\scripts\boinc\setup_windows_volunteer.ps1 -Status
 #>
 [CmdletBinding()]
 param(
     [switch]$Apply,
     [switch]$InstallBoinc,
     [switch]$AllowCpuOnly,
+    [switch]$Status,
     [string]$BoincDirectory
 )
 
@@ -273,6 +276,51 @@ function Test-ProjectAttached($Installation) {
     return ($result.Output -match '(?im)^\s*master URL:\s*https://boinc\.usnewsmap\.com/\s*$')
 }
 
+function Get-ProjectTaskSummary($Installation) {
+    $result = Invoke-BoundedProcess (Join-Path $Installation.Directory 'boinccmd.exe') `
+        '--get_tasks' $Installation.DataDirectory
+    if ($result.ExitCode -ne 0 -or ($result.Output + $result.ErrorOutput) -match '(?im)authorization failure|can.t connect|RPC:.*error|operation failed') {
+        throw 'Cannot query the local BOINC client. In BOINC Manager select the local computer and start/connect the client, then retry. For authorization errors repair the official installation/user access; do not put gui_rpc_auth.cfg or its password on a command line. No client was started or killed by this check.'
+    }
+    # boinccmd prints one numbered block per task. Count only this project's
+    # tasks, by state, and never echo the raw output (task names are not secret
+    # but the summary is all a volunteer needs).
+    $summary = [ordered]@{}
+    $total = 0
+    foreach ($block in ($result.Output -split '(?m)^\s*\d+\)\s*-+\s*$')) {
+        if ($block -notmatch '(?im)^\s*project URL:\s*https://boinc\.usnewsmap\.com/\s*$') { continue }
+        $total++
+        $state = 'unknown'
+        if ($block -match '(?im)^\s*state:\s*(\S+)') { $state = $Matches[1].ToLowerInvariant() }
+        if ($block -match '(?im)^\s*active_task_state:\s*(\S+)' -and $Matches[1] -ne 'UNINITIALIZED') {
+            $state = $Matches[1].ToLowerInvariant()
+        }
+        if ($summary.Contains($state)) { $summary[$state]++ } else { $summary[$state] = 1 }
+    }
+    return [pscustomobject]@{ Total = $total; ByState = $summary }
+}
+
+function Invoke-WindowsStatus {
+    param([string]$Directory)
+    Assert-NativeWindows
+    $installation = Get-BoincInstallation $Directory
+    if (-not $installation) {
+        throw 'BOINC is not installed. Run this helper with -Apply -InstallBoinc first (see docs/boinc-windows.md).'
+    }
+    Write-Host "BOINC $($installation.Version) at $($installation.Directory); data in $($installation.DataDirectory)."
+    if (-not (Test-ProjectAttached $installation)) {
+        throw 'usnewsmap is not attached to the local client. In BOINC Manager choose Tools > Add project, enter https://boinc.usnewsmap.com/ and sign in with your account, then run -Status again.'
+    }
+    $tasks = Get-ProjectTaskSummary $installation
+    if ($tasks.Total -eq 0) {
+        Write-Host 'Attached to usnewsmap; no tasks on this computer right now. Work goes out in small batches, so this is normal. Check Manager''s Event Log for "Scheduler request completed".'
+    } else {
+        $parts = foreach ($entry in $tasks.ByState.GetEnumerator()) { "$($entry.Value) $($entry.Key)" }
+        Write-Host "Attached to usnewsmap; $($tasks.Total) task(s) on this computer: $($parts -join ', ')."
+    }
+    Write-Host 'This is a local read-only check. Validation happens on the server; see Tasks on your account page at https://boinc.usnewsmap.com/.'
+}
+
 function Open-BoincManager($Installation) {
     [void](Start-Process -FilePath (Join-Path $Installation.Directory 'boincmgr.exe'))
 }
@@ -350,8 +398,15 @@ Before adding a project:
 
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        Invoke-WindowsOnboarding -ApplyChanges $Apply.IsPresent -InstallClient $InstallBoinc.IsPresent `
-            -CpuAllowed $AllowCpuOnly.IsPresent -Directory $BoincDirectory
+        if ($Status.IsPresent) {
+            if ($Apply.IsPresent -or $InstallBoinc.IsPresent -or $AllowCpuOnly.IsPresent) {
+                throw '-Status is a read-only check and cannot be combined with -Apply, -InstallBoinc or -AllowCpuOnly.'
+            }
+            Invoke-WindowsStatus -Directory $BoincDirectory
+        } else {
+            Invoke-WindowsOnboarding -ApplyChanges $Apply.IsPresent -InstallClient $InstallBoinc.IsPresent `
+                -CpuAllowed $AllowCpuOnly.IsPresent -Directory $BoincDirectory
+        }
     } catch {
         Write-Error $_.Exception.Message -ErrorAction Continue
         exit 1

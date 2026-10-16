@@ -37,7 +37,7 @@ work finishes. Local computing preferences affect other BOINC projects too.
 
 This pilot may have no work or supported app for your device. You can install
 BOINC and register or attach later. Start with the
-[Linux quick start](boinc-linux.md), [Windows setup](#13-windows-windows_x86_64),
+[Linux quick start](boinc-linux.md), [Windows quick start](boinc-windows.md),
 [macOS setup](#12-macos-arm64-apple-darwin-apple-silicon-and-x86_64-apple-darwin-intel)
 or the [Linux reference](#11-linux-x86_64-pc-linux-gnu-and-aarch64-unknown-linux-gnu),
 then review [resources, network and privacy](#4-resources-network-and-privacy).
@@ -226,7 +226,8 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
 
 ### 1.3 Windows (`windows_x86_64`)
 
-**Start here for native NVIDIA GPU volunteering.** Use the same one-time setup
+The short version is the [Windows quick start](boinc-windows.md); this section
+is the full reference. **Start here for native NVIDIA GPU volunteering.** Use the same one-time setup
 for experimental Qwen and production work: one official BOINC client, one
 account, one project attachment, and the usual BOINC Manager controls.
 Participation includes both experimental and production work under your normal
@@ -253,6 +254,10 @@ edit preferences, or attach a project. After reviewing the preview:
 # Same command whether BOINC already exists or needs installing:
 .\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc
 ```
+
+Later, `-Status` is a read-only local check: it reports whether the PC is
+attached and how many usnewsmap tasks it holds, by state, using only
+`boinccmd` in the data directory. It opens nothing and contacts no server.
 
 `-InstallBoinc` permits an installation **prompt**, not a silent install. An
 existing eligible client is reused. If you already installed BOINC, `-Apply`
