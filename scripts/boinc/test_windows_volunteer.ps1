@@ -201,6 +201,25 @@ function Set-ReadinessMocks {
     }
 }
 
+Test-Case 'disk headroom accounts for every supported large GPU even while busy' {
+    Set-ReadinessMocks
+    Set-Mock Get-Command {
+        param($Name, $CommandType, $ErrorAction)
+        return [pscustomobject]@{ Source = 'mock-nvidia-smi.exe' }
+    }
+    Set-Mock Invoke-BoundedProcess {
+        param($File, $Arguments, $Directory)
+        return [pscustomobject]@{
+            ExitCode = 0
+            Output = "NVIDIA big busy, 560.94, 12000, 2000`nNVIDIA small free, 560.94, 6000, 3500"
+            ErrorOutput = ''
+        }
+    }
+    $ready = Get-WindowsReadiness $PSScriptRoot $false
+    Assert-True ($ready.Gpu.Name -eq 'NVIDIA small free') 'currently eligible adapter reported'
+    Assert-True ($ready.DiskGiB -eq 18) 'busy/secondary 8 GiB adapter can later qualify for the larger model'
+}
+
 Test-Case 'unsupported GPU requires explicit optional CPU participation' {
     Set-ReadinessMocks
     Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'AMD/Intel GPUs are not supported'

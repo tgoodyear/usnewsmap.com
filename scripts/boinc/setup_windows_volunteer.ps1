@@ -119,6 +119,7 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed) {
     if ($ramGiB -lt 6) { throw 'Native Qwen onboarding requires at least 6 GiB host RAM. Use a larger host or ask the operator about CPU-quality-only participation.' }
 
     $gpu = $null
+    $gpus = @()
     $smi = Get-Command nvidia-smi.exe -CommandType Application -ErrorAction SilentlyContinue
     if (-not $smi) {
         $smiPath = Join-Path $env:SystemRoot 'System32\nvidia-smi.exe'
@@ -128,7 +129,8 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed) {
         $result = Invoke-BoundedProcess $smi.Source `
             '--query-gpu=name,driver_version,memory.total,memory.free --format=csv,noheader,nounits' $env:SystemRoot
         if ($result.ExitCode -eq 0) {
-            $gpu = Select-NvidiaGpu $result.Output
+            $gpus = @(Get-NvidiaGpus $result.Output)
+            $gpu = $gpus | Where-Object { $_.FreeMiB -ge 3000 } | Sort-Object FreeMiB -Descending | Select-Object -First 1
         }
     }
     if (-not $gpu -and -not $CpuAllowed) {
@@ -143,7 +145,7 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed) {
         $gpu = $null
     }
     $diskGiB = 12
-    if ($gpu -and $gpu.FreeMiB -ge 7000) { $diskGiB = 18 }
+    if ($gpus | Where-Object { $_.TotalMiB -ge 7000 }) { $diskGiB = 18 }
     $root = [IO.Path]::GetPathRoot($DataDirectory)
     $drive = New-Object IO.DriveInfo $root
     if (-not $drive.IsReady -or $drive.AvailableFreeSpace -lt ($diskGiB * 1GB)) {
@@ -152,26 +154,28 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed) {
     return [pscustomobject]@{ RamGiB = $ramGiB; Gpu = $gpu; DiskGiB = $diskGiB }
 }
 
-function Select-NvidiaGpu([string]$Csv) {
-    $eligible = @(
-        foreach ($line in ($Csv -split '\r?\n')) {
-            $fields = $line -split ','
-            if ($fields.Count -ne 4) { continue }
-            $driver = $fields[1].Trim()
-            $total = $fields[2].Trim()
-            $free = $fields[3].Trim()
-            if ($driver -notmatch '^\d+\.\d+$' -or $total -notmatch '^\d+$' -or $free -notmatch '^\d+$') {
-                continue
-            }
-            if ([version]$driver -ge [version]'551.61' -and [int]$free -ge 3000) {
-                [pscustomobject]@{
-                    Name = $fields[0].Trim(); Driver = $driver
-                    TotalMiB = [int]$total; FreeMiB = [int]$free
-                }
+function Get-NvidiaGpus([string]$Csv) {
+    foreach ($line in ($Csv -split '\r?\n')) {
+        $fields = $line -split ','
+        if ($fields.Count -ne 4) { continue }
+        $driver = $fields[1].Trim()
+        $total = $fields[2].Trim()
+        $free = $fields[3].Trim()
+        if ($driver -notmatch '^\d+\.\d+$' -or $total -notmatch '^\d+$' -or $free -notmatch '^\d+$') {
+            continue
+        }
+        if ([version]$driver -ge [version]'551.61') {
+            [pscustomobject]@{
+                Name = $fields[0].Trim(); Driver = $driver
+                TotalMiB = [int]$total; FreeMiB = [int]$free
             }
         }
-    )
-    return ($eligible | Sort-Object FreeMiB -Descending | Select-Object -First 1)
+    }
+}
+
+function Select-NvidiaGpu([string]$Csv) {
+    return (Get-NvidiaGpus $Csv | Where-Object { $_.FreeMiB -ge 3000 } |
+        Sort-Object FreeMiB -Descending | Select-Object -First 1)
 }
 
 function Assert-VerifiedInstaller([string]$Path) {

@@ -189,10 +189,21 @@ and the matching
 Pins were checked against the official download on 2026-10-15. A changed upstream
 file requires a reviewed pin update, not disabling verification.
 
-If Windows blocks a downloaded `.ps1`, first review its contents and trusted
-checkout source; then use `Unblock-File` **only on this reviewed local file** if
-permitted by your organization's policy. Do not set a global execution-policy
-bypass or bypass an enforced policy.
+Windows PowerShell 5.1 can default to `Restricted`, which blocks `.ps1` files
+even when they are local and have no Mark-of-the-Web. Inspect the effective policy
+first with `Get-ExecutionPolicy` and `Get-ExecutionPolicy -List`. Only if the
+effective policy is `Restricted` and neither `MachinePolicy` nor `UserPolicy` is
+set, you can permit this reviewed checkout **for this PowerShell window only**:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+```
+
+Then run the command above in that same window. This does not persist after the
+window closes. Do not lower a stricter local policy. If a downloaded checkout's
+reviewed script still has Mark-of-the-Web, `Unblock-File` may be used on that
+single reviewed file if permitted. Do not set a global execution-policy bypass
+or work around an enforced Group Policy; ask your administrator instead.
 
 #### Prerequisites and current availability
 
@@ -206,9 +217,13 @@ bypass or bypass an enforced policy.
   are not supported by the native NVIDIA CUDA classes. Hardware checks are not
   a guarantee that a particular older GPU/runtime combination can execute work.
 - Have at least **6 GiB host RAM** and allow **12 GiB disk** for a cold 2B model
-  run, or **18 GiB** for an 8B run. The data volume must have that free space,
-  and BOINC's own disk allowance must also permit it. Prefer a desktop with
-  comfortable spare RAM/VRAM rather than using your last available resources.
+  run, or **18 GiB** if any supported NVIDIA GPU has at least 7,000 MiB total
+  VRAM and could later qualify for an 8B task. The preview uses total memory
+  across all driver-supported NVIDIA GPUs for disk headroom, not just whichever
+  adapter currently has free VRAM; GPU memory use can change after onboarding.
+  The data volume must have the reported free space, and BOINC's own disk
+  allowance must also permit it. Prefer a desktop with comfortable spare
+  RAM/VRAM rather than using your last available resources.
 - Intended classes: `nvidia_cuda_8b` with at least 7,000 MB GPU RAM, or
   `nvidia_cuda_2b` with at least 3,000 MB; actual scheduling also depends on BOINC's
   GPU/memory report and resource preferences. CPU participation is **optional**.
