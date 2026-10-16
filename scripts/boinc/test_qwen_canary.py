@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -11,6 +12,78 @@ SPEC = importlib.util.spec_from_file_location(
 )
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+REFRESH_SPEC = importlib.util.spec_from_file_location(
+    "refresh_scheduler", ROOT / "contrib-compute/images/server/refresh-scheduler.py"
+)
+REFRESH = importlib.util.module_from_spec(REFRESH_SPEC)
+REFRESH_SPEC.loader.exec_module(REFRESH)
+
+
+class SchedulerRefresh(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(prefix=".qwen-scheduler-", dir=ROOT)
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.source = self.root / "image-cgi"
+        self.target = self.root / "project-cgi"
+        self.source.write_bytes(b"reviewed scheduler batch and consent gates\n")
+        self.source.chmod(0o755)
+        self.target.write_bytes(b"old scheduler\n")
+
+    def test_replacement_preserves_inflight_bytes_and_is_idempotent(self):
+        with self.target.open("rb") as inflight:
+            self.assertTrue(REFRESH.refresh(self.source, self.target))
+            self.assertEqual(inflight.read(), b"old scheduler\n")
+        self.assertEqual(self.target.read_bytes(), self.source.read_bytes())
+        self.assertTrue(self.target.stat().st_mode & 0o111)
+        inode = self.target.stat().st_ino
+        self.assertFalse(REFRESH.refresh(self.source, self.target))
+        self.assertEqual(self.target.stat().st_ino, inode)
+        self.assertEqual(list(self.root.glob(".usnm-scheduler-*")), [])
+
+    def test_failed_replacement_preserves_original_and_cleans_owned_staging(self):
+        for operation in ("fsync", "replace"):
+            with self.subTest(operation=operation):
+                with patch.object(REFRESH.os, operation, side_effect=OSError("operation rejected")):
+                    with self.assertRaises(OSError):
+                        REFRESH.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), b"old scheduler\n")
+                self.assertEqual(list(self.root.glob(".usnm-scheduler-*")), [])
+
+    def test_staging_collision_never_deletes_another_file(self):
+        occupied = self.root / ".usnm-scheduler-occupied"
+        occupied.write_bytes(b"not ours")
+        with patch.object(REFRESH.uuid, "uuid4") as uuid4:
+            uuid4.return_value.hex = "occupied"
+            with self.assertRaises(FileExistsError):
+                REFRESH.refresh(self.source, self.target)
+        self.assertEqual(occupied.read_bytes(), b"not ours")
+        self.assertEqual(self.target.read_bytes(), b"old scheduler\n")
+
+    def test_matching_bytes_with_missing_execute_permission_are_repaired(self):
+        self.target.write_bytes(self.source.read_bytes())
+        self.target.chmod(0o644)
+        self.assertTrue(REFRESH.refresh(self.source, self.target))
+        self.assertTrue(self.target.stat().st_mode & 0o111)
+
+    def test_missing_empty_or_nonexecutable_source_fails_closed(self):
+        for bad in ("missing", "empty", "nonexecutable"):
+            with self.subTest(source=bad):
+                if bad == "missing":
+                    self.source.unlink()
+                else:
+                    self.source.write_bytes(b"" if bad == "empty" else b"not executable")
+                    self.source.chmod(0o755 if bad == "empty" else 0o644)
+                with self.assertRaises(ValueError):
+                    REFRESH.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), b"old scheduler\n")
+
+    def test_startup_refreshes_before_serving_and_image_contains_helper(self):
+        image = (ROOT / "contrib-compute/images/server/Containerfile").read_text()
+        entry = (ROOT / "contrib-compute/images/server/entrypoint.sh").read_text()
+        self.assertIn("images/server/refresh-scheduler.py", image)
+        self.assertIn('"$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/cgi" --target "$PROJ/cgi-bin/cgi"', entry)
+        self.assertLess(entry.index("  project_tree\n"), entry.index("exec /usr/bin/supervisord"))
 
 
 class CanaryPreferences(unittest.TestCase):

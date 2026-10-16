@@ -61,7 +61,13 @@ driver's `nvcuda.dll` and Windows system APIs remain platform prerequisites.
 
 Before publication, coordinate deployments in #529 and preserve all existing
 OCR/training pins and queues. Publish only the intended Windows platform version;
-inventory opted-in eligible hosts without publishing identities. Initially stage
+the scheduler must also be upgraded, not just its plan-class XML. The persistent
+project CGI is a copy, not necessarily a link to the new image's executable.
+Server startup atomically refreshes it from the reviewed image before serving,
+preserving already-running CGI requests. Verify the project CGI SHA256 matches
+`/usr/local/boinc/sched/cgi` after the single-active-revision rollout; otherwise
+old batch/consent code can silently prevent or misroute dispatch.
+Inventory opted-in eligible hosts without publishing identities. Initially stage
 at most **one** audited workunit with two independent results, digest-qualified
 sticky models, the correct native target and existing idempotency journal.
 Record exact workunit/result IDs, then stop submitting until the results have been
