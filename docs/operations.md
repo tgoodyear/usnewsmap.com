@@ -1392,7 +1392,7 @@ Check it with `pct exec 211 -- cat /tank/ocr/scans/status-full.json` and `pct ex
 
 ### The scan archive (#442)
 
-The keep-set scans are copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute clients will read before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. Nothing below has been run.
+The keep-set scans are intended to be copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. A read-only check on 15 October 2026 confirmed the production account exists with Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The uploader binary, service user and archive units were not installed on pve-big; an upload and off-site-copy completeness are **not verified**.
 
 1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
 2. **The identity.** pve-big is an Arc machine but not a node, so it isn't in the nodes' group yet. Add it, which also gives it the node queue roles (ADR-0018, open question 4):
@@ -1411,25 +1411,17 @@ The keep-set scans are copied to a Cold-tier container, `scans` in the storage a
    sudo systemctl daemon-reload
    ```
 
-4. **Look first.** Run the checks as the `usnm` user with the unit's environment and groups. `systemd-run` does that without copying the unit's settings by hand: it loads `/etc/usnm/scan-archive.env`, adds the Arc endpoints and the `himds` group, and prints the JSON report:
+4. **Bounded acceptance.** On the host holding the scans, run the automated dry-run, sample upload and verify sequence:
 
    ```sh
-   run_archive() {
-     sudo systemd-run --pipe --wait --collect --quiet \
-       --uid=usnm --gid=usnm -p SupplementaryGroups=himds \
-       -p EnvironmentFile=/etc/usnm/scan-archive.env \
-       -p Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token \
-       -p Environment=IMDS_ENDPOINT=http://localhost:40342 \
-       /usr/local/bin/usnm-ocr-worker archive-scans "$@"
-   }
-   run_archive --dry-run --limit 100
-   run_archive --limit 100
-   run_archive --verify --limit 100
+   sudo bash scripts/ocr-node/check-scan-archive.sh --limit 100
+   # Subsequent bounded checks without uploading:
+   sudo bash scripts/ocr-node/check-scan-archive.sh --limit 100 --verify-only
    ```
 
-   The dry run writes nothing (it still reads the archive for each scan); the real run uploads 100 scans; `--verify` compares each blob's size, md5, tier and stored sha256 with the local file from its properties, without downloading it (a Cold read is billed per GB). These runs pass no `--state`, so they check every scan they list and do not touch the unit's state file.
+   The helper requires the installed binary, service user, Arc group and environment file. It runs each phase as `usnm` with the unit's Arc environment and supplementary group, and holds the same lock as the upload/verify services throughout all phases. A concurrent upload, verify or acceptance check makes it fail before starting a sample. It never enables timers or starts a full upload. The dry run writes nothing; the upload creates at most the requested number of missing scans; verify compares size, md5, tier and stored sha256 from properties without downloading Cold bytes. Limits are 1–1,000 scans (default 100), and acceptance requires a nonempty, consistent-size sample with clean reports and every sampled scan present at verification. These runs pass no `--state`, so they check every scan they list and do not touch the unit's state file.
 
-5. **The first upload.** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time in nanoseconds, inode, change time); an older three-field line is ignored, so that scan is checked once more; on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. Then `sudo systemctl enable --now usnm-scan-archive.timer` for a daily top-up as the fetcher adds scans, and `sudo systemctl enable --now usnm-scan-archive-verify.timer` for the full check on the first of each month. The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand with `sudo systemctl start usnm-scan-archive-verify`. The two units hold one `flock` on `/var/lib/usnm-scan-archive/lock`, so a verify that starts during an upload waits for it (and the other way round) instead of reporting scans not yet uploaded as missing. The `systemd-run` checks in step 4 take no lock: do not run `--verify` there while the upload unit is running. A blob with no stored MD5 is never counted as present, in any mode (`conflicts` in an upload or dry run, `mismatched` in verify), and is never written to the state file.
+5. **The first upload.** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time in nanoseconds, inode, change time); an older three-field line is ignored, so that scan is checked once more; on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. Then `sudo systemctl enable --now usnm-scan-archive.timer` for a daily top-up as the fetcher adds scans, and `sudo systemctl enable --now usnm-scan-archive-verify.timer` for the full check on the first of each month. The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand with `sudo systemctl start usnm-scan-archive-verify`. The upload, verify and bounded acceptance helper hold one `flock` on `/var/lib/usnm-scan-archive/lock`, so a verify that starts during an upload waits for it (and the other way round) instead of reporting scans not yet uploaded as missing. A blob with no stored MD5 is never counted as present, in any mode (`conflicts` in an upload or dry run, `mismatched` in verify), and is never written to the state file.
 6. **What a report means.** `bad_local` is a scan whose sidecar is missing or doesn't match its bytes (not uploaded: fetch it again). `conflicts` is a blob of that name that differs from the local file (never overwritten: look before doing anything). `errors` are failed requests: run it again. `skipped` (upload runs with the state file) are scans recorded as archived and unchanged; they are not counted in `scanned`. In `--verify`, `mismatched` includes a blob with no stored sha256 metadata or one that differs. The command exits non-zero unless all are zero.
 
 The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists for a test only.
