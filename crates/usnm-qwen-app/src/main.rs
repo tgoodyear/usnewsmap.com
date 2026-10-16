@@ -11,7 +11,8 @@
 //! 3. Waits for `/health`, posts each crop PNG to `/v1/chat/completions`,
 //!    updates `fraction_done`, writes `readings.json`, `result.json`, and
 //!    `diag.txt`, kills `llama-server` on drop, and writes `boinc_finish_called`
-//!    (`"0\n"`).
+//!    (`"0\n"` on success, `"1\n"` on failure). Failures exit nonzero and
+//!    automatically report bounded diagnostics through standard BOINC stderr.
 use anyhow::{bail, ensure, Context};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use image::GenericImageView as _;
