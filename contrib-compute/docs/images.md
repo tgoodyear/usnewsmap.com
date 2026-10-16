@@ -66,6 +66,13 @@ registers applications, replays the configured signed app version and checks pub
 Completed initialization is skipped; partial project data and existing databases are never
 dropped automatically. `--what-if` creates only the retained preview, not managed resources.
 
+To record a work-volume sample, run
+`scripts/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record
+containing aggregate workunit and result counts plus BOINC's recent-credit user/host counts;
+the workbook reads it from console logs. Workunit validation, assimilation and file-deletion
+counts are separate, potentially overlapping flags. The bridge job is manual-triggered, so
+the time chart gains a point only when this step is run.
+
 `scripts/build-boinc-images.sh` builds and pins the server/bridge artifacts.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
 designated signing host without exporting its private key. These are release inputs, not
