@@ -12,6 +12,11 @@ on:
         description: "Identifies this run (set by scripts/bootstrap.sh)"
         required: false
         default: ""
+      scope:
+        description: "full preserves bootstrap/deploy behavior; ocr-worker publishes only the checked, attested OCR worker release on current main"
+        type: choice
+        options: [full, ocr-worker]
+        default: full
 
 permissions:
   contents: read
@@ -51,6 +56,7 @@ jobs:
         run: scripts/ci/changes.sh
         env:
           BEFORE_SHA: ${{ github.event.before }}
+          CI_SCOPE: ${{ inputs.scope }}
 
   rust:
     name: rust (fmt, clippy, test)

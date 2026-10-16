@@ -20,7 +20,7 @@
 # only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
 # XML and Bicep; ADR-0019), which no other job builds.
-# Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
+# Everything runs for a default workflow_dispatch (scripts/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
 # the changed files can't be worked out; everything but ops, which runs only
 # when its own files change (the snapshots, the index history, their schemas,
@@ -48,6 +48,24 @@ all() {
   echo "running everything: $1"
   exit 0
 }
+if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
+  case "${CI_SCOPE:-full}" in
+    full) all "full workflow dispatch" ;;
+    ocr-worker)
+      [ "${GITHUB_REF:-}" = refs/heads/main ] || {
+        echo "ocr-worker publication scope requires refs/heads/main" >&2
+        exit 1
+      }
+      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker page_language contrib ocr_gold boinc_pages; do
+        case "$part" in rust|ocr_worker) value=true ;; *) value=false ;; esac
+        printf '%s=%s\n' "$part" "$value" >> "$out"
+      done
+      echo "OCR worker checks and attested release only; no application rollout"
+      exit 0
+      ;;
+    *) echo "unknown workflow dispatch scope: $CI_SCOPE" >&2; exit 1 ;;
+  esac
+fi
 case "${GITHUB_EVENT_NAME:-}" in
   pull_request) range="origin/$GITHUB_BASE_REF...HEAD" ;;
   push)
