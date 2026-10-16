@@ -171,6 +171,31 @@ class Observer(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     observer.add_catalog(observer.snapshot([], [], NOW), path, NOW)
 
+    def test_invalid_catalog_issue_leaves_live_snapshot_unchanged(self):
+        catalog = observer.snapshot([], [], NOW)
+        catalog["issues"] = [{"code": "bad\ncode", "detail": "Invalid control character"}]
+        value = observer.snapshot([], [], NOW)
+        original = json.dumps(value)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps(catalog))
+            with self.assertRaises(ValueError):
+                observer.add_catalog(value, path, NOW)
+        self.assertEqual(json.dumps(value), original)
+
+    def test_join_caps_coverage_and_issues_with_explicit_omission(self):
+        catalog = observer.snapshot([], [], NOW)
+        catalog["coverage"] = [f"Coverage {index}" for index in range(32)]
+        catalog["issues"] = [{"code": "sample", "detail": f"Issue {index}"} for index in range(128)]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps(catalog))
+            value = observer.add_catalog(observer.snapshot([], [], NOW), path, NOW)
+        self.assertEqual(len(value["coverage"]), 32)
+        self.assertIn("omitted", value["coverage"][-1])
+        self.assertEqual(len(value["issues"]), 128)
+        self.assertEqual(value["issues"][-1]["code"], "catalog-issues-truncated")
+
 
 if __name__ == "__main__":
     unittest.main()
