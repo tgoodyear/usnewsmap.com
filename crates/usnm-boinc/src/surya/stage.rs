@@ -19,6 +19,7 @@ use usnm_ocr_contract::{
     boinc::{is_sha256, sha256},
     surya::{Engine, Input, InputMode, Job, MAX_SCAN, VERSION},
 };
+use usnm_ocr_worker::loc::FetchError;
 
 pub const MIN_GAP: Duration = scans::MIN_GAP;
 
@@ -108,6 +109,13 @@ async fn page(src: &scans::Sources, p: &Page, unit: &Path, opts: &Options) -> an
         }
         Err(e) => return Err(anyhow::anyhow!("{e}")),
     };
+    match src.alto(&key, &jpg.iiif_base).await {
+        Ok(Some(b)) => atomic(&unit.join("loc.xml"), &b)?,
+        Ok(None) | Err(FetchError::Permanent(_)) => {
+            atomic(&unit.join("loc.xml.missing"), b"404\n")?
+        }
+        Err(e) => return Err(anyhow::anyhow!("{e}")),
+    }
     eprintln!(
         "{}: {} bytes from {}",
         p.doc_id,

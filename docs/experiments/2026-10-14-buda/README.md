@@ -1,6 +1,6 @@
 # BUDA spike procedure for #481
 
-Status: prepared, not executed against a BOINC server. See the [observations](../../notes/2026-10-14-buda-evaluation.md), [completed Mac standalone tests](../../notes/2026-10-14-buda-mac-offline-tests.md) and [proposed ADR](../../design/adr/0020-boinc-buda-evaluation.md). The procedure extends the existing apps; it does not replace them.
+Status: not executed against a BOINC server. [ADR-0020](../../design/adr/0020-boinc-buda-evaluation.md) records the accepted decision not to adopt BUDA under the reviewed implementation. This procedure is retained only as a reference if the decision is reconsidered; it does not authorize a production or experimental deployment. See the [observations](../../notes/2026-10-14-buda-evaluation.md) and [completed Mac standalone tests](../../notes/2026-10-14-buda-mac-offline-tests.md).
 
 ## Inputs and baseline
 

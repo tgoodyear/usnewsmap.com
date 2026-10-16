@@ -66,6 +66,13 @@ pub fn blob_name(batch: &str, key: &PageKey, format: ScanFormat) -> String {
     )
 }
 
+/// LoC's ALTO URL beside the JP2 for a known IIIF base.
+pub fn alto_url(iiif_root: &str, storage_root: &str, iiif_base: &str) -> Option<String> {
+    let service_root = storage_root.strip_suffix("ndnp/")?;
+    let jp2 = jp2_url_of(iiif_root, service_root, iiif_base)?;
+    Some(format!("{}.xml", jp2.strip_suffix(".jp2")?))
+}
+
 /// A scan, wherever it came from. `url` is always its tile.loc.gov URL
 /// (provenance), `iiif_base` its IIIF service.
 #[derive(Debug, Clone)]
@@ -293,6 +300,16 @@ impl Sources {
         }
         self.tile_jpeg(base.to_owned()).await
     }
+
+    /// LoC's ALTO for a page with a known IIIF base. It stays on the server
+    /// for scoring and is never sent to a volunteer.
+    pub async fn alto(&self, key: &PageKey, iiif_base: &str) -> Result<Option<Bytes>, FetchError> {
+        let url = alto_url(&self.iiif_root, &self.storage_root, iiif_base)
+            .ok_or_else(|| FetchError::Permanent("invalid IIIF base for ALTO".into()))?;
+        self.loc
+            .storage_file(&url, &key.lccn, usnm_ocr_contract::boinc::MAX_ALTO)
+            .await
+    }
 }
 
 fn tracing_warn(name: &str, why: &str) {
@@ -319,6 +336,35 @@ mod tests {
 
     const BATCH: &str = "/storage-services/service/ndnp/xx/batch_xx_test_ver01/";
     const OTHER: &str = "/storage-services/service/ndnp/yy/batch_yy_other_ver02/";
+
+    #[test]
+    fn alto_url_is_derived_from_a_checked_iiif_base() {
+        let iiif_root = "https://tile.loc.gov/image-services/iiif/";
+        let storage_root = "https://tile.loc.gov/storage-services/service/ndnp/";
+        let base = format!("{iiif_root}service:ndnp:xx:batch_xx_test_ver01:page");
+        assert_eq!(
+            alto_url(iiif_root, storage_root, &base).as_deref(),
+            Some("https://tile.loc.gov/storage-services/service/ndnp/xx/batch_xx_test_ver01/page.xml")
+        );
+        assert!(alto_url(iiif_root, storage_root, "https://example.com/unknown").is_none());
+    }
+
+    #[tokio::test]
+    async fn alto_is_fetched_from_the_storage_service() {
+        let s = StandIn::start().await;
+        let jp2 = issue(&s, BATCH);
+        let base = tile(&s, &jp2, b"jpeg");
+        let alto = format!("{}.xml", jp2.strip_suffix(".jp2").unwrap());
+        s.put(alto.strip_prefix(&s.root).unwrap(), b"<alto/>".to_vec());
+
+        let got = sources(&s, None)
+            .alto(&key(), &base)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.as_ref(), b"<alto/>");
+        assert_eq!(s.hits("/0099.xml"), 1);
+    }
 
     /// A blob's bytes and metadata.
     type Blob = (Vec<u8>, Vec<(String, String)>);

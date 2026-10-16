@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { DEFAULTS, isIsoDate, parseView, searchParams, serializeView } from "./url";
 
 describe("view URL", () => {
+  it("round-trips States without changing search parameters or old layer defaults", () => {
+    const v = parseView("?q=gold&layer=states");
+    expect(v.layer).toBe("states");
+    expect(parseView(serializeView(v))).toEqual(v);
+    expect(searchParams(v)).toEqual(searchParams(parseView("?q=gold")));
+    expect(parseView("?layer=unknown").layer).toBe("points");
+    expect(parseView("?layer=heat").layer).toBe("heat");
+    expect(parseView("").layer).toBe("points");
+  });
   it("round-trips and writes only non-defaults", () => {
     const v = parseView(
       "?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week&t=1896-07-12&win=4&layer=heat&norm=skew&state=il,ny&lang=ger&place=P00412&sort=newest&z=4.2&c=-92.1,39.4",

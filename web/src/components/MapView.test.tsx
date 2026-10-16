@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 
 // MapLibre and deck.gl need WebGL; stand in for the parts MapView calls.
 const maps: FakeMap[] = [];
+const config = vi.hoisted(() => ({ style: "https://tiles.openfreemap.org/styles/positron" }));
+vi.mock("../lib/basemap", () => ({
+  get STYLE_URL() {
+    return config.style;
+  },
+  US_CENTER: [-96, 38.5],
+  DEFAULT_ZOOM: 3.3,
+}));
 class FakeMap {
   zoom: number;
   center: { lng: number; lat: number };
@@ -18,22 +28,44 @@ class FakeMap {
   }
   getZoom = () => this.zoom;
   getCenter = () => this.center;
-  on() {}
+  handlers: Record<string, (() => void)[]> = {};
+  on(event: string, handler: () => void) {
+    (this.handlers[event] ??= []).push(handler);
+  }
+  emit(event: string) {
+    this.handlers[event]?.forEach((handler) => handler());
+  }
+  areTilesLoaded = vi.fn(() => true);
   addControl() {}
   remove() {}
 }
 vi.mock("maplibre-gl", () => ({ Map: FakeMap, NavigationControl: class {}, setWorkerUrl: () => {} }));
 vi.mock("maplibre-gl/dist/maplibre-gl.css", () => ({}));
 vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({ default: "" }));
+const layers: { id: string; data: unknown }[][] = [];
 vi.mock("@deck.gl/mapbox", () => ({
   MapboxOverlay: class {
-    setProps() {}
+    setProps(props: { layers: { id: string; data: unknown }[] }) {
+      layers.push(props.layers);
+    }
   },
 }));
-vi.mock("@deck.gl/layers", () => ({ ScatterplotLayer: class {} }));
+vi.mock("@deck.gl/layers", () => ({
+  ScatterplotLayer: class {},
+  GeoJsonLayer: class {
+    constructor(props: object) {
+      Object.assign(this, props);
+    }
+  },
+}));
 vi.mock("@deck.gl/aggregation-layers", () => ({ HeatmapLayer: class {} }));
 
 const { default: MapView } = await import("./MapView");
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })}>
+    {children}
+  </QueryClientProvider>
+);
 
 const props = {
   points: [],
@@ -50,11 +82,60 @@ describe("MapView", () => {
   afterEach(() => {
     cleanup();
     maps.length = 0;
+    layers.length = 0;
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    config.style = "https://tiles.openfreemap.org/styles/positron";
+  });
+
+  it("holds the overlay until load and an idle with loaded tiles, only once", () => {
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const element = getByTestId("map");
+    const m = maps[0]!;
+    expect(element.classList.contains("map--basemap-ready")).toBe(false);
+    m.emit("idle");
+    expect(element.classList.contains("map--basemap-ready")).toBe(false);
+    m.emit("load");
+    m.areTilesLoaded.mockReturnValue(false);
+    m.emit("idle");
+    expect(element.classList.contains("map--basemap-ready")).toBe(false);
+    m.areTilesLoaded.mockReturnValue(true);
+    m.emit("idle");
+    expect(element.classList.contains("map--basemap-ready")).toBe(true);
+    m.areTilesLoaded.mockReturnValue(false);
+    m.emit("idle");
+    expect(element.classList.contains("map--basemap-ready")).toBe(true);
+  });
+
+  it("reveals the overlay after two seconds if the basemap is blocked", () => {
+    vi.useFakeTimers();
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    vi.advanceTimersByTime(1999);
+    expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(true);
+  });
+
+  it("shows the offline style immediately and cleans up its timer on unmount", () => {
+    vi.useFakeTimers();
+    config.style = "none";
+    const { getByTestId, unmount } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(true);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels the fallback when unmounted while waiting", () => {
+    vi.useFakeTimers();
+    const { unmount } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("leaves a gesture in progress alone when a re-render repeats the URL viewport", () => {
     // Playback re-renders every frame with a freshly parsed center.
-    const { rerender } = render(<MapView {...props} zoom={4} center={[-90, 40]} />);
+    const { rerender } = render(<MapView {...props} zoom={4} center={[-90, 40]} />, { wrapper });
     const m = maps[0]!;
     m.zoom = 5.5; // mid-pinch: no moveend yet, so the URL still says 4
     rerender(<MapView {...props} zoom={4} center={[-90, 40]} />);
@@ -63,9 +144,30 @@ describe("MapView", () => {
   });
 
   it("moves to a viewport the URL changes to", () => {
-    const { rerender } = render(<MapView {...props} zoom={4} center={[-90, 40]} />);
+    const { rerender } = render(<MapView {...props} zoom={4} center={[-90, 40]} />, { wrapper });
     const m = maps[0]!;
     rerender(<MapView {...props} zoom={6} center={[-87.6, 41.9]} />);
     expect(m.jumpTo).toHaveBeenCalledWith({ center: [-87.6, 41.9], zoom: 6 });
+  });
+
+  it("loads geometry only for States and draws only a GeoJsonLayer, reusing its geometry", async () => {
+    const geometry = { type: "FeatureCollection", features: [] };
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => geometry });
+    vi.stubGlobal("fetch", fetcher);
+    const { rerender } = render(<MapView {...props} zoom={4} center={null} />, { wrapper });
+    expect(fetcher).not.toHaveBeenCalled();
+    rerender(<MapView {...props} layer="states" zoom={4} center={null} />);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(layers.at(-1)).toEqual([]);
+    const states = [{ code: "NY", name: "New York", hits: 0, pages: 100, rate: 0 }];
+    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={states} />);
+    await waitFor(() => expect(layers.at(-1)?.map((l) => l.id)).toEqual(["states"]));
+    const data = layers.at(-1)![0]!.data;
+    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={[...states]} />);
+    expect(layers.at(-1)![0]!.data).toBe(data);
+    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={[]} />);
+    expect(layers.at(-1)).toEqual([]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });
