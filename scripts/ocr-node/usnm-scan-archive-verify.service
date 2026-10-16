@@ -19,9 +19,9 @@ SupplementaryGroups=himds
 Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 Environment=IMDS_ENDPOINT=http://localhost:40342
 EnvironmentFile=/etc/usnm/scan-archive.env
-ExecStart=/usr/bin/flock --exclusive /var/lib/usnm-scan-archive/lock /usr/local/bin/usnm-ocr-worker archive-scans --verify --concurrency 4
+ExecStart=/usr/bin/flock --exclusive /run/lock/usnm-scan-archive/lock /usr/local/bin/usnm-ocr-worker archive-scans --verify --concurrency 4
 # The upload and this check hold one lock (flock on the lock file in the
-# shared state directory), so the check waits for a running upload instead
+# root-controlled runtime directory), so the check waits for a running upload instead
 # of reporting scans it has not reached as missing.
 StateDirectory=usnm-scan-archive
 # Reads and hashes every local scan: hours.
@@ -34,6 +34,7 @@ SyslogIdentifier=usnm-scan-archive
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 ProtectSystem=strict
+ReadWritePaths=/run/lock/usnm-scan-archive
 ProtectHome=yes
 # Reads only: the upload never writes to the scans.
 ReadOnlyPaths=/tank/ocr/scans
