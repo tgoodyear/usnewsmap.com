@@ -47,11 +47,20 @@ class Observer(unittest.TestCase):
 
     def test_bad_xml_and_missing_counters_fail(self):
         for body in [b"<html/>", b"<!DOCTYPE x><server_status/>",
+                     "<!DOCTYPE x><server_status/>".encode("utf-16"),
                      XML.replace(b"<unsent>2</unsent>", b""),
                      XML.replace(b"<unsent>2</unsent>", b"<unsent>-1</unsent>"),
                      b"x" * (observer.MAX_BYTES + 1)]:
             with self.subTest(body=body[:20]), self.assertRaises(ValueError):
                 observer.boinc_stages(body, NOW)
+
+    def test_timestamp_range_errors_preserve_other_source(self):
+        payload = self.local()
+        payload["fetch"]["status"]["updated_at"] = "0001-01-01T00:00:00+01:00"
+        with patch.object(observer, "fetch", side_effect=[json.dumps(payload).encode(), XML]):
+            events, failures = observer.collect("http://local/", "https://project/", NOW)
+        self.assertEqual(len(events), 4)
+        self.assertEqual(failures[0]["code"], "local-ocr-unavailable")
 
     def test_failures_remain_explicit_and_other_source_survives(self):
         with patch.object(observer, "fetch", side_effect=[OSError("private diagnostics"), XML]):

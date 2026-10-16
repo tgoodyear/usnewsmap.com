@@ -21,7 +21,10 @@ def timestamp(value):
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError("Source timestamp requires a timezone")
-    return parsed.astimezone(timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except OverflowError as error:
+        raise ValueError("Source timestamp is outside the supported range") from error
 
 
 def utc(value):
@@ -102,9 +105,12 @@ def local_stages(payload, now):
 
 
 def boinc_stages(body, now):
-    if len(body) > MAX_BYTES or b"<!DOCTYPE" in body.upper() or b"<!ENTITY" in body.upper():
+    if len(body) > MAX_BYTES:
+        raise ValueError("Oversized BOINC XML")
+    text = body.decode("utf-8")
+    if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
         raise ValueError("Unsafe or oversized BOINC XML")
-    root = ET.fromstring(body)
+    root = ET.fromstring(text)
     if root.tag != "server_status":
         raise ValueError("Expected BOINC status XML")
     database = root.find("database_file_states")
