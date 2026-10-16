@@ -107,14 +107,22 @@ render_config() {
     fi
   fi
   DB_PASSWD="$(cat "$SECRETS/db-runtime")" python3 - "$TEMPLATES/config.xml.template" "$SECRETS/config.xml" "$daemons" <<'PY'
-import os, socket, sys
+import glob, os, socket, sys
 from xml.sax.saxutils import escape
 src, dst, daemons = sys.argv[1:4]
+project_dir = os.path.join(os.environ["PROJECT_DIR"], os.environ["PROJECT"])
+project_host = os.environ.get("PROJECT_HOST_OVERRIDE") or socket.gethostname().split(".")[0]
+if os.environ.get("BRIDGE_STEP") and not os.environ.get("PROJECT_HOST_OVERRIDE"):
+    logs = sorted(glob.glob(os.path.join(project_dir, "log_*", "scheduler.log")), key=os.path.getmtime)
+    if logs:
+        candidate = os.path.basename(os.path.dirname(logs[-1])).removeprefix("log_")
+        if candidate:
+            project_host = candidate
 v = {
     "DB_HOST": os.environ["DB_HOST"], "DB_NAME": os.environ["DB_NAME"],
     "DB_USER": os.environ["DB_RUNTIME_USER"], "DB_PASSWD": os.environ["DB_PASSWD"],
-    "MASTER_URL": "https://%s/" % os.environ["MASTER_HOST"], "PROJECT_HOST": socket.gethostname().split(".")[0],
-    "PROJECT_DIR": os.path.join(os.environ["PROJECT_DIR"], os.environ["PROJECT"]), "PROJECT": os.environ["PROJECT"],
+    "MASTER_URL": "https://%s/" % os.environ["MASTER_HOST"], "PROJECT_HOST": project_host,
+    "PROJECT_DIR": project_dir, "PROJECT": os.environ["PROJECT"],
 }
 t = open(src).read()
 for k, x in v.items():
@@ -126,6 +134,7 @@ with os.fdopen(fd, "w") as f:
 PY
   chown root:boincadm "$SECRETS/config.xml"
   if [ "$(readlink "$PROJ/config.xml" 2>/dev/null || true)" != "$SECRETS/config.xml" ]; then
+    rm -f "$PROJ/config.xml"
     ln -sfn "$SECRETS/config.xml" "$PROJ/config.xml"
   fi
   if [ "$(readlink "$PROJ/keys" 2>/dev/null || true)" != "$SECRETS/keys" ]; then

@@ -416,3 +416,42 @@ Executing a 5,000-workunit campaign surfaced seven operational lessons that have
      --var QUALITY_CAMPAIGN=<campaign> --var QUALITY_MAX=500 --wait-mins 15
    ```
 
+### 8.3 Empirical Findings from `v1-wave5` (`2,469` Assimilated Pages, `5,464` Reader Evaluations)
+
+Analyzing the first `2,469` assimilated `v1-wave5` pages (`5,464` reader rows across `14` LCCNs: `1,941` 2-reader pages and `528` 3-reader pages) against our 218-word German function-word lexicon (`der`, `die`, `und`, `in`, `zu`, `den`, `das`, `nicht`, `von`, `sie`, `ist`, `des`, `sich`, `mit`, `dem`, `dass`, `daß`, etc.) yielded four critical insights that directly shape whole-corpus scoring and re-OCR:
+
+| Reader (`v1-wave5`, `n = 2,469` pages) | Pages | Mean Words / Page | Median Words / Page | Mean Function-Word Hit Rate (`fw_hit_rate`) | Median `fw_hit_rate` | Mean Valid Function Words / Page | Total Valid Function Words Recovered | Page Win Rate (Highest `fw_hit_rate`) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **`ours-tesseract` (`tesseract/5.5.0 profile=frak2021`)** | 2,469 | **4,779** | **4,361** | **0.2423** | **0.2472** | **1,164.7** | **2,875,765** | **97.41% (`2,405 / 2,469`)** |
+| **`loc-hist` (Historical LoC ALTO)** | 2,467 | 3,661 | 3,736 | 0.1433 | 0.1500 | 525.6 | 1,297,593 | 2.59% (`64 / 2,469`) |
+| **`as` (American Stories `effocr_en`)** | 528 | 2,438 | 2,175 | 0.0558 | 0.0518 | 144.3 | 76,174 | 0.00% (`0 / 528`) |
+
+1. **`97.4%` Page Win Rate (`2,405 / 2,469` pages) & `2.22×` Total Valid Text Recovery:**
+   - `ours-tesseract` (`tesseract/5.5.0 profile=frak2021`) achieved a **`24.23%`** mean German function-word hit rate (matching the natural `22%–28%` function-word density of German prose) compared to **`14.33%`** for historical `loc-hist` (which applied English/Antiqua OCR to Fraktur script, turning `u/n/d` and `ſ/s` into gibberish) and **`5.58%`** for `as` (`effocr_en`).
+   - Across all `2,469` pages, `ours-tesseract` recovered **`2,875,765` valid German function words vs. `1,297,593` in `loc-hist` (`2.22×` total valid text recovery; `2.53×` median per page)**.
+2. **`28.64%` Historical LoC Severe Dropout vs. `1.17%` Tesseract Layout Dropout:**
+   - **`707 / 2,469` (`28.64%`)** of historical `loc-hist` pages dropped `>65%` of the page's words (`words_loc < 0.35 × words_tess`), especially on dense 7-column broadsheets such as `sn83045081` (*Westliche Blätter*, where `loc-hist` recovered a median of `1,010` words/page vs. `8,396` for `ours-tesseract`).
+   - Only **`29 / 2,469` (`1.17%`)** of `ours-tesseract` pages suffered severe dropout (`words_tess < 0.35 × words_loc`). Crucially, those `1.17%` layout failures are deterministically flagged by **`line_height_px > 90 px`** (`115` pages, `4.66%` — where Tesseract `--psm 3` merged columns or misdetected vertical column rules as 90°-rotated lines) and **`mean_word_conf < 0.50`** (`224` pages, `9.07%`).
+3. **Why Intrinsic `function_word_rate` & `function_word_count` Must Complement Pairwise Completeness/Precision on 2-Reader Pages:**
+   - On 2-reader pages (`loc` + `ours-tesseract`), the shared-vocabulary intersection (`loc ∩ ours-tesseract`) makes `completeness` trivially `1.000` for both readers and makes `precision = |intersection| / |reader_vocab|` look lower (`0.409` vs. `0.858`) for the stronger reader (`ours-tesseract`) simply because `loc-hist` missed half the page's vocabulary.
+   - Recording intrinsic `function_word_rate` (`fw_hit_rate`) and `function_word_count` per reader directly in `pages.parquet` provides an absolute, non-relative lexical quality signal on 1-reader and 2-reader pages, while 3-reader pages (`n = 528`) confirm via Three-Cornered Hat that `ours-tesseract` achieves **`0.2738` median `est_cer`** vs. **`0.3133`** (`loc`) and **`0.5567`** (`as`).
+4. **Data-Driven 3-Tier Whole-Corpus Routing Policy:**
+   - **Tier 1 (~90% of Fraktur pages):** Immediately promote `ours-tesseract` (`frak2021`) when `18 <= line_height_px <= 90`, `mean_word_conf >= 0.50`, and `fw_count_tess >= fw_count_loc`.
+   - **Tier 2 (~4.7% of pages):** Re-run layout segmentation (`--psm 1` / `--psm 4` or `usnm_surya` layout regions) when `line_height_px > 90 px` or `words_tess < 0.35 × words_loc`.
+   - **Tier 3 (~5% of pages):** Escalate only genuinely degraded scans (`mean_word_conf < 0.50` paired with low `contrast_p95_p05` or high `bleed_through`) to `usnm_qwen` VLM crop transcription.
+
+---
+
+## 9. Wave 6 (`v1-wave6`, 10,000 Non-Overlapping Workunits / 20,000 Replica Tasks) & Campaign CLI Tooling
+
+To scale evaluation to **10,000 additional workunits (`20,000` replica tasks)** with **zero overlap** against all `5,086` unique pages previously evaluated in `v1-pilot`, `v1-wave1`, `v1-wave3`, `v1-wave4`, and `v1-wave5`:
+
+1. **Strictly Non-Overlapping 10,000-Page Inventory (`v1-wave6`):**
+   - Selected **`10,000` strictly non-overlapping pages** (`2,524` 3-reader pages with `loc` + `ours-tesseract` + `as`, and `7,476` 2-reader pages with `loc` + `ours-tesseract`) from 8 LCCNs (`sn83045081`, `sn83045227`, `sn83045474`, `sn83045241`, `sn83045350`, `sn83045255`, `sn83025182`, `sn88084068`) that have verified full-resolution scans in `usnmscansstprodffapzy/scans/keep/` and ALTO XMLs in `stusnmdffapzy/curated/ocr-local/alto/`.
+2. **Lossless Geometry Grayscale JPEG Transcoding for `.jp2` Scans:**
+   - Because ~62% of archived scans in `usnmscansstprodffapzy/scans/keep/` are stored as JPEG2000 (`.jp2`, up to `7688 × 10171` = `78 MP`), staging transcodes `.jp2` (and `>40 MP` RGB JPEGs) to 1-channel 8-bit grayscale JPEG (`L`, `quality=75`). This preserves 100% of the exact pixel dimensions (`WIDTH × HEIGHT` in `loc.xml`) required by `usnm-ocr-quality`'s crop and line-height geometry while keeping every image under `8 MB` and within `zune-jpeg`'s allocation limit.
+3. **Single-Command Campaign CLI (`scripts/boinc-quality-campaign.py`) & Server Config Safeguard (`lib.sh`):**
+   - Added `scripts/boinc-quality-campaign.py` (`prepare`, `status`, `restore`) so preparing sharded campaigns, checking live shard + BOINC queue progress (`python3 scripts/boinc-quality-campaign.py status --campaign v1-wave6`), and restoring the canonical `usnm-boinc-bridge-caj-prod` job specification require a single quiet command with zero manual shell/SAS/YAML plumbing.
+   - Hardened `render_config` in `contrib-compute/images/server/lib.sh` so bridge executions preserve the live server replica's `<host>` and always maintain `$PROJ/config.xml` as a symlink to container-local tmpfs (`$SECRETS/config.xml`).
+
+

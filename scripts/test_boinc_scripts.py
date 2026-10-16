@@ -643,5 +643,46 @@ class BoincLockAndPveClient(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0, bad)
 
 
+QUALITY_CAMPAIGN_SCRIPT = os.path.join(HERE, "boinc-quality-campaign.py")
+
+
+class QualityCampaignCli(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_prepare_splits_manifest_into_round_robin_shards(self):
+        manifest = Path(self.tmp, "sample.jsonl")
+        rows = [{"doc_id": f"sn83045081_1900-01-{i:02d}_ed-1_seq-1", "lang": "deu"} for i in range(1, 11)]
+        manifest.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        out_dir = Path(self.tmp, "out")
+        res = subprocess.run(
+            [
+                "python3",
+                QUALITY_CAMPAIGN_SCRIPT,
+                "prepare",
+                "--campaign",
+                "v1-test",
+                "--manifest",
+                str(manifest),
+                "--out-dir",
+                str(out_dir),
+                "--count",
+                "8",
+                "--shards",
+                "4",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("Prepared 8 pages across 4 shards", res.stdout)
+        for s in range(4):
+            self.assertTrue((out_dir / "shards" / f"shard-s{s}.tar.gz").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
