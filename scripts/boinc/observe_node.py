@@ -59,6 +59,8 @@ def summarize(lines, now, window_seconds):
 
 
 def read_cgroup(group):
+    if not group or not group.startswith("/") or group == "/" or ".." in Path(group).parts:
+        return None
     root = Path("/sys/fs/cgroup") / group.lstrip("/")
     result = {}
     for filename in ("cpu.stat", "memory.current", "memory.peak", "memory.events", "pids.current"):

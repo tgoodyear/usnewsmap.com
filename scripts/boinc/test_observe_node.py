@@ -11,6 +11,13 @@ SPEC.loader.exec_module(observe)
 
 
 class ObserveNodeTests(unittest.TestCase):
+    def test_unavailable_service_cgroup_never_reads_root_host_counters(self):
+        for group in ("", "/", "relative"):
+            with patch.object(observe, "Path") as path:
+                self.assertIsNone(observe.read_cgroup(group))
+                path.assert_not_called()
+        self.assertIsNone(observe.read_cgroup("/../outside"))
+
     def test_short_and_empty_text_are_successful_uploaded_pages_not_failures(self):
         now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
         lines = [json.dumps({"timestamp": "2026-10-16T11:59:00Z", "fields": {
