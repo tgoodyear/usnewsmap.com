@@ -9,6 +9,8 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
   const samples: number[] = [];
   const drawSamples: number[] = [];
   const parseSamples: number[] = [];
+  const shaderVariants: number[] = [];
+  const shaderCold = process.env.USNM_STATES_SHADER_COLD === "1";
   let userAgent = "";
   let renderer = "";
   for (let i = 0; i < 5; i++) {
@@ -26,6 +28,23 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
         baseURL: testInfo.project.use.baseURL,
         viewport: testInfo.project.use.viewport,
       });
+      if (shaderCold) {
+        await page.addInitScript(
+          (offset) => {
+            const original = WebGL2RenderingContext.prototype.shaderSource;
+            WebGL2RenderingContext.prototype.shaderSource = function (shader, source) {
+              if (/SHADER_NAME (solid-polygon|path|line)-layer-vertex-shader/.test(source)) {
+                source = source.replace(/void main\s*\(\s*(?:void)?\s*\)\s*\{/, "void measuredOriginalMain() {");
+                // A unique, subpixel position offset changes the executable shader, not just a comment/cache key.
+                source += `\nvoid main() { measuredOriginalMain(); gl_Position.x += ${offset} * gl_Position.w; }\n`;
+                performance.mark("states-diagnostic-shader-variant");
+              }
+              return original.call(this, shader, source);
+            };
+          },
+          (1e-8 + Math.random() * 1e-8).toPrecision(9),
+        );
+      }
       await page.route("https://tiles.openfreemap.org/**", (route) =>
         route.fulfill({
           json: {
@@ -55,6 +74,9 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
           return performance.getEntriesByName("usnm-states-parsed")[0]!.startTime - resource.responseEnd;
         }),
       );
+      shaderVariants.push(
+        await page.evaluate(() => performance.getEntriesByName("states-diagnostic-shader-variant").length),
+      );
       userAgent = await page.evaluate(() => navigator.userAgent);
       renderer = await page.evaluate(() => {
         const gl = document.createElement("canvas").getContext("webgl2");
@@ -71,6 +93,8 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
       hardware: "runner-specific; record host separately",
       browserName,
       cacheScope: "fresh browser processes; Chrome GPU caches disabled; OS/driver cache uncontrolled",
+      shaderCold,
+      shaderVariants,
       userAgent,
       renderer,
       samplesMs: samples,
@@ -79,5 +103,6 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
       maxMs: Math.max(...samples),
     }),
   );
+  if (shaderCold) expect(shaderVariants).toEqual([2, 2, 2, 2, 2]);
   expect(Math.max(...samples)).toBeLessThanOrEqual(300);
 });

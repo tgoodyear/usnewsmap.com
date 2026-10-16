@@ -101,6 +101,11 @@ USNM_STATES_PERF=1 npm test -- src/engine/states.performance.test.ts
 # USNM_STATES_GPU=metal explicitly selects native Apple GPU rendering on macOS.
 USNM_STATES_PERF=1 USNM_STATES_GPU=metal PW_BASE_URL=http://127.0.0.1:18092 \
   npm run e2e -- e2e/states.performance.spec.ts --project=desktop --workers=1
+
+# Diagnostic only: executable shader variants discourage driver cache reuse.
+USNM_STATES_PERF=1 USNM_STATES_GPU=metal USNM_STATES_SHADER_COLD=1 \
+  PW_BASE_URL=http://127.0.0.1:18092 npm run e2e -- \
+  e2e/states.performance.spec.ts --project=desktop --workers=1
 ```
 
 The scrub gate asserts **p95 ≤2 ms**, after 200 warm-up frames, including totals,
@@ -152,6 +157,29 @@ or to the two animation frames would be speculation.
 After integrating the initial basemap readiness gate, the visibility-aware
 five-process native-Metal run measured **52.9, 52.8, 54.7, 81.4, 67.7 ms**.
 The same uncontrolled-driver-cache limitation applies; no cold pass is claimed.
+
+The optional shader diagnostic wraps the polygon and border vertex shader
+entry points with a random, executable **1–2 × 10⁻⁸ clip-space offset**. This
+subpixel perturbation discourages reusing exactly the same compiled program,
+unlike changing a comment. It asserts that both shaders were instrumented.
+It is **test-only**, not a production shader or a simulated mid-range laptop.
+It cannot reset driver/compiler infrastructure, prove a cache miss at every
+driver layer, or measure actual compositor presentation.
+
+On the same M1, the first five-variant run of the original renderer measured
+**547.1, 280.1, 270.8, 266.5, 273.8 ms** (CPU first draw **530.3 ms** in
+the first sample), reproducing a cold miss without clearing shared OS caches.
+A later matched original-renderer run measured **289.4, 252.6, 260.7, 269.9,
+276.0 ms**. An experimental simpler line-segment border shader measured
+**273.2–280.6 ms**, but did not convincingly beat the matched original;
+that renderer change was discarded. The initial compiler/global-cache state
+still confounds the comparison. No optimization or resolved cold budget is
+claimed. In a separate software-renderer diagnostic, CPU draw **73.2 ms**
+versus proxy **1,398.5 ms** located most delay after CPU submission; native
+Metal CPU **63.0 ms** versus proxy **77.7 ms** did not reproduce the original
+native cold miss. Synchronous shader program-status checks in that native
+sample cost **8.8 + 8.5 ms**. These observations must not be extrapolated to
+the uninstrumented original 489.4 ms sample.
 
 Read-only public metadata on 2026-10-15 (`pages-v20261010-2`) listed **1,617
 places**, none missing state codes; all codes are represented by the boundary
