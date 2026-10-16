@@ -761,6 +761,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 let cfg = LocConfig {
                     api_gap: Duration::from_millis(api_gap_ms),
                     tile_gap: Duration::from_millis(tile_gap_ms),
+                    html_is_block: true,
                     ..LocConfig::default()
                 };
                 let iiif_root = cfg.iiif_root.clone();
@@ -911,6 +912,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 storage_gap: Duration::from_millis(storage_gap_ms),
                 storage_own_budget,
                 batch_cache: Some(batch_cache),
+                html_is_block: true,
                 ..LocConfig::default()
             })?);
             let opts = prefetch::Options {

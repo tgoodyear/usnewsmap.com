@@ -526,8 +526,8 @@ PUBLIC: dict[str, dict] = {
     },
     # BLN600 is No-Derivatives: nothing from it is committed, the crop is the dataset's own image file
     # copied unchanged (never re-encoded), and its LICENSE and readme travel with every output directory.
-    # BOINC clients (#457) must download the original zip and cut or copy locally; the project cannot
-    # ship derived crops.
+    # BOINC's project mirror must serve only the unchanged source zip; clients cut locally and the
+    # project does not distribute derived crops. The operator must verify the deployment's use.
     "bln600": {
         "group": "pub-bln600", "lang": "eng",
         "license": "CC BY-NC-ND 4.0 (figshare record and the LICENSE file in the zip)",

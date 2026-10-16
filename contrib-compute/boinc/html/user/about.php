@@ -39,8 +39,12 @@ can affect other BOINC projects too.</p>
 <h3>Getting started</h3>
 <p>This is a limited pilot. Available work depends on your platform, resources
 and project preferences; creating an account does not guarantee tasks.
-Experimental and production work use the same BOINC account and client.
-Experimental participation, when available, uses normal project preferences.
+Normal project participation includes production and experimental tasks, including
+Qwen, using the same BOINC account and client. There is no experiment-specific
+flag or repeated profile update. Your normal CPU/GPU choices and resource limits
+still apply; operators phase experimental campaigns server-side. Experimental
+tasks may fail with a normal Computation error; diagnostics return automatically,
+without a manual log upload.
 You can install BOINC now and register or attach later.</p>
 <p>Read the
 <a href="https://github.com/tgoodyear/usnewsmap.com/blob/main/docs/boinc-volunteer.md">volunteer

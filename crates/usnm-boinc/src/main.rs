@@ -16,6 +16,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// OFF-by-default onboarding and independent-host OCR spot checks; never modifies trust.
+    HostTrust {
+        #[command(subcommand)]
+        command: HostTrust,
+    },
     /// Export selected cached pages and reserve their native requested-work ledger entries.
     Export {
         #[arg(long)]
@@ -152,6 +157,43 @@ enum Commands {
     Status {
         #[arg(long)]
         root: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum HostTrust {
+    /// Read existing quarantine reasons without connecting to BOINC or modifying results.
+    Quarantine {
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Discover BOINC hosts and issue one gold unit per untrusted host/campaign.
+    Onboard {
+        #[arg(long)]
+        config: PathBuf,
+        /// Dispatch work; without this switch only read-only discovery/planning occurs.
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Deterministically sample OCR jobs and rerun on a second same-image trusted host.
+    SpotSubmit {
+        #[arg(long)]
+        config: PathBuf,
+        /// JSON array of original job digests.
+        #[arg(long)]
+        jobs: PathBuf,
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Validate both canonical results and record agreement; never publishes or grants trust.
+    SpotCompare {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        job: String,
+        #[arg(long)]
+        original_spool: PathBuf,
+        #[arg(long)]
+        spot_spool: PathBuf,
     },
 }
 #[derive(Subcommand)]
@@ -928,6 +970,37 @@ enum Found {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
+        Commands::HostTrust { command } => {
+            use usnm_boinc::host_trust as x;
+            match command {
+                HostTrust::Quarantine { root } => {
+                    println!("{}", serde_json::to_string_pretty(&x::quarantine(&root)?)?);
+                }
+                HostTrust::Onboard { config, execute } => {
+                    let hosts = x::onboard(&x::Config::load(&config)?, execute).await?;
+                    println!("{}", serde_json::to_string(&hosts)?);
+                }
+                HostTrust::SpotSubmit {
+                    config,
+                    jobs,
+                    execute,
+                } => {
+                    let units = x::spot_submit(&x::Config::load(&config)?, &jobs, execute).await?;
+                    println!("{}", serde_json::to_string(&units)?);
+                }
+                HostTrust::SpotCompare {
+                    config,
+                    job,
+                    original_spool,
+                    spot_spool,
+                } => {
+                    anyhow::ensure!(
+                        x::spot_compare(&x::Config::parse(&config)?, &job, &original_spool, &spot_spool).await?,
+                        "independent OCR spot check disagrees; inspect comparison.json; no trust or publication changed"
+                    );
+                }
+            }
+        }
         Commands::Export {
             manifest,
             pages,

@@ -25,6 +25,7 @@ pub const MAX_EXTRA_CHAR_EDITS: usize = 200_000;
 pub const MAX_EXTRA_WORD_EDITS: usize = 40_000;
 /// How long a crop may take beyond its deadline (engine start and stop).
 pub const SLACK_MS: u64 = 30_000;
+const MAX_EXPECTATIONS: usize = 16 << 20;
 
 /// `<project>/gold/<manifest sha256>.json`: the validator's view of one bundle.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,12 +52,13 @@ fn expected_path(dir: &Path, manifest_sha256: &str) -> anyhow::Result<PathBuf> {
 
 pub fn load_expected(dir: &Path, manifest_sha256: &str) -> anyhow::Result<Expectations> {
     let p = expected_path(dir, manifest_sha256)?;
-    serde_json::from_slice(&read(&p, 16 << 20).with_context(|| format!("{}", p.display()))?)
+    serde_json::from_slice(&read(&p, MAX_EXPECTATIONS).with_context(|| format!("{}", p.display()))?)
         .with_context(|| format!("parsing {}", p.display()))
 }
 
 /// Records units in the bundle's expectations, before they are submitted.
 pub fn add_jobs(dir: &Path, p: &prepare::Prepared, jobs: &[Job]) -> anyhow::Result<()> {
+    let _lock = crate::Lock::take(dir)?;
     let path = expected_path(dir, &p.manifest_sha256)?;
     let mut e = if path.exists() {
         let e = load_expected(dir, &p.manifest_sha256)?;
@@ -77,7 +79,12 @@ pub fn add_jobs(dir: &Path, p: &prepare::Prepared, jobs: &[Job]) -> anyhow::Resu
     for j in jobs {
         e.jobs.insert(j.id.clone(), j.engine.clone());
     }
-    atomic(&path, &serde_json::to_vec_pretty(&e)?)
+    let bytes = serde_json::to_vec_pretty(&e)?;
+    ensure!(
+        bytes.len() <= MAX_EXPECTATIONS,
+        "gold expectations exceed validator size limit; prior file preserved"
+    );
+    atomic(&path, &bytes)
 }
 
 pub fn load(file: &Path) -> anyhow::Result<Report> {
@@ -331,6 +338,38 @@ pub(crate) mod tests {
         let j = submit::job(&p, &submit::tests::engine(), 0).unwrap();
         add_jobs(dir, &p, std::slice::from_ref(&j)).unwrap();
         (load_expected(dir, &p.manifest_sha256).unwrap(), j.id)
+    }
+
+    #[test]
+    fn expectations_overflow_preserves_readable_file_and_concurrent_writes_refuse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = submit::tests::prepared();
+        let j = submit::job(&p, &submit::tests::engine(), 0).unwrap();
+        add_jobs(tmp.path(), &p, std::slice::from_ref(&j)).unwrap();
+        let path = expected_path(tmp.path(), &p.manifest_sha256).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let jobs: Vec<_> = (0..50000)
+            .map(|i| {
+                let mut job = j.clone();
+                job.id = format!("{i:064x}");
+                job
+            })
+            .collect();
+        assert!(add_jobs(tmp.path(), &p, &jobs)
+            .unwrap_err()
+            .to_string()
+            .contains("size limit"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            load_expected(tmp.path(), &p.manifest_sha256)
+                .unwrap()
+                .jobs
+                .len(),
+            1
+        );
+        let _lock = crate::Lock::take(tmp.path()).unwrap();
+        assert!(add_jobs(tmp.path(), &p, &[j]).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]

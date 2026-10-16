@@ -5,8 +5,8 @@ Preview native Windows BOINC onboarding; -Apply enables an interactive setup.
 .DESCRIPTION
 Run from a reviewed checkout in a normal (not administrator) PowerShell window.
 Credentials are entered only in BOINC Manager, never in this script or arguments.
-Native Windows Qwen publication and experimental enrollment are separate operator
-gates: attachment does not guarantee work. No WSL, Podman or CUDA toolkit needed.
+Project participation includes production and experimental tasks. Operators phase
+campaigns server-side; attachment does not guarantee work. No WSL, Podman or CUDA toolkit needed.
 .EXAMPLE
 .\scripts\boinc\setup_windows_volunteer.ps1
 .EXAMPLE
@@ -300,7 +300,7 @@ function Invoke-WindowsOnboarding {
         }
     }
     else { Write-Host 'BOINC is not installed. Use -Apply -InstallBoinc for the verified interactive installer.' }
-    Write-Warning 'Native Windows Qwen is an operator-gated experimental pilot, not guaranteed available. This script does NOT enable qwen_native_cuda_canary or any other account preference.'
+    Write-Warning 'Project participation includes production and experimental tasks, including Qwen. Operators bound pilot campaigns; work is not guaranteed. No separate experiment flag or profile update is required.'
     Write-Host 'No WSL, Podman, Docker or CUDA toolkit is installed. The helper does not edit BOINC preferences/account files, firewall or execution policy; the optional BOINC installer applies the installation settings you review.'
     if (-not $ApplyChanges) {
         Write-Host 'CHECK ONLY: no network, downloads, client starts or attachment. Rerun with -Apply to continue interactively; -InstallBoinc additionally permits an installation prompt.'
@@ -329,8 +329,8 @@ Before adding a project:
      preferences affect ALL projects; review rather than overwrite existing limits.
   2. At $script:ProjectUrl create/sign in to YOUR account.
      Review project preferences: GPU-only volunteers disable Use CPU; CPU is optional.
-     Experimental participation, when offered, uses the normal project's
-     preferences checkbox with informed consent, not a different client/script.
+     Participation includes production and experimental work. Your normal CPU/GPU
+     choices and resource limits apply to both; there is no experiment checkbox.
   3. In BOINC Manager: Tools > Add project (or Add project/account manager),
      enter $script:ProjectUrl and sign in to the SAME account.
      Enter passwords ONLY in Manager/the HTTPS project site. Never paste account
@@ -342,9 +342,9 @@ Before adding a project:
     if (-not (Test-ProjectAttached $installation)) {
         throw 'usnewsmap is not attached to the local client. In Manager add https://boinc.usnewsmap.com/ using your account, check account credentials and Event Log for network/scheduler errors, then rerun. No account or project was changed by this check.'
     }
-    Write-Host 'Local usnewsmap attachment verified. This is NOT evidence of scheduler acceptance, canary opt-in, app availability or a completed task.'
-    Write-Host 'Experimental and production work use this SAME account, attachment, client, pause/resource preferences, project Update and automatic result upload. Server-side signed app versions and normal project consent determine eligibility; never reattach or sideload apps/models to switch cohorts.'
-    Write-Host 'In Manager check Event Log and Tasks: no work may mean the pilot is closed, not opted in, no published Windows app, or unmet preferences/resources. Ask the operator; do not enable WSL or delete model caches to fix this.'
+    Write-Host 'Local usnewsmap attachment verified. This is NOT evidence of scheduler acceptance, app availability or a completed task.'
+    Write-Host 'Experimental and production work use this SAME account, attachment, client, CPU/GPU choices, pause/resource preferences, project Update and automatic result/diagnostic return. No separate experiment enrollment; never reattach or sideload apps/models to switch cohorts.'
+    Write-Host 'In Manager check Event Log and Tasks: no work may mean a server-side cohort is closed, no published Windows app, or unmet preferences/resources. Experimental failures appear as normal Computation error and diagnostics return automatically; no manual log upload. Do not enable WSL or delete model caches to fix this.'
     Write-Host 'Live Windows acceptance still requires task download/run, suspend/resume, upload, server validation and collection. Use No new tasks to stop new work; let existing tasks finish/report.'
 }
 

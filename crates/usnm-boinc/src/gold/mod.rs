@@ -3,8 +3,7 @@
 //!
 //! Two steps, because the BOINC job container has no network (docs/boinc.md):
 //! - `gold-stage` (network): verifies the bundle and downloads the original files it refers to
-//!   (the BLN600 zip, Library of Congress page images) into a cache, checking each sha256. The
-//!   project never ships them: BLN600 is No-Derivatives, and the page images come from LoC.
+//!   (the BLN600 zip, Library of Congress page images) into a cache, checking each sha256.
 //! - `gold-run` (offline): verifies the bundle again, checks the cache, cuts the crops locally,
 //!   runs Tesseract on each, scores CER/WER as gold.py does, and writes a report of counts only.
 //!   The report holds no page text and no transcription.
