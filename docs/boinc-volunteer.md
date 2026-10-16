@@ -4,6 +4,54 @@ Volunteers run OCR and OCR-quality checks on historical newspaper pages from Chr
 
 Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md) and [boinc-quality.md](boinc-quality.md).
 
+## Why volunteer?
+
+**Help make historical newspapers discoverable, not just viewable.** A scanned
+newspaper preserves what a page looked like, but searching it depends on optical
+character recognition (OCR): software that turns the image into text. Faded ink,
+damaged paper, unusual typefaces and complex columns can leave names, places and
+whole passages missing or garbled in that text.
+
+[US News Map](https://usnewsmap.com/) lets people search historical American
+newspapers and explore where and when matches were printed. Better searchable
+text can help genealogists find a family name, historians trace a story across
+towns, and students explore how language and public discussion changed over time.
+The underlying scans come from
+[Chronicling America](https://www.loc.gov/collections/chronicling-america/),
+the Library of Congress and National Endowment for the Humanities newspaper
+collection.
+
+Your computer contributes processing time for transcribing pages or measuring
+the quality of existing OCR. Some tasks test newer methods, including Qwen, on
+small image crops. These experiments help us decide which methods are useful;
+they are not the project's purpose, and a fluent-looking transcription is not
+proof that it matches the scan. Returned outputs undergo project checks, and
+not every task produces a change to the public search index.
+
+### What you contribute, and what you control
+
+BOINC downloads a task, runs the project's application and sends back results
+and task diagnostics. You do not need to transcribe pages yourself. Experimental
+and production tasks use the same account, client and automatic return process;
+experimental participation, when available, uses normal project preferences.
+
+Donating compute is not cost-free: CPU/GPU use consumes electricity, produces
+heat, may increase fan noise, and needs disk space and download bandwidth.
+Large model downloads can be several gigabytes. Use only a computer you own or
+have permission to use, and review the platform-specific requirements below.
+In BOINC you can limit resources, choose idle-only operation, pause processing,
+or select **No new tasks** to stop receiving work while existing tasks finish.
+Review existing settings carefully because local computing preferences affect
+other BOINC projects too.
+
+This is still a limited pilot: registration or attachment does not guarantee
+available work or a supported application for your device. You can install
+BOINC now and register or attach later. Start with the
+[Windows setup](#13-windows-windows_x86_64),
+[macOS setup](#12-macos-arm64-apple-darwin-apple-silicon-and-x86_64-apple-darwin-intel)
+or [Linux setup](#11-linux-x86_64-pc-linux-gnu-and-aarch64-unknown-linux-gnu),
+then review [resources, network and privacy](#4-resources-network-and-privacy).
+
 ## 1. Set up and check the host
 
 The project ships two kinds of BOINC app versions:
