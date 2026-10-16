@@ -707,14 +707,17 @@ its checks are `usnm_boinc::gold::job`; the code is `crates/usnm-boinc/src/gold/
 The originals are `create_work --remote_file URL BYTES MD5` inputs: the BOINC
 client downloads each from the publisher's URL and checks its size and md5, so
 the project server never stores or serves them. That keeps BLN600 (CC BY-NC-ND)
-and the LoC images where the licence and #457 put them. The tar and the
-originals are `<sticky/>` and `<no_delete/>`, so each host downloads them once and reuses
-them across its gold units; all are `<copy_file/>`, because the container sees only the
-slot. The open names are the cache names `gold-run` reads, so the slot is the
-cache and the run step needs no network: the container keeps `--network=none`
-from `job.toml`. The worker checks every input's size and sha256 against the
-job, the manifest's digest and version, the Tesseract version and base image,
-and the model bytes of each profile it used, then writes `gold-result.json`.
+and the LoC images where the licence and #457 put them. The tar and originals
+are marked `<sticky/>` and `<no_delete/>` in the input template, intended for
+reuse across a host's gold units; live client evidence has not confirmed that
+the generated work retains these flags or avoids repeat downloads (see the
+acceptance record below). All are `<copy_file/>`, because the container sees
+only the slot. The open names are the cache names `gold-run` reads, so the slot
+is the cache and the run step needs no network: the container keeps
+`--network=none` from `job.toml`. The worker checks every input's size and
+sha256 against the job, the manifest's digest and version, the Tesseract
+version and base image, and the model bytes of each profile it used, then
+writes `gold-result.json`.
 
 **Result.** `gold-result.json` is the report above, run on the whole bundle
 (no `--limit`), with a `boinc` block: job id, worker image and base digests,
@@ -883,16 +886,33 @@ hours.
 
 Then run `gold-prepare` as above.
 
-**Not verified** (check in the live acceptance exercise):
+### Live acceptance record and remaining checks
 
-- that stock `create_work --remote_file` keeps `<sticky/>` and `<no_delete/>`
-  from the input template, and that the client follows figshare's redirect;
-- that `script_validator` passes the upload under its `<workunit>_<replica>_0`
-  name, which the validator reads the unit from;
-- that the Docker wrapper's slot mount includes `init_data.xml` (the host id is
-  empty otherwise);
-- that `PROJECT_DIR` and `PROJECT` reach `script_validator`'s environment
-  (`USNM_GOLD_EXPECTED` overrides the directory);
-- run time and memory on a real host; `rsc_fpops_est` 5e12 is a guess.
+The production `v1-tess550` campaign completed on 14 October 2026. `gold-collect`
+read the batch-0 assimilator spool and wrote six report rows and 540 crop rows.
+Hosts 2 and 3 returned four and two valid results respectively; each scored 90
+crops and skipped 52 for unavailable language models. Both hosts reported CER
+0.0905 and WER 0.2366. The successful reports establish an end-to-end path through
+the stock client, worker and server validator, but do not prove every transport
+or runtime detail below.
+
+| Acceptance check                                                                             | Evidence and status                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Figshare redirect, BLN600 MD5 and bridge access to figshare / tile.loc.gov                   | **Passed end to end:** the campaign prepared the publisher inputs and valid tasks scored the BLN600 and LoC-backed samples. The worker's input hash checks and server validation passed.                                                                                     |
+| Wrapper slot contains `init_data.xml`                                                        | **Passed end to end:** accepted reports carried host IDs 2 and 3.                                                                                                                                                                                                            |
+| Validator finds the expected bundle data                                                     | **Passed in production; mechanism unverified:** `script_validator` accepted all six reports. The run did not establish whether `PROJECT_DIR` and `PROJECT` were present or the fallback/`USNM_GOLD_EXPECTED` path was used.                                                  |
+| `<sticky/>` / `<no_delete/>` survive `create_work --remote_file`; a second unit reuses files | **Partly verified:** each host returned multiple valid units, but no transfer log or before/after cache record established that later units avoided downloads.                                                                                                               |
+| Real-host duration and resource use                                                          | **Partly measured:** two Gold results in the related live acceptance recorded 163.618 s elapsed each; the host's cgroup limits were 1 CPU, 1.5 GiB memory, no swap and 64 PIDs. Peak memory and disk consumption were not measured, so `rsc_fpops_est=5e12` remains a guess. |
+| Volunteer guide on a clean Debian/Ubuntu host                                                | **Unverified:** the documented clean-host procedure and expected output still need to be exercised on that platform.                                                                                                                                                         |
+
+For a repeatable acceptance record, retain per-host and per-workunit evidence for
+these same checks: result upload and validation; the result's non-null host ID
+matched to the server's canonical host; client transfer/cache evidence across
+two units on one host; publisher-input hash checks; validator success and how it
+resolved its expected-data directory; `gold-prepare` completion; task elapsed
+time, peak memory and disk; and the clean-host guide's command output. Do not
+infer cache reuse from multiple successful tasks or infer peak resource use from
+cgroup limits. Keep the production issuance/campaign separate from this
+documentation checklist.
 
 Volunteers' steps are in [boinc-volunteer.md](boinc-volunteer.md).
