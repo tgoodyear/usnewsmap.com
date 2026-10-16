@@ -360,6 +360,11 @@ retain every explicit day. Schedules that cannot round-trip the pinned client's
 two-decimal weekly serialization are refused rather than silently rounded.
 Historical server records
 are not rewritten. A standard detach can remove unused project downloads;
+For the stock client's idle CPU-count percentage only, working value zero and
+parsed override value 100 are equivalent (both leave the CPU count unlimited).
+Readback accepts that documented representation change, not arbitrary limit
+changes. Weak-key shape checks reject both 31- and 33-hex suffixes; valid shape
+alone cannot detect a transcribed but different credential.
 inventory caches and obtain explicit rejoin authorization first. This does not
 provision resources, activate the optional OCR-node profile, grant GPU consent,
 or change server pins/TLS policy.
