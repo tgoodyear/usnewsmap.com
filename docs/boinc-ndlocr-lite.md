@@ -110,6 +110,45 @@ python3 scripts/boinc/smoke-ndlocr.py --image IMAGE --work "$PWD/ndlocr-page-pro
 Record architecture, CPU quota, page dimensions and model/runtime identity before
 comparing hosts or increasing the campaign.
 
+### Two-host Linux headline check (2026-10-16 UTC)
+
+The published BOINC worker was exercised independently in Docker on pve-big
+(CT 100, i7-7700K) and pve-laptop (CT 110, i7-1185G7). Both runs used
+`ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`, one CPU, 4 GiB
+memory with no additional swap, no network, and a read-only container root.
+No BOINC workunit was submitted, and no curated data or trust state was changed.
+
+- Worker manifest: `sha256:1c7731046380c340b73dc4c14e47a0aff1a933815bc7f733f54681d54eb70819`.
+- Engine configuration: `sha256:bf3a44e1e23b18f1c234a768939acedf38dfcf432d1a3aabf10754352fb7928a`.
+- Both workers passed the shipped `ndlocr check`. The actual `ndlocr compare`
+  across the two independent result sets reported character-bigram Dice
+  **1.000000** against the unchanged 0.99 floor.
+- Both returned 246 normalized characters with text SHA-256
+  `bb779f06f366c89a46679cfac60377b103d8b8ebc941567101aca8c7aacf5978`.
+  A separate upstream Python invocation on each host matched the text;
+  the Python ALTO converter matched all 16 String contents and geometry.
+  Complete ALTO/result files differ, including processing timestamps.
+
+| Measurement                       | pve-big CT 100 | pve-laptop CT 110 |
+| --------------------------------- | -------------- | ----------------- |
+| Worker-reported elapsed time      | 25.637 s       | 10.670 s          |
+| Independent Python wall time      | 25.123 s       | 10.807 s          |
+| Independent Python CPU time       | 21.781 CPU-s   | 10.806 CPU-s      |
+| Independent Python peak child RSS | 679,100 KiB    | 683,960 KiB       |
+
+These are headline smoke measurements on two x86-64 CPUs, not full-page
+resource bounds, ARM/x86 equivalence, scheduler acceptance, canonical
+assimilation, or curated publication. The classified full-page pilot and normal
+release/search checks below remain required.
+
+An initial attempt through pve-big's host-level Podman failed before inference:
+AppArmor profile `containers-default-0.62.2` denied creation of a Unix stream
+socket required by Tokio's signal handler. A Python `socket.socketpair()`
+probe reproduced the denial, confirmed in the host kernel audit log. No
+AppArmor or seccomp policy was relaxed; the successful second-host test used
+the existing Docker test container instead. Host-level Podman compatibility
+remains unresolved and must not be inferred from these Docker results.
+
 ## BOINC lifecycle (phase 2, #626)
 
 The dedicated `usnm_ndlocr` CPU app is separate from `usnm_ocr`: Japanese
