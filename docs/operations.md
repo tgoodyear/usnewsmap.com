@@ -1289,6 +1289,15 @@ The same as charts: the "usnm OCR nodes (<env>)" workbook under Application Insi
 
 `no heartbeat` means the node is down or off the network, or has lost its agent or its association with the rule (run `onboard.sh` again): the agent sends heartbeats only to the workspaces of the rules it's associated with. `no counters` with heartbeats means the agent is associated but its counters aren't arriving: check the rule's counters and the agent's logs under `/var/opt/microsoft/azuremonitoragent/log`. A node with no heartbeat in the whole span isn't listed at all, so widen the span (`scripts/logs.sh --env prod --query-name ocr-node-health --span 7d`) or check the Arc machine's status.
 
+**Worker publication catch-up.** A worker-affecting push can finish after an unrelated push: the current-main guard correctly prevents stale publication, but the unrelated push's change selector may skip the worker. To publish current main without the default full CI dispatch's API rollout, use the explicit worker-only scope:
+
+```sh
+gh workflow run ci.yml --repo tgoodyear/usnewsmap.com --ref main \
+  -f scope=ocr-worker -f correlation=ocr-worker-catch-up
+```
+
+This runs the Rust checks, worker EL9 build, RHEL/engine smoke checks and existing attested release publication only (plus the always-on private-address check). It does not select API images/rollouts, BOINC server/bridge builds, infrastructure provisioning or host installation. `scope=full` (the default, preserving bootstrap behavior) is **not** publication-only. Worker-only scope refuses a non-main ref or unknown scope. The existing main-only/current-main guard, build checks, checksums and provenance attestation remain mandatory. If main advances again before publication, the guard still skips; verify the actual publication steps and rerun the same scoped dispatch against new main after checking its source. A successful run with skipped publication is not a release. Verify the release tag's source includes the required fix and verify its binary/checksum provenance before any separately authorized installation. Publishing is not installed-source acceptance; existing nightly node delays and separately managed prefetch installation still apply.
+
 **Install the worker.** CI builds `usnm-ocr-worker` on AlmaLinux 9 whenever the worker, a crate it uses or its Tesseract image changes on `main`, checks that it needs no glibc newer than EL9's 2.34, runs it on AlmaLinux 10, reads a rendered line with it through the Tesseract image, and publishes a GitHub release, `ocr-worker-<yyyymmdd>-<sha7>`: the binary, the Tesseract image as an OCI archive (`ocr/engines/tesseract/`: the engine survey's Debian base and Tesseract 5.5.0 package, with tessdata_best's `eng`, `deu`, `deu_latf`, `srp`, `srp_latn`, `ces`, `pol` and `rus`), the image's id and `SHA256SUMS`, each with a build provenance attestation. Install it from your machine:
 
 ```sh
