@@ -22,6 +22,9 @@ class DbTlsPatch(unittest.TestCase):
                 path.write_text("\n".join(old for old, _ in replacements))
             result = patch.patched(root)
             self.assertEqual(len(result), 4)
+            for relative, replacements in patch.PATCHES.items():
+                for _, expected in replacements:
+                    self.assertEqual(result[root / relative].count(expected), 1)
             self.assertIn("MYSQL_OPT_SSL_ENFORCE", result[root / "db/db_base.cpp"])
             broken = root / "html/inc/db_conn.inc"
             original = (root / "py/Boinc/db_base.py").read_text()

@@ -130,6 +130,8 @@ no deployed sample or workbook success is claimed.
 designated signing host without exporting its private key. These are release inputs, not
 steps printed after every deployment. See [app-release.md](app-release.md) for signing and
 acceptance boundaries. The code-signing private key stays offline.
+For a BOINC-only isolated environment, use the scoped
+[dev acceptance plan](dev-acceptance.md), not the application's full dev stack.
 
 ## Submission file permissions
 

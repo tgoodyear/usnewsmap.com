@@ -13,6 +13,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$image" ] || usage
+checks=$(cd "$(dirname "${BASH_SOURCE[0]}")/../boinc" && pwd)
+docker run --rm -v "$checks:/checks:ro" --entrypoint python3 "$image" -c '
+from pathlib import Path
+import runpy
+
+patch = runpy.run_path("/checks/patch-server-db-tls.py")
+for relative, replacements in patch["PATCHES"].items():
+    text = (Path("/usr/local/boinc") / relative).read_text()
+    for _, expected in replacements:
+        if text.count(expected) != 1:
+            raise SystemExit(f"{relative}: installed TLS patch differs from reviewed source")
+print("installed Python/PHP/C++ TLS patch sources ok (not a live connection test)")
+'
 docker run --rm --entrypoint bash "$image" -c '
 set -e
 cd /usr/local/boinc

@@ -18,6 +18,16 @@
       "type": "string",
       "description": "The PUBLIC half of the offline code-signing key (code_sign_public), as text. Empty until it is made on the offline machine. The private half never comes here or to Azure."
     },
+    "dns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resourceGroup", "zone"],
+      "description": "Optional isolated-dev DNS authority, independent of the dev registry group. provision-boinc.sh refuses this override for prod. Writes only the master host CNAME/asuid TXT via the existing DNS module; requires separate approval for that zone.",
+      "properties": {
+        "resourceGroup": { "type": "string", "pattern": "^[A-Za-z0-9_.()-]{1,90}$" },
+        "zone": { "type": "string", "pattern": "^[a-z0-9-]+(\\.[a-z0-9-]+)+$" }
+      }
+    },
     "goldBundle": {
       "type": "boolean",
       "description": "Deploy the gold bundle job, which builds the gold bundle v1 from its publishers onto the share inside the VNet (docs/boinc.md#build-the-gold-bundle): main.bicep's goldBundle parameter."
