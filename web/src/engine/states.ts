@@ -78,7 +78,17 @@ export function stateColor(row: StateTotal | undefined, breaks: number[]): [numb
   const index = breaks.findIndex((b) => row.rate! <= b);
   return STATE_COLORS[index < 0 ? 4 : index]!;
 }
-export const formatStateRate = (rate: number | null) =>
-  rate === null ? "—" : rate.toLocaleString("en-US", { maximumFractionDigits: 2 });
+export const formatStateRate = (rate: number | null, digits = 3) =>
+  rate === null ? "—" : rate.toLocaleString("en-US", { maximumSignificantDigits: digits });
+
+/** Increase precision until unequal class thresholds have unequal labels. */
+export function stateBreakLabels(breaks: number[]): string[] {
+  let labels: string[] = [];
+  for (let digits = 3; digits <= 17; digits++) {
+    labels = breaks.map((rate) => formatStateRate(rate, digits));
+    if (breaks.every((rate, i) => i === 0 || rate === breaks[i - 1] || labels[i] !== labels[i - 1])) break;
+  }
+  return labels;
+}
 export const stateDescription = (r: StateTotal) =>
   `${r.name} · ${r.hits.toLocaleString("en-US")} matching pages · ${r.pages.toLocaleString("en-US")} pages published · ${formatStateRate(r.rate)} per 1,000`;

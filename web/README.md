@@ -80,6 +80,10 @@ First-pass decisions for #452:
   points instead. The layer selector stays hidden in Table/no-WebGL contexts;
   an already-selected States layer retains its accessible table there.
 - Geometry is reused across frames; only fill attributes change.
+  Unavailable coverage never draws no-pages fills. Escape dismisses hover
+  or pinned state details regardless of keyboard focus. Small positive rates
+  retain significant digits, and legend precision increases when needed to
+  distinguish unequal thresholds.
   The 300 ms post-download first-paint and 2 ms / 5,000-place scrub targets
   have **not been measured on a mid-range laptop**; passing functional tests
   must not be read as those performance measurements.

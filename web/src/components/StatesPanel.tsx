@@ -1,8 +1,16 @@
 import { useState } from "react";
-import { formatStateRate, NO_MATCHES, NO_PAGES, STATE_COLORS, type StateTotal } from "../engine/states";
+import {
+  formatStateRate,
+  stateBreakLabels,
+  NO_MATCHES,
+  NO_PAGES,
+  STATE_COLORS,
+  type StateTotal,
+} from "../engine/states";
 
 const css = (color: number[]) => `rgb(${color.slice(0, 3).join(",")})`;
 export function StatesLegend({ breaks }: { breaks: number[] }) {
+  const labels = stateBreakLabels(breaks);
   return (
     <section className="legend states-legend" aria-label="States legend">
       <strong>Matching pages per 1,000 pages published</strong>
@@ -12,7 +20,7 @@ export function StatesLegend({ breaks }: { breaks: number[] }) {
             <span className="states-swatch" style={{ background: css(STATE_COLORS[i]!) }} />
             {b === 0
               ? "No positive rates"
-              : `${i === 0 ? "> 0" : `> ${formatStateRate(breaks[i - 1]!)}`} – ${formatStateRate(b)}${i > 0 && b === breaks[i - 1] ? " (empty class)" : ""}`}
+              : `${i === 0 ? "> 0" : `> ${labels[i - 1]}`} – ${labels[i]}${i > 0 && b === breaks[i - 1] ? " (empty class)" : ""}`}
           </li>
         ))}
         <li>

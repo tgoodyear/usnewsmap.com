@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { AggregateResponse, CoverageResponse, PlaceFeature } from "../api/types";
-import { prepareStates, stateTotals, stateBreaks, stateColor, NO_MATCHES, NO_PAGES, type StateTotal } from "./states";
+import {
+  prepareStates,
+  stateTotals,
+  stateBreaks,
+  stateColor,
+  stateBreakLabels,
+  formatStateRate,
+  NO_MATCHES,
+  NO_PAGES,
+  type StateTotal,
+} from "./states";
 const feature = (state: string) => ({ properties: { state } }) as PlaceFeature;
 const data = {
   index_version: "test",
@@ -54,6 +64,19 @@ describe("state window totals", () => {
   });
 });
 describe("five quantile classes", () => {
+  it("preserves small positive rates and distinguishes nearby unequal thresholds", () => {
+    expect(formatStateRate(0.001)).toBe("0.001");
+    expect(stateBreakLabels([0.001, 0.002, 0.003, 0.004, 0.005])).toEqual([
+      "0.001",
+      "0.002",
+      "0.003",
+      "0.004",
+      "0.005",
+    ]);
+    const close = [1.000001, 1.000002, 1.000003, 1.000004, 1.000005];
+    expect(new Set(stateBreakLabels(close)).size).toBe(5);
+    expect(new Set(stateBreakLabels([1, 1 + Number.EPSILON])).size).toBe(2);
+  });
   const row = (rate: number | null): StateTotal => ({
     code: "NY",
     name: "New York",

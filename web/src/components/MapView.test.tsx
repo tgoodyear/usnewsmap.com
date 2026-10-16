@@ -95,10 +95,17 @@ describe("MapView", () => {
     const { rerender } = render(<MapView {...props} zoom={4} center={null} />, { wrapper });
     expect(fetcher).not.toHaveBeenCalled();
     rerender(<MapView {...props} layer="states" zoom={4} center={null} />);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(layers.at(-1)).toEqual([]);
+    const states = [{ code: "NY", name: "New York", hits: 0, pages: 100, rate: 0 }];
+    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={states} />);
     await waitFor(() => expect(layers.at(-1)?.map((l) => l.id)).toEqual(["states"]));
     const data = layers.at(-1)![0]!.data;
-    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={[]} />);
+    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={[...states]} />);
     expect(layers.at(-1)![0]!.data).toBe(data);
+    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={[]} />);
+    expect(layers.at(-1)).toEqual([]);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

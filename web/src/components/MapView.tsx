@@ -103,6 +103,14 @@ export default function MapView(props: Props) {
     retry: false,
   });
   const [stateTip, setStateTip] = useState<{ code: string; x: number; y: number; pinned: boolean } | null>(null);
+  useEffect(() => {
+    if (!stateTip) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setStateTip(null);
+    };
+    document.addEventListener("keydown", dismiss);
+    return () => document.removeEventListener("keydown", dismiss);
+  }, [stateTip]);
   const stateRows = useRef(new Map<string, StateTotal>());
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
@@ -243,7 +251,7 @@ export default function MapView(props: Props) {
     if (tooltip.current) tooltip.current.hidden = true;
     const layers =
       layer === "states" && norm === "raw"
-        ? boundaries.data
+        ? boundaries.data && states && states.length > 0
           ? [
               new GeoJsonLayer({
                 id: "states",

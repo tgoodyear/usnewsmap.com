@@ -91,7 +91,7 @@ test("state polygon hover/click and mobile pinned tap provide state details and 
     const details = page.getByRole("group", { name: "Illinois details" });
     await expect(details).toContainText("matching pages");
     await expect(page).not.toHaveURL(/state=IL/);
-    await details.getByRole("button", { name: "Dismiss state details" }).click();
+    await page.locator("body").press("Escape");
     await expect(details).toHaveCount(0);
     // A rapid repeat at the same map position is MapLibre's double-tap zoom.
     await page.waitForTimeout(350);
@@ -104,6 +104,10 @@ test("state polygon hover/click and mobile pinned tap provide state details and 
     const tooltip = page.getByRole("tooltip").filter({ hasText: "Illinois" });
     await expect(tooltip).toContainText("pages published");
     await expect(tooltip).toContainText("per 1,000");
+    await page.locator("body").press("Escape");
+    await expect(tooltip).toHaveCount(0);
+    await page.mouse.move(point.x + 2, point.y + 2);
+    await expect(tooltip).toBeVisible();
     await page.mouse.click(point.x, point.y);
   }
   await expect(page).toHaveURL(/state=IL/);
@@ -185,4 +189,14 @@ test("warns about truncated place totals and retains the table when geometry fai
   await expect(page.getByRole("note").filter({ hasText: "State matching-page totals are incomplete" })).toBeVisible();
   await expect(page.getByRole("alert")).toContainText("State boundaries could not be loaded");
   await expect(page.getByRole("button", { name: "Download states CSV" })).toBeVisible();
+});
+
+test("unavailable coverage does not draw state fills as zero published pages", async ({ page }) => {
+  await page.route("**/v1/coverage?**", (route) => route.fulfill({ status: 503 }));
+  await page.goto(`${query}&layer=states`);
+  await expect(page.getByRole("alert").filter({ hasText: "Pages-published counts could not be loaded" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByRole("region", { name: "States legend" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "States table" })).toHaveCount(0);
 });
