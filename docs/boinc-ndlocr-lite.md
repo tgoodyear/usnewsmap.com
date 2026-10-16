@@ -153,6 +153,41 @@ AppArmor or seccomp policy was relaxed; the successful second-host test used
 the existing Docker test container instead. Host-level Podman compatibility
 remains unresolved and must not be inferred from these Docker results.
 
+### Full-page acceptance blocker, 16 October 2026
+
+The same pinned worker was then run on both hosts with the actual full-page
+`sn83025517/1945-01-01/ed-1/seq-4`, real `missing` classification and published
+`dlc_ballston` v01. The shipped staging route fetched a 5,832 by 7,582 JPEG,
+4,665,071 bytes, SHA-256
+`73732eb9253253eba4269ac5afb348626bc691c9f79ecf5ddb46aae74bf4af0a`;
+the staged job is
+`41fa5b807da96634892d6b18325931ae4fc184f2c0d502f2397aa3cce11746da`.
+This page already has native Japanese output; it is not a fresh-page claim.
+
+**Both published workers failed with `ALTO/text disagree` before writing
+result files.** Independent upstream runs on both hosts produced identical
+7,607-character normalized text, SHA-256
+`022cdf8fc80d2554d0ba40fad98e5f1424e32be4ab943ded7f6d675358c46145`.
+Their 630 complete text lines agree with the Python ALTO converter's lines,
+including duplicate counts, but their sequence differs: upstream text follows
+XML document order, while ALTO sorts 90 blocks and their lines by `ORDER`.
+The headline did not cover this difference.
+
+| Independent Python measurement | pve-big CT 100 | pve-laptop CT 110 |
+| ------------------------------ | -------------- | ----------------- |
+| Wall time                      | 79.431 s       | 59.724 s          |
+| CPU time                       | 79.424 CPU-s   | 59.726 CPU-s      |
+| Peak child RSS                 | 1,110,140 KiB  | 1,107,948 KiB     |
+
+The release blocker is tracked in [#699](https://github.com/tgoodyear/usnewsmap.com/issues/699);
+[#700](https://github.com/tgoodyear/usnewsmap.com/pull/700) preserves both output
+formats and checks complete-line content with multiplicity. Patched maintainer
+checker replay of the independent outputs passes with peer Dice 1.000000,
+using explicitly synthetic offline envelopes, **not worker or canonical
+results**. The worker and server validator must both contain the reviewed fix
+before repeating the actual BOINC pilot. No work was submitted, assimilated,
+collected into `ocr-ja`, or verified through release/search in this run.
+
 ## BOINC lifecycle (phase 2, #626)
 
 The dedicated `usnm_ndlocr` CPU app is separate from `usnm_ocr`: Japanese
