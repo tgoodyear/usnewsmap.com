@@ -209,6 +209,11 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
   .scroll { max-height:320px; }
   .scroll td { white-space:nowrap; } .scroll td code { word-break:normal; }
   .scroll .pipeline-table td { white-space:normal; }
+  .pipeline-table { font-size:13px; }
+  .pipeline-table th:first-child { width:44%; }
+  .pipeline-table th:nth-child(2) { width:20%; }
+  .pipeline-table th:nth-child(3) { width:22%; }
+  .pipeline-table td:nth-child(3) { overflow-wrap:normal; font-size:12px; }
   .scroll td.msg { white-space:normal; width:auto; max-width:none; min-width:15em; }
   th { white-space:nowrap; padding-right:6px; }
   td { white-space:normal; overflow-wrap:break-word; padding-right:6px; }
