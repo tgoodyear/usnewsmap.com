@@ -61,7 +61,11 @@ impl Catalog {
             .find(|e| {
                 e.family == family
                     && if family == "ndlocr-lite" {
-                        profile.is_none()
+                        if profile.is_none() {
+                            e.id == "ndlocr-lite-survey"
+                        } else {
+                            e.id == "ndlocr-lite"
+                        }
                     } else {
                         e.id == format!("{family}-{version}")
                             || e.id == format!("{family}-{series}")

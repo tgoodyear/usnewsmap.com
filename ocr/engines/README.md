@@ -7,8 +7,8 @@ replaces, rather than supplements, that copy. Unknown schemas, duplicate ids
 or names, empty profiles, and dangling model references fail loading.
 
 The inventory includes checked engines/models not yet implemented. Only
-Tesseract has production profiles here. `production = false` keeps every
-other engine unroutable; recording a cleared model does not deploy it. Code
+Tesseract and the pinned CPU NDLOCR-Lite adapter have production profiles here.
+`production = false` keeps the other engines unroutable; recording a cleared model does not deploy it. Code
 not separately checked in the design stays `unknown`, not implicitly Apache.
 No tier-2 or credit-required profiles are added before the credits page (#372).
 
@@ -21,7 +21,7 @@ No tier-2 or credit-required profiles are added before the credits page (#372).
 - `[[engine.model]]`: `name` (unique within its engine, e.g.
   `tessdata/eng.traineddata`), optional `version` (published revision), plus the
   same attribution fields as the code. Pinned image model versions must match
-  `tesseract/models.lock`; the web catalog test checks them. These pins do not
+  their engine image's `models.lock` (`tesseract/` or `ndlocr-lite/`); the web catalog test checks them. These pins do not
   prove the revision of a serving reading: short engine keys omit model
   digests, so release credits and legacy web fallbacks leave those model
   revisions unrecorded instead of relabelling old text with today's pin.

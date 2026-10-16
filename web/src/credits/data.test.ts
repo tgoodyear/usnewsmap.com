@@ -65,6 +65,15 @@ describe("serving engine credits from engines.toml", () => {
     expect(() => creditFor("tesseract/5.5.1 german_print")).toThrow();
     expect(() => creditFor("tesseract/6.0 eng")).toThrow();
   });
+  it("credits the pinned NDLOCR-Lite BOINC default profile", () => {
+    const key = "ndlocr-lite/636d1cfeb1331f89f4048f416e49e23a09a714b5 default";
+    const credit = creditFor(key);
+    expect(credit.engine.id).toBe("ndlocr-lite");
+    expect(credit.models).toHaveLength(4);
+    expect(credit.models[0]!.license).toBe("LicenseRef-DINOv3");
+    expect(credit.languages).toEqual(["jpn"]);
+    expect(() => creditFor("ndlocr-lite/636d1cf unknown")).toThrow("Missing OCR credit");
+  });
   it("supports the legacy keys still published on hits", () => {
     expect(creditFor("tesseract-5.5.1/deu_latf+deu").models).toHaveLength(2);
     const ndl = creditFor("ndlocr-lite 636d1cf");
