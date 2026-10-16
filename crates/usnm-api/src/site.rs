@@ -29,13 +29,13 @@ use axum::Router;
 use tower_http::services::ServeDir;
 
 /// Headers on every response (the site's and the API's). `connect-src`
-/// needs only `'self'` for the API; the rest is the basemap and tiles.
+/// allows the same-origin API and the OpenFreeMap basemap.
 pub const SECURITY_HEADERS: [(&str, &str); 4] = [
     (
         "content-security-policy",
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob: https:; font-src 'self' https://tiles.openfreemap.org; \
-         connect-src 'self' https://*.blob.core.windows.net https://tiles.openfreemap.org; \
+         connect-src 'self' https://tiles.openfreemap.org; \
          worker-src 'self' blob:; child-src blob:; object-src 'none'; base-uri 'self'; \
          form-action 'self'",
     ),
@@ -309,6 +309,22 @@ pub async fn www_redirect(State(host): State<Arc<str>>, req: Request, next: Next
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_src_allows_only_the_api_and_basemap() {
+        let csp = SECURITY_HEADERS
+            .iter()
+            .find(|(name, _)| *name == "content-security-policy")
+            .unwrap()
+            .1;
+        let connect = csp
+            .split(';')
+            .map(str::trim)
+            .find(|directive| directive.starts_with("connect-src "))
+            .unwrap();
+        assert_eq!(connect, "connect-src 'self' https://tiles.openfreemap.org");
+        assert!(!csp.contains("blob.core.windows.net"));
+    }
 
     #[test]
     fn app_pages() {
