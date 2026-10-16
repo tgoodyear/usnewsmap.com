@@ -124,7 +124,7 @@ jobs:
             }
             Copy-Item $file.FullName (Join-Path $out $name)
             $hash = (Get-FileHash (Join-Path $out $name) -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $name" | Out-File (Join-Path $out 'SHA256SUMS') -Append -Encoding ascii
+            [IO.File]::AppendAllText((Join-Path $out 'SHA256SUMS'), "$hash  $name`n", [Text.Encoding]::ASCII)
             $rows += @{ name=$name; sha256=$hash; signature='Valid Microsoft Corporation' }
           }
           @{ version=$redist.Name; files=$rows } | ConvertTo-Json -Depth 4 |

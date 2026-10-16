@@ -15,6 +15,21 @@ SPEC.loader.exec_module(MODULE)
 
 class CanaryPreferences(unittest.TestCase):
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell required")
+    def test_windows_checksum_append_is_portable_ascii_lf(self):
+        workflow = (ROOT / ".github/workflows/boinc-quality-native.yml").read_text()
+        append = next(line.strip() for line in workflow.splitlines()
+                      if "[IO.File]::AppendAllText" in line)
+        with tempfile.TemporaryDirectory(prefix=".qwen-sha-test-", dir=ROOT) as folder:
+            root = Path(folder)
+            literal = str(root).replace("'", "''")
+            script = f"$out='{literal}'; $hash='{'a' * 64}'; $name='msvcp140.dll';\n{append}"
+            result = subprocess.run(["pwsh", "-NoProfile", "-Command", script],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((root / "SHA256SUMS").read_bytes(),
+                             b"a" * 64 + b"  msvcp140.dll\n")
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell required")
     def test_windows_crt_workflow_enumerates_directory_contents_not_wildcard_entry(self):
         workflow = (ROOT / ".github/workflows/boinc-quality-native.yml").read_text()
         enumeration = "$crt = " + workflow.split("          $crt = ", 1)[1].split(
