@@ -10,6 +10,11 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
   const drawSamples: number[] = [];
   const parseSamples: number[] = [];
   const shaderVariants: number[] = [];
+  const shaderStalls: {
+    totalMs: number;
+    maxMs: number;
+    calls: { name: string; duration: number; stack?: string }[];
+  }[] = [];
   const shaderCold = process.env.USNM_STATES_SHADER_COLD === "1";
   let userAgent = "";
   let renderer = "";
@@ -41,6 +46,31 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
               }
               return original.call(this, shader, source);
             };
+            for (const name of ["compileShader", "linkProgram", "getProgramParameter", "getShaderParameter"] as const) {
+              const prototype = WebGL2RenderingContext.prototype;
+              const call = prototype[name] as (...args: unknown[]) => unknown;
+              Object.defineProperty(prototype, name, {
+                value: function (this: WebGL2RenderingContext, ...args: unknown[]) {
+                  const start = performance.now();
+                  try {
+                    return call.apply(this, args);
+                  } finally {
+                    const parameter =
+                      name === "getProgramParameter" || name === "getShaderParameter"
+                        ? `-0x${Number(args[1]).toString(16)}`
+                        : "";
+                    const end = performance.now();
+                    performance.measure(`states-diagnostic-gl-${name}${parameter}`, {
+                      start,
+                      end,
+                      detail: end - start >= 1 ? { stack: new Error().stack } : undefined,
+                    });
+                  }
+                },
+                configurable: true,
+                writable: true,
+              });
+            }
           },
           (1e-8 + Math.random() * 1e-8).toPrecision(9),
         );
@@ -77,6 +107,26 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
       shaderVariants.push(
         await page.evaluate(() => performance.getEntriesByName("states-diagnostic-shader-variant").length),
       );
+      shaderStalls.push(
+        await page.evaluate(() => {
+          const asset = performance
+            .getEntriesByType("resource")
+            .find((e) => e.name.endsWith(".geojson")) as PerformanceResourceTiming;
+          const calls = performance
+            .getEntriesByType("measure")
+            .filter((e) => e.name.startsWith("states-diagnostic-gl-") && e.startTime >= asset.responseEnd)
+            .map((e) => ({
+              name: e.name.replace("states-diagnostic-gl-", ""),
+              duration: e.duration,
+              stack: (e as PerformanceMeasure).detail?.stack as string | undefined,
+            }));
+          return {
+            totalMs: calls.reduce((sum, call) => sum + call.duration, 0),
+            maxMs: Math.max(0, ...calls.map((call) => call.duration)),
+            calls: calls.filter((call) => call.duration >= 1),
+          };
+        }),
+      );
       userAgent = await page.evaluate(() => navigator.userAgent);
       renderer = await page.evaluate(() => {
         const gl = document.createElement("canvas").getContext("webgl2");
@@ -95,6 +145,7 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
       cacheScope: "fresh browser processes; Chrome GPU caches disabled; OS/driver cache uncontrolled",
       shaderCold,
       shaderVariants,
+      shaderStalls,
       userAgent,
       renderer,
       samplesMs: samples,

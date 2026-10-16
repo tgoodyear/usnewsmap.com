@@ -106,6 +106,11 @@ USNM_STATES_PERF=1 USNM_STATES_GPU=metal PW_BASE_URL=http://127.0.0.1:18092 \
 USNM_STATES_PERF=1 USNM_STATES_GPU=metal USNM_STATES_SHADER_COLD=1 \
   PW_BASE_URL=http://127.0.0.1:18092 npm run e2e -- \
   e2e/states.performance.spec.ts --project=desktop --workers=1
+
+# Isolate the captured production shaders from React, deck, map and geometry:
+node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal
+# Control: enqueue both programs before inspecting either, poll KHR completion.
+node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal --parallel
 ```
 
 The scrub gate asserts **p95 ≤2 ms**, after 200 warm-up frames, including totals,
@@ -180,6 +185,55 @@ Metal CPU **63.0 ms** versus proxy **77.7 ms** did not reproduce the original
 native cold miss. Synchronous shader program-status checks in that native
 sample cost **8.8 + 8.5 ms**. These observations must not be extrapolated to
 the uninstrumented original 489.4 ms sample.
+
+#### Cold-link root cause and minimal reproduction (2026-10-16)
+
+The shader diagnostic additionally times WebGL compilation/link/status calls,
+records parameter enums and captures caller stacks for stalls ≥1 ms. On the
+same M1/Chromium 153 native Metal, a run measured **307.0, 285.0, 262.5, 257.5,
+291.7 ms** (the first sample **fails**). Post-asset synchronous WebGL calls
+accounted for **227.3–255.6 ms**; the two dominant calls were
+`getProgramParameter(LINK_STATUS = 0x8b82)`, **133–152 ms** for polygon fill
+and **94–104 ms** for borders. The stack enters luma.gl 9.4.2
+`WEBGLSharedRenderPipeline._linkShaders → _getLinkStatus`, during the two
+deck Models' construction. This locates the measured delay before CPU draw,
+independently of basemap visibility. A later run's five proxies passed
+**271.4–284.5 ms**, without resolving the prior cold failures.
+
+`probe-states-shaders.mjs` captures the two app-generated shader programs once,
+then links unique executable variants in five fresh browser processes on a
+blank page, with no React, deck, basemap, state geometry or drawing. It reports
+host CPU/backend/version, verifies link success and writes no files. Serial
+immediate status queries took **226.6, 255.5, 243.7, 238.5, 244.8 ms**.
+The enqueue-both/nonblocking-KHR-poll control took **151.5, 145.3, 146.7,
+143.3, 157.3 ms**, with zero measured blocking in final status checks.
+This is a **dependency pipeline scheduling bottleneck, not proof of a
+fundamental hardware lower bound** or an implemented app improvement.
+
+The device supports `KHR_parallel_shader_compile`, but luma.gl 9.4.2 disables
+its asynchronous-compilation feature by default. Merely enabling that device
+flag was tested: it moves the **133 + 95 ms** stalls to
+`getProgramParameter(ACTIVE_ATTRIBUTES = 0x8b89)` in synchronous shader-layout
+introspection during render-pipeline construction. Five proxies still measured
+**263.7–298.6 ms** after previous compiler warm-up. That experimental flag
+was discarded: it does not remove serialization, and a warm-cache pass does
+not certify initial cold behavior.
+
+A separate flat/unlit polygon-shader specialization was also tested and
+discarded: its initial proxy was **454.8 ms**, including **447.1 ms** to CPU
+draw. None of these discarded alternatives changes production. A safe
+dependency-level fix would need to defer **both** linking-status checks and
+shader-layout introspection until asynchronous program completion, while
+preserving layer readiness, picking and error handling. Simply overriding GL
+queries, enabling an experimental flag, or prefetching/delaying the asset
+would not constitute that fix. The raw parallel control is a minimal
+reproducer for pursuing that change; the 300 ms app requirement remains
+unmet, not waived.
+
+The latest 5,000-place arithmetic gate (2,000 frames) measured preparation
+**19.009 ms**, p95 **0.023875 ms**, maximum **0.493375 ms**. This validates
+the scoped arithmetic budget on this host, not the shader/draw budget or an
+every-frame timing guarantee on other hardware.
 
 Read-only public metadata on 2026-10-15 (`pages-v20261010-2`) listed **1,617
 places**, none missing state codes; all codes are represented by the boundary
