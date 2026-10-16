@@ -25,6 +25,31 @@ new additive `batch-inventory` step; retain the existing immutable worker pin.
 Do not deploy server/bridge images or run the controller while another release
 owner is changing them.
 
+### Separate hand-off runtime
+
+The hand-off job is in the **main** resource group, not the BOINC runtime
+group. Updating the BOINC server/bridge pair does not update this job.
+`USNM_BOINC_HANDOFF_IMAGE` in `infra/env/prod.json` must name a reviewed bridge
+artifact containing the bounded export, exact-file reads and accepted-snapshot
+collection code. Production pins the existing #675 artifact built from
+`7e634564c77acb64936f6f61092f451bb7110adc`; no additional cloud build is needed.
+
+After the pin PR passes review/CI and merges, serialize a hand-off-only update
+through #529. Verify the job and other lifecycle jobs are idle and retain the
+entire before-template. Update only the existing `handoff` container's image;
+verify the exact digest afterward and compare every other template,
+configuration and identity property with the before-state. Do not start a job
+or run a broad stack provision merely to update this pin. A code/image update
+is not allocation, trust promotion or permission to start a feed.
+
+The controller's existing local environment must contain
+`AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP` and `BOINC_HANDOFF_JOB`.
+Check the case-normalized main-stack outputs and actual job ID; older deployed
+stacks can lack the hand-off output even while the job exists. Reconcile only
+these local, nonsecret output values from the verified existing resource, in
+the approved controller's settings directory. Do not provision resources,
+change managed identities or add grants to repair local outputs.
+
 The push command is a trusted literal argv prefix reaching the **existing**
 `scripts/ocr-node/push-boinc-scan.sh` in CT 211. It receives normal `--scan`,
 `--manifest`, account and root options. It reads cached scans and sidecars only;
