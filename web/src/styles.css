@@ -852,6 +852,15 @@ select {
   min-height: 300px;
   isolation: isolate;
 }
+/* Overlaid deck canvas: basemap readiness is independent of result arrival.
+   The shared reduced-motion rule below disables this transition. */
+.map--gated #search-overlay {
+  opacity: 0;
+  transition: opacity 180ms ease-out;
+}
+.map--basemap-ready #search-overlay {
+  opacity: 1;
+}
 .map-tooltip {
   position: absolute;
   left: 0;
