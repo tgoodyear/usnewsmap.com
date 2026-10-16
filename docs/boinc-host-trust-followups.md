@@ -55,7 +55,10 @@ original-file set** from the existing `gold prepare` command. Each prepared remo
 must be present under `cache/<remotes[*].name>` and match its size, MD5 and SHA-256.
 Metadata and the bundle alone are not sufficient for mirrored gold submission.
 `trust` is the existing calibrated v2 list: no default CER or
-new approval is invented. `jobs_root` is the server-local root containing the
+new approval is invented. Only `onboard` accepts a missing list or the
+uncalibrated v1 list, and treats either as trusting no host: issuing gold
+publishes nothing, and its reports are what calibrates the first threshold.
+Spot checks and publication still require a valid v2 list. `jobs_root` is the server-local root containing the
 exported OCR job journals and staged inputs, not the controller root.
 
 ## Automatically discover and issue first gold
@@ -106,7 +109,7 @@ recalibration. Collect and review the gold reports and rebuild trust through the
 existing calibrated workflow. A later failed report revokes trust as before.
 In production, the bridge's `gold-onboard` step runs one pass with the bridge's
 own database credentials, the campaign's prepared inputs and
-`$SHARE_DIR/gold/trust.json`; the controller root is `$SHARE_DIR/host-trust`:
+`$SHARE_DIR/gold/trust.json` (when there); the controller root is `$SHARE_DIR/host-trust`:
 
 ```sh
 scripts/start-boinc-bridge.sh --env prod --step gold-onboard --var GOLD_CAMPAIGN=v1-tess550 \

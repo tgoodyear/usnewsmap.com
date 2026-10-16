@@ -433,7 +433,6 @@ case "$step" in
     # One bounded host-trust onboard pass: a targeted gold unit for each untrusted host
     # without one outstanding, including hosts whose last unit failed (docs/boinc-host-trust-followups.md).
     [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
-    [ -f "$SHARE_DIR/gold/trust.json" ] || fail "no $SHARE_DIR/gold/trust.json; run gold-trust first"
     write_mycnf
     controller="$SECRETS/host-trust.json"
     trap 'rm -f "$mycnf" "$SECRETS/db-runtime" "$controller"' EXIT
