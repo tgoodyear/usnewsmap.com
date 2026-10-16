@@ -68,6 +68,15 @@ def read_cgroup(group):
     return result
 
 
+def journal(unit, now, window_seconds):
+    # Absolute, rounded-down cutoff keeps the advertised window intact even if
+    # the preceding systemctl query is delayed; summarize applies exact bounds.
+    cutoff = int(now.timestamp() - window_seconds)
+    return subprocess.check_output(
+        ["journalctl", "-u", unit, "--since", f"@{cutoff}",
+         "--no-pager", "-o", "cat"], text=True)
+
+
 def snapshot(window_seconds):
     now = datetime.now(timezone.utc)
     unit = "usnm-ocr-worker.service"
@@ -75,9 +84,7 @@ def snapshot(window_seconds):
         ["systemctl", "show", unit, "-p", "MainPID", "-p", "ActiveState",
          "-p", "ExecMainStartTimestamp", "-p", "ControlGroup"], text=True)
     worker = dict(line.split("=", 1) for line in properties.splitlines() if "=" in line)
-    logs = subprocess.check_output(
-        ["journalctl", "-u", unit, "--since", f"{window_seconds} seconds ago",
-         "--no-pager", "-o", "cat"], text=True)
+    logs = journal(unit, now, window_seconds)
     report = {"observed_at": now.isoformat(), "worker": worker,
               "throughput": summarize(logs.splitlines(), now, window_seconds),
               "worker_cgroup": read_cgroup(worker["ControlGroup"]),

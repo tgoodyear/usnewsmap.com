@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("observe_node", Path(__file__).with_name("observe_node.py"))
 observe = importlib.util.module_from_spec(SPEC)
@@ -10,6 +11,17 @@ SPEC.loader.exec_module(observe)
 
 
 class ObserveNodeTests(unittest.TestCase):
+    def test_delayed_journal_query_keeps_error_at_start_of_advertised_window(self):
+        now = datetime(2026, 10, 16, 12, 0, 0, 500000, tzinfo=timezone.utc)
+        failure = json.dumps({"timestamp": "2026-10-16T11:45:01Z", "level": "ERROR",
+                              "fields": {"message": "delete failed; the page will be redone"}})
+        with patch.object(observe.subprocess, "check_output", return_value=failure) as query:
+            logs = observe.journal("worker.service", now, 900)
+        args = query.call_args.args[0]
+        self.assertEqual(args[args.index("--since") + 1], f"@{int(now.timestamp() - 900)}")
+        self.assertFalse(any("ago" in arg for arg in args))
+        self.assertEqual(observe.summarize(logs.splitlines(), now, 900)["error_events"], 1)
+
     def test_actual_worker_failures_never_pass_even_with_recent_successes(self):
         now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
         successes = [json.dumps({"timestamp": "2026-10-16T11:59:00Z", "fields": {
