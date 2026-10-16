@@ -37,6 +37,19 @@ memory respectively, and cold disk bounds of 12 GiB/18 GiB. This is admission
 policy, **not measured Windows acceptance**. Signed publication is not evidence
 of successful inference.
 
+Windows publication must include both pinned CUDA archives in `llama.lock`:
+the llama archive does **not** include `cudart64_12.dll` or the cuBLAS DLLs.
+The companion runtime archive contributes 574,138,880 bytes; the selected
+llama-server/DLL payload contributes 545,153,592 bytes before the small driver,
+locks and Microsoft runtime. Together they fit the reviewed 2 GiB native bundle
+envelope (enforced by staging). The Windows native CI artifact supplies app-local
+Microsoft CRT DLLs from the installed Visual Studio redistributable, verifies
+their Microsoft Authenticode signatures and records version/hashes in
+`VC_REDIST_SOURCE.json`/`SHA256SUMS`. Stage these DLLs as signed `--extra-file`
+members too; staging rejects a missing mandatory CUDA/CRT dependency. No
+volunteer should install a CUDA toolkit or manually fetch DLLs. The NVIDIA
+driver's `nvcuda.dll` and Windows system APIs remain platform prerequisites.
+
 Before publication, coordinate deployments in #529 and preserve all existing
 OCR/training pins and queues. Publish only the intended Windows platform version;
 inventory opted-in eligible hosts without publishing identities. Initially stage
