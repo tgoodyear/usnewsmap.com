@@ -271,10 +271,12 @@ On Linux, submission gives only the staged download inputs (`page` and
 `request.json`) mode `0644`, before their atomic rename and before `create_work`.
 These files are meant to be downloaded by volunteers; the separate Apache
 identity must be able to read them. The dispatch journal and original input
-snapshots retain owner-only access. The project administrator must also give
-Apache traversal access to the download fan-out directories; submission does
-not change existing directory ownership or ACLs. Check both file access and
-traversal with the actual web-server identity on the deployed filesystem.
+snapshots retain owner-only access. New download fan-out directories are
+created with mode `0755` regardless of umask. Pre-existing download parents
+are repaired by adding only missing `0755` bits, preserving other mode bits
+such as setgid and group-write; submission does not change directory ownership
+or ACLs. Check both file access and traversal with the actual web-server
+identity on the deployed filesystem.
 
 The server bridge wrapper submits directly and preserves the CLI's exit status.
 It does not scan the download or hand-off trees to broaden permissions after
