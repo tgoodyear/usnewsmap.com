@@ -54,7 +54,10 @@ original-file set** from the existing `gold prepare` command. Each prepared remo
 must be present under `cache/<remotes[*].name>` and match its size, MD5 and SHA-256.
 Metadata and the bundle alone are not sufficient for mirrored gold submission.
 `trust` is the existing calibrated v2 list: no default CER or
-new approval is invented. `jobs_root` is the server-local root containing the
+new approval is invented. Only `onboard` accepts a missing list or the
+uncalibrated v1 list, and treats either as trusting no host: issuing gold
+publishes nothing, and its reports are what calibrates the first threshold.
+Spot checks and publication still require a valid v2 list. `jobs_root` is the server-local root containing the
 exported OCR job journals and staged inputs, not the controller root.
 
 ## Automatically discover and issue first gold
@@ -84,7 +87,16 @@ The shared validator expectations writer is locked and refuses updates over its
 bound is reached, stop for a reviewed sharding or retention decision; never
 delete expectations for pending units to force another submission.
 
-Submitted hosts are skipped without starving new hosts behind the per-pass cap.
+Each untrusted host keeps **one gold unit outstanding**. A host whose latest
+unit is unsent, in progress or succeeded is skipped without starving new hosts
+behind the per-pass cap. A host whose latest unit is over with no successful
+result (client error, no reply, validate error, detached) is **not parked**: the
+pass writes BOINC's diagnostics for each failed result (outcome, client state,
+exit status and the first 64 KiB of the client's uploaded stderr) to that
+attempt's `failure.json`, then issues the next attempt under
+`<host>/retry/<n>` (attempt 0 is `<host>` itself). A workunit no longer in the
+database (purged after 30 days) is left alone. Run passes more often than the
+purge age so failures are seen.
 A `submitting` marker blocks the pass and is **never automatically retried**.
 Inspect that campaign's deterministic workunit on BOINC, then use the existing
 gold reconciliation procedure: rename `submitting` to `submitted` if the
@@ -94,8 +106,19 @@ kernel lock serializes its own dispatches.
 
 Issuance does not promote trust or periodically recalibrate it. Review gold
 reports and rebuild trust through the calibrated workflow; later failures revoke
-trust. Reissuing failed hosts, starting a new campaign or scheduling the
-controller requires an operator decision. No service is installed.
+trust.
+In production, the bridge's `gold-onboard` step runs one pass with the bridge's
+own database credentials, the campaign's prepared inputs and
+`$SHARE_DIR/gold/trust.json` (when there); the controller root is `$SHARE_DIR/host-trust`:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step gold-onboard --var GOLD_CAMPAIGN=v1-tess550 \
+  --var GOLD_ENGINE_IMAGE=sha256:<worker> --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
+```
+
+A failed unit is a failed job, not a verdict on the host: it gets another unit
+on the next pass. A successful unit whose CER is over the threshold is a
+verdict and is not reissued; a new campaign decides that.
 
 ## Sample and rerun OCR independently
 

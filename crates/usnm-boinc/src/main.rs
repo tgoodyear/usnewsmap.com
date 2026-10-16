@@ -442,6 +442,13 @@ enum Assess {
 }
 #[derive(Subcommand)]
 enum Gold {
+    /// Mirror only the 18 locked v1 LoC JPEGs from cache; no BLN600 or work creation.
+    MirrorLoc {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+    },
     /// Server side, once per bundle: fetch the original files (one request at a time) to learn
     /// their sizes and md5s and the crops' reference counts; writes prepared.json.
     Prepare {
@@ -1215,6 +1222,12 @@ async fn handoff(h: Handoff) -> anyhow::Result<()> {
 async fn gold(g: Gold) -> anyhow::Result<()> {
     use usnm_boinc::gold as x;
     match g {
+        Gold::MirrorLoc { root, project } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&x::mirror::loc(&root, &project).await?)?
+            );
+        }
         Gold::Prepare {
             bundle,
             root,

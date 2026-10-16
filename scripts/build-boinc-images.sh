@@ -76,7 +76,7 @@ have() { baz acr repository show --name "$registry" --image "$1:$2" -o none 2> /
 base_inputs=(HEAD:contrib-compute/images/base/Containerfile HEAD:scripts/boinc/patch-server-apple-gpu.py
   HEAD:scripts/boinc/patch-server-db-tls.py HEAD:contrib-compute/images/base/mysql-tls.cnf)
 base_key=$(git rev-parse "${base_inputs[@]}" | git hash-object --stdin | cut -c1-16)
-bin_inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:ocr/boinc HEAD:ocr/boinc/qwen/weights.lock HEAD:.dockerignore HEAD:contrib-compute/images/bridge-bin/Containerfile)
+bin_inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:ocr/boinc HEAD:ocr/boinc/qwen/weights.lock HEAD:fixtures/ocr-gold/bundle-v1.lock.json HEAD:.dockerignore HEAD:contrib-compute/images/bridge-bin/Containerfile)
 if git rev-parse -q --verify HEAD:rust-toolchain.toml > /dev/null; then bin_inputs+=(HEAD:rust-toolchain.toml); fi
 bin_key=$(git rev-parse "${bin_inputs[@]}" | git hash-object --stdin | cut -c1-16)
 

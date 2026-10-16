@@ -10,6 +10,7 @@ FROM ${BASE_IMAGE}
 COPY images/server/lib.sh images/server/secrets.sh images/server/entrypoint.sh images/server/work-volume.py images/server/apache-project.conf.template \
      images/server/supervisord.conf images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
 COPY images/server/bridge-job.sh /usr/local/bin/bridge-job
+COPY images/server/gold-mirror-config.py /usr/local/lib/usnm-boinc/
 COPY images/server/batch-inventory.py /usr/local/lib/usnm-boinc/
 COPY boinc/config.xml.template boinc/project.xml boinc/plan_class_spec.xml /usr/local/lib/usnm-boinc/
 # Project web pages (about.php, the front-page description), installed by entrypoint.sh --serve

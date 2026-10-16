@@ -843,6 +843,28 @@ The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
 These commands describe the code path; no production mirror or campaign is
 enabled by this change.
 
+For separately authorized LoC-only transfer acceptance, `gold-mirror-loc`
+stages only the 18 original JPEGs pinned in `bundle-v1.lock.json`, without
+opening BLN600, fetching upstream data, submitting work, or changing clients:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step gold-mirror-loc --var GOLD_CAMPAIGN=v1-tess550
+```
+
+Use the normal serialized production-job preflight. The command first checks
+all selected cache files against prepared size, MD5 and SHA-256, and the locked
+URL/SHA-256, and checks existing destinations. It rejects unexpected paths,
+symlinks and mismatches, then publishes mode-0664 files atomically using native
+`dir_hier_path`. JSON receipts list physical paths and checksums. A partial
+publication after an I/O failure is safe to retry; existing matching files are
+not replaced. This is not BLN licence clearance or sticky-client acceptance.
+Verify anonymous HTTP GET bytes and headers separately; proving client reuse
+still requires two units on the same compatible attached host.
+In a fresh bridge job, the wrapper writes only `download_dir` and the committed
+template's fanout to the container-local config target. It refuses an existing
+local config or unexpected shared config symlink, never replaces that symlink,
+and never fetches credentials. The server replica's own config is unaffected.
+
 A unit left with a `submitting` marker is handled as for the assessment.
 
 ### Host trust for `usnm_ocr`
