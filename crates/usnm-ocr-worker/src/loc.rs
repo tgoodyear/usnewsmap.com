@@ -670,7 +670,7 @@ impl LocClient {
         self.pacer(server).wait().await;
         match self.http.get(url).send().await {
             Ok(resp) if self.cfg.html_is_block && html_page(&resp).is_some() => {
-                self.block_hold(server, resp.status(), "html_challenge");
+                self.block_hold(server, resp.status(), "html_challenge", retry_after(&resp));
                 Err(ProbeFailure::Blocked(FetchError::Transient(format!(
                     "{url}: known-good item answered HTTP {} with {}; a bot challenge or block page; holding",
                     resp.status().as_u16(),
@@ -679,6 +679,7 @@ impl LocClient {
             }
             Ok(resp) if resp.status().is_success() => {
                 let status = resp.status();
+                let asked = retry_after(&resp);
                 match read_limited(resp, MAX_ITEM_BYTES).await {
                     Ok(_) => {
                         if let Some(h) = self.health(server) {
@@ -689,7 +690,7 @@ impl LocClient {
                         Ok(())
                     }
                     Err(e) if self.cfg.html_is_block => {
-                        self.block_hold(server, status, "unreadable_body");
+                        self.block_hold(server, status, "unreadable_body", asked);
                         Err(ProbeFailure::Blocked(FetchError::Transient(format!(
                             "{url}: known-good item's body could not be read ({e}); a possible block or challenge; holding"
                         ))))
@@ -740,16 +741,23 @@ impl LocClient {
             .map(|g| g.expect("a 404 is an error unless asked for"))
     }
 
-    fn block_hold(&self, server: Server, status: StatusCode, reason: &'static str) {
-        self.pacer(server).hold(self.cfg.backoff);
+    fn block_hold(
+        &self,
+        server: Server,
+        status: StatusCode,
+        reason: &'static str,
+        asked: Option<(Duration, bool)>,
+    ) {
+        self.pacer(server)
+            .hold(asked.map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff)));
         self.metrics.loc_slowdowns.add(
             1,
             &[
                 KeyValue::new("status", i64::from(status.as_u16())),
                 KeyValue::new("server", server.name()),
                 KeyValue::new("reason", reason),
-                KeyValue::new("retry_after", false),
-                KeyValue::new("capped", false),
+                KeyValue::new("retry_after", asked.is_some()),
+                KeyValue::new("capped", asked.is_some_and(|(_, capped)| capped)),
             ],
         );
     }
@@ -778,7 +786,12 @@ impl LocClient {
                 Ok(resp) if resp.status().is_success() => {
                     if self.cfg.html_is_block {
                         if let Some(why) = html_page(&resp) {
-                            self.block_hold(server, resp.status(), "html_challenge");
+                            self.block_hold(
+                                server,
+                                resp.status(),
+                                "html_challenge",
+                                retry_after(&resp),
+                            );
                             tracing::warn!(
                                 url,
                                 server = server.name(),
@@ -791,6 +804,7 @@ impl LocClient {
                         }
                     }
                     let status = resp.status();
+                    let asked = retry_after(&resp);
                     match read_limited(resp, max).await {
                         Ok(b) => {
                             if title.is_some() {
@@ -802,7 +816,7 @@ impl LocClient {
                             }));
                         }
                         Err(e) if self.cfg.html_is_block => {
-                            self.block_hold(server, status, "unreadable_body");
+                            self.block_hold(server, status, "unreadable_body", asked);
                             return Err(FetchError::Transient(format!(
                             "{url}: the answer's body could not be read ({e}), which is how a block or challenge page can look; holding"
                         )));
@@ -1097,7 +1111,12 @@ impl LocClient {
                 // page or a server error is a block, never "not there".
                 if status.is_success() {
                     if let Some(why) = html_page(&resp) {
-                        self.block_hold(Server::Storage, status, "html_challenge");
+                        self.block_hold(
+                            Server::Storage,
+                            status,
+                            "html_challenge",
+                            retry_after(&resp),
+                        );
                         return Err(FetchError::Transient(format!(
                             "{url} answered HTTP {} with {why} instead of a redirect: a bot challenge or block page; holding",
                             status.as_u16()
@@ -2240,9 +2259,30 @@ mod tests {
                 .await
                 .unwrap_err();
         }
-        loc.block_hold(Server::Tile, StatusCode::OK, "unreadable_body");
+        loc.block_hold(Server::Tile, StatusCode::OK, "unreadable_body", None);
+        loc.set_known_good(format!("{}/good", s.root));
+        s.script("/probe-item", Scripted::Status(503));
+        s.script("/good", Scripted::ChallengeRetryAfter(403, 7200));
+        let error = loc
+            .get(
+                &format!("{}/probe-item", s.root),
+                Server::Api,
+                1024,
+                Some("sn2"),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Cloudflare challenge"),
+            "{error}"
+        );
+        assert_eq!(s.hits("/probe-item"), 1);
+        let remaining = loc.api.held_until().unwrap() - Instant::now();
+        assert!(remaining > Duration::from_secs(3599), "{remaining:?}");
+        assert!(remaining <= MAX_RETRY_AFTER, "{remaining:?}");
         provider.force_flush().unwrap();
         let mut reasons = Vec::new();
+        let mut capped_probe = false;
         for resource in exporter.get_finished_metrics().unwrap() {
             for scope in resource.scope_metrics() {
                 for metric in scope.metrics().filter(|m| m.name() == "ocr.loc_slowdowns") {
@@ -2251,6 +2291,14 @@ mod tests {
                     };
                     for point in sum.data_points() {
                         assert_eq!(point.value(), 1);
+                        let attrs: Vec<_> = point.attributes().cloned().collect();
+                        if attrs.contains(&KeyValue::new("capped", true)) {
+                            assert!(attrs.contains(&KeyValue::new("retry_after", true)));
+                            assert!(attrs.contains(&KeyValue::new("status", 403_i64)));
+                            assert!(attrs.contains(&KeyValue::new("server", "api")));
+                            assert!(attrs.contains(&KeyValue::new("reason", "html_challenge")));
+                            capped_probe = true;
+                        }
                         reasons.extend(
                             point
                                 .attributes()
@@ -2262,9 +2310,14 @@ mod tests {
             }
         }
         reasons.sort();
+        assert!(
+            capped_probe,
+            "the probe must preserve capped Retry-After metrics"
+        );
         assert_eq!(
             reasons,
             [
+                "html_challenge",
                 "html_challenge",
                 "html_challenge",
                 "http_status",
