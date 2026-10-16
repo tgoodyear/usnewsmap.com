@@ -14,6 +14,13 @@ def summarize(lines, now, window_seconds):
     cutoff = now.timestamp() - window_seconds
     completed = []
     errors = 0
+    failure_messages = {
+        "dead-lettered",
+        "page failed; it reappears when its visibility runs out",
+        "page abandoned: out of time, nothing written; it reappears for another node",
+        "receive failed",
+        "message was gone at delete; another node may redo it",
+    }
     for line in lines:
         try:
             record = json.loads(line)
@@ -23,13 +30,16 @@ def summarize(lines, now, window_seconds):
             if not cutoff <= timestamp.timestamp() <= now.timestamp():
                 continue
             fields = record.get("fields", {})
+            failed = False
             if fields.get("message") == "page done":
                 if fields.get("status") == "ok":
                     completed.append((timestamp, fields))
                 else:
-                    errors += 1
-            elif fields.get("message") == "dead-lettered":
-                errors += 1
+                    failed = True
+            if (record.get("level") == "ERROR"
+                    or fields.get("message") in failure_messages):
+                failed = True
+            errors += int(failed)
         except (ValueError, TypeError, KeyError):
             continue
     durations = [float(fields["secs"]) for _, fields in completed if "secs" in fields]
