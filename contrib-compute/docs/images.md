@@ -6,13 +6,13 @@ listed below.
 
 ## What is built
 
-| Image | Source | Contents |
-| ----- | ------ | -------- |
-| base | `images/base/Containerfile` | Pinned BOINC source and runtime dependencies; cached in the shared ACR as `usnm-boinc-base:<input-key>`. |
-| bridge-bin | `images/bridge-bin/Containerfile` | Release-built `usnm-boinc` binary; cached in the shared ACR as `usnm-boinc-bridge-bin:<input-key>`. |
-| server | `images/server/Containerfile` | The base plus project configuration, Apache/PHP, scheduler and upload CGIs, and all daemons under `supervisord`; one container. |
-| bridge | `images/bridge/Containerfile` | The server image plus the bridge binary; used by the in-VNet bridge and optional gold-bundle jobs. |
-| worker | `ocr/boinc/Containerfile` (#441) | Tesseract and `usnm-boinc work`; volunteers pull it from the public GHCR package. Built and published by `.github/workflows/boinc-worker.yml` (ADR-0019 addendum). |
+| Image      | Source                            | Contents                                                                                                                                                           |
+| ---------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| base       | `images/base/Containerfile`       | Pinned BOINC source and runtime dependencies; cached in the shared ACR as `usnm-boinc-base:<input-key>`.                                                           |
+| bridge-bin | `images/bridge-bin/Containerfile` | Release-built `usnm-boinc` binary; cached in the shared ACR as `usnm-boinc-bridge-bin:<input-key>`.                                                                |
+| server     | `images/server/Containerfile`     | The base plus project configuration, Apache/PHP, scheduler and upload CGIs, and all daemons under `supervisord`; one container.                                    |
+| bridge     | `images/bridge/Containerfile`     | The server image plus the bridge binary; used by the in-VNet bridge and optional gold-bundle jobs.                                                                 |
+| worker     | `ocr/boinc/Containerfile` (#441)  | Tesseract and `usnm-boinc work`; volunteers pull it from the public GHCR package. Built and published by `.github/workflows/boinc-worker.yml` (ADR-0019 addendum). |
 
 One container holds Apache and the daemons because the feeder and the scheduler share a System V shared-memory segment (design.md, section 2.1).
 

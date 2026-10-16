@@ -23,14 +23,14 @@ Where this page and #441 differ, #441 wins; it is the client base.
 
 ## What this directory provides to #441
 
-| Item                               | Where                                                                                     |
-| ---------------------------------- | ----------------------------------------------------------------------------------------- |
-| A stock server in Azure            | `infra/boinc/` (Container App, MySQL, Files share, Key Vault, Log Analytics, static site) |
-| The `docker` plan class            | `boinc/plan_class_spec.xml`                                                               |
-| Project and daemon configuration   | `boinc/config.xml.template` and `boinc/project.xml`                                       |
-| Where `submit` and `reconcile` run | the manual-trigger Container Apps Job in `infra/boinc/modules/bridge-job.bicep`           |
+| Item                               | Where                                                                                                       |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| A stock server in Azure            | `infra/boinc/` (Container App, MySQL, Files share, Key Vault, Log Analytics, static site)                   |
+| The `docker` plan class            | `boinc/plan_class_spec.xml`                                                                                 |
+| Project and daemon configuration   | `boinc/config.xml.template` and `boinc/project.xml`                                                         |
+| Where `submit` and `reconcile` run | the manual-trigger Container Apps Job in `infra/boinc/modules/bridge-job.bicep`                             |
 | The set-up plan and deployment     | `scripts/provision-boinc.sh` and `scripts/build-boinc-images.sh`; secrets and project init run in VNet jobs |
-| The server and bridge images       | `images/server`, `images/bridge` ([images.md](images.md))                                 |
+| The server and bridge images       | `images/server`, `images/bridge` ([images.md](images.md))                                                   |
 
 ## Paths on the share
 

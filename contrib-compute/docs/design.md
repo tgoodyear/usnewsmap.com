@@ -208,9 +208,9 @@ flowchart LR
 | `submit`, `reconcile` (`create_work`) | Container Apps Job, in Azure | Needs the project tree, `config.xml` and the database; none is reachable from outside    |
 | Scheduler, feeder, transitioner, etc. | Container App                | Stock daemons; one replica (section 2)                                                   |
 | `batch_collect_assimilator`           | Container App                | Writes the spool under the project tree, on the share                                    |
-| Runtime/upload secrets               | In-VNet secrets job          | Reaches the private Key Vault; generates missing secrets without passing them locally    |
-| Project initialization               | In-VNet init job             | Creates the schema and project tree on the mounted share; skips complete initialization  |
-| Signed app-version publication       | In-VNet publish job          | Copies the selected version to the share and runs `update_versions`                      |
+| Runtime/upload secrets                | In-VNet secrets job          | Reaches the private Key Vault; generates missing secrets without passing them locally    |
+| Project initialization                | In-VNet init job             | Creates the schema and project tree on the mounted share; skips complete initialization  |
+| Signed app-version publication        | In-VNet publish job          | Copies the selected version to the share and runs `update_versions`                      |
 | `collect`, `status`                   | Maintainer side              | Writes `ocr-out`; holds the ledger and journal; the Job gets no storage write credential |
 
 ### 4.2 Where `create_work` runs
