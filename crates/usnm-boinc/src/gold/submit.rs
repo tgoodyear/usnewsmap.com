@@ -9,7 +9,7 @@
 //! Write-ahead, as for the assessment: `submitting` before `create_work`, `submitted` after. A
 //! unit left at `submitting` is skipped until a person checks the server for its workunit name
 //! (`usnm_gold_<job id>`) and either removes the marker (absent) or renames it to `submitted`.
-use super::job::{Engine, File, Job, JOB_FILE, MAX_JSON, VERSION};
+use super::job::{Assignment, Engine, File, Job, JOB_FILE, MAX_JSON, VERSION};
 use super::{prepare, validate};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
@@ -81,6 +81,7 @@ pub fn job(p: &prepare::Prepared, engine: &Engine, unit: u32) -> anyhow::Result<
         sha256: s.sha256.clone(),
     };
     let mut j = Job {
+        assignment: None,
         bundle: file(&p.bundle),
         bundle_version: p.bundle_version,
         engine: engine.clone(),
@@ -92,6 +93,10 @@ pub fn job(p: &prepare::Prepared, engine: &Engine, unit: u32) -> anyhow::Result<
     };
     j.id = j.identity()?;
     j.validate()?;
+    ensure!(
+        serde_json::to_vec_pretty(&j)?.len() <= MAX_JSON,
+        "targeted gold job is over the size limit"
+    );
     ensure!(
         serde_json::to_vec_pretty(&j)?.len() <= MAX_JSON,
         "the job is over {MAX_JSON} bytes: the bundle names too many original files"
@@ -190,6 +195,53 @@ pub fn units_dir(root: &Path) -> PathBuf {
     root.join("units")
 }
 
+fn assignment_enabled(config: &str) -> anyhow::Result<bool> {
+    use quick_xml::{events::Event, Reader};
+    let mut reader = Reader::from_str(config);
+    let mut path = Vec::new();
+    let (mut roots, mut configs, mut settings) = (0, 0, 0);
+    let mut value = String::new();
+    loop {
+        let event = reader.read_event()?;
+        let empty = matches!(&event, Event::Empty(_));
+        match event {
+            Event::Start(e) | Event::Empty(e) => {
+                let name = e.name().as_ref().to_owned();
+                if path.is_empty() {
+                    roots += 1;
+                    ensure!(name == "boinc", "expected boinc config root");
+                }
+                path.push(name);
+                if path == ["boinc", "config"] {
+                    configs += 1;
+                }
+                if path == ["boinc", "config", "enable_assignment"] {
+                    settings += 1;
+                }
+                if empty {
+                    path.pop();
+                }
+            }
+            Event::End(_) => {
+                path.pop();
+            }
+            Event::Text(e) if path == ["boinc", "config", "enable_assignment"] => {
+                value.push_str(&e);
+            }
+            Event::CData(e) if path == ["boinc", "config", "enable_assignment"] => {
+                value.push_str(&e);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    ensure!(
+        roots == 1 && configs == 1 && settings <= 1 && path.is_empty(),
+        "ambiguous assignment config"
+    );
+    Ok(settings == 1 && value.trim() == "1")
+}
+
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     ensure!(
         (1..=1000).contains(&opts.units),
@@ -207,7 +259,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         ensure!(host > 0, "--target-host must be positive");
         let config = std::fs::read_to_string(project.join("config.xml"))?;
         ensure!(
-            config.contains("<enable_assignment>1</enable_assignment>"),
+            assignment_enabled(&config)?,
             "targeted work requires an explicitly enabled <enable_assignment>1</enable_assignment>"
         );
     }
@@ -230,28 +282,48 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         publish(&tar, &opts.root.join(prepare::BUNDLE_COPY))?;
     }
     let mut summary = Summary::default();
+    let assignment_path = opts.root.join("assignment.json");
+    let assignment: Option<Assignment> = if assignment_path.exists() {
+        let previous: Option<Assignment> = serde_json::from_slice(&read(&assignment_path, 1024)?)?;
+        ensure!(
+            previous.as_ref().map(|a| a.host_id) == opts.target_host,
+            "campaign target changed; use a fresh campaign root"
+        );
+        previous
+    } else {
+        ensure!(
+            opts.target_host.is_none() || !units_dir(&opts.root).exists(),
+            "cannot target a pre-existing campaign; use a fresh campaign root"
+        );
+        let assignment = if let Some(host_id) = opts.target_host {
+            let nonce = tempfile::NamedTempFile::new_in(&opts.root)?;
+            Some(Assignment {
+                campaign: usnm_ocr_contract::boinc::sha256(
+                    nonce.path().as_os_str().as_encoded_bytes(),
+                ),
+                host_id,
+            })
+        } else {
+            None
+        };
+        atomic(&assignment_path, &serde_json::to_vec(&assignment)?)?;
+        assignment
+    };
     let mut jobs = Vec::new();
     for unit in 0..opts.units {
-        jobs.push(job(&p, &opts.engine, unit)?);
+        let mut j = job(&p, &opts.engine, unit)?;
+        if let Some(assignment) = &assignment {
+            j.assignment = Some(assignment.clone());
+            j.v = 2;
+            j.id = j.identity()?;
+            j.validate()?;
+        }
+        jobs.push(j);
     }
     validate::add_jobs(&validate::expected_dir(&project), &p, &jobs)?;
     for j in jobs {
         let dir = units_dir(&opts.root).join(format!("{:04}", j.unit));
         let path = dir.join(JOB_FILE);
-        let target = dir.join("target-host.json");
-        if target.exists() {
-            let old: Option<u64> = serde_json::from_slice(&read(&target, 128)?)?;
-            ensure!(
-                old == opts.target_host,
-                "campaign target changed; use a fresh campaign root"
-            );
-        } else {
-            ensure!(
-                opts.target_host.is_none() || !path.exists(),
-                "cannot target a pre-existing campaign; use a fresh campaign root"
-            );
-            atomic(&target, &serde_json::to_vec(&opts.target_host)?)?;
-        }
         if path.exists() {
             let old: Job = serde_json::from_slice(&read(&path, MAX_JSON)?)?;
             ensure!(
@@ -353,6 +425,50 @@ pub(crate) mod tests {
             timeout_secs: 300,
             version: "5.5.0".into(),
         }
+    }
+
+    #[test]
+    fn assignment_opt_in_uses_active_unambiguous_xml_not_comments() {
+        assert!(assignment_enabled(
+            "<boinc><config><enable_assignment> 1\n </enable_assignment></config></boinc>"
+        )
+        .unwrap());
+        assert!(!assignment_enabled("<boinc><config><!-- <enable_assignment>1</enable_assignment> --><enable_assignment>0</enable_assignment></config></boinc>").unwrap());
+        assert!(!assignment_enabled(
+            "<boinc><config><!-- <enable_assignment>1</enable_assignment> --></config></boinc>"
+        )
+        .unwrap());
+        assert!(assignment_enabled("<boinc><config><enable_assignment>1</enable_assignment><enable_assignment>0</enable_assignment></config></boinc>").is_err());
+        assert!(assignment_enabled("<boinc><config/><config/></boinc>").is_err());
+        assert!(assignment_enabled("<boinc><config>").is_err());
+    }
+
+    #[test]
+    fn targeted_campaigns_have_distinct_validated_retry_stable_identities() {
+        let legacy = job(&prepared(), &engine(), 0).unwrap();
+        let mut a = legacy.clone();
+        a.assignment = Some(Assignment {
+            campaign: "a".repeat(64),
+            host_id: 42,
+        });
+        a.v = 2;
+        a.id = a.identity().unwrap();
+        a.validate().unwrap();
+        let retry: Job = serde_json::from_slice(&serde_json::to_vec(&a).unwrap()).unwrap();
+        retry.validate().unwrap();
+        assert_eq!(a.identity().unwrap(), retry.identity().unwrap());
+        let mut b = a.clone();
+        b.assignment.as_mut().unwrap().campaign = "b".repeat(64);
+        assert_ne!(a.identity().unwrap(), b.identity().unwrap());
+        assert!(b.validate().is_err());
+        b.id = b.identity().unwrap();
+        b.validate().unwrap();
+        b.assignment.as_mut().unwrap().host_id = 43;
+        assert_ne!(a.identity().unwrap(), b.identity().unwrap());
+        assert_ne!(legacy.identity().unwrap(), a.identity().unwrap());
+        assert!(!serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("assignment"));
     }
 
     #[tokio::test]

@@ -798,8 +798,13 @@ fail closed. Missing CER never grants trust. These timestamps are also client
 claims, not protection against malicious volunteers.
 
 `gold submit --target-host HOST` (bridge: `GOLD_TARGET_HOST`) provides a targeted,
-write-ahead campaign; its target cannot change on retry. Use a fresh campaign
-root per host and image. It refuses until the project's config explicitly has
+write-ahead campaign; its persisted campaign nonce and host participate in
+the validated job identity, so fresh roots/hosts cannot collide in workunit
+or spool names and retries keep the same identity. Targeted jobs use protocol
+v2 and require a **newly built/released worker containing this support**;
+do not target old worker images that only understand v1. Untargeted v1 job
+bytes/identities remain compatible. Use a fresh campaign root per host and
+image. It refuses until the project's active XML config explicitly has
 `<enable_assignment>1</enable_assignment>`. This PR does **not** enable assignment
 on production: first verify scheduler/assignment behavior in dev and calibrate
 the first campaign. Automatic discovery/issuance for new hosts, live canonical

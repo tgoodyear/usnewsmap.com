@@ -53,6 +53,8 @@ pub struct Engine {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<Assignment>,
     pub bundle: File,
     pub bundle_version: u32,
     pub engine: Engine,
@@ -63,6 +65,13 @@ pub struct Job {
     /// Which of the campaign's units this is, so units of one campaign differ.
     pub unit: u32,
     pub v: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assignment {
+    pub campaign: String,
+    pub host_id: u64,
 }
 
 /// The cache name of an original file, as `usnm_ocr_survey::bundle::cache_path` writes it.
@@ -79,7 +88,7 @@ fn pinned(s: &str) -> bool {
 
 impl Job {
     pub fn identity(&self) -> anyhow::Result<String> {
-        Ok(sha256(&serde_json::to_vec(&(
+        let legacy = serde_json::to_vec(&(
             self.v,
             self.unit,
             self.bundle_version,
@@ -87,13 +96,28 @@ impl Job {
             &self.bundle,
             &self.remotes,
             &self.engine,
-        ))?))
+        ))?;
+        Ok(if let Some(assignment) = &self.assignment {
+            sha256(&serde_json::to_vec(&(legacy, assignment))?)
+        } else {
+            sha256(&legacy)
+        })
     }
     pub fn workunit(&self) -> String {
         format!("usnm_gold_{}", self.id)
     }
     pub fn validate(&self) -> anyhow::Result<()> {
-        ensure!(self.v == VERSION, "unsupported gold job version");
+        ensure!(
+            (self.v == VERSION && self.assignment.is_none())
+                || (self.v == 2 && self.assignment.is_some()),
+            "unsupported gold job version"
+        );
+        if let Some(assignment) = &self.assignment {
+            ensure!(
+                assignment.host_id > 0 && is_sha256(&assignment.campaign),
+                "invalid gold assignment"
+            );
+        }
         ensure!(
             is_sha256(&self.id) && self.id == self.identity()?,
             "job identity mismatch"
@@ -161,6 +185,7 @@ mod tests {
 
     pub fn job() -> Job {
         let mut j = Job {
+            assignment: None,
             bundle: File {
                 bytes: 10,
                 name: BUNDLE_FILE.into(),
