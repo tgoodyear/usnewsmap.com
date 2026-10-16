@@ -103,6 +103,7 @@ SQL
 #   minimum, 2026-10-14) never reached the share.
 project_tree() {
   local i inc="$PROJ/html/project/project.inc"
+  python3 "$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/cgi" --target "$PROJ/cgi-bin/cgi"
   cp "$TEMPLATES/plan_class_spec.xml" "$PROJ/plan_class_spec.xml"
   for i in $(seq 0 255); do mkdir -p "$PROJ/html/cache/$(printf %02x "$i")"; done
   sed -i -e 's|"REPLACE WITH PROJECT NAME"|"usnewsmap OCR"|' \

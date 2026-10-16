@@ -11,7 +11,8 @@
 //! 3. Waits for `/health`, posts each crop PNG to `/v1/chat/completions`,
 //!    updates `fraction_done`, writes `readings.json`, `result.json`, and
 //!    `diag.txt`, kills `llama-server` on drop, and writes `boinc_finish_called`
-//!    (`"0\n"`).
+//!    (`"0\n"` on success, `"1\n"` on failure). Failures exit nonzero and
+//!    automatically report bounded diagnostics through standard BOINC stderr.
 use anyhow::{bail, ensure, Context};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use image::GenericImageView as _;
@@ -72,7 +73,77 @@ fn start_boinc_control(work: &Path) -> BoincControl {
 }
 
 fn main() -> anyhow::Result<()> {
-    run_slot(Path::new("."))
+    if run_slot_reporting(Path::new(".")).is_err() {
+        std::process::exit(1);
+    }
+    if std::fs::read_to_string(FINISH_FILE).is_ok_and(|code| code.trim() != "0") {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn report_failure(work: &Path, report: &str) -> std::io::Result<()> {
+    // Windows BOINC starts native apps without inherited stderr handles.
+    #[cfg(windows)]
+    {
+        let mut stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(work.join("stderr.txt"))?;
+        writeln!(stderr, "{report}")?;
+        stderr.flush()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = work;
+        writeln!(std::io::stderr().lock(), "{report}")
+    }
+}
+
+fn run_slot_reporting(work: &Path) -> anyhow::Result<()> {
+    run_slot(work).inspect_err(|_| {
+        let _ = report_failure(
+            work,
+            "USNM_QWEN_FAILURE {\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}",
+        );
+    })
+}
+
+fn failure_report(result: &ResultManifest, diag: &[u8]) -> String {
+    let evidence = String::from_utf8_lossy(diag).to_ascii_lowercase();
+    let short = |s: Option<&str>| {
+        s.map(|s| {
+            s.chars()
+                .filter(|c| c.is_ascii_alphanumeric() || "._- ".contains(*c))
+                .take(64)
+                .collect::<String>()
+        })
+    };
+    let digest = |s: &str| {
+        s.strip_prefix("sha256:")
+            .filter(|s| usnm_ocr_contract::boinc::is_sha256(s))
+            .map(|s| format!("sha256:{s}"))
+    };
+    let report = serde_json::json!({
+        "v": 1, "exit_status": 1, "outcome": result.outcome,
+        "device": short(Some(&result.device)), "model": short(result.model.as_deref()),
+        "llama": digest(&result.engine.llama), "weights": digest(&result.engine.weights),
+        "runtime": short(result.host.runtime.as_deref()),
+        "plan_class": short(result.host.plan_class.as_deref()),
+        "gpu_driver": short(result.host.gpu_driver.as_deref()),
+        "gpu_memory_mib": result.host.gpu_mem_total_mib,
+        "gpu_peak_mib": result.gpu_mem_peak_mib, "peak_rss_kib": result.peak_rss_kib,
+        "load_ms": result.load_ms, "engine_ms": result.engine_ms,
+        "runtime_missing": evidence.contains("no such file") || evidence.contains("os error 2"),
+        "access_denied": evidence.contains("permission denied") || evidence.contains("os error 5"),
+        "cuda_error": evidence.contains("cuda error"),
+        "out_of_memory": evidence.contains("out of memory"),
+        "runtime_exited": evidence.contains("exited"),
+        "diag_sha256": result.diag_sha256,
+    });
+    // Failed BOINC tasks need not upload declared outputs. Only this fixed-schema
+    // summary travels via stderr; never include prompts, readings or raw paths.
+    format!("USNM_QWEN_FAILURE {report}")
 }
 
 fn ms(since: Instant) -> u64 {
@@ -1149,7 +1220,12 @@ pub fn run_slot_with(
     write_atomic(&diag_out, &diag_bytes)?;
     write_atomic(&result_out, &serde_json::to_vec_pretty(&result)?)?;
     write_atomic(&fraction_out, b"1.0\n")?;
-    write_atomic(&finish_out, b"0\n")?;
+    if result.outcome == Outcome::Ok {
+        write_atomic(&finish_out, b"0\n")?;
+    } else {
+        report_failure(work, &failure_report(&result, &diag_bytes))?;
+        write_atomic(&finish_out, b"1\n")?;
+    }
     Ok(())
 }
 
@@ -1499,6 +1575,70 @@ mod tests {
             }
         });
         port
+    }
+
+    #[test]
+    fn failed_slot_marks_computation_error_and_reports_only_bounded_facts() {
+        let tmp = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        std::fs::write(tmp.path().join("stderr.txt"), "existing BOINC diagnostic\n").unwrap();
+        run_slot_with(tmp.path(), None, None).unwrap();
+        #[cfg(windows)]
+        {
+            let stderr = std::fs::read_to_string(tmp.path().join("stderr.txt")).unwrap();
+            assert!(stderr.starts_with("existing BOINC diagnostic\nUSNM_QWEN_FAILURE "));
+            assert_eq!(stderr.matches("USNM_QWEN_FAILURE ").count(), 1);
+            assert!(stderr.contains("\"outcome\":\"unit_error\""));
+            assert!(stderr.len() < 2048);
+        }
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(FINISH_FILE)).unwrap(),
+            "1\n"
+        );
+        let mut result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(tmp.path().join(RESULT_FILE)).unwrap()).unwrap();
+        assert_eq!(result.outcome, Outcome::UnitError);
+        result.engine.llama = "PRIVATE_TOKEN".repeat(1000);
+        result.unit_error = Some("PRIVATE_TOKEN raw input text credentials local path".into());
+        result.host.runtime = Some("native-windows-x86_64".into());
+        result.host.gpu_mem_total_mib = Some(8192);
+        for outcome in [
+            Outcome::UnitError,
+            Outcome::Failed,
+            Outcome::NoGpu,
+            Outcome::Timeout,
+        ] {
+            result.outcome = outcome;
+            let report = failure_report(&result, b"CUDA error: out of memory PRIVATE_TOKEN");
+            assert!(report.len() <= 2048);
+            assert!(!report.contains("PRIVATE_TOKEN"));
+            assert!(!report.contains("raw input text"));
+            let facts: serde_json::Value =
+                serde_json::from_str(report.strip_prefix("USNM_QWEN_FAILURE ").unwrap()).unwrap();
+            assert_eq!(facts["exit_status"], 1);
+            assert_eq!(facts["gpu_memory_mib"], 8192);
+            assert_eq!(facts["cuda_error"], true);
+            assert_eq!(facts["out_of_memory"], true);
+            assert!(facts["llama"].is_null());
+        }
+    }
+
+    #[test]
+    fn early_slot_io_error_uses_the_same_boinc_failure_transport() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(RESULT_FILE)).unwrap();
+        #[cfg(windows)]
+        std::fs::write(tmp.path().join("stderr.txt"), "existing BOINC diagnostic\n").unwrap();
+        assert!(run_slot_reporting(tmp.path()).is_err());
+        #[cfg(windows)]
+        {
+            let stderr = std::fs::read_to_string(tmp.path().join("stderr.txt")).unwrap();
+            assert_eq!(
+                stderr,
+                "existing BOINC diagnostic\nUSNM_QWEN_FAILURE {\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}\n"
+            );
+        }
+        assert!(!tmp.path().join(FINISH_FILE).exists());
     }
 
     #[test]

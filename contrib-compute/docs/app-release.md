@@ -23,6 +23,79 @@ Operator staging uses a unique mode-0700 directory beneath the checkout and a
 private directory beneath the signing host's root home, removed on exit. Build
 inputs stay on those filesystems rather than relying on system temporary storage.
 
+### Native NVIDIA experimental canary
+
+Native `nvidia_cuda_2b` and `nvidia_cuda_8b` are experimental and default-deny:
+the scheduler requires the account's **effective venue** project preference
+`qwen_native_cuda_canary` to equal exactly `1`. Absent, false, or malformed
+preferences do not enroll anyone. The authenticated project preferences page
+(`prefs.php?subset=project`) exposes an unchecked opt-in checkbox; volunteers
+must explicitly save it for the venue used by their host. Unchecking it stops
+future canary assignments, not already assigned tasks. Existing stock application
+selection, CPU/job limits, other preferences and venue editing remain available.
+No operator should silently enroll accounts or edit authenticators.
+
+Rebuild the BOINC **base and server** through `build-boinc-images.sh` before
+enabling this release. The scheduler patch checks the untrimmed preference in
+the effective-venue buffer, before stock `parse_str()` strips whitespace.
+An XML-only rollout on an old scheduler is insufficient. The base cache key
+includes the patch, so the normal build pipeline will invalidate it.
+
+These native-only classes admit stable BOINC 8.2.11+; unlike containers they do
+not need the 8.2.13 container extension. They require a CUDA 12.4-capable NVIDIA driver (the pinned
+runtime includes CUDA libraries; no toolkit/WSL/Podman), 3 GB/7 GB detected GPU
+memory respectively, and cold disk bounds of 12 GiB/18 GiB. This is admission
+policy, **not measured Windows acceptance**. Signed publication is not evidence
+of successful inference.
+
+Windows publication must include both pinned CUDA archives in `llama.lock`:
+the llama archive does **not** include `cudart64_12.dll` or the cuBLAS DLLs.
+The companion runtime archive contributes 574,138,880 bytes; the selected
+llama-server/DLL payload contributes 545,153,592 bytes before the small driver,
+locks and Microsoft runtime. Together they fit the reviewed 2 GiB native bundle
+envelope (enforced by staging). The Windows native CI artifact supplies app-local
+Microsoft CRT DLLs from the installed Visual Studio redistributable, verifies
+their Microsoft Authenticode signatures and records version/hashes in
+`VC_REDIST_SOURCE.json`/`SHA256SUMS`. Stage these DLLs as signed `--extra-file`
+members too; staging rejects a missing mandatory CUDA/CRT dependency, including
+the portable `ggml-cpu-x64.dll` backend and its `libomp140.x86_64.dll` dependency
+from the pinned llama archive (CPU backend discovery is required even for CUDA
+offload; optimized CPU variants are optional). No
+volunteer should install a CUDA toolkit or manually fetch DLLs. The NVIDIA
+driver's `nvcuda.dll` and Windows system APIs remain platform prerequisites.
+
+Before publication, coordinate deployments in #529 and preserve all existing
+OCR/training pins and queues. Publish only the intended Windows platform version;
+the scheduler must also be upgraded, not just its plan-class XML. The persistent
+project CGI is a copy, not necessarily a link to the new image's executable.
+Server startup atomically refreshes it from the reviewed image before serving,
+preserving already-running CGI requests. Verify the project CGI SHA256 matches
+`/usr/local/boinc/sched/cgi` after the single-active-revision rollout; otherwise
+old batch/consent code can silently prevent or misroute dispatch.
+Inventory opted-in eligible hosts without publishing identities. Initially stage
+at most **one** audited workunit with two independent results, digest-qualified
+sticky models, the correct native target and existing idempotency journal.
+Record exact workunit/result IDs, then stop submitting until the results have been
+examined. Do not reduce independent quorum to make a single volunteer pass.
+Collect BOINC exit status, bounded stderr, backend/model/runtime identities and
+available resource diagnostics; report missing measurements rather than inferring
+successful CUDA execution from registration. Do not run arbitrary commands on
+volunteers or broaden enrollment to bypass missing hardware/consent.
+
+Native failures write a nonzero `boinc_finish_called` and exit nonzero, so the
+ordinary BOINC UI can show **Computation error**. A fixed-schema, bounded
+`USNM_QWEN_FAILURE` JSON summary goes automatically into BOINC task stderr
+(appended directly to the slot's `stderr.txt` on Windows, ordinary stderr on Unix) and
+the normal scheduler result report, even when failure prevents declared output
+uploads. It includes outcome, runtime/model identities, driver/memory facts,
+timings and known failure categories—not raw paths, input text, prompts, account
+data or full runtime logs. Successful tasks retain the usual three checksummed-output
+upload paths. Client-side download/signature/loader failures can occur before the
+app runs; inspect their standard BOINC exit status/stderr/event reports rather
+than promising an application summary exists. Server receipt of those reports
+must still be verified with real canary results; no manual volunteer log upload
+is part of the onboarding flow.
+
 ### Holding legacy Qwen dispatch
 
 Before enabling split-payload inference, inventory app versions, workunits and

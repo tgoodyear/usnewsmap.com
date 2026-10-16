@@ -38,6 +38,7 @@ bool PLAN_CLASS_SPEC::check(SCHEDULER_REQUEST& sreq, HOST_USAGE& hu) {
             return false;
         }
     }
+        bool p = parse_str(buf, tag, value, sizeof(value));
 
     if (!strcmp(gpu_type, "nvidia")) {
         // nvidia eligibility
@@ -62,6 +63,52 @@ bool PLAN_CLASS_SPEC::check(SCHEDULER_REQUEST& sreq, HOST_USAGE& hu) {
 
 
 class PatchServerAppleGpuTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
+    def test_raw_effective_venue_consent_rejects_whitespace_before_boinc_trims_it(self):
+        source = r"""
+#define assert(value) do { if (!(value)) return __LINE__; } while (false)
+int strcmp(const char* a, const char* b) {
+    while (*a && *a == *b) { ++a; ++b; } return *a - *b;
+}
+int strncmp(const char* a, const char* b, unsigned long n) {
+    while (n && *a && *a == *b) { ++a; ++b; --n; } return n ? *a - *b : 0;
+}
+const char* strstr(const char* a, const char* b) {
+    for (; *a; ++a) {
+        const char* x=a; const char* y=b;
+        while (*x && *x==*y) {++x; ++y;}
+        if (!*y) return a;
+    } return nullptr;
+}
+bool parse_str(const char*, const char*, char*, int) { return true; }
+bool gate(const char* name, const char* buf) {
+    char tag[256], value[256];
+GATE
+    return p;
+}
+int main() {
+    const char* names[] = {"nvidia_cuda_2b", "nvidia_cuda_8b"};
+    for (const char* name : names) {
+        assert(gate(name, "<qwen_native_cuda_canary>1</qwen_native_cuda_canary>"));
+        const char* preferences[] = {
+            "", "<qwen_native_cuda_canary>0</qwen_native_cuda_canary>",
+            "<qwen_native_cuda_canary> 1 </qwen_native_cuda_canary>",
+            "<qwen_native_cuda_canary>\n1\n</qwen_native_cuda_canary>",
+            "<qwen_native_cuda_canary>1 </qwen_native_cuda_canary>",
+            "<qwen_native_cuda_canary> 1</qwen_native_cuda_canary>",
+            "<qwen_native_cuda_canary>01</qwen_native_cuda_canary>"
+        };
+        for (const char* prefs : preferences) { assert(!gate(name, prefs)); }
+    }
+    assert(gate("docker_nvidia_train", ""));
+}
+""".replace("GATE", module.CANARY_PREF_PATCHED)
+        with tempfile.TemporaryDirectory() as folder:
+            binary = str(Path(folder) / "scheduler-canary")
+            subprocess.run(["c++", "-std=c++17", "-x", "c++", "-", "-o", binary],
+                           input=source, text=True, check=True, capture_output=True)
+            subprocess.run([binary], check=True)
+
     @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
     def test_model_batches_are_exclusive_in_executable_scheduler_gate(self):
         source = r"""
@@ -118,6 +165,7 @@ int main() {
             self.assertEqual(patched.count(module.DISPATCH_PATCHED), 1)
             self.assertEqual(patched.count(module.BATCH_INFEASIBLE_PATCHED), 1)
             self.assertEqual(patched.count(module.BATCH_CHECK_PATCHED), 1)
+            self.assertEqual(patched.count(module.CANARY_PREF_PATCHED), 1)
             self.assertNotIn(module.ELIGIBILITY_ORIGINAL, patched)
             self.assertNotIn(module.DISPATCH_ORIGINAL, patched)
             self.assertNotIn(module.BATCH_INFEASIBLE_ORIGINAL, patched)
@@ -133,8 +181,10 @@ int main() {
             SNIPPET.replace(module.DISPATCH_ORIGINAL, "// missing dispatch"),
             SNIPPET.replace(module.BATCH_INFEASIBLE_ORIGINAL, "// missing batch gate"),
             SNIPPET.replace(module.BATCH_CHECK_ORIGINAL, "// missing batch check"),
+            SNIPPET.replace(module.CANARY_PREF_ORIGINAL, "// missing consent gate"),
             SNIPPET + "\n" + module.ELIGIBILITY_ORIGINAL + "\n",
             SNIPPET + "\n" + module.DISPATCH_ORIGINAL + "\n",
+            SNIPPET + "\n" + module.CANARY_PREF_ORIGINAL + "\n",
         ):
             with self.subTest(bad=bad):
                 with self.assertRaisesRegex(ValueError, "expected exactly 1"):

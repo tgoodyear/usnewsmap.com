@@ -74,8 +74,9 @@ jobs:
         shell: bash
         run: |
           cargo build --release --locked --target "${{ matrix.target }}" -p usnm-quality-app -p usnm-qwen-app
-          out_dir="$RUNNER_TEMP/boinc-native-${{ matrix.boinc_platform }}"
-          mkdir -p "$out_dir"
+          out_dir="boinc-native-${{ matrix.boinc_platform }}"
+          umask 077
+          mkdir "$out_dir"
           cp "target/${{ matrix.target }}/release/usnm_quality${{ matrix.ext }}" \
             "$out_dir/usnm_quality_${{ matrix.boinc_platform }}${{ matrix.ext }}"
           cp "target/${{ matrix.target }}/release/usnm_qwen${{ matrix.ext }}" \
@@ -95,8 +96,41 @@ jobs:
                 "usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}" > SHA256SUMS
             fi
           )
+      - name: Bundle signed app-local Microsoft runtime (Windows)
+        if: matrix.boinc_platform == 'windows_x86_64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:GITHUB_WORKSPACE 'boinc-native-windows_x86_64'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'MSVC installation not found' }
+          $redist = Get-ChildItem (Join-Path $vs 'VC\Redist\MSVC') -Directory |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (!$redist) { throw 'MSVC redistributable not found' }
+          $rows = @()
+          $crt = @(Get-ChildItem (Join-Path $redist.FullName 'x64') -Directory -Filter 'Microsoft.VC*.CRT')
+          if ($crt.Count -ne 1) { throw 'Missing/ambiguous MSVC x64 CRT directory' }
+          $files = @(Get-ChildItem -LiteralPath $crt[0].FullName -Filter '*.dll' -File | Sort-Object Name)
+          foreach ($required in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+            if (@($files | Where-Object Name -eq $required).Count -ne 1) { throw "Missing/duplicate app-local $required" }
+          }
+          foreach ($file in $files) {
+            $name = $file.Name.ToLowerInvariant()
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation(?:,|$)') {
+              throw "Untrusted Microsoft runtime $name"
+            }
+            Copy-Item $file.FullName (Join-Path $out $name)
+            $hash = (Get-FileHash (Join-Path $out $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            [IO.File]::AppendAllText((Join-Path $out 'SHA256SUMS'), "$hash  $name`n", [Text.Encoding]::ASCII)
+            $rows += @{ name=$name; sha256=$hash; signature='Valid Microsoft Corporation' }
+          }
+          @{ version=$redist.Name; files=$rows } | ConvertTo-Json -Depth 4 |
+            Set-Content (Join-Path $out 'VC_REDIST_SOURCE.json') -Encoding utf8
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: boinc-native-${{ matrix.boinc_platform }}
-          path: ${{ runner.temp }}/boinc-native-${{ matrix.boinc_platform }}/
+          path: ${{ github.workspace }}/boinc-native-${{ matrix.boinc_platform }}/
           if-no-files-found: error

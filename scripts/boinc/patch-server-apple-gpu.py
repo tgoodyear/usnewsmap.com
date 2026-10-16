@@ -59,6 +59,19 @@ BATCH_CHECK_PATCHED = """\
         }
     }"""
 
+CANARY_PREF_ORIGINAL = "        bool p = parse_str(buf, tag, value, sizeof(value));"
+CANARY_PREF_PATCHED = """\
+        if (!strcmp(name, "nvidia_cuda_2b") || !strcmp(name, "nvidia_cuda_8b")) {
+            // parse_str strips whitespace; test consent in the effective venue
+            // buffer first so admission agrees with the authenticated web form.
+            const char expected[] = "<qwen_native_cuda_canary>1</qwen_native_cuda_canary>";
+            const char* consent = strstr(buf, "<qwen_native_cuda_canary>");
+            if (!consent || strncmp(consent, expected, sizeof(expected)-1)) {
+                return false;
+            }
+        }
+        bool p = parse_str(buf, tag, value, sizeof(value));"""
+
 
 def patch_source(text: str) -> str:
     for label, target, replacement in (
@@ -66,6 +79,7 @@ def patch_source(text: str) -> str:
         ("dispatch", DISPATCH_ORIGINAL, DISPATCH_PATCHED),
         ("batch infeasibility gate", BATCH_INFEASIBLE_ORIGINAL, BATCH_INFEASIBLE_PATCHED),
         ("batch restriction check", BATCH_CHECK_ORIGINAL, BATCH_CHECK_PATCHED),
+        ("untrimmed native canary consent", CANARY_PREF_ORIGINAL, CANARY_PREF_PATCHED),
     ):
         count = text.count(target)
         if count != 1:
