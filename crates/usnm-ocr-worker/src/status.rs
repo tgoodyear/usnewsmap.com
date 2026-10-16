@@ -110,13 +110,12 @@ fn journal_id(_: &std::fs::Metadata) -> String {
     String::new()
 }
 
-/// The short form of an engine tag for the routes: its `profile=`, else
-/// the tag.
+/// The engine/version and profile, without image/model digests.
 fn profile(tag: &str) -> String {
-    tag.split_whitespace()
-        .find_map(|w| w.strip_prefix("profile="))
-        .unwrap_or(tag)
-        .to_owned()
+    match tag.split_whitespace().find(|w| w.starts_with("profile=")) {
+        Some(profile) => format!("{} {profile}", tag.split_whitespace().next().unwrap_or(tag)),
+        None => tag.to_owned(),
+    }
 }
 
 impl Tracker {
@@ -539,6 +538,14 @@ async fn serve_once(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dashboard_routes_keep_the_engine_and_profile() {
+        assert_eq!(
+            super::profile("ndlocr-lite/1.0 profile=default image=local"),
+            "ndlocr-lite/1.0 profile=default"
+        );
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;
@@ -598,7 +605,7 @@ mod tests {
         assert!(s.in_flight.iter().any(|p| p.stage == "ocr"));
         assert_eq!(s.last_hour.done, 1);
         assert_eq!(s.last_hour.from_cache, 1);
-        assert_eq!(s.routes["deu"], "frak2021");
+        assert_eq!(s.routes["deu"], "tesseract/5.5.0 profile=frak2021");
         assert_eq!(s.recent.len(), 1);
         assert!(s.journal_bytes > 0);
         assert!(!s.journal_id.is_empty());

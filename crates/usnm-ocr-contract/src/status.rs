@@ -40,7 +40,7 @@ pub struct WorkerStatus {
     pub engine_version: String,
     /// The models the engine has.
     pub models: Vec<String>,
-    /// Language (ISO 639-3) → the model or engine it is read with, where
+    /// Language (ISO 639-3) → engine/version and profile it is read with, where
     /// the worker routes languages; empty where it doesn't.
     pub routes: BTreeMap<String, String>,
     /// The scan server the worker asks before LoC, if any.
