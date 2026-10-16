@@ -1847,3 +1847,68 @@ details.status-error > summary {
 .ocr-credit dt {
   font-weight: 600;
 }
+.states-legend ol {
+  list-style: none;
+  padding: 0;
+}
+.states-legend li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.states-swatch {
+  display: inline-block;
+  width: 1.5rem;
+  height: 1rem;
+  border: 1px solid var(--ink);
+  flex-shrink: 0;
+}
+.states-swatch--empty {
+  background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, #555 3px, #555 4px);
+}
+.states-panel {
+  flex: 0 0 42%;
+  min-width: 0;
+  max-height: 28rem;
+  overflow: auto;
+  padding: 0.75rem;
+  background: var(--panel);
+  color: var(--ink);
+}
+@media (max-width: 640px) {
+  .states-panel {
+    flex: none;
+    width: 100%;
+  }
+}
+.states-panel h2 {
+  font-size: 1rem;
+}
+.states-panel p {
+  font-size: 0.85rem;
+  max-width: 35rem;
+}
+.map-state-tip,
+.map-state-error {
+  position: absolute;
+  z-index: 3;
+  padding: 0.75rem;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  max-width: min(280px, 100%);
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+.map-state-tip--pinned {
+  bottom: 1rem;
+  left: 0.5rem;
+  right: 0.5rem;
+  max-width: none;
+  pointer-events: auto;
+}
+.map-state-error {
+  top: 3rem;
+  left: 1rem;
+  pointer-events: auto;
+}
