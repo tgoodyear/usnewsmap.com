@@ -6,10 +6,9 @@ Run from the repository root with an existing Docker-compatible runtime:
 scripts/boinc/check-db-tls.sh
 ```
 
-This creates **no Azure resources or DNS records**, uses no production settings
-or credentials, publishes no image, and never changes production enforcement.
-The image is a test fixture, not a replacement server release or a dependency on
-the closed staging-relocation PR #610.
+This local fixture creates **no Azure resources or DNS records**, uses no
+production settings or credentials, publishes nothing and changes no production
+enforcement. It neither replaces the server release nor depends on closed #610.
 
 ## What actually runs
 
@@ -62,25 +61,21 @@ are not rewritten.
    patched consumers must reject this reachable plaintext peer.
 6. Restart that database with TLS required again: all five reconnect encrypted.
 
-Output is categorical JSON lines that include the consumer, the case and the
-successful session cipher. Negative cases require a nonzero exit **and**
-connector-specific TLS error codes or messages. Python and PHP probes emit
-structured errors without tracebacks; C++ and CLI diagnostics must match anchored
-TLS-error lines, so TLS function names or hostnames in an authentication traceback
-cannot pass. mysqlnd reports no-SSL handshakes as error 2006, "MySQL server has
-gone away"; this exact failure is accepted only for the independently verified
-reachable, authenticated SSL-disabled peer, never for certificate tests.
-Unreachable DNS or TCP, missing modules or authentication-only errors are not
-passes. Raw client errors, keys and passwords are not printed.
+JSON lines identify the consumer, case and successful session cipher. Negative
+cases require a nonzero exit **and** connector-specific TLS errors. Python and PHP
+emit structured errors without tracebacks; C++ and CLI require anchored TLS-error
+lines. A TLS name in an authentication traceback cannot pass. mysqlnd error 2006,
+"MySQL server has gone away", counts only for the independently verified
+reachable, authenticated SSL-disabled peer, never certificate tests.
+DNS, TCP, missing-module and authentication-only failures do not pass.
+Raw errors, keys and passwords are not printed.
 
-The initial real run exposed a defect hidden by connector mocks:
+The integration run caught a defect missed by mocks:
 `mysqli_options(MYSQLI_OPT_SSL_VERIFY_SERVER_CERT, true)` returns false under
-Bookworm mysqlnd, causing the old helper to refuse valid connections before the
-handshake. The patch now uses
-`MYSQLI_CLIENT_SSL | MYSQLI_CLIENT_SSL_VERIFY_SERVER_CERT`, with actual coverage
-of the positive case, wrong-host and wrong-CA rejection, and plaintext rejection.
-The lightweight PHP mock rejects the unsupported option rather than pretending it
-succeeds.
+Bookworm mysqlnd, rejecting valid connections before the handshake. The patch uses
+`MYSQLI_CLIENT_SSL | MYSQLI_CLIENT_SSL_VERIFY_SERVER_CERT`; tests cover trusted
+TLS, wrong hosts, wrong CAs and plaintext rejection. The PHP mock also rejects
+the unsupported option.
 
 CI runs this exact disposable matrix in its own bounded job when BOINC changes.
 `python3 -m unittest scripts/boinc/test_db_tls_fixture.py` tests evidence
@@ -167,27 +162,23 @@ entrypoint.
 
 ## Remaining release gates
 
-These fixtures demonstrate actual local MariaDB connector enforcement, full
-project creation, PHP and CGI operation, four daemon connections and persistent
-restart. They do not demonstrate acceptance against Azure MySQL 8.4 or the
-rotating Azure certificate chain, a public remote dev service, dispatch of tasks
-to an authenticated client with validation and assimilation of the returned
-tasks, or the bridge's additional application validators. Starting validators on
-an empty queue is not completed-result acceptance.
+The fixtures verify local MariaDB TLS, project creation, PHP, CGI, four daemons
+and persistent restart. Remaining gates are Azure MySQL 8.4 and rotating
+certificate-chain acceptance, a public remote dev service, authenticated task
+dispatch through validation and assimilation, and the bridge's extra validators.
+Starting an empty-queue validator does not test returned results.
 
-Persistent restart is not an upgrade or rollback: existing completed projects
-retain copied Python, PHP and binaries. Complete file inventory, safe
-replacement, backward-compatible migration and tested rollback remain
-necessary before changing production enforcement. The four sampled
-unchanged-file hashes are not an all-files migration inventory.
+Restart does not test upgrade or rollback. Existing projects retain copied
+Python, PHP and binaries; changing production enforcement requires a complete
+file inventory, safe replacement, compatible migration and tested rollback.
+Four sampled hashes cannot establish that inventory.
 
-The optional OCR-node pilot additionally needs the actual supported BOINC
-client build and ABI, a dedicated account and subordinate IDs, effective
-rootless Podman, SELinux, cgroup and startup isolation, a tiny dev cohort
-through collection, and comparable OCR throughput against an agreed
-non-disruption rule. Local server success does not authorize account
-installation or node activation, and does not make paid Azure resources the
-only possible dev path.
+The optional OCR-node pilot also requires a supported client build and host ABI,
+dedicated account and subordinate IDs, rootless Podman, SELinux, cgroup and
+startup isolation, a tiny dev cohort through collection, and comparable OCR
+throughput under an agreed non-disruption rule. Local success authorizes neither
+node activation nor account installation; paid Azure resources are not required
+for every dev approach.
 
 ### Existing-resource node readiness
 

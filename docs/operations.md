@@ -4,22 +4,17 @@ Running the ingest pipeline in Azure: the backfill, releases, full rebuilds, and
 
 Every command below uses your own `az` sign-in. CI can only roll the API onto new images, so starting jobs and changing settings is always a person's action.
 
-**Resource naming (#309).** The job and identity names above are the forms
-pinned in today's prod; dev and experiments already use ADR-0017's
-convention. Read a name from the stack outputs instead of reconstructing
-it.
+**Resource naming (#309).** Prod pins the job and identity names above; dev and
+experiments use ADR-0017. Read names from stack outputs.
+The [owner rollout](../infra/README.md#naming-guard-and-phase-12-rollout)
+covers stateless OCR alerts and role labels, plus Phase 2 monitoring, CI and title
+renames: reconcile inventory, reset the budget, provision, immediately bootstrap
+the new CI identity, then check alerts and workbooks. A merge does not migrate
+live resources.
 
-Some renames need the
-[owner rollout](../infra/README.md#naming-guard-and-phase-12-rollout):
-the stateless OCR alerts and role labels, and the Phase 2 renames of
-monitoring, CI and titles. The rollout reconciles the inventory, resets
-the budget, provisions and at once bootstraps the new CI identity, then
-checks the alerts and workbooks. Merging code implies no live migration.
-
-The rename guard blocks destructive changes to durable resources unless
-each known removal is explicitly authorized; a missing or failed plan
-cannot be overridden. The OCR exchange and Phase 3 names stay pinned until
-their documented migration and rebuild windows.
+The rename guard requires explicit authorization for each known durable-resource
+removal; missing or failed plans cannot be overridden. OCR exchange and Phase 3
+names remain pinned until their migration and rebuild windows.
 
 ## Settings
 

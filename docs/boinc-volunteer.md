@@ -1,56 +1,42 @@
 # Contribute compute to usnewsmap OCR (BOINC)
 
-Volunteers run OCR and OCR-quality checks on historical newspaper pages from Chronicling America (Library of Congress) on their own Linux, macOS, and Windows machines through a stock BOINC client. Each task reads one page image (or its extracted texts and word crops) and returns structured outputs. Those outputs go into the site's search index and quality audit after the project's own checks.
+Run OCR and quality checks on historical newspapers with BOINC on Linux, macOS or Windows. Tasks process page images, extracted text or word crops. The project checks returned outputs before using them in search or quality audits.
 
 Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md) and [boinc-quality.md](boinc-quality.md).
 
 ## Why volunteer?
 
-**Help make historical newspapers discoverable, not just viewable.** A scanned
-newspaper preserves what a page looked like, but searching it depends on optical
-character recognition (OCR): software that turns the image into text. Faded ink,
-damaged paper, unusual typefaces and complex columns can leave names, places and
-whole passages missing or garbled in that text.
-
-[US News Map](https://usnewsmap.com/) lets people search historical American
-newspapers and explore where and when matches were printed. Better searchable
-text can help genealogists find a family name, historians trace a story across
-towns, and students explore how language and public discussion changed over time.
-The underlying scans come from
+Searchable newspapers help genealogists find family names, historians trace
+stories and students study changes in language and public discussion.
+[US News Map](https://usnewsmap.com/) maps where and when search matches were
+printed, using scans from
 [Chronicling America](https://www.loc.gov/collections/chronicling-america/),
 the Library of Congress and National Endowment for the Humanities newspaper
 collection.
 
-Your computer contributes processing time for transcribing pages or measuring
-the quality of existing OCR. Some tasks test newer methods, including Qwen, on
-small image crops. These experiments help us decide which methods are useful;
-they are not the project's purpose. A fluent-looking transcription is not proof
-that it matches the scan. Returned outputs undergo project checks, and not every
-task produces a change to the public search index.
+Search depends on optical character recognition (OCR), which turns images into
+text. Faded ink, damaged paper, unusual typefaces and complex columns cause
+errors that hide names and passages from search. Your computer transcribes pages
+or checks existing OCR. Some tasks test methods such as Qwen on image crops.
+Fluent text can still misread a scan; outputs need checks, and not every task
+changes the public index.
 
 ### What you contribute, and what you control
 
-BOINC downloads a task, runs the project's application and sends back results
-and task diagnostics. You do not need to transcribe pages yourself. Experimental
-and production tasks use the same account, client and automatic return process.
-**Normal project participation includes both production and experimental tasks,
-including Qwen.** There is no experiment-specific checkbox or repeated profile
-update. Your normal CPU and GPU choices and resource limits apply to both.
-Operators phase experimental campaigns server-side; joining does not guarantee
-available work.
+BOINC downloads tasks and applications, runs them, and returns results and
+diagnostics automatically. **Participation includes production and experimental
+tasks, including Qwen**, through the same account and client. Your CPU, GPU and
+resource choices apply to both; experiments need no separate checkbox.
+Operators control campaign rollout.
 
-Donating compute is not cost-free: CPU and GPU use consumes electricity,
-produces heat, may increase fan noise, and needs disk space and download
-bandwidth. Large model downloads can be several gigabytes. Use only a computer
-you own or have permission to use, and review the platform-specific requirements
-below. In BOINC you can limit resources, choose idle-only operation, pause
-processing, or select **No new tasks** to stop receiving work while existing
-tasks finish. Review existing settings carefully because local computing
-preferences affect other BOINC projects too.
+Processing uses electricity, produces heat and fan noise, and consumes disk
+space and bandwidth. Models can require several gigabytes of downloads.
+Use only a computer you own or have permission to use. BOINC lets you limit
+resources, run only while idle, pause, or select **No new tasks** while existing
+work finishes. Local computing preferences affect other BOINC projects too.
 
-This is still a limited pilot: registration or attachment does not guarantee
-available work or a supported application for your device. You can install
-BOINC now and register or attach later. Start with the
+This pilot may have no work or supported app for your device. You can install
+BOINC and register or attach later. Start with the
 [Windows setup](#13-windows-windows_x86_64),
 [macOS setup](#12-macos-arm64-apple-darwin-apple-silicon-and-x86_64-apple-darwin-intel)
 or [Linux setup](#11-linux-x86_64-pc-linux-gnu-and-aarch64-unknown-linux-gnu),
@@ -85,7 +71,7 @@ Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit) and `aarch64-unknow
 
 Use a dedicated BOINC service on Linux (`x86_64-pc-linux-gnu` or `aarch64-unknown-linux-gnu`) with enough RAM for the task profile (at least 4 GiB is recommended for the default 1536 MiB `usnm_ocr` profile; at least 8–12 GiB for 6 GiB `usnm_surya` or `usnm_qwen` container tasks). The rootless Podman profile below needs systemd, cgroup v2, Python 3.9 or later, Podman, and a stock BOINC client version 8.2.13 or later. The stock wrapper supports Podman directly; a Docker daemon and Docker-group membership are not required. BOINC still calls the scheduler plan classes `docker`, `docker_mt`, and `docker_nvidia_cuda` and logs `Docker: version ... (podman)`.
 
-A container that starts successfully does not establish that its resource limits work or that pausing works. On a real RHEL host, Podman accepted CPU and memory flags without a usable cgroup, and SELinux blocked the wrapper's slot mount. The startup preflight below checks actual kernel limits and slot access and refuses to start BOINC on failure. See the [live measurement](notes/2026-10-14-boinc-volunteer-preflight.md).
+A successful container start does not verify resource limits or pausing. On RHEL, Podman accepted CPU and memory flags without a usable cgroup, and SELinux blocked the slot mount. The startup preflight checks kernel limits and slot access; failure prevents BOINC startup. See the [live measurement](notes/2026-10-14-boinc-volunteer-preflight.md).
 
 ##### Install prerequisites
 

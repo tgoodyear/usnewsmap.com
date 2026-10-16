@@ -18,17 +18,15 @@ scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-h
 `usbbak/signing`) name where the private key is on the signing host. `--what-if` runs the
 read-only checks and prints the plan.
 
-For a **PR-first release**, add `--prepare-only` to stage, sign and build the
-immutable app-version image without deploying or starting the publish job. It
-writes only `images.appver` in the environment's settings; the key remains on
-the signing host. Submit that pin as a release PR, obtain review and green CI,
-then run `scripts/provision-boinc.sh --env prod` from the merged checkout to
-publish and verify registration. Preparation is not evidence of publication or
-of volunteer execution. Omit `--prepare-only` only when immediate publication
-is authorized; the existing one-command behavior is unchanged.
+For a **PR-first release**, use `--prepare-only` to stage, sign and build the
+immutable app-version image without publishing. It changes only `images.appver`;
+the key stays on the signing host. After pin review, green CI and merge, run
+`scripts/provision-boinc.sh --env prod` to publish and verify registration.
+Preparation proves neither publication nor volunteer execution. Omit
+`--prepare-only` only when immediate publication is authorized.
 
-The release script and `scripts/boinc/install.py` support two distribution kinds (`--kind`).
-Both are described in the numbered list after the next sections.
+The release script and `scripts/boinc/install.py` support two distribution kinds
+(`--kind`), listed below.
 
 Operator staging uses a unique mode-0700 directory beneath the checkout and a
 private directory beneath the signing host's root home, removed on exit. Build
@@ -41,13 +39,11 @@ or signature checks to include them.
 
 ### Native NVIDIA experimental canary
 
-Normal project participation includes production and experimental tasks, including
-native `nvidia_cuda_2b` and `nvidia_cuda_8b`. There is no Qwen-specific account
-flag, enrollment step, or repeat profile update. Old stored
-`qwen_native_cuda_canary` values are ignored; do not rewrite account rows. The
-volunteer's normal effective-venue CPU and GPU choices, resource limits, pause
-control and No new tasks control remain authoritative. Do not enable GPUs or change
-volunteers' preferences.
+Project participation includes production and experimental tasks, including
+`nvidia_cuda_2b` and `nvidia_cuda_8b`. There is no Qwen-specific enrollment.
+Ignore legacy `qwen_native_cuda_canary` values; do not rewrite account rows.
+Honor effective-venue CPU and GPU choices, resource limits, pause and No new
+tasks. Do not enable GPUs or change volunteers' preferences.
 
 Rebuild the BOINC **base and server** through `build-boinc-images.sh` before
 enabling this policy. Removing only the web control or XML tag is insufficient:
@@ -69,15 +65,13 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --stop --apply
 ```
 
-The helper validates the Qwen identity, the native model's batch and disk
-bounds, an independent quorum and target of 2, and two unsent results; it
-journals the old plan, then atomically opens exactly one WU in one class and
-closes the other. It does not create work, modify scientific or account rows, or
-change resource choices. The unchanged stock scheduler range and batch checks
-enforce the window. Runtime reinitialization or deployment copies the closed
-shipped template: re-audit before reopening, rather than assuming an old
-campaign stayed enabled. Stop immediately after the bounded cohort; widening to
-general unvalidated dispatch is not this helper's scope.
+The helper checks Qwen identity, model batch, disk bound, independent quorum and
+target of 2, and two unsent results. It journals the old plan, atomically opens
+one WU in one class and closes the other. Stock scheduler range and batch checks
+enforce that window. It creates no work and changes no scientific rows, account
+rows or resource choices. Deployment or reinitialization restores the closed
+template; re-audit before reopening. Stop after the cohort. The helper does not
+authorize general unvalidated dispatch.
 
 These native-only classes admit stable BOINC 8.2.11+ and do not require a
 container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
@@ -123,19 +117,16 @@ rather than inferring successful CUDA execution from registration. Do not run
 arbitrary commands on volunteers or override CPU, GPU or resource choices to
 bypass missing hardware.
 
-Native failures write a nonzero `boinc_finish_called` and exit nonzero, so the
-ordinary BOINC UI can show **Computation error**. A fixed-schema, bounded
-`USNM_QWEN_FAILURE` JSON summary goes automatically into BOINC task stderr
-(appended directly to the slot's `stderr.txt` on Windows, ordinary stderr on Unix)
-and the normal scheduler result report, even when failure prevents declared output
-uploads. It includes the outcome, runtime and model identities, driver and memory
-facts, timings and known failure categories, and not raw paths, input text,
-prompts, account data or full runtime logs. Successful tasks retain the usual
-three checksummed-output upload paths. Client-side download, signature or loader
-failures can occur before the app runs; inspect their standard BOINC exit status,
-stderr and event reports rather than promising an application summary exists.
-Server receipt of those reports must still be verified with real canary results;
-no manual volunteer log upload is part of the onboarding flow.
+Native failures write a nonzero `boinc_finish_called` and exit nonzero; BOINC may
+show **Computation error**. A bounded, fixed-schema `USNM_QWEN_FAILURE` JSON
+summary enters task stderr and the scheduler result report even if output upload
+fails. Windows appends it to the slot's `stderr.txt`; Unix uses stderr. Fields
+cover outcome, runtime and model identities, driver, memory, timings and failure
+category. They exclude raw paths, input text, prompts, account data and full logs.
+Successful tasks upload three checksummed outputs. Download, signature and loader
+failures can precede app startup and lack an application summary; inspect normal
+BOINC status, stderr and event reports. Verify server receipt with real canary
+results. Volunteers should not need to upload logs manually.
 
 #### Production delivery snapshot (2026-10-16)
 

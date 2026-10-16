@@ -15,12 +15,11 @@ are added before the credits page (#372).
 
 Tesseract image builds download the unchanged `tesseract/models.lock` URLs
 with certificate verification and verify each SHA-256 before accepting it.
-A download gets 30 retries, TLS and connection failures included, with a
-30-second connection timeout, a 600-second per-attempt timeout and a 900-second
-retry-start budget. A final attempt already in progress can run past that
-budget, to at most 1500 seconds per model in all. Running out of retries or a
-checksum mismatch fails the build; the build never falls back to another
-endpoint or an unverified model.
+Downloads allow 30 retries, including TLS and connection failures: 30-second
+connect timeout, 600-second attempt timeout, 900-second retry-start budget.
+An in-progress final attempt can extend the total to 1500 seconds per model.
+Exhausted retries or checksum mismatches fail the build without alternate
+endpoints or unverified models.
 
 ## Credits data shape
 

@@ -295,11 +295,11 @@ Phase 2 runs now rather than at a rebuild, decided by the maintainer on 10 Octob
 - Scratch becomes `usnmscratchstprodffapzy` with `usnm-scratch-file-pep-prod` and NIC `usnm-scratch-file-nic-prod`.
 - Document Intelligence becomes `usnm-jaocr-di-prod-ffapzy` in two provisions: `USNM_OCR` off, purge the soft-deleted account (a deleted account holds its name for 48 hours unless purged, [recover and purge][purge]), `USNM_OCR` on. F0 allows one account per subscription.
 
-The preconditions are that the current release is published, no execution is running, the Cosmos `quickwit-writer` lease is free, and `provision.sh` runs with `--allow-rename=stusnmsffapzy`. Afterwards, check one small ingest run against the alerts and the pipeline workbook before the 36-hour rebuild starts.
+Before renaming: publish the current release, wait for all executions to stop and the Cosmos `quickwit-writer` lease to clear, and run `provision.sh` with `--allow-rename=stusnmsffapzy`. Check one small ingest run against the alerts and pipeline workbook before the 36-hour rebuild.
 
 ### Phase 4: only at a prod environment rebuild
 
-The triggers are a region move, a subscription move, or Azure forcing a new Container Apps environment. No such rebuild is planned; until one happens these names are documented exceptions, not an open task. The scope is the skeleton in the exception table, plus the lake and Cosmos only if the move copies them anyway.
+A region move, subscription move or Azure-forced Container Apps environment triggers this phase. None is planned; these names remain documented exceptions. Rename the skeleton in the exception table, plus the lake and Cosmos only if the move already copies them.
 
 Side by side works only into another subscription. The stack name (`usnm-{env}`, `env.sh:83`) and the settings file (`.azure/{env}/.env`) depend on the environment name alone, so a second `prod` in the same subscription would replace the live stack, whose `deleteResources` then removes the old resources, or overwrite the live settings. A region move or a forced new Container Apps environment therefore also goes to a new subscription, or first gets a PR that gives the second copy its own stack and settings names.
 

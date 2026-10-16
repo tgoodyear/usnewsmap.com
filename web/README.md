@@ -51,59 +51,50 @@ public-domain ones, prepared by a script; see
 [the asset source and preparation](src/assets/README.md). Alaska, Hawaii and
 the territories stay at their true positions.
 
-`engine/states.ts` reduces both sparse cubes to state prefix sums once per
-search, then uses the same cumulative or trailing window as points. The
-denominator includes **all coverage places**, including places with no
-matches; aligning coverage only to matching places would inflate state rates.
-A place whose state is unknown or missing goes to Unassigned and never
-disappears from the table. If the API caps matching places (5,000), a visible
-warning marks the numerators as incomplete; the client cannot assign or
-recover the missing tail. No survey of real queries against the cap has been
-done. The layer makes no API changes and no extra aggregate or coverage
-requests.
+`engine/states.ts` builds state prefix sums from both sparse cubes once per
+search, using the same cumulative or trailing window as points. Denominators
+include **all coverage places**, even those without matches, to avoid inflated
+rates. Missing or unknown states appear as Unassigned. The API's 5,000-place cap
+triggers an incomplete-numerator warning; the client cannot recover omitted
+matches. Real-query cap frequency has not been surveyed. No API changes or
+extra aggregate or coverage requests are needed.
 
 First-pass decisions for #452:
 
 - Page-weighted matches per 1,000 pages published, not raw counts or per-title
   rates. Both raw counts remain in the tooltip, sortable table and CSV.
-- The minimum denominator is one page. There is no suppression threshold;
-  the legend warns that small counts are noisy. A state with no pages is grey
-  (unknown, not a rate of zero), while one with pages but no matches is light
-  neutral. The legend's no-pages swatch is also hatched; on the map, no-pages
-  fills are solid grey.
+- Minimum denominator: one page, with no suppression. The legend warns about
+  noisy small counts. No pages means unknown: solid grey on the map, hatched
+  grey in the legend. Pages without matches use light neutral.
 - Five quantiles of positive state rates in the **current window**, with
   zero a separate neutral class. Ties stay together and can leave empty
   classes, which are labelled as such. Breaks change with scrubbing, and the
   legend changes with them. There is no toggle between raw counts and rates.
-- On desktop, a click adds a state filter; existing search filters remove it.
-  On touch, a tap pins the details with explicit Filter and Dismiss buttons,
-  so the first tap doesn't filter by accident. The states table is the
-  keyboard path, with the same filter action and a CSV download.
+- Desktop clicks add a state filter; existing search filters remove it.
+  Touch taps pin details with Filter and Dismiss buttons. The keyboard-accessible
+  table offers the same filter action and a CSV download.
 - States is unavailable for measures other than Pages, searches filtered by
   newspaper, Congress, and versions whose coverage baseline is unavailable. A
   shared link that asks for it in one of those cases draws points instead.
   The layer selector stays hidden in the Table tab and without WebGL; a
   States layer already selected keeps its accessible table there.
-- Geometry is reused across frames; only the fill colours change. States uses
-  a MapLibre GeoJSON source with the state codes promoted to feature IDs and
-  fill colours set through feature state, inserted below the first symbol
-  layer so labels stay readable. Opening States directly also defers
-  constructing the deck overlay until another layer needs it. This replaces
-  the deck `GeoJsonLayer` that #452 recommended, because creating a cold luma
-  pipeline serialized expensive link-status queries. Points, Heat and the
-  other measures keep the existing deck overlay; States neither prefetches
-  geometry nor changes that overlay's basemap-readiness gate.
+- Geometry is reused; only fill colours change. A MapLibre GeoJSON source
+  promotes state codes to feature IDs and sets colours through feature state,
+  below the first symbol layer. Direct States entry defers the deck overlay
+  until another layer needs it. This replaces #452's proposed deck
+  `GeoJsonLayer`, whose cold luma pipeline serialized costly link-status
+  queries. Points, Heat and other measures retain deck. States does not prefetch
+  geometry or change deck's basemap-readiness gate.
 - If the initial basemap style fails, a plain local style enables the native
   fills, and an initial request that never settles is bounded by the existing
   two-second fallback. Errors in the tiles or fonts of a style already parsed
   neither replace it nor discard the state geometry. Unavailable coverage
   never draws no-pages fills.
-- Escape dismisses hover or pinned state details whatever has keyboard
-  focus. Small positive rates keep their significant digits, and the legend's
-  precision increases when needed to tell unequal thresholds apart.
-- The opt-in reproducible performance gates and the measured limits of the
-  hardware and backend are described below. Passing functional tests is not
-  proof of the performance budgets.
+- Escape dismisses hover or pinned details regardless of focus. Small positive
+  rates keep significant digits; legend precision increases to distinguish
+  unequal thresholds.
+- Performance gates and hardware limits follow. Functional tests do not
+  establish performance budgets.
 
 ### States performance measurements
 
@@ -129,40 +120,32 @@ node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal
 node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal --parallel
 ```
 
-The scrub gate asserts a **measured maximum ≤2 ms** (and reports the p95)
-after 200 warm-up frames; a frame includes the totals, the quantiles and every
-fill-colour lookup. Preparation is reported separately. The gate does not
-measure the rest of React or deck.gl's draw. On an **Apple M1 (macOS arm64,
-Node 25.8.2)**, the isolated run of 2026-10-15 measured preparation at
-**16.679 ms** and, across 2,000 frames, a median of **0.014 ms**, a p95 of
-**0.023 ms** and a maximum of **0.100 ms**. A test run alongside others had a
-p95 of **0.080 ms** but a maximum outlier of **12.780 ms**. The original gate
-checked only the p95; it now also fails on any measured sample above 2 ms.
-Even a passing run is **not a guarantee about future frames**.
+After 200 warm-up frames, the scrub gate requires **every measured frame ≤2 ms**
+and reports p95. It times totals, quantiles and all fill-colour lookups, excluding
+preparation, React and deck.gl draw. On **Apple M1 (macOS arm64, Node 25.8.2)**,
+the isolated 2026-10-15 run measured **16.679 ms** preparation and, over 2,000
+frames, **0.014 ms** median, **0.023 ms** p95 and **0.100 ms** maximum.
+A concurrent run had **0.080 ms** p95 but a **12.780 ms** maximum. The former
+p95-only gate would miss that failure. Passing does not guarantee future frames.
 
-The browser gate asserts a maximum of **300 ms** over five fresh browser
-processes **per entry path**: selecting States on a ready basemap, and opening
-a `layer=states` URL directly without prewarming the basemap. Chrome's shader
-disk and program caches are disabled. It measures from the asset's Resource
-Timing `responseEnd` to the first rendered native state features plus two
-animation frames. The mark `usnm-states-first-paint` is a **presentation
-proxy**, not a GPU fence or a compositor timestamp. Separately, Chromium's CDP
-screencast frame-swap timestamps bound the interval from the asset's arrival
-to the composited frame. The captured frame must contain a pixel at the centre
-of Illinois that matches one of the legend's five colours, alpha-blended over
-the known fixture background (within rounding tolerance); a pixel that is
-merely not the background does not count. This rules out a blank initial
-page, unrelated UI and CPU callbacks. The overhead of capturing and delivering
-the frame is not subtracted. The result is evidence of a composited browser
-frame, not of physical display scanout timing.
+The browser gate requires **≤300 ms** in five fresh processes **per entry path**:
+selecting States on a ready basemap, or opening `layer=states` without basemap
+prewarming. Chrome shader disk and program caches are disabled. Timing starts at
+the asset's Resource Timing `responseEnd` and ends after native features render
+plus two animation frames. `usnm-states-first-paint` is a **presentation proxy**,
+not a GPU fence or compositor timestamp.
 
-The benchmark uses fixture data and a plain local basemap, not real tiles or
-network conditions. The selection path checks that no geometry was requested
-before States was chosen; the direct URL is already an explicit States
-selection. The marks `usnm-states-parsed` and `usnm-states-first-draw` also
-separate JSON decoding from the completion of the CPU render. The proxy waits
-for a visible map canvas; the native fills do not live in the deck canvas,
-which is gated separately.
+Separate CDP screencast frame-swap timestamps bound asset-to-composited-frame
+time. An Illinois-centre pixel must match one of five legend colours blended
+over the fixture background, within rounding tolerance. A merely non-background
+pixel, unrelated UI or CPU callback cannot pass. Capture and delivery overhead
+is included; physical display scanout is not measured.
+
+Tests use fixture data and a plain local basemap, excluding real tiles and
+network conditions. Selection verifies no earlier geometry request; direct URLs
+already select States. `usnm-states-parsed` and `usnm-states-first-draw` separate
+JSON decoding and CPU render completion. The proxy waits for a visible map
+canvas; native fills are outside the separately gated deck canvas.
 
 #### Native MapLibre follow-up (2026-10-16)
 
@@ -175,25 +158,22 @@ were:
 | Select States     | 143.6, 143.0, 151.2, 133.9, 152.6  | 133.4, 129.3, 144.3, 123.8, 145.0  |
 | Direct States URL | 236.8, 251.5, 248.7, 255.8, 241.6  | 244.4, 240.6, 237.9, 263.4, 248.4  |
 
-All ten composited proof pixels were `[189,212,222,255]`, within rounding
-tolerance of the legend ramp over the fixture background. Three new vertex
-program variants were recorded after selection; direct entry recorded five,
-including map startup. No geometry was fetched in Points mode.
-These runs meet 300 ms **on this hardware, backend and fixture**. They say
-nothing about another laptop, real basemap latency, software rendering or a
-driver that is cold throughout. No shared OS or driver caches were cleared.
+All ten proof pixels were `[189,212,222,255]`, matching the blended legend ramp.
+Selection recorded three new vertex variants; direct entry recorded five,
+including map startup. Points mode fetched no geometry. The 300 ms pass applies
+only to this hardware, backend and fixture, excluding other laptops, real
+basemap latency, software rendering and fully cold drivers. Shared OS and
+driver caches were not cleared.
 
-After the sparse-remap and per-frame allocations were reduced (details
-below), five fresh and otherwise isolated Node processes measured strict
-maxima over 2,000 frames of **0.0602, 0.0558, 0.0574, 0.0998, 0.0519 ms**,
-with preparation at **10.0–10.3 ms** and the p95 at **0.0162–0.0170 ms**. A
-batch of five processes run at the same time as the browser suite had three
-strict failures, with maxima of **6.1104, 3.7456, 5.9017 ms**. Only the
-3.7456 ms frame overlapped a recorded GC pause (**3.7077 ms**); the others
-have no proven GC cause. No failed sample is excluded or converted to a pass.
-The isolated measurements demonstrate the arithmetic budget on this host,
-**not a hard wall-time guarantee under contention or GC**. The strict
-assertion stays in place. Neither budget is a production measurement.
+After reducing sparse-remap and per-frame allocations (below), five isolated
+Node processes measured 2,000-frame maxima of **0.0602, 0.0558, 0.0574, 0.0998,
+0.0519 ms**, preparation **10.0–10.3 ms** and p95 **0.0162–0.0170 ms**.
+Five processes concurrent with the browser suite had three failures:
+**6.1104, 3.7456, 5.9017 ms** maxima. Only the 3.7456 ms frame overlapped
+recorded GC (**3.7077 ms**); the other causes are unproven. Failed samples remain
+failures. Isolated runs meet the arithmetic budget on this host, without
+guaranteeing wall time under contention or GC. The strict assertion remains;
+neither budget is a production measurement.
 
 #### Historical deck-renderer measurements and discarded alternatives
 

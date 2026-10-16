@@ -1,36 +1,29 @@
 # BOINC batch pilot
 
-An opt-in worker pool for trusted friends, alongside the on-prem OCR nodes.
-Joining the project includes production and experimental tasks, including Qwen,
-under the same normal CPU and GPU choices and resource limits. There is no
-separate experiment account flag or repeated profile update. Operators bound
-experimental campaigns server-side; the native NVIDIA workunit window and stop
-procedure are documented in [app
-release](../contrib-compute/docs/app-release.md).
+A volunteer worker pool alongside the on-prem OCR nodes
+([#438](https://github.com/tgoodyear/usnewsmap.com/issues/438)).
+Production and experimental tasks, including Qwen, share the same account,
+CPU and GPU choices and resource limits. No per-experiment profile update is
+required. Operators bound campaigns with the [native NVIDIA workunit window
+and stop procedure](../contrib-compute/docs/app-release.md).
 
-Design issue: [#438](https://github.com/tgoodyear/usnewsmap.com/issues/438).
-The pilot uses stock BOINC, one cached page per task, and the repository's
-pinned Tesseract 5.5.0, model lock and language routing. It publishes native ALTO and
-Parquet to `ocr-out`; `ocr-sync` and the release keep their existing decisions.
+The pilot uses stock BOINC, one cached page per task, pinned Tesseract 5.5.0,
+the model lock and language routing. It publishes native ALTO and Parquet to
+`ocr-out`; `ocr-sync` and release decisions are unchanged. Other apps:
 
-A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison (#456);
-see [boinc-assessment.md](boinc-assessment.md). A third, `usnm_gold`, scores a
-host's engine on public ground truth ([Gold check](#gold-check)). A fourth,
-`usnm_surya`, runs Surya 2 on volunteer CPUs and NVIDIA GPUs (#516); see
-[boinc-surya.md](boinc-surya.md). The dedicated `usnm_ndlocr` CPU app stages
-Japanese pages through the NDLOCR-Lite/default route, validates two readings by
-character similarity and collects into curated `ocr-ja`; see
-[boinc-ndlocr-lite.md](boinc-ndlocr-lite.md). A fifth and sixth, `usnm_quality`
-and `usnm_qwen`, score per-page OCR quality without ground truth and transcribe
-deterministic word crops with Qwen3-VL (#522); see
-[boinc-quality.md](boinc-quality.md).
+- `usnm_assess`: [JP2 versus IIIF JPEG comparison](boinc-assessment.md) (#456).
+- `usnm_gold`: [score a host's engine on public ground truth](#gold-check).
+- `usnm_surya`: [Surya 2 on CPUs and NVIDIA GPUs](boinc-surya.md) (#516).
+- `usnm_ndlocr`: [Japanese NDLOCR-Lite/default-route CPU work](boinc-ndlocr-lite.md),
+  two-reading character-similarity validation and collection into `ocr-ja`.
+- `usnm_quality` and `usnm_qwen`: [per-page quality scoring without ground
+  truth and Qwen3-VL deterministic word-crop transcription](boinc-quality.md) (#522).
 
-Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
-The opt-in [batch controller](boinc-batch-scheduler.md) schedules explicitly
-allocated cached pages with bounded queue backpressure; activation is a separate
-operator-controlled deployment.
-The [transcription post-training pilot](boinc-transcription.md) uses `usnm_qwen`
-for public-gold baseline and adapted-model evaluation.
+Start with the [volunteer guide](boinc-volunteer.md).
+The opt-in [batch controller](boinc-batch-scheduler.md) schedules allocated
+cached pages with bounded queue backpressure; operators activate it separately.
+The [post-training pilot](boinc-transcription.md) evaluates public-gold
+baselines and adapted models with `usnm_qwen`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">

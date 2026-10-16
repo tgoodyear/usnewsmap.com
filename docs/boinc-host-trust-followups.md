@@ -1,19 +1,16 @@
 # Host onboarding and OCR spot checks
 
-These **OFF-by-default** `usnm-boinc host-trust` commands implement the remaining
-controller primitives in #527. Nothing installs a timer, enables assignment,
-calibrates a threshold, changes trust, publishes OCR, or modifies a production
-setting. A command without `--execute` only queries the database and prints its
-bounded plan; it does not create a controller root or submit work.
+`usnm-boinc host-trust` implements #527's controller commands, **OFF by default**.
+Without `--execute`, commands only query the database and print a bounded plan;
+they create no controller root or work. They install no timer, enable no
+assignment, calibrate no threshold, change no trust, publish no OCR and modify
+no production setting.
 
-Before any authorized execution, coordinate a current runtime and worker release
-and the operational scope in #529. Existing resource, signing, client and human
-activation holds still apply. The v2-capable worker must be released, its
-immutable image must match the selected OCR engine, and active BOINC project XML
-must already explicitly enable assignment. These commands refuse disabled
-assignment; they never change it. Scientific calibration and additional
-real-host canonical-query acceptance remain outstanding operational
-requirements, not implied test passes.
+Coordinate scope and current runtime and worker releases in #529 before
+execution. Resource, signing, client and activation holds still apply. Assignment
+must already be enabled in project XML, and the released v2 worker's immutable
+image must match the selected OCR engine. Commands cannot enable assignment.
+Scientific calibration and real-host canonical-query acceptance remain required.
 
 ## Operator-owned configuration
 
@@ -74,16 +71,13 @@ up to `max_hosts` (1–100). Repeated invocations discover later hosts without a
 operator supplying host IDs. Inventory is bounded to 100,000 hosts; larger
 projects fail closed instead of silently skipping hosts.
 
-Campaign roots are bound to the prepared bundle and manifest, the complete
-engine configuration and the host. Native gold write-ahead markers make retries
-stable. Each campaign stores one checksum-bound bundle; per-host regular-file
-hard links share its storage instead of retaining a full bundle copy per
-volunteer. Original cache files are checksum-verified and stored once in the
-shared campaign, then hard-linked into every per-host `cache/`; no original
-bytes are recopied per host. The prepared source may be on another filesystem;
-controller per-host roots must share a filesystem supporting regular-file hard
-links. Native gold submission then verifies and mirrors these originals into the
-BOINC download tree before dispatch.
+Campaign roots bind the prepared bundle, manifest, complete engine configuration
+and host. Native gold write-ahead markers stabilize retries. One checksum-bound
+bundle and checksum-verified cache serve each campaign, with regular-file hard
+links into per-host roots and `cache/`; original bytes are not recopied per host.
+Those roots must share a filesystem supporting hard links; the prepared source
+may live elsewhere.
+Native gold submission verifies and mirrors originals into BOINC downloads.
 
 The shared validator expectations writer is locked and refuses updates over its
 16 MiB reader limit **before** replacing the previous readable file. If that
@@ -98,12 +92,10 @@ workunit is present, and remove it only after proving the workunit is absent. Do
 not evade uncertainty by choosing another controller root. The controller's
 kernel lock serializes its own dispatches.
 
-This is first-gold issuance, not automatic trust promotion or periodic
-recalibration. Collect and review the gold reports and rebuild trust through the
-existing calibrated workflow. A later failed report revokes trust as before.
-Already-issued hosts are not silently reissued after a failure; any new campaign
-requires an explicit operator decision. Repeated execution or scheduling of
-this controller is a separate activation decision; no service is installed here.
+Issuance does not promote trust or periodically recalibrate it. Review gold
+reports and rebuild trust through the calibrated workflow; later failures revoke
+trust. Reissuing failed hosts, starting a new campaign or scheduling the
+controller requires an operator decision. No service is installed.
 
 ## Sample and rerun OCR independently
 
@@ -159,25 +151,20 @@ comparison. The two normalized texts must be exactly equal: no uncalibrated
 fuzzy threshold is introduced. Agreement is a diagnostic quality quorum, not
 identity proof or malicious-volunteer protection.
 
-`spots/<job>/comparison.json` records only the job, image and host IDs, the
-quorum, the time and the agreement and its reason; it does not contain page
-text or connector diagnostics. Every attempt whose config, root and job can be
-parsed first invalidates an older comparison, before connector preflight.
-Errors leave `status: unverified`
-and `agrees: false`; valid mismatches record `text-disagreement` and exit nonzero.
-Only validated comparisons have `status: verified`; this includes a verified
-**disagreement**, so inspect `agrees` too. This file does not authorize future
-publication or survive a later trust revocation as a fresh approval.
+`spots/<job>/comparison.json` records job, image and host IDs, quorum, time,
+agreement and reason, excluding page text and connector diagnostics. Attempts
+with parseable config, root and job invalidate older comparisons before connector
+preflight. Errors leave `status: unverified` and `agrees: false`; valid mismatches
+record `text-disagreement` and exit nonzero. `status: verified` can describe
+**disagreement**: check `agrees`. The file authorizes no future publication and
+cannot override later trust revocation.
 
-On a mismatch or failure, preserve the source spools and journal for
-investigation and use the existing quarantine and review process. No native job
-stage, reservation,
-trust list, queue, canonical result or published OCR is changed. The ordinary
-trust-checked collector remains mandatory. This independent audit does **not**
-retroactively block an already published original or add a new automatic
-publication gate. A scheduled controller, additional-host live acceptance, gold
-calibration, assignment canary and any publication-policy change require their
-separate approved rollout; #527 stays open until those operational criteria pass.
+Preserve spools and journals after mismatches or failures; use quarantine and
+review. No job stage, reservation, trust list, queue, canonical result or
+published OCR changes. The trust-checked collector remains mandatory; this audit
+adds no automatic publication gate or retroactive block. #527 stays open pending
+approved controller scheduling, additional-host acceptance, gold calibration,
+assignment canary and any publication-policy rollout.
 
 ## Show currently held results
 
