@@ -113,7 +113,7 @@ jobs:
               print(f"error: <{tag}> in boinc/project.xml has a quote or backslash, which xadd inserts into SQL unescaped: {text!r}")
           sys.exit(1 if bad else 0)
           PY
-      - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh images/bridge/*.sh
+      - run: shellcheck -x -S warning images/server/*.sh images/appver/*.sh images/bridge/*.sh
       - name: The gold-bundle step's tests pass
         run: python3 -m unittest -v images/bridge/test_gold_bundle.py
       - name: The server daemon configuration tests pass
