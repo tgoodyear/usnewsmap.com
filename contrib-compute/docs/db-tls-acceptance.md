@@ -248,6 +248,47 @@ At 11:44:50 UTC it naturally recovered: 23 successful pages in 900 seconds
 45.8 seconds earlier, with the same worker PID/start. This meets readiness,
 not the still-unexecuted during/after pilot's no-regression acceptance.
 
+### Disabled existing-node client prerequisites
+
+`scripts/boinc/prepare_node.py` is a separate explicit opt-in for the user-approved
+existing-node pilot. It does not install packages, adopt existing accounts, start
+or enable a service, create a project attachment, or modify worker/timer units.
+It refuses an existing `boinc` account/home/install/unit, verifies both exported
+binary hashes and the stable source commit, requires a ready baseline no more
+than 120 seconds old with the same live worker PID, then previews the exact plan:
+
+```sh
+sudo python3 scripts/boinc/prepare_node.py \
+  --bundle /path/to/extracted/boinc-node-client \
+  --baseline /path/to/fresh-node4-before.json
+```
+
+Only an explicit `--apply` creates the locked, nologin `boinc` identity, fresh
+non-overlapping 65536-entry subuid/subgid ranges, owned home, client binaries,
+and disabled `usnm-boinc-canary.service`. It executes `--version` as that actual
+unprivileged host UID, then verifies the worker PID stayed unchanged. The base
+unit cannot start until the reviewed volunteer-profile drop-in exists. Apply
+`setup_volunteer.py --ocr-node --service usnm-boinc-canary.service` separately
+to configure and verify whole-UID limits, SELinux and rootless runtime; that
+helper also leaves the client stopped/disabled. Neither step authorizes an
+attachment by itself. Production attachment requires explicit account/master
+authorization, a fresh healthy baseline and the verified capped profile; do
+not infer consent or enable unreviewed apps/GPU work.
+
+Rollback an explicitly started pilot with:
+
+```sh
+sudo python3 scripts/boinc/prepare_node.py --stop
+```
+
+This stops/disables only the managed canary client and its dedicated user
+manager, disables lingering, and retains account/files/task evidence for
+inspection. It does not delete subordinate-ID allocations or kill/restart OCR.
+If preparation fails before the unit is written, no service was started;
+inspect retained identity/files instead of retrying over an existing account.
+The source/tests alone are not evidence that this host setup or a returned
+cohort has executed.
+
 Production `require_secure_transport` remains OFF. Keep #464 open until these
 remaining gates and a reviewed migration plan are satisfied. #631 remains draft;
 preserve current production pins. The paid dev/DNS proposal in #634 remains
