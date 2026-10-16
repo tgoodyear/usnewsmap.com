@@ -335,7 +335,7 @@ def quote(value):
     return '"' + value + '"'
 
 values = {"host": os.environ["DB_HOST"], "user": os.environ["DB_RUNTIME_USER"],
-          "password": Path(sys.argv[2]).read_text().removesuffix("\n")}
+          "password": Path(sys.argv[2]).read_bytes().decode("utf-8").removesuffix("\n")}
 Path(sys.argv[1]).write_text("[client]\n" + "".join(f"{key}={quote(value)}\n" for key, value in values.items()))
 PY
   )

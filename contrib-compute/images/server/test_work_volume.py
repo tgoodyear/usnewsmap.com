@@ -19,6 +19,30 @@ ROOT = HERE.parents[2]
 
 
 class WorkVolume(unittest.TestCase):
+    def test_runtime_defaults_preserve_carriage_returns(self):
+        source = (HERE / "bridge-job.sh").read_text().split('if [ "$step" = work-volume ]; then\n', 1)[1]
+        setup = source.split('  python3 "$TEMPLATES/work-volume.py"', 1)[0]
+        for password, escaped in (("internal\rreturn", "internal\\rreturn"),
+                                  ("internal\r\nreturn", "internal\\r\\nreturn"),
+                                  ("trailing\r", "trailing\\r"),
+                                  ("trailing\r\n", "trailing\\r\\n")):
+            with self.subTest(password=repr(password)):
+                with tempfile.TemporaryDirectory(prefix="work-volume-") as directory:
+                    script = '''
+set -eu
+kv_get() { printf '%s\\n' "$SYNTHETIC_PASSWORD" > "$2"; }
+''' + setup + '\ntrap - EXIT\n'
+                    subprocess.run(
+                        ["bash", "-c", script], check=True, capture_output=True,
+                        env={**os.environ, "SECRETS": directory, "DB_HOST": "localhost",
+                             "DB_RUNTIME_USER": "synthetic", "SYNTHETIC_PASSWORD": password},
+                    )
+                    self.assertEqual(
+                        (Path(directory) / "mysql-runtime.cnf").read_bytes(),
+                        ('[client]\nhost="localhost"\nuser="synthetic"\npassword="'
+                         + escaped + '"\n').encode("utf-8"),
+                    )
+
     def test_runtime_defaults_are_valid_and_private(self):
         source = (HERE / "bridge-job.sh").read_text().split('if [ "$step" = work-volume ]; then\n', 1)[1]
         setup = source.split('  python3 "$TEMPLATES/work-volume.py"', 1)[0]
