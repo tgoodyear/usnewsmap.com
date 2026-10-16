@@ -88,6 +88,10 @@ First-pass decisions for #452:
   luma pipeline creation serialized expensive link-status queries. Points,
   Heat and other measures retain the existing deck overlay; States does not
   prefetch geometry or change that overlay's basemap-readiness gate.
+  If the initial basemap style fails, a plain local style enables native fills;
+  an initial request that never settles is bounded by the existing two-second
+  fallback. Errors in tiles or fonts of an already parsed style do not replace
+  it or discard state geometry.
   Unavailable coverage never draws no-pages fills. Escape dismisses hover
   or pinned state details regardless of keyboard focus. Small positive rates
   retain significant digits, and legend precision increases when needed to

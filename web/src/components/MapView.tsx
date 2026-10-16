@@ -151,6 +151,15 @@ export default function MapView(props: Props) {
     });
     m.touchZoomRotate.disableRotation();
     m.addControl(new NavigationControl({ showCompass: false }), "top-left");
+    let fallbackStyleUsed = STYLE_URL === "none";
+    const recoverStyle = () => {
+      // getStyle is undefined until the initial document is parsed. A failed
+      // tile or font must not replace a usable style or remove native fills.
+      if (fallbackStyleUsed || m.getStyle()) return;
+      fallbackStyleUsed = true;
+      m.setStyle(PLAIN_STYLE, { diff: false });
+    };
+    m.on("error", recoverStyle);
     m.on("style.load", () => setStyleReady(true));
     if (m.isStyleLoaded()) setStyleReady(true);
 
@@ -162,7 +171,10 @@ export default function MapView(props: Props) {
       element.classList.add("map--basemap-ready");
       clearTimeout(fallback);
     };
-    const fallback = setTimeout(reveal, 2000);
+    const fallback = setTimeout(() => {
+      recoverStyle();
+      reveal();
+    }, 2000);
     m.on("load", () => {
       loaded = true;
     });

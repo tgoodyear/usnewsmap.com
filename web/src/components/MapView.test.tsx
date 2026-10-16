@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 // MapLibre and deck.gl need WebGL; stand in for the parts MapView calls.
 const maps: FakeMap[] = [];
-const config = vi.hoisted(() => ({ style: "https://tiles.openfreemap.org/styles/positron" }));
+const config = vi.hoisted(() => ({ style: "https://tiles.openfreemap.org/styles/positron", styleLoaded: true }));
 vi.mock("../lib/basemap", () => ({
   get STYLE_URL() {
     return config.style;
@@ -39,7 +39,13 @@ class FakeMap {
     this.handlers[event]?.forEach((handler) => handler());
   }
   areTilesLoaded = vi.fn(() => true);
-  isStyleLoaded = () => true;
+  styleLoaded = config.styleLoaded;
+  isStyleLoaded = () => this.styleLoaded;
+  getStyle = () => (this.styleLoaded ? { version: 8, layers: [] } : undefined);
+  setStyle = vi.fn(() => {
+    this.styleLoaded = true;
+    this.emit("style.load");
+  });
   addControl() {}
   remove() {}
 }
@@ -104,6 +110,7 @@ describe("MapView", () => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
     config.style = "https://tiles.openfreemap.org/styles/positron";
+    config.styleLoaded = true;
   });
 
   it("holds the overlay until load and an idle with loaded tiles, only once", () => {
@@ -211,5 +218,42 @@ describe("MapView", () => {
     rerender(<MapView {...props} layer="points" zoom={4} center={null} states={states} />);
     expect(nativeLayers[0]!.destroy).toHaveBeenCalled();
     expect(layers.at(-1)?.map((layer) => layer.id)).toEqual(["points"]);
+  });
+
+  it("recovers an initial style failure so ready States geometry can render", async () => {
+    config.styleLoaded = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ type: "FeatureCollection", features: [] }),
+      }),
+    );
+    const states = [{ code: "NY", name: "New York", hits: 1, pages: 100, rate: 10 }];
+    render(<MapView {...props} layer="states" zoom={4} center={null} states={states} />, { wrapper });
+    expect(nativeLayers).toHaveLength(0);
+    act(() => maps[0]!.emit("error"));
+    expect(maps[0]!.setStyle).toHaveBeenCalledWith(
+      expect.objectContaining({ sources: {}, layers: [expect.objectContaining({ type: "background" })] }),
+      { diff: false },
+    );
+    await waitFor(() => expect(nativeLayers).toHaveLength(1));
+    act(() => maps[0]!.emit("error"));
+    expect(maps[0]!.setStyle).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds a stalled initial style request but does not replace a loaded style on tile errors", () => {
+    vi.useFakeTimers();
+    config.styleLoaded = false;
+    const { unmount } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    act(() => vi.advanceTimersByTime(2000));
+    expect(maps[0]!.setStyle).toHaveBeenCalledTimes(1);
+    unmount();
+    render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const loaded = maps.at(-1)!;
+    loaded.styleLoaded = true;
+    act(() => loaded.emit("error"));
+    act(() => vi.advanceTimersByTime(2000));
+    expect(loaded.setStyle).not.toHaveBeenCalled();
   });
 });
