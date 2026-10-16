@@ -969,9 +969,8 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
         vertical_gap = max(0, max(ay0, by0) - min(ay1, by1))
         if vertical_gap > tolerance:
             return True
-        vertical_overlap = max(0, min(ay1, by1) - max(ay0, by0))
         horizontal_gap = max(0, max(ax0, bx0) - min(ax1, bx1))
-        return horizontal_gap > tolerance and vertical_overlap >= 0.5 * min(ah, bh)
+        return horizontal_gap > tolerance
 
     for d in hipe_docs(src, "ca"):
         stats["articles"] += 1
@@ -1009,8 +1008,10 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
             run.clear()
 
         for i, h in enumerate(hits):
-            split_for_geometry = (run and h is not None and
-                                  spatially_discontinuous(alto[hits[run[-1]]]["box"], alto[h]["box"]))
+            previous_box = alto[hits[run[-1]]]["box"] if run else None
+            current_box = alto[h]["box"] if h is not None and truth[i].strip() else None
+            split_for_geometry = (run and previous_box is not None and current_box is not None and
+                                  spatially_discontinuous(previous_box, current_box))
             if h is None or not truth[i].strip() or (run and (hits[run[-1]] + 1 != h or len(run) >= max_lines or
                                                                split_for_geometry)):
                 flush()

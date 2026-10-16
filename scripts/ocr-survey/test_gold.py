@@ -351,7 +351,7 @@ class Overproof(unittest.TestCase):
             self.assertEqual(regs[0]["text"], "The cat\nsat-\ndown.")
             self.assertEqual(regs[0]["box"], [10, 10, 210, 90])
 
-    def test_spatially_discontinuous_matched_lines_become_separate_crops(self):
+    def test_staggered_distant_columns_become_separate_crops(self):
         with tempfile.TemporaryDirectory() as d:
             src = Path(d)
             (src / "hipe").mkdir()
@@ -360,15 +360,54 @@ class Overproof(unittest.TestCase):
             doc = hipe_doc("sn1-11-00001-1872040501-0002",
                            ["The cat", "sat down."], ["Tho cat", "sat down."])
             (src / "hipe" / "a.jsonl").write_text(json.dumps(doc) + "\n")
-            xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="1000"><PrintSpace>
-            <TextBlock HPOS="0" VPOS="0" WIDTH="400" HEIGHT="1000">
+            xml = b"""<alto><Layout><Page WIDTH="1000" HEIGHT="600"><PrintSpace>
+            <TextBlock HPOS="0" VPOS="0" WIDTH="1000" HEIGHT="600">
             <TextLine HPOS="10" VPOS="10" WIDTH="200" HEIGHT="20">
             <String HPOS="10" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="Tho"/>
             <String HPOS="120" VPOS="10" WIDTH="90" HEIGHT="20" CONTENT="cat"/>
             </TextLine>
-            <TextLine HPOS="10" VPOS="800" WIDTH="200" HEIGHT="20">
-            <String HPOS="10" VPOS="800" WIDTH="100" HEIGHT="20" CONTENT="sat"/>
-            <String HPOS="120" VPOS="800" WIDTH="90" HEIGHT="20" CONTENT="down."/>
+            <TextLine HPOS="700" VPOS="35" WIDTH="200" HEIGHT="20">
+            <String HPOS="700" VPOS="35" WIDTH="100" HEIGHT="20" CONTENT="sat"/>
+            <String HPOS="810" VPOS="35" WIDTH="90" HEIGHT="20" CONTENT="down."/>
+            </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
+            (src / "loc" / f"{key}.xml").write_bytes(xml)
+            (src / "loc" / f"{key}.jpg").write_bytes(b"synthetic image placeholder")
+            (src / "loc" / "pages.json").write_text(json.dumps({key: {"image": f"{key}.jpg", "alto": f"{key}.xml"}}))
+
+            class FakeImage:
+                width = 1000
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+            pil = types.ModuleType("PIL")
+            image = types.ModuleType("PIL.Image")
+            image.open = lambda _: FakeImage()
+            pil.Image = image
+            with patch.dict(sys.modules, {"PIL": pil, "PIL.Image": image}):
+                regs, _ = gold.overproof_ca_regions(src)
+            self.assertEqual([(r["text"], r["box"]) for r in regs],
+                             [("The cat", [10, 10, 210, 30]), ("sat down.", [700, 35, 900, 55])])
+
+    def test_unboxed_blank_truth_match_flushes_open_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d)
+            (src / "hipe").mkdir()
+            (src / "loc").mkdir()
+            key = "sn1-00001-1872040501-0002"
+            doc = hipe_doc("sn1-11-00001-1872040501-0002", ["The cat", ""], ["Tho cat", "ghost"])
+            (src / "hipe" / "a.jsonl").write_text(json.dumps(doc) + "\n")
+            xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="300"><PrintSpace>
+            <TextBlock HPOS="0" VPOS="0" WIDTH="400" HEIGHT="300">
+            <TextLine HPOS="10" VPOS="10" WIDTH="200" HEIGHT="20">
+            <String HPOS="10" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="Tho"/>
+            <String HPOS="120" VPOS="10" WIDTH="80" HEIGHT="20" CONTENT="cat"/>
+            </TextLine>
+            <TextLine HPOS="0" VPOS="0" WIDTH="400" HEIGHT="300">
+            <String HPOS="invalid" VPOS="0" WIDTH="400" HEIGHT="300" CONTENT="ghost"/>
             </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
             (src / "loc" / f"{key}.xml").write_bytes(xml)
             (src / "loc" / f"{key}.jpg").write_bytes(b"synthetic image placeholder")
@@ -388,9 +427,9 @@ class Overproof(unittest.TestCase):
             image.open = lambda _: FakeImage()
             pil.Image = image
             with patch.dict(sys.modules, {"PIL": pil, "PIL.Image": image}):
-                regs, _ = gold.overproof_ca_regions(src)
-            self.assertEqual([(r["text"], r["box"]) for r in regs],
-                             [("The cat", [10, 10, 210, 30]), ("sat down.", [10, 800, 210, 820])])
+                regs, stats = gold.overproof_ca_regions(src)
+            self.assertEqual(stats["lines_matched"], 2)
+            self.assertEqual([(r["text"], r["box"]) for r in regs], [("The cat", [10, 10, 200, 30])])
 
     def test_unmatched_line_without_plausible_geometry_keeps_text_without_a_box(self):
         malformed = (ALTO.replace('HEIGHT="20"', 'HEIGHT="300"')
