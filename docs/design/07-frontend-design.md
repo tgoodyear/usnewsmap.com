@@ -5,7 +5,7 @@
 | Concern       | Choice                                                                                                                                                                                                                                         | Why                                                                                                                                                            |
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Framework     | **React 19 + TypeScript**, built with **Vite**                                                                                                                                                                                                 | Large hiring and contributor pool; strong typing against the OpenAPI types                                                                                     |
-| Map           | **MapLibre GL JS** (vector basemap) + **deck.gl** (`ScatterplotLayer`, `HeatmapLayer`, `GeoJsonLayer`)                                                                                                                                         | WebGL rendering of thousands of animated points at 60 fps; open source, no token required                                                                      |
+| Map           | **MapLibre GL JS** (vector basemap and States fill) + **deck.gl** (`ScatterplotLayer`, `HeatmapLayer`)                                                                                                                                         | WebGL rendering of thousands of animated points at 60 fps; open source, no token required                                                                      |
 | Basemap       | Self-hosted **Protomaps PMTiles** (a US extract of OpenStreetMap) in a public-read Blob container (HTTP range requests, no tile server), with a muted "archival" dark style and a light style. The keyless OpenFreeMap service is the fallback | No per-view tile fees or third-party keys (the legacy code depended on CartoDB and Mapbox tokens)                                                              |
 | Charts        | **uPlot** (timeline, compare)                                                                                                                                                                                                                  | Tiny and fast; handles thousands of points                                                                                                                     |
 | Data fetching | **TanStack Query**                                                                                                                                                                                                                             | Caching, deduplication, cancellation of superseded searches                                                                                                    |
@@ -124,14 +124,21 @@ Truncated matching-place lists show a warning, never invent an allocation of the
 missing tail. The minimum denominator is one page with a small-count warning,
 not an arbitrary suppression threshold. See the [web implementation decisions](../../web/README.md#states-layer)
 and [reproducible Census preparation](../../web/src/assets/README.md).
+States uses a native MapLibre GeoJSON source with promoted state-code IDs and
+feature-state colours below symbol labels; scrubbing does not replace geometry.
+This replaces the original recommended deck `GeoJsonLayer`, whose cold luma
+pipeline linking caused synchronous stalls. Points and Heat retain deck.
 The [opt-in performance gates and measurements](../../web/README.md#states-performance-measurements)
-report a passing synthetic 5,000-place p95 scrub budget on Apple M1, but a
-native-GPU cold first-paint proxy of 489 ms misses the 300 ms target (warm
-repeats pass). Fresh browser processes with Chrome GPU caches disabled also
-pass, but persistent OS/driver caches remain uncontrolled. Intermediate JSON
-decode/draw marks do not retroactively explain the original slow sample.
-These are not representative target-hardware certification; the cold-driver
-first-paint requirement remains an unwaived release blocker.
+retain the original 489/547 ms cold failures and dependency-level reproduction.
+The native follow-up measures actual state-colour pixels in composited browser
+frames: five unique-shader selection runs took 124–145 ms and five direct-URL
+runs 238–263 ms on M1/Chromium/Metal. Direct States entry defers constructing
+the unused deck overlay until a different layer needs it.
+The 5,000-place gate now asserts measured
+maximum, not just p95: five isolated 2,000-frame runs passed below 0.1 ms;
+concurrent/GC runs still exceeded 2 ms and remain recorded failures.
+These are fixture- and hardware-specific results, not software-renderer,
+real-network, globally cold-driver or arbitrary-load guarantees.
 
 ## 7.5 URL state (permalinks)
 

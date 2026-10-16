@@ -51,6 +51,15 @@ describe("state window totals", () => {
     expect(stateTotals(sums, 1, 1).find((r) => r.code === "NY")).toMatchObject({ hits: 6, pages: 60, rate: 100 });
     expect(stateTotals(sums, 0, 1).reduce((n, r) => n + r.hits, 0)).toBe(5);
   });
+  it("reuses private window scratch without mutating totals returned for previous windows", () => {
+    const sums = prepareStates(data, coverage, features)!;
+    const earlier = stateTotals(sums, 0, null);
+    const snapshot = structuredClone(earlier);
+    const later = stateTotals(sums, 1, 1);
+    expect(later.find((row) => row.code === "NY")).toMatchObject({ hits: 6, pages: 60 });
+    expect(earlier).toEqual(snapshot);
+    expect(stateTotals(sums, 0, null)).toEqual(snapshot);
+  });
   it("rejects stale or misaligned coverage instead of calling unknown baselines zero", () => {
     for (const patch of [
       { index_version: "old" },

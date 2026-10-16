@@ -11,12 +11,17 @@ export interface PrefixSums {
   sums: Float64Array;
 }
 
-export function prefixSums(cube: SparseCube, places: number, buckets: number): PrefixSums {
+export function prefixSums(
+  cube: SparseCube,
+  places: number,
+  buckets: number,
+  placeIndex?: (place: number) => number,
+): PrefixSums {
   const stride = buckets + 1;
   const sums = new Float64Array(places * stride);
   const n = Math.min(cube.p.length, cube.b.length, cube.h.length);
   for (let i = 0; i < n; i++) {
-    const p = cube.p[i]!;
+    const p = placeIndex ? placeIndex(cube.p[i]!) : cube.p[i]!;
     const b = cube.b[i]!;
     if (p < places && b < buckets) sums[p * stride + b + 1]! += cube.h[i]!;
   }
