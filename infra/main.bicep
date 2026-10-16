@@ -250,6 +250,9 @@ param ocrNodeIps string = ''
 @description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-grp-<env> (scripts/ocr-node/group.sh creates or relabels the saved group without changing its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
 
+@description('Arc service principal object id of the scan archive uploader. Grants only the archive writer role on scans, without OCR queue access or membership in the pacing-counted OCR node group.')
+param scanArchiveUploaderId string = ''
+
 @description('Schedule for the OCR pickup job usnm-ocrs-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
 param ocrSyncCron string = '17 * * * *'
 
@@ -561,6 +564,7 @@ module scanArchive 'modules/scan-archive.bicep' = if (ocrNodes) {
     readerIds: boincHandoff ? [boincBridgeIdentity!.properties.principalId] : []
     nodeGroupId: trim(ocrNodeGroupId)
     writerRoleLabel: n.scansWriterRole
+    uploaderId: trim(scanArchiveUploaderId)
   }
 }
 
