@@ -118,7 +118,8 @@ or running, keeps the same identity/group checks as `--ocr-node`, and replaces
 the 25%-of-one-CPU slice file with `zz-usnm-dedicated-node.conf`: no CPU quota,
 85% of memory, no swap, 1024 tasks, lowest CPU/IO weight, nice 19 / idle IO.
 BOINC gets every CPU (`--ncpus N` to leave some free), runs while someone is
-logged in, may use 80% of memory, and is enabled at boot. Every start's
+logged in, may use 85% of memory (the slice cap; on an 8 GB node this admits
+the 6 GiB qwen units, which 80% did not), and is enabled at boot. Every start's
 preflight refuses an enabled or running OCR worker and a slice without its
 memory, swap or task limits. Accounts and attachments are kept.
 

@@ -135,7 +135,7 @@ MemoryMax=85%
 MemorySwapMax=0
 TasksMax=1024
 """
-DEDICATED_PREFS = {"run_if_user_active": "1", "ram_max_used_busy_pct": "80", "ram_max_used_idle_pct": "80"}
+DEDICATED_PREFS = {"run_if_user_active": "1", "ram_max_used_busy_pct": "85", "ram_max_used_idle_pct": "85"}
 OCR_WORKER = "usnm-ocr-worker.service"
 
 
@@ -512,7 +512,7 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
     print(f"Worker image: {image}")
     print("Install rootless Podman configuration and a mandatory startup slot/limits/pause check.")
     if dedicated_node:
-        print(f"Set {ncpus} BOINC CPUs, no GPUs, run while users are logged in, no task buffer, and 80% memory allowance (task containers keep their own caps).")
+        print(f"Set {ncpus} BOINC CPUs, no GPUs, run while users are logged in, no task buffer, and 85% memory allowance (matching the slice cap) (task containers keep their own caps).")
     else:
         print("Set one BOINC CPU, no GPUs, idle after 5 minutes, no battery use, no task buffer, and 50% memory allowance (task containers remain capped at 1536 MiB).")
     print("Preserve accounts and unrelated preferences; back up changed XML before writing.")

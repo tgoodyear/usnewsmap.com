@@ -504,6 +504,9 @@ class SetupTest(unittest.TestCase):
         self.assertIn("MemoryMax=85%", setup.DEDICATED_NODE_SLICE)
         self.assertIn("MemorySwapMax=0", setup.DEDICATED_NODE_SLICE)
         self.assertIn("TasksMax=1024", setup.DEDICATED_NODE_SLICE)
+        # BOINC's allowance must match the slice cap so 8 GB nodes admit 6 GiB qwen units.
+        self.assertEqual(setup.DEDICATED_PREFS["ram_max_used_busy_pct"], "85")
+        self.assertEqual(setup.DEDICATED_PREFS["ram_max_used_idle_pct"], "85")
         with self.assertRaises(setup.SetupError):
             setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999,
                           ocr_node=True, dedicated_node=True)
