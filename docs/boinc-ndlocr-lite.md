@@ -76,21 +76,27 @@ unavailable, so this was a **native macOS run, not the Linux image** (whose pin 
 ONNX Runtime 1.26.0). Source: [Rocky Shimpo, 1945-01-01 full scan](https://tile.loc.gov/image-services/iiif/service:sgp:sgpbatches:batch_dlc_ballston_ver01:data:sn83025517:00237288798:1945010101:0365/full/full/0/default.jpg),
 5,832 × 7,582 pixels, 7,607 normalized characters.
 
-| Metric                          | One page, including startup/model loading                                        |
-| ------------------------------- | -------------------------------------------------------------------------------- |
-| Wall time                       | 40.56 s                                                                          |
-| CPU time (user + system)        | 65.54 CPU-s                                                                      |
-| Peak process RSS                | 1,283,344 KiB (1.22 GiB)                                                         |
-| Repeat text and ALTO comparison | Exact equality with a second upstream read and `jaocr.py` / `alto.py` conversion |
+| Metric                                       | First run                | Repeat after contract regression fixes |
+| -------------------------------------------- | ------------------------ | -------------------------------------- |
+| Wall time, including startup/model loading   | 40.56 s                  | 12.55 s                                |
+| CPU time (user + system)                     | 65.54 CPU-s              | 48.52 CPU-s                            |
+| Peak process RSS                             | 1,283,344 KiB (1.22 GiB) | 1,531,328 KiB (1.46 GiB)               |
+| Text and ALTO comparison with the Python job | Exact                    | Exact                                  |
 
 CPU time and high-water RSS were collected with `getrusage(RUSAGE_CHILDREN)`
-after the adapter reaped the engine. Two quorum results cost roughly 131 CPU-s
-for a page like this one, before retries. This is **one page on one host**, not
-a cross-host determinism test or a measured Linux-container bound. A cautious
-initial scheduler estimate is `rsc_fpops_est = 1e12` (65.54 CPU-s at an assumed
-5 GFLOPS/core, with about 3× margin) and `rsc_memory_bound = 4294967296` (4 GiB,
-about 3.3× the observed peak). Revise both from a multi-page volunteer pilot;
-FLOPS here are an assumption, not a benchmark of this M1.
+after the adapter reaped the engine. Each measured run was also checked against
+a second upstream read and the existing Python converters. The repeat exercised
+a search-only output parent and the default local-root scratch mapping. The
+shared development host was not CPU-quota limited; elapsed time varies with host
+load and caches. Two quorum results cost roughly 97–131 CPU-s for a page like
+this one, before retries. This is **one page on one host**, not a cross-host
+determinism test or a measured Linux-container bound.
+
+A cautious initial scheduler estimate is `rsc_fpops_est = 1e12` (65.54 CPU-s at
+an assumed 5 GFLOPS/core, with about 3× margin) and
+`rsc_memory_bound = 4294967296` (4 GiB, about 2.7× the highest observed peak).
+Revise both from a multi-page volunteer pilot; FLOPS here are an assumption,
+not a benchmark of this M1.
 
 The image CI reports the same wall/CPU/RSS fields for the small headline fixture;
 that is a smoke cost, not a newspaper-page estimate. With a running container
