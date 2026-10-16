@@ -1,8 +1,9 @@
 # BOINC server hosting: design
 
-Status: draft. Nothing here is deployed. Facts about BOINC and Azure are in
-[verified-facts.md](verified-facts.md), each with a fetch date (2026-10-13);
-UNVERIFIED marks a claim that was not confirmed.
+The production stack was deployed and checked as recorded in #470. This design
+describes the committed Bicep and scripts; it does not claim a fresh live check.
+Facts about BOINC and Azure are in [verified-facts.md](verified-facts.md), and
+UNVERIFIED marks behavior that remains unconfirmed.
 
 ## 1. What this covers
 
@@ -16,14 +17,20 @@ bridge. Its model, which this design does not change:
   journals each submission before `create_work`, reads the stock `batch_collect_assimilator`
   spool and publishes native ALTO and Parquet to `ocr-out` and `ocr-sync`;
 - the default validator (`sample_trivial_validator`), for trusted friends;
-- a stock, self-hosted BOINC server that the repository does not provision.
+- a stock, self-hosted BOINC server (provisioned separately by this directory).
 
-This directory is that last item: Azure hosting for the stock server, a script that sets it
-up, and the notes on how the bridge reaches it. It contains no BOINC code, no work
-generator, no validator, no assimilator and no app. The interface to #441 is in
+This directory is that last item: Azure hosting for the stock server and the notes on how the
+bridge reaches it. Provisioning and image builds are driven by `scripts/provision-boinc.sh`
+and `scripts/build-boinc-images.sh`. It contains no BOINC code, no work generator, no validator,
+no assimilator and no app. The interface to #441 is in
 [interface.md](interface.md).
 
 ## 2. Hosting on Azure
+
+The production Container Apps environment, MySQL server, VNet, Files account and Key Vault use
+the `westus2` setting in `infra/boinc/env/prod.json`; other deployments take their region from
+their committed settings. Static Web Apps retains its `eastus2` default because it is available
+in a limited set of regions.
 
 ### 2.1 One Container Apps app
 
@@ -70,15 +77,15 @@ The BOINC project tree needs persistence: `upload/`, `download/` (the staged sca
 Container Apps the container disk is ephemeral and the persistent option is an Azure Files
 mount; Blob storage cannot be mounted. So:
 
-- an Azure Files share holds `upload/`, `download/`, `results/`, `apps/` and a `handoff/` folder (section 4); mounted at the project path;
+- an Azure Files share holds `upload/`, `download/`, `results/`, `apps/` and a `handoff/` folder (section 4), mounted at the project path over SMB with `mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict`;
 - `keys/` is not on the share. The container start script writes the upload key pair from
   Key Vault into a tmpfs-backed path and links it into the tree;
 - the code-signing private key is not anywhere in Azure (section 5.1).
 
-Whether SMB semantics (setgid, umask 0002, file locking) hold under the mount is UNVERIFIED.
-If they do not, the fallback is a one-user container (web and daemons both as `boincadm`),
-which gives up the web-user/daemon-user split BOINC recommends but keeps one process user.
-That is a deployment-time test (section 9, question 1).
+The `mfsymlinks` mount option provides the symlink behavior BOINC's project tree needs; the
+mount also sets the container uid/gid and modes. Full POSIX ownership, permission and file-locking
+semantics still need validation beyond successful project initialization and daemon startup.
+The share is reached through a private endpoint in the VNet.
 
 ### 2.4 Database: Azure Database for MySQL flexible server, burstable
 
@@ -91,15 +98,14 @@ choose it now. Notes:
   generated at deploy time and stored as a Key Vault secret. Container Apps reads it through
   the app's user-assigned managed identity as a Key Vault secret reference. The password
   appears in the running container's environment and in the rendered `config.xml`, so
-  `config.xml` is rendered into tmpfs at start, never into an image layer or the repo. The Entra
-  admin for human access is a separate bootstrap step after deployment (bootstrap.sh 1a), because
-  the server's identity needs Directory Readers first, which a template cannot grant. This is the one place where the "no keys in config"
-  rule is not fully met, and it is documented as a gap.
-- MyISAM. `post`, `thread` and `profile` are MyISAM in `schema.sql`. We turn off forums and
-  profiles. Whether the server rejects MyISAM is UNVERIFIED; the `schema.sql` we apply is
-  tested on a throwaway server first.
-- TLS. `require_secure_transport` remains OFF pending #464's dev migration gate;
-  do not flip it on a production deployment merely because the base image builds.
+  `config.xml` is rendered into tmpfs at start, never into an image layer or the repo. BOINC uses
+  this runtime account; the template does not configure a human Entra MySQL administrator.
+- MyISAM. `post`, `thread` and `profile` are MyISAM in `schema.sql`. Forums and profiles are
+  disabled. The production project initialization recorded in #470 succeeded against the
+  configured MySQL server.
+- TLS. The deployed MySQL server sets `require_secure_transport` to OFF because BOINC's clients
+  do not request TLS (#464 tracks the migration to required TLS). The server has private VNet
+  access only; do not enable transport enforcement until #464's dev migration gate passes.
   `scripts/boinc/patch-server-db-tls.py` patches the pinned source's Python
   `db_base`, **both** PHP connection paths, and C++ `DB_CONN`; CLI consumers pass
   verified TLS flags. Python's Bookworm mysqlclient cannot use `ssl_mode` against
@@ -133,9 +139,8 @@ choose it now. Notes:
 - CPU credits. B1ms has 20% baseline CPU. The transitioner and feeder poll constantly. If the
   credit balance drains, MySQL throttles to 20%. We alarm on the CPU-credit metric and move to
   `Standard_B2s` (4 GiB RAM variants cost more; section 6) when it does.
-- Privileges. A setup user with `CREATE`/`ALTER`/`INDEX`/`DROP` runs `make_project` once from a
-  one-off job; the run-time user gets `SELECT`/`INSERT`/`UPDATE`/`DELETE`. UNVERIFIED that the
-  run-time user needs nothing more.
+- Privileges. The in-VNet init job creates the project schema and tree; the run-time user gets
+  `SELECT`/`INSERT`/`UPDATE`/`DELETE`. UNVERIFIED that the run-time user needs nothing more.
 
 ## 3. Static frontend: what can be static
 
@@ -163,14 +168,14 @@ Decision:
    uploads go to `file_upload_handler`, which cannot be redirected to blob storage.
 4. Scheduler RPC goes to the dynamic app at `https://boinc.usnewsmap.com/<project>_cgi/cgi`.
 
-Custom-domain steps (nothing here is done yet; `bootstrap.sh` prints them as a plan):
+Custom-domain provisioning is declarative and staged by `scripts/provision-boinc.sh`:
 
-1. DNS `CNAME boinc` to the Container App's FQDN (`boinc-dev` for dev).
-2. DNS `TXT asuid.boinc` holding the environment's custom-domain verification id.
-3. Bind the domain to the app with a Container Apps managed certificate. UNVERIFIED that a
-   managed certificate works with this environment; the fallback is a certificate from Key Vault.
-4. The master URL cannot change after volunteers attach; every client would have to reattach.
-5. `boinc-dev` follows the repo's dev rule: it holds nothing unless a focused experiment is
+1. The Bicep `custom-domain-dns` module writes the CNAME to the Container App FQDN and the
+   `asuid` TXT verification record in the existing public zone.
+2. Provisioning advances the app's custom-domain binding and managed-certificate stages. The
+   production endpoint and DigiCert managed certificate were reported working in #470.
+3. The master URL cannot change after volunteers attach; every client would have to reattach.
+4. `boinc-dev` follows the repo's dev rule: it holds nothing unless a focused experiment is
    running, and is torn down fully afterwards.
 
 This differs from a "static frontend" as first asked for.
@@ -203,6 +208,9 @@ flowchart LR
 | `submit`, `reconcile` (`create_work`) | Container Apps Job, in Azure | Needs the project tree, `config.xml` and the database; none is reachable from outside    |
 | Scheduler, feeder, transitioner, etc. | Container App                | Stock daemons; one replica (section 2)                                                   |
 | `batch_collect_assimilator`           | Container App                | Writes the spool under the project tree, on the share                                    |
+| Runtime/upload secrets               | In-VNet secrets job          | Reaches the private Key Vault; generates missing secrets without passing them locally    |
+| Project initialization               | In-VNet init job             | Creates the schema and project tree on the mounted share; skips complete initialization  |
+| Signed app-version publication       | In-VNet publish job          | Copies the selected version to the share and runs `update_versions`                      |
 | `collect`, `status`                   | Maintainer side              | Writes `ocr-out`; holds the ledger and journal; the Job gets no storage write credential |
 
 ### 4.2 Where `create_work` runs
@@ -222,10 +230,11 @@ choices were:
 - **A VM or a Cloud Shell session.** Rejected: ADR-0005 keeps IaaS out, and the shell would
   need the database credential on a person's machine.
 
-The job's image is the server image plus the bridge binary (`images/bridge/Containerfile`;
-`bridgeImage` in `main.bicep`, a required parameter with no default; `bootstrap.sh` requires `--bridge-image`). `bridge-job` (`images/server/bridge-job.sh`) renders `config.xml`
-into tmpfs and runs `usnm-boinc submit` or `reconcile` for the job id in `JOB_ID`. Written, not run
-(docs/images.md).
+The bridge image combines the server image and bridge binary (`images/bridge/Containerfile`).
+`scripts/build-boinc-images.sh` records its digest in the environment settings, and Bicep gives
+the runtime and secrets identities `AcrPull` on the app's shared registry. `bridge-job`
+(`images/server/bridge-job.sh`) renders `config.xml` into tmpfs and runs `usnm-boinc submit` or
+`reconcile` for the job id in `JOB_ID`.
 
 ### 4.3 The hand-off and the spool
 
@@ -264,10 +273,10 @@ into tmpfs and runs `usnm-boinc submit` or `reconcile` for the job id in `JOB_ID
 ### 5.2 Security
 
 Attack surface: the public scheduler CGI, `file_upload_handler` and the PHP web UI. The MySQL
-server has private access only. The Key Vault and the Files account have public network access
-off and are reached through private endpoints in the project's VNet; nothing else in the project is public. The public name is
-`boinc.usnewsmap.com` with a managed certificate (section 3, UNVERIFIED); the master URL is part of
-every volunteer's attachment and cannot change.
+server has private access only. The Key Vault and Files account have public network access off
+and are reached through private endpoints in the project's VNet. The public name is
+`boinc.usnewsmap.com` with a managed certificate; #470 records a successful production health
+check. The master URL is part of every volunteer's attachment and cannot change.
 
 - Keep the PHP surface small: disable forums, profiles, private messages and teams in
   `html/project/project.inc`. Account creation can use `INVITE_CODES` so the project starts
@@ -276,25 +285,32 @@ every volunteer's attachment and cannot change.
   `daily_result_quota`, `max_wus_to_send`); the cohort size (at most 100 tasks per batch) is
   the effective ceiling. How the project behaves under a flood has not been tested (UNVERIFIED);
   the pause switch (2.2) is the backstop.
-- Secrets: Key Vault (RBAC mode) and a user-assigned managed identity shared by the app and the
-  bridge job. Exceptions to the repository's Entra-only rule (ADR-0009), all forced by the
+- Secrets: Key Vault (RBAC mode), a runtime user-assigned managed identity shared by the app and
+  bridge/init/publish jobs, and a separate identity for the secrets job. Exceptions to the
+  repository's Entra-only rule (ADR-0009), all forced by the
   platform or by BOINC: the MySQL password (2.4); the key of the Azure Files account, because
   the Container Apps mount takes it (the template reads it from the account it creates, so no
   key is passed in or committed); and the Log Analytics shared key that the Container Apps
   environment is configured with. No connection strings in Bicep outputs.
-- Registry and operator access: both Container App resources pull the image with the shared
-  identity, which has AcrPull scoped to the one registry named by the image (the registry has no
-  admin user and no anonymous pull). The operator named by `--operator-object-id` gets Key Vault
-  Secrets Officer, to create the five secrets, and is made the MySQL Entra administrator in the separate step above. Because the
-  vault and the Files account are private, the operator needs a network path into the VNet to
-  create secrets or copy to the share; none is provisioned here (open question 11).
+- Registry and operator access: the app and its jobs pull from the app's shared registry, with
+  `AcrPull` granted by the BOINC stack to the runtime and secrets-job identities. Registry admin
+  and anonymous pull are disabled. The configured operator receives Key Vault Secrets Officer;
+  the in-VNet secrets job creates the runtime password and upload keys without routing their
+  values through the operator's machine. The init and publish jobs also run in the VNet with
+  their required share mounts and settings. The maintainer-side hand-off to and from the share
+  still needs a network path into the VNet (open question 11).
+- Private DNS: the VNet links the Key Vault private endpoint to `privatelink.vaultcore.azure.net`;
+  the Files account also has its private DNS zone and endpoint.
 - Policy: the repository's guardrails deny a storage account with shared key access and a
   Log Analytics workspace with local auth. This stack needs both (the three ADR-0009 exceptions
-  in decision 5 of ADR-0019). `infra/main.bicep` waives exactly those two policies for the
+  in decision 6 of ADR-0019). `infra/main.bicep` waives exactly those two policies for the
   dedicated BOINC resource group when `USNM_BOINC_GROUP` is set. The group must hold only
   BOINC resources, and provisioning runs before this stack is deployed.
-- Images: our own build (`images/`) from a pinned BOINC master commit, because the 1.6.2 tag has no
-  `batch_collect_assimilator`; the Docker Hub images are stale.
+- Images: `scripts/build-boinc-images.sh` uses ACR Tasks in the shared registry. The build
+  reuses `usnm-boinc-base` (pinned BOINC source/runtime dependencies) and
+  `usnm-boinc-bridge-bin` (the Rust binary) when their input hashes are unchanged, then builds
+  digest-pinned server and bridge images. The worker image remains in public GHCR for volunteer
+  clients.
 
 Privacy:
 
@@ -311,8 +327,9 @@ Privacy:
 ## 6. Cost
 
 Unit prices come from the Azure retail prices API (`https://prices.azure.com/api/retail/prices`),
-queried 2026-10-13, East US, pay-as-you-go. They are retail list prices, not an invoice. No
-run-rate total is given: the volumes depend on how many pages the maintainer chooses to send.
+queried 2026-10-13, East US, pay-as-you-go. They are retail list prices, not an invoice or a
+westus2 estimate. No run-rate total is given: the volumes depend on how many pages the maintainer
+chooses to send.
 
 | Item                        | Meter                                          | Unit price                             |
 | --------------------------- | ---------------------------------------------- | -------------------------------------- |
@@ -396,12 +413,13 @@ credits drain); the retention of staged scans.
    them.
 5. **`install.py` needs a `docker` plan class** that the repository did not provide.
    `boinc/plan_class_spec.xml` here supplies it.
-6. **The worker image's registry.** Volunteers' Docker must pull it by digest, without our
-   credentials: a public GHCR package (ADR-0019, addendum). Not published yet.
+6. **The worker image's registry.** Volunteers' Docker pulls it by digest, without our
+   credentials, from the public GHCR package (ADR-0019, addendum).
 7. **`daemons.xml` has no standard daemons.** It lists only the validator and the assimilator;
    the template here adds the feeder, transitioner, file_deleter and db_purge.
-8. **Azure Files semantics.** BOINC wants setgid directories, umask 0002 and file locking;
-   whether Azure Files over SMB under Container Apps gives them is UNVERIFIED (2.3).
+8. **Azure Files semantics.** The Container Apps app/jobs mount SMB with `mfsymlinks` and
+   explicit uid/gid and mode options (2.3). Full POSIX permissions and file-locking behavior
+   across BOINC operations remains to be verified.
 9. **Resource bounds.** `submit.rs` sets `rsc_memory_bound` to 1.5 GiB and `job.toml` caps the
    container at 1536 MiB. Whether Tesseract plus JP2 decoding of a 128 MiB scan fits is
    UNVERIFIED; #441 says to calibrate on real scans.
@@ -421,10 +439,12 @@ the images would be preferred if one exists. It is not planned until the maintai
 
 ## 9. Open questions
 
-1. Does Azure Files under Container Apps keep setgid, umask and locking semantics that BOINC
-   needs? Test with a throwaway app before choosing it.
-2. Do the BOINC C++ and PHP clients connect to the flexible server with TLS required? Does it
-   accept the MyISAM tables (forums off)? Does BOINC's code work against MySQL 8.4?
+1. Does Azure Files under Container Apps preserve the POSIX permissions and locking behavior
+   BOINC needs across all project operations? Project initialization and daemon startup succeeded
+   (#470), but the full behavior remains to be verified.
+2. Does BOINC's runtime account have all required MySQL 8.4 privileges? Project initialization
+   succeeded (#470); `require_secure_transport` is OFF in the deployed stack, and #464 tracks the
+   separate TLS migration gate before it can be enabled.
 3. Does Entra authorisation work for pulling and pushing Azure Files data from the
    maintainer's side, or does the hand-off use the account key?
 4. ~~Does a Container Apps Job accept per-run argument overrides at start (the job id to
@@ -433,24 +453,27 @@ the images would be preferred if one exists. It is not planned until the maintai
    writes the run's settings into the job and starts it without an override (docs/boinc.md,
    "Start a bridge step"). UNVERIFIED against a live job.
 5. Does the BOINC client follow a redirect for `get_project_config.php`?
-6. ~~Which registry holds the worker image?~~ Proposed: public GHCR package (ADR-0019, addendum); the maintainer sets its visibility.
+6. ~~Which registry holds the worker image?~~ Public GHCR package (ADR-0019, addendum).
 7. Code-signing key custody: which offline machine, and who holds the backup?
-8. The project's name, domain and terms of use. The master URL, once volunteers attach, cannot
-   change.
-9. ~~Who builds the server image and `bridge-job`?~~ `images/`, built by CI without pushing; the operator pushes to the registry (docs/images.md).
+8. The terms of use and any change to project metadata. The production domain and master URL
+   are set; a URL change after volunteers attach would require them to reattach.
+9. ~~Who builds the server image and bridge job?~~ `scripts/build-boinc-images.sh` builds both in ACR Tasks and writes their digests to the settings (docs/images.md).
 10. Should `submit` get a remote mode in #441, or is the manual hand-off enough for the pilot?
-11. What network path does the operator use into the VNet to create the Key Vault secrets and to
-    reach the Files share (for the hand-off in section 4)? Candidates: `az containerapp exec`
-    into the bridge job's environment, a point-to-site VPN, or a jump host. None is chosen.
+11. What network path does the maintainer use to reach the Files share for the hand-off in
+    section 4? Secrets and project initialization are handled by in-VNet jobs; the share
+    hand-off still requires an operator path into the VNet.
 12. ~~How are the three ADR-0009 exceptions expressed in the guardrail policies?~~ Resolved
-    (ADR-0019, decision 5): group-scoped Waiver exemptions in `infra/modules/boinc-exemptions.bicep`;
+    (ADR-0019, decision 6): group-scoped Waiver exemptions in `infra/modules/boinc-exemptions.bicep`;
     the definitions are unchanged.
-13. Does the maintainer accept `require_secure_transport = OFF` inside the private network if
-    the BOINC clients cannot use TLS?
+13. ~~Does the maintainer accept `require_secure_transport = OFF` inside the private network
+    while BOINC's clients cannot use TLS?~~ The deployed setting is OFF; #464 tracks restoring
+    required TLS after its migration gate.
 
-## 10. First deployment step
+## 10. Deployment and acceptance
 
-Not without the maintainer's go-ahead: create a throwaway resource group with the MySQL
-server only, run BOINC's `schema.sql` against it from a developer machine, and record whether
-MyISAM is accepted and whether the BOINC daemons connect with TLS required. It costs a few
-cents for an hour and answers question 2 before anything else is built on the answer.
+The production deployment and checks are recorded in #470: provisioning completed, the in-VNet
+secrets and project initialization jobs succeeded, the public project configuration and status
+endpoints answered, the daemons were running, and the managed certificate was active. This
+design update does not re-run those production checks. Remaining acceptance items are the
+MySQL schema/runtime compatibility details, complete Azure Files permission and locking
+behavior, and the #464 TLS migration; see the open questions above.

@@ -2,7 +2,8 @@
 
 Issue: [#456](https://github.com/tgoodyear/usnewsmap.com/issues/456). Background: the [#435 report](reports/2026-10-jp2-vs-jpeg-ocr/report.md), which compared the two formats on 80 pages that were not a random sample. This page covers the second BOINC app, `usnm_assess`, which runs the same comparison on a stratified random sample of the corpus on volunteer hosts, and the server steps around it. The OCR pilot (`usnm_ocr`) is described in [boinc.md](boinc.md); the server hosting is in [contrib-compute/docs](../contrib-compute/docs/design.md).
 
-Status: written and unit-tested. No campaign has run, and nothing here has been deployed.
+Status: written and unit-tested. No assessment campaign has run; the production server
+deployment is recorded in #470.
 
 ## What a unit is
 
@@ -66,7 +67,7 @@ It places the JP2 through the batch's bag manifest and checks its md5, then (OCR
 
 `batch_collect_assimilator --app usnm_assess` copies the canonical result into the spool.
 
-The validator needs `usnm-boinc` in the server container. The server image does not carry it, so a server that runs the assessment uses the bridge image: deploy with `bootstrap.sh --assessment` (Bicep parameter `assessment=true`). `images/server/lib.sh` then adds the two daemons and links the scripts into the project's `bin/`.
+The validator needs `usnm-boinc` in the server container. The server image does not carry it, so a server that runs the assessment uses the bridge image: set `assessment: true` in `contrib-compute/infra/boinc/env/<env>.json` and deploy with `scripts/provision-boinc.sh --env <env>`. `images/server/lib.sh` then adds the two daemons and links the scripts into the project's `bin/`.
 
 ## Scoring
 

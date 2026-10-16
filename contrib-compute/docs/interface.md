@@ -1,6 +1,6 @@
 # Interface to PR #441
 
-What the Azure-hosted server and the files in this directory assume about #441's client and bridge, and what #441 can assume about the server. Design reasons are in [design.md](design.md). Nothing is deployed; the project URL is a placeholder that the maintainer fills in when the server exists.
+What the Azure-hosted server and the files in this directory assume about #441's client and bridge, and what #441 can assume about the server. Design reasons are in [design.md](design.md). The production deployment and checks are recorded in #470; this interface page does not imply a fresh live check.
 
 Where this page and #441 differ, #441 wins; it is the client base.
 
@@ -29,7 +29,7 @@ Where this page and #441 differ, #441 wins; it is the client base.
 | The `docker` plan class            | `boinc/plan_class_spec.xml`                                                               |
 | Project and daemon configuration   | `boinc/config.xml.template` and `boinc/project.xml`                                       |
 | Where `submit` and `reconcile` run | the manual-trigger Container Apps Job in `infra/boinc/modules/bridge-job.bicep`           |
-| The set-up plan and deployment     | `scripts/boinc/bootstrap.sh` (`--what-if` default; `--apply` deploys)                     |
+| The set-up plan and deployment     | `scripts/provision-boinc.sh` and `scripts/build-boinc-images.sh`; secrets and project init run in VNet jobs |
 | The server and bridge images       | `images/server`, `images/bridge` ([images.md](images.md))                                 |
 
 ## Paths on the share
