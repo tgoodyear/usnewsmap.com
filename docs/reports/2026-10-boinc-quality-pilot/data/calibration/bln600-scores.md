@@ -1,0 +1,8 @@
+| engine | group | crops | reference chars | CER | WER |
+|---|---|---|---|---|---|
+| doctr-1.1.0-db_resnet50-parseq-multilingual | all | 120 | 324404 | 0.1205 | 0.3533 |
+| doctr-1.1.0-db_resnet50-parseq-multilingual | pub-bln600 | 120 | 324404 | 0.1205 | 0.3533 |
+| tesseract-5.5-eng-psm4 | all | 600 | 1696781 | 0.0604 | 0.2089 |
+| tesseract-5.5-eng-psm4 | pub-bln600 | 600 | 1696781 | 0.0604 | 0.2089 |
+| tesseract-5.5-eng-psm6 | all | 600 | 1696781 | 0.0711 | 0.2394 |
+| tesseract-5.5-eng-psm6 | pub-bln600 | 600 | 1696781 | 0.0711 | 0.2394 |
