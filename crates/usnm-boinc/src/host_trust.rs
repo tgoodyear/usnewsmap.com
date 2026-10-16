@@ -151,8 +151,159 @@ async fn canonical_host(c: &Config, workunit: &str) -> anyhow::Result<u64> {
     Ok(*ids.first().unwrap())
 }
 
-/// Discover hosts centrally, skip same-image trusted hosts, and issue at most one gold unit
-/// per host and campaign. Native gold submission journals handle uncertain dispatch.
+/// One BOINC result of a failed gold attempt, kept with the attempt as its diagnostics.
+#[derive(Debug, PartialEq, Serialize)]
+struct FailedResult {
+    result: u64,
+    outcome: i64,
+    client_state: i64,
+    exit_status: i64,
+    /// The client's uploaded stderr (BOINC `result.stderr_out`), first 64 KiB.
+    stderr: String,
+}
+
+#[derive(Debug, PartialEq)]
+enum GoldStatus {
+    /// The workunit row is gone (purged) or never reached the database; leave it alone.
+    Unknown,
+    Pending,
+    Succeeded,
+    Failed(Vec<FailedResult>),
+}
+
+const SERVER_STATE_OVER: i64 = 5;
+const OUTCOME_SUCCESS: i64 = 1;
+const MAX_ATTEMPTS: u32 = 10_000;
+
+fn decode_hex(text: &str) -> anyhow::Result<Vec<u8>> {
+    ensure!(
+        text.is_ascii() && text.len().is_multiple_of(2),
+        "invalid hex"
+    );
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).context("invalid hex"))
+        .collect()
+}
+
+/// Rows of `id, server_state, outcome, client_state, exit_status, HEX(stderr)` from a
+/// `workunit LEFT JOIN result` query: no rows means no workunit; a NULL id means no result yet.
+fn gold_status(text: &str) -> anyhow::Result<GoldStatus> {
+    let mut failed = Vec::new();
+    let mut any = false;
+    let mut pending = false;
+    let mut succeeded = false;
+    for line in text.lines() {
+        any = true;
+        let f: Vec<&str> = line.split('\t').collect();
+        ensure!(f.len() == 6, "invalid gold status row");
+        if f[0] == "NULL" {
+            pending = true;
+            continue;
+        }
+        let n = |s: &str| s.parse::<i64>().context("invalid gold status field");
+        let (server_state, outcome) = (n(f[1])?, n(f[2])?);
+        if server_state != SERVER_STATE_OVER {
+            pending = true;
+        } else if outcome == OUTCOME_SUCCESS {
+            succeeded = true;
+        } else {
+            let stderr = if f[5] == "NULL" {
+                Vec::new()
+            } else {
+                decode_hex(f[5])?
+            };
+            failed.push(FailedResult {
+                result: f[0].parse().context("invalid result id")?,
+                outcome,
+                client_state: n(f[3])?,
+                exit_status: n(f[4])?,
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            });
+        }
+    }
+    Ok(match (any, pending, succeeded) {
+        (false, ..) => GoldStatus::Unknown,
+        (_, true, _) => GoldStatus::Pending,
+        (_, _, true) => GoldStatus::Succeeded,
+        _ => GoldStatus::Failed(failed),
+    })
+}
+
+async fn query_gold_status(c: &Config, workunit: &str) -> anyhow::Result<GoldStatus> {
+    ensure!(
+        workunit
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+        "invalid workunit"
+    );
+    gold_status(&query(c, &format!(
+        "SELECT r.id, r.server_state, r.outcome, r.client_state, r.exit_status, HEX(LEFT(r.stderr_out, 65536)) \
+         FROM workunit w LEFT JOIN result r ON r.workunitid=w.id WHERE w.name='{workunit}' ORDER BY r.id"
+    )).await?)
+}
+
+/// Attempt 0 keeps the original per-host root; later attempts are fresh campaign roots
+/// because a targeted gold campaign root is bound to one assignment.
+fn attempt_root(host_root: &Path, attempt: u32) -> PathBuf {
+    if attempt == 0 {
+        host_root.to_path_buf()
+    } else {
+        host_root.join("retry").join(attempt.to_string())
+    }
+}
+
+/// Where this host's next gold unit goes, or None while its latest attempt is pending,
+/// succeeded or unknown. A failed attempt never parks the host: its BOINC diagnostics are
+/// written to `failure.json` (on `--execute`) and the following attempt is planned.
+async fn next_attempt(
+    c: &Config,
+    host_root: &Path,
+    execute: bool,
+) -> anyhow::Result<Option<PathBuf>> {
+    let mut attempt = 0;
+    while attempt_root(host_root, attempt + 1)
+        .join("units/0000")
+        .is_dir()
+    {
+        attempt += 1;
+        ensure!(attempt < MAX_ATTEMPTS, "too many gold attempts");
+    }
+    let root = attempt_root(host_root, attempt);
+    let unit = gold::submit::units_dir(&root).join("0000");
+    // Not yet submitted, or uncertain: gold submission's own journal decides (and refuses).
+    if !unit.join("submitted").is_file() {
+        return Ok(Some(root));
+    }
+    let job: gold::job::Job =
+        serde_json::from_slice(&read(&unit.join(gold::job::JOB_FILE), gold::job::MAX_JSON)?)?;
+    let workunit = job.workunit();
+    match query_gold_status(c, &workunit).await? {
+        GoldStatus::Failed(results) => {
+            if execute {
+                let failure = serde_json::json!({ "workunit": workunit, "results": results });
+                atomic(
+                    &root.join("failure.json"),
+                    &serde_json::to_vec_pretty(&failure)?,
+                )?;
+                eprintln!(
+                    "gold attempt {attempt} ({workunit}) failed; diagnostics in {}; issuing another",
+                    root.join("failure.json").display()
+                );
+            }
+            Ok(Some(attempt_root(host_root, attempt + 1)))
+        }
+        GoldStatus::Unknown => {
+            eprintln!("{workunit} is not in the database; not reissuing");
+            Ok(None)
+        }
+        GoldStatus::Pending | GoldStatus::Succeeded => Ok(None),
+    }
+}
+
+/// Discover hosts centrally, skip same-image trusted hosts, and keep one gold unit
+/// outstanding per untrusted host and campaign: a host whose attempt failed gets a new one.
+/// Native gold submission journals handle uncertain dispatch.
 pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     c.validate()?;
     let trust = Trust::load(&c.trust)?;
@@ -169,23 +320,24 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
         .filter(|h| trust.refuse(&c.engine.image, Some(*h)).is_some())
         .collect();
     let campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &c.engine))?);
-    let pending: Vec<_> = pending
-        .into_iter()
-        .filter(|host| {
-            !c.root
-                .join("onboard")
-                .join(&campaign)
-                .join(host.to_string())
-                .join("units/0000/submitted")
-                .is_file()
-        })
-        .collect();
+    let campaign_root = c.root.join("onboard").join(&campaign);
+    // Hosts are visited in id order and the pass stops at max_hosts, so hosts with an
+    // outstanding unit never starve newly discovered ones.
+    let mut plans = Vec::new();
+    for host in pending {
+        if let Some(root) = next_attempt(c, &campaign_root.join(host.to_string()), execute).await? {
+            plans.push((host, root));
+            if plans.len() == c.max_hosts {
+                break;
+            }
+        }
+    }
     if !execute {
-        return Ok(pending.into_iter().take(c.max_hosts).collect());
+        return Ok(plans.into_iter().map(|(host, _)| host).collect());
     }
     let _lock = Lock::take(&c.root)?;
-    let shared = c.root.join("onboard").join(&campaign).join("shared");
-    if !pending.is_empty() {
+    let shared = campaign_root.join("shared");
+    if !plans.is_empty() {
         for name in [gold::prepare::PREPARED, gold::prepare::BUNDLE_COPY] {
             let limit = if name == gold::prepare::PREPARED {
                 16 << 20
@@ -233,16 +385,7 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
         }
     }
     let mut issued = Vec::new();
-    for host in pending {
-        let root = c
-            .root
-            .join("onboard")
-            .join(&campaign)
-            .join(host.to_string());
-        // Already issued hosts must not starve newly discovered hosts when a pass is capped.
-        if root.join("units/0000/submitted").is_file() {
-            continue;
-        }
+    for (host, root) in plans {
         for name in [gold::prepare::PREPARED, gold::prepare::BUNDLE_COPY] {
             let source = shared.join(name);
             let limit = if name == gold::prepare::PREPARED {
@@ -274,9 +417,6 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
             "uncertain gold submission; reconcile native campaign markers"
         );
         issued.push(host);
-        if issued.len() == c.max_hosts {
-            break;
-        }
     }
     Ok(issued)
 }
@@ -598,6 +738,40 @@ pub fn quarantine(root: &Path) -> anyhow::Result<Vec<Quarantine>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gold_status_retries_only_terminal_failures_and_keeps_diagnostics() {
+        assert_eq!(gold_status("").unwrap(), GoldStatus::Unknown);
+        assert_eq!(
+            gold_status("NULL\tNULL\tNULL\tNULL\tNULL\tNULL\n").unwrap(),
+            GoldStatus::Pending
+        );
+        assert_eq!(
+            gold_status("7\t4\t0\t1\t0\tNULL\n").unwrap(),
+            GoldStatus::Pending
+        );
+        assert_eq!(
+            gold_status("7\t5\t1\t5\t0\t\n").unwrap(),
+            GoldStatus::Succeeded
+        );
+        // "Error -1" hex-encoded, as HEX(stderr_out) returns it.
+        let GoldStatus::Failed(r) = gold_status("7\t5\t3\t5\t255\t4572726F72202D31\n").unwrap()
+        else {
+            panic!("expected a failure")
+        };
+        assert_eq!(
+            r,
+            vec![FailedResult {
+                result: 7,
+                outcome: 3,
+                client_state: 5,
+                exit_status: 255,
+                stderr: "Error -1".into()
+            }]
+        );
+        assert!(gold_status("7\t5\t3\n").is_err());
+        assert!(gold_status("7\t5\t3\t5\t255\t4G\n").is_err());
+    }
 
     fn trust() -> Trust {
         Trust {
