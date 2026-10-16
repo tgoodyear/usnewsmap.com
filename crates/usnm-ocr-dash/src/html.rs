@@ -156,8 +156,19 @@ section { background:var(--surface); border:1px solid var(--ring); border-radius
 section > :last-child { margin-bottom:0; }
 /* The diagrams need the page's width. */
 section.wide { column-span:all; }
+section.wide > details > summary { cursor:pointer; font-weight:600; }
+section.wide > details > summary h2 { display:inline; }
 section.wide figure { overflow-x:auto; }
 section.wide svg { margin:6px 0 10px; min-width:760px; }
+.pipeline-table { table-layout:fixed; }
+.pipeline-table th:first-child { width:52%; }
+.pipeline-table th:nth-child(2) { width:16%; }
+.pipeline-table th:nth-child(3) { width:16%; }
+.pipeline-table td { white-space:normal; overflow-wrap:anywhere; }
+.pipeline-table details > summary { cursor:pointer; }
+.pipeline-table details p { margin:6px 0; color:var(--ink2); }
+.pipeline-meta { margin-top:12px; }
+.pipeline-meta > summary { cursor:pointer; color:var(--ink2); }
 .sr { position:absolute; width:1px; height:1px; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 /* Long lists scroll inside their panel, under a header that stays put. */
 .scroll { max-height:360px; overflow:auto; border-bottom:1px solid var(--grid); }
@@ -197,6 +208,7 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
   /* Lists keep a row a line or two tall and scroll sideways in their box. */
   .scroll { max-height:320px; }
   .scroll td { white-space:nowrap; } .scroll td code { word-break:normal; }
+  .scroll .pipeline-table td { white-space:normal; }
   .scroll td.msg { white-space:normal; width:auto; max-width:none; min-width:15em; }
   th { white-space:nowrap; padding-right:6px; }
   td { white-space:normal; overflow-wrap:break-word; padding-right:6px; }
@@ -415,7 +427,8 @@ fn sset_eta(x: &crate::view::SsetView) -> String {
 }
 
 fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
-    let mut o = String::from("<section id=\"corpus-data-flow\"><h2>Corpus data flow</h2>");
+    let mut o =
+        String::from("<section class=\"wide\" id=\"corpus-data-flow\"><h2>Corpus data flow</h2>");
     o.push_str(&badge(
         if v.stale { "warning" } else { "good" },
         if v.stale {
@@ -425,19 +438,63 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
         },
     ));
     o.push_str(
-        "<p>Catalog evidence only; stage counts are separate from local worker totals. \
-         Cataloged counts are not whole-corpus totals; zero may mean no catalog loaded. \
+        "<p class=\"note\">Partial catalog; stage counts are separate from local worker totals, not whole-corpus totals. \
         <a href=\"/api/pipeline.json\">JSON</a></p>",
     );
-    if let Some(e) = &v.last_error {
-        let _ = write!(o, "<p class=\"stale\">{}</p>", esc(e));
-    }
     if let Some(s) = &v.snapshot {
+        o.push_str(&scroll("Corpus stages"));
+        o.push_str("<table class=\"pipeline-table\"><thead><tr><th>Stage / details</th><th class=\"r\">Count</th><th>State</th><th>Age</th></tr></thead><tbody>");
+        for stage in &s.stages {
+            let state = match stage.state {
+                crate::pipeline::StageState::Observed => "observed",
+                crate::pipeline::StageState::Unknown => "unknown",
+                crate::pipeline::StageState::Blocked => "blocked",
+            };
+            let freshness = v.stage_freshness.iter().find(|f| f.id == stage.id);
+            let _ = write!(
+                o,
+                "<tr><td><details><summary>{}</summary><p>{}</p><p><code>{}</code></p>\
+                 <p>Source evidence: {}</p></details></td><td class=\"r\">{}</td><td>{}{}</td><td>{}</td></tr>",
+                esc(&stage.label),
+                esc(&stage.detail),
+                esc(&stage.id),
+                stage
+                    .observed_at
+                    .unwrap_or(s.observed_at)
+                    .map_or_else(|| "unknown".into(), time),
+                stage.count.map_or_else(|| "unknown".into(), int),
+                state,
+                if stage.state == crate::pipeline::StageState::Observed
+                    && freshness.is_none_or(|f| f.stale)
+                {
+                    " / stale"
+                } else {
+                    ""
+                },
+                freshness
+                    .and_then(|f| f.age_secs)
+                    .map_or_else(|| "unknown".into(), |age| span(age.max(0) as u64)),
+            );
+        }
+        let _ = write!(
+            o,
+            "</tbody></table></div><details class=\"pipeline-meta\"><summary>Coverage, provenance and issues ({})</summary>\
+             <p>Cataloged runs: {}; cataloged run pages: {}. Cataloged artifact locations: {}; \
+             verified: {}; missing: {}.</p>",
+            s.issues.len(),
+            int(s.runs.total),
+            int(s.runs.pages),
+            int(s.artifacts.locations),
+            int(s.artifacts.verified),
+            int(s.artifacts.missing)
+        );
+        if let Some(e) = &v.last_error {
+            let _ = write!(o, "<p class=\"stale\">{}</p>", esc(e));
+        }
         let _ = write!(
             o,
             "<p>Producer: {} (schema {}). Source evidence: {}. Generated: {}. \
-             Retrieved: {}. Evidence age: {}.</p><p>Coverage: {}</p>\
-             <table><tr><th>Stage</th><th>Count</th><th>State / detail</th></tr>",
+             Retrieved: {}. Evidence age: {}.</p><p>Coverage: {}</p>",
             esc(&s.producer),
             s.schema_version,
             s.observed_at.map_or_else(|| "unknown".into(), time),
@@ -447,54 +504,15 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
                 .map_or_else(|| "unknown".into(), |n| span(n.max(0) as u64)),
             esc(&s.coverage.join(", "))
         );
-        for stage in &s.stages {
-            let state = match stage.state {
-                crate::pipeline::StageState::Observed => "observed",
-                crate::pipeline::StageState::Unknown => "unknown",
-                crate::pipeline::StageState::Blocked => "blocked",
-            };
-            let _ = write!(
-                o,
-                "<tr><td>{} ({})</td><td>{}</td><td>{}: {}</td></tr>",
-                esc(&stage.label),
-                esc(&stage.id),
-                stage.count.map_or_else(|| "unknown".into(), int),
-                state,
-                esc(&stage.detail)
-            );
-            let freshness = v.stage_freshness.iter().find(|f| f.id == stage.id);
-            let _ = write!(
-                o,
-                "<tr><td colspan=\"3\">Source evidence: {}; age: {}; {}</td></tr>",
-                stage
-                    .observed_at
-                    .unwrap_or(s.observed_at)
-                    .map_or_else(|| "unknown".into(), time),
-                freshness
-                    .and_then(|f| f.age_secs)
-                    .map_or_else(|| "unknown".into(), |age| span(age.max(0) as u64)),
-                if freshness.is_none_or(|f| f.stale) {
-                    "STALE / unavailable"
-                } else {
-                    "observed"
-                }
-            );
-        }
-        let _ = write!(
-            o,
-            "</table><p>Cataloged runs: {}; cataloged run pages: {}. Cataloged artifact locations: {}; \
-             verified: {}; missing: {}.</p>",
-            int(s.runs.total),
-            int(s.runs.pages),
-            int(s.artifacts.locations),
-            int(s.artifacts.verified),
-            int(s.artifacts.missing)
-        );
         for issue in &s.issues {
             let _ = write!(o, "<p>{}: {}</p>", esc(&issue.code), esc(&issue.detail));
         }
+        o.push_str("</details>");
     } else {
         o.push_str("<p>No valid catalog snapshot available.</p>");
+        if let Some(e) = &v.last_error {
+            let _ = write!(o, "<p class=\"stale\">{}</p>", esc(e));
+        }
     }
     o.push_str("</section>");
     o
@@ -517,8 +535,6 @@ pub fn render(v: &View) -> String {
         time(now),
         v.refresh_secs
     );
-
-    o.push_str(&pipeline_panel(&v.pipeline));
 
     // 0. At a glance.
     o.push_str("<section class=\"wide\"><h2>At a glance</h2><table><tr><th>What</th><th>State</th><th>Progress</th><th class=\"r\">Per hour</th><th class=\"r\">Done in</th></tr>");
@@ -579,8 +595,7 @@ pub fn render(v: &View) -> String {
     }
     o.push_str("</table></section>");
 
-    // 0b. Pipelines, one diagram for each data set.
-    o.push_str(&crate::diagrams::section(v));
+    o.push_str(&pipeline_panel(&v.pipeline));
 
     // 1. Pool and hosts.
     o.push_str("<section><h2>Pool and hosts</h2>");
@@ -1155,6 +1170,7 @@ pub fn render(v: &View) -> String {
         esc(v.azure.queues_note)
     );
 
+    o.push_str(&crate::diagrams::section(v));
     let _ = write!(o, "</div><script>{SCRIPT}</script></body></html>");
     o
 }
@@ -1182,6 +1198,12 @@ mod tests {
         };
         let html = pipeline_panel(&v);
         assert!(html.contains("Corpus data flow"));
+        assert!(html.contains("<section class=\"wide\" id=\"corpus-data-flow\">"));
+        assert!(html.contains("aria-label=\"Corpus stages\""));
+        assert!(html.contains("<table class=\"pipeline-table\">"));
+        assert_eq!(html.matches("<details><summary>").count(), 2);
+        assert!(!html.contains("colspan=\"3\""));
+        assert!(html.contains("<details class=\"pipeline-meta\"><summary>"));
         assert!(html.contains("STALE / unavailable"));
         assert!(html.contains("separate from local worker totals"));
         for s in [
