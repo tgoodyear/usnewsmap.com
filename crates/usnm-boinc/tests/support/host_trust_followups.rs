@@ -41,6 +41,7 @@ case "$*" in
   *"SELECT id FROM host"*) printf '1\n2\n3\n4\n';;
   *"usnm_spot_"*) printf '%s\n' "${SPOT_HOST:-2}";;
   *"SELECT r.hostid"*) printf '%s\n' "${SOURCE_HOST:-1}";;
+  *"r.workunitid=w.id"*) printf '%b' "${GOLD_STATUS:-}";;
   *) exit 5;;
 esac
 "#,
@@ -252,6 +253,59 @@ async fn planning_is_read_only_and_onboarding_is_capped_retry_stable_and_does_no
     assert_eq!(c.calls().lines().count(), 2);
     assert!(!c.calls().contains("--target_host 1"));
     assert!(!c.calls().contains("--target_host 2"));
+}
+
+#[tokio::test]
+async fn a_failed_gold_attempt_is_recorded_and_the_host_gets_another() {
+    let c = Controller::new().await;
+    success(&c.command("onboard").arg("--execute").output().unwrap());
+    assert!(c.calls().contains("--target_host 3"));
+    let host = std::fs::read_dir(c.root.join("onboard"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("3");
+    // Unsent or in progress: host 3 keeps its unit and host 4 is next.
+    let out = c
+        .command("onboard")
+        .env("GOLD_STATUS", "NULL\\tNULL\\tNULL\\tNULL\\tNULL\\tNULL\\n")
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[4]");
+    // Over with a client error: the diagnostics are kept and host 3 gets a fresh unit.
+    let failed = "11\\t5\\t3\\t5\\t255\\t4572726F72202D31\\n";
+    let out = c
+        .command("onboard")
+        .env("GOLD_STATUS", failed)
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[3]");
+    assert!(!host.join("failure.json").exists());
+    success(
+        &c.command("onboard")
+            .arg("--execute")
+            .env("GOLD_STATUS", failed)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(c.calls().lines().count(), 2);
+    assert_eq!(c.calls().matches("--target_host 3").count(), 2);
+    let failure: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(host.join("failure.json")).unwrap()).unwrap();
+    assert_eq!(failure["results"][0]["exit_status"], 255);
+    assert_eq!(failure["results"][0]["stderr"], "Error -1");
+    assert!(host.join("retry/1/units/0000/submitted").is_file());
+    // A success ends the retries; the trust workflow decides from its report.
+    let out = c
+        .command("onboard")
+        .env("GOLD_STATUS", "12\\t5\\t1\\t5\\t0\\t\\n")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[4]");
 }
 
 #[tokio::test]

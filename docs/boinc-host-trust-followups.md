@@ -85,7 +85,16 @@ The shared validator expectations writer is locked and refuses updates over its
 16 MiB reader limit **before** replacing the previous readable file. If that
 bound is reached, stop for a reviewed sharding/retention decision; never delete
 expectations for pending units to force another submission.
-Submitted hosts are skipped without starving new hosts behind the per-pass cap.
+Each untrusted host keeps **one gold unit outstanding**. A host whose latest
+unit is unsent, in progress or succeeded is skipped without starving new hosts
+behind the per-pass cap. A host whose latest unit is over with no successful
+result (client error, no reply, validate error, detached) is **not parked**: the
+pass writes BOINC's diagnostics for each failed result (outcome, client state,
+exit status and the first 64 KiB of the client's uploaded stderr) to that
+attempt's `failure.json`, then issues the next attempt under
+`<host>/retry/<n>` (attempt 0 is `<host>` itself). A workunit no longer in the
+database (purged after 30 days) is left alone. Run passes more often than the
+purge age so failures are seen.
 A `submitting` marker blocks the pass and is **never automatically retried**.
 Inspect that campaign's deterministic workunit on BOINC, then use the existing
 gold reconciliation procedure (rename `submitting` to `submitted` if present;
@@ -95,9 +104,18 @@ controller root. The controller's kernel lock serializes its own dispatches.
 This is first-gold issuance, not automatic trust promotion or periodic
 recalibration. Collect and review the gold reports and rebuild trust through the
 existing calibrated workflow. A later failed report revokes trust as before.
-Already-issued hosts are not silently reissued after a failure; any new campaign
-requires an explicit operator decision. Repeated execution/scheduling of this
-controller is a separate activation decision; no service is installed here.
+In production, the bridge's `gold-onboard` step runs one pass with the bridge's
+own database credentials, the campaign's prepared inputs and
+`$SHARE_DIR/gold/trust.json`; the controller root is `$SHARE_DIR/host-trust`:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step gold-onboard --var GOLD_CAMPAIGN=v1-tess550 \
+  --var GOLD_ENGINE_IMAGE=sha256:<worker> --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
+```
+
+A failed unit is a failed job, not a verdict on the host: it gets another unit
+on the next pass. A successful unit whose CER is over the threshold is a
+verdict and is not reissued; a new campaign decides that.
 
 ## Sample and rerun OCR independently
 
