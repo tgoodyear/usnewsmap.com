@@ -28,6 +28,7 @@ use serde::Serialize;
 use usnm_store::credential::Credential;
 
 use crate::batch;
+use crate::loc::ScanFormat;
 use crate::prefetch::{matches_sidecar, sidecar_path, Sidecar};
 
 /// Blob service REST API version, as `usnm_store::blob`.
@@ -334,9 +335,11 @@ impl Archive {
         // The sidecar must describe this file: its extension's format and
         // the full resolution, as `prefetch::verified` requires.
         let ext = scan.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let Some(side) = side
-            .filter(|s| s.resolution == "full" && s.format == ext && matches_sidecar(&bytes, s))
-        else {
+        let Some(side) = side.filter(|s| {
+            s.resolution == "full"
+                && ScanFormat::from_name(&s.format).is_some_and(|format| format.ext() == ext)
+                && matches_sidecar(&bytes, s)
+        }) else {
             return Ok((Outcome::BadLocal, 0));
         };
         let size = bytes.len() as u64;
@@ -620,6 +623,12 @@ pub async fn run(opts: Options, credential: Arc<Credential>) -> anyhow::Result<R
             tracing::info!(
                 scanned = report.scanned,
                 uploaded = report.uploaded,
+                present = report.present,
+                bad_local = report.bad_local,
+                conflicts = report.conflicts,
+                missing = report.missing,
+                mismatched = report.mismatched,
+                errors = report.errors,
                 "archive progress"
             );
         }
@@ -753,6 +762,51 @@ mod tests {
             concurrency: 2,
             state: None,
         }
+    }
+
+    #[tokio::test]
+    async fn archives_current_and_legacy_jpeg_sidecars_but_rejects_wrong_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, format) in [
+            ("current.jpg", Some("jpeg")),
+            ("legacy.jpg", None),
+            ("wrong.jpg", Some("jp2")),
+            ("wrong.jp2", Some("jpeg")),
+            ("unknown.jpg", Some("jpg")),
+        ] {
+            let rel = format!("keep/b/s/d/e/{name}");
+            put_scan(dir.path(), &rel, b"jpeg bytes", true);
+            let side = sidecar_path(&dir.path().join(&rel));
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&side).unwrap()).unwrap();
+            value.as_object_mut().unwrap().remove("md5");
+            if let Some(format) = format {
+                value["format"] = format.into();
+            } else {
+                value.as_object_mut().unwrap().remove("format");
+            }
+            std::fs::write(side, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+        let m = Arc::new(Mock::default());
+        let url = serve(m.clone()).await;
+        let r = run(opts(dir.path(), url.clone(), Mode::Upload), cred())
+            .await
+            .unwrap();
+        assert_eq!((r.scanned, r.uploaded, r.bad_local), (5, 2, 3));
+        let blobs = m.blobs.lock().unwrap().clone();
+        for name in ["current.jpg", "legacy.jpg"] {
+            let blob = &blobs[&format!("scans/keep/b/s/d/e/{name}")];
+            assert_eq!(blob.headers["x-ms-meta-format"], "jpeg");
+            assert_eq!(blob.headers["x-ms-blob-content-type"], "image/jpeg");
+        }
+        let r = run(opts(dir.path(), url, Mode::Verify), cred())
+            .await
+            .unwrap();
+        assert_eq!(
+            (r.present, r.bad_local, r.missing, r.mismatched),
+            (2, 3, 0, 0)
+        );
+        assert_eq!(*m.puts.lock().unwrap(), 2);
     }
 
     #[tokio::test]

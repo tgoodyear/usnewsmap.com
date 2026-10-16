@@ -8,7 +8,7 @@ UNVERIFIED marks behavior that remains unconfirmed.
 ## 1. What this covers
 
 PR #441 (`docs/boinc.md`, `crates/usnm-boinc`, `ocr/boinc/`) is the client side and the
-bridge. Its model, which this design does not change:
+bridge. This design does not change its model:
 
 - a Docker-wrapper app, `usnm_ocr`, whose worker image runs Tesseract directly; BOINC's
   `docker_wrapper` controls the outer container, so volunteers need Docker;
@@ -63,9 +63,9 @@ feeder's first fill. BOINC clients back off and retry, so it would function, but
 uploaded and validated would stall for the cold period, and the daemons would not run when no
 HTTP request has arrived.
 
-So: `minReplicas = 1`. What we can do cheaply is a pause switch. Setting `minReplicas = 0`
-(and not running the bridge job) parks the whole project. The clients back off with growing
-delay. That parks the project and costs only the database and storage.
+So `minReplicas = 1`. What we can do cheaply is a pause switch. Setting `minReplicas = 0`
+(and not running the bridge job) parks the whole project, and the clients back off with
+growing delay. A parked project costs only the database and storage.
 
 Container Apps bills a replica at the idle rate (lower) when it is not busy and at the active
 rate when it is. The daemons use little CPU when no work flows, so the bill falls between
@@ -117,24 +117,28 @@ choose it now. Notes:
   No leaf pin, disabled verification, or silent plaintext fallback is permitted.
   Certificate roots are verified at image build, not fetched at runtime.
 
-  **Migration gate (not yet executed):** build the new base/server/bridge images
-  together (base cache key includes patch and options). In an isolated dev
-  project/database, initialize with enforcement ON and show non-empty
+  **Migration gate (not yet executed):** build the new base, server and bridge
+  images together (base cache key includes patch and options). In an isolated dev
+  project and database, initialize with enforcement ON and show non-empty
   `SHOW SESSION STATUS LIKE 'Ssl_cipher'` for Python, both PHP APIs and a C++
-  utility. Exercise the web pages, `get_project_config.php`, scheduler RPC,
-  feeder, transitioner, validator and assimilator. A wrong hostname, untrusted
-  CA and TLS-disabled test server must all fail for each client type.
-  Existing projects contain **copies**, not symlinks, of PHP, Python and daemon/CGI
-  binaries: rebuild alone is insufficient. Back up the dev project and rehearse
-  BOINC's `upgrade`/project installation from the new source with all daemons
-  stopped, preserving config, keys, apps and spool. Inventory every installed
-  binary/library against the patched image before resuming. Only after this is
-  independently verified should a separately reviewed production maintenance
-  plan migrate the project, verify live sessions while enforcement remains OFF,
-  then turn it ON. Rollback restores the complete project and matching image
-  while enforcement is OFF. Do not restart/deploy production as part of this PR.
-  Local connector mocks and patch/syntax checks are prerequisites, **not** live
-  Azure/TLS acceptance or proof of uninterrupted production operation.
+  utility. Exercise the web pages, `get_project_config.php`, scheduler RPC, feeder,
+  transitioner, validator and assimilator. A wrong hostname, untrusted CA and
+  TLS-disabled test server must all fail for each client type. Existing projects
+  contain **copies**, not symlinks, of PHP, Python, daemon and CGI binaries:
+  rebuild alone is insufficient. Back up the dev project and rehearse BOINC's
+  `upgrade` or project installation from the new source with all daemons stopped,
+  preserving config, keys, apps and spool. Inventory every installed binary and
+  library against the patched image before resuming. Only after this is
+  independently verified should a separately reviewed production maintenance plan
+  migrate the project, verify live sessions while enforcement remains OFF, then
+  turn it ON. Rollback restores the complete project and matching image while
+  enforcement is OFF. Do not restart or deploy production as part of this PR. Local
+  connector mocks and patch and syntax checks are prerequisites, **not** live Azure
+  TLS acceptance or proof of uninterrupted production operation. The [local
+  disposable TLS fixture](db-tls-acceptance.md) exercises the actual pinned Python,
+  both PHP APIs, C++ `DB_CONN` and CLI against a TLS-required MariaDB server,
+  including the certificate, hostname and plaintext negative cases. It does not
+  replace Azure MySQL or full persisted-project migration acceptance.
 
 - CPU credits. B1ms has 20% baseline CPU. The transitioner and feeder poll constantly. If the
   credit balance drains, MySQL throttles to 20%. We alarm on the CPU-credit metric and move to
@@ -144,7 +148,7 @@ choose it now. Notes:
 
 ## 3. Static frontend: what can be static
 
-Scope: very little.
+Very little can be static.
 
 - The client requests `<master URL>get_project_config.php` and the account RPCs
   (`create_account.php`, `lookup_account.php`) at the master URL. All are PHP. So the master
@@ -272,9 +276,9 @@ the runtime and secrets identities `AcrPull` on the app's shared registry. `brid
 
 ### 5.2 Security
 
-Attack surface: the public scheduler CGI, `file_upload_handler` and the PHP web UI. The MySQL
-server has private access only. The Key Vault and Files account have public network access off
-and are reached through private endpoints in the project's VNet. The public name is
+The attack surface is the public scheduler CGI, `file_upload_handler` and the PHP web UI. The
+MySQL server has private access only. The Key Vault and Files account have public network
+access off and are reached through private endpoints in the project's VNet. The public name is
 `boinc.usnewsmap.com` with a managed certificate; #470 records a successful production health
 check. The master URL is part of every volunteer's attachment and cannot change.
 
@@ -286,12 +290,12 @@ check. The master URL is part of every volunteer's attachment and cannot change.
   the effective ceiling. How the project behaves under a flood has not been tested (UNVERIFIED);
   the pause switch (2.2) is the backstop.
 - Secrets: Key Vault (RBAC mode), a runtime user-assigned managed identity shared by the app and
-  bridge/init/publish jobs, and a separate identity for the secrets job. Exceptions to the
-  repository's Entra-only rule (ADR-0009), all forced by the
-  platform or by BOINC: the MySQL password (2.4); the key of the Azure Files account, because
-  the Container Apps mount takes it (the template reads it from the account it creates, so no
-  key is passed in or committed); and the Log Analytics shared key that the Container Apps
-  environment is configured with. No connection strings in Bicep outputs.
+  the bridge, init and publish jobs, and a separate identity for the secrets job. Exceptions to
+  the repository's Entra-only rule (ADR-0009), all forced by the platform or by BOINC: the MySQL
+  password (2.4); the key of the Azure Files account, because the Container Apps mount takes it
+  (the template reads it from the account it creates, so no key is passed in or committed); and
+  the Log Analytics shared key that the Container Apps environment is configured with. No
+  connection strings in Bicep outputs.
 - Registry and operator access: the app and its jobs pull from the app's shared registry, with
   `AcrPull` granted by the BOINC stack to the runtime and secrets-job identities. Registry admin
   and anonymous pull are disabled. The configured operator receives Key Vault Secrets Officer;
@@ -307,7 +311,7 @@ check. The master URL is part of every volunteer's attachment and cannot change.
   dedicated BOINC resource group when `USNM_BOINC_GROUP` is set. The group must hold only
   BOINC resources, and provisioning runs before this stack is deployed.
 - Images: `scripts/build-boinc-images.sh` uses ACR Tasks in the shared registry. The build
-  reuses `usnm-boinc-base` (pinned BOINC source/runtime dependencies) and
+  reuses `usnm-boinc-base` (pinned BOINC source and runtime dependencies) and
   `usnm-boinc-bridge-bin` (the Rust binary) when their input hashes are unchanged, then builds
   digest-pinned server and bridge images. The worker image remains in public GHCR for volunteer
   clients.
@@ -318,7 +322,7 @@ Privacy:
   `enable_privacy_by_default`, `enable_delete_account` is on, and the terms of use are shown.
 - The files on the share are scans the cache already holds, volunteers' results and the spool.
   No search text, user data or credentials of ours.
-- Web server and scheduler logs include IP addresses. Log Analytics retention 30 days.
+- Web server and scheduler logs include IP addresses. Log Analytics retention is 30 days.
 - #441's provenance carries its own route and version fields; nothing here adds a volunteer's
   email or IP to what is published.
 - #441 notes that its result fields establish transport consistency, not proof that a
@@ -389,8 +393,8 @@ Per-unit consequences, using the unit prices above:
 The fixed blocks (Container App at the idle or active rate, MySQL, Files, Key Vault, Log
 Analytics) are billed whether or not a batch is running. Pausing (2.2) saves the replica.
 
-Knobs: the cohort size and how often batches go out; the MySQL tier (B1ms to B2s if CPU
-credits drain); the retention of staged scans.
+The knobs are the cohort size and how often batches go out, the MySQL tier (B1ms to B2s
+if CPU credits drain), and the retention of staged scans.
 
 ## 7. Where #441 and this hosting may not fit
 
@@ -417,9 +421,9 @@ credits drain); the retention of staged scans.
    credentials, from the public GHCR package (ADR-0019, addendum).
 7. **`daemons.xml` has no standard daemons.** It lists only the validator and the assimilator;
    the template here adds the feeder, transitioner, file_deleter and db_purge.
-8. **Azure Files semantics.** The Container Apps app/jobs mount SMB with `mfsymlinks` and
-   explicit uid/gid and mode options (2.3). Full POSIX permissions and file-locking behavior
-   across BOINC operations remains to be verified.
+8. **Azure Files semantics.** The Container Apps app and jobs mount SMB with `mfsymlinks`
+   and explicit uid/gid and mode options (2.3). Full POSIX permissions and file-locking
+   behavior across BOINC operations remain to be verified.
 9. **Resource bounds.** `submit.rs` sets `rsc_memory_bound` to 1.5 GiB and `job.toml` caps the
    container at 1536 MiB. Whether Tesseract plus JP2 decoding of a 128 MiB scan fits is
    UNVERIFIED; #441 says to calibrate on real scans.
@@ -475,5 +479,5 @@ The production deployment and checks are recorded in #470: provisioning complete
 secrets and project initialization jobs succeeded, the public project configuration and status
 endpoints answered, the daemons were running, and the managed certificate was active. This
 design update does not re-run those production checks. Remaining acceptance items are the
-MySQL schema/runtime compatibility details, complete Azure Files permission and locking
+MySQL schema and runtime compatibility details, complete Azure Files permission and locking
 behavior, and the #464 TLS migration; see the open questions above.

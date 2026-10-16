@@ -20,7 +20,7 @@ Every result has five files: `text-tiled.txt`, `text-whole.txt`, `text-capped.tx
 
 ## The image
 
-`ocr/boinc/surya/Containerfile` builds one image for both app versions, on llama.cpp's CUDA server image, pinned by digest. That build loads its CUDA backend when the container can see an NVIDIA GPU and its CPU backends otherwise. On top of it: surya-ocr 0.22.1 in a Python virtual environment, with the CPU build of torch (torch only runs Surya's layout fallback; the OCR model runs in llama-server), and `usnm-boinc`, which runs the unit.
+`ocr/boinc/surya/Containerfile` builds one image for both app versions, on llama.cpp's CUDA server image, pinned by digest. That build loads its CUDA backend when the container can see an NVIDIA GPU and its CPU backends otherwise. On top of it are surya-ocr 0.22.1 in a Python virtual environment, with the CPU build of torch (torch only runs Surya's layout fallback; the OCR model runs in llama-server), and `usnm-boinc`, which runs the unit.
 
 The weights are in the image: Surya 2's GGUF model and vision projector, and the layout model, at the revisions round 1 used. `ocr/boinc/surya/weights.lock` pins each file's URL and sha256, and the build checks them. Datalab's licence (a modified Open RAIL-M) requires a copy with every distribution of the weights, and notice of its use-based restrictions, so the image carries `LICENSE` beside the weights (`/opt/surya/models/LICENSE`) and a `NOTICE`. The image records its llama.cpp base, Surya version and weights lock digest as `USNM_SURYA_LLAMA_IMAGE`, `USNM_SURYA_VERSION` and `USNM_SURYA_WEIGHTS`; a unit carries the same three values and the host refuses a unit staged for another build.
 
@@ -44,7 +44,7 @@ The stock `docker_wrapper` adds `--gpus all` to `docker create` (or `podman crea
 
 Without these, the container either fails to start (the wrapper's stderr, which BOINC returns with the result, holds the runtime's error) or starts without a GPU. In the second case the unit returns `no_gpu` for each mode, quickly, with the diagnostics.
 
-The wrapper passes every GPU, not only the one BOINC assigned (`gpu_device_num`). The worker runs llama-server on the assigned one (`CUDA_VISIBLE_DEVICES`, taking BOINC's number as nvidia-smi's index, which may differ on a host with mixed GPUs) and measures that GPU's memory; the diagnostics record which. llama.cpp's CUDA build needs a driver that supports CUDA 12.
+The wrapper passes every GPU, not only the one BOINC assigned (`gpu_device_num`). The worker runs llama-server on the assigned one (`CUDA_VISIBLE_DEVICES`, taking BOINC's number as nvidia-smi's index, which may differ on a host with mixed GPUs) and measures that GPU's memory; the diagnostics record which GPU that was. llama.cpp's CUDA build needs a driver that supports CUDA 12.
 
 ## Diagnostics
 
@@ -65,13 +65,13 @@ A unit that can't run at all (an input whose checksum doesn't match, an engine t
 `create_work` makes each unit with `min_quorum` 2 and `target_nresults` 2, and at most 4 results. `script_validator` runs:
 
 - `usnm_surya_check` (`usnm-boinc surya check`) on each result: shape, sizes, UTF-8 and checksums. It also copies the result to `<project>/surya/seen/<result>/`, so every host's timings and diagnostics are kept, not only the canonical result's.
-- `usnm_surya_compare` (`usnm-boinc surya compare`) on each pair: the same job and engine; in each mode both ran, both read the page or neither did; and where both read it, a word-bag Dice (the measure in [boinc-assessment.md](boinc-assessment.md)) of at least the threshold. A mode only one of them ran is not compared, and two results with no mode in common don't agree; two results that both could not run the unit (`unit_error`) do. Every pair is appended to `<project>/surya/pairs.jsonl` with its Dice per mode and both hosts' devices.
+- `usnm_surya_compare` (`usnm-boinc surya compare`) on each pair. Two results agree when they have the same job and engine; when, in each mode both ran, both read the page or neither did; and when, where both read it, their word-bag Dice (the measure in [boinc-assessment.md](boinc-assessment.md)) is at least the threshold. A mode only one of them ran is not compared, and two results with no mode in common don't agree. Two results that both could not run the unit (`unit_error`) do agree. Every pair is appended to `<project>/surya/pairs.jsonl` with its Dice per mode and both hosts' devices.
 
 Vision-language output can differ between GPUs, and between CPU and GPU, so the threshold is measured, not assumed. Until the probe has measured it, `compare` accepts any Dice of 0.5 or more (`PROBE_MIN_DICE`), which only rejects unrelated text, and the logged pairs give the distribution to set it from.
 
 `rsc_fpops_est` is 1e14 (round 1's median 18,753 CPU-seconds per tiled page at a few GFLOPS per core) and `rsc_memory_bound` 12 GiB, rounded up from the measured 11.8 GB CPU peak. A workunit can be sent to either version, so the shared admission bound must cover the CPU version even though the GPU container is capped at 8 GiB. This conservatively excludes hosts whose BOINC memory allowance is below 12 GiB; revise it only after pilot measurements.
 
-The ALTO staged with each page is retained so the Surya outputs can be scored against LoC with the existing report tooling. There is not yet a Surya collector that produces the large-sample quality report; the attached-host pilot and its output are prerequisites to setting the agreement threshold and widening the sample.
+The ALTO staged with each page is retained so the Surya outputs can be scored against LoC with the existing report tooling. There is not yet a Surya collector that produces the large-sample quality report. The attached-host pilot and its output are prerequisites to setting the agreement threshold and widening the sample.
 
 ## Running a campaign
 
@@ -130,6 +130,6 @@ docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=1g --gpus all -v
 ## Not verified
 
 - That rootless Podman with a CDI specification gives the container the GPU through the stock wrapper (the probe's question).
-- That llama.cpp's CUDA build falls back to its CPU backends on a host without a GPU outside the CI runner.
+- That llama.cpp's CUDA build falls back to its CPU backends on a host without a GPU other than the CI runner.
 - Peak memory and time on volunteers' hosts, and so the plan classes' limits.
 - Quality against LoC and the gold set for a stratified multi-hundred-page sample.

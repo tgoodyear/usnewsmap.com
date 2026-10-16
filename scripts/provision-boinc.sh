@@ -203,8 +203,10 @@ run_job() {
     case "$status" in Succeeded | Failed | Stopped | Degraded) break ;; esac
     sleep 10
   done
-  [ "$status" = Succeeded ] ||
-    die "$job execution $execution ended $status; inspect its ContainerAppConsoleLogs_CL logs"
+  if [ "$status" != Succeeded ]; then
+    boinc_execution_log "$execution"
+    die "$job execution $execution ended $status"
+  fi
   echo "$job complete ($execution)"
 }
 

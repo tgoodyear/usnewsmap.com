@@ -18,10 +18,15 @@ spec.loader.exec_module(work_volume)
 ROOT = HERE.parents[2]
 
 
+def runtime_defaults_setup():
+    """bridge-job.sh's write_mycnf function and a call to it."""
+    source = (HERE / "bridge-job.sh").read_text().split("\nwrite_mycnf() {\n", 1)[1]
+    return "write_mycnf() {\n" + source.split("\n}\n", 1)[0] + "\n}\nwrite_mycnf\n"
+
+
 class WorkVolume(unittest.TestCase):
     def test_runtime_defaults_preserve_carriage_returns(self):
-        source = (HERE / "bridge-job.sh").read_text().split('if [ "$step" = work-volume ]; then\n', 1)[1]
-        setup = source.split('  python3 "$TEMPLATES/work-volume.py"', 1)[0]
+        setup = runtime_defaults_setup()
         for password, escaped in (("internal\rreturn", "internal\\rreturn"),
                                   ("internal\r\nreturn", "internal\\r\\nreturn"),
                                   ("trailing\r", "trailing\\r"),
@@ -44,8 +49,7 @@ kv_get() { printf '%s\\n' "$SYNTHETIC_PASSWORD" > "$2"; }
                     )
 
     def test_runtime_defaults_are_valid_and_private(self):
-        source = (HERE / "bridge-job.sh").read_text().split('if [ "$step" = work-volume ]; then\n', 1)[1]
-        setup = source.split('  python3 "$TEMPLATES/work-volume.py"', 1)[0]
+        setup = runtime_defaults_setup()
         with tempfile.TemporaryDirectory(prefix="work-volume-") as directory:
             directory = Path(directory)
             password = ' synthetic#;"\\value\twith spaces '
@@ -155,14 +159,25 @@ kv_get() { printf '%s\\n' "$SYNTHETIC_PASSWORD" > "$2"; }
         states = items["workvolume-states"]["query"]
         chart = items["workvolume-chart"]["query"]
         for query in (latest, states, chart):
-            self.assertIn("ContainerAppConsoleLogs_CL", query)
+            self.assertIn(
+                "union isfuzzy=true ContainerAppConsoleLogs, ContainerAppConsoleLogs_CL",
+                query,
+            )
+            self.assertIn('column_ifexists("ContainerAppName", "")', query)
+            self.assertIn('column_ifexists("ContainerAppName_s", "")', query)
+            self.assertIn('column_ifexists("Log", "")', query)
+            self.assertIn('column_ifexists("Log_s", "")', query)
+            self.assertIn("| distinct TimeGenerated, App, Msg", query)
             self.assertIn("parse_json(Msg)", query)
             self.assertIn('tostring(m.event) == "boinc_work_volume"', query)
             self.assertIn("m.workunits.assimilate_state.ready", query)
             self.assertIn("m.results.server_state.in_progress", query)
             self.assertIn("m.active_users", query)
             self.assertIn("m.active_hosts", query)
-        self.assertIn("| top 1 by TimeGenerated desc", latest)
+        for query in (latest, states):
+            self.assertIn("let latestSample = samples | top 1 by TimeGenerated desc;", query)
+            self.assertIn("\nlatestSample\n", query)
+            self.assertNotIn("let latest =", query)
         for state in ("need_validate.no", "need_validate.yes", "assimilate_state.init",
                       "assimilate_state.ready", "assimilate_state.done", "assimilate_state.other",
                       "file_delete_state.init", "file_delete_state.ready", "file_delete_state.done",
@@ -171,6 +186,54 @@ kv_get() { printf '%s\\n' "$SYNTHETIC_PASSWORD" > "$2"; }
                       "server_state.other"):
             self.assertIn(state, states)
         self.assertIn("bin(TimeGenerated, {TimeRange:grain})", chart)
+
+        system_queries = [
+            items[name]["query"]
+            for name in ("executions", "executionsbyday", "revisions", "restarts", "warnings")
+        ]
+        for query in system_queries:
+            self.assertIn(
+                "union isfuzzy=true ContainerAppSystemLogs, ContainerAppSystemLogs_CL",
+                query,
+            )
+            for column in (
+                "ContainerAppName", "JobName", "RevisionName", "ReplicaName",
+                "Reason", "Type", "Log", "ContainerAppName_s", "JobName_s",
+                "RevisionName_s", "ReplicaName_s", "Reason_s", "Type_s", "Log_s",
+            ):
+                self.assertIn(f'column_ifexists("{column}"', query)
+            self.assertIn(
+                'Kind = coalesce(column_ifexists("Type_s", ""), column_ifexists("Type", ""))',
+                query,
+            )
+            self.assertIn(
+                "| distinct TimeGenerated, App, Revision, Replica, Reason, Kind, Msg",
+                query,
+            )
+
+        legacy_event = {"Type": "ContainerAppSystemLogs_CL", "Type_s": "Warning"}
+        preferred_order = ("Type_s", "Type")
+        legacy_type_first = ("Type", "Type_s")
+        self.assertEqual(
+            next(legacy_event[column] for column in preferred_order if legacy_event.get(column)),
+            "Warning",
+        )
+        self.assertNotEqual(
+            next(legacy_event[column] for column in legacy_type_first
+                 if legacy_event.get(column)),
+            "Warning",
+        )
+        self.assertIn('App contains "-caj-"', items["executions"]["query"])
+        self.assertIn('App contains "-ca-"', items["revisions"]["query"])
+        self.assertNotIn("ExecutionName", items["executions"]["query"])
+        self.assertEqual(items["executions"]["title"], "Job activity by last event")
+        self.assertIn("by Job = App", items["executions"]["query"])
+        self.assertIn("LastReason = Reason", items["executions"]["query"])
+        self.assertIn("Events = count()", items["executionsbyday"]["query"])
+        self.assertEqual(
+            items["executionsbyday"]["title"],
+            "Job system events per day, by reason",
+        )
 
 
 @unittest.skipUnless(os.environ.get("USNM_WORK_VOLUME_MYSQL_PORT"),

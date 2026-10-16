@@ -285,6 +285,10 @@ enum Command {
         /// abandoned (they reappear when their visibility runs out).
         #[arg(long, default_value_t = 60)]
         shutdown_grace_secs: u64,
+        /// On planned stops, stop taking pages and give in-flight pages
+        /// their configured page timeout before abandoning them.
+        #[arg(long, env = "USNM_OCR_DRAIN_ON_STOP")]
+        drain_on_stop: bool,
         /// Also publish the scan server's fetched list for this prefetch
         /// manifest version to `ocr-out/fetched/` every
         /// --publish-every-secs, for the seeder (12 Step 11). Needs
@@ -306,8 +310,11 @@ enum Command {
         /// times, outcome; no text), appended to across restarts.
         #[arg(long, env = "USNM_OCR_STATUS_JOURNAL")]
         status_journal: Option<PathBuf>,
+        /// Durable local page/engine execution JSON (no OCR text); unset disables capture.
+        #[arg(long, env = "USNM_OCR_RUN_METADATA_DIR")]
+        run_metadata_dir: Option<PathBuf>,
         #[command(flatten)]
-        engine: EngineArgs,
+        engine: Box<EngineArgs>,
     },
     /// Publish the scan server's fetched list once (12 Step 11): read
     /// `<scan server>/index/full.jsonl` and write the full-size scans'
@@ -554,6 +561,91 @@ enum Command {
     },
 }
 
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn run_metadata_flag_and_environment_are_opt_in() {
+        const NAME: &str = "USNM_OCR_RUN_METADATA_DIR";
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var(NAME, value),
+                    None => std::env::remove_var(NAME),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os(NAME));
+        std::env::remove_var(NAME);
+        let args = [
+            "usnm-ocr-worker",
+            "run",
+            "--queue-url",
+            "queue",
+            "--out-url",
+            "output",
+            "--node-id",
+            "node",
+        ];
+        let path = |cli: Cli| match cli.command {
+            Command::Run {
+                run_metadata_dir, ..
+            } => run_metadata_dir,
+            _ => panic!("expected run"),
+        };
+        assert!(path(Cli::try_parse_from(args).unwrap()).is_none());
+        std::env::set_var(NAME, "environment-metadata");
+        assert_eq!(
+            path(Cli::try_parse_from(args).unwrap()),
+            Some(PathBuf::from("environment-metadata"))
+        );
+        assert_eq!(
+            path(
+                Cli::try_parse_from(
+                    args.into_iter()
+                        .chain(["--run-metadata-dir", "flag-metadata"])
+                )
+                .unwrap()
+            ),
+            Some(PathBuf::from("flag-metadata"))
+        );
+    }
+
+    #[test]
+    fn drain_on_stop_can_be_enabled_through_environment() {
+        struct RestoreEnv(Option<std::ffi::OsString>);
+
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("USNM_OCR_DRAIN_ON_STOP", value),
+                    None => std::env::remove_var("USNM_OCR_DRAIN_ON_STOP"),
+                }
+            }
+        }
+
+        let _restore = RestoreEnv(std::env::var_os("USNM_OCR_DRAIN_ON_STOP"));
+        std::env::set_var("USNM_OCR_DRAIN_ON_STOP", "true");
+        let cli = Cli::try_parse_from([
+            "usnm-ocr-worker",
+            "run",
+            "--queue-url",
+            "https://example.queue.core.windows.net",
+            "--out-url",
+            "https://example.blob.core.windows.net/ocr-out",
+            "--node-id",
+            "node",
+        ])
+        .expect("parse environment-backed drain setting");
+        match cli.command {
+            Command::Run { drain_on_stop, .. } => assert!(drain_on_stop),
+            _ => panic!("expected run command"),
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum RoutesCommand {
     /// Refuse production candidates whose code or models fail the licence gate.
@@ -677,11 +769,13 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             scan_cache_url,
             visibility_secs,
             shutdown_grace_secs,
+            drain_on_stop,
             publish_fetched,
             publish_every_secs,
             status_listen,
             status_allow,
             status_journal,
+            run_metadata_dir,
             engine,
         } => {
             check_node_id(&node_id)?;
@@ -702,6 +796,9 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 once,
                 visibility: Duration::from_secs(visibility_secs),
                 shutdown_grace: Duration::from_secs(shutdown_grace_secs),
+                drain_on_stop,
+                page_timeout: Duration::from_secs(engine.page_timeout_secs),
+                run_metadata_dir,
                 ..Config::default()
             };
             if Duration::from_secs(engine.page_timeout_secs) >= cfg.budget() {
@@ -717,6 +814,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 let cfg = LocConfig {
                     api_gap: Duration::from_millis(api_gap_ms),
                     tile_gap: Duration::from_millis(tile_gap_ms),
+                    html_is_block: true,
                     ..LocConfig::default()
                 };
                 let iiif_root = cfg.iiif_root.clone();
@@ -746,6 +844,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                         version: VERSION.clone(),
                         concurrency: u32::try_from(cfg.concurrency).unwrap_or(u32::MAX),
                         engine: engine.source().to_owned(),
+                        models: engine.models(),
+                        routes: engine.routes(),
                         scan_cache_url: scan_cache_url.clone(),
                     },
                     status_journal.filter(|p| !p.as_os_str().is_empty()),
@@ -865,6 +965,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 storage_gap: Duration::from_millis(storage_gap_ms),
                 storage_own_budget,
                 batch_cache: Some(batch_cache),
+                html_is_block: true,
                 ..LocConfig::default()
             })?);
             let opts = prefetch::Options {

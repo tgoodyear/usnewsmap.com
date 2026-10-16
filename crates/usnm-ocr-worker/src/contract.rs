@@ -745,7 +745,7 @@ impl ContractEngine {
                     dpi: Some(layout.alto_dpi.unwrap_or(f64::from(self.opts.dpi))),
                     ..usnm_alto::ParseOptions::default()
                 };
-                let page = usnm_alto::parse(&raw, &opts).map_err(|e| {
+                let mut page = usnm_alto::parse(&raw, &opts).map_err(|e| {
                     use usnm_alto::{AltoError, ParseError};
                     // A broken limit is the protocol's; the instance goes.
                     let limit = matches!(
@@ -773,6 +773,8 @@ impl ContractEngine {
                     )
                     .into());
                 }
+                // A boxed String can hold an entire line, not a word.
+                page.granularity = inst.hello.granularity;
                 page
             }
             Layout::Boxes => {
@@ -1258,8 +1260,45 @@ impl Engine for ContractEngine {
         self.profile(language).is_some()
     }
 
+    fn routes(&self) -> BTreeMap<String, String> {
+        let mut routes = BTreeMap::new();
+        for profile in &self.hello.profiles {
+            for language in &profile.languages {
+                if self.profile(language) == Some(profile.id.as_str()) {
+                    routes.insert(language.clone(), profile.id.clone());
+                }
+            }
+        }
+        routes
+    }
+
+    fn models(&self) -> Vec<String> {
+        self.hello
+            .models
+            .iter()
+            .map(|model| model.name.clone())
+            .collect()
+    }
+
     fn dpi(&self) -> u32 {
         self.opts.dpi
+    }
+
+    fn execution_config(&self) -> serde_json::Value {
+        let (runtime, limits) = match &self.opts.launch {
+            Launch::Local { .. } => ("local", None),
+            Launch::Podman { remote, .. } => ("podman", Some(remote.limits)),
+        };
+        serde_json::json!({
+            "runtime": runtime,
+            "limits": limits,
+            "dpi": self.opts.dpi,
+            "threads": self.opts.threads.max(1),
+            "instances": self.opts.instances,
+            "start_timeout_seconds": self.opts.start_timeout.as_secs_f64(),
+            "page_timeout_seconds": self.opts.page_timeout.as_secs_f64(),
+            "max_jobs": self.opts.max_jobs,
+        })
     }
 
     fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
@@ -1462,6 +1501,33 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_metadata_execution_config_excludes_adapter_command_and_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = silent_engine(dir.path()).await;
+        if let Launch::Local { args, .. } = &mut engine.opts.launch {
+            args.push("--token=private-credential".into());
+        }
+        engine.opts.threads = 0;
+        let config = engine.execution_config();
+        assert_eq!(
+            config,
+            serde_json::json!({
+                "runtime": "local",
+                "limits": null,
+                "dpi": 300,
+                "threads": 1,
+                "instances": 1,
+                "start_timeout_seconds": 10.0,
+                "page_timeout_seconds": 10.0,
+                "max_jobs": 100,
+            })
+        );
+        assert!(!config.to_string().contains("private-credential"));
+        assert!(!config.to_string().contains(dir.path().to_str().unwrap()));
+        engine.shutdown().await;
     }
 
     #[tokio::test]

@@ -14,7 +14,7 @@ Data files compiled into `usnm-core`. The crate's code is MIT; these files keep 
 
 ## The damage word lists
 
-One file per word list code in `usnm_core::lang` (wordfreq's codes: `sh` serves Croatian and Serbian, `nb` Norwegian, `fil` Tagalog). Each holds the language's 5,000 most frequent words, most frequent first, one per line, exactly as wordfreq 3.1.1's `top_n_list` returns them, the call `ja-ocr/quality.py` makes. Order matters: the metric takes its function words and head words from the front of the list.
+One file per word list code in `usnm_core::lang` (wordfreq's codes: `sh` serves Croatian and Serbian, `nb` Norwegian, `fil` Tagalog). Each holds the language's 5,000 most frequent words, most frequent first, one per line, exactly as wordfreq 3.1.1's `top_n_list` returns them (the same call `ja-ocr/quality.py` makes). Order matters: the metric takes its function words and head words from the front of the list.
 
 Rebuild or check them with wordfreq 3.1.1 installed (`pip install wordfreq==3.1.1`):
 
@@ -27,7 +27,7 @@ Nothing in the pipeline runs the script; the files are committed data.
 
 ## The page-language word lists
 
-`page-language-words.txt` holds each word list's function words: its 100 most frequent words of 2 letters or more, most frequent first, then for Danish and Norwegian their `aa` spellings (`paa` for `på`). One line per list: the list's code, the script of its words, then the words. The script builds it from `ja-ocr/damage_v2.py`'s own models, so the words are the ones the OCR audit finds a page's language by; it is about 18 KB, and every binary that uses `usnm_core::page_language` embeds it (the damage lists stay behind the `damage` feature). It is derived from the wordfreq lists and from our Hawaiian (CC0) and Yiddish (CC BY-SA 4.0) lists, so it is shared under CC BY-SA 4.0, as its header says.
+`page-language-words.txt` holds each word list's function words: its 100 most frequent words of 2 letters or more, most frequent first, then for Danish and Norwegian their `aa` spellings (`paa` for `på`). One line per list: the list's code, the script of its words, then the words. The script builds it from `ja-ocr/damage_v2.py`'s own models, so the words are the ones the OCR audit finds a page's language by. It is about 18 KB, and every binary that uses `usnm_core::page_language` embeds it; the damage lists stay behind the `damage` feature. It is derived from the wordfreq lists and from our Hawaiian (CC0) and Yiddish (CC BY-SA 4.0) lists, so it is shared under CC BY-SA 4.0, as its header says.
 
 Rebuild or check it with wordfreq 3.1.1 installed:
 

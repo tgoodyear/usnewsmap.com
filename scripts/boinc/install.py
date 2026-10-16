@@ -23,12 +23,14 @@ TEMPLATES = {
     # template, which depends on the bundle.
     "usnm_gold": ["usnm_gold_out"],
     # The Surya 2 test (#516): its own worker image, a CPU and a GPU version.
+    "usnm_ndlocr": ["usnm_ndlocr_in", "usnm_ndlocr_out"],
     "usnm_surya": ["usnm_surya_in", "usnm_surya_out"],
     # The OCR quality estimate (#522): the CPU app runs in the worker image under the docker
     # class; the Qwen app has its own image, a CPU and a GPU version.
     "usnm_quality": ["usnm_quality_in", "usnm_quality_out"],
     "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"],
     "usnm_qwen_train": ["usnm_qwen_train_in", "usnm_qwen_train_out"],
+    "usnm_iris": ["usnm_iris_in", "usnm_iris_out"],
 }
 QWEN_NATIVE_MODEL_TEMPLATES = {
     "apple_gpu_8b": "usnm_qwen_8b_in",
@@ -44,12 +46,14 @@ JOB_TOML = {
     ("usnm_ocr", "docker"): "ocr/boinc/job.toml",
     ("usnm_assess", "docker"): "ocr/boinc/job.toml",
     ("usnm_gold", "docker"): "ocr/boinc/job.toml",
+    ("usnm_ndlocr", "docker"): "ocr/boinc/ndlocr-lite/job.toml",
     ("usnm_surya", "docker_mt"): "ocr/boinc/surya/job-cpu.toml",
     ("usnm_surya", "docker_nvidia_cuda"): "ocr/boinc/surya/job-gpu.toml",
     ("usnm_quality", "docker"): "ocr/boinc/job.toml",
     ("usnm_qwen", "docker_mt_2b"): "ocr/boinc/qwen/job-cpu.toml",
     ("usnm_qwen", "docker_nvidia_cuda_8b"): "ocr/boinc/qwen/job-gpu.toml",
     ("usnm_qwen_train", "docker_nvidia_train"): "ocr/boinc/train/job.toml",
+    ("usnm_iris", "docker_intel_opencl_4b"): "ocr/boinc/iris/job.toml",
 }
 
 PLATFORMS = (
@@ -224,6 +228,14 @@ def install(
             present_extras = {logical for logical, _ in parsed_extras}
             required_server = "llama-server.exe" if platform == "windows_x86_64" else "llama-server"
             required_extras = (required_server, "llama.lock", "weights.lock")
+            if platform == "windows_x86_64":
+                required_extras += ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+                if plan_class in ("nvidia_cuda_2b", "nvidia_cuda_8b"):
+                    required_extras += (
+                        "ggml-cuda.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
+                        "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
+                        "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
+                    )
             missing_extras = [name for name in required_extras if name not in present_extras]
             if missing_extras:
                 raise ValueError(

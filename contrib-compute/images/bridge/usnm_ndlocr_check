@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stock script_validator passes text, ALTO and result in template order.
+[ "$#" -eq 3 ] || exit 2
+exec /usr/local/bin/usnm-boinc ndlocr check --files "$1" "$2" "$3"

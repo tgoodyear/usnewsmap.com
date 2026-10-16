@@ -61,7 +61,16 @@ impl Catalog {
             .find(|e| {
                 e.family == family
                     && if family == "ndlocr-lite" {
-                        profile.is_none()
+                        if profile.is_none() {
+                            e.id == "ndlocr-lite-survey"
+                        } else {
+                            e.id == "ndlocr-lite"
+                                && e.attribution.source.as_deref().and_then(|source| {
+                                    source.strip_prefix(
+                                        "https://github.com/ndl-lab/ndlocr-lite/tree/",
+                                    )
+                                }) == Some(version)
+                        }
                     } else {
                         e.id == format!("{family}-{version}")
                             || e.id == format!("{family}-{series}")
@@ -169,6 +178,31 @@ mod tests {
         assert_eq!(
             catalog.credit("tesseract/5.5.1 eng").unwrap().models.len(),
             1
+        );
+    }
+
+    #[test]
+    fn modern_ndlocr_requires_the_recorded_commit() {
+        let key = "ndlocr-lite/636d1cfeb1331f89f4048f416e49e23a09a714b5 default";
+        let credit = ENGINES.credit(key).unwrap();
+        assert_eq!(credit.engine.id, "ndlocr-lite");
+        assert_eq!(credit.models.len(), 4);
+        assert_eq!(credit.languages, ["jpn"]);
+        for revision in [
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            "not-a-revision",
+            "636d1cf",
+        ] {
+            assert!(ENGINES
+                .credits([format!("ndlocr-lite/{revision} default").as_str()])
+                .is_err());
+        }
+        assert!(ENGINES
+            .credit("ndlocr-lite/636d1cfeb1331f89f4048f416e49e23a09a714b5 unknown")
+            .is_err());
+        assert_eq!(
+            ENGINES.credit("ndlocr-lite 636d1cf").unwrap().engine.id,
+            "ndlocr-lite-survey"
         );
     }
 

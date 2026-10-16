@@ -1,0 +1,10 @@
+# Files the usnm_iris image installs besides Debian packages and the model: <sha256> <URL> <name>.
+# Intel's OpenCL runtime for the Iris Xe GPU, from Intel's GitHub releases: compute-runtime 25.18.33578.6
+# (checksums in that release's ww18.sum, with gmmlib 22.7.0) and intel-graphics-compiler v2.11.7+19146
+# (checksums in its release notes). The Apache-2.0 text for the model comes from the Apache Software
+# Foundation, as for the usnm_qwen image.
+f522954a3cd85bafcfb16c303f808b6fc41af54b96637ecebe2d88f7c8a9655a https://github.com/intel/compute-runtime/releases/download/25.18.33578.6/intel-opencl-icd_25.18.33578.6-0_amd64.deb intel-opencl-icd_25.18.33578.6-0_amd64.deb
+3360af2bc0efaf05ad77c7f04a72320bf02ee6ae4989415d7256a656ee1ed37e https://github.com/intel/compute-runtime/releases/download/25.18.33578.6/libigdgmm12_22.7.0_amd64.deb libigdgmm12_22.7.0_amd64.deb
+f9a593d38ddcca83325725b12289fb3972a737fb821ddb8d7e4adbe616140f1a https://github.com/intel/intel-graphics-compiler/releases/download/v2.11.7/intel-igc-core-2_2.11.7%2B19146_amd64.deb intel-igc-core-2_2.11.7+19146_amd64.deb
+632b9665712f85c906a51ad8d43f5913ef0a026e8f74d78c3cf36857f702b1b8 https://github.com/intel/intel-graphics-compiler/releases/download/v2.11.7/intel-igc-opencl-2_2.11.7%2B19146_amd64.deb intel-igc-opencl-2_2.11.7+19146_amd64.deb
+cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 https://www.apache.org/licenses/LICENSE-2.0.txt LICENSE

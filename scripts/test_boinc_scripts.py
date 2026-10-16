@@ -74,6 +74,25 @@ class OperatorWorkspace(unittest.TestCase):
             for path in paths:
                 shutil.rmtree(path)
 
+    def test_failed_execution_log_is_printed_and_never_fails_the_caller(self):
+        stub = r"""
+az() {
+  case "$*" in
+    *"workspace list"*) echo ws-id ;;
+    *"log-analytics query"*) [[ "$*" == *"'bad-exec-'"* ]] && echo '[{"TimeGenerated":"t1","Log_s":"Error: boom"}]' || echo '[]' ;;
+  esac
+}
+"""
+        command = (stub + "set -euo pipefail; ENV_NAME=prod; SUBSCRIPTION=s; die() { exit 1; }; "
+                   ". scripts/lib/boinc.sh; boinc_execution_log bad-exec 0; boinc_execution_log quiet-exec 0; "
+                   "boinc_execution_log 'x; rm' 0; echo done")
+        result = subprocess.run(["bash", "-c", command], cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "done")
+        self.assertIn("t1  Error: boom", result.stderr)
+        self.assertIn("no log lines for quiet-exec yet", result.stderr)
+        self.assertNotIn("x; rm", result.stderr)
+
     def test_release_staging_paths_match_image_build_paths(self):
         release = Path(ROOT, "scripts/boinc-app-release.sh").read_text()
         container = Path(ROOT, "contrib-compute/images/appver/Containerfile").read_text()
@@ -377,6 +396,11 @@ class AppReleaseArgs(unittest.TestCase):
         r = self.run_release("--app", "usnm_qwen_train", "--plan-class", "docker_nvidia_train", "--worker-image", img)
         self.assertIn("--signing-host must be a host name", r.stderr)
 
+    def test_prepare_only_is_recognized_before_signing_host_validation(self):
+        r = self.run_release("--app", "usnm_ocr", "--prepare-only", "--what-if")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--signing-host must be a host name", r.stderr)
+
     def test_rejects_qwen_without_worker_image_or_wrong_plan_class(self):
         r = self.run_release("--app", "usnm_qwen", "--plan-class", "docker_nvidia_cuda_8b")
         self.assertEqual(r.returncode, 1)
@@ -389,6 +413,47 @@ class AppReleaseArgs(unittest.TestCase):
         r = self.run_release("--app", "usnm_quality", "--plan-class", "docker_mt")
         self.assertEqual(r.returncode, 1)
         self.assertIn("--app and --plan-class", r.stderr)
+
+
+class AppReleasePublication(unittest.TestCase):
+    def test_prepare_and_publish_paths_update_only_the_appver_pin(self):
+        text = Path(APP_RELEASE_SCRIPT).read_text()
+        _, marker, tail = text.partition('echo "   $appver_image"\n')
+        self.assertTrue(marker)
+        old = {"images": {"appver": "old", "worker": "unchanged"}, "assessment": True}
+        image = "registry.example.azurecr.io/usnm-boinc-appver@sha256:" + "a" * 64
+        for prepare, provision_rc in (("true", "0"), ("false", "0"), ("false", "9")):
+            with self.subTest(prepare=prepare, provision_rc=provision_rc), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts").mkdir()
+                (root / "build").mkdir()
+                settings = root / "settings.json"
+                settings.write_text(json.dumps(old))
+                log = root / "provision.log"
+                provision = root / "scripts/provision-boinc.sh"
+                provision.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "$STUB_LOG"\nexit "$STUB_PROVISION_RC"\n')
+                provision.chmod(0o755)
+                env = dict(os.environ, PREPARE_ONLY=prepare, STUB_PROVISION_RC=provision_rc,
+                           STUB_LOG=str(log), ENV_NAME="prod", appver_image=image,
+                           BOINC_SETTINGS=str(settings), work=str(root / "build"),
+                           APP="usnm_ocr", VERSION="1.2", PLATFORM="arm64-apple-darwin",
+                           PLAN_CLASS="docker")
+                result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + tail],
+                                        cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, int(provision_rc))
+                self.assertEqual(log.exists(), prepare == "false")
+                if provision_rc != "0":
+                    self.assertEqual(json.loads(settings.read_text()), old)
+                    self.assertNotIn("published and verified", result.stdout)
+                    continue
+                expected = dict(old, images=dict(old["images"], appver=image))
+                self.assertEqual(json.loads(settings.read_text()), expected)
+                if prepare == "true":
+                    self.assertIn("not published or registered", result.stdout)
+                    self.assertNotIn("release registration and public health verified", result.stdout)
+                else:
+                    self.assertEqual(log.read_text().strip(), f"--env prod --publish-image {image}")
+                    self.assertIn("published and verified", result.stdout)
 
 
 class HandoffAndBridgeQualitySteps(unittest.TestCase):

@@ -6,12 +6,12 @@
 
 ## Context
 
-Every app/job → storage/Cosmos path already used managed identities, with keys disabled. But the data services' public endpoints were open (Entra-only) because the ACI Spot backfill workers can't join a VNet and have no stable outbound IP. The maintainer asked for private networking on those paths and chose "private in steady state".
+Every path from an app or job to storage or Cosmos already used managed identities, with keys disabled. But the data services' public endpoints were open (Entra-only) because the ACI Spot backfill workers can't join a VNet and have no stable outbound IP. The maintainer asked for private networking on those paths and chose "private in steady state".
 
 ## Decision
 
 - **VNet-integrated Container Apps environment** (current prod VNet `vnet-usnm-prod`, environment `cae-usnm-prod`, `/27` delegated subnet; workload-profiles env with the Consumption profile). The public API keeps external ingress at `api.usnewsmap.com`.
-- **Private endpoints** `pe-usnm-blob` for `stusnmdffapzy` (Blob) and `pe-usnm-cosmos` for `cosmos-usnm-prod-ffapzy` (Sql), with linked private DNS zones. These are the pinned prod names; dev/experiments use the conventional names in [ADR-0017](0017-resource-naming.md) and scripts read stack outputs. **`publicNetworkAccess: Disabled`** on both in steady state.
+- **Private endpoints** `pe-usnm-blob` for `stusnmdffapzy` (Blob) and `pe-usnm-cosmos` for `cosmos-usnm-prod-ffapzy` (Sql), with linked private DNS zones. These are the pinned prod names; dev and experiments use the conventional names in [ADR-0017](0017-resource-naming.md) and scripts read stack outputs. **`publicNetworkAccess: Disabled`** on both in steady state.
 - **Managed identity on every path** (see the table in [08 §8.3](../08-azure-infrastructure.md#83-networking)). Keys stay disabled, and Azure Policy **denies** re-enabling them.
 - **Guarded public-access window** only while a Spot backfill or full re-index runs:
   - the launcher records a window item in Cosmos with an expiry, then enables public access (still Entra-only, no IP rules);
@@ -47,4 +47,4 @@ The Serial Set fetch (`usnm-ingest congress-serialset`) runs on an OCR node at h
 
 Turning `USNM_SERIALSET_ONPREM` off closes the lake, removes the grant and drops the exemption at the next provision. Turn it off once the fetch is done. Monthly updates can run the same way, or as the Azure job.
 
-Considered and not chosen: a VPN gateway into the VNet (a new paid resource); running the job in Azure (the compute this avoids); staging the output in the exchange account, which the node can already reach, and copying it into the lake from Azure (a copy job is Azure compute again, and the copy step is new code).
+Three other options were considered and not chosen: a VPN gateway into the VNet (a new paid resource); running the job in Azure (the compute this avoids); staging the output in the exchange account, which the node can already reach, and copying it into the lake from Azure (a copy job is Azure compute again, and the copy step is new code).

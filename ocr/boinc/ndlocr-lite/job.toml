@@ -1,0 +1,3 @@
+# One CPU Japanese page. The wrapper applies its plan-class CPU limit.
+workdir = "/work"
+create_args = "--network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=4g --memory-swap=4g --pids-limit=256"

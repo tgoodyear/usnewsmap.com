@@ -83,7 +83,7 @@ scripts/ocr-survey/gold.py public-convert --dataset newseye-bnf --src DATA/newse
 
 Other `public-convert` flags: `--seed` (default 296) changes which regions are picked; `--min-chars` and `--max-chars` override the length window (200 to 2,500 normalized characters for most sets, 200 to 8,000 for BLN600, 20 to 300 for NZZ lines). The pick takes one region from each page before a second from any page, up to `--per-page` per page. With the same download, seed and flags, the pick is the same, so two people can score on the same crops.
 
-Not yet run on the real files: the `reichsanzeiger` and `austrian` conversions (see [What was tested](ocr-gold-set.md#fetch-and-convert)). If one of them fails or writes no crops, open an issue with the error.
+The `reichsanzeiger` and `austrian` conversions have not yet run on the real files (see [What was tested](ocr-gold-set.md#fetch-and-convert)). If one of them fails or writes no crops, open an issue with the error.
 
 ## Running your engine
 
@@ -108,14 +108,14 @@ Run your engine on each `image` and write one JSON object per line:
 
 Both keys are required. A crop with no row in your file is left out of your engine's score, and the `crops` column then shows fewer crops than the set has (see [Comparing engines](#comparing-engines)). Rows whose `crop_id` isn't in `crops.jsonl` are ignored.
 
-What to normalize, and what to leave alone. `score` applies the same normalization to your text and to the transcription: Unicode NFC, a hyphen at the end of a line joined to the next line, and every run of whitespace and line breaks turned into one space. So:
+`score` applies the same normalization to your text and to the transcription: Unicode NFC, a hyphen at the end of a line joined to the next line, and every run of whitespace and line breaks turned into one space. So:
 
 - **Send the raw reading order and line breaks.** Don't join hyphenated words yourself and don't reflow lines; the scorer does both.
 - **Don't fold anything else.** Case, punctuation, diacritics, long s (ſ) and ligatures all count. Don't lowercase, strip punctuation, transliterate or spell-correct, or you'll be charged for each change.
 - **Don't add anything.** No confidence scores, markup, page headers or `[?]`-style markers in `text`; they count as characters. The `[?]` and `[?x]` markers are read only in transcriptions.
 - **Use UTF-8.** Write the file in UTF-8; `ensure_ascii=False` in Python keeps it readable, and escaped `\u` sequences decode to the same text.
 
-A minimal example with Tesseract. It reads `crops.jsonl`, runs `tesseract` on each image with the language you name, and writes the hypothesis file. Save it anywhere outside the repository, for example as `run_tesseract.py`:
+A minimal example with Tesseract reads `crops.jsonl`, runs `tesseract` on each image with the language you name, and writes the hypothesis file. Save it anywhere outside the repository, for example as `run_tesseract.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -232,10 +232,10 @@ BLN600 crops run up to 7,000 characters. Scoring all 600 against Gale's OCR took
 Each output directory has a `LICENSES/` folder with `SOURCE.json` (dataset, URL, licence, attribution, and for BLN600 a note on the No-Derivatives terms) and the dataset's own licence and readme files where it has them. Every row in `manifest.jsonl` carries `source_dataset`, `source_url`, `source_license` and `source_attribution`. When you publish results, cite each dataset you scored on from those fields, and say which subset, `--count`, `--per-page` and `--seed` you used so others can rebuild the same crops.
 
 - **Attribution (BY).** Every scoring set except Reichsanzeiger's GitHub copy carries a BY term. Credit the source named in `SOURCE.json`. Its `attribution` (and the manifest's `source_attribution`) is null for Reichsanzeiger and Austrian, because `gold.py` has no attribution text for them yet, so use the credits that follow. From [ocr-gold-set.md](ocr-gold-set.md#source-policy): UB Mannheim for Reichsanzeiger-GT; ONB, NewsEye and READ for the Austrian set; Callum Booth, Alan Thomas and Robert Gaizauskas for BLN600.
-- **NonCommercial (NC): BLN600, NZZ, Overproof.** Fine for research, which is how [ocr-gold-set.md](ocr-gold-set.md#source-policy) uses them. Commercial use of the data needs the rights holder's terms, which this guide doesn't cover.
+- **NonCommercial (NC): BLN600, NZZ, Overproof.** The source terms condition sharing on non-commercial use. This guide does not decide whether the project's activities, hosting or volunteer distribution qualify; the operator must verify the specific use against each source's terms before serving or distributing the data.
 - **ShareAlike (SA): Overproof (HIPE copy).** If you redistribute the converted text or an adaptation of it, it goes out under CC BY-NC-SA 4.0. The HIPE licence applies to the structured format; the newspaper text and LoC's images are public domain.
 - **NoDerivatives (ND): BLN600.** Don't share crops, re-encoded images or other derived files of BLN600. `public-convert` copies BLN600's images unchanged for that reason. To let someone reproduce your run, give them the dataset's URL and your flags, and let them fetch it themselves.
 
-Scores, tables and the per-crop CSVs hold numbers and crop IDs, not the dataset's text or images, so this project reads them as publishable with the attribution above (an inference, not legal advice). Your hypothesis files contain your engine's text of the crops; whether publishing those counts as a derivative under ND or SA terms is UNVERIFIED, so keep BLN600 hypotheses private to be safe.
+Scores, tables and per-crop CSVs hold numbers and crop IDs, not the dataset's text or images. This guide does not determine whether publishing those outputs is permitted under applicable terms. Hypothesis files contain engine text of the crops; whether publishing those counts as a derivative under ND or SA terms is UNVERIFIED, so keep BLN600 hypotheses private.
 
 Nothing from these datasets is committed to this repository. Keep `DATA` and `OUT` outside it, or out of version control.

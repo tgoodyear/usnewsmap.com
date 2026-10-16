@@ -7,19 +7,20 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | Setting                           | Default | Effect                                                                                                                                                                                                                                                                    |
 | --------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `USNM_INDEX_STORAGE`              | `false` | Create `usnmqwst{env}{suffix}` (ADR-0017), private Blob endpoint/DNS, parallel `usnm-qw-search-ca-{env}` searcher and container-scoped roles. Writer stages fresh full rebuilds there while SERVE is false. **Keep on**: disabling deletes the account through the stack. |
-| `USNM_INDEX_STORAGE_SERVE`        | `false` | Requires INDEX_STORAGE. After verifying/promoting `reference/index-storage-pending.json`, switch the API to the new searcher. Later releases publish `current.json` normally. The lake searcher/sidecar and roles are retained for the old revision and rollback.         |
-| `USNM_LAKE_BLOB_SOFT_DELETE_DAYS` | `3`     | Lake retention, 1–365 days. Restore `14` only after retiring/pruning its old indexes; does not affect the new account.                                                                                                                                                    |
+| `USNM_INDEX_STORAGE_SERVE`        | `false` | Requires INDEX_STORAGE. After verifying and promoting `reference/index-storage-pending.json`, switch the API to the new searcher. Later releases publish `current.json` normally. The lake searcher/sidecar and roles are retained for the old revision and rollback.     |
+| `USNM_LAKE_BLOB_SOFT_DELETE_DAYS` | `3`     | Lake retention, 1–365 days. Restore `14` only after retiring or pruning its old indexes; does not affect the new account.                                                                                                                                                 |
 
 The new account is Standard LRS, Hot, flat namespace, Entra-only, shared keys
-and public access disabled, **no versioning or blob/container soft delete**.
-It is not a public-policy exception. Blob writes/deletes use the same
-Log Analytics diagnostics as the lake. The writer job's system identity and
-the ingest user identity have Blob Data Contributor on its `qw-index`;
-the new searcher's system identity (and API system identity for transition)
-have Reader. No account-wide data grants. The experiment's `qw-cluster` and
-`qw-bench` stay in the lake. The shared `searcher.yaml` and CI's roll-api
-continue preserving each running searcher's account, so merging with both
-settings absent does not retarget/restart the serving searcher.
+and public access disabled, **no versioning and no blob or container soft
+delete**. It is not a public-policy exception. Blob writes and deletes use
+the same Log Analytics diagnostics as the lake. The writer job's system
+identity and the ingest user identity have Blob Data Contributor on its
+`qw-index`; the new searcher's system identity (and the API's system
+identity, for the transition) have Reader. There are no account-wide data
+grants. The experiment's `qw-cluster` and `qw-bench` stay in the lake. The
+shared `searcher.yaml` and CI's roll-api continue preserving each running
+searcher's account, so merging with both settings absent does not retarget or
+restart the serving searcher.
 
 Follow [Index storage cutover](../docs/operations.md#index-storage-cutover),
 not an ordinary full release: Quickwit has one configured Azure account,
@@ -77,10 +78,11 @@ Prod runs `USNM_SEARCH_BACKEND=quickwit`. The ingest job's `run` command calls `
 ## Naming guard and Phase 1/2 rollout
 
 ADR-0017's stateless Phase 1 changes and Phase 2 are declared in the
-templates, **not evidence that Azure has been migrated**. Existing prod
-keeps its data lake, Cosmos, skeleton, OCR exchange and Phase 3 ingest
-resources pinned. The reviewed target names are in `names/prod.json`; the
-remaining 22 pins are in `names/exceptions.json`.
+templates; that declaration is **not evidence that Azure has been
+migrated**. Existing prod keeps its data lake, Cosmos, skeleton, OCR
+exchange and Phase 3 ingest resources pinned. The reviewed target names
+are in `names/prod.json`; the remaining 22 pins are in
+`names/exceptions.json`.
 
 ### Protected-resource gate
 
@@ -89,22 +91,23 @@ provisions, reads the current stack inventory and runs a full-payload
 `az deployment sub what-if` with the same parameter file and exported
 settings. `scripts/lib/rename_guard.py` compares IDs case-insensitively and
 refuses a managed storage account, Cosmos account, registry, workspace,
-vault, Container Apps environment, VNet or public/private DNS zone that
+vault, Container Apps environment, VNet or a public or private DNS zone that
 would be ignored or deleted. A removal without a replacement is protected
 too. Unmanaged resources do not need an override.
 
 `scripts/provision.sh --env prod --what-if` also runs the gate without
 writing anything. A missing protected ID, unsupported result, malformed
-response or failed read/what-if fails closed and cannot be overridden.
-Guard failures are not retried. A first deployment is recognized only by
-`DeploymentStackNotFound`, not by an arbitrary failed read.
+response or failed read or what-if fails closed and cannot be
+overridden. Guard failures are not retried. A first deployment is
+recognized only by `DeploymentStackNotFound`, not by an arbitrary failed
+read.
 
-Keep resource-loop counts independent of runtime outputs. The DNS CNAME
-loop always enumerates `www` and `api`, with the root's static API-deployment
-flag controlling each record. Using an unresolved API FQDN to size the loop
-makes ARM skip the entire DNS module; using it as the record condition
-still hides existing CNAMEs. The guard correctly refuses the missing zone.
-Resolve such incomplete plans rather than approving serving DNS removal.
+Keep resource-loop counts independent of runtime outputs. The DNS CNAME loop
+always enumerates `www` and `api`, with the root's static API-deployment flag
+controlling each record. Using an unresolved API FQDN to size the loop makes
+ARM skip the entire DNS module; using it as the record condition still hides
+existing CNAMEs. The guard correctly refuses the missing zone. Resolve such
+incomplete plans rather than approving the removal of the serving DNS.
 
 For a deliberately approved removal, repeat the exact **old** leaf name:
 
@@ -118,14 +121,14 @@ Phase 3 scratch window, after its preconditions and rename PR. Wildcards,
 resource IDs and empty overrides are refused. Permissions, complete
 what-if expansion and an approved data migration remain mandatory.
 
-Archive-connected teardown first provisions without the archive/search
-cluster before deleting the environment's groups. With NFS search storage
-and ingest scratch disabled, that partial provision removes the scratch
-account and file private-DNS zone. `teardown.sh` accepts and forwards the
-same repeated exact-name approvals; confirming the environment name does
-**not** approve protected removals. Inspect the live inventory and partial
-provision's guard output, then explicitly approve **both** old names, for
-example:
+Archive-connected teardown first provisions without the archive and the
+search cluster before deleting the environment's groups. With NFS search
+storage and ingest scratch disabled, that partial provision removes the
+scratch account and file private-DNS zone. `teardown.sh` accepts and
+forwards the same repeated exact-name approvals; confirming the
+environment name does **not** approve protected removals. Inspect the live
+inventory and partial provision's guard output, then explicitly approve
+**both** old names, for example:
 
 ```sh
 # Set SCRATCH_ACCOUNT_NAME to the inspected account's exact old leaf name.
@@ -136,10 +139,11 @@ scripts/teardown.sh --env dev \
 
 Use the actual managed names, not an empty variable or assumed prod
 names. The approvals apply only to known Ignore/Delete results; failed,
-missing or unsupported plans still abort before stack creation/deletion.
-The archive lock is restored on failure, and a rerun resumes the detach
-using its saved marker. No wildcard or automatic teardown exemption is
-provided; a partial provision outside teardown follows the same rules.
+missing or unsupported plans still abort before stack creation or
+deletion. The archive lock is restored on failure, and a rerun resumes
+the detach using its saved marker. No wildcard or automatic teardown
+exemption is provided; a partial provision outside teardown follows the
+same rules.
 
 ### Owner steps for the stateless Phase 1 and Phase 2 names
 
@@ -169,9 +173,9 @@ provided; a partial provision outside teardown follows the same rules.
 
    It was not stack-managed; removing a Bicep declaration cannot delete it.
 
-3. Use CI's Bicep 0.47.16 or newer compatible tooling. Pause CI deploys for
-   the provision/bootstrap interval (serving is unaffected).
-   Reset `USNM_BUDGET_START` to the first of the current month, commit that
+3. Use CI's Bicep 0.47.16 or newer compatible tooling. Pause CI deploys
+   while provision and bootstrap run (serving is unaffected). Reset
+   `USNM_BUDGET_START` to the first of the current month, commit that
    public setting through a PR, and provision from the approved main:
 
    ```sh
@@ -191,13 +195,13 @@ provided; a partial provision outside teardown follows the same rules.
    test, the `usnm-core-ag-prod` receivers and short name `usnm-prod`, the
    `usnm-core-budget-prod` start/notifications, and workbook titles
    `usnm pipeline (prod)` and `usnm API (prod)`. Do not use the issue's old
-   alert count: later changes added/consolidated rules. The three OCR alert
-   names also become conventional. Old fired-alert/availability history
-   remains in the same workspace; the recreated rules have new resource
-   IDs. Workbook GUIDs and custom role IDs/seeds do not change; only
-   workbook titles and role labels change in place. Check that
-   `usnm-api-failures-alert-prod` exists, is enabled and targets the
-   current component and `usnm-core-ag-prod`:
+   alert count: later changes added and consolidated rules. The three OCR
+   alert names also become conventional. The old history of fired alerts
+   and availability results remains in the same workspace; the recreated
+   rules have new resource IDs. Workbook GUIDs and custom role IDs and
+   seeds do not change; only workbook titles and role labels change in
+   place. Check that `usnm-api-failures-alert-prod` exists, is enabled and
+   targets the current component and `usnm-core-ag-prod`:
 
    ```sh
    az resource show -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
@@ -209,42 +213,43 @@ provided; a partial provision outside teardown follows the same rules.
    to `usnm-ocr-nodes-grp-prod`. Its object ID, members and role grants stay
    unchanged. A legacy group without a saved ID must be checked and saved
    by its ID, never adopted or duplicated by name.
-6. Node renaming is still an operator migration: stop/drain the worker,
+6. Node renaming is still an operator migration: stop and drain the worker,
    offboard its old Arc name, rename Proxmox VM 120 and the hostname, update
    DNS, then onboard as `usnm-ocr-node1-arcs-prod` and verify membership,
-   telemetry and worker configuration. New/re-onboarded node names must
+   telemetry and worker configuration. New or re-onboarded node names must
    match the environment and fit the 32-character worker ID cap. Copy
    `scripts/lib/names.sh` beside `proxmox-create-vm.sh` on a Proxmox host.
    Offboarding still accepts legacy names so this migration is possible.
 
 ### Explicitly blocked later changes
 
-- **OCR exchange:** the original empty-account/pre-worker window has
-  passed; `ocr-exchange.bicep` now also holds BOINC hand-off containers and
-  grants. Do not remove the `ocrExchange` pin until an owner has inventoried
-  live queues/blobs and all OCR/BOINC clients, chosen a drain/copy and
-  quiescence window, and approved node/BOINC reconfiguration. Then a
-  reviewed PR removes that ternary/exception and changes the target map;
-  the operator uses `--allow-rename=stusnmoffapzy`, provisions, configures
-  nodes with `--exchange-account usnmocrstprodffapzy`, updates other clients
-  and verifies pickup. No blanket permission or assumption of emptiness
+- **OCR exchange:** the original window, when the account was empty and had
+  no worker, has passed; `ocr-exchange.bicep` now also holds BOINC hand-off
+  containers and grants. Do not remove the `ocrExchange` pin until an owner
+  has inventoried live queues and blobs and all OCR and BOINC clients,
+  chosen a drain or copy and a quiescence window, and approved the
+  reconfiguration of the nodes and BOINC. Then a reviewed PR removes that
+  ternary and exception and changes the target map; the operator uses
+  `--allow-rename=stusnmoffapzy`, provisions, configures nodes with
+  `--exchange-account usnmocrstprodffapzy`, updates other clients and
+  verifies pickup. No blanket permission or assumption of emptiness
   substitutes for this plan.
 - **Phase 3:** no evidence here establishes the #240/#275 dev measurements,
   #283 preparation, a published release, no executions, or a free
   `quickwit-writer` lease. Keep `ingestJob`, `backfillJob`, `jaocrJob`,
   `jaoneJob`, `ingestIdentity`, `scratch`, `scratchEndpoint` and `docIntel`
-  pinned until that window. The approved window's PR removes those pins
-  and updates the manifests. Scratch needs its explicit old-name override;
+  pinned until that window. The approved window's PR removes those pins and
+  updates the manifests. Scratch needs its explicit old-name override;
   Document Intelligence needs the two provisions (OCR off, purge the
   soft-deleted account, OCR on), then a small ingest checked against the
-  alerts/workbook before the full rebuild.
+  alerts and the workbook before the full rebuild.
 - Verify the previously removed tiles account is actually gone and finish
   the [Spot group cleanup](#retired-spot-resource-group). Bootstrap no
-  longer attempts legacy SWA deletion; if one remains, inspect/remove it
-  explicitly. The stale `SWA_NAME` and `USNM_OCR_NODE_NAMES` settings are
-  not in the current schema; back up the selected environment's local
-  settings and remove any obsolete entries still left there (do not add
-  them to committed settings or the store).
+  longer attempts legacy SWA deletion; if one remains, inspect it and
+  remove it explicitly. The stale `SWA_NAME` and `USNM_OCR_NODE_NAMES`
+  settings are not in the current schema; back up the selected
+  environment's local settings and remove any obsolete entries still left
+  there (do not add them to committed settings or the store).
 - Phase 4 is intentionally deferred to an environment rebuild, not part of
   #283. Do not unpin the skeleton, lake or Cosmos just to complete naming.
 
@@ -314,7 +319,7 @@ What it does:
 7. Once the registrar delegates `--domain` to the zone, binds the apex, `www` and `api` to the API app, which serves the site and the API, with managed certificates (re-run it after delegating). The retired Static Web App is not managed or deleted by bootstrap.
 8. Checks the API's `/readyz` and the site.
 
-Options: `--subscription`, `--location` (default `eastus2`), `--vnet-address-prefix` (the VNet's private block, `USNM_VNET_ADDRESS_PREFIX`; needed for a new environment), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and the old Static Web Apps token secret from before per-environment deployment), `--move` (lets an existing environment move to another subscription, starting there with no data). Environment names are `prod`, `dev` or `x` plus 1–4 lowercase letters/digits (ADR-0017).
+Options: `--subscription`, `--location` (default `eastus2`), `--vnet-address-prefix` (the VNet's private block, `USNM_VNET_ADDRESS_PREFIX`; needed for a new environment), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and the old Static Web Apps token secret from before per-environment deployment), `--move` (lets an existing environment move to another subscription, starting there with no data). Environment names are `prod`, `dev` or `x` plus 1–4 lowercase letters or digits (ADR-0017).
 
 Check the result:
 
@@ -336,6 +341,8 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `apiImage`                    | `USNM_API_IMAGE`                           | empty. A public image to run while `useAcr` is off; empty skips the API until then                                                                                                                                                                                                                                                                                                                   |
 | `useAcr`                      | `USNM_USE_ACR`                             | `false`. Turn on once CI has pushed to the registry                                                                                                                                                                                                                                                                                                                                                  |
 | `imageTag`                    | `USNM_IMAGE_TAG`                           | `main` (or a commit sha)                                                                                                                                                                                                                                                                                                                                                                             |
+| `apiImageTag`                 | `USNM_API_IMAGE_TAG`                       | `imageTag`. API-only override; production records its independently deployed release.                                                                                                                                                                                                                                                                                                                |
+| `scheduledIngestImageTag`     | `USNM_SCHEDULED_INGEST_IMAGE_TAG`          | `imageTag`. Primary ingest job only; backfill and sync jobs retain the shared tag.                                                                                                                                                                                                                                                                                                                   |
 | `searchBackend`               | `USNM_SEARCH_BACKEND`                      | `fixtures`, or `quickwit` once indexes are published                                                                                                                                                                                                                                                                                                                                                 |
 | `cosmosFreeTier`              | `USNM_COSMOS_FREE_TIER`                    | `true` (one free-tier account per subscription)                                                                                                                                                                                                                                                                                                                                                      |
 | `alertEmails`                 | `USNM_ALERT_EMAILS`                        | empty (comma-separated)                                                                                                                                                                                                                                                                                                                                                                              |
@@ -367,7 +374,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 An environment's settings live in three places (#295); [`env/schema.json`](env/schema.json) says which setting goes where, and [operations](../docs/operations.md#settings) shows how to change each:
 
 - **Committed:** the public choices (flags, sizes, caps, schedules) in [`env/<env>.json`](env/), so a change goes through a pull request and its history is git's. `scripts/lib/env_settings.py --check` (CI) fails on an unknown setting, a private one, a wrong type or unsorted keys, and on a setting `main.bicepparam` reads that the schema doesn't list.
-- **The settings store:** the private ones (addresses, principals, resource ids) in one App Configuration store for every environment in the subscription, `usnm-config-appcs-<suffix>` (its own stack `usnm-config`, [`settings/main.bicep`](settings/main.bicep); its endpoint saved as `SETTINGS_STORE_ENDPOINT`), each environment's under its own label, which `scripts/provision.sh` reads with your sign-in ([ADR-0006](../docs/design/adr/0006-lean-hosting-profile.md)). The operators in the store's admin list (`scripts/settings-store.sh --deploy --admins`) and the account that last deployed it can read and set them; the role covers every label. The first provision in a subscription creates the store; until then private settings stay in the local file, and `scripts/settings.sh --env <env> --migrate` then moves them. An environment's teardown keeps them.
+- **The settings store:** the private ones (addresses, principals, resource ids) in one App Configuration store for every environment in the subscription, `usnm-config-appcs-<suffix>` (its own stack `usnm-config`, [`settings/main.bicep`](settings/main.bicep); its endpoint saved as `SETTINGS_STORE_ENDPOINT`). Each environment's settings sit under its own label, which `scripts/provision.sh` reads with your sign-in ([ADR-0006](../docs/design/adr/0006-lean-hosting-profile.md)). The operators in the store's admin list (`scripts/settings-store.sh --deploy --admins`) and the account that last deployed it can read and set them; the role covers every label. The first provision in a subscription creates the store; until then private settings stay in the local file, and `scripts/settings.sh --env <env> --migrate` then moves them. An environment's teardown keeps them.
 - **Local:** everything else, the stack's outputs, the subscription and tenant, and what the scripts keep (`USNM_EXPERIMENT`, `USNM_IMAGE_TAG`), in the local file below.
 
 A setting in the wrong place, or in two, stops a provision. The local file is `KEY="value"` lines: `~/.config/usnewsmap/<env>/.env` (or `$USNM_SETTINGS_HOME/<env>/.env`) when that directory exists, so every checkout and worktree reads the same settings; otherwise it's the checkout's own `.azure/<env>/.env`, which is git-ignored. Once the shared directory exists, a copy in a checkout is ignored (the scripts say so). To move an environment's settings there:
@@ -393,7 +400,7 @@ Everything is one **deployment stack** at subscription scope, `usnm-<env>` ([ADR
 - **Nothing the stack manages can be deleted outside it.** `--deny-settings-mode denyDelete` puts a deny assignment on every managed resource, the resource groups included, that blocks deletes by anyone, Owners too. Changes still go through the stack. To delete by hand in an emergency, deploy once with `--deny-settings-mode none`.
 - Resources the template doesn't declare (the certificates bootstrap binds, anything made in the portal) aren't managed: the stack neither protects nor deletes them.
 - The guard-rail policy definitions every environment in the subscription assigns (`infra/guardrails.bicep`) are a stack of their own, `usnm-guardrails`, deployed just before the environment's. The archival account's group assigns them too, and `scripts/archive-store.sh deploy` deploys the stack the same way. Two stacks never manage the same resource. The same stack holds the budget on dev's groups, `budget-usnm-dev-groups` (an alert at $5 a month of actual spend, [Dev environment lifecycle](../docs/operations.md#dev-environment-lifecycle)), so it exists while dev doesn't. It mails the alert recipients (`USNM_ALERT_EMAILS`) of the environment provisioned last, or keeps the ones it has when that environment has none (an archive deploy keeps them too).
-- `scripts/teardown.sh --env <env>` deletes an environment: its resource groups, its custom role, the guard-rail stack (`usnm-guardrails`, the policy definitions) when no other environment in the subscription, and not the archival account, uses it, and its GitHub Environment. It asks for the name first, and works in the environment's recorded subscription. `--subscription OLD` removes only the Azure copy left in an old subscription after a move. An environment that uses the archival account is detached from it first ([Dev environment lifecycle](../docs/operations.md#dev-environment-lifecycle)).
+- `scripts/teardown.sh --env <env>` deletes an environment: its resource groups, its custom role, its GitHub Environment, and the guard-rail stack (`usnm-guardrails`, the policy definitions) when neither another environment in the subscription nor the archival account uses it. It asks for the name first, and works in the environment's recorded subscription. `--subscription OLD` removes only the Azure copy left in an old subscription after a move. An environment that uses the archival account is detached from it first ([Dev environment lifecycle](../docs/operations.md#dev-environment-lifecycle)).
 
 ## Web app
 
@@ -429,7 +436,16 @@ CI pushes from `main` as `usnm-ci-id-{env}`, signing in with OIDC (`id-usnm-ci-p
 
 The CI identity's rights are AcrPush on its registry, and a custom role, "usnm deployer", on its resource group (`infra/modules/deployer.bicep`). The role can roll Container Apps onto new images (which carry the site too), and nothing else: no data, keys, networking or role assignments. It's scoped to the group because Azure rejects role assignments scoped to a Container App itself, and because `az containerapp update` also needs join rights on the app's environment; the group holds only this environment. The update also needs assign rights on the app's identity: CI has Managed Identity Operator on `id-usnm-app-{env}` alone, never on the group, so it can't attach the ingest identity (and its data access) to the app.
 
-Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the one CI last rolled out).
+Each stack deployment sets the API image to `USNM_API_IMAGE_TAG`, falling back to
+`USNM_IMAGE_TAG` (default `main`). `USNM_SCHEDULED_INGEST_IMAGE_TAG` similarly
+pins only the primary `caj-usnm-ingest-*` job; backfill, OCR sync and other
+ingest-image jobs still follow `USNM_IMAGE_TAG`. Both overrides are public
+committed settings in `infra/env/<env>.json`, reviewed before deployment.
+Production records its existing independent API and primary-ingest tags so a
+provision for an unrelated workbook or output change does not silently replace
+either with `:main`. Update the relevant pin through a release PR when
+intentionally rolling that workload; a CI app rollout does not update these stack
+pins.
 
 The Quickwit image (the searcher sidecar, and the base of the ingest image) is pinned by digest per environment in `infra/quickwit-image.json`: our build of v0.9.1, which `scripts/build-quickwit.sh` builds in the environment's registry, or for an environment the file doesn't list, upstream v0.9.1, which CI copies in ([operations](../docs/operations.md#the-quickwit-image), ADR-0013).
 

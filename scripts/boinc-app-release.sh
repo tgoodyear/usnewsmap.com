@@ -36,12 +36,14 @@
 #
 # --what-if makes the read-only checks (settings, Azure, the worker image, the signing host's
 # key status and podman) and prints the plan.
+# --prepare-only stages, signs and builds, then records the appver pin for a release PR
+# without deploying or starting the publish job.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--prepare-only] [--what-if]" >&2
   exit 2
 }
-ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false
+ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false PREPARE_ONLY=false
 PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA=""
 EXTRA_FILES=()
 while [ $# -gt 0 ]; do
@@ -62,6 +64,7 @@ while [ $# -gt 0 ]; do
     --wrapper-source-pin) [ $# -ge 2 ] || usage; WRAPPER_PIN=$2; shift 2 ;;
     --signing-key-dir) [ $# -ge 2 ] || usage; KEY_DIR=$2; shift 2 ;;
     --signing-dataset) [ $# -ge 2 ] || usage; KEY_DATASET=$2; shift 2 ;;
+    --prepare-only) PREPARE_ONLY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
@@ -75,7 +78,7 @@ case "$KIND" in
     [ -z "$BINARY$BINARY_SHA" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--binary and --extra-file are only valid with --kind native"
     case "$APP:$PLAN_CLASS" in
       usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker | usnm_quality:docker) ;;
-      usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train)
+      usnm_ndlocr:docker | usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train | usnm_iris:docker_intel_opencl_4b)
         [ -n "$WORKER_OVERRIDE" ] || die "$APP has its own worker image: give --worker-image" ;;
       *) die "unsupported --app and --plan-class: Qwen uses docker_mt_2b (2B) or docker_nvidia_cuda_8b (8B); see scripts/boinc/install.py" ;;
     esac
@@ -290,9 +293,13 @@ would, from commit $sha:
 2. stage $APP $VERSION ($KIND, $PLATFORM, ${PLAN_CLASS:-default}) on the signing host: pull $SERVER_IMAGE (short-lived ACR token), run
    scripts/boinc/install.py in it with --network=none
 3. sign each file with sign_executable (--network=none, key $KEY_DIR read-only); bring back the .sig files
-4. build $registry.azurecr.io/$APPVER_REPO:$APPVER_TAG in ACR Tasks (every signature verified),
-   scripts/provision-boinc.sh --env $ENV_NAME --publish-image <it>, then start the publish job
+4. build $registry.azurecr.io/$APPVER_REPO:$APPVER_TAG in ACR Tasks (every signature verified)
 PLAN
+  if $PREPARE_ONLY; then
+    echo "   write images.appver for a release PR; do not deploy or start the publish job"
+  else
+    echo "   scripts/provision-boinc.sh --env $ENV_NAME --publish-image <it>, then start the publish job"
+  fi
   exit 0
 fi
 
@@ -428,12 +435,19 @@ baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platfo
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"
 
-echo "   deploying and verifying the signed app version"
-scripts/provision-boinc.sh --env "$ENV_NAME" --publish-image "$appver_image"
-echo "published and verified $APP $VERSION ($PLATFORM, $PLAN_CLASS)"
+if ! $PREPARE_ONLY; then
+  echo "   deploying and verifying the signed app version"
+  scripts/provision-boinc.sh --env "$ENV_NAME" --publish-image "$appver_image"
+  echo "published and verified $APP $VERSION ($PLATFORM, $PLAN_CLASS)"
+fi
 # Recorded like build-boinc-images.sh records the server and bridge: the stack keeps the publish
-# job on the last published version once this is committed.
+# job on the selected version once this is committed.
 tmp="$work/settings.json"
 jq --indent 2 --arg a "$appver_image" '.images.appver = $a' "$BOINC_SETTINGS" > "$tmp" && mv "$tmp" "$BOINC_SETTINGS"
 echo "wrote images.appver to $BOINC_SETTINGS: commit it through a pull request, so the next provision-boinc.sh keeps the publish job on this version"
-echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"
+if $PREPARE_ONLY; then
+  echo "prepared signed $APP $VERSION ($PLATFORM, $PLAN_CLASS); not published or registered"
+  echo "after the release PR merges, run scripts/provision-boinc.sh --env $ENV_NAME from the merged checkout"
+else
+  echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"
+fi

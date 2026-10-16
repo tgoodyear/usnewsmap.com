@@ -80,3 +80,97 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
         assert_eq!(calls.contains("\nsubmit --root"), submits, "{calls}");
     }
 }
+
+#[test]
+fn gold_mirror_loc_dispatch_never_fetches_secrets_or_submits_work() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let calls = root.join("calls");
+    let library = root.join("lib.sh");
+    let templates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contrib-compute/images/server")
+        .canonicalize()
+        .unwrap();
+    let config_template = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contrib-compute/boinc/config.xml.template");
+    std::fs::create_dir_all(root.join("project")).unwrap();
+    std::fs::create_dir_all(root.join("templates")).unwrap();
+    std::fs::copy(
+        templates.join("gold-mirror-config.py"),
+        root.join("templates/gold-mirror-config.py"),
+    )
+    .unwrap();
+    std::fs::copy(config_template, root.join("templates/config.xml.template")).unwrap();
+    symlink(
+        root.join("local/config.xml"),
+        root.join("project/config.xml"),
+    )
+    .unwrap();
+    std::fs::write(
+        &library,
+        format!(
+            "PROJ='{0}/project'\nSECRETS='{0}/local'\nTEMPLATES='{0}/templates'\nfetch_secrets() {{ exit 91; }}\nrender_config() {{ exit 92; }}\n\
+         log() {{ echo \"$*\" >&2; }}\nfail() {{ log \"$*\"; exit 1; }}\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let stub = bin.join("usnm-boinc");
+    std::fs::write(
+        &stub,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n", calls.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contrib-compute/images/server/bridge-job.sh"),
+    )
+    .unwrap()
+    .replace(
+        ". /usr/local/lib/usnm-boinc/lib.sh",
+        &format!(". '{}'", library.display()),
+    )
+    .replace("[ -e \"$PROJ/.usnm-initialised\" ] ||", "true ||");
+    let wrapper = root.join("bridge-job.sh");
+    std::fs::write(&wrapper, script).unwrap();
+    let out = std::process::Command::new("bash")
+        .arg(wrapper)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("BRIDGE_STEP", "gold-mirror-loc")
+        .env("GOLD_CAMPAIGN", "v1-tess550")
+        .env("PROJECT_DIR", &root)
+        .env("SHARE_DIR", &root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(calls).unwrap().trim(),
+        format!(
+            "gold mirror-loc --root {}/gold/v1-tess550 --project {}/project",
+            root.display(),
+            root.display()
+        )
+    );
+    let config = std::fs::read_to_string(root.join("local/config.xml")).unwrap();
+    assert!(config.contains("<uldl_dir_fanout>1024</uldl_dir_fanout>"));
+    assert!(config.contains(&format!(
+        "<download_dir>{}/project/download/</download_dir>",
+        root.display()
+    )));
+    assert!(!config.contains("db_"));
+    assert_eq!(
+        std::fs::read_link(root.join("project/config.xml")).unwrap(),
+        root.join("local/config.xml")
+    );
+}

@@ -48,14 +48,16 @@ pub struct Metrics {
     /// Times the status server for the LAN dashboard failed (to bind,
     /// while serving, or by a panic) and was started again, by `cause`.
     pub status_restarts: Counter<u64>,
-    /// loc.gov answers asking us to slow down, by `status` (429, 503),
-    /// `server` (api or tile) and whether a `Retry-After` came with it.
+    /// loc.gov holds, by `status`, `server` (api, tile or storage),
+    /// `reason` (http_status, html_challenge or unreadable_body), and
+    /// whether a `Retry-After` came with it or was capped.
     pub loc_slowdowns: Counter<u64>,
-    /// Engine time per page, by `engine`, `models` and `language`.
+    /// Sum of engine read times per page, by `engine`, `models`, `language`
+    /// and whether the page needed the JPEG fallback.
     pub ocr_seconds: Histogram<f64>,
-    /// Time to get a page's scan, by `outcome` and `source`: `loc` (the
-    /// issue lookup and the image from loc.gov, a cache miss included) or
-    /// `cache` (read and checked from the prefetch cache).
+    /// Time to get a page's scan, by `outcome`, `source` and `jpeg_fallback`:
+    /// `loc` (the image from loc.gov, a cache miss included) or `cache`
+    /// (read and checked from the prefetch cache).
     pub image_fetch_seconds: Histogram<f64>,
 }
 
@@ -88,17 +90,17 @@ impl Metrics {
                 .build(),
             loc_slowdowns: meter
                 .u64_counter("ocr.loc_slowdowns")
-                .with_description("loc.gov 429/503 answers")
+                .with_description("loc.gov HTTP, challenge and unreadable-body holds")
                 .build(),
             ocr_seconds: meter
                 .f64_histogram("ocr.ocr_seconds")
                 .with_unit("s")
-                .with_description("Engine time per page")
+                .with_description("Sum of engine read times per page")
                 .build(),
             image_fetch_seconds: meter
                 .f64_histogram("ocr.image_fetch_seconds")
                 .with_unit("s")
-                .with_description("Time to get a page's scan, from loc.gov or the prefetch cache")
+                .with_description("Time to get a page's scan, including JPEG fallbacks")
                 .build(),
         }
     }

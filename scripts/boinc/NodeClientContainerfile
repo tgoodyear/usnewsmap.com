@@ -1,0 +1,6 @@
+FROM mirror.gcr.io/library/almalinux:9@sha256:9819dc675b67b595c2b59e42be7763fca1a8bb217fa5944e04daa22e9a64db16
+RUN dnf -y -q install git gcc-c++ make autoconf automake libtool pkgconf-pkg-config \
+      libcurl-devel openssl-devel zlib-devel ca-certificates tar gzip file diffutils \
+ && dnf clean all
+COPY scripts/boinc/build-node-client.sh /checks/build-node-client.sh
+CMD ["/bin/bash", "-ec", "test \"$(cat /sys/fs/cgroup/memory.max)\" = 1610612736; test \"$(cat /sys/fs/cgroup/cpu.max)\" = '100000 100000'; bash /checks/build-node-client.sh --out /build; cat /sys/fs/cgroup/memory.max > /build/runtime-memory-max; cat /sys/fs/cgroup/cpu.max > /build/runtime-cpu-max"]

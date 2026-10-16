@@ -1,6 +1,6 @@
 # BOINC and Azure facts, checked against sources
 
-The facts the hosting design for the stock BOINC server depends on. The client side, the bridge and the contracts are in PR #441 (`docs/boinc.md`) and are not repeated here.
+These are the facts the hosting design for the stock BOINC server depends on. The client side, the bridge and the contracts are in PR #441 (`docs/boinc.md`) and are not repeated here.
 
 Every fact here has a source and a fetch date. All sources were read on 2026-10-13 (US Eastern).
 A fact marked UNVERIFIED was not confirmed from a source and must be tested before design
@@ -89,7 +89,12 @@ CORRECTIONS and gaps, in order of how much they affect the design:
    share a group; directories are setgid and umask is 0002. Source: `wiki:DirHierarchy`,
    `wiki:Create-a-BOINC-server-(cookbook)`, `wiki:Server-security`. On Container Apps the
    container disk is ephemeral and Azure Files is the persistent mount, and blob storage
-   cannot be mounted (see the Azure notes below).
+   cannot be mounted (see the Azure notes below). Each replica's `pid_<host>/` is the
+   exception: `boinc-daemons.sh` keeps it on the container disk and links it into the
+   tree. `bin/start` leaves its unlinked `start.lock` open in every daemon it starts, and on
+   Azure Files that file stays delete-pending, so each later `bin/start --cron` failed with
+   ENOENT and never restarted a stopped daemon. Source: `src:sched/start` lines 311-325
+   and 785-819.
 3. CORRECTED, MyISAM. Most tables are InnoDB, but `post`, `thread` and `profile` are MyISAM
    because of full-text indexes. Source: `src:db/schema.sql` lines 33 to 35. Azure Database
    for MySQL "uses the InnoDB storage engine"
@@ -138,7 +143,9 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
 - `docker_wrapper` runs a container described by `job.toml` and built from a `Dockerfile`
   (or pulled from an image), in an app version directory. Source: `wiki:Docker-apps`,
   `wiki:Docker-app-cookbook`, `wiki:Docker-app-implementation`.
-- The wiki says the client must be BOINC 9.0 or later (see below: 8.2.13 is what exists) and the host needs Docker (Windows needs WSL). The
+- The wiki says the client must be BOINC 9.0 or later, but released 8.2 clients
+  already implement container support (see the platform correction below).
+  The host needs Docker or Podman (Windows needs WSL). The
   image must contain `ps`. The cookbook asks for a server of November 2024 or later and tells
   you to copy `plan_class_spec.xml.sample` into the project directory. Source:
   `wiki:Docker-app-cookbook`.
@@ -154,13 +161,22 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   Azure hosting: the Container App never runs a container itself.
 - Element names are CONFIRMED in `src:sched/plan_class_spec.xml.sample` (the `docker` class is
   `<plan_class><name>docker</name><docker/></plan_class>`) and in the parser
-  (`src:sched/plan_class_spec.cpp`, lines 1258 to 1266: `min_core_client_version`,
-  `docker`). `boinc/plan_class_spec.xml` here is that class plus
-  `<min_core_client_version>80213</min_core_client_version>`, so older clients are not sent
-  the app. The server's own Docker check applies the 8.2.6 minimum to macOS clients only
-  (line 625). The wiki asks for 9.0, but no 9.x client had been released as of 2026-10-14
-  (newest Linux packages: 8.2.13 stable, 8.2.15 alpha), so a 9.0 minimum blocked every host.
-  8.2.13 on Debian 13 detects Docker (`Docker: version ...` in its event log).
+  (`src:sched/plan_class_spec.cpp`, lines 1258 to 1266: `min_core_client_version`, `docker`).
+  `boinc/plan_class_spec.xml` here is that class plus
+  `<min_core_client_version>80211</min_core_client_version>` for ordinary OCR; separate
+  multi-CPU and GPU container pilot classes retain their 80213 floors. The server's own Docker
+  check applies the 8.2.6 minimum to macOS clients only (line 625). The wiki asks for 9.0, but
+  no 9.x client had been released as of 2026-10-14 (newest Linux packages: 8.2.13 stable,
+  8.2.15 alpha), so a 9.0 minimum blocked every host. 8.2.13 on Debian 13 detects Docker
+  (`Docker: version ...` in its event log).
+- **Platform correction, 2026-10-16:** the recommended stable Mac client is
+  **8.2.11**, which already contains Podman path detection, the installed
+  `Run_Podman` helper, and BOINC-owned VM initialization in upstream stable
+  commit [`5511380`](https://github.com/BOINC/boinc/tree/5511380b8980935c25c3ea41df3980445419e59e).
+  Releases 8.2.12/13 are Linux hotfixes, not the introduction of Mac container
+  support. Computer 1's unmodified 8.2.11 client detected Podman 6.1.4 after
+  an idle restart. This proves runtime readiness, not live task acceptance;
+  volunteers do not need the development Mac client.
 - `scripts/boinc/install.py` (#441) installs the version under
   `apps/usnm_ocr/<version>/x86_64-pc-linux-gnu__docker`. The `__docker` suffix is the plan
   class name, so the plan class must be called `docker`.

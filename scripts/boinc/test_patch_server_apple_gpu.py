@@ -38,6 +38,7 @@ bool PLAN_CLASS_SPEC::check(SCHEDULER_REQUEST& sreq, HOST_USAGE& hu) {
             return false;
         }
     }
+        bool p = parse_str(buf, tag, value, sizeof(value));
 
     if (!strcmp(gpu_type, "nvidia")) {
         // nvidia eligibility
@@ -80,12 +81,15 @@ const char* strstr(const char* a, const char* b) {
     }
     return nullptr;
 }
-struct PC { int max_batch = 0; bool docker; const char* name; };
-struct WU { int batch; };
+struct PC { int max_batch = 0; bool docker; const char* name; int min_wu_id=0, max_wu_id=0; };
+struct WU { int batch; int id=100; };
 struct { bool debug_version_select = false; } config;
 struct { template<class... T> void printf(T...) {} } log_messages;
 const int MSG_NORMAL = 0;
 bool infeasible(const PC* pc, const WU* wu) {
+    // Unchanged pinned BOINC WU range checks precede the patched batch gate.
+    if (pc->min_wu_id && wu->id < pc->min_wu_id) return true;
+    if (pc->max_wu_id && wu->id > pc->max_wu_id) return true;
 GATE
 }
 int main() {
@@ -93,13 +97,28 @@ int main() {
         {0, true, "docker_mt"}, {0, true, "docker_nvidia_cuda"},
         {12, true, "docker_mt_2b"}, {18, true, "docker_nvidia_cuda_8b"},
         {0, false, "mt"}, {8, false, "apple_gpu_8b"},
-        {8, false, "nvidia_cuda_8b"}, {2, false, "nvidia_cuda_2b"}
+        {8, false, "nvidia_cuda_8b"}, {2, false, "nvidia_cuda_2b"},
+        {104, true, "docker_intel_opencl_4b"}
     };
-    const int expected[] = {1, 1, 12, 18, 2, 8, 8, 2};
-    const int batches[] = {1, 12, 18, 2, 8};
-    for (int i = 0; i < 8; ++i) {
+    const int expected[] = {1, 1, 12, 18, 2, 8, 8, 2, 104};
+    const int batches[] = {1, 12, 18, 2, 8, 104};
+    for (int i = 0; i < 9; ++i) {
         for (int b : batches) { WU wu{b}; assert(infeasible(&classes[i], &wu) == (b != expected[i])); }
         WU legacy{0}; assert(!infeasible(&classes[i], &legacy));
+    }
+    const char* native_names[] = {"nvidia_cuda_2b", "nvidia_cuda_8b"};
+    const int ids[] = {0, 1, 2, 100, 2147483647};
+    for (const char* name : native_names) {
+        int batch = strcmp(name, "nvidia_cuda_2b") ? 8 : 2;
+        PC closed{batch, false, name, 2, 1};
+        for (int id : ids) {
+            WU wu{batch, id}; assert(infeasible(&closed, &wu));
+        }
+        PC bounded{batch, false, name, 100, 100};
+        WU allowed{batch,100}, before{batch,99}, after{batch,101}, wrong{12,100};
+        assert(!infeasible(&bounded, &allowed));
+        assert(infeasible(&bounded, &before) && infeasible(&bounded, &after));
+        assert(infeasible(&bounded, &wrong));
     }
 }
 """.replace("GATE", module.BATCH_INFEASIBLE_PATCHED)
@@ -118,6 +137,7 @@ int main() {
             self.assertEqual(patched.count(module.DISPATCH_PATCHED), 1)
             self.assertEqual(patched.count(module.BATCH_INFEASIBLE_PATCHED), 1)
             self.assertEqual(patched.count(module.BATCH_CHECK_PATCHED), 1)
+            self.assertNotIn("qwen_native_cuda_canary", patched)
             self.assertNotIn(module.ELIGIBILITY_ORIGINAL, patched)
             self.assertNotIn(module.DISPATCH_ORIGINAL, patched)
             self.assertNotIn(module.BATCH_INFEASIBLE_ORIGINAL, patched)

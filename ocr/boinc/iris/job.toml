@@ -1,0 +1,3 @@
+workdir = "/work"
+use_gpu = false
+create_args = "--device=/dev/dri/renderD128 --network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=9g --memory-swap=9g --pids-limit=512 --tmpfs=/tmp:rw,size=1g"

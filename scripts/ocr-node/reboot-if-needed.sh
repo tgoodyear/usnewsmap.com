@@ -15,7 +15,8 @@
 # /run/lock/usnm-ocr-maintenance.lock (as long again), then stops
 # usnm-ocr-worker.service, and usnm-sset.service (the on-prem Serial Set
 # fetch, #229) if it's running, and waits for them to exit, up to
-# --drain-timeout (default 1260 s: the 1200 s page timeout and a minute),
+# --drain-timeout (default 1320 s: the worker's 1260 s stop bound and a
+# minute),
 # then reboots. Both are enabled and start at boot by themselves (the
 # Serial Set fetch until it has finished: its unit has a completion
 # marker); the fetch resumes from its raw store and takes over its own
@@ -24,13 +25,12 @@
 # usnm-ocr-reboot-resume.service runs this with --resume at boot, which
 # starts it again.
 #
-# On SIGTERM the worker stops taking pages, gives those in flight 60 s (its
-# --shutdown-grace-secs) to finish, then abandons the rest without output;
-# they reappear on the queue when their visibility runs out (30 minutes
-# after they were taken) for either node, at the cost of one of their five
-# receives. The unit's TimeoutStopSec (120 s) kills anything left, so
-# `systemctl stop` normally returns within two minutes; --drain-timeout is
-# the outer bound. Everything goes to the journal under usnm-ocr-reboot;
+# On SIGTERM the worker stops taking pages and gives those in flight their
+# configured page timeout (1,200 s on the production nodes), then abandons
+# any remainder without output; those messages reappear when their
+# visibility runs out (30 minutes after they were taken). TimeoutStopSec
+# allows 1,260 s for the page timeout and telemetry flush; --drain-timeout
+# is the outer bound. Everything goes to the journal under usnm-ocr-reboot;
 # a reboot and any problem are logged at Warning, which the Azure Monitor
 # Agent collects from the node's syslog, the rest at Notice.
 # --dry-run says what it would do and changes nothing.
@@ -41,7 +41,7 @@ pri() { if [ -n "${JOURNAL_STREAM:-}" ]; then printf '<%s>%s\n' "$1" "$2"; else 
 log() { pri 5 "$*"; }
 warn() { pri 4 "$*"; }
 
-DRAIN_TIMEOUT=1260 DNF_WAIT=1800 DRY_RUN=false RESUME_MODE=false
+DRAIN_TIMEOUT=1320 DNF_WAIT=1800 DRY_RUN=false RESUME_MODE=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --drain-timeout) DRAIN_TIMEOUT=${2:-}; shift 2 ;;
@@ -144,7 +144,7 @@ if [ -n "$running" ]; then
     mkdir -p "$(dirname "$RESUME")"
     tr ' ' '\n' <<< "$resume" > "$RESUME"
   fi
-  log "stopping $running (the worker's in-flight pages get its grace; up to $DRAIN_TIMEOUT s in all)"
+  log "stopping $running (the worker drains in-flight pages; up to $DRAIN_TIMEOUT s in all)"
   start=$(date +%s)
   # shellcheck disable=SC2086 # a list of unit names
   timeout "$DRAIN_TIMEOUT" systemctl stop $running ||

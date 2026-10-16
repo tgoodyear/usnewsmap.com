@@ -1,7 +1,7 @@
 //! OCR engines. Tesseract to start; the engine survey (#296) may add others
 //! behind the same trait.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -36,7 +36,7 @@ pub struct EngineOutput {
 /// The engine's side of a read's provenance (13 §13.8.3's Engine,
 /// Artifacts, Configuration and Resources groups). The worker adds what it
 /// knows itself: the page, the times and the layout counts.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ReadInfo {
     /// The engine's id (`engines.toml`, or `hello`'s `engine.id`).
     pub engine_id: String,
@@ -202,10 +202,23 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     /// costs no image request (12 Step 7). The engine contract (ADR-0016,
     /// #307) answers it from routing.
     fn can_read(&self, language: &str) -> bool;
+    /// The languages and profiles this engine can read before its first page.
+    fn routes(&self) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+    /// The models available to this engine before its first page.
+    fn models(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// The resolution the engine reads scans at: IIIF JPEGs carry none,
     /// so it is assumed (13 §13.4.3), and the stored ALTO records it.
     fn dpi(&self) -> u32 {
         300
+    }
+    /// Safe execution configuration for opt-in provenance. Never include
+    /// command arguments, environment variables, credentials or service URLs.
+    fn execution_config(&self) -> serde_json::Value {
+        serde_json::Value::Null
     }
     /// Stops what the engine keeps running between pages, after the last
     /// page (long-lived instances); nothing for an engine that starts
@@ -369,7 +382,7 @@ pub struct Remote {
 }
 
 /// Limits on each engine container (13 §13.6.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Limits {
     /// `--memory` and `--memory-swap`: no swap.
     pub memory_mib: u32,
@@ -1329,8 +1342,42 @@ impl Engine for Tesseract {
         self.route(language).is_some()
     }
 
+    fn routes(&self) -> BTreeMap<String, String> {
+        let Ok(engine) = self.catalog.engine(&tesseract_id(&self.version)) else {
+            return BTreeMap::new();
+        };
+        let mut routes = BTreeMap::new();
+        for profile in &engine.profile {
+            for language in &profile.languages {
+                if self.route(language).as_deref() == Some(profile.id.as_str()) {
+                    routes.insert(language.clone(), profile.id.clone());
+                }
+            }
+        }
+        routes
+    }
+
+    fn models(&self) -> Vec<String> {
+        self.installed.iter().cloned().collect()
+    }
+
     fn dpi(&self) -> u32 {
         self.dpi
+    }
+
+    fn execution_config(&self) -> serde_json::Value {
+        let (runtime, limits) = match &self.runner {
+            Runner::Host(_) => ("host", None),
+            Runner::Podman { remote, .. } => ("podman", remote.as_ref().map(|r| r.limits)),
+        };
+        serde_json::json!({
+            "runtime": runtime,
+            "limits": limits,
+            "dpi": self.dpi,
+            "psm": self.psm,
+            "threads": self.threads,
+            "page_timeout_seconds": self.timeout.as_secs_f64(),
+        })
     }
 
     fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
@@ -1516,6 +1563,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn run_metadata_execution_config_excludes_launch_credentials() {
+        let mut tess = Tesseract {
+            catalog: usnm_ocr_route::ENGINES.clone(),
+            runner: Runner::Host("private-binary-path".into()),
+            sandbox: None,
+            version: "5.5.0".into(),
+            installed: BTreeSet::new(),
+            psm: 3,
+            dpi: 300,
+            threads: 2,
+            timeout: Duration::from_secs(120),
+        };
+        assert_eq!(
+            tess.execution_config(),
+            serde_json::json!({
+                "runtime": "host", "limits": null, "dpi": 300,
+                "psm": 3, "threads": 2, "page_timeout_seconds": 120.0,
+            })
+        );
+        tess.runner = Runner::Podman {
+            podman: "private-podman-path".into(),
+            remote: Some(Remote {
+                url: "private-connection-url".into(),
+                scratch: "private-scratch-path".into(),
+                limits: Limits::default(),
+            }),
+            image: format!("registry/engine@sha256:{}", "a".repeat(64)),
+        };
+        let config = tess.execution_config();
+        assert_eq!(config["limits"]["memory_mib"], Limits::default().memory_mib);
+        assert_eq!(config["runtime"], "podman");
+        assert!(!config.to_string().contains("private-"));
+    }
+
+    #[test]
     fn japanese_selects_ndlocr_but_is_unavailable_to_tesseract() {
         assert_eq!(
             candidates("jpn"),
@@ -1597,6 +1679,29 @@ mod tests {
                 .as_deref(),
             Some("eng")
         );
+    }
+
+    #[test]
+    fn startup_status_includes_installed_models_and_resolved_routes() {
+        let installed = ["deu", "eng", "frak2021"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let tesseract = Tesseract {
+            catalog: usnm_ocr_route::ENGINES.clone(),
+            runner: Runner::Host("tesseract".into()),
+            sandbox: None,
+            version: "5.5.0".into(),
+            installed,
+            psm: 3,
+            dpi: 300,
+            threads: 1,
+            timeout: Duration::from_secs(600),
+        };
+        assert_eq!(tesseract.models(), ["deu", "eng", "frak2021"]);
+        let routes = tesseract.routes();
+        assert_eq!(routes.get("deu").map(String::as_str), Some("frak2021"));
+        assert_eq!(routes.get("eng").map(String::as_str), Some("eng"));
     }
 
     #[test]

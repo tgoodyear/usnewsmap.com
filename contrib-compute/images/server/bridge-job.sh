@@ -24,6 +24,11 @@
 #                               reference counts (prepared.json); serves none of them
 #   BRIDGE_STEP=gold-submit     GOLD_ENGINE_IMAGE=sha256:... GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
 #                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_UNITS=20]
+#   BRIDGE_STEP=gold-onboard    GOLD_ENGINE_IMAGE=sha256:... GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
+#                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_MAX_HOSTS=10]; one host-trust
+#                               onboard pass: a gold unit for each untrusted host without one
+#                               outstanding, and a fresh one after a failed unit
+#   BRIDGE_STEP=gold-mirror-loc stages only the 18 locked v1 LoC JPEGs; no BLN or work creation
 #   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>; writes <campaign>/out
 #   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold>; writes $SHARE_DIR/gold/trust.json from this
 #                               campaign's out/reports.jsonl, for `usnm-boinc collect --trust`
@@ -100,6 +105,8 @@
 #                               and leaves the others (safe to repeat)
 #   BRIDGE_STEP=work-volume     writes one JSON line of aggregate workunit, result, active-user
 #                               and active-host counts to stdout; safe to repeat
+#   BRIDGE_STEP=batch-inventory BATCH_NONCE=<32 hex> HANDOFF_URL=<container URL>; writes the
+#                               read-only queue/host/journal/spool inventory to scheduler/
 #
 # Start a step with scripts/start-boinc-bridge.sh, which sets these on the job: an
 # `az containerapp job start --env-vars` override drops the job's own settings and the share.
@@ -282,6 +289,11 @@ case "$step" in
   gold-prepare)
     # No database or secrets: this step only talks to the publishers and writes the share.
     exec usnm-boinc gold prepare --bundle "$GOLD/bundle.tar" --root "$GOLD" ;;
+  gold-mirror-loc)
+    # No database, secrets, publisher fetches, bundle or BLN600 reads.
+    python3 "$TEMPLATES/gold-mirror-config.py" --project "$PROJ" \
+      --config "$SECRETS/config.xml" --template "$TEMPLATES/config.xml.template"
+    exec usnm-boinc gold mirror-loc --root "$GOLD" --project "$PROJ" ;;
   gold-bundle)
     # No database or secrets: this step only talks to the datasets' publishers and writes the share.
     [ -f /usr/local/lib/usnm-boinc/gold-bundle.sh ] || fail "gold-bundle needs the bridge image"
@@ -296,7 +308,8 @@ case "$step" in
 esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
-  [ "$step" != register-apps ] && [ "$step" != work-volume ]; then
+  [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
+  [ "$step" != gold-onboard ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -330,7 +343,20 @@ if [ "$step" = spool-out ]; then
     ${host_args[@]+"${host_args[@]}"} ${trust_args[@]+"${trust_args[@]}"}
   exit 0
 fi
-if [ "$step" = work-volume ]; then
+# share_readable <stamp> <dir>...: makes files a step created since <stamp> readable by the
+# server's boincadm group. Skipped on SMB/CIFS: the share's mount options fix the owner, group
+# and modes, so chgrp/chmod change nothing there, and walking its download tree takes minutes.
+share_readable() {
+  local stamp=$1 d
+  shift
+  for d in "$@"; do
+    [ -d "$d" ] || continue
+    case "$(stat -f -c %T "$d" 2>/dev/null)" in smb2 | cifs) continue ;; esac
+    find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
+  done
+}
+# A private MySQL defaults file for the runtime database user, removed on exit.
+write_mycnf() {
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   mycnf="$SECRETS/mysql-runtime.cnf"
   trap 'rm -f "$mycnf" "$SECRETS/db-runtime"' EXIT
@@ -350,7 +376,21 @@ values = {"host": os.environ["DB_HOST"], "user": os.environ["DB_RUNTIME_USER"],
 Path(sys.argv[1]).write_text("[client]\n" + "".join(f"{key}={quote(value)}\n" for key, value in values.items()))
 PY
   )
-  python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
+}
+if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then
+  write_mycnf
+  if [ "$step" = batch-inventory ]; then
+    [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
+      fail "HANDOFF_URL must name the hand-off container"
+    [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
+    mkdir -p "$HANDOFF_DIR/scheduler"
+    python3 "$TEMPLATES/batch-inventory.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME" \
+      --root "$HANDOFF_DIR" --results "$PROJ/results" --nonce "$BATCH_NONCE" \
+      --out "$HANDOFF_DIR/scheduler/inventory.json"
+    usnm-boinc handoff put --from "$HANDOFF_DIR/scheduler" --to-url "$HANDOFF_URL" --prefix scheduler
+  else
+    python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
+  fi
   exit 0
 fi
 fetch_secrets
@@ -365,27 +405,32 @@ case "$step" in
     exec python3 "$TEMPLATES/train/campaign.py" submit --root "$TRAIN" --project "$PROJ" ;;
   assess-submit)
     assess_mode
-    exec usnm-boinc assess submit --root "$ASSESS" --project "$PROJ" --mode "$ASSESS_MODE" \
-      --max-units "${ASSESS_MAX:-500}" ;;
+    stamp="$(mktemp)"
+    rc=0
+    usnm-boinc assess submit --root "$ASSESS" --project "$PROJ" --mode "$ASSESS_MODE" \
+      --max-units "${ASSESS_MAX:-500}" || rc=$?
+    share_readable "$stamp" "$PROJ/download"
+    rm -f "$stamp"
+    exit "$rc" ;;
   surya-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" || rc=$?
-    find "$PROJ/templates" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp"
     exit "$rc" ;;
   quality-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc quality submit --root "$QUALITY" --project "$PROJ" --max-units "${QUALITY_MAX:-500}" || rc=$?
-    find "$PROJ/templates" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp" "$PROJ/html/cache/f2/server_status.php_job_status" 2>/dev/null || true
     exit "$rc" ;;
   qwen-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc qwen submit --root "$QWEN" --project "$PROJ" --target "${QWEN_TARGET:-container}" --max-units "${QWEN_MAX:-20}" || rc=$?
-    find "$PROJ/templates" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp" "$PROJ/html/cache/f2/server_status.php_job_status" 2>/dev/null || true
     exit "$rc" ;;
   gold-submit)
@@ -401,10 +446,30 @@ case "$step" in
       --engine-base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
       --engine-version "${GOLD_ENGINE_VERSION:-5.5.0}" --units "${GOLD_UNITS:-20}" \
       ${target_args[@]+"${target_args[@]}"} || rc=$?
-    for d in "$PROJ/templates" "$PROJ/gold"; do
-      [ -d "$d" ] || continue
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/gold"
+    rm -f "$stamp"
+    exit "$rc" ;;
+  gold-onboard)
+    # One bounded host-trust onboard pass: a targeted gold unit for each untrusted host
+    # without one outstanding, including hosts whose last unit failed (docs/boinc-host-trust-followups.md).
+    [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
+    write_mycnf
+    controller="$SECRETS/host-trust.json"
+    trap 'rm -f "$mycnf" "$SECRETS/db-runtime" "$controller"' EXIT
+    (umask 077; jq -n --arg root "$SHARE_DIR/host-trust" --arg project "$PROJ" \
+      --arg jobs "$HANDOFF_DIR" --arg mycnf "$mycnf" --arg ca /usr/local/share/usnm/mysql-ca.pem \
+      --arg db "$DB_NAME" --arg trust "$SHARE_DIR/gold/trust.json" --arg prepared "$GOLD" \
+      --arg image "${GOLD_ENGINE_IMAGE:?set GOLD_ENGINE_IMAGE}" \
+      --arg base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
+      --arg version "${GOLD_ENGINE_VERSION:-5.5.0}" --argjson max "${GOLD_MAX_HOSTS:-10}" \
+      '{root:$root, project:$project, jobs_root:$jobs, mysql_defaults:$mycnf, mysql_ca:$ca,
+        database:$db, trust:$trust, prepared:$prepared,
+        engine:{base:$base, dpi:300, image:$image, psm:3, timeout_secs:300, version:$version},
+        max_hosts:$max, max_spots:1, sample_every:1}' > "$controller")
+    stamp="$(mktemp)"
+    rc=0
+    usnm-boinc host-trust onboard --config "$controller" --execute || rc=$?
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/gold"
     rm -f "$stamp"
     exit "$rc" ;;
   register-apps)

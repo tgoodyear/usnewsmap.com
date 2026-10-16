@@ -35,9 +35,9 @@ python3 scripts/boinc/smoke-worker.py --runtime /opt/podman/bin/podman \
   --arch arm64 --dir /tmp/usnm-native-arm-pr/smoke
 ```
 
-The script checks native image architectures, runs export/work/collect with no
-network, a read-only container root and the worker's resource limits, rejects a
-forged engine digest, and checks collection replay. The fixture generator runs
+The script checks native image architectures, runs export, work and collect with
+no network, a read-only container root and the worker's resource limits, rejects
+a forged engine digest, and checks collection replay. The fixture generator runs
 natively as well. The workflow runs the same test on native amd64 and arm64
 Ubuntu runners before publishing a joint index. Hosted runs and index publication
 were not executed locally.
@@ -70,9 +70,9 @@ was used. No published settings were changed.
 
 The maintainer must merge the build tooling, publish the tested worker index,
 commit public digest settings, and use the [offline-signing release procedure](../../contrib-compute/docs/app-release.md#mac-app-versions).
-Then verify a reserved native Mac `usnm_ocr` job end to end, fix and retest Podman
-pause/restart, test client restart/reboot, and establish native gold-page agreement
-before closing #476. Gold and assessment expectations currently hold one
-architecture-specific engine base ID; a multi-architecture campaign requires
-matching expectations rather than reusing the amd64 ID for arm64. The
-server-dependent BUDA evidence in #481 remains outstanding.
+Then verify a reserved native Mac `usnm_ocr` job end to end, fix and retest
+Podman pause and restart, test client restart and reboot, and establish native
+gold-page agreement before closing #476. Gold and assessment expectations
+currently hold one architecture-specific engine base ID; a multi-architecture
+campaign requires matching expectations rather than reusing the amd64 ID for
+arm64. The server-dependent BUDA evidence in #481 remains outstanding.

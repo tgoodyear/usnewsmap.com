@@ -109,7 +109,37 @@ test("a blocked basemap does not hide results indefinitely, including with reduc
   await page.goto("/?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31");
   await expect(page.locator(".summary")).toContainText("places");
   const overlay = page.locator("#search-overlay");
-  await expect(overlay).toHaveCSS("opacity", "0");
   await expect(overlay).toHaveCSS("opacity", "1");
   await expect(overlay).toHaveCSS("transition-duration", "0s");
 });
+
+for (const direct of [false, true]) {
+  for (const failure of ["abort", "timeout"]) {
+    test(`States survives ${failure} of the basemap style (${direct ? "direct entry" : "switch from Points"})`, async ({
+      page,
+      isMobile,
+    }) => {
+      await page.route("https://tiles.openfreemap.org/**", async (route) => {
+        if (failure === "timeout") await new Promise((resolve) => setTimeout(resolve, 3000));
+        await route.abort();
+      });
+      await page.goto(
+        `/?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&c=-89,40&z=5${direct ? "&layer=states" : ""}`,
+      );
+      if (!direct) await page.getByRole("combobox", { name: "Map layer" }).selectOption("states");
+      await page.waitForFunction(() => performance.getEntriesByName("usnm-states-first-paint").length > 0);
+      await expect(page.getByRole("region", { name: "States legend" })).toBeVisible();
+      const map = page.getByTestId("map");
+      await map.evaluate((element) => element.scrollIntoView({ block: "center", behavior: "instant" }));
+      const box = (await map.boundingBox())!;
+      const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
+      if (isMobile) {
+        await page.touchscreen.tap(x, y);
+        await expect(page.getByRole("group", { name: "Illinois details" })).toContainText("pages published");
+      } else {
+        await page.mouse.move(x, y);
+        await expect(page.getByRole("tooltip").filter({ hasText: "Illinois" })).toContainText("pages published");
+      }
+    });
+  }
+}

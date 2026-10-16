@@ -526,8 +526,8 @@ PUBLIC: dict[str, dict] = {
     },
     # BLN600 is No-Derivatives: nothing from it is committed, the crop is the dataset's own image file
     # copied unchanged (never re-encoded), and its LICENSE and readme travel with every output directory.
-    # BOINC clients (#457) must download the original zip and cut or copy locally; the project cannot
-    # ship derived crops.
+    # BOINC's project mirror must serve only the unchanged source zip; clients cut locally and the
+    # project does not distribute derived crops. The operator must verify the deployment's use.
     "bln600": {
         "group": "pub-bln600", "lang": "eng",
         "license": "CC BY-NC-ND 4.0 (figshare record and the LICENSE file in the zip)",
@@ -741,21 +741,180 @@ def ca_page(doc_id: str) -> dict | None:
 
 
 def alto_lines(xml: bytes, image_width: int) -> list[dict]:
-    """LoC ALTO as lines in reading (file) order: text (Strings joined by spaces) and box in image pixels."""
-    import crops
+    """LoC ALTO as lines in reading order, ignoring implausible String/TextLine geometry.
 
-    w = crops.page_width(xml)
+    String text is kept even when its coordinates are bad. Its box is left out of the union, so a single
+    page-spanning coordinate cannot stretch the crop. A line with no plausible String box falls back to
+    its TextLine box; if neither is usable, conversion leaves the line unboxed for matched-only validation.
+    """
+    import math
+    import statistics
+    import xml.etree.ElementTree as ET
+
+    page_width_match = re.search(rb"<(?:\w+:)?Page\b[^>]*\bWIDTH=\"([\d.]+)\"", xml)
+    w = float(page_width_match.group(1)) if page_width_match else None
     import altotext
 
     scale = image_width / w if w else altotext.pixel_scale(xml)
-    lines: dict[int, list] = {}
-    for x, y, ww, h, c, ln in altotext.parse(xml, scale)[1]:
-        lines.setdefault(ln, []).append((x, y, ww, h, c))
+    root = ET.fromstring(xml)
+    page = next((e for e in root.iter() if _local(e) == "Page"), None)
+    page_height = None
+    if page is not None and page.get("HEIGHT"):
+        try:
+            page_height = float(page.get("HEIGHT")) * scale
+        except ValueError:
+            pass
+    if page_height is not None and (not math.isfinite(page_height) or page_height <= 0):
+        page_height = None
+    page_width = float(image_width)
+
+    def rect(el):
+        try:
+            values = tuple(float(el.get(k)) * scale for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT"))
+        except (TypeError, ValueError):
+            return None
+        return values if all(math.isfinite(v) for v in values) and values[2] > 0 and values[3] > 0 else None
+
+    line_meta = []
+    for block in root.iter():
+        if _local(block) != "TextBlock":
+            continue
+        block_rect = rect(block)
+        for line in block:
+            if _local(line) != "TextLine":
+                continue
+            strings = []
+            for el in line:
+                if _local(el) != "String":
+                    continue
+                try:
+                    box = tuple(float(el.get(k, 0)) * scale for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT"))
+                except ValueError:
+                    box = None
+                strings.append((el.get("CONTENT", ""), box,
+                                "HPOS" in el.attrib and "VPOS" in el.attrib))
+            line_meta.append((block_rect, rect(line), strings))
+
+    line_heights = []
+    char_widths = []
+    for _, _, strings in line_meta:
+        heights = []
+        for c, box, has_origin in strings:
+            if box is None:
+                continue
+            _, _, ww, h = box
+            if has_origin and math.isfinite(h) and h > 0 and (not page_height or h < page_height * 0.15):
+                heights.append(h)
+            if c and has_origin and math.isfinite(ww) and ww > 0:
+                char_widths.append(ww / len(c))
+        if heights:
+            line_heights.append(statistics.median(heights))
+    typical_height = statistics.median(line_heights) if line_heights else None
+    typical_char_width = statistics.median(char_widths) if char_widths else None
+
+    def plausible(box, containing, text):
+        if box is None:
+            return False
+        x, y, ww, h = box
+        if not all(math.isfinite(v) for v in box) or ww <= 0 or h <= 0:
+            return False
+        if typical_height and h > 6 * typical_height:
+            return False
+        if page_height and h > 0.12 * page_height:
+            return False
+        if page_width:
+            margin = max(3.0, page_width * 0.02)
+            if x < -margin or x + ww > page_width + margin:
+                return False
+        if page_height:
+            margin = max(3.0, page_height * 0.02)
+            if y < -margin or y + h > page_height + margin:
+                return False
+        if containing:
+            bx, by, bw, bh = containing
+            margin = max(3.0, bw * 0.02)
+            if ww > bw + margin or x < bx - margin or x + ww > bx + bw + margin:
+                return False
+            vmargin = max(3.0, bh * 0.02)
+            if h > bh + vmargin or y < by - vmargin or y + h > by + bh + vmargin:
+                return False
+        return True
+
+    def string_rect(box, containing, text, allow_wide):
+        """Repair oversized dimensions at a sane origin; discard coordinates whose origin is unusable."""
+        if box is None or not text:
+            return None
+        x, y, ww, h = box
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        if page_width and not 0 <= x < page_width:
+            return None
+        if page_height and not 0 <= y < page_height:
+            return None
+        if containing:
+            bx, by, bw, bh = containing
+            margin = max(3.0, bw * 0.02)
+            if x < bx - margin or x >= bx + bw + margin or y < by - margin or y >= by + bh + margin:
+                return None
+
+        if typical_char_width and (not math.isfinite(ww) or ww <= 0 or
+                                   (not allow_wide and ww > 4 * typical_char_width * len(text))):
+            ww = typical_char_width * len(text)
+        if typical_height and (not math.isfinite(h) or h <= 0 or h > 6 * typical_height):
+            h = typical_height
+        if not math.isfinite(ww) or ww <= 0 or not math.isfinite(h) or h <= 0:
+            return None
+        if page_width:
+            ww = min(ww, page_width - x)
+        if page_height:
+            h = min(h, page_height - y)
+        if containing:
+            bx, by, bw, bh = containing
+            ww = min(ww, bx + bw - x)
+            h = min(h, by + bh - y)
+        repaired = (x, y, ww, h)
+        return repaired if plausible(repaired, containing, text) else None
+
+    def box_in_line(box, line_box):
+        x, y, ww, h = box
+        lx, ly, lw, lh = line_box
+        x_margin, y_margin = max(3.0, lw * 0.02), max(3.0, lh * 0.25)
+        return (lx - x_margin <= x and x + ww <= lx + lw + x_margin and
+                ly - y_margin <= y and y + h <= ly + lh + y_margin)
+
     out = []
-    for ln in sorted(lines):
-        ws = lines[ln]
-        out.append({"text": " ".join(c for *_, c in ws if c),
-                    "box": box_of([(x, y) for x, y, *_ in ws] + [(x + ww, y + h) for x, y, ww, h, _ in ws])})
+    for block_rect, line_rect, strings in line_meta:
+        if not strings:
+            continue
+        text = " ".join(c for c, _, _ in strings if c)
+        line_is_plausible = plausible(line_rect, block_rect, text)
+        valid = []
+        line_conflict = False
+        for c, box, has_origin in strings:
+            if has_origin:
+                repaired = string_rect(box, block_rect, c, line_is_plausible)
+                if repaired:
+                    valid.append(repaired)
+                    if line_is_plausible and not box_in_line(repaired, line_rect):
+                        line_conflict = True
+                elif c and line_is_plausible:
+                    line_conflict = True
+            elif c and line_is_plausible:
+                line_conflict = True
+        if line_conflict:
+            valid = []
+        if valid:
+            x0 = min(x for x, _, _, _ in valid)
+            y0 = min(y for _, y, _, _ in valid)
+            x1 = max(x + ww for x, _, ww, _ in valid)
+            y1 = max(y + h for _, y, _, h in valid)
+            if not plausible((x0, y0, x1 - x0, y1 - y0), block_rect, text):
+                valid = []
+        if not valid and line_is_plausible:
+            valid = [line_rect]
+        box = (box_of([(x, y) for x, y, *_ in valid] +
+                      [(x + ww, y + h) for x, y, ww, h in valid]) if valid else None)
+        out.append({"text": text, "box": box})
     return out
 
 
@@ -801,6 +960,18 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
 
     pages = json.loads((src / "loc" / "pages.json").read_text(encoding="utf-8")) if (src / "loc" / "pages.json").exists() else {}
     out, stats = [], {"articles": 0, "articles_with_page": 0, "lines": 0, "lines_matched": 0}
+
+    def spatially_discontinuous(a, b):
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+        ah, bh = ay1 - ay0, by1 - by0
+        tolerance = 4 * max(ah, bh)
+        vertical_gap = max(0, max(ay0, by0) - min(ay1, by1))
+        if vertical_gap > tolerance:
+            return True
+        horizontal_gap = max(0, max(ax0, bx0) - min(ax1, bx1))
+        return horizontal_gap > tolerance
+
     for d in hipe_docs(src, "ca"):
         stats["articles"] += 1
         pg = ca_page(d["document_metadata"]["document_id"])
@@ -818,6 +989,10 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
         alto = alto_lines(alto_path.read_bytes(), width)
         hits = match_lines(ocr, alto)
         stats["lines_matched"] += sum(h is not None for h in hits)
+        for i, h in enumerate(hits):
+            if h is not None and truth[i].strip() and alto[h]["box"] is None:
+                raise ValueError(f"matched Overproof line {d['document_metadata']['document_id']}/{i} maps to "
+                                 f"ALTO TextLine {h + 1} on {pg['key']} without plausible geometry")
         run: list[int] = []
 
         def flush():
@@ -833,7 +1008,12 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
             run.clear()
 
         for i, h in enumerate(hits):
-            if h is None or not truth[i].strip() or (run and (hits[run[-1]] + 1 != h or len(run) >= max_lines)):
+            previous_box = alto[hits[run[-1]]]["box"] if run else None
+            current_box = alto[h]["box"] if h is not None and truth[i].strip() else None
+            split_for_geometry = (run and previous_box is not None and current_box is not None and
+                                  spatially_discontinuous(previous_box, current_box))
+            if h is None or not truth[i].strip() or (run and (hits[run[-1]] + 1 != h or len(run) >= max_lines or
+                                                               split_for_geometry)):
                 flush()
             if h is not None and truth[i].strip():
                 run.append(i)

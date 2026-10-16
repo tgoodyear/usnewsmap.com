@@ -4,10 +4,10 @@
   "codeSignPublicKey": "1024\ned41759f6f9d26afc59cb55b47403279aefb529ddf0c7a45dd05edd252b406cf\n90b71251e5e224a2df33de05941de47c966258a7a0042c1d276d999f1aaa8d79\n2894de320981f6bbf430b30a40987c37d647b029051abcf21f79da809f7f28a2\na8bb6d18af8eb4edca94c4413e5fb6b2fa7c4c6cd6ab4b205944d31babdd9739\n0000000000000000000000000000000000000000000000000000000000000000\n0000000000000000000000000000000000000000000000000000000000000000\n0000000000000000000000000000000000000000000000000000000000000000\n0000000000000000000000000000000000000000000000000000000000010001\n.\n",
   "goldBundle": true,
   "images": {
-    "appver": "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:5812d72b1ac11904e9d5dfe141dd87134c8359485a597e43fd4c2479b3ba0ccb",
-    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:80481dede6b30c95cf07072edfc550a84188c2f06e1083bb91d1222009b8d81b",
-    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:5c0795387316ebe5ec8600a9774bcbf68a8194c65f75b1efd8451eb2f8b25b5f",
-    "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:040e9ac887b9a3b66c3d0b29a34aeebf55151aaa3ef866798b05edc42954ca17"
+    "appver": "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:272f54bc93e3c01be65c13b9c11b1d56ed75109bcf48c1b51e8647d2c5f8c6c2",
+    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:87621a8f9daf46d313d1cdcb510c541255e2ed8365803bf7949c7c5aeb9ce1e6",
+    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:9e63ab98eb7abe39e36cd0e19571e911d83de4eba6fec0b4be300087c17b2dee",
+    "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:80bf2d6586fb3a9f6ef644937ddd40ca2304b1b433d3b9e657e193ba6f573ae0"
   },
   "location": "westus2",
   "operator": {

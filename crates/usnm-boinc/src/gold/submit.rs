@@ -1,10 +1,9 @@
 //! Make gold units with stock `create_work`, one result each.
 //!
 //! Each unit's inputs, in input template order: its job (`gold.json`), the bundle tar (staged
-//! once in the download tree, sticky), and every original file as a `--remote_file`: the BOINC
-//! client downloads it from the publisher's URL and checks its size and md5, and keeps it as a
-//! sticky file, so a host fetches it once for all the units it runs. The project server stores
-//! none of the originals.
+//! once in the download tree, sticky), and each original file mirrored there once from the
+//! verified campaign cache. The client gets ordinary project downloads, checks BOINC's file
+//! checksum, and keeps them as sticky files, so a host fetches each once for all its units.
 //!
 //! Write-ahead, as for the assessment: `submitting` before `create_work`, `submitted` after. A
 //! unit left at `submitting` is skipped until a person checks the server for its workunit name
@@ -19,6 +18,7 @@ use usnm_ocr_contract::boinc::is_sha256;
 
 pub const APP: &str = "usnm_gold";
 pub const RESULT_TEMPLATE: &str = "templates/usnm_gold_out";
+const INPUT_PREFIX: &str = "usnm_gold_input_";
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -72,6 +72,56 @@ pub fn template_name(p: &prepare::Prepared) -> String {
         p.bundle_version,
         &p.manifest_sha256[..16]
     )
+}
+
+pub(super) fn remote_physical(s: &prepare::Staged) -> anyhow::Result<String> {
+    ensure!(
+        super::job::remote_name_ok(&s.name),
+        "invalid original cache name {:?}",
+        s.name
+    );
+    Ok(format!("{INPUT_PREFIX}{}", s.name))
+}
+
+pub(super) fn verify_file(path: &Path, expected: &prepare::Staged) -> anyhow::Result<()> {
+    let (bytes, md5, sha256) = prepare::md5_sha256(path)
+        .with_context(|| format!("checking original file {}", path.display()))?;
+    ensure!(
+        bytes == expected.bytes
+            && md5 == expected.md5
+            && sha256 == expected.sha256
+            && expected.name.starts_with(&expected.sha256),
+        "{} disagrees with prepared.json",
+        path.display()
+    );
+    Ok(())
+}
+
+pub(super) fn publish_original(
+    destination: &Path,
+    source: &Path,
+    expected: &prepare::Staged,
+) -> anyhow::Result<()> {
+    verify_file(source, expected)?;
+    if destination.exists() {
+        verify_file(destination, expected)?;
+        return Ok(());
+    }
+    let parent = destination.parent().context("no parent")?;
+    crate::public_dirs(parent)?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    std::io::copy(&mut std::fs::File::open(source)?, staged.as_file_mut())?;
+    verify_file(staged.path(), expected)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o664))?;
+    }
+    staged.as_file().sync_all()?;
+    staged.persist_noclobber(destination).map_err(|e| e.error)?;
+    verify_file(destination, expected)
 }
 
 pub fn job(p: &prepare::Prepared, engine: &Engine, unit: u32) -> anyhow::Result<Job> {
@@ -143,23 +193,12 @@ pub fn create_work_args(p: &prepare::Prepared, job: &Job) -> anyhow::Result<Vec<
     args.push(format!("{}_gold_json", job.id));
     args.push(bundle_physical(p));
     for r in &p.remotes {
-        let url = r.url.as_deref().context("original file without a URL")?;
-        ensure!(
-            url.starts_with("https://") && !url.chars().any(|c| c.is_whitespace()),
-            "bad URL {url}"
-        );
-        ensure!(r.md5.len() == 32, "bad md5 for {}", r.name);
-        args.extend([
-            "--remote_file".to_string(),
-            url.to_string(),
-            r.bytes.to_string(),
-            r.md5.clone(),
-        ]);
+        args.push(remote_physical(r)?);
     }
     Ok(args)
 }
 
-async fn hier_path(project: &Path, physical: &str) -> anyhow::Result<PathBuf> {
+pub(super) async fn hier_path(project: &Path, physical: &str) -> anyhow::Result<PathBuf> {
     let output = Command::new(project.join("bin/dir_hier_path"))
         .arg(physical)
         .current_dir(project)
@@ -195,7 +234,7 @@ pub fn units_dir(root: &Path) -> PathBuf {
     root.join("units")
 }
 
-fn assignment_enabled(config: &str) -> anyhow::Result<bool> {
+pub(crate) fn assignment_enabled(config: &str) -> anyhow::Result<bool> {
     use quick_xml::{events::Event, Reader};
     let mut reader = Reader::from_str(config);
     let mut path = Vec::new();
@@ -287,6 +326,11 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             .is_ok_and(|(b, _, s)| b == p.bundle.bytes && s == p.bundle.sha256);
     if !current {
         publish(&tar, &opts.root.join(prepare::BUNDLE_COPY))?;
+    }
+    for r in &p.remotes {
+        let source = opts.root.join("cache").join(&r.name);
+        let destination = hier_path(&project, &remote_physical(r)?).await?;
+        publish_original(&destination, &source, r)?;
     }
     let mut summary = Summary::default();
     let assignment_path = opts.root.join("assignment.json");
@@ -514,20 +558,56 @@ pub(crate) mod tests {
         let t = input_template(&p);
         assert_eq!(t.matches("<file_info>").count(), 3);
         assert_eq!(t.matches("<sticky/>").count(), 2);
+        assert_eq!(t.matches("<no_delete/>").count(), 2);
         assert!(t.contains(&format!("<open_name>{}</open_name>", p.remotes[0].name)));
         let a = create_work_args(&p, &j).unwrap();
-        let i = a.iter().position(|s| s == "--remote_file").unwrap();
+        assert!(!a.iter().any(|s| s == "--remote_file"));
         assert_eq!(
-            &a[i..],
-            [
-                "--remote_file",
-                "https://ndownloader.figshare.com/files/1",
-                "68",
-                &"3".repeat(32)
+            &a[a.len() - 3..],
+            vec![
+                format!("{}_gold_json", j.id),
+                bundle_physical(&p),
+                format!("{INPUT_PREFIX}{}", p.remotes[0].name)
             ]
         );
-        assert_eq!(a[i - 1], bundle_physical(&p));
-        assert_eq!(a[i - 2], format!("{}_gold_json", j.id));
+        assert_eq!(
+            remote_physical(&p.remotes[0]).unwrap(),
+            format!("{INPUT_PREFIX}{}", p.remotes[0].name)
+        );
+        let mut bad = p.remotes[0].clone();
+        bad.name = "../outside.zip".into();
+        assert!(remote_physical(&bad).is_err());
         assert_ne!(job(&p, &engine(), 1).unwrap().id, j.id);
+    }
+
+    #[test]
+    fn prepared_originals_are_verified_and_mirrored_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.zip");
+        let destination = tmp.path().join("download.zip");
+        let body = b"unchanged source archive";
+        std::fs::write(&source, body).unwrap();
+        let (bytes, md5, sha256) = prepare::md5_sha256(&source).unwrap();
+        let expected = prepare::Staged {
+            bytes,
+            md5,
+            name: format!("{sha256}.zip"),
+            sha256,
+            url: Some("https://publisher.example/archive.zip".into()),
+        };
+
+        publish_original(&destination, &source, &expected).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), body);
+        publish_original(&destination, &source, &expected).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), body);
+
+        std::fs::write(&destination, b"unexpected content").unwrap();
+        assert!(publish_original(&destination, &source, &expected).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"unexpected content");
+        std::fs::write(&destination, body).unwrap();
+
+        let mut stale = expected.clone();
+        stale.md5 = "0".repeat(32);
+        assert!(publish_original(&destination, &source, &stale).is_err());
     }
 }

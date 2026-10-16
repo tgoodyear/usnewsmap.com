@@ -28,6 +28,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".dockerignore"
+      - "!**/*.md"
 
 permissions:
   contents: read

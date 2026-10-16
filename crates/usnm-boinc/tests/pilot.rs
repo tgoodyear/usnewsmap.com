@@ -29,6 +29,9 @@ use usnm_state::{
 use usnm_store::{queue::LocalQueue, ObjectStore};
 const IMAGE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ALTO: &str = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation><fileName>page</fileName></sourceImageInformation></Description><Layout><Page WIDTH="1000" HEIGHT="1000"><PrintSpace><TextBlock><TextLine><String CONTENT="HELLO"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+#[cfg(unix)]
+#[path = "support/host_trust_followups.rs"]
+mod host_trust_followups;
 struct Fixture {
     tmp: tempfile::TempDir,
     state: State,
@@ -1245,6 +1248,100 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
     );
 }
 
+#[tokio::test]
+async fn remote_handoff_retry_restores_accepted_bytes_after_partial_publication() {
+    use usnm_boinc::handoff;
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let files = fx.result(&id);
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    let (alto_path, part_path) = record.paths().unwrap();
+    let blocked = fx.tmp.path().join("out").join(&part_path);
+    std::fs::create_dir_all(&blocked).unwrap();
+    assert!(fx.import(&id, &files).await.is_err());
+    assert!(fx.stores.out.get(&alto_path).await.unwrap().is_some());
+    assert!(fx
+        .options
+        .root
+        .join(format!("jobs/{id}/accepted/result.json"))
+        .exists());
+    std::fs::remove_dir(&blocked).unwrap();
+    let container = store(fx.tmp.path(), "retry-handoff");
+    handoff::put(
+        container.as_ref(),
+        &fx.options.root.join(format!("jobs/{id}")),
+        &format!("dispatch/jobs/{id}"),
+    )
+    .await
+    .unwrap();
+    let retry = fx.tmp.path().join("retry-dispatch");
+    handoff::get_file(
+        container.as_ref(),
+        &format!("dispatch/jobs/{id}/record.json"),
+        &retry.join(format!("jobs/{id}/record.json")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        handoff::get(
+            container.as_ref(),
+            &format!("dispatch/jobs/{id}/accepted"),
+            &retry.join(format!("jobs/{id}/accepted")),
+        )
+        .await
+        .unwrap(),
+        3
+    );
+    assert!(!retry.join(format!("jobs/{id}/page")).exists());
+    std::fs::write(&files.1, b"CHANGED SPOOL").unwrap();
+    usnm_boinc::import(
+        &retry,
+        &id,
+        &files.0,
+        &files.1,
+        &files.2,
+        fx.stores.curated.as_ref(),
+        fx.stores.out.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::load(&retry, &id).unwrap().stage,
+        Stage::Published
+    );
+    assert!(fx.stores.out.get(&part_path).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn handoff_get_file_copies_only_the_named_object_and_rejects_missing_or_unsafe_paths() {
+    let fx = Fixture::new("eng").await;
+    let container = store(fx.tmp.path(), "exact-handoff");
+    container
+        .put("selected/record.json", b"selected".to_vec(), "x")
+        .await
+        .unwrap();
+    container
+        .put("selected/page", b"unrelated".to_vec(), "x")
+        .await
+        .unwrap();
+    let output = fx.tmp.path().join("exact/record.json");
+    usnm_boinc::handoff::get_file(container.as_ref(), "selected/record.json", &output)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), b"selected");
+    assert!(!output.with_file_name("page").exists());
+    assert!(
+        usnm_boinc::handoff::get_file(container.as_ref(), "missing/file", &output)
+            .await
+            .is_err()
+    );
+    assert!(
+        usnm_boinc::handoff::get_file(container.as_ref(), "../escape", &output)
+            .await
+            .is_err()
+    );
+}
+
 /// The #469 route on synthetic data, with a local directory standing in for the hand-off
 /// container: the fetcher's scans and manifest in, export and the dispatch root put, the
 /// bridge's pull and submit, the spool and trust list back, and the trusted collect.
@@ -1354,6 +1451,7 @@ async fn remote_handoff_round_trip_through_the_container() {
         )
         .unwrap();
     }
+
     std::fs::write(spool.join("usnm_unrelated__file_text.txt"), "other job").unwrap();
     let trust = Trust {
         hosts: [(record.job.engine.image.clone(), [42].into())].into(),
@@ -1369,11 +1467,16 @@ async fn remote_handoff_round_trip_through_the_container() {
         3
     );
 
-    // The hand-off job's collect: dispatch root, spool and trust down, collect, root up.
+    // Collection needs only this journal, never retained scans or unrelated jobs.
     let collect = fx.tmp.path().join("collect");
-    handoff::get(container.as_ref(), DISPATCH, &collect.join("dispatch"))
-        .await
-        .unwrap();
+    handoff::get_file(
+        container.as_ref(),
+        &format!("{DISPATCH}/jobs/{id}/record.json"),
+        &collect.join(format!("dispatch/jobs/{id}/record.json")),
+    )
+    .await
+    .unwrap();
+    assert!(!collect.join(format!("dispatch/jobs/{id}/page")).exists());
     let host = handoff::get_spool(container.as_ref(), &id, &collect.join("spool"))
         .await
         .unwrap();

@@ -1,11 +1,12 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
+import { PerformanceObserver } from "node:perf_hooks";
 import type { AggregateResponse, CoverageResponse, PlaceFeature, SparseCube } from "../api/types";
 import { prepareStates, stateTotals, stateBreaks, stateColor, STATE_CODES } from "./states";
 
 it.skipIf(process.env.USNM_STATES_PERF !== "1")(
-  "scores a synthetic 5,000-place search within the 2 ms p95 frame budget",
-  () => {
+  "scores a synthetic 5,000-place search within the 2 ms measured maximum frame budget",
+  async () => {
     const places = 5000;
     const buckets = 120;
     const ids = Array.from({ length: places }, (_, i) => `synthetic-${i}`);
@@ -54,12 +55,26 @@ it.skipIf(process.env.USNM_STATES_PERF !== "1")(
     };
     for (let i = 0; i < 200; i++) frame(i);
     const timings: number[] = [];
+    const starts = new Float64Array(2000);
+    const ends = new Float64Array(2000);
+    const garbageCollections: { start: number; duration: number }[] = [];
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries())
+        garbageCollections.push({ start: entry.startTime, duration: entry.duration });
+    });
+    observer.observe({ entryTypes: ["gc"] });
     let checksum = 0;
     for (let i = 0; i < 2000; i++) {
       const start = performance.now();
       checksum += frame(i);
-      timings.push(performance.now() - start);
+      const end = performance.now();
+      timings.push(end - start);
+      starts[i] = start;
+      ends[i] = end;
     }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    observer.disconnect();
     timings.sort((a, b) => a - b);
     const p95 = timings[Math.floor(timings.length * 0.95)]!;
     console.log(
@@ -75,9 +90,23 @@ it.skipIf(process.env.USNM_STATES_PERF !== "1")(
         node: process.version,
         arch: process.arch,
         checksum,
+        overBudgetFrames: Array.from(starts).flatMap((start, index) =>
+          ends[index]! - start > 2
+            ? [
+                {
+                  index,
+                  duration: ends[index]! - start,
+                  overlappingGc: garbageCollections.filter(
+                    (entry) => entry.start < ends[index]! && entry.start + entry.duration > start,
+                  ),
+                },
+              ]
+            : [],
+        ),
       }),
     );
     expect(checksum).toBeGreaterThan(0);
     expect(p95).toBeLessThanOrEqual(2);
+    expect(timings.at(-1)).toBeLessThanOrEqual(2);
   },
 );

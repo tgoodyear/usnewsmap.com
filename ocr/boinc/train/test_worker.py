@@ -147,8 +147,9 @@ def visual_smoke(processor_dir: Path) -> dict:
     config.text_config.num_attention_heads = 4
     config.text_config.num_key_value_heads = 2
     config.text_config.head_dim = 16
-    config.text_config.rope_scaling = {"rope_type": "default", "mrope_section": [2, 3, 3],
-                                      "mrope_interleaved": True}
+    config.text_config.rope_parameters = {
+        **config.text_config.rope_parameters, "mrope_section": [2, 3, 3], "mrope_interleaved": True,
+    }
     config.vision_config.depth = 1
     config.vision_config.hidden_size = 32
     config.vision_config.intermediate_size = 64
@@ -157,7 +158,7 @@ def visual_smoke(processor_dir: Path) -> dict:
     config.vision_config.deepstack_visual_indexes = []
     config._attn_implementation = "eager"
     processor = AutoProcessor.from_pretrained(
-        processor_dir, local_files_only=True, min_pixels=4096, max_pixels=4096,
+        processor_dir, local_files_only=True, size={"shortest_edge": 4096, "longest_edge": 4096},
     )
     buf = io.BytesIO()
     Image.new("RGB", (64, 64), "white").save(buf, format="PNG")

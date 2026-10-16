@@ -14,9 +14,9 @@ fixed base model per campaign. Held-out gold text remains on the server;
 training workunits contain only permissively licensed train-split pixels,
 targets and source notices.
 
-The exporter creates immutable title/source-disjoint splits, preserves image
-bytes and licence files, and emits training conversations only for train and
-validation. Training requires explicit source rights checks. The first English
+The exporter creates immutable splits, disjoint by title and source, preserves
+image bytes and licence files, and emits training conversations only for train
+and validation. Training requires explicit source rights checks. The first English
 baseline is evaluation-only, not permission to train on the HIPE distribution.
 
 ## Local measurements
@@ -31,8 +31,9 @@ baseline is evaluation-only, not permission to train on the HIPE distribution.
 These measure preparation, not OCR accuracy or training benefit. The small
 selection is not representative of the corpus. The oversized-box issue
 [#531](https://github.com/tgoodyear/usnewsmap.com/issues/531) remains open:
-conversion-specific crop/reference alignment must be checked before an accuracy
-claim, not inferred from engine agreement.
+before any accuracy claim, the alignment between each crop and its reference
+text must be checked for this conversion rather than inferred from engine
+agreement.
 
 All 20 local crop images were visually checked against their reference
 boundaries before the live selection. Conversion-specific crops
@@ -40,17 +41,17 @@ boundaries before the live selection. Conversion-specific crops
 before inference, leaving 18 evaluation-only crops. This is an operational
 acceptance sample, not a representative accuracy benchmark.
 
-The signed Qwen CPU payload uses app/version/platform-qualified physical
-filenames. The initial publish job nevertheless reported success while the stock
-registration tool aborted on an older Surya download-file collision; follow-up
-[#547](https://github.com/tgoodyear/usnewsmap.com/issues/547) tracks the false
-success and registration isolation. Signed files must not be renamed or existing
-download files overwritten to recover.
+The signed Qwen CPU payload uses physical filenames qualified by app, version
+and platform. The initial publish job still reported success while the stock
+registration tool aborted on a collision with an older Surya download file;
+follow-up [#547](https://github.com/tgoodyear/usnewsmap.com/issues/547) tracks
+the false success and registration isolation. To recover, do not rename the
+signed files or overwrite existing download files.
 
 ## Live baseline acceptance
 
 PR #545 merged after all CI gates passed. The standard release from reviewed
-main signed on the isolated signing host and completed secrets, safe project
+main was signed on the isolated signing host and completed secrets, safe project
 initialization, application registration, corrected app-version publication and
 public XML health verification. PR #557 persists the verified publisher image.
 
@@ -60,7 +61,8 @@ CPUs and the pinned `qwen3-vl-2b-q8` model. The client downloaded the signed app
 and all three reference-free inputs, produced nonempty transcription, uploaded
 all three outputs and reported success: server outcome 1, exit status 0,
 `unit_error=null`. Elapsed time was approximately 513 seconds, including a cold
-container/model download and setup; this is not an inference-only measurement.
+download and setup of the container and model; this is not an inference-only
+measurement.
 The remaining 17 crops were submitted only after this acceptance succeeded.
 The client subsequently completed another crop and continued processing.
 
@@ -70,15 +72,15 @@ the `docker_mt` plan requires four. Its override now permits four cores and
 advertised 2 GiB workunit bound; [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559)
 tracks measurement, image separation and correct dispatch requirements.
 
-Two-independent-host validation and canonical assimilation remain pending.
-Completed adapter training,
-quantized-model export, held-out improvement and calibration of the quality
-estimator remain UNVERIFIED. No adapted checkpoint is shipped by this change.
+Validation on two independent hosts and canonical assimilation remain pending.
+Completed adapter training, quantized-model export, held-out improvement and
+calibration of the quality estimator remain UNVERIFIED. No adapted checkpoint is
+shipped by this change.
 
 ## Live volunteer GPU training publication
 
 PR #570 implements independent, bounded offline LoRA trials; PR #579 deploys
-combined server/bridge images without reverting the concurrent OCR worker,
+combined server and bridge images without reverting the concurrent OCR worker,
 signed publisher or quality scan-directory forwarding. The training worker was
 published from reviewed main `19ce4da0` and is anonymously accessible:
 
@@ -92,8 +94,9 @@ training publisher image so a later provision replays the same release.
 Campaign `transcription-lora-v1` was prepared from the private converted cache
 and identical replay succeeded. Source-disjoint split counts are 24 train
 (NewsEye BnF), 18 validation (Finnish) and 10 test (Swedish). Only 16 eligible
-train examples are public trial inputs. This is a multilingual-source
-hardware/method pilot, not English-specialized training or an accuracy result.
+train examples are public trial inputs. This is a pilot of the hardware and
+method on multilingual sources, not English-specialized training or an accuracy
+result.
 
 | Trial       | BOINC workunit | Initial result | Seed | Rank | Steps |
 | ----------- | -------------- | -------------- | ---- | ---- | ----- |
@@ -106,8 +109,9 @@ collection succeeded; private immutable output hashes and submitted markers
 were checked against the actual campaign. Structural safetensors validation
 quarantines candidates and does not promote them or establish scientific validity.
 
-The exact published container passed real tiny Qwen3-VL visual forward/backward
-on CPU: adapters changed and all frozen base/vision parameters were unchanged.
+The exact published container passed a real forward and backward pass through
+a tiny Qwen3-VL visual model on CPU: the adapters changed and all frozen base
+and vision parameters were unchanged.
 The full pinned 2B configuration's 112 FP32 LoRA keys and shapes also match
 the server validator (meta-only check). Neither is evidence of GPU execution
 or pretrained OCR improvement.

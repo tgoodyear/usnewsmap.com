@@ -23,6 +23,8 @@ pub enum Scripted {
     /// A bot challenge page, as Cloudflare sends one: HTML with
     /// `cf-mitigated: challenge`, with this status.
     Challenge(u16),
+    /// A challenge that also asks for a hold.
+    ChallengeRetryAfter(u16, u32),
 }
 
 #[derive(Default)]
@@ -61,6 +63,10 @@ async fn answer(State(s): State<StandIn>, uri: Uri) -> Response {
         )
     };
     let status = |c: u16| StatusCode::from_u16(c).unwrap();
+    let retry_after = match scripted {
+        Some(Scripted::ChallengeRetryAfter(_, secs)) => Some(secs),
+        _ => None,
+    };
     match scripted {
         Some(Scripted::Status(c)) => return status(c).into_response(),
         Some(Scripted::RetryAfter(c, secs)) => {
@@ -70,8 +76,8 @@ async fn answer(State(s): State<StandIn>, uri: Uri) -> Response {
             tokio::time::sleep(d).await;
             return status(c).into_response();
         }
-        Some(Scripted::Challenge(c)) => {
-            return (
+        Some(Scripted::Challenge(c) | Scripted::ChallengeRetryAfter(c, _)) => {
+            let mut response = (
                 status(c),
                 [
                     (header::CONTENT_TYPE, "text/html; charset=UTF-8"),
@@ -80,7 +86,13 @@ async fn answer(State(s): State<StandIn>, uri: Uri) -> Response {
                 ],
                 "<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>",
             )
-                .into_response()
+                .into_response();
+            if let Some(secs) = retry_after {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, secs.to_string().parse().unwrap());
+            }
+            return response;
         }
         None => {}
     }

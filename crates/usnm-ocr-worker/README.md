@@ -28,6 +28,103 @@ usnm-ocr-worker check-engine --tesseract-image sha256:<image id>
 usnm-ocr-worker --version
 ```
 
+## Local page-run metadata (opt-in)
+
+`run --run-metadata-dir ./run-metadata` (or `USNM_OCR_RUN_METADATA_DIR`)
+also captures actual page execution locally. Unset, it does nothing; the existing
+ALTO, runs Parquet, overlay, queue and failure-telemetry paths are unchanged.
+This does **not** enable capture in `ocr-file`, BOINC clients/validators, or
+other runtimes that do not call `Worker::process`. Those need separate adapters.
+
+Each decoded page attempt that reaches processing writes one UTF-8 JSON object
+plus a newline to
+`<dir>/<sha256(run_id UTF-8), 64 lowercase hex digits>.json`.
+Redeliveries mint fresh run IDs and files, even for the same page. Invalid messages
+and dequeue-limit dead letters do not reach processing and are not captured.
+The object is an execution envelope, **not** a second `RunRecord` schema:
+
+| Field(s)                                                   | JSON value                                                                               |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `metadata_schema`                                          | `1`, the envelope version                                                                |
+| `run_id`, `doc_id`, `node`, `worker_version`, `ocr_source` | Strings naming this attempt, canonical page, worker and engine source                    |
+| `language`, `batch`, `reason`                              | Checked queue-message strings                                                            |
+| `damage_before`, `queued_at`                               | Queue score or null; parsed UTC RFC3339 timestamp or null                                |
+| `dpi`, `dpi_source`                                        | Configured integer resolution; `"assumed"` (not a measured scan resolution)              |
+| `execution_config`                                         | Known engine runtime configuration, or null for engines that do not expose it            |
+| `worker_config`                                            | Object: `concurrency`, `visibility_seconds`, `abandon_at`, `page_timeout_seconds`        |
+| `started_at`, `finished_at`, `seconds_wall`                | UTC RFC3339 page-processing timestamps and measured monotonic elapsed seconds            |
+| `status`, `error_kind`                                     | Page execution: `ok`, `failed` or `abandoned`; classified error token or null            |
+| `observations`                                             | Ordered array, at most two reads: original scan then optional JPEG retry                 |
+| `run_record`                                               | Existing `usnm_ocr_contract::runs::to_json_line` object, including `"schema":1`, or null |
+
+`run_record` is populated once output conversion succeeds, before uploads. It is
+the **same** `RunRecord` written to the existing runs Parquet, including full
+available engine/image/model identifiers and digests, options, input hash,
+layout/text counts and hashes, confidence/damage and measured wall time.
+CPU/memory metrics remain null when unmeasured. Existing `"local"` artifact
+markers retain their existing meaning; they are not measured digests.
+No placeholder record is invented for pre-engine, engine or conversion failures.
+An upload failure can leave a valid `run_record` with envelope `status:"failed"`.
+
+Each observation has `image_sha256` (the exact fetched bytes), `image_format`,
+`engine_started_at`, `engine_finished_at`, `seconds_wall`, `status`, `error_kind`,
+`ocr_engine`, `info_source` and `info`. Engine timestamps bound the worker's read
+API call, including instance acquisition/startup, not measured process CPU time.
+Status is `not_started` if scratch-file writing prevented the call, `ok` for an
+engine result, the adapter's classified failure status, or `abandoned` for a
+dropped read. An abandoned read has no observed engine finish timestamp.
+Null means unknown. Fetch/no-model failures have an empty observation array.
+
+`info_source` is `planned`, `instance`, `result`, or null: planned metadata can
+describe the instance anticipated before assignment, not the instance actually
+used. `info` is null when unavailable; otherwise it has the existing `ReadInfo`
+fields: `engine_id`, `adapter`, `image_ref`, `image_digest`, `models_digest`,
+`models_json`, `options_json`, `models_loaded`, `cold_start`,
+`model_load_seconds`, `markup`, `engine_stats_json`. The three `*_json` values
+are JSON-encoded **strings**, as in `RunRecord`. Runtime configuration includes
+known threads, DPI, timeouts, instance recycling and container limits (or null
+limits), plus Tesseract PSM. It excludes service URLs, command arguments,
+environment variables and credentials. OCR text, ALTO, input URLs, free-form
+errors and stderr are never copied into this metadata.
+
+Page `ok` means its output uploads completed; it does not promise queue deletion.
+Observation/record `ok` means the engine answered successfully.
+`RunRecord.selected` means **route selection**, not project acceptance.
+Acceptance, catalog import and search indexing are deliberately not inferred.
+
+Publication uses a private `.pending-*` file in the destination, file fsync,
+atomic create-only publication, then directory fsync. Concurrent writers cannot
+overwrite a run, including on replay; a collision is an explicit error.
+Only `*.json` files are importable. A process/machine crash can leave ignored
+`.pending-*` files, and a hard kill before publication cannot produce a completed
+observation. No startup recovery guesses outcomes from these staging files.
+Capture retains at most two observations
+and one record per in-flight page. Publication moves an owned snapshot
+to a dedicated blocking-I/O thread with a process-wide capacity of 16 pending
+snapshots plus one active write. Enqueuing never blocks: a full/unavailable writer
+queue is an explicit ERROR and that observation is not published. Serialized files
+are capped at 4 MiB, and individual records at 2 MiB before JSON-line allocation.
+This is local per-attempt publication, not an extra Blob transaction.
+Use a persistent local filesystem supporting atomic publication and fsync.
+
+The destination is checked before taking queue work; an invalid/unwritable
+destination fails startup. A later serialization/publication/fsync failure is
+explicitly logged at ERROR as unconfirmed metadata durability, but never replaces
+the page's original result/error or changes queue retry/dead-letter behavior.
+Normal page completion waits for publication for at most 250 ms, never past the
+page's original budget. Cancellation submits without waiting. A dropped/timed-out
+wait explicitly logs unconfirmed durability; the writer may still publish later.
+The dedicated thread does not block Tokio's executor or runtime shutdown. Shutdown
+does not wait indefinitely for slow storage; pending writes may be lost at process
+exit, with unconfirmed-durability logs rather than a claim they were persisted.
+Disk retention/import and alerts for these errors are the operator's responsibility.
+
+A separate importer can use only Python's standard library: `json.load()` each
+`*.json`, check `metadata_schema == 1`, and read `run_record` when non-null.
+That nested object is already the existing runs JSON-line format; serialize it
+with `json.dumps()` to feed a `RunRecord` JSONL consumer. Preserve the outer
+status and observations separately, especially failures with no complete record.
+
 ## Prefetching scans
 
 `prefetch` fetches the scans a manifest lists (`usnm-ingest ocr-prefetch-manifest`, #368) onto local disk with the same LoC client and pacing as `run`, so a node's engines can read them later without asking LoC again. It runs in the scan-fetch container on pve-big (`scripts/ocr-node/scanfetch-ct.sh`, 12 §12.2.4).
@@ -42,13 +139,21 @@ usnm-ocr-worker prefetch --manifest <manifest> --out <dir> --sample 300 --resolu
 usnm-ocr-worker prefetch-estimate --manifest <manifest> --index <dir>/index-pct50.jsonl
 ```
 
-Pages are in two sets. The keep set holds every page not detected as English and the worst English batches' pages, and is kept for good. The buffer set holds the rest of English, capped by `--buffer-cap` (1 TB): the fetcher waits at the cap until workers have emptied some of it. `--resolution` applies to the keep set and `--buffer-resolution` to the buffer set. `--sets keep|buffer|both` picks the sets. Each full-size page is the original JP2 from its batch directory on tile.loc.gov's storage service: the batch's `manifest-md5.txt` (read once, kept under `--batch-cache`, default `/tank/ocr/manifests/batches`) lists every file and its md5, and the issue's METS (kept there too) maps seq to the JP2's frame number. The JP2 must match the bag's md5. Only a page that route can't place goes through the item API and the IIIF JPEG. Scans go to `<out>/<set>/<batch>/<lccn>/<date>/<edition>/<seq>.jp2` (`<seq>.jpg` for an IIIF JPEG, `<seq>.pct<n>.jpg` when scaled), each with a sidecar `<file>.json` holding the tile.loc.gov URL, the IIIF base, the fetch time, the size, the sha256, the format and, for a JP2, the bag's md5. A run skips scans in either format that match their sidecar, so it resumes where it stopped, keeps the JPEGs fetched before the batch route, and can be pointed at a newer manifest. Other flags: `--limit`, `--order priority|issue`, `--concurrency` (4; the pages share the gaps), `--lock-file` (default `<out>/.prefetch.lock`; one fetching process at a time), `--progress-every` (100), `--api-gap-ms` (5000), `--tile-gap-ms` (1000), `--storage-gap-ms` (1000) and `--storage-own-budget` (without it, storage and image requests share one pacer at the longer gap). It writes `status-<res>.json`, `index-<res>.jsonl` and `failures-<res>.jsonl` in `<out>`, logs progress as JSON lines, and stops after 20 pages from at least 3 titles fail in a row (`--max-failures-in-a-row`, `--stop-min-titles`). An issue whose item JSON answers 503 at once, with no `Retry-After`, while other items answer is an item error, not a hold (on the storage service, only a second such 503 for the same METS or JP2): its pages are skipped for `--item-cooloff-secs` (86400) and asked again after it, up to `--item-max-cooloffs` (3) times, then taken as permanent. They are written to `failures-<res>.jsonl` as `loc_item_error` and kept in `<out>/item-errors.json` (12 §12.2.4).
+Pages are in two sets. The keep set holds every page not detected as English and the worst English batches' pages, and is kept for good. The buffer set holds the rest of English, capped by `--buffer-cap` (1 TB): the fetcher waits at the cap until workers have emptied some of it. `--resolution` applies to the keep set and `--buffer-resolution` to the buffer set. `--sets keep|buffer|both` picks the sets.
 
-`run --scan-cache-url http://<host>:8380` asks the scan server (`serve-scans`) for a page's full scan, in `keep/` and then `buffer/`, before asking LoC, with a 2 s connect timeout and a 30 s total. It uses the scan when its sidecar names the page and the message's batch at full size, points at a tile.loc.gov IIIF image, and matches the bytes' size and sha256; a miss, a timeout, a 5xx or a mismatch goes to LoC at once. Every result's ALTO records the image URL in `fileName` and the sha256 of the bytes read in `fileIdentifier` (ADR-0015 decision 9). Once the output is uploaded, a buffer-set scan is deleted on the server, best effort.
+Each full-size page is the original JP2 from its batch directory on tile.loc.gov's storage service: the batch's `manifest-md5.txt` (read once, kept under `--batch-cache`, default `/tank/ocr/manifests/batches`) lists every file and its md5, and the issue's METS (kept there too) maps seq to the JP2's frame number. The JP2 must match the bag's md5. Only a page that route can't place goes through the item API and the IIIF JPEG.
+
+Scans go to `<out>/<set>/<batch>/<lccn>/<date>/<edition>/<seq>.jp2` (`<seq>.jpg` for an IIIF JPEG, `<seq>.pct<n>.jpg` when scaled), each with a sidecar `<file>.json` holding the tile.loc.gov URL, the IIIF base, the fetch time, the size, the sha256, the format and, for a JP2, the bag's md5. A run skips scans in either format that match their sidecar, so it resumes where it stopped, keeps the JPEGs fetched before the batch route, and can be pointed at a newer manifest.
+
+Other flags: `--limit`, `--order priority|issue`, `--concurrency` (4; the pages share the gaps), `--lock-file` (default `<out>/.prefetch.lock`; one fetching process at a time), `--progress-every` (100), `--api-gap-ms` (5000), `--tile-gap-ms` (1000), `--storage-gap-ms` (1000) and `--storage-own-budget` (without it, storage and image requests share one pacer at the longer gap).
+
+A run writes `status-<res>.json`, `index-<res>.jsonl` and `failures-<res>.jsonl` in `<out>`, logs progress as JSON lines, and stops after 20 pages from at least 3 titles fail in a row (`--max-failures-in-a-row`, `--stop-min-titles`). An issue whose item JSON answers 503 at once, with no `Retry-After`, while other items answer is an item error, not a hold; on the storage service, only a second such 503 for the same METS or JP2 counts as one. The issue's pages are skipped for `--item-cooloff-secs` (86400) and asked again after it, up to `--item-max-cooloffs` (3) times, then taken as permanent. They are written to `failures-<res>.jsonl` as `loc_item_error` and kept in `<out>/item-errors.json` (12 §12.2.4).
+
+`run --scan-cache-url http://<host>:8380` asks the scan server (`serve-scans`) for a page's full scan, in `keep/` and then `buffer/`, before asking LoC, with a 2 s connect timeout and a 30 s total. It uses the scan when its sidecar names the page and the message's batch at full size, points at a tile.loc.gov IIIF image, and matches the bytes' size and sha256. A miss, a timeout, a 5xx or a mismatch goes to LoC at once. Every result's ALTO records the image URL in `fileName` and the sha256 of the bytes read in `fileIdentifier` (ADR-0015 decision 9). Once the output is uploaded, a buffer-set scan is deleted on the server, best effort.
 
 `run --publish-fetched <manifest version>` (`USNM_OCR_PUBLISH_FETCHED`, set on one node) also relays the scan server's index to the seeder every `--publish-every-secs` (1800): it reads `/index/full.jsonl` as a stream, keeps the full-size scans' batch and page id, and writes them create-only to `ocr-out/fetched/<version>/<node>.<stamp>.parquet` (`usnm_ocr_contract::fetched`). The seeder's `fetched` source queues only pages on the newest list (12 Step 11). A failed publish is logged and tried again at the next turn. `publish-fetched --scan-cache-url --out-url --node-id --manifest` does it once.
 
-`archive-scans --archive-url https://<account>.blob.core.windows.net/scans [--scans /tank/ocr/scans] [--set keep] [--dry-run | --verify] [--limit N] [--concurrency 4]` (`USNM_ARCHIVE_URL`, `USNM_ARCHIVE_SCANS`) copies the keep set to the scan archive (#442, ADR-0018). Each scan is checked against its sidecar first (size, sha256, and the bag's md5 for a JP2), then created as a Cold-tier block blob named like the file, with the sidecar's fields as metadata and `Content-MD5` so the service rejects damaged bytes. It is create-only (`If-None-Match: *`): a blob that exists and matches is counted as present, one that differs is a conflict and is left alone. `--verify` reads properties only (size, md5, tier), never the bytes, since a Cold read is billed per GB. It signs in with the host's Arc identity, refuses SAS and non-blob hosts, prints a JSON report, and exits non-zero if any scan didn't match, conflicted or failed.
+`archive-scans --archive-url https://<account>.blob.core.windows.net/scans [--scans /tank/ocr/scans] [--set keep] [--dry-run | --verify] [--limit N] [--concurrency 4]` (`USNM_ARCHIVE_URL`, `USNM_ARCHIVE_SCANS`) copies the keep set to the scan archive (#442, ADR-0018). Each scan is checked against its sidecar first (size, sha256, and the bag's md5 for a JP2), then created as a Cold-tier block blob named like the file, with the sidecar's fields as metadata and `Content-MD5` so the service rejects damaged bytes. It is create-only (`If-None-Match: *`): a blob that exists and matches is counted as present; one that differs is a conflict and is left alone. `--verify` reads properties only (size, md5, tier), never the bytes, since a Cold read is billed per GB. It signs in with the host's Arc identity, refuses SAS and non-blob hosts, prints a JSON report, and exits non-zero if any scan didn't match, conflicted or failed.
 
 `serve-scans --allow <node host names> [--allow-refresh-secs 300] [--scans /tank/ocr/scans] [--manifests /tank/ocr/manifests] [--listen 0.0.0.0:8380]` serves `GET /scans/...` and the sidecars, `DELETE /scans/buffer/...` (renaming the sidecar to `<scan>.done`; `keep/` gets 403) and `PUT /manifests/<version>/{manifest.parquet,summary.json}`, to the allowed hosts only, with a log line per request. It resolves the `--allow` names at startup (a name that doesn't resolve stops it) and again every `--allow-refresh-secs`; a name that stops resolving keeps its last addresses.
 
@@ -65,7 +170,7 @@ There are three Azure Storage Queues: `ocr-priority`, `ocr-bulk` and `ocr-deadle
 - A temporary failure (LoC or storage errors, a Tesseract crash or timeout, or a language with no model on this node, which another node may have) leaves the message, which reappears when its time runs out. The worker asks the engine whether it can read the page's language before it fetches the scan, so a page with no model here costs loc.gov nothing.
 - While loc.gov holds this node's requests for more than half a new page's budget (80% of `--visibility-secs`), the worker takes no messages: a page taken then would mostly wait in the pacer, and could be abandoned and spend one of its 5 receives.
 - The output uploads are cut off at the same 80% mark, so a node never writes a page after its message may have gone to another node. A cut between the two uploads leaves an ALTO without its part, which does no harm because parts are only read with their ALTO.
-- On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are abandoned and reappear when their time runs out. The systemd unit's `TimeoutStopSec` should be longer than the grace period plus the telemetry flush (up to 30 s); the node's unit (`scripts/ocr-node/usnm-ocr-worker.service`) keeps the default 60 s grace, sets `TimeoutStopSec=120` and `KillMode=mixed`, so only the worker gets the SIGTERM and Tesseract keeps running through the grace period.
+- On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are abandoned and reappear when their time runs out. The systemd unit's `TimeoutStopSec` should be longer than the grace period plus the telemetry flush (up to 30 s). The node's unit (`scripts/ocr-node/usnm-ocr-worker.service`) keeps the default 60 s grace, sets `TimeoutStopSec=120` and `KillMode=mixed`, so only the worker gets the SIGTERM and Tesseract keeps running through the grace period.
 
 The REST calls use API version 2023-11-03 and an Entra bearer token for `https://storage.azure.com/`. No keys or SAS tokens are used.
 
@@ -77,7 +182,7 @@ In directory mode, each queue is a directory with `ready/` and `leased/` subdire
 {"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"nbu_gage","language":"deu","reason":"bulk","score":0.62,"queued_at":"2026-10-10T12:00:00Z"}
 ```
 
-`page` must be a canonical `PageKey`, `batch` has the shape of LoC's base batch names (the awardee's code, `_`, the batch's name, as in `nbu_gage`; no `_verNN`, since curated rows and the release use the base name and a versioned one would be skipped at release), `language` an ISO 639-3 code that `usnm_core::lang` knows (`deu`, not the catalog's `ger`), `reason` is `user` or `bulk`, and `score` is optional (0 to 1). Unknown fields are refused, so a search query can't be carried in a message. On the queue the JSON is base64-encoded, the convention the portal, Storage Explorer and Functions follow. Raw JSON is accepted too.
+`page` must be a canonical `PageKey`. `batch` has the shape of LoC's base batch names: the awardee's code, `_`, the batch's name, as in `nbu_gage`. It carries no `_verNN`, since curated rows and the release use the base name and a versioned one would be skipped at release. `language` is an ISO 639-3 code that `usnm_core::lang` knows (`deu`, not the catalog's `ger`). `reason` is `user` or `bulk`, and `score` is optional (0 to 1). Unknown fields are refused, so a search query can't be carried in a message. On the queue the JSON is base64-encoded, the convention the portal, Storage Explorer and Functions follow. Raw JSON is accepted too.
 
 ## Identity
 
@@ -85,7 +190,7 @@ In directory mode, each queue is a directory with `ready/` and `leased/` subdire
 
 ## Fetching scans
 
-Without the scan cache, the worker fetches scans the way `ja-ocr/jaocr.py` does. It makes one request per issue to `https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json` and caches the result (256 issues, one hour). The page's JP2 URL gives its IIIF service on `tile.loc.gov`, and the scan is `<service>/full/full/0/default.jpg`. The API and image gaps are shared by every page in flight on the node. With two nodes, double both so the pair stays at the Japanese job's rate. A 429, a 503 or a 403 (how a block looks) holds every request to that server for its `Retry-After`, or for 60 s times the attempt number if that is longer or none came, at most an hour; a longer `Retry-After` is cut to the hour and counted with `capped`, which a log alert on the nodes' workspace watches. A 408 is retried like a 5xx; other 4xx answers are permanent. Only an issue's answer is cached: a 4xx on its item JSON fails that page and is asked again for the next one. The User-Agent is `usnewsmap-ocr-worker/<version> (+https://usnewsmap.com)`. The scan is held in memory and in a temporary directory that is removed after the page is done.
+Without the scan cache, the worker fetches scans the way `ja-ocr/jaocr.py` does. It makes one request per issue to `https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json` and caches the result (256 issues, one hour). The page's JP2 URL gives its IIIF service on `tile.loc.gov`, and the scan is `<service>/full/full/0/default.jpg`. The API and image gaps are shared by every page in flight on the node. With two nodes, double both so the pair stays at the Japanese job's rate. A 429, a 503 or a 403 (how a block looks) holds every request to that server for its `Retry-After`, or for 60 s times the attempt number if that is longer or none came, at most an hour. A longer `Retry-After` is cut to the hour and counted with `capped`, which a log alert on the nodes' workspace watches. A 408 is retried like a 5xx; other 4xx answers are permanent. Only an issue's answer is cached: a 4xx on its item JSON fails that page and is asked again for the next one. The User-Agent is `usnewsmap-ocr-worker/<version> (+https://usnewsmap.com)`. The scan is held in memory and in a temporary directory that is removed after the page is done.
 
 ## Tesseract
 
@@ -109,7 +214,7 @@ Tesseract runs with `--psm 3 --dpi 300` and the `txt` and `alto` configs, so one
 
 - `--engine-image <name>@sha256:<digest>` runs the adapter's image through the engine account's Podman API socket (`--podman-url`, `--scratch-dir`), with the container settings of 13 §13.6.1 and the `--engine-memory-mib`, `--engine-cpus` and `--engine-pids` limits. Each instance gets a scratch slot with `in/` (read-only) and `out/`, and each page an `out/<run_id>/` directory.
 - `--engine-command <program>` runs the adapter as a process on this host, for development and tests only, with `--engine-command-flag=--name=value` for its flags.
-- `--engine-instances` (default 1) instances read pages at once. `--engine-start-timeout-secs` bounds the start to `hello`, `--page-timeout-secs` is each page's `deadline_ms`, and an instance with no result 15 s after it is killed. `--engine-max-jobs` replaces an instance after that many pages.
+- `--engine-instances` (default 1) sets how many instances read pages at once. `--engine-start-timeout-secs` bounds the start up to `hello`, `--page-timeout-secs` is each page's `deadline_ms`, and an instance that has no result 15 s after that deadline is killed. `--engine-max-jobs` replaces an instance after that many pages.
 - The first instance's `hello` is checked (contract version, engine, unique profiles) and every later instance must match it. A page's language goes to the first profile that lists it; a language no profile lists is left for another node, as `no_model`.
 - An adapter's `ok` result with `layout: alto` is stored like Tesseract's ALTO. With `layout: boxes`, the worker reads `boxes.json` within its limits and converts it to the stored ALTO itself, so an engine that returns text only (granularity `page`) stores one page-sized block. `failed`, `bad_input` and `timeout` fail the page as transient `engine` and keep the instance; only `failed` may ask for a restart (`restart: true`), which replaces it. A crash, a broken line or no answer kills the instance, and the next page starts a new one.
 
@@ -135,7 +240,7 @@ Both writes are create-only, and the names are unique per node and moment: the n
 
 Logs are JSON lines on stdout (journald under systemd), with the level set by `RUST_LOG` (default `info`). Each finished page logs one line with the page, queue, reason, language, engine, status, characters, the ALTO and part names, and seconds taken.
 
-When `APPLICATIONINSIGHTS_CONNECTION_STRING` is set, the worker also sends telemetry to Application Insights through `usnm-telemetry`, as `usnm-api` does. Unset or empty, it runs with stdout logs only. The cloud role is `usnm-ocr-worker` and the role instance is `--node-id`. Application Insights has local auth disabled, so every upload carries an Entra token for `https://monitor.azure.com/.default` from the node's Arc identity through HIMDS, as the queue and blob calls get theirs. The node's identity needs Monitoring Metrics Publisher on the component. On a node that is the nodes' own component, `usnm-ocr-appi-<env>`, on their own workspace, `usnm-ocr-log-<env>`: the template grants the nodes' Entra group the role there and nowhere else (`infra/modules/ocr-node-monitoring.bicep`, ADR-0015 decision 8), so a node can't write the environment's telemetry. `scripts/ocr-node/onboard.sh` passes that component's connection string (the setting `OCR_NODE_APPINSIGHTS`) to `scripts/ocr-node/node-setup.sh`, which writes it to `/etc/usnm/ocr-worker.env` for the systemd unit.
+When `APPLICATIONINSIGHTS_CONNECTION_STRING` is set, the worker also sends telemetry to Application Insights through `usnm-telemetry`, as `usnm-api` does. Unset or empty, it runs with stdout logs only. The cloud role is `usnm-ocr-worker` and the role instance is `--node-id`. Application Insights has local auth disabled, so every upload carries an Entra token for `https://monitor.azure.com/.default` from the node's Arc identity through HIMDS, as the queue and blob calls get theirs. The node's identity needs Monitoring Metrics Publisher on the component. On a node, that component is the nodes' own, `usnm-ocr-appi-<env>`, on their own workspace, `usnm-ocr-log-<env>`. The template grants the nodes' Entra group the role there and nowhere else (`infra/modules/ocr-node-monitoring.bicep`, ADR-0015 decision 8), so a node can't write the environment's telemetry. `scripts/ocr-node/onboard.sh` passes that component's connection string (the setting `OCR_NODE_APPINSIGHTS`) to `scripts/ocr-node/node-setup.sh`, which writes it to `/etc/usnm/ocr-worker.env` for the systemd unit.
 
 Each message is a request (`ocr_page`) carrying its page id, queue, reason and language, with an `outcome` of `done`, `failed`, `abandoned` or `dead_lettered`. The lines logged while it runs, at the `RUST_LOG` level, go with it as traces. Message bodies, search text and tokens are never recorded. A page abandoned at shutdown is counted, and its request has no `outcome`. The metrics:
 
@@ -158,7 +263,7 @@ Metrics are sent every 30 s and once more at shutdown.
 With `--status-listen 0.0.0.0:8381` (`USNM_OCR_STATUS_LISTEN`) and `--status-allow <dashboard address>` (`USNM_OCR_STATUS_ALLOW`), `run` serves its status to `usnm-ocrdash` (12 §12.2.5) and refuses every other address:
 
 - `GET /status`: the node id, version, engine, concurrency, scan server, any LoC hold, the pages in flight (doc_id, language, queue, stage, start), pages by outcome and scan source over the last hour and day and since the start, the latest finished pages, and each language's engine profile from its last page done.
-- The status also carries the queues as the worker last saw them, a look a minute: each queue's approximate length (Get Queue Metadata) and up to 20 dead letters at the front of `ocr-deadletter` (Peek Messages), shown as their page, cause, kind, error, receive count, node and time. It takes and deletes nothing, and needs Storage Queue Data Reader on the queues.
+- The status also carries the queues as the worker last saw them (it looks once a minute): each queue's approximate length (Get Queue Metadata) and up to 20 dead letters at the front of `ocr-deadletter` (Peek Messages), shown as their page, cause, kind, error, receive count, node and time. It takes and deletes nothing, and needs Storage Queue Data Reader on the queues.
 - `GET /journal?from=<offset>`: `--status-journal` (`USNM_OCR_STATUS_JOURNAL`) from a byte offset, whole lines only, at most 1 MiB. Each line is one finished page: doc_id, language, engine tag, queue, reason, times, outcome, scan source, whether its output was uploaded, and a failure's kind. The file is appended to across restarts.
 
 The status server runs apart from the OCR loop: if it can't bind, fails or panics, it is logged, counted and started again after 5 s, doubling to 5 minutes. A page is tracked per attempt (its message id and pop receipt), so a redelivered message running beside an earlier attempt doesn't overwrite it. Neither endpoint holds page text. `scripts/ocr-node/install-worker.sh --status-allow <address>` writes the settings, and the node's nftables drops the port from anyone else.
@@ -179,17 +284,18 @@ podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
 
 ## Optional BOINC batch pool
 
-The [BOINC pilot](../../docs/boinc.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO/Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing; volunteers receive no Azure credentials. The existing `run` command is unchanged.
+The [BOINC pilot](../../docs/boinc.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO and Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing, and volunteers receive no Azure credentials. The `run` command is unchanged.
 
 ## Engine catalog and production licences
 
 The worker embeds `ocr/engines/engines.toml`; `--engines <path>` (or
 `USNM_OCR_ENGINES`) overrides it for `run`, `ocr-file` and `check-engine`.
-The Tesseract profile preference order now comes from that catalog. An
-unrecorded engine/version or model is never implicitly cleared, even when
-installed locally. Both direct Tesseract and contract profiles pass the same
-`usnm-ocr-route::Catalog::check_production` gate before a page can be read.
-Contract profiles are checked against their actual `hello` model list.
+The Tesseract profile preference order comes from that catalog. An engine
+version or model that the catalog doesn't record is never treated as cleared,
+even when it is installed locally. Direct Tesseract profiles and contract
+profiles both pass the same `usnm-ocr-route::Catalog::check_production` gate
+before a page can be read. A contract profile is checked against the model
+list in its `hello`.
 
 Validate the minimal route without an engine, credentials or network access:
 
@@ -198,8 +304,8 @@ usnm-ocr-worker routes check
 usnm-ocr-worker routes check --engines ocr/engines/engines.toml --routes ocr/routing/routes.toml
 ```
 
-This command checks all named candidates, `auto` profiles and cascade targets;
-it is a licence check, not the later route-matching/capability/lock validator.
-The [catalog schema](../../ocr/engines/README.md) documents the attribution data
-for the follow-on credits page (#372). No attributed or credit-required
-production profiles are introduced here.
+This command checks every named candidate, `auto` profile and cascade target.
+It is a licence check, not the later validator for route matching, node
+capabilities and locks. The [catalog schema](../../ocr/engines/README.md)
+documents the attribution data for the follow-on credits page (#372). The
+catalog holds no attributed or credit-required production profiles yet.

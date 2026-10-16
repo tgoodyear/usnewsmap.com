@@ -103,6 +103,7 @@ SQL
 #   minimum, 2026-10-14) never reached the share.
 project_tree() {
   local i inc="$PROJ/html/project/project.inc" cache_inc="$PROJ/html/project/cache_parameters.inc"
+  python3 "$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/cgi" --target "$PROJ/cgi-bin/cgi"
   cp "$TEMPLATES/plan_class_spec.xml" "$PROJ/plan_class_spec.xml"
   for i in $(seq 0 255); do mkdir -p "$PROJ/html/cache/$(printf %02x "$i")"; done
   sed -i -e 's|"REPLACE WITH PROJECT NAME"|"usnewsmap OCR"|' \
@@ -113,6 +114,11 @@ project_tree() {
   # The project's own web pages ship in the image, so a rollout updates them; overwrites the
   # copies on the share, never deletes stock files.
   cp -R "$TEMPLATES/html/." "$PROJ/html/"
+  # Keep stock project settings while replacing its low-resolution badge/footer.
+  sed -i 's/^function project_footer(/function stock_project_footer(/' "$inc"
+  if ! grep -Fq 'require_once(__DIR__ . "/usnm_footer.inc");' "$inc"; then
+    sed -i '/^<?php$/a require_once(__DIR__ . "/usnm_footer.inc");' "$inc"
+  fi
 }
 
 serve() {

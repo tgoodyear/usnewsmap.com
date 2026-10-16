@@ -13,14 +13,14 @@
 # to it alone runs only the Markdown format check.
 # ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/, and the
 # Rust scorer's golden files that gold.py writes), whose unit tests and golden
-# check run in the infra job. fixtures/ocr-gold/ is read by no build, test
-# or generator outside the bridge's reviewed selections, so it counts for none
-# of rust/quickwit/web/image/fixtures. Reviewed selections also build the bridge.
+# check run in the infra job. Most fixtures/ocr-gold/ files count for none
+# of rust/quickwit/web/image/fixtures. The v1 lock is embedded in the Rust
+# mirror CLI, and it and reviewed selections also build the bridge.
 # boinc_pages: the BOINC project's own web pages (contrib-compute/boinc/html/), which
 # only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
 # XML and Bicep; ADR-0019), which no other job builds.
-# Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
+# Everything runs for a default workflow_dispatch (scripts/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
 # the changed files can't be worked out; everything but ops, which runs only
 # when its own files change (the snapshots, the index history, their schemas,
@@ -48,6 +48,24 @@ all() {
   echo "running everything: $1"
   exit 0
 }
+if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
+  case "${CI_SCOPE:-full}" in
+    full) all "full workflow dispatch" ;;
+    ocr-worker)
+      [ "${GITHUB_REF:-}" = refs/heads/main ] || {
+        echo "ocr-worker publication scope requires refs/heads/main" >&2
+        exit 1
+      }
+      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker page_language contrib ocr_gold boinc_pages; do
+        case "$part" in rust|ocr_worker) value=true ;; *) value=false ;; esac
+        printf '%s=%s\n' "$part" "$value" >> "$out"
+      done
+      echo "OCR worker checks and attested release only; no application rollout"
+      exit 0
+      ;;
+    *) echo "unknown workflow dispatch scope: $CI_SCOPE" >&2; exit 1 ;;
+  esac
+fi
 case "${GITHUB_EVENT_NAME:-}" in
   pull_request) range="origin/$GITHUB_BASE_REF...HEAD" ;;
   push)
@@ -71,7 +89,8 @@ files=$(grep -Ev '\.md$|^docs/' <<< "$files" || true)
 if grep -Eq '^contrib-compute/boinc/html/' <<< "$files"; then boinc_pages=true; else boinc_pages=false; fi
 files=$(grep -Ev '^contrib-compute/boinc/html/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
-# The gold set's crops and selection: nothing builds, tests or generates them.
+# Gold fixtures are excluded from application/image rules. The embedded v1 lock
+# is considered separately for Rust below, and for BOINC's contrib checks.
 built=$(grep -Ev '^fixtures/ocr-gold/' <<< "$files" || true)
 matches_built() { [ -n "$built" ] && grep -Eq "$1" <<< "$built"; }
 # infra/quickwit/ holds the index configs (read by the ingest image) and the
@@ -145,7 +164,7 @@ ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-ocr-r
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|fixtures/ocr-gold/selections/|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/boinc-app-release\.sh$|scripts/ci/check-boinc-server-image\.sh$)'
+contrib='^(contrib-compute/|fixtures/ocr-gold/(selections/|bundle-v1\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/boinc-app-release\.sh$|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # closure_crates ROOT...: the directories of the workspace crates the roots
 # depend on, directly or not (normal, build and dev dependencies: path
@@ -207,7 +226,9 @@ narrow quickwit usnm-search usnm-ingest
 narrow image usnm-api usnm-ingest
 narrow e2e usnm-api
 for part in rust quickwit web image e2e fixtures; do
-  if matches_built "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
+  if matches_built "${!part}" ||
+    { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
+    [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 for part in ocr_worker page_language contrib ocr_gold; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi

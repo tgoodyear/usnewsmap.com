@@ -2,7 +2,7 @@
 //! overlay part, delete the message. Messages are hidden for a fixed time
 //! when taken and never renewed (ADR-0015).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -81,6 +81,12 @@ pub struct Config {
     /// After SIGTERM, how long in-flight pages may take before they are
     /// abandoned (they reappear when their visibility runs out).
     pub shutdown_grace: Duration,
+    /// Let in-flight pages run to their configured page timeout on stop.
+    pub drain_on_stop: bool,
+    /// The engine's page timeout, used as the planned-stop drain window.
+    pub page_timeout: Duration,
+    /// Optional durable local execution observations; unset leaves execution unchanged.
+    pub run_metadata_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -94,6 +100,9 @@ impl Default for Config {
             idle_max: Duration::from_secs(60),
             once: false,
             shutdown_grace: Duration::from_secs(60),
+            drain_on_stop: false,
+            page_timeout: Duration::from_secs(600),
+            run_metadata_dir: None,
         }
     }
 }
@@ -168,7 +177,10 @@ pub(crate) struct ScratchError(pub(crate) String);
 /// What a page's engine read got to, for the `ocr_engine_run` event of a
 /// read that writes nothing (13 §13.8.3).
 #[derive(Debug, Default)]
-struct ReadTrace(std::sync::Mutex<TraceState>);
+struct ReadTrace {
+    state: std::sync::Mutex<TraceState>,
+    metadata: Option<crate::run_metadata::Capture>,
+}
 
 #[derive(Debug, Default)]
 struct TraceState {
@@ -185,7 +197,10 @@ struct TraceState {
 
 impl ReadTrace {
     fn start(&self, planned: Option<(String, ReadInfo)>) {
-        if let Ok(mut t) = self.0.lock() {
+        if let Some(c) = &self.metadata {
+            c.start(planned.clone());
+        }
+        if let Ok(mut t) = self.state.lock() {
             *t = TraceState {
                 started: Some(Instant::now()),
                 planned,
@@ -197,14 +212,20 @@ impl ReadTrace {
     /// The engine fields of the instance the read got, replacing the
     /// planned ones (`describe` guessed before the read had a slot).
     fn instance(&self, info: ReadInfo) {
-        if let Ok(mut t) = self.0.lock() {
+        if let Some(c) = &self.metadata {
+            c.instance(info.clone());
+        }
+        if let Ok(mut t) = self.state.lock() {
             let tag = t.planned.take().map(|(tag, _)| tag).unwrap_or_default();
             t.planned = Some((tag, info));
         }
     }
 
     fn ended(&self, out: &Result<EngineOutput, EngineError>) {
-        let Ok(mut t) = self.0.lock() else { return };
+        if let Some(c) = &self.metadata {
+            c.ended(out);
+        }
+        let Ok(mut t) = self.state.lock() else { return };
         match out {
             Ok(o) => t.read = Some((o.engine.clone(), o.read.clone())),
             Err(EngineError::Failed(e)) if !e.is::<ScratchError>() => {
@@ -219,7 +240,7 @@ impl ReadTrace {
     /// a later failure (the part's upload, or a stop while the scan is
     /// evicted) sends no event of its own.
     fn recorded(&self) {
-        if let Ok(mut t) = self.0.lock() {
+        if let Ok(mut t) = self.state.lock() {
             t.started = None;
         }
     }
@@ -240,6 +261,9 @@ impl Drop for CancelledRead<'_> {
         if self.armed {
             self.worker
                 .report_failed_read(self.key, self.run_id, self.trace, None);
+            if let Some(c) = &self.trace.metadata {
+                c.cancelled();
+            }
         }
     }
 }
@@ -285,6 +309,35 @@ pub fn output_paths(key: &PageKey, run_id: &str) -> OutputPaths {
         runs: usnm_ocr_contract::runs::path(&issue, run_id),
         part: format!("pages/{issue}.{run_id}.parquet"),
     }
+}
+
+fn fetch_dimensions(
+    result: &Result<Scan, FetchError>,
+    fallback: bool,
+) -> (&'static str, &'static str, bool) {
+    let outcome = if result.is_ok() { "ok" } else { "error" };
+    let source = match result {
+        Ok(scan) if scan.from_cache => "cache",
+        _ => "loc",
+    };
+    (outcome, source, fallback)
+}
+
+fn record_image_fetch(
+    metrics: &Metrics,
+    started: Instant,
+    result: &Result<Scan, FetchError>,
+    fallback: bool,
+) {
+    let (outcome, source, fallback) = fetch_dimensions(result, fallback);
+    metrics.image_fetch_seconds.record(
+        started.elapsed().as_secs_f64(),
+        &[
+            KeyValue::new("outcome", outcome),
+            KeyValue::new("source", source),
+            KeyValue::new("jpeg_fallback", fallback),
+        ],
+    );
 }
 
 #[derive(Debug)]
@@ -358,9 +411,13 @@ impl Worker {
     }
 
     /// Run until `stop` turns true (or, with `once`, the queues are empty).
-    /// In-flight pages get `shutdown_grace` to finish; then they're
-    /// abandoned, and reappear when their visibility runs out.
+    /// In-flight pages get `shutdown_grace` to finish, or their page timeout
+    /// when `drain_on_stop` is set; then they're abandoned and reappear when
+    /// their visibility runs out.
     pub async fn run(self: Arc<Self>, mut stop: watch::Receiver<bool>) -> anyhow::Result<()> {
+        if let Some(dir) = &self.cfg.run_metadata_dir {
+            crate::run_metadata::prepare(dir)?;
+        }
         let slots = Arc::new(Semaphore::new(self.cfg.concurrency.max(1)));
         let mut tasks = JoinSet::new();
         let mut idle = Duration::from_secs(1);
@@ -402,12 +459,17 @@ impl Worker {
                 }
             }
             let next = tokio::select! {
-                r = self.next_message() => r,
+                biased;
                 // A message received as this is dropped reappears when its visibility runs out.
                 _ = stop.changed() => break,
+                r = self.next_message() => r,
             };
             match next {
                 Ok(Some(msg)) => {
+                    if *stop.borrow() {
+                        drop(permit);
+                        break;
+                    }
                     idle = Duration::from_secs(1);
                     let me = self.clone();
                     let received = Instant::now();
@@ -440,12 +502,17 @@ impl Worker {
             idle = (idle * 2).min(self.cfg.idle_max);
         }
         if !tasks.is_empty() {
+            let shutdown_grace = if self.cfg.drain_on_stop {
+                self.cfg.page_timeout
+            } else {
+                self.cfg.shutdown_grace
+            };
             tracing::info!(
                 in_flight = tasks.len(),
-                grace_secs = self.cfg.shutdown_grace.as_secs(),
+                grace_secs = shutdown_grace.as_secs(),
                 "stopping; finishing in-flight pages"
             );
-            let drained = tokio::time::timeout(self.cfg.shutdown_grace, async {
+            let drained = tokio::time::timeout(shutdown_grace, async {
                 while tasks.join_next().await.is_some() {}
             })
             .await;
@@ -697,7 +764,19 @@ impl Worker {
         // an engine behind the contract, its outputs and its runs record
         // (13 §13.4.3).
         let run_id = crate::provenance::mint_run_id(&self.cfg.node_id);
-        let trace = ReadTrace::default();
+        let trace = ReadTrace {
+            metadata: self.cfg.run_metadata_dir.as_ref().map(|dir| {
+                crate::run_metadata::Capture::new(
+                    dir,
+                    &run_id,
+                    &key.doc_id(),
+                    &self.cfg,
+                    self.engine.as_ref(),
+                    m,
+                )
+            }),
+            ..ReadTrace::default()
+        };
         // Reports the read if this future is dropped mid-page (the
         // shutdown grace ran out), inside the page's span: `Instrumented`
         // enters it while dropping.
@@ -715,6 +794,15 @@ impl Worker {
         if let Err(f) = &result {
             self.report_failed_read(key, &run_id, &trace, Some(f));
         }
+        if let Some(c) = &trace.metadata {
+            let (status, kind) = match &result {
+                Ok(_) => ("ok", None),
+                Err(Failure::Permanent(_)) => ("failed", Some("permanent")),
+                Err(Failure::Transient(kind, _)) => ("failed", Some(*kind)),
+                Err(Failure::Abandoned) => ("abandoned", Some("budget")),
+            };
+            c.finish(status, kind, deadline).await;
+        }
         result
     }
 
@@ -729,7 +817,9 @@ impl Worker {
         trace: &ReadTrace,
         f: Option<&Failure>,
     ) {
-        let Ok(mut t) = trace.0.lock() else { return };
+        let Ok(mut t) = trace.state.lock() else {
+            return;
+        };
         let Some(started) = t.started.take() else {
             return;
         };
@@ -787,30 +877,21 @@ impl Worker {
         let read = async {
             let t = Instant::now();
             let scan = self.scans.scan(key, &m.batch).await;
-            self.metrics.image_fetch_seconds.record(
-                t.elapsed().as_secs_f64(),
-                &[
-                    KeyValue::new("outcome", if scan.is_ok() { "ok" } else { "error" }),
-                    KeyValue::new(
-                        "source",
-                        match &scan {
-                            Ok(s) if s.from_cache => "cache",
-                            _ => "loc",
-                        },
-                    ),
-                ],
-            );
+            record_image_fetch(&self.metrics, t, &scan, false);
             let scan = scan?;
             self.tracker.scanned(token, scan.from_cache);
             self.tracker.stage(token, "ocr");
             if scan.from_cache {
                 tracing::debug!(doc_id = %key.doc_id(), format = scan.format.name(), "scan read from the cache");
             }
-            let t = Instant::now();
-            let mut read_secs = t;
+            let mut read_secs = Instant::now();
+            let first_read = Instant::now();
+            let mut ocr_read_time = Duration::ZERO;
             let mut jpeg_fallback = false;
             let mut evict_jp2 = None;
-            let (scan, out) = match self.read_scan(&scan, m, work.path(), &run_id, trace).await {
+            let first = self.read_scan(&scan, m, work.path(), &run_id, trace).await;
+            ocr_read_time += first_read.elapsed();
+            let (scan, out) = match first {
                 Ok(out) => (scan, out),
                 // Some intact JP2s crash the engine with status 136 (#454);
                 // their IIIF JPEG reads. One more run on it; no second
@@ -820,7 +901,10 @@ impl Worker {
                         doc_id = %key.doc_id(), error = format!("{e:#}"),
                         "the engine crashed on the JP2 (status 136); reading the IIIF JPEG instead"
                     );
-                    let jpeg = self.scans.jpeg(key, &m.batch, &scan.iiif_base).await?;
+                    let fetch_started = Instant::now();
+                    let fetched = self.scans.jpeg(key, &m.batch, &scan.iiif_base).await;
+                    record_image_fetch(&self.metrics, fetch_started, &fetched, true);
+                    let jpeg = fetched?;
                     // The scan read is the JPEG now, wherever it came from.
                     self.tracker.scanned(token, jpeg.from_cache);
                     // A directory of its own, so nothing the crashed run
@@ -830,10 +914,10 @@ impl Worker {
                         .await
                         .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
                     read_secs = Instant::now();
-                    let out = self
-                        .read_scan(&jpeg, m, &again, &run_id, trace)
-                        .await
-                        .map_err(|e| engine_failure(e, &self.cfg.node_id))?;
+                    let retry_started = Instant::now();
+                    let retry = self.read_scan(&jpeg, m, &again, &run_id, trace).await;
+                    ocr_read_time += retry_started.elapsed();
+                    let out = retry.map_err(|e| engine_failure(e, &self.cfg.node_id))?;
                     // The JP2's buffer copy goes with the JPEG's, after the upload.
                     evict_jp2 = scan.evict.clone();
                     jpeg_fallback = true;
@@ -844,7 +928,7 @@ impl Worker {
             let seconds_wall = read_secs.elapsed().as_secs_f64();
             let scan_sha256 = crate::prefetch::sha256(&scan.bytes);
             self.metrics.ocr_seconds.record(
-                t.elapsed().as_secs_f64(),
+                ocr_read_time.as_secs_f64(),
                 &[
                     KeyValue::new("engine", self.engine.source().to_owned()),
                     // The short key (`tesseract/5.5.0 frak2021`), so the
@@ -855,6 +939,7 @@ impl Worker {
                             .map_or_else(|_| out.engine.clone(), |t| t.short_key()),
                     ),
                     KeyValue::new("language", m.language.clone()),
+                    KeyValue::new("jpeg_fallback", jpeg_fallback),
                 ],
             );
             Ok((
@@ -921,6 +1006,9 @@ impl Worker {
             seconds_wall,
             finished_at: Utc::now(),
         });
+        if let Some(c) = &trace.metadata {
+            c.record(&runs);
+        }
         let runs = usnm_ocr_contract::runs::write(std::slice::from_ref(&runs))
             .map_err(|e| Failure::Transient("output", format!("runs record: {e:#}")))?;
         let (text, alto) = (stored.text, stored.alto);
@@ -979,6 +1067,9 @@ impl Worker {
         run_id: &str,
         trace: &ReadTrace,
     ) -> Result<EngineOutput, EngineError> {
+        if let Some(c) = &trace.metadata {
+            c.input(scan);
+        }
         // The extension names the format: Tesseract (Leptonica) reads
         // JPEG and, through OpenJPEG, JP2.
         let image = work.join(format!("page.{}", scan.format.ext()));
@@ -1035,6 +1126,29 @@ mod tests {
     use super::*;
     use crate::message::Reason;
     use crate::queue::LocalQueue;
+
+    #[test]
+    fn fallback_fetch_dimensions_keep_source_and_fallback_separate() {
+        let cached = Scan {
+            url: "https://example.org/page.jpg".into(),
+            iiif_base: "https://example.org".into(),
+            format: ScanFormat::Jpeg,
+            bytes: bytes::Bytes::new(),
+            md5: None,
+            download: Duration::ZERO,
+            from_cache: true,
+            evict: None,
+        };
+        assert_eq!(fetch_dimensions(&Ok(cached), true), ("ok", "cache", true));
+        assert_eq!(
+            fetch_dimensions(&Err(FetchError::Transient("offline".into())), true),
+            ("error", "loc", true)
+        );
+        assert_eq!(
+            fetch_dimensions(&Err(FetchError::Transient("offline".into())), false),
+            ("error", "loc", false)
+        );
+    }
 
     /// Counts scan requests; a hold, when set, is reported as loc.gov's.
     /// Pages 95 to 97 come as JP2s (see [`FakeEngine`]).
@@ -1788,6 +1902,276 @@ mod tests {
         w.handle(m, Instant::now()).await;
     }
 
+    fn metadata_files(root: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                assert_eq!(path.extension().unwrap(), "json");
+                let bytes = std::fs::read(&path).unwrap();
+                let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let hash = crate::prefetch::sha256(value["run_id"].as_str().unwrap().as_bytes());
+                assert_eq!(
+                    path.file_name().unwrap().to_str().unwrap(),
+                    format!("{hash}.json")
+                );
+                for excluded in [
+                    "Nebraska",
+                    "secret page text",
+                    "Staats-Zeitung",
+                    "<alto",
+                    "stderr",
+                ] {
+                    assert!(!std::str::from_utf8(&bytes).unwrap().contains(excluded));
+                }
+                assert!(value.get("accepted").is_none());
+                assert!(value.get("imported").is_none());
+                assert!(value.get("indexed").is_none());
+                value
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn run_metadata_captures_concurrent_reads_replay_and_jpeg_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut w, _, out) = worker(dir.path());
+        let root = dir.path().join("metadata");
+        assert!(w.cfg.run_metadata_dir.is_none());
+        Arc::get_mut(&mut w).unwrap().cfg.run_metadata_dir = Some(root.clone());
+        let (m, key) = message::decode(&msg("sn83045462/1890-05-03/ed-1/seq-7", "deu")).unwrap();
+        let (fallback_m, fallback_key) =
+            message::decode(&msg("sn83045462/1890-05-03/ed-1/seq-97", "deu")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let (first, replay, fallback) = tokio::join!(
+            w.process(&m, &key, "first", deadline),
+            w.process(&m, &key, "replay", deadline),
+            w.process(&fallback_m, &fallback_key, "fallback", deadline),
+        );
+        let done = [first.unwrap(), replay.unwrap(), fallback.unwrap()];
+        let rows = metadata_files(&root);
+        assert_eq!(rows.len(), 3);
+        for row in &rows {
+            assert_eq!(row["metadata_schema"], 1);
+            assert_eq!(row["status"], "ok");
+            assert!(row["error_kind"].is_null());
+            assert!(row["started_at"].as_str().unwrap() <= row["finished_at"].as_str().unwrap());
+            assert!(row["seconds_wall"].as_f64().unwrap() >= 0.0);
+            let record =
+                usnm_ocr_contract::runs::from_json_line(&row["run_record"].to_string()).unwrap();
+            let page = done.iter().find(|d| d.run_id == record.run_id).unwrap();
+            let uploaded =
+                usnm_ocr_contract::runs::read(out.get(&page.runs).await.unwrap().unwrap().into())
+                    .unwrap();
+            let mut parquet_record = record.clone();
+            // Parquet stores the existing contract's timestamps at microsecond precision.
+            parquet_record.node_finished_at =
+                chrono::DateTime::from_timestamp_micros(record.node_finished_at.timestamp_micros())
+                    .unwrap();
+            assert_eq!(uploaded, vec![parquet_record]);
+            assert_eq!(record.image_sha256, crate::prefetch::sha256(b"jpeg"));
+            assert!(record.seconds_cpu.is_none() && record.peak_mem_mb.is_none());
+            assert!(record.selected); // Route selection, not project acceptance.
+            let observations = row["observations"].as_array().unwrap();
+            let last = observations.last().unwrap();
+            assert_eq!(last["status"], "ok");
+            assert_eq!(last["info_source"], "result");
+            assert_eq!(last["info"]["engine_id"], record.engine_id);
+            assert_eq!(last["image_sha256"], record.image_sha256);
+            assert!(last["engine_finished_at"].is_string());
+            if page.jpeg_fallback {
+                assert_eq!(observations.len(), 2);
+                assert_eq!(observations[0]["status"], "failed");
+                assert_eq!(observations[0]["error_kind"], "engine_crash");
+                assert_eq!(
+                    observations[0]["image_sha256"],
+                    crate::prefetch::sha256(b"jp2 exit 136")
+                );
+            } else {
+                assert_eq!(observations.len(), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn run_metadata_keeps_pre_engine_failures_and_actual_instance_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut w, _, _) = worker(dir.path());
+        let root = dir.path().join("metadata");
+        Arc::get_mut(&mut w).unwrap().cfg.run_metadata_dir = Some(root.clone());
+        for (seq, language, kind) in [(7, "haw", "no_model"), (98, "deu", "fetch")] {
+            let (m, key) = message::decode(&msg(
+                &format!("sn83045462/1890-05-03/ed-1/seq-{seq}"),
+                language,
+            ))
+            .unwrap();
+            let result = w
+                .process(&m, &key, "test", Instant::now() + Duration::from_secs(30))
+                .await;
+            assert!(matches!(result, Err(Failure::Transient(k, _)) if k == kind));
+        }
+        let failing = with_engine(&w, Arc::new(ColdInstanceEngine));
+        let (m, key) = message::decode(&msg("sn83045462/1890-05-03/ed-1/seq-7", "deu")).unwrap();
+        assert!(matches!(
+            failing
+                .process(&m, &key, "test", Instant::now() + Duration::from_secs(30))
+                .await,
+            Err(Failure::Transient("engine", _))
+        ));
+        let bad_alto = with_engine(&w, Arc::new(BadAltoEngine));
+        assert!(matches!(
+            bad_alto
+                .process(&m, &key, "test", Instant::now() + Duration::from_secs(30))
+                .await,
+            Err(Failure::Transient("convert", _))
+        ));
+        let rows = metadata_files(&root);
+        assert_eq!(rows.len(), 4);
+        for row in &rows {
+            assert_eq!(row["status"], "failed");
+            assert!(row["run_record"].is_null());
+            let observations = row["observations"].as_array().unwrap();
+            match row["error_kind"].as_str().unwrap() {
+                "no_model" | "fetch" => assert!(observations.is_empty()),
+                "engine" => {
+                    assert_eq!(observations[0]["status"], "timeout");
+                    assert_eq!(observations[0]["error_kind"], "engine_timeout");
+                    assert_eq!(observations[0]["info_source"], "instance");
+                    assert_eq!(observations[0]["info"]["cold_start"], true);
+                    assert_eq!(observations[0]["info"]["model_load_seconds"], 2.5);
+                    assert_eq!(
+                        observations[0]["image_sha256"],
+                        crate::prefetch::sha256(b"jpeg")
+                    );
+                }
+                "convert" => assert_eq!(observations[0]["status"], "ok"),
+                other => panic!("unexpected error {other}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn run_metadata_observes_budget_and_dropped_page_without_claiming_engine_exit() {
+        #[derive(Debug)]
+        struct WaitingEngine;
+        #[async_trait]
+        impl Engine for WaitingEngine {
+            fn source(&self) -> &str {
+                "usnm-tesseract"
+            }
+            fn can_read(&self, _: &str) -> bool {
+                true
+            }
+            async fn ocr(&self, _: &Path, _: &str, _: &Path) -> Result<EngineOutput, EngineError> {
+                std::future::pending().await
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut w, _, _) = worker(dir.path());
+        let root = dir.path().join("metadata");
+        Arc::get_mut(&mut w).unwrap().cfg.run_metadata_dir = Some(root.clone());
+        let waiting = with_engine(&w, Arc::new(WaitingEngine));
+        let (m, key) = message::decode(&msg("sn83045462/1890-05-03/ed-1/seq-7", "deu")).unwrap();
+        assert!(matches!(
+            waiting
+                .process(
+                    &m,
+                    &key,
+                    "budget",
+                    Instant::now() + Duration::from_millis(50)
+                )
+                .await,
+            Err(Failure::Abandoned)
+        ));
+        let mut page = Box::pin(waiting.process(
+            &m,
+            &key,
+            "shutdown",
+            Instant::now() + Duration::from_secs(30),
+        ));
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut page)
+            .await
+            .is_err());
+        drop(page);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count = std::fs::read_dir(&root).map_or(0, |files| {
+                    files
+                        .filter_map(Result::ok)
+                        .filter(|f| f.path().extension().is_some_and(|e| e == "json"))
+                        .count()
+                });
+                if count == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let rows = metadata_files(&root);
+        assert_eq!(rows.len(), 2);
+        let kinds: std::collections::BTreeSet<_> = rows
+            .iter()
+            .map(|r| r["error_kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["budget", "shutdown"].into_iter().collect());
+        for row in rows {
+            assert_eq!(row["status"], "abandoned");
+            assert!(row["run_record"].is_null());
+            let observation = &row["observations"][0];
+            assert_eq!(observation["status"], "abandoned");
+            assert!(observation["engine_finished_at"].is_null());
+            assert!(observation["seconds_wall"].as_f64().unwrap() > 0.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn run_metadata_write_failure_does_not_change_success_or_original_engine_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut w, _, _) = worker(dir.path());
+        let not_a_dir = dir.path().join("file");
+        std::fs::write(&not_a_dir, b"not a directory").unwrap();
+        Arc::get_mut(&mut w).unwrap().cfg.run_metadata_dir = Some(not_a_dir);
+        let (m, key) = message::decode(&msg("sn83045462/1890-05-03/ed-1/seq-7", "deu")).unwrap();
+        assert!(w
+            .process(&m, &key, "test", Instant::now() + Duration::from_secs(30))
+            .await
+            .is_ok());
+        let failing = with_engine(&w, Arc::new(ColdInstanceEngine));
+        assert!(matches!(
+            failing
+                .process(&m, &key, "test", Instant::now() + Duration::from_secs(30))
+                .await,
+            Err(Failure::Transient("engine", _))
+        ));
+        let (_, rx) = watch::channel(false);
+        assert!(w.run(rx).await.is_err()); // Misconfiguration fails before taking queue work.
+    }
+
+    #[tokio::test]
+    async fn run_metadata_queue_path_preserves_upload_failure_and_redelivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut w, queue, out) = worker(dir.path());
+        let root = dir.path().join("metadata");
+        {
+            let w = Arc::get_mut(&mut w).unwrap();
+            w.cfg.run_metadata_dir = Some(root.clone());
+            w.out = Arc::new(NoParts(out.clone()));
+        }
+        one_page(&w, &queue, "sn83045462/1890-05-03/ed-1/seq-7", "deu").await;
+        let rows = metadata_files(&root);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["status"], "failed");
+        assert_eq!(rows[0]["error_kind"], "output");
+        assert_eq!(rows[0]["run_record"]["status"], "ok");
+        assert_eq!(rows[0]["observations"][0]["status"], "ok");
+        assert_eq!(out.list("runs").await.unwrap().len(), 1);
+        assert!(out.list("pages").await.unwrap().is_empty());
+        let again = queue.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
+        assert_eq!(again.dequeue_count, 2);
+    }
+
     #[tokio::test]
     async fn a_read_that_writes_nothing_sends_an_engine_run_event() {
         let dir = tempfile::tempdir().unwrap();
@@ -2149,5 +2533,86 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(m.dequeue_count, 2);
+    }
+
+    #[derive(Debug)]
+    struct DelayedEngine;
+
+    #[async_trait]
+    impl Engine for DelayedEngine {
+        fn source(&self) -> &str {
+            "usnm-tesseract"
+        }
+
+        fn can_read(&self, language: &str) -> bool {
+            language != "haw"
+        }
+
+        async fn ocr(
+            &self,
+            image: &Path,
+            language: &str,
+            work: &Path,
+        ) -> Result<EngineOutput, EngineError> {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            FakeEngine.ocr(image, language, work).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_planned_stop_drains_in_flight_pages_and_stops_intake() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base, queue, out) = worker(dir.path());
+        let w = Arc::new(Worker {
+            engine: Arc::new(DelayedEngine),
+            cfg: Config {
+                concurrency: 1,
+                shutdown_grace: Duration::from_millis(50),
+                drain_on_stop: true,
+                page_timeout: Duration::from_secs(1),
+                ..base.cfg.clone()
+            },
+            queue: base.queue.clone(),
+            out: base.out.clone(),
+            scans: base.scans.clone(),
+            metrics: base.metrics.clone(),
+            tracker: base.tracker.clone(),
+        });
+        for seq in [7, 8] {
+            queue
+                .send(
+                    BULK,
+                    &msg(&format!("sn83045462/1890-05-03/ed-1/seq-{seq}"), "deu"),
+                )
+                .await
+                .unwrap();
+        }
+
+        let (tx, rx) = watch::channel(false);
+        let run = tokio::spawn(w.clone().run(rx));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while w.tracker.status().in_flight.is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let started = Instant::now();
+        tx.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(2), run)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert_eq!(w.tracker.status().since_start.done, 1);
+        assert_eq!(out.list("pages").await.unwrap().len(), 1);
+        let pending = queue
+            .receive(BULK, Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.dequeue_count, 1);
     }
 }

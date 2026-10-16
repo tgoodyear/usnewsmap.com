@@ -162,7 +162,9 @@ while :; do
     --job-execution-name "$execution" --query properties.status -o tsv) || die "can't read $execution's status"
   case $status in
     Succeeded) break ;;
-    Failed | Stopped | Degraded) die "$execution ended $status; its log is in $LOGS" ;;
+    Failed | Stopped | Degraded)
+      [ "$TARGET" = handoff ] || boinc_execution_log "$execution"
+      die "$execution ended $status; its log is in $LOGS" ;;
   esac
   [ "$(date +%s)" -lt "$deadline" ] || die "$execution is still ${status:-starting} after $WAIT_MINS minutes"
   sleep 15

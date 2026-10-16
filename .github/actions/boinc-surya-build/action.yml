@@ -33,6 +33,9 @@ runs:
           --label "org.opencontainers.image.description=usnewsmap BOINC Surya 2 worker (surya-ocr, llama.cpp, usnm-boinc)" \
           -t "$IMAGE:$SHA" .
         docker image ls "$IMAGE"
+        # Podman refuses images with a healthcheck where no systemd user session exists.
+        hc=$(docker image inspect --format '{{json .Config.Healthcheck}}' "$IMAGE:$SHA")
+        [[ $hc == null || $hc == '{"Test":["NONE"]}' ]] || { echo "::error::image declares a healthcheck: $hc"; exit 1; }
     # Without a GPU: the diagnostics, the Python probe and a unit that is refused (no job)
     # must still write all five outputs.
     - name: The image runs a unit and always returns its outputs

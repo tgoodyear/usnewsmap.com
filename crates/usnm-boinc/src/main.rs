@@ -16,6 +16,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// OFF-by-default onboarding and independent-host OCR spot checks; never modifies trust.
+    HostTrust {
+        #[command(subcommand)]
+        command: HostTrust,
+    },
     /// Export selected cached pages and reserve their native requested-work ledger entries.
     Export {
         #[arg(long)]
@@ -142,6 +147,9 @@ enum Commands {
     /// The vision-language readings on volunteer GPUs and CPUs (#522), app `usnm_qwen`.
     #[command(subcommand)]
     Qwen(Qwen),
+    /// Japanese NDLOCR-Lite staging, redundant validation and ocr-ja publication.
+    #[command(subcommand)]
+    Ndlocr(Ndlocr),
     /// The remote hand-off between the OCR node and the BOINC server (#469, docs/boinc.md).
     #[command(subcommand)]
     Handoff(Handoff),
@@ -152,7 +160,147 @@ enum Commands {
     },
 }
 #[derive(Subcommand)]
+enum HostTrust {
+    /// Read existing quarantine reasons without connecting to BOINC or modifying results.
+    Quarantine {
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Discover BOINC hosts and issue one gold unit per untrusted host/campaign.
+    Onboard {
+        #[arg(long)]
+        config: PathBuf,
+        /// Dispatch work; without this switch only read-only discovery/planning occurs.
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Deterministically sample OCR jobs and rerun on a second same-image trusted host.
+    SpotSubmit {
+        #[arg(long)]
+        config: PathBuf,
+        /// JSON array of original job digests.
+        #[arg(long)]
+        jobs: PathBuf,
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Validate both canonical results and record agreement; never publishes or grants trust.
+    SpotCompare {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        job: String,
+        #[arg(long)]
+        original_spool: PathBuf,
+        #[arg(long)]
+        spot_spool: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum Ndlocr {
+    /// Stage reason:jpn:doc_id:batch_verNN pages from the archive or polite IIIF fetch.
+    Stage {
+        #[arg(long = "page", required = true)]
+        pages: Vec<usnm_boinc::surya::Page>,
+        #[arg(long)]
+        root: PathBuf,
+        /// Immutable engine BASE image digest; signed wrapper separately pins the worker.
+        #[arg(long)]
+        engine_image: String,
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u32,
+        #[arg(long)]
+        scan_archive: Option<String>,
+        #[arg(long)]
+        batch_cache: Option<PathBuf>,
+    },
+    Submit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        doc: String,
+    },
+    Check {
+        #[arg(long, num_args = 3)]
+        files: Vec<PathBuf>,
+    },
+    Compare {
+        #[arg(long, num_args = 3)]
+        files: Vec<PathBuf>,
+        #[arg(long, num_args = 3)]
+        files2: Vec<PathBuf>,
+    },
+    Collect {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        doc: String,
+        #[arg(long)]
+        curated_url: String,
+    },
+}
+
+async fn ndlocr(command: Ndlocr) -> anyhow::Result<()> {
+    use usnm_boinc::ndlocr as x;
+    match command {
+        Ndlocr::Stage {
+            pages,
+            root,
+            engine_image,
+            timeout_secs,
+            scan_archive,
+            batch_cache,
+        } => {
+            println!(
+                "staged {}",
+                x::stage(
+                    &root,
+                    &pages,
+                    x::engine(engine_image, timeout_secs),
+                    scan_archive.as_deref(),
+                    batch_cache
+                )
+                .await?
+            );
+        }
+        Ndlocr::Submit { root, project, doc } => x::submit(&root, &project, &doc).await?,
+        Ndlocr::Check { files } => {
+            x::load(&files)?;
+        }
+        Ndlocr::Compare { files, files2 } => x::compare(&files, &files2)?,
+        Ndlocr::Collect {
+            root,
+            spool,
+            doc,
+            curated_url,
+        } => {
+            x::collect(
+                &root,
+                &spool,
+                &doc,
+                usnm_store::open(&curated_url)?.as_ref(),
+            )
+            .await?
+        }
+    }
+    Ok(())
+}
+
+#[derive(Subcommand)]
 enum Handoff {
+    /// Copy exactly one object, without downloading adjacent jobs or scans.
+    GetFile {
+        #[arg(long)]
+        from_url: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        to: PathBuf,
+    },
     /// Copy every object under a prefix of the hand-off container into a directory.
     Get {
         #[arg(long)]
@@ -294,6 +442,13 @@ enum Assess {
 }
 #[derive(Subcommand)]
 enum Gold {
+    /// Mirror only the 18 locked v1 LoC JPEGs from cache; no BLN600 or work creation.
+    MirrorLoc {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+    },
     /// Server side, once per bundle: fetch the original files (one request at a time) to learn
     /// their sizes and md5s and the crops' reference counts; writes prepared.json.
     Prepare {
@@ -834,6 +989,37 @@ enum Found {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
+        Commands::HostTrust { command } => {
+            use usnm_boinc::host_trust as x;
+            match command {
+                HostTrust::Quarantine { root } => {
+                    println!("{}", serde_json::to_string_pretty(&x::quarantine(&root)?)?);
+                }
+                HostTrust::Onboard { config, execute } => {
+                    let hosts = x::onboard(&x::Config::load(&config)?, execute).await?;
+                    println!("{}", serde_json::to_string(&hosts)?);
+                }
+                HostTrust::SpotSubmit {
+                    config,
+                    jobs,
+                    execute,
+                } => {
+                    let units = x::spot_submit(&x::Config::load(&config)?, &jobs, execute).await?;
+                    println!("{}", serde_json::to_string(&units)?);
+                }
+                HostTrust::SpotCompare {
+                    config,
+                    job,
+                    original_spool,
+                    spot_spool,
+                } => {
+                    anyhow::ensure!(
+                        x::spot_compare(&x::Config::parse(&config)?, &job, &original_spool, &spot_spool).await?,
+                        "independent OCR spot check disagrees; inspect comparison.json; no trust or publication changed"
+                    );
+                }
+            }
+        }
         Commands::Export {
             manifest,
             pages,
@@ -960,6 +1146,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Assess(a) => assess(a).await?,
         Commands::Gold(g) => gold(g).await?,
         Commands::Surya(x) => surya(x).await?,
+        Commands::Ndlocr(x) => ndlocr(x).await?,
         Commands::Quality(q) => quality(q).await?,
         Commands::Qwen(q) => qwen(q).await?,
         Commands::Handoff(h) => handoff(h).await?,
@@ -978,6 +1165,9 @@ async fn main() -> anyhow::Result<()> {
 async fn handoff(h: Handoff) -> anyhow::Result<()> {
     use usnm_boinc::handoff as x;
     match h {
+        Handoff::GetFile { from_url, path, to } => {
+            x::get_file(usnm_store::open(&from_url)?.as_ref(), &path, &to).await?;
+        }
         Handoff::Get {
             from_url,
             prefix,
@@ -1035,6 +1225,12 @@ async fn handoff(h: Handoff) -> anyhow::Result<()> {
 async fn gold(g: Gold) -> anyhow::Result<()> {
     use usnm_boinc::gold as x;
     match g {
+        Gold::MirrorLoc { root, project } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&x::mirror::loc(&root, &project).await?)?
+            );
+        }
         Gold::Prepare {
             bundle,
             root,

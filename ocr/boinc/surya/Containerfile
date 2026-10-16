@@ -58,6 +58,9 @@ ENV PATH=/opt/venv/bin:/app:$PATH LLAMA_CPP_BINARY=/app/llama-server \
 # the check is off; the plan class asks for CUDA 12.0 and the diagnostics record the driver.
 ENV NVIDIA_DISABLE_REQUIRE=1
 # Stock docker_wrapper mounts the BOINC slot at /work (job-cpu.toml, job-gpu.toml).
+# The llama.cpp base declares a HEALTHCHECK (curl :8080/health). A BOINC unit is not a service,
+# and rootless Podman without a systemd user session (our dedicated nodes, WSL) refuses to create
+# a container that has one, so the unit fails before it starts.
 HEALTHCHECK NONE
 ENTRYPOINT []
 CMD ["/usr/local/bin/usnm-boinc", "work", "--dir", "/work"]

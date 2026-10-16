@@ -155,3 +155,33 @@ boinc_release_lock() {
     BOINC_LOCK_HELD_BY_SELF=false
   fi
 }
+
+# boinc_execution_log EXECUTION [WAIT_SECS]: prints the last console lines of one job execution
+# from the stack's Log Analytics workspace (operators have Log Analytics Reader on it), to stderr.
+# Ingestion lags a few minutes, so it polls until lines arrive or WAIT_SECS (default 300) pass.
+# Best effort: it never fails the caller.
+boinc_execution_log() {
+  local execution=$1 wait=${2:-300} workspace rows deadline
+  [[ $execution =~ ^[a-z0-9-]+$ ]] || return 0
+  workspace=$(baz monitor log-analytics workspace list --resource-group "$BOINC_RG" --query "[0].customerId" -o tsv 2> /dev/null) || workspace=""
+  if [ -z "$workspace" ]; then
+    echo "(no Log Analytics workspace in $BOINC_RG; its log is in ContainerAppConsoleLogs_CL)" >&2
+    return 0
+  fi
+  deadline=$(($(date +%s) + wait))
+  echo "reading $execution's log from Log Analytics (up to ${wait}s for ingestion)" >&2
+  while :; do
+    rows=$(baz monitor log-analytics query --workspace "$workspace" --timespan P1D --analytics-query \
+      "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '$execution-' | order by TimeGenerated desc | take 50 | order by TimeGenerated asc | project TimeGenerated, Log_s" \
+      -o json 2> /dev/null | jq -r '.[] | "\(.TimeGenerated)  \(.Log_s)"' 2> /dev/null) || rows=""
+    [ -z "$rows" ] || break
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "(no log lines for $execution yet; query ContainerAppConsoleLogs_CL in workspace $workspace later)" >&2
+      return 0
+    fi
+    sleep 20
+  done
+  echo "--- $execution (last 50 lines) ---" >&2
+  echo "$rows" >&2
+  echo "---" >&2
+}

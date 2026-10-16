@@ -1,0 +1,57 @@
+name: ocr-dashboard
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/ocr-dashboard.yml
+      - crates/**
+      - ocr/engines/engines.toml
+      - ocr/engines/tesseract/models.lock
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - "!**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-dashboard-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: dashboard (static Linux binary)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RUSTFLAGS: -D warnings
+      USNM_GIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install musl linker
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - name: Build dashboard only
+        run: cargo build --locked --release -p usnm-ocr-dash --target x86_64-unknown-linux-musl
+      - name: Record artifact identity
+        run: |
+          mkdir dashboard-artifact
+          cp target/x86_64-unknown-linux-musl/release/usnm-ocrdash dashboard-artifact/
+          cd dashboard-artifact
+          sha256sum usnm-ocrdash > SHA256SUMS
+          printf '%s\n' "$GITHUB_SHA" > SOURCE_COMMIT
+          ./usnm-ocrdash --help >/dev/null
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ocr-dashboard-linux-x86_64
+          path: dashboard-artifact/
+          retention-days: 7
+          if-no-files-found: error

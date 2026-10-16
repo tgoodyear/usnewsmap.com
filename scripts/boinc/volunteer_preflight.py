@@ -601,6 +601,30 @@ def check_ocr_node_slice(uid, cgroup_root=Path("/sys/fs/cgroup"), membership=Non
         raise PreflightError("OCR-node aggregate CPU/memory/swap/task limits are missing or weakened.")
 
 
+def check_dedicated_node(uid, cgroup_root=Path("/sys/fs/cgroup"), membership=None, runner=None):
+    """A former OCR node retired to BOINC: no OCR worker, and a bounded (not CPU-capped) slice."""
+    if uid <= 0 or os.geteuid() != uid:
+        raise PreflightError("Dedicated-node preflight must run as the dedicated BOINC UID.")
+    runner = runner or (lambda args: subprocess.run(args, capture_output=True, text=True, timeout=60).stdout.strip())
+    worker = "usnm-ocr-worker.service"
+    if runner(["systemctl", "show", worker, "--property=LoadState", "--value"]) != "not-found":
+        enabled = runner(["systemctl", "show", worker, "--property=UnitFileState", "--value"])
+        active = runner(["systemctl", "show", worker, "--property=ActiveState", "--value"])
+        if enabled not in ["disabled", "masked"] or active not in ["inactive", "failed"]:
+            raise PreflightError(f"{worker} is enabled or running; a dedicated BOINC node must not share it.")
+    membership = Path("/proc/self/cgroup").read_text() if membership is None else membership
+    relative = f"user.slice/user-{uid}.slice"
+    line = next((line.removeprefix("0::") for line in membership.splitlines() if line.startswith("0::")), "")
+    if not line.startswith(f"/{relative}/"):
+        raise PreflightError("BOINC is outside its dedicated user slice.")
+    parent = cgroup_root / relative
+    memory = (parent / "memory.max").read_text().strip()
+    swap = (parent / "memory.swap.max").read_text().strip()
+    tasks = (parent / "pids.max").read_text().strip()
+    if memory == "max" or int(memory) <= 0 or swap != "0" or tasks == "max" or not 0 < int(tasks) <= 1024:
+        raise PreflightError("Dedicated-node aggregate memory/swap/task limits are missing or weakened.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -608,6 +632,7 @@ def main():
     parser.add_argument("--service")
     parser.add_argument("--job-toml", type=Path, action="append", default=None)
     parser.add_argument("--ocr-node-uid", type=int)
+    parser.add_argument("--dedicated-node-uid", type=int)
     args = parser.parse_args()
     def interrupted(signum, frame):
         raise PreflightError("Startup preflight interrupted; no work may be accepted.")
@@ -617,6 +642,9 @@ def main():
         if args.ocr_node_uid is not None:
             check_ocr_node_slice(args.ocr_node_uid)
             check_ocr_groups(args.ocr_node_uid, args.service, actual=True)
+        if args.dedicated_node_uid is not None:
+            check_dedicated_node(args.dedicated_node_uid)
+            check_ocr_groups(args.dedicated_node_uid, args.service, actual=True)
         result = preflight(args.data_dir, args.image, service=args.service, job_tomls=args.job_toml)
     except (PreflightError, OSError, KeyError, ValueError, json.JSONDecodeError) as error:
         print(f"BOINC host preflight FAILED: {error}", file=sys.stderr)

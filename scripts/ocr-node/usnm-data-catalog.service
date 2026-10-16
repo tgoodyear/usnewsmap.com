@@ -1,0 +1,30 @@
+[Unit]
+Description=Read-only local corpus page and run metadata queries
+After=network.target
+ConditionPathExists=/var/lib/usnm-data-flow/catalog.sqlite
+
+[Service]
+Type=simple
+User=ocrdash
+Group=ocrdash
+ExecStart=/usr/bin/python3 /usr/local/lib/usnm-data-flow/data_catalog.py --db /var/lib/usnm-data-flow/catalog.sqlite serve --host 127.0.0.1 --port 8764
+StateDirectory=usnm-data-flow
+StateDirectoryMode=0750
+UMask=0027
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=256M
+CPUQuota=20%
+
+[Install]
+WantedBy=multi-user.target

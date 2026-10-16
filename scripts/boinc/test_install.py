@@ -53,6 +53,33 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(target.parts[-3], "usnm_gold")
         self.assertTrue((self.project / "templates" / "usnm_gold_out").is_file())
 
+    def test_iris_is_a_separate_intel_application(self):
+        target = module.install(
+            self.project, self.wrapper, IMAGE, "1.0", "usnm_iris", "docker_intel_opencl_4b",
+        )
+        self.assertEqual(target.parts[-3], "usnm_iris")
+        job = next(target.glob("job_*.toml")).read_text()
+        self.assertIn("--device=/dev/dri/renderD128", job)
+        self.assertIn("--network=none", job)
+        self.assertIn("--memory=9g --memory-swap=9g", job)
+        self.assertNotIn("use_gpu = true", job)
+        for name in ("usnm_iris_in", "usnm_iris_out"):
+            self.assertTrue((self.project / "templates" / name).is_file())
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_iris", "docker_nvidia_cuda")
+
+    def test_japanese_app_has_separate_inputs_and_four_gib_cpu_budget(self):
+        target = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_ndlocr")
+        self.assertEqual(target.parts[-3], "usnm_ndlocr")
+        job = next(target.glob("job_*.toml")).read_text()
+        self.assertIn("--memory=4g --memory-swap=4g", job)
+        self.assertIn("--network=none", job)
+        for name in ("usnm_ndlocr_in", "usnm_ndlocr_out"):
+            self.assertTrue((self.project / "templates" / name).is_file())
+        self.assertIn("ndlocr.json", (self.project / "templates/usnm_ndlocr_in").read_text())
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_ndlocr", "docker_nvidia_cuda")
+
     def test_surya_versions_per_plan_class(self):
         cpu = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_surya", "docker_mt")
         gpu = module.install(self.project, self.wrapper, IMAGE, "1.1", "usnm_surya", "docker_nvidia_cuda")
@@ -229,6 +256,26 @@ class InstallTest(unittest.TestCase):
             ext = ".exe" if platform == "windows_x86_64" else ""
             srv_logical = f"llama-server{ext}"
             srv_src = llama_srv_win if platform == "windows_x86_64" else llama_srv
+            extras = [
+                f"{srv_logical}={srv_src}",
+                f"llama.lock={llama_lock}",
+                f"weights.lock={weights_lock}",
+            ]
+            dll_names = (
+                "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll",
+                "ggml-cuda.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
+                "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
+                "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
+            ) if platform == "windows_x86_64" else ()
+            extras.extend(f"{name}={llama_srv_win}" for name in dll_names)
+            for missing in dll_names:
+                with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "requires --extra-file"):
+                    module.install(
+                        self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
+                        platform=platform, kind="native", binary=bin_for_plat,
+                        extra_files=[item for item in extras if not item.startswith(f"{missing}=")],
+                    )
+                self.assertFalse((self.project / "apps/usnm_qwen/2.0").exists())
             target = module.install(
                 self.project,
                 version="1.0",
@@ -237,11 +284,7 @@ class InstallTest(unittest.TestCase):
                 platform=platform,
                 kind="native",
                 binary=bin_for_plat,
-                extra_files=[
-                    f"{srv_logical}={srv_src}",
-                    f"llama.lock={llama_lock}",
-                    f"weights.lock={weights_lock}",
-                ],
+                extra_files=extras,
                 sign_key=sign_key,
                 crypt_prog=fake_crypt,
             )
@@ -264,6 +307,9 @@ class InstallTest(unittest.TestCase):
             self.assertIn("<logical_name>llama.lock</logical_name>", xml_text)
             self.assertIn("<logical_name>weights.lock</logical_name>", xml_text)
             self.assertNotIn("is_wrapper", xml_text)
+            for name in dll_names:
+                self.assertTrue((target / f"{suffix}_{name}.sig").is_file())
+                self.assertIn(f"<logical_name>{name}</logical_name>", xml_text)
             if gpu:
                 self.assertIn("<dont_throttle />", xml_text)
             else:

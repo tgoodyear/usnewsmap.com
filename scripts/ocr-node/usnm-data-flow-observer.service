@@ -1,0 +1,27 @@
+[Unit]
+Description=Read-only OCR and BOINC aggregate evidence observer
+After=network-online.target usnm-ocrdash.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ocrdash
+Group=ocrdash
+EnvironmentFile=/etc/usnm/data-flow-observer.env
+ExecStart=/usr/bin/python3 /usr/local/lib/usnm-data-flow/data_flow_observer.py --ocr-url ${USNM_DATA_FLOW_OCR_URL} --snapshot /var/lib/usnm-data-flow/pipeline.json --catalog-snapshot /var/lib/usnm-data-flow/catalog.json
+StateDirectory=usnm-data-flow
+StateDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+TimeoutStartSec=45
+MemoryMax=128M
+CPUQuota=10%

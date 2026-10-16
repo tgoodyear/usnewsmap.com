@@ -241,6 +241,12 @@ def _patch_scheduler_config_xml(text: str, server_replica: str | None = None) ->
     if server_replica:
         text = re.sub(r"<host>[^<]+</host>", f"<host>{server_replica}</host>", text)
     text = re.sub(r"\s*<one_result_per_user_per_wu\s*/>", "", text)
+    if "<enable_assignment>" not in text:
+        text = text.replace(
+            "<show_results>1</show_results>",
+            "<show_results>1</show_results>\n        <enable_assignment>1</enable_assignment>",
+        )
+    text = re.sub(r"<min_sendwork_interval>\d+</min_sendwork_interval>", "<min_sendwork_interval>2</min_sendwork_interval>", text)
     text = re.sub(r"<max_wus_in_progress>\d+</max_wus_in_progress>", "<max_wus_in_progress>32</max_wus_in_progress>", text)
     text = re.sub(r"<daily_result_quota>\d+</daily_result_quota>", "<daily_result_quota>50000</daily_result_quota>", text)
     text = re.sub(r"<max_wus_to_send>\d+</max_wus_to_send>", "<max_wus_to_send>64</max_wus_to_send>", text)

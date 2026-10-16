@@ -12,6 +12,11 @@ on:
         description: "Identifies this run (set by scripts/bootstrap.sh)"
         required: false
         default: ""
+      scope:
+        description: "full preserves bootstrap/deploy behavior; ocr-worker publishes only the checked, attested OCR worker release on current main"
+        type: choice
+        options: [full, ocr-worker]
+        default: full
 
 permissions:
   contents: read
@@ -51,6 +56,7 @@ jobs:
         run: scripts/ci/changes.sh
         env:
           BEFORE_SHA: ${{ github.event.before }}
+          CI_SCOPE: ${{ inputs.scope }}
 
   rust:
     name: rust (fmt, clippy, test)
@@ -128,8 +134,15 @@ jobs:
         run: python3 -m unittest -v images/bridge/test_gold_bundle.py
       - name: The server daemon configuration tests pass
         run: python3 -m unittest -v boinc/test_config.py
+      - name: The daemon runner keeps bin/start's pid directory off the share
+        run: python3 -m unittest -v images/server/test_boinc_daemons.py
       - name: The work-volume export and workbook queries pass
         run: python3 -m unittest -v images/server/test_work_volume.py
+        env:
+          USNM_WORK_VOLUME_MYSQL_PORT: '3307'
+      - name: The bounded volunteer batch scheduler tests pass
+        working-directory: .
+        run: python3 -m unittest -v scripts/boinc/test_batch_scheduler.py contrib-compute/images/server/test_batch_inventory.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
@@ -137,8 +150,9 @@ jobs:
         working-directory: .
         run: |
           python3 -m unittest -v scripts/boinc/test_install.py
-          python3 -m unittest -v scripts/boinc/test_volunteer.py scripts/boinc/test_qwen_disk.py scripts/boinc/test_hold_legacy_qwen.py
-          python3 -m unittest -v scripts/boinc/test_node_client.py
+          python3 -m unittest -v scripts/boinc/test_iris_campaign.py scripts/boinc/test_iris_worker.py
+          python3 -m unittest -v scripts/boinc/test_volunteer.py scripts/boinc/test_qwen_disk.py scripts/boinc/test_qwen_canary.py scripts/boinc/test_hold_legacy_qwen.py
+          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
           python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
@@ -163,6 +177,59 @@ jobs:
         with:
           persist-credentials: false
       - run: find contrib-compute/boinc/html -name '*.php' -print0 | xargs -0 -n1 php -l
+
+  boinc-db-tls:
+    name: BOINC actual database TLS (private disposable fixture)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py
+      - run: shellcheck -x -S warning scripts/boinc/check-db-tls.sh
+      - run: scripts/boinc/check-db-tls.sh
+
+  boinc-node-client:
+    name: BOINC stable node client (EL9 build, no host installation)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the actual pinned client away from production
+        run: |
+          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_observe_node.py
+          shellcheck -x -S warning scripts/boinc/build-node-client-container.sh
+          scripts/boinc/build-node-client-container.sh --out "$PWD/target/boinc-node-client"
+      - name: Archive and re-extract the retained executable bundle
+        run: |
+          tar -C target -czf target/boinc-node-client.tar.gz boinc-node-client
+          mkdir target/client-archive-check
+          tar -C target/client-archive-check -xzf target/boinc-node-client.tar.gz
+          cd target/client-archive-check/boinc-node-client
+          sha256sum -c SHA256SUMS
+          test -x install/bin/boinc
+          test -x install/bin/boinccmd
+          test "$(cat runtime-memory-max)" = 1610612736
+          test "$(cat runtime-cpu-max)" = "100000 100000"
+      - name: The exported client loads on EL10 without a host install
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -v "$PWD/target/client-archive-check/boinc-node-client/install:/client:ro" \
+            mirror.gcr.io/library/almalinux:10@sha256:838c2fafefb1a8a0d7f8cdbc3b0551c2a2b1eb0cd87aad6d62aecadb18311f1b \
+            /bin/sh -ec 'ldd /client/bin/boinc; ldd /client/bin/boinccmd; /client/bin/boinc --version; /client/bin/boinccmd --version'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boinc-node-client-el9
+          retention-days: 7
+          path: target/boinc-node-client.tar.gz
 
   # The BOINC server image and the bridge job image (contrib-compute/images). Built, smoke-tested
   # and not pushed: where they are published is the maintainer's step (docs/images.md).
@@ -198,6 +265,12 @@ jobs:
         run: scripts/ci/check-boinc-server-image.sh --image usnm-boinc-server:check
       - name: Record the image id
         run: docker image inspect usnm-boinc-server:check --format 'server image id {{.Id}}'
+      - name: The actual server installs and restarts a full private TLS-required project
+        timeout-minutes: 15
+        run: |
+          python3 -m unittest -v scripts/boinc/test_full_db_tls.py
+          shellcheck -x -S warning scripts/boinc/check-full-db-tls.sh
+          scripts/boinc/check-full-db-tls.sh --local-server-image usnm-boinc-server:check
       # crates/usnm-boinc arrives with PR #441; until then there is no bridge binary to build.
       - name: The bridge image builds
         if: hashFiles('crates/usnm-boinc/Cargo.toml') != ''
@@ -554,6 +627,12 @@ jobs:
           python3 -m unittest -v scripts/ci/test_no_positional_args.py
       - name: changes.sh runs the Quickwit job only for what its tests build
         run: python3 -m unittest -v scripts/ci/test_changes.py
+      - name: The bounded local corpus catalog's tests pass
+        run: python3 -m unittest -v scripts/test_data_catalog.py
+      - name: Read-only corpus flow observations preserve scope and freshness
+        run: python3 -m unittest -v scripts/test_data_flow_observer.py
+      - name: Pinned model downloads retry TLS failures without bypassing verification
+        run: python3 -m unittest -v scripts/ci/test_model_download.py
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |
@@ -567,9 +646,12 @@ jobs:
         run: |
           python3 -m unittest -v scripts/ocr-node/test_update_worker.py
           python3 -m unittest -v scripts/ocr-node/test_check_scan_archive.py
+          python3 -m unittest -v scripts/ocr-node/test_grant_archive_uploader.py
+          python3 -m unittest -v scripts/ocr-node/test_install_archive_host.py
           shellcheck -x -S warning scripts/ocr-node/update-worker.sh scripts/ocr-node/install-worker-node.sh \
             scripts/ocr-node/install-worker.sh scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
-            scripts/ocr-node/check-scan-archive.sh
+            scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
+            scripts/ocr-node/install-archive-host.sh
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's

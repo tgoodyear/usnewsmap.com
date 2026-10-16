@@ -16,6 +16,82 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CARGO = shutil.which("cargo")
 
+class Dispatch(unittest.TestCase):
+    def test_boinc_build_paths_exclude_markdown_after_positive_patterns(self):
+        for workflow in (ROOT / ".github/workflows").glob("boinc-*.yml"):
+            paths = re.search(r"(?m)^    paths:\n((?:      .*\n)+)", workflow.read_text())
+            self.assertIsNotNone(paths, workflow.name)
+            patterns = [
+                line.strip()[2:].strip("'\"")
+                for line in paths[1].splitlines() if line.strip().startswith("- ")
+            ]
+            if any("**" in pattern for pattern in patterns):
+                with self.subTest(workflow=workflow.name):
+                    self.assertEqual(patterns[-1], "!**/*.md")
+                    self.assertIn(f".github/workflows/{workflow.name}", patterns)
+                    self.assertTrue(any(not p.startswith("!") and "**" in p
+                                        for p in patterns[:-1]))
+
+    def flags(self, scope=None, event="workflow_dispatch", ref="refs/heads/main"):
+        env = dict(os.environ, GITHUB_EVENT_NAME=event, GITHUB_REF=ref,
+                   GITHUB_OUTPUT="/dev/stdout")
+        env.pop("CI_SCOPE", None)
+        if scope is not None:
+            env["CI_SCOPE"] = scope
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/ci/changes.sh")], cwd=ROOT,
+            env=env, capture_output=True, text=True,
+        )
+        return result, dict(re.findall(r"^(\w+)=(true|false)$", result.stdout, re.M))
+
+    def test_worker_dispatch_runs_checks_without_application_or_boinc_rollout(self):
+        result, flags = self.flags("ocr-worker")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({key for key, value in flags.items() if value == "true"},
+                         {"rust", "ocr_worker"})
+        self.assertEqual(len(flags), 15)
+        self.assertEqual(flags["image"], "false")
+        self.assertEqual(flags["contrib"], "false")
+        self.assertEqual(flags["provision"], "false")
+
+    def test_default_and_explicit_full_dispatch_preserve_bootstrap(self):
+        for scope in [None, "", "full"]:
+            with self.subTest(scope=scope):
+                result, flags = self.flags(scope)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(flags["image"], "true")
+                self.assertEqual(flags["ocr_worker"], "true")
+                self.assertEqual(flags["rust"], "true")
+                self.assertEqual(flags["contrib"], "true")
+
+    def test_unknown_dispatch_scope_fails_closed(self):
+        result, flags = self.flags("ocr-wroker")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(flags)
+
+    def test_worker_dispatch_requires_main(self):
+        result, flags = self.flags("ocr-worker", ref="refs/heads/other")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(flags)
+
+    def test_worker_scope_cannot_narrow_other_events(self):
+        result, flags = self.flags("ocr-worker", event="schedule")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(flags["image"], "true")
+        self.assertEqual(flags["contrib"], "true")
+
+    def test_scope_is_wired_without_weakening_release_guards(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("CI_SCOPE: ${{ inputs.scope }}", workflow)
+        release = workflow.split("\n  ocr-worker-release:\n", 1)[1].split("\n  private-addresses:", 1)[0]
+        self.assertIn("needs: [changes, rust, ocr-worker-el9, ocr-worker-check]", release)
+        self.assertIn("github.ref == 'refs/heads/main'", release)
+        self.assertIn("scripts/ci/head-of-main.sh", release)
+        self.assertIn("actions/attest-build-provenance@", release)
+        self.assertIn("if: steps.head.outputs.current == 'true'", release)
+        rollout = workflow.split("name: publish and roll out", 1)[1]
+        self.assertIn("needs.changes.outputs.image == 'true'", rollout)
+
 
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(repo), *args], check=True,
@@ -192,6 +268,13 @@ class BoincPages(unittest.TestCase):
         self.change = lambda: self.touch("scripts/ocr-survey/transcription.py")
         o = self.outputs()
         self.assertEqual((o["contrib"], o["ocr_gold"]), ("true", "true"))
+
+    def test_embedded_gold_lock_runs_rust_and_bridge_checks(self):
+        self.change = lambda: self.touch("fixtures/ocr-gold/bundle-v1.lock.json")
+        o = self.outputs()
+        self.assertEqual((o["rust"], o["contrib"], o["ocr_gold"]), ("true", "true", "true"))
+        self.assertEqual({key for key, value in o.items() if value == "true"},
+                         {"rust", "contrib", "ocr_gold", "code"})
 
 class OcrCatalog(unittest.TestCase):
     """Embedded catalog and routing edits must rebuild and test OCR releases."""

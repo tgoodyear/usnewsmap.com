@@ -110,6 +110,32 @@ impl Trust {
         Ok(t)
     }
 
+    /// For issuing gold only: a missing list, or the uncalibrated v1 list that v2 deliberately
+    /// rejects, trusts no host, so every host is offered gold (which is how a threshold gets
+    /// calibrated in the first place). Anything else must load as [`Trust::load`] would.
+    pub fn load_or_none_trusted(path: &Path) -> anyhow::Result<Self> {
+        let none = || Self {
+            hosts: BTreeMap::new(),
+            max_cer: 0.0,
+            v: TRUST_VERSION,
+        };
+        if !path.exists() {
+            eprintln!("no trust list at {}; no host is trusted", path.display());
+            return Ok(none());
+        }
+        let raw: serde_json::Value =
+            serde_json::from_slice(&crate::read(path, MAX_REPORTS as usize)?)
+                .with_context(|| format!("reading {}", path.display()))?;
+        if raw.get("v").and_then(serde_json::Value::as_u64) == Some(1) {
+            eprintln!(
+                "{} is the uncalibrated v1 trust list; no host is trusted",
+                path.display()
+            );
+            return Ok(none());
+        }
+        Self::load(path)
+    }
+
     /// `None` when the host is trusted for this image; otherwise why not.
     pub fn refuse(&self, engine_image: &str, host_id: Option<u64>) -> Option<String> {
         if !immutable_image(engine_image) || host_id == Some(0) {
@@ -258,5 +284,25 @@ mod tests {
         assert!(Trust::build(&[a, b.clone()], 0.1).unwrap().hosts.is_empty());
         std::fs::write(&b, row("mutable:latest", Some(42), Some(0.0))).unwrap();
         assert!(Trust::build(&[b], 0.1).is_err());
+    }
+
+    #[test]
+    fn gold_issuance_treats_a_missing_or_v1_list_as_trusting_no_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("trust.json");
+        let image = format!("sha256:{}", "a".repeat(64));
+        assert!(Trust::load_or_none_trusted(&p).unwrap().hosts.is_empty());
+        let v1 = serde_json::json!({"v": 1, "max_cer": 0.1, "hosts": {image.clone(): [42]}});
+        std::fs::write(&p, v1.to_string()).unwrap();
+        assert!(Trust::load(&p).is_err());
+        let t = Trust::load_or_none_trusted(&p).unwrap();
+        assert!(t.refuse(&image, Some(42)).is_some());
+        std::fs::write(&p, r#"{"v": 3, "max_cer": 0.1, "hosts": {}}"#).unwrap();
+        assert!(Trust::load_or_none_trusted(&p).is_err());
+        std::fs::write(&p, "not json").unwrap();
+        assert!(Trust::load_or_none_trusted(&p).is_err());
+        let v2 = Trust::build(&[], 0.1).unwrap();
+        std::fs::write(&p, serde_json::to_vec(&v2).unwrap()).unwrap();
+        assert_eq!(Trust::load_or_none_trusted(&p).unwrap(), v2);
     }
 }

@@ -1,0 +1,26 @@
+FROM mirror.gcr.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git g++ libbsd-dev default-libmysqlclient-dev mariadb-server \
+      openssl php8.2-cli php8.2-mysql python3 python3-mysqldb \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /usr/local/share/usnm /fixture /checks
+WORKDIR /opt/boinc
+RUN git init . && git remote add origin https://github.com/BOINC/boinc.git \
+ && git fetch --depth 1 origin 22bbebe08e2eaac5d5e88a6d93b88e800cb6341c \
+ && git checkout --detach FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = 22bbebe08e2eaac5d5e88a6d93b88e800cb6341c
+COPY scripts/boinc/patch-server-db-tls.py /checks/patch-server-db-tls.py
+RUN python3 /checks/patch-server-db-tls.py --source /opt/boinc \
+ && printf '#define HAVE_STRCASECMP 1\n#define HAVE_STRCASESTR 1\n#define HAVE_STRLCPY 1\n#define HAVE_STRLCAT 1\n' > config.h \
+ && sed 's|@TOP_BUILD_DIR@|/opt/boinc|g' py/boinc_path_config.py.in > py/boinc_path_config.py
+COPY scripts/boinc/db-tls/ /checks/
+RUN g++ -O1 -ffunction-sections -fdata-sections -include bsd/string.h \
+      -I. -Ilib -Idb $(mariadb_config --include) \
+      db/db_base.cpp /checks/consumer.cpp -Wl,--gc-sections \
+      $(mariadb_config --libs) -lbsd -o /checks/consumer \
+ && php -l /checks/consumer.php \
+ && python3 -m py_compile /checks/fixture.py /checks/consumer.py /checks/schema.py
+WORKDIR /fixture
+ENV TMPDIR=/fixture
+ENTRYPOINT ["python3", "/checks/fixture.py"]

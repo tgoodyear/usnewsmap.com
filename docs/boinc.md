@@ -1,21 +1,29 @@
 # BOINC batch pilot
 
-An opt-in worker pool for trusted friends, alongside the on-prem OCR nodes.
-Design issue: [#438](https://github.com/tgoodyear/usnewsmap.com/issues/438).
-The pilot uses stock BOINC, one cached page per task, and the repository's
-Tesseract 5.5.0/model lock and language routing. It publishes native ALTO and
-Parquet to `ocr-out`; `ocr-sync` and the release keep their existing decisions.
-A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
-(#456); see [boinc-assessment.md](boinc-assessment.md). A third, `usnm_gold`,
-scores a host's engine on public ground truth ([Gold check](#gold-check)).
-A fourth, `usnm_surya`, runs Surya 2 on volunteer CPUs and NVIDIA GPUs (#516);
-see [boinc-surya.md](boinc-surya.md). A fifth and sixth, `usnm_quality` and
-`usnm_qwen`, score per-page OCR quality without ground truth and transcribe
-deterministic word crops with Qwen3-VL (#522); see
-[boinc-quality.md](boinc-quality.md).
-Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
-The [transcription post-training pilot](boinc-transcription.md) uses `usnm_qwen`
-for public-gold baseline and adapted-model evaluation.
+A volunteer worker pool alongside the on-prem OCR nodes
+([#438](https://github.com/tgoodyear/usnewsmap.com/issues/438)).
+Production and experimental tasks, including Qwen, share the same account,
+CPU and GPU choices and resource limits. No per-experiment profile update is
+required. Operators bound campaigns with the [native NVIDIA workunit window
+and stop procedure](../contrib-compute/docs/app-release.md).
+
+The pilot uses stock BOINC, one cached page per task, pinned Tesseract 5.5.0,
+the model lock and language routing. It publishes native ALTO and Parquet to
+`ocr-out`; `ocr-sync` and release decisions are unchanged. Other apps:
+
+- `usnm_assess`: [JP2 versus IIIF JPEG comparison](boinc-assessment.md) (#456).
+- `usnm_gold`: [score a host's engine on public ground truth](#gold-check).
+- `usnm_surya`: [Surya 2 on CPUs and NVIDIA GPUs](boinc-surya.md) (#516).
+- `usnm_ndlocr`: [Japanese NDLOCR-Lite/default-route CPU work](boinc-ndlocr-lite.md),
+  two-reading character-similarity validation and collection into `ocr-ja`.
+- `usnm_quality` and `usnm_qwen`: [per-page quality scoring without ground
+  truth and Qwen3-VL deterministic word-crop transcription](boinc-quality.md) (#522).
+
+Start with the [volunteer guide](boinc-volunteer.md).
+The opt-in [batch controller](boinc-batch-scheduler.md) schedules allocated
+cached pages with bounded queue backpressure; operators activate it separately.
+The [post-training pilot](boinc-transcription.md) evaluates public-gold
+baselines and adapted models with `usnm_qwen`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">
@@ -26,19 +34,20 @@ for public-gold baseline and adapted-model evaluation.
 
 - Five registered BOINC platforms (`contrib-compute/boinc/project.xml`): `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, and `windows_x86_64` (#533).
 - Dual native + container distribution:
-  - **Container apps** (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`, plus container versions of `usnm_quality` and `usnm_qwen`) use BOINC's `docker_wrapper` under plan classes `docker`, `docker_mt`, and `docker_nvidia_cuda`. The stock wrapper supports both Docker and Podman on Linux, Podman via `Run_Podman` on macOS (with our `--format` pipe quoting fix in `scripts/boinc/patch-mac-wrapper.py`; see [boinc-buda-arm-evaluation.md](notes/boinc-buda-arm-evaluation.md)), and WSL2 `boinc-buda-runner` Podman on Windows. The [volunteer guide](boinc-volunteer.md) supplies an opt-in Linux rootless Podman profile and a mandatory startup preflight (`scripts/boinc/volunteer_preflight.py`, parameterized by `--job-toml`) for slot access, actual cgroup limits and pause/resume.
+  - **Container apps** (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`, plus container versions of `usnm_quality` and `usnm_qwen`) use BOINC's `docker_wrapper` under plan classes `docker`, `docker_mt`, and `docker_nvidia_cuda`. The stock wrapper supports both Docker and Podman on Linux, Podman via `Run_Podman` on macOS (with our `--format` pipe quoting fix in `scripts/boinc/patch-mac-wrapper.py`; see [boinc-buda-arm-evaluation.md](notes/boinc-buda-arm-evaluation.md)), and WSL2 `boinc-buda-runner` Podman on Windows. The [volunteer guide](boinc-volunteer.md) supplies an opt-in Linux rootless Podman profile and a mandatory startup preflight (`scripts/boinc/volunteer_preflight.py`, parameterized by `--job-toml`) for slot access, actual cgroup limits, and pausing and resuming.
   - **Native apps** (`usnm_quality` and `usnm_qwen`) run directly on the volunteer's host without a container runtime ([boinc-quality.md](boinc-quality.md)). `usnm_quality` ships as a standalone CPU binary (`crates/usnm-quality-app`, built by `.github/workflows/boinc-quality-native.yml`) across all five platforms. `usnm_qwen` ships as a native driver binary paired with the pinned `llama.cpp` release archives in `ocr/boinc/qwen/llama.lock` and `<sticky/><no_delete/>` GGUF model files under plan classes `apple_gpu_8b` (Apple Silicon Metal, >= 7,000 MB available unified RAM), `nvidia_cuda_8b` (>= 7,000 MB VRAM), `nvidia_cuda_2b` (>= 3,000 MB VRAM), and `mt` (4–8 CPU threads).
-  - **The `boinc_finish_called` contract**: because BOINC's client treats a plain executable exiting `0` without writing `boinc_finish_called` in the slot directory as a premature exit and restarts it up to 100 times before aborting with `ERR_TOO_MANY_EXITS` (`client/app_control.cpp:533-546`), native binaries use `<copy_file/>` on all slot inputs/outputs, update `fraction_done`, and write `boinc_finish_called` containing `0\n` as their final act before exiting `0`.
+  - **The `boinc_finish_called` contract**: because BOINC's client treats a plain executable exiting `0` without writing `boinc_finish_called` in the slot directory as a premature exit and restarts it up to 100 times before aborting with `ERR_TOO_MANY_EXITS` (`client/app_control.cpp:533-546`), native binaries use `<copy_file/>` on all slot inputs and outputs, update `fraction_done`, and write `boinc_finish_called` containing `0\n` as their final act before exiting `0`.
 - Explicit cohorts of 1-100 pages from one batch, selected from the prefetch
   manifest. No automatic consumption of Azure queues or LoC fetching.
-- Central bridge: native work reservations, BOINC staging/submission, validation
-  and publishing. Only it can access Azure through the existing Entra credential
-  path. Volunteers get images and processing metadata, never credentials.
-- Separate job/result file transport, version 1, from the planned ADR-0016
-  long-lived engine protocol. Engine provenance remains `contract=0` with
-  `route=boinc@r1`; models and routing are shared with the current worker.
-- A task's container runs Tesseract directly. There is no nested Podman/Docker
-  daemon. BOINC's Docker wrapper controls the outer container.
+- Central bridge: native work reservations, BOINC staging and submission,
+  validation and publishing. Only it can access Azure through the existing Entra
+  credential path. Volunteers get images and processing metadata, never
+  credentials.
+- The job and result file transport (version 1) is separate from the planned
+  ADR-0016 long-lived engine protocol. Engine provenance remains `contract=0`
+  with `route=boinc@r1`; models and routing are shared with the current worker.
+- A task's container runs Tesseract directly. There is no nested Podman or
+  Docker daemon. BOINC's Docker wrapper controls the outer container.
 
 ```
 explicit page selection + cached scans
@@ -86,10 +95,11 @@ Replace the placeholder with the full engine image ID. `TESSERACT_FROM` is
 needed with Docker's BuildKit, which can't resolve a bare local image id in
 `FROM`; podman can, and it defaults to `TESSERACT_IMAGE`. Volunteers pull the
 published image ([Publish the worker image](#publish-the-worker-image)); an app
-version records its registry digest, `ghcr.io/tgoodyear/usnm-boinc-worker@sha256:FULL_DIGEST`,
-not the engine base's pin. Rebuild/sign a new BOINC app version when changing
-code, models, image, or runtime configuration. The Rust build uses the repository's
-locked dependencies; capture the build revision and compiler in your release.
+version records its registry digest,
+`ghcr.io/tgoodyear/usnm-boinc-worker@sha256:FULL_DIGEST`, not the engine base's
+pin. Rebuild and sign a new BOINC app version when changing code, models, image,
+or runtime configuration. The Rust build uses the repository's locked
+dependencies; capture the build revision and compiler in your release.
 
 ### Publish the worker image
 
@@ -139,21 +149,22 @@ Later pushes keep the package public. Verify an anonymous pull on each native
 architecture before releasing Mac app versions. See the [Mac release procedure](../contrib-compute/docs/app-release.md#mac-app-versions).
 
 Before changing the installed worker image, stop creating new cohorts. Finish
-exporting/submitting already allocated cohorts with their original image, and
-drain all existing workunits through collection. Resolve uncertain and failed tasks before
-rolling the app version; do not send their existing requests to a different image.
-The worker checks the exact Tesseract version, profile and model bytes, and the
-collector checks the result against the job's immutable engine metadata. Installing
-a new app version does not rewrite existing requests or bind `create_work` to an
-image automatically. Resume with fresh cohorts and the new image pin after the
-old cohort is drained. Retain old signed files and journals for recovery.
+exporting and submitting already allocated cohorts with their original image,
+and drain all existing workunits through collection. Resolve uncertain and
+failed tasks before rolling the app version; do not send their existing requests
+to a different image. The worker checks the exact Tesseract version, profile and
+model bytes, and the collector checks the result against the job's immutable
+engine metadata. Installing a new app version does not rewrite existing requests
+or bind `create_work` to an image automatically. Resume with fresh cohorts and
+the new image pin after the old cohort is drained. Retain old signed files and
+journals for recovery.
 
 ## Local synthetic demonstration
 
 Requires Rust and the worker image above. `pilot_fixture` creates a rendered
-`HELLO WORLD` page plus native manifest, sidecar, curated/reference stores, and
-file-backed state. It makes no network requests and contains no production data.
-Use a fresh directory:
+`HELLO WORLD` page plus native manifest, sidecar, curated and reference stores,
+and file-backed state. It makes no network requests and contains no production
+data. Use a fresh directory:
 
 ```sh
 cargo run --locked -p usnm-boinc --example pilot_fixture -- --dir /tmp/usnm-boinc-demo
@@ -199,19 +210,20 @@ python3 -m unittest discover -s scripts/boinc -p 'test_*.py'
 
 ## Connect a stock BOINC project
 
-Create your own Linux BOINC project server using the upstream setup documentation.
-Stock means unmodified upstream BOINC software: BOINC Central hosting or public
-project registration is not required. Friends attach manually to your server's
-project URL. Registering `usnm_ocr` below means registering it on your own server.
-This repository does not provision its web server/database or ship BOINC binaries.
-Use BOINC 8.2.13+ clients and a recent Linux x86-64 `docker_wrapper` supporting
-`workdir` and `create_args`. Install/merge upstream's Docker plan class and test
-that the requested runtime limits, pause/resume, and output permissions work.
-The minimal CPU `docker` class from the upstream sample is supplied in
-`ocr/boinc/plan_class_spec.xml`: copy it into a project without a plan-class file,
-or merge its class into an existing file, retaining the other classes. Restart
-project daemons after changing the project configuration. Installing an app
-version alone does not install its scheduler plan class.
+Create your own Linux BOINC project server using the upstream setup
+documentation. Stock means unmodified upstream BOINC software: BOINC Central
+hosting or public project registration is not required. Friends attach manually
+to your server's project URL. Registering `usnm_ocr` below means registering it
+on your own server. This repository does not provision its web server or
+database or ship BOINC binaries. Use BOINC 8.2.13+ clients and a recent Linux
+x86-64 `docker_wrapper` supporting `workdir` and `create_args`. Install or merge
+upstream's Docker plan class and test that the requested runtime limits, pause
+and resume, and output permissions work. The minimal CPU `docker` class from the
+upstream sample is supplied in `ocr/boinc/plan_class_spec.xml`: copy it into a
+project without a plan-class file, or merge its class into an existing file,
+retaining the other classes. Restart project daemons after changing the project
+configuration. Installing an app version alone does not install its scheduler
+plan class.
 
 The current stock wrapper source parses `workdir` as the slot's container mount
 path and appends `create_args` to `docker create` (these fields are absent from
@@ -220,13 +232,14 @@ binary hash, and verify its behavior in the live acceptance exercise; an older
 wrapper may ignore these settings. See the linked wrapper source.
 
 `job.toml` drops all capabilities except `DAC_OVERRIDE`, which allows the
-container's UID 0 to read/write the BOINC-owned slot without changing the host
-slot permissions. Root with all capabilities dropped cannot reliably do that
-when the slot and input files belong to another UID. The root filesystem stays
-read-only, networking is disabled, and the slot is the only configured host mount.
-Outputs and `fraction_done` are mode 0644 so the client can read them. This has
-been checked with an OCI runtime and a deliberately foreign-owned slot; it still
-needs confirmation through the actual BOINC wrapper on each supported host.
+container's UID 0 to read and write the BOINC-owned slot without changing the
+host slot permissions. Root with all capabilities dropped cannot reliably do
+that when the slot and input files belong to another UID. The root filesystem
+stays read-only, networking is disabled, and the slot is the only configured
+host mount. Outputs and `fraction_done` are mode 0644 so the client can read
+them. This has been checked with an OCI runtime and a deliberately foreign-owned
+slot; it still needs confirmation through the actual BOINC wrapper on each
+supported host.
 
 Register the application in the BOINC admin interface (`contrib-compute/boinc/project.xml`). Install a container app candidate using a trusted stock wrapper and the pullable worker image digest, or a native app candidate using `--kind native --binary`:
 
@@ -246,26 +259,28 @@ python3 scripts/boinc/install.py --project /srv/boinc/newspapers \
 `contrib-compute/boinc/plan_class_spec.xml` defines both the container plan classes (`docker`, `docker_mt`, `docker_nvidia_cuda`) and the native `usnm_qwen` plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `mt`). For native `usnm_qwen`, `ocr/boinc/qwen/llama.lock` pins the upstream `llama.cpp` release tag and per-platform archive SHA-256 digests, and the GGUF model templates use `<sticky/>` and `<no_delete/>` so volunteer clients cache models across workunits (`client/client_types.cpp:387`) and `file_deleter` (`sched/file_deleter.cpp:160-171`) never deletes shared model files from `download/`.
 
 The installer refuses an existing version directory. It does not alter running
-server configuration. Sign/publish its files using BOINC's normal code-signing
-process and `bin/update_versions`. Merge `ocr/boinc/daemons.xml` into the existing
-`config.xml` daemons section and restart the project daemons. This file is a
-fragment, not a replacement list: retain the stock feeder, transitioner,
-file_deleter, db_purge and other standard daemons. The separate hosting work in
-[#439](https://github.com/tgoodyear/usnewsmap.com/pull/439) supplies server deployment
-and bootstrap configuration; it is not a prerequisite for self-hosting.
+server configuration. Sign and publish its files using BOINC's normal
+code-signing process and `bin/update_versions`. Merge `ocr/boinc/daemons.xml`
+into the existing `config.xml` daemons section and restart the project daemons.
+This file is a fragment, not a replacement list: retain the stock feeder,
+transitioner, file_deleter, db_purge and other standard daemons. The separate
+hosting work in [#439](https://github.com/tgoodyear/usnewsmap.com/pull/439)
+supplies server deployment and bootstrap configuration; it is not a prerequisite
+for self-hosting.
 
-`sample_trivial_validator` accepts results for this trusted-friends pilot; it
-is not an accuracy/security check. `batch_collect_assimilator` moves canonical
-outputs to `results/0/<workunit>__file_<logical_name>` and records terminal errors
-there. Our central collector validates every result before publishing. Keep the
-spool until central publication succeeds. A partial/missing spool is refused;
-inspect BOINC logs and recover its files rather than accepting a partial result.
+`sample_trivial_validator` accepts results for this trusted-friends pilot; it is
+not an accuracy or security check. `batch_collect_assimilator` moves canonical
+outputs to `results/0/<workunit>__file_<logical_name>` and records terminal
+errors there. Our central collector validates every result before publishing.
+Keep the spool until central publication succeeds. A partial or missing spool is
+refused; inspect BOINC logs and recover its files rather than accepting a
+partial result.
 
 Export a real allocated cohort using its native prefetch manifest, canonical
-page-key list, cached scan root, and curated/reference stores. For Azure state use `--cosmos`
-in place of `--state-file`, with the same Entra identity/store settings as ingest.
-The image flag is the full `sha256:...` digest corresponding to the installed app.
-Then submit each exported job:
+page-key list, cached scan root, and curated and reference stores. For Azure state
+use `--cosmos` in place of `--state-file`, with the same Entra identity and store
+settings as ingest. The image flag is the full `sha256:...` digest corresponding
+to the installed app. Then submit each exported job:
 
 ```sh
 target/debug/usnm-boinc submit --root /srv/usnm/boinc-state \
@@ -323,6 +338,16 @@ template's own settings, `BRIDGE_STEP` and each `--var`; whatever a previous run
 dropped), then starts it with no override. The next `scripts/provision-boinc.sh` restores
 the template's settings. Run one step at a time.
 
+When a waited-for execution (`--wait-mins`) or a `scripts/provision-boinc.sh` lifecycle job
+fails, the script prints the execution's last 50 console lines from the stack's Log Analytics
+workspace (`ContainerAppConsoleLogs_CL`; operators have Log Analytics Reader on it), polling up
+to five minutes for ingestion. To read any execution's log by hand:
+
+```sh
+az monitor log-analytics query --workspace <workspace customerId> --analytics-query \
+  "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '<execution>-' | project TimeGenerated, Log_s"
+```
+
 ### Register the apps
 
 Provisioning runs the idempotent `--ensure-project` lifecycle job and then `bin/xadd`.
@@ -344,11 +369,11 @@ deletes or deprecates anything. The step needs a bridge image with this step in 
 
 ## Server and maintainer on different hosts
 
-The bridge has no remote-submit API. `submit`/`reconcile` must run on the BOINC
-server host where the project tree and database are reachable. `export`/`collect`
-can run on the maintainer's host with its existing Entra access. The original
-prefetch scan cache stays there: the dispatch root's `jobs/` already contains the
-input snapshots the server needs.
+The bridge has no remote-submit API. `submit` and `reconcile` must run on the
+BOINC server host where the project tree and database are reachable. `export`
+and `collect` can run on the maintainer's host with its existing Entra access.
+The original prefetch scan cache stays there: the dispatch root's `jobs/`
+already contains the input snapshots the server needs.
 
 For a small pilot, use a manual hand-off over a trusted transfer channel:
 
@@ -357,8 +382,8 @@ For a small pilot, use a manual hand-off over a trusted transfer channel:
    root. Preserve file bytes and journal timestamps; do not transfer a live lock
    or regenerate requests. Keep the frozen original as a backup.
 2. Make the server copy the sole writable journal. Submit using that root and
-   the local BOINC project. If submission becomes uncertain, inspect/reconcile
-   on the server before transferring control again.
+   the local BOINC project. If submission becomes uncertain, inspect and
+   reconcile on the server before transferring control again.
 3. Stop server bridge writers and transfer the updated complete journal tree
    back into a fresh maintainer-local root. Transfer the matching assimilator
    spool files, including any terminal error markers. Retain the server copy
@@ -553,29 +578,30 @@ The grant opens no network path: the exchange account takes the home IP through
 
 ## Allocation and recovery
 
-Export filters the manifest while decoding, retaining only selected batch/page
-rows (the native decoder still validates all rows). Undetected page languages
-use the title's first catalog language from the published reference snapshot,
-using the same MARC-to-ISO mapping as native enqueue. BOINC eligibility is stricter:
-only titles present in this version's `titles.json` are eligible. The mutable
-`catalog/titles.json` cannot make an unpublished title eligible. Published version
-IDs must be safe single path segments before any snapshot objects are read.
+Export filters the manifest while decoding, retaining only selected batch and
+page rows (the native decoder still validates all rows). Undetected page
+languages use the title's first catalog language from the published reference
+snapshot, using the same MARC-to-ISO mapping as native enqueue. BOINC
+eligibility is stricter: only titles present in this version's `titles.json` are
+eligible. The mutable `catalog/titles.json` cannot make an unpublished title
+eligible. Published version IDs must be safe single path segments before any
+snapshot objects are read.
 
 Export stages all selected jobs locally before reserving the cohort under one
-renewable `ocr-sync` lock. It reads the published metadata and native ledger once,
-validates the whole cohort, and writes one create-only queued part for fresh
-reservations. If any row conflicts, no new reservations are written. It verifies
-that the published version has not changed since staging, checks batch/version
-and title against that snapshot, and leaves Japanese titles to their
-existing pipeline. It refuses pages with prior native work, except an
-exact replay of its own reservation. "Fresh cohort" means different page keys
-without prior native work. Both outstanding and completed native work make a
-page ineligible; changing the plan, image pin, timeout or job ID does not bypass
-this check. The ledger remains
-outstanding across BOINC processing; no Azure queue lease is held or renewed. Allocate a fresh small cohort,
-and exclude it from overlapping seeder plans: the existing seeder may reconsider
-old outstanding work under its own policy. This pilot does not add a global
-long-lived BOINC ownership field to that policy.
+renewable `ocr-sync` lock. It reads the published metadata and native ledger
+once, validates the whole cohort, and writes one create-only queued part for
+fresh reservations. If any row conflicts, no new reservations are written. It
+verifies that the published version has not changed since staging, checks batch,
+version and title against that snapshot, and leaves Japanese titles to their
+existing pipeline. It refuses pages with prior native work, except an exact
+replay of its own reservation. "Fresh cohort" means different page keys without
+prior native work. Both outstanding and completed native work make a page
+ineligible; changing the plan, image pin, timeout or job ID does not bypass this
+check. The ledger remains outstanding across BOINC processing; no Azure queue
+lease is held or renewed. Allocate a fresh small cohort, and exclude it from
+overlapping seeder plans: the existing seeder may reconsider old outstanding
+work under its own policy. This pilot does not add a global long-lived BOINC
+ownership field to that policy.
 
 The local journal has `prepared`, `reserved`, `submitting`, `submitted`,
 `published`, and `failed` states. Keep it on persistent local storage and back it
@@ -587,7 +613,7 @@ up. An advisory lock serializes bridge processes sharing that directory.
   The original request time is retained at native microsecond precision.
 - Before `create_work`, submission records `submitting`. After an error or crash
   it never automatically submits again. Inspect BOINC for `usnm_JOB_ID`. Only
-  after verifying existence/absence run `reconcile --root DIR --job ID --found
+  after verifying whether it exists, run `reconcile --root DIR --job ID --found
 present` (mark submitted) or `--found absent` (permit submission again).
 - The importer snapshots the first accepted bytes before external publication.
   Fixed object names and byte comparisons recover a lost upload response or a
@@ -601,50 +627,53 @@ present` (mark submitted) or `--found absent` (permit submission again).
 --found present` to permit collection of its recovered output. A failed job
   cannot be marked absent to create a duplicate workunit. Alternatively arrange
   a new native allocation through the existing pipeline. Do not reset a
-  submitted/failed task blindly. There is no supported "re-export this failed
-  page with a new BOINC job ID" command. To move the page back to the native pool,
-  first ensure BOINC can no longer return or collect it, retain its journal and
-  spool for audit, then use the existing
-  [native enqueue/requeue procedure](operations.md#ocr-pickup-ocr-sync-296) with an
-  operator-approved `ocr-enqueue --include-outstanding` retry for that page.
-  `ocr-requeue` targets native dead letters, not BOINC spool error markers. Never
-  delete ledger history to make the page appear fresh.
+  submitted or failed task blindly. There is no supported "re-export this failed
+  page with a new BOINC job ID" command. To move the page back to the native
+  pool, first ensure BOINC can no longer return or collect it, retain its
+  journal and spool for audit, then use the existing [native enqueue/requeue
+  procedure](operations.md#ocr-pickup-ocr-sync-296) with an operator-approved
+  `ocr-enqueue --include-outstanding` retry for that page. `ocr-requeue` targets
+  native dead letters, not BOINC spool error markers. Never delete ledger
+  history to make the page appear fresh.
 - Keep `keep/` scans. Do not delete `buffer/` scans from a volunteer claim or task
   completion. The exporter snapshots inputs centrally and never deletes originals.
 - No in-page checkpointing: restart can repeat a page. BOINC resource estimates
-  are initial bounds; calibrate them on real scans. One-hour maximum configurable
-  OCR deadline, default 600 seconds, one Tesseract thread, PSM 3/DPI 300. The
-  fixed `rsc_fpops_est=1e12` is provisional, so client ETA and credit are rough;
-  use `elapsed_ms` from returned manifests across real JPEG/JP2 scans to calibrate
-  it. `target_nresults=1` requests one result. `max_success_results=3` is a failure
-  ceiling, not a request for three copies; stock BOINC cancels unsent copies once
-  it finds a canonical result. These retry ceilings remain unchanged pending
-  live recovery measurements. The 1.5 GiB memory bound is provisional and has
-  only been exercised on a synthetic page; peak memory for large historical JP2
-  decode plus Tesseract is unmeasured. Record peak memory and time on the largest
-  intended scans before widening enrollment or raising batch volume. A resource
-  limit failure is a failed task, not evidence of a usable OCR result.
+  are initial bounds; calibrate them on real scans. One-hour maximum
+  configurable OCR deadline, default 600 seconds, one Tesseract thread, PSM 3,
+  DPI 300. The fixed `rsc_fpops_est=1e12` is provisional, so client ETA and
+  credit are rough; use `elapsed_ms` from returned manifests across real JPEG
+  and JP2 scans to calibrate it. `target_nresults=1` requests one result.
+  `max_success_results=3` is a failure ceiling, not a request for three copies;
+  stock BOINC cancels unsent copies once it finds a canonical result. These
+  retry ceilings remain unchanged pending live recovery measurements. The 1.5
+  GiB memory bound is provisional and has only been exercised on a synthetic
+  page; peak memory for large historical JP2 decode plus Tesseract is
+  unmeasured. Record peak memory and time on the largest intended scans before
+  widening enrollment or raising batch volume. A resource limit failure is a
+  failed task, not evidence of a usable OCR result.
 
-Result identity/provenance fields and checksums establish transport consistency,
-not proof that a volunteer actually ran the declared image. Trusted friends are
-a prerequisite; public enrollment requires stronger validation. Raising quorum
-alone with `sample_trivial_validator` does not compare OCR output. A future audit
-or comparative validator could rerun sampled pages and compare text, after
-measuring determinism across supported hosts, or check a trusted reference set.
-No hand-transcribed historical accuracy measurement is implied by the synthetic smoke test. The
-optional comparative validator is being developed separately in
-[#444](https://github.com/tgoodyear/usnewsmap.com/pull/444); it is not part of this
-pilot's default validator or a claim of public-volunteer readiness.
+Result identity and provenance fields and checksums establish transport
+consistency, not proof that a volunteer actually ran the declared image. Trusted
+friends are a prerequisite; public enrollment requires stronger validation.
+Raising quorum alone with `sample_trivial_validator` does not compare OCR
+output. A future audit or comparative validator could rerun sampled pages and
+compare text, after measuring determinism across supported hosts, or check a
+trusted reference set. No hand-transcribed historical accuracy measurement is
+implied by the synthetic smoke test. The optional comparative validator is being
+developed separately in
+[#444](https://github.com/tgoodyear/usnewsmap.com/pull/444); it is not part of
+this pilot's default validator or a claim of public-volunteer readiness.
 
 ## Live acceptance exercise
 
-Complete one real stock-client/server task, then test keyboard activity pause,
-sleep/reboot, a missing result file, a wrong checksum, an importer restart and
-repeat collection. Confirm the wrapper applies `create_args` and all three outputs
-are readable by the host client. Include a slot owned by the BOINC service user
-with restrictive directory/input modes, not only a directory owned by the runtime
-user; confirm `DAC_OVERRIDE` and the file modes work as intended. Record server/client/wrapper/image versions and
-which platforms were tested. Local native-pipeline tests do not establish BOINC
+Complete one real task on a stock client and server, then test keyboard activity
+pause, sleep and reboot, a missing result file, a wrong checksum, an importer
+restart and repeat collection. Confirm the wrapper applies `create_args` and all
+three outputs are readable by the host client. Include a slot owned by the BOINC
+service user with restrictive directory and input modes, not only a directory
+owned by the runtime user; confirm `DAC_OVERRIDE` and the file modes work as
+intended. Record the server, client, wrapper and image versions and which
+platforms were tested. Local native-pipeline tests do not establish BOINC
 scheduler or OS-specific idle behavior.
 
 Upstream references:
@@ -688,26 +717,27 @@ flags; no shell expansion is performed. Each crop has the same timeout; output
 is capped at 16 MiB. External commands require Unix; their process group is
 killed on completion, failure, timeout and cancellation, including ordinary
 adapter subprocesses. Detached sessions are outside this containment (use a
-container for untrusted engines). Failed command output (including stderr) is never copied
-into the report. The profile is the bundle language; psm/dpi describe Tesseract
-only and do not configure an external engine. Name/version are explicit operator
-metadata, not independently verified image identity.
+container for untrusted engines). Failed command output (including stderr) is
+never copied into the report. The profile is the bundle language; psm and dpi
+describe Tesseract only and do not configure an external engine. Name and
+version are explicit operator metadata, not independently verified image
+identity.
 
-`gold-run` does not download files, but it cannot sandbox an arbitrary executable.
-Run the **entire invocation** in a container with `--network=none` (as for the
-stock worker), with preinstalled engine/models and a staged cache; never give
-the adapter reference text. This option is for local experiments, not the
-locked `usnm_gold` BOINC job or its trust reports.
+`gold-run` does not download files, but it cannot sandbox an arbitrary
+executable. Run the **entire invocation** in a container with `--network=none`
+(as for the stock worker), with preinstalled engine and models and a staged
+cache; never give the adapter reference text. This option is for local
+experiments, not the locked `usnm_gold` BOINC job or its trust reports.
 
 `gold-result.json` holds `bundle_version`, the manifest's sha256, the engine
 (name, version, psm, dpi), one row per crop (counts only: reference characters,
-character edits, reference words, word edits, the model profile and the time),
-a summary per source and overall, the `--limit` if one was given (a limited
-run is partial), and the crops that were skipped with the
-reason (not staged, checksum mismatch, no installed model, engine error,
-over the limit). It
-holds no page text and no transcription. The project ships no BLN600 crop and
-no LoC image: the client gets them from their publishers and cuts them itself.
+character edits, reference words, word edits, the model profile and the time), a
+summary per source and overall, the `--limit` if one was given (a limited run is
+partial), and the crops that were skipped with the reason (not staged, checksum
+mismatch, no installed model, engine error, over the limit). It holds no page
+text and no transcription. The project does not ship derived BLN600 crops or LoC
+crops: it mirrors the unchanged original files from the publisher and LoC fetch
+cache, and the client cuts the crops locally.
 
 ### As BOINC work: `usnm_gold`
 
@@ -717,26 +747,48 @@ its checks are `usnm_boinc::gold::job`; the code is `crates/usnm-boinc/src/gold/
 
 **Inputs and delivery.** A unit's inputs, in input template order:
 
-| Open name              | From                                                                     | On the host  |
-| ---------------------- | ------------------------------------------------------------------------ | ------------ |
-| `gold.json`            | the project server                                                       | per unit     |
-| `bundle.tar`           | the project server (shareable files only)                                | sticky, kept |
-| `<sha256>.zip`, `.jpg` | the publisher: BLN600's zip from figshare, page images from tile.loc.gov | sticky, kept |
+| Open name              | From                                                               | On the host  |
+| ---------------------- | ------------------------------------------------------------------ | ------------ |
+| `gold.json`            | the project server                                                 | per unit     |
+| `bundle.tar`           | the project server (shareable files only)                          | sticky, kept |
+| `<sha256>.zip`, `.jpg` | the project server's mirror of figshare and tile.loc.gov originals | sticky, kept |
 
-The originals are `create_work --remote_file URL BYTES MD5` inputs: the BOINC
-client downloads each from the publisher's URL and checks its size and md5, so
-the project server never stores or serves them. That keeps BLN600 (CC BY-NC-ND)
-and the LoC images where the licence and #457 put them. The tar and originals
-are marked `<sticky/>` and `<no_delete/>` in the input template, intended for
-reuse across a host's gold units; live client evidence has not confirmed that
-the generated work retains these flags or avoids repeat downloads (see the
-acceptance record below). All are `<copy_file/>`, because the container sees
-only the slot. The open names are the cache names `gold-run` reads, so the slot
-is the cache and the run step needs no network: the container keeps
-`--network=none` from `job.toml`. The worker checks every input's size and
-sha256 against the job, the manifest's digest and version, the Tesseract
-version and base image, and the model bytes of each profile it used, then
-writes `gold-result.json`.
+`gold prepare` downloads the originals into the campaign cache and records
+their sizes, MD5s and SHA-256s in `prepared.json`. Before creating work,
+`gold submit` verifies each cached file against those values and mirrors it
+once into the BOINC project's ordinary download hierarchy under a
+content-addressed physical name. `create_work` receives those staged filenames,
+not `--remote_file` URLs; the volunteer client transfers the project copy,
+not the publisher copy. A pre-existing mirror file must match the prepared
+manifest or submission stops without replacing it.
+
+The [Figshare v2 record](https://doi.org/10.15131/shef.data.25439023.v2)
+identifies CC BY-NC-ND 4.0 and credits Callum Booth, Alan Thomas and Robert
+Gaizauskas. The [CC BY-NC-ND 4.0
+deed](https://creativecommons.org/licenses/by-nc-nd/4.0/deed.en) and [legal
+code](https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode.en) describe
+sharing subject to NonCommercial use, appropriate credit and a license link, and
+do not permit sharing adaptations. The staged zip is copied unchanged. The
+bundle's `licenses/bln600/` directory preserves the source `LICENSE` and
+`readme.md`, plus `SOURCE.json` and `ATTRIBUTION.txt`; the bundle is delivered
+as a separate sticky input alongside the zip. These files record the published
+conditions; the locked v1 `SOURCE.json` is retained as historical source
+metadata, not a legal determination or confirmation that a particular deployment
+qualifies as NonCommercial. Before enabling a mirror, the operator must verify
+the project and hosting use against the source terms. Do not distribute
+BLN600-derived crops or re-encoded images. The LoC images are likewise
+transferred from the verified mirror.
+
+The tar and originals are marked `<sticky/>` and `<no_delete/>` in the input
+template, intended for reuse across a host's gold units. Live client evidence
+has not confirmed that the generated work retains these flags or avoids repeat
+downloads (see the acceptance record below). All are `<copy_file/>`, because
+the container sees only the slot. Their open names match the cache names
+`gold-run` reads, so the slot is the cache and the run step needs no network:
+the container keeps `--network=none` from `job.toml`. The worker checks every
+input's size and sha256 against the job, the manifest's digest and version, the
+Tesseract version and base image, and the model bytes of each profile it used,
+then writes `gold-result.json`.
 
 **Result.** `gold-result.json` is the report above, run on the whole bundle
 (no `--limit`), with a `boinc` block: job id, worker image and base digests,
@@ -798,6 +850,30 @@ scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v
 ```
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
+These commands describe the code path; no production mirror or campaign is
+enabled by this change.
+
+For separately authorized LoC-only transfer acceptance, `gold-mirror-loc`
+stages only the 18 original JPEGs pinned in `bundle-v1.lock.json`, without
+opening BLN600, fetching upstream data, submitting work, or changing clients:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step gold-mirror-loc --var GOLD_CAMPAIGN=v1-tess550
+```
+
+Use the normal serialized production-job preflight. The command first checks
+all selected cache files against prepared size, MD5 and SHA-256, and the locked
+URL/SHA-256, and checks existing destinations. It rejects unexpected paths,
+symlinks and mismatches, then publishes mode-0664 files atomically using native
+`dir_hier_path`. JSON receipts list physical paths and checksums. A partial
+publication after an I/O failure is safe to retry; existing matching files are
+not replaced. This is not BLN licence clearance or sticky-client acceptance.
+Verify anonymous HTTP GET bytes and headers separately; proving client reuse
+still requires two units on the same compatible attached host.
+In a fresh bridge job, the wrapper writes only `download_dir` and the committed
+template's fanout to the container-local config target. It refuses an existing
+local config or unexpected shared config symlink, never replaces that symlink,
+and never fetches credentials. The server replica's own config is unaffected.
 
 A unit left with a `submitting` marker is handled as for the assessment.
 
@@ -829,34 +905,40 @@ With `--trust`, a result from an untrusted host, or with no `--host-id`, is held
 back: `collect` copies its spool files and a `reason.json` to
 `<root>/quarantine/<job>/`, publishes nothing, leaves the job's stage as it was
 and exits non-zero. Once the host passes a gold unit, rebuild `trust.json` and
-run `collect` again. Without `--trust`, `collect` publishes as before; production
-collection must use the existing hand-off `collect` step: it always requires
-trust and a canonical host for successful work, refusing missing lists/hosts.
-`spool-out` already queries `workunit.canonical_resultid -> result.hostid`;
-the hand-off rejects an operator override conflicting with that host.
-Only terminal failure markers bypass trust to mark failure, never to publish.
-The host id in gold remains the client's own claim, so this is a
-quality signal for trusted volunteers, not an identity check.
+run `collect` again. Without `--trust`, `collect` publishes as before;
+production collection must use the existing hand-off `collect` step: it always
+requires trust and a canonical host for successful work, refusing a missing list
+or host. `spool-out` already queries
+`workunit.canonical_resultid -> result.hostid`; the hand-off rejects an operator
+override conflicting with that host. Only terminal failure markers bypass trust
+to mark failure, never to publish. The host id in gold remains the client's
+own claim, so this is a quality signal for trusted volunteers, not an identity
+check.
 
-Trust is keyed by the **full immutable worker digest**, not a tag, base image
-or engine version. The latest report's `completed_at` per host/image wins,
+Trust is keyed by the **full immutable worker digest**, not a tag, base image or
+engine version. The latest report's `completed_at` per host and image wins,
 regardless of file order; later failures revoke trust and same-time conflicts
 fail closed. Missing CER never grants trust. These timestamps are also client
 claims, not protection against malicious volunteers.
 
-`gold submit --target-host HOST` (bridge: `GOLD_TARGET_HOST`) provides a targeted,
-write-ahead campaign; its persisted campaign nonce and host participate in
-the validated job identity, so fresh roots/hosts cannot collide in workunit
-or spool names and retries keep the same identity. Targeted jobs use protocol
-v2 and require a **newly built/released worker containing this support**;
-do not target old worker images that only understand v1. Untargeted v1 job
-bytes/identities remain compatible. Use a fresh campaign root per host and
-image. It refuses until the project's active XML config explicitly has
-`<enable_assignment>1</enable_assignment>`. This PR does **not** enable assignment
-on production: first verify scheduler/assignment behavior in dev and calibrate
-the first campaign. Automatic discovery/issuance for new hosts, live canonical
-host-query acceptance, and periodic spot-checks remain rollout blockers; no
-automatic publication or scheduler configuration has been deployed.
+`gold submit --target-host HOST` (bridge: `GOLD_TARGET_HOST`) provides a
+targeted, write-ahead campaign; its persisted campaign nonce and host
+participate in the validated job identity, so fresh roots and hosts cannot
+collide in workunit or spool names and retries keep the same identity. Targeted
+jobs use protocol v2 and require a **newly built and released worker containing
+this support**; do not target old worker images that only understand v1.
+Untargeted v1 job bytes and identities remain compatible. Use a fresh campaign
+root per host and image. It refuses until the project's active XML config
+explicitly has `<enable_assignment>1</enable_assignment>`. This PR does **not**
+enable assignment on production: first verify scheduler and assignment behavior
+in dev and calibrate the first campaign. Live acceptance of discovery and
+issuance for new hosts, canonical host-query acceptance, and periodic spot-check
+activation remain rollout blockers; no automatic publication or scheduler
+configuration has been deployed. The OFF-by-default [host-trust follow-up
+controller](boinc-host-trust-followups.md) now provides bounded automatic host
+discovery and first-gold issuance commands, and sampled independent-host OCR
+rerun and comparison commands. Dispatch requires an explicit `--execute`; no
+timer, trust promotion or assignment enablement is installed.
 
 ### Build the gold bundle
 
@@ -915,24 +997,25 @@ crops and skipped 52 for unavailable language models. Both hosts reported CER
 the stock client, worker and server validator, but do not prove every transport
 or runtime detail below.
 
-| Acceptance check                                                                             | Evidence and status                                                                                                                                                                                                                                                          |
-| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Figshare redirect, BLN600 MD5 and bridge access to figshare / tile.loc.gov                   | **Passed end to end:** the campaign prepared the publisher inputs and valid tasks scored the BLN600 and LoC-backed samples. The worker's input hash checks and server validation passed.                                                                                     |
-| Wrapper slot contains `init_data.xml`                                                        | **Passed end to end:** accepted reports carried host IDs 2 and 3.                                                                                                                                                                                                            |
-| Validator finds the expected bundle data                                                     | **Passed in production; mechanism unverified:** `script_validator` accepted all six reports. The run did not establish whether `PROJECT_DIR` and `PROJECT` were present or the fallback/`USNM_GOLD_EXPECTED` path was used.                                                  |
-| `<sticky/>` / `<no_delete/>` survive `create_work --remote_file`; a second unit reuses files | **Partly verified:** each host returned multiple valid units, but no transfer log or before/after cache record established that later units avoided downloads.                                                                                                               |
-| Real-host duration and resource use                                                          | **Partly measured:** two Gold results in the related live acceptance recorded 163.618 s elapsed each; the host's cgroup limits were 1 CPU, 1.5 GiB memory, no swap and 64 PIDs. Peak memory and disk consumption were not measured, so `rsc_fpops_est=5e12` remains a guess. |
-| Volunteer guide on a clean Debian/Ubuntu host                                                | **Unverified:** the documented clean-host procedure and expected output still need to be exercised on that platform.                                                                                                                                                         |
+| Acceptance check                                                                             | Evidence and status                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Legacy campaign: publisher fetch, BLN600 MD5 and bridge access to figshare / tile.loc.gov    | **Passed end to end on 14 October:** the campaign prepared publisher inputs and valid tasks scored BLN600 and LoC-backed samples. This predates project mirroring; it is not mirror acceptance evidence.                                                                                                       |
+| Wrapper slot contains `init_data.xml`                                                        | **Passed end to end:** accepted reports carried host IDs 2 and 3.                                                                                                                                                                                                                                              |
+| Validator finds the expected bundle data                                                     | **Passed in production; mechanism unverified:** `script_validator` accepted all six reports. The run did not establish whether `PROJECT_DIR` and `PROJECT` were present or the fallback/`USNM_GOLD_EXPECTED` path was used.                                                                                    |
+| `<sticky/>` / `<no_delete/>` survive `create_work --remote_file`; a second unit reuses files | **Partly verified:** production WUs 1 and 4 retain both flags in their database XML (16 October 2026). No transfer log or before/after cache record established that later units avoided downloads.                                                                                                            |
+| Current ordinary-file mirror path                                                            | **Not deployed or live-tested:** `gold submit` verifies originals against `prepared.json` and stages them as ordinary project downloads; repeat-unit cache behavior still needs client transfer evidence.                                                                                                      |
+| Real-host duration and resource use                                                          | **Partly measured:** two Gold results in the related live acceptance recorded 163.618 s elapsed each; the host's cgroup limits were 1 CPU, 1.5 GiB memory, no swap and 64 PIDs. Peak memory and disk consumption were not measured, so `rsc_fpops_est=5e12` remains a guess.                                   |
+| Volunteer guide on a clean Debian/Ubuntu host                                                | **Debian host readiness passed:** clean Debian 13 x86-64 full VM, official BOINC 8.2.13, Podman 5.4.2 and AppArmor enabled; setup and restart passed mandatory slot, isolation, kernel-limit and pause/resume probes (16 October 2026). No project attached; new task acceptance and Ubuntu remain unverified. |
 
-For a repeatable acceptance record, retain per-host and per-workunit evidence for
-these same checks: result upload and validation; the result's non-null host ID
-matched to the server's canonical host; client transfer/cache evidence across
-two units on one host; publisher-input hash checks; validator success and how it
-resolved its expected-data directory; `gold-prepare` completion; task elapsed
-time, peak memory and disk; and the clean-host guide's command output. Do not
-infer cache reuse from multiple successful tasks or infer peak resource use from
-cgroup limits. Keep the production issuance/campaign separate from this
-documentation checklist.
+For a repeatable acceptance record, retain per-host and per-workunit evidence
+for these same checks: result upload and validation; the result's non-null host
+ID matched to the server's canonical host; client transfer and cache evidence
+across two units on one host; mirrored-file hashes against `prepared.json`;
+validator success and how it resolved its expected-data directory;
+`gold-prepare` completion; task elapsed time, peak memory and disk; and the
+clean-host guide's command output. Do not infer cache reuse from multiple
+successful tasks or infer peak resource use from cgroup limits. Keep the
+production issuance and campaign separate from this documentation checklist.
 
 Volunteers' steps are in [boinc-volunteer.md](boinc-volunteer.md).
 
@@ -941,7 +1024,7 @@ Volunteers' steps are in [boinc-volunteer.md](boinc-volunteer.md).
 Production selection is shared through `usnm_ocr_contract::routing::EngineKind`
 and `EngineRoute { kind, profile }`. `EngineKind::for_language` chooses
 `NdlocrLite` (`ndlocr-lite`) for `jpn` and `Tesseract` for every other language.
-`usnm_ocr_worker::engine::candidates` exposes engine/profile preferences
+`usnm_ocr_worker::engine::candidates` exposes engine and profile preferences
 (Japanese: `default`); `route(language, installed)` resolves only capabilities
 of a Tesseract node, returning an `EngineRoute` or `None`. Sampling's existing
 `no_model` counter includes an unavailable selected engine, not just missing
@@ -951,10 +1034,11 @@ Tesseract weights. There is no Japanese fallback to Tesseract.
 result matching and the `ocr_engine` family. It defaults to Tesseract and is
 omitted when serializing Tesseract jobs, preserving existing JSON, identity
 hashes and ledger tags. Tesseract-only BOINC workers reject other kinds before
-checking models or starting Tesseract. An NDLOCR-Lite worker can dispatch on
-`job.engine.kind`, using the existing pinned image, version, profile and model
-digest fields; its engine image and staging support are separate work (#626).
-For on-prem contract adapters, the hello's family must match the selected
-engine and its models must pass the catalog's existing production gate. The
-current survey-only NDLOCR-Lite catalog entry does not enable execution.
-Dashboard routes retain the engine/version as well as the profile.
+checking models or starting Tesseract. The dedicated NDLOCR-Lite worker
+validates `job.engine.kind`, its pinned image, version, profile and model
+digest; use `usnm-boinc ndlocr stage/submit/collect`, not the native Tesseract
+exporter. For on-prem contract adapters, the hello's family must match the
+selected engine and its models must pass the catalog's existing production gate.
+The historical survey-only NDLOCR-Lite entry remains separate from the pinned
+production entry. Dashboard routes retain the engine and version as well as the
+profile.

@@ -19,10 +19,16 @@ COPY contrib-compute/images/bridge/usnm_assess_check contrib-compute/images/brid
      contrib-compute/images/bridge/usnm_quality_check contrib-compute/images/bridge/usnm_quality_compare \
      contrib-compute/images/bridge/usnm_qwen_check contrib-compute/images/bridge/usnm_qwen_compare \
      contrib-compute/images/bridge/usnm_qwen_train_check \
+     contrib-compute/images/bridge/usnm_ndlocr_check contrib-compute/images/bridge/usnm_ndlocr_compare \
      /usr/local/lib/usnm-boinc/
 COPY ocr/boinc/train/worker.py ocr/boinc/train/campaign.py ocr/boinc/train/check.py \
      /usr/local/lib/usnm-boinc/train/
+COPY ocr/boinc/usnm_ndlocr_in ocr/boinc/usnm_ndlocr_out /usr/local/lib/usnm-boinc/
 COPY ocr/boinc/usnm_qwen_train_in ocr/boinc/usnm_qwen_train_out /usr/local/lib/usnm-boinc/
+COPY ocr/boinc/usnm_iris_in ocr/boinc/usnm_iris_out contrib-compute/images/bridge/usnm_iris_check /usr/local/lib/usnm-boinc/
+COPY ocr/boinc/iris/contract.py scripts/boinc/iris-campaign.py scripts/boinc/iris-check.py /usr/local/lib/usnm-boinc/iris/
+RUN mv /usr/local/lib/usnm-boinc/iris/iris-check.py /usr/local/lib/usnm-boinc/iris/check.py \
+ && chmod 0755 /usr/local/lib/usnm-boinc/usnm_iris_check
 RUN chmod 0755 /usr/local/lib/usnm-boinc/usnm_qwen_train_check
 COPY docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py \
      /usr/local/lib/usnm-boinc/assess/

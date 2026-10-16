@@ -42,6 +42,7 @@ tracing.workspace = true
 standin = []
 
 [dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tower.workspace = true
 tracing-subscriber.workspace = true
 usnm-ingest = { path = "../usnm-ingest" }

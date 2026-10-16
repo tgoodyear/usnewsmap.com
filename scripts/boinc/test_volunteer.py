@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from collections import namedtuple
 import shlex
 from pathlib import Path
@@ -217,7 +218,7 @@ class PreflightTest(unittest.TestCase):
         service = "boinc-client.service"
         expected = {
             "HOME": str(self.data),
-            "XDG_RUNTIME_DIR": "/run/usnm-boinc-1000-boinc-client",
+            "XDG_RUNTIME_DIR": "/run/user/1000/usnm-boinc-boinc-client",
             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
             "CONTAINERS_CONF": f"/etc/usnm-boinc-volunteer/{service}/containers.conf",
             "CONTAINERS_STORAGE_CONF": f"/etc/usnm-boinc-volunteer/{service}/storage.conf",
@@ -462,12 +463,16 @@ class SetupTest(unittest.TestCase):
             self.assertEqual(result.findtext("suspend_cpu_usage"), "0")
 
     def test_managed_dropin_preflights_inside_service_and_preserves_runtime(self):
-        _, dropin, config, _ = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
+        _, dropin, config, storage = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
         self.assertIn("Requires=user@999.service", dropin)
         self.assertIn("After=user@999.service", dropin)
         self.assertIn("ExecStartPre=/usr/bin/python3 /usr/local/lib/usnm-boinc-volunteer/preflight.py --data-dir=/var/lib/boinc --image=" + IMAGE + " --service=boinc-client.service", dropin)
         self.assertIn("RuntimeDirectoryPreserve=yes", dropin)
+        self.assertIn("RuntimeDirectory=user/999/usnm-boinc-boinc-client\n", dropin)
+        self.assertIn("Environment=XDG_RUNTIME_DIR=/run/user/999/usnm-boinc-boinc-client\n", dropin)
+        self.assertIn('runroot="/run/user/999/usnm-boinc-boinc-client/containers"', storage)
         self.assertIn("ProtectControlGroups=false", dropin)
+        self.assertIn("UnsetEnvironment=INVOCATION_ID\n", dropin)
         self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/999/bus", dropin)
         self.assertIn('conmon_cgroup="pod"', config)
         self.assertNotIn("docker", dropin)
@@ -479,6 +484,16 @@ class SetupTest(unittest.TestCase):
             job_tomls=[Path("/etc/usnm-boinc-volunteer/job-cpu.toml")],
         )
         self.assertIn("--job-toml=/etc/usnm-boinc-volunteer/job-cpu.toml", dropin_jobs)
+
+    def test_profiles_keep_runtime_paths_under_each_users_apparmor_allowed_tree(self):
+        for uid in (999, 1000):
+            for service in ("boinc-client.service", "boinc-pilot.service"):
+                _, dropin, _, storage = setup.profile(service, Path("/var/lib/boinc"), IMAGE, uid)
+                runtime = f"user/{uid}/usnm-boinc-{service.removesuffix('.service')}"
+                self.assertIn(f"Environment=XDG_RUNTIME_DIR=/run/{runtime}\n", dropin)
+                self.assertIn(f"RuntimeDirectory={runtime}\n", dropin)
+                self.assertIn('RuntimeDirectoryMode=0700\n', dropin)
+                self.assertIn(f'runroot="/run/{runtime}/containers"', storage)
 
     def test_optional_ocr_profile_caps_the_entire_dedicated_identity(self):
         setup.check_ocr_identity("boinc", 999, [1000, 1001])
@@ -496,6 +511,71 @@ class SetupTest(unittest.TestCase):
         self.assertIn("MemorySwapMax=0", setup.OCR_NODE_SLICE)
         _, normal, _, _ = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
         self.assertNotIn("Slice=", normal)
+
+    def test_dedicated_node_profile_replaces_ocr_cap_but_stays_bounded(self):
+        _, dropin, _, _ = setup.profile(
+            "boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999, dedicated_node=True)
+        self.assertIn("Slice=user-999.slice", dropin)
+        self.assertIn("--dedicated-node-uid=999", dropin)
+        self.assertNotIn("--ocr-node-uid", dropin)
+        self.assertIn("Nice=19", dropin)
+        self.assertNotIn("CPUQuota", setup.DEDICATED_NODE_SLICE)
+        self.assertIn("MemoryMax=85%", setup.DEDICATED_NODE_SLICE)
+        self.assertIn("MemorySwapMax=0", setup.DEDICATED_NODE_SLICE)
+        self.assertIn("TasksMax=1024", setup.DEDICATED_NODE_SLICE)
+        # BOINC's allowance must match the slice cap so 8 GB nodes admit 6 GiB qwen units.
+        self.assertEqual(setup.DEDICATED_PREFS["ram_max_used_busy_pct"], "85")
+        self.assertEqual(setup.DEDICATED_PREFS["ram_max_used_idle_pct"], "85")
+        with self.assertRaises(setup.SetupError):
+            setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999,
+                          ocr_node=True, dedicated_node=True)
+        for kwargs in [{"ocr_node": True, "dedicated_node": True}, {"ncpus": 2}, {"dedicated_node": True, "ncpus": 0},
+                       {"dedicated_node": True, "ncpus": (os.cpu_count() or 1) + 1}]:
+            with self.assertRaises(setup.SetupError):
+                setup.setup("boinc-client.service", Path("/var/lib/boinc"), IMAGE, **kwargs)
+
+    def test_dedicated_node_requires_retired_ocr_worker(self):
+        def states(load, enabled, active):
+            values = {"LoadState": load, "UnitFileState": enabled, "ActiveState": active}
+            return lambda args, **_: values[args[3].removeprefix("--property=")]
+
+        for retired in [("not-found", "", "inactive"), ("loaded", "disabled", "inactive"),
+                        ("loaded", "masked", "failed")]:
+            with patch.object(setup, "run", side_effect=states(*retired)):
+                setup.check_ocr_worker_retired()
+        for live in [("loaded", "enabled", "inactive"), ("loaded", "disabled", "active"),
+                     ("loaded", "disabled", "deactivating")]:
+            with patch.object(setup, "run", side_effect=states(*live)):
+                with self.assertRaisesRegex(setup.SetupError, "disable --now"):
+                    setup.check_ocr_worker_retired()
+
+    def test_dedicated_preflight_refuses_live_worker_and_unbounded_slice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "user.slice/user-999.slice"
+            parent.mkdir(parents=True)
+            values = {"memory.max": str(6 * 1024**3), "memory.swap.max": "0", "pids.max": "1024"}
+            for name, value in values.items():
+                (parent / name).write_text(value)
+            membership = "0::/user.slice/user-999.slice/boinc-client.service"
+            retired = {"LoadState": "loaded", "UnitFileState": "disabled", "ActiveState": "inactive"}
+
+            def runner(state):
+                return lambda args: state[args[3].removeprefix("--property=")]
+
+            with patch.object(pre.os, "geteuid", return_value=999):
+                pre.check_dedicated_node(999, root, membership, runner(retired))
+                for key, value in [("UnitFileState", "enabled"), ("ActiveState", "active")]:
+                    with self.assertRaisesRegex(pre.PreflightError, "usnm-ocr-worker"):
+                        pre.check_dedicated_node(999, root, membership, runner({**retired, key: value}))
+                for name, bad in [("memory.max", "max"), ("memory.swap.max", "max"),
+                                  ("pids.max", "max"), ("pids.max", "4096")]:
+                    (parent / name).write_text(bad)
+                    with self.assertRaises(pre.PreflightError):
+                        pre.check_dedicated_node(999, root, membership, runner(retired))
+                    (parent / name).write_text(values[name])
+                with self.assertRaises(pre.PreflightError):
+                    pre.check_dedicated_node(999, root, "0::/system.slice/boinc-client.service", runner(retired))
 
     def test_ocr_group_checks_include_account_service_and_user_manager_grants(self):
         account = namedtuple("Account", "pw_name pw_gid")("boinc", 999)
@@ -554,7 +634,7 @@ class SetupTest(unittest.TestCase):
         data = Path("/var/lib/boinc")
         config, _, _, _ = setup.profile(service, data, IMAGE, 999)
         environment = {
-            "HOME": str(data), "XDG_RUNTIME_DIR": "/run/usnm-boinc-999-boinc-client",
+            "HOME": str(data), "XDG_RUNTIME_DIR": "/run/user/999/usnm-boinc-boinc-client",
             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/999/bus",
             "CONTAINERS_CONF": str(config / "containers.conf"),
             "CONTAINERS_STORAGE_CONF": str(config / "storage.conf"),
@@ -585,7 +665,7 @@ class SetupTest(unittest.TestCase):
                 "WorkingDirectory": str(data),
                 "ExecStart": valid_start,
                 "Environment": base_env_str,
-                "UnsetEnvironment": "UNRELATED_VAR",
+                "UnsetEnvironment": "UNRELATED_VAR INVOCATION_ID",
                 "EnvironmentFiles": f"{harmless_env} (ignore_errors=no) {missing_env} (ignore_errors=yes)",
                 "ProtectControlGroups": "no",
                 "RuntimeDirectoryPreserve": "yes",
@@ -614,7 +694,8 @@ class SetupTest(unittest.TestCase):
                     ("EnvironmentFiles", f"{override_boinc_dir} (ignore_errors=no)"),
                     ("EnvironmentFiles", f"{harmless_env}"),
                     ("Environment", "HOME=/old"),
-                    ("UnsetEnvironment", "XDG_RUNTIME_DIR"),
+                    ("UnsetEnvironment", "XDG_RUNTIME_DIR INVOCATION_ID"),
+                    ("UnsetEnvironment", "UNRELATED_VAR"),
                     ("UnsetEnvironment", f"CONTAINERS_STORAGE_CONF={config / 'storage.conf'}"),
                     ("EnvironmentFiles", f"{override_runtime} (ignore_errors=yes)"),
                     ("EnvironmentFiles", f"{override_storage} (ignore_errors=no)"),
