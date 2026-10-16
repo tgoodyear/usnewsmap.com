@@ -13,6 +13,8 @@ on:
       - ocr/engines/ndlocr-lite/**
       - scripts/boinc/smoke-ndlocr.py
       - ja-ocr/testdata/**
+      - ja-ocr/alto.py
+      - ja-ocr/jaocr.py
       - crates/**
       - Cargo.toml
       - Cargo.lock
