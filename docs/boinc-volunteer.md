@@ -132,25 +132,192 @@ Container apps on macOS require Podman (Docker Desktop is not supported by BOINC
 
 ### 1.3 Windows (`windows_x86_64`)
 
-Install a stock 64-bit Windows BOINC client (**8.2.13 or later**) from [BOINC's Windows downloads](https://boinc.berkeley.edu/download_all.php?platform=win).
+**Start here for native NVIDIA GPU volunteering.** Use the same one-time setup
+for experimental Qwen and production work: one official BOINC client, one account,
+one project attachment, and the usual BOINC Manager controls. Experimental
+participation, when offered, is consent in the **normal project preferences**;
+cohort selection and signed application versions are server-side. There is no
+experimental script flag, alternate client, `app_info.xml`, manual runtime/model
+installation, or remove/re-attach step.
 
-#### Native CPU (`usnm_quality`) and native GPU/CPU (`usnm_qwen`) apps
+#### One PowerShell entrypoint
 
-- **`usnm_quality`** and **`usnm_qwen`** run directly as native Windows `.exe` binaries (`windows_x86_64`) with **no WSL2 or Podman required**.
-- **`usnm_qwen` plan classes on Windows**:
-  - `nvidia_cuda_8b`: NVIDIA GPU with CUDA 12+ driver and at least 7,000 MB free VRAM (8B `Q4_K_M` model).
-  - `nvidia_cuda_2b`: NVIDIA GPU with CUDA 12+ driver and at least 3,000 MB free VRAM (2B `Q8_0` model).
-  - `mt`: 4 to 8 CPU threads (2B `Q8_0` model fallback).
-- Model weights (`usnm_qwen_model_<sha256>`) use `<sticky/><no_delete/>` and are cached once in the BOINC project directory (`C:\ProgramData\BOINC\projects\boinc.usnewsmap.com\`).
-- Status: `UNVERIFIED` on a live Windows volunteer host.
+Get a current reviewed checkout of this repository, open **64-bit PowerShell as
+your regular user**, and change to its root directory. Windows PowerShell 5.1
+(included with Windows) or PowerShell 7 is supported. First preview:
 
-#### Container apps (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`)
+```powershell
+.\scripts\boinc\setup_windows_volunteer.ps1
+```
 
-- Container apps on `windows_x86_64` run through the standard BOINC Windows installer's bundled WSL2 `boinc-buda-runner` Podman distribution (`boinc-buda-runner-wsl-installer.exe`). `docker_wrapper` on Windows opens a pipe-connected shell inside the `boinc-buda-runner` WSL2 distro and runs Podman commands there (`docker_wrapper.cpp` `wsl_init`, `lib/wslinfo.cpp`).
-- Ensure Windows Subsystem for Linux 2 (WSL2) is enabled and that the BOINC installer's `boinc-buda-runner` WSL distribution is installed and detected in the BOINC Event Log (`WSL: distro boinc-buda-runner ...`). GPU container workloads (`docker_nvidia_cuda`) additionally require a Windows NVIDIA driver with WSL2 CUDA passthrough (`check_wsl_gpu`, `min_boinc_wsl_distro_version` 6).
-- Status: `UNVERIFIED` on a live Windows volunteer host.
+The default only reads local host/client information (including `nvidia-smi` if
+installed). It does not contact the project, download software, start BOINC, edit
+preferences, or attach a project. After reviewing the preview:
+
+```powershell
+# Same command whether BOINC already exists or needs installing:
+.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc
+```
+
+`-InstallBoinc` permits an installation **prompt**, not a silent install. An existing
+eligible client is reused. If you already installed BOINC, `-Apply` alone suffices.
+A nonstandard program location can be supplied with
+`-BoincDirectory 'D:\Applications\BOINC'`; the existing registry data directory is
+preserved. For a fresh installation, hardware is checked first but model-space
+verification waits until you select the real data directory in the installer's
+Advanced options; a full default C: volume does not block choosing D:. Existing
+installations check their current data directory. Disk queries follow the actual
+directory's backing volume, including NTFS mount points/junctions, rather than
+assuming the drive-letter root. The helper refuses to upgrade a running older client/Manager: finish
+and report existing work, then exit them first. It never kills/restarts BOINC.
+
+For a new/older installation, you must type `YES` before the download and again
+before execution. The helper downloads the official recommended **8.2.11 x64**
+installer (about 17 MB), checks its pinned SHA256 **and** Windows Authenticode
+trust/publisher `BOINC`, then opens the interactive installer with its own UAC
+prompt. Do not elevate the whole PowerShell session. In **Advanced** options keep
+**Service install** off: Windows service-mode BOINC cannot use the GPU. Leave
+BOINC protected-application execution at its secure default; do not disable it.
+At **Finish**, verify **Launch BOINC Manager** is unchecked. The helper explicitly
+passes `LAUNCHPROGRAM=0` to the signed installer's MSI (the upstream default is
+`1`), including upgrades, so Manager/client cannot auto-launch before the separate
+Manager-consent prompt. Leave any optional WSL installer unchecked as well.
+Review all installer options; finish/reboot if requested before continuing. The helper removes its installer
+download afterward and does not change execution policy, firewall rules or TLS
+validation. A hash/signature failure stops without execution; do not bypass it.
+
+Installer sources:
+[official recommended downloads](https://boinc.berkeley.edu/download.php),
+[official version feed](https://boinc.berkeley.edu/download_all.php?xml=1),
+and the matching
+[Microsoft winget package hash](https://github.com/microsoft/winget-pkgs/blob/master/manifests/u/UCBerkeley/BOINC/8.2.11/UCBerkeley.BOINC.installer.yaml).
+Pins were checked against the official download on 2026-10-15. A changed upstream
+file requires a reviewed pin update, not disabling verification.
+
+Windows PowerShell 5.1 can default to `Restricted`, which blocks `.ps1` files
+even when they are local and have no Mark-of-the-Web. Inspect the effective policy
+first with `Get-ExecutionPolicy` and `Get-ExecutionPolicy -List`. Only if the
+effective policy is `Restricted` and neither `MachinePolicy` nor `UserPolicy` is
+set, you can permit this reviewed checkout **for this PowerShell window only**:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+```
+
+Then run the command above in that same window. This does not persist after the
+window closes. Do not lower a stricter local policy. If a downloaded checkout's
+reviewed script still has Mark-of-the-Web, `Unblock-File` may be used on that
+single reviewed file if permitted. Do not set a global execution-policy bypass
+or work around an enforced Group Policy; ask your administrator instead.
+
+#### Prerequisites and current availability
+
+- Use Intel/AMD **x64 Windows 11**, or Windows 10 22H2 with current ESU security
+  updates. This helper does not support Windows ARM, 32-bit Windows, older desktop
+  Windows, or Windows Server.
+- Install/update the **official NVIDIA Windows driver**, not a CUDA toolkit.
+  The native CUDA 12.4 runtime is delivered with the signed BOINC app; the helper
+  conservatively requires driver **551.61 or newer** and at least **3,000 MiB
+  currently free VRAM**. Close GPU-heavy applications if needed. AMD/Intel GPUs
+  are not supported by the native NVIDIA CUDA classes. Hardware checks are not
+  a guarantee that a particular older GPU/runtime combination can execute work.
+- Have at least **6 GiB host RAM** and allow **12 GiB disk** for a cold 2B model
+  run, or **18 GiB** if any supported NVIDIA GPU has at least 7,000 MiB total
+  VRAM and could later qualify for an 8B task. The preview uses total memory
+  across all driver-supported NVIDIA GPUs for disk headroom, not just whichever
+  adapter currently has free VRAM; GPU memory use can change after onboarding.
+  The data volume must have the reported free space, and BOINC's own disk
+  allowance must also permit it. Prefer a desktop with comfortable spare
+  RAM/VRAM rather than using your last available resources.
+- Intended classes: `nvidia_cuda_8b` with at least 7,000 MB GPU RAM, or
+  `nvidia_cuda_2b` with at least 3,000 MB; actual scheduling also depends on BOINC's
+  GPU/memory report and resource preferences. CPU participation is **optional**.
+  GPU-only volunteers disable **Use CPU** in normal project preferences. To
+  knowingly onboard a CPU-only/unsupported-GPU host use `-AllowCpuOnly` with the
+  same command; this only relaxes the local GPU check, does not enable CPU work,
+  and does not promise a published CPU app. Ask the operator about `usnm_quality`
+  or the multi-threaded Qwen CPU class before expecting work.
+- **Release status (2026-10-15): native Windows Qwen signed publication/live
+  acceptance is pending.** The native CUDA canary change targets stable BOINC
+  **8.2.11+**; older deployed scheduler rules may still require 8.2.13 until that
+  reviewed server change rolls out. Do not install a development client just to
+  work around a pending rollout. A successful attachment can safely wait for
+  publication/eligibility, and does not imply that Qwen or any other Windows app
+  is currently available. No WSL2, Podman, Docker, VM, or CUDA toolkit is needed
+  for native apps.
+
+#### Account, attachment, and normal BOINC controls
+
+The helper asks permission before opening **BOINC Manager**, which may start its
+local client and resume existing projects. It then walks you through the same
+normal Manager flow used for production:
+
+1. Set conservative **computing preferences**: CPU/GPU only while idle, no battery
+   use, and reviewed CPU, memory and disk limits. Local Manager preferences affect
+   **all projects**; do not overwrite settings blindly.
+2. At **<https://boinc.usnewsmap.com/>**, create your own account or sign in to your
+   existing one. Review normal **project preferences**, including CPU/GPU choices.
+   Once the reviewed server-side gate is deployed, experimental consent is the
+   ordinary project-preferences checkbox **“Experimental native NVIDIA Qwen
+   canary (unvalidated; opt in)”** at
+   [project preferences](https://boinc.usnewsmap.com/usnmocr/prefs.php?subset=project)
+   (for the currently selected venue, if applicable); off/default denies the
+   canary. This preference may not appear before the server rollout. Never use
+   a script, alternate client setting, or re-attachment to enable it. Do not share
+   an account/key with another volunteer. Pilot work is limited to selected cohorts.
+3. In Manager choose **Tools → Add project** (or **Add project/account manager**),
+   enter `https://boinc.usnewsmap.com/`, and sign in with that same account.
+   Passwords go only into Manager or the HTTPS account site, never into this
+   script, shell history, command arguments, or a support ticket. The helper
+   neither creates accounts nor handles keys/passwords. It intentionally uses
+   Manager for attachment rather than a credential-bearing `boinccmd` command.
+   If already attached, **do not remove/re-add** the project.
+4. Return to PowerShell and press Enter for its **read-only local attachment
+   check**. This uses `boinccmd --get_project_status` in the existing data
+   directory without passing a GUI RPC password or printing raw client output.
+   For local-client/authorization errors, open Manager on the local computer or
+   repair the official installation/user access; do not expose RPC to the network
+   or weaken data-directory permissions.
+5. In Manager's **Event Log**, confirm the NVIDIA GPU is detected and look for
+   **Scheduler request completed**. Use normal project **Update** after changing
+   account preferences. No work can mean unpublished apps, a closed cohort,
+   consent not given, or resource/preference limits; it does not mean you need
+   WSL. For connection errors check DNS, clock, firewall/proxy and the HTTPS site.
+   For login errors recover your account on that site; never post account keys.
+
+BOINC automatically downloads signed app versions and shared sticky models, runs
+tasks, and uploads/reports results for **both experimental and production work**.
+Use Manager's ordinary suspend/resume controls and resource preferences for both.
+Use **No new tasks** to stop accepting work and let existing tasks finish/report.
+Do not sideload executables/models, create `app_info.xml`, or delete sticky cached
+models (`C:\ProgramData\BOINC\projects\boinc.usnewsmap.com\` by default) to switch
+cohorts. Nothing must be reconfigured or reattached when the server graduates an
+app version.
+
+If a task fails, leave its normal BOINC report/diagnostic path intact; this
+onboarding does not ask volunteers to harvest or manually upload log files or
+share account keys. The Manager Event Log is for local troubleshooting, not a
+required support-ticket attachment.
+
+**UNVERIFIED live Windows acceptance:** local attachment and an HTTP 200 response
+are not scheduler acceptance or useful results. A real authorized host still must
+complete download/run, GPU detection, pause/resume, result upload/report,
+server-side validation and collection. The automated mocked PowerShell tests
+check the helper's contract, not this end-to-end acceptance.
+
+#### Optional container apps (not required for native Windows volunteering)
+
+The separate container apps (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`)
+use BOINC's WSL2 `boinc-buda-runner` Podman integration with an appropriate
+**8.2.13+** client, and remain **UNVERIFIED** on a live Windows volunteer host.
+That is a different app capability, not a prerequisite or a workaround for native
+Qwen availability. The native onboarding helper does not enable/install it.
 
 ## 2. Attach to the project
+
+**Windows volunteers:** the [PowerShell/BOINC Manager flow above](#13-windows-windows_x86_64)
+already covers this step without putting credentials on a command line. Do not
+repeat the command-line account/key examples below.
 
 The master URL is `https://boinc.usnewsmap.com/`. It is fixed for the life of the project.
 
@@ -175,7 +342,7 @@ boinccmd --project_attach https://boinc.usnewsmap.com/ ACCOUNT_KEY
 boinccmd --get_project_status   # expect: an entry whose master URL is https://boinc.usnewsmap.com/
 ```
 
-`boinccmd --get_messages 0` then shows `Master file download succeeded` and `Scheduler request completed`. The client also logs `Docker: version ... (podman)` at start-up for this profile; if that line is missing, the scheduler sends this host no work.
+`boinccmd --get_messages 0` then shows `Master file download succeeded` and `Scheduler request completed`. For **container apps only**, the client also logs `Docker: version ... (podman)` at start-up; a missing runtime prevents container work, not native CPU/GPU apps.
 
 Set idle-only processing and conservative limits in your BOINC preferences, as the pilot asks. On a headless host or a container, the client may log `Suspending computation - CPU is busy` because it sees the whole machine's load; set `<suspend_cpu_usage>0</suspend_cpu_usage>` in `/var/lib/boinc/global_prefs_override.xml` and run `boinccmd --read_global_prefs_override`.
 
@@ -201,7 +368,7 @@ The OCR text from `usnm_ocr` is what the project uses. It is published as ALTO a
 - `bundle.tar`, 9.6 MB, from the project server: crops and transcriptions the licences allow us to share, with their licence files.
 - The BLN600 zip, 68 MB, from figshare, and 18 page images from tile.loc.gov. Your BOINC client fetches these from the publishers, not from us, and checks each one's size and md5.
 
-The input template marks all of these `<sticky/>` (written by `usnm-boinc gold submit`), so your client downloads each once per host and reuses it for later gold tasks (UNVERIFIED on a live server, #469). By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. The NC licences allow non-commercial use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
+The input template marks all of these `<sticky/>` and `<no_delete/>` (written by `usnm-boinc gold submit`). On 14 October 2026, production hosts returned multiple valid Gold tasks, but no client transfer log was retained to confirm that a later task reused each file without downloading it again; see the [live acceptance record](boinc.md#live-acceptance-record-and-remaining-checks). By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. The NC licences allow non-commercial use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
 
 `gold-result.json` holds, per crop: reference characters, character edits, reference words, word edits, the model profile and the time; then a summary per source, the crops it skipped and why, the engine version, the bundle version and manifest checksum, the job id and your BOINC host id. It holds no page text and no transcription. Counts are enough to compare engines across hosts, and the licences (BLN600's No-Derivatives terms in particular) rule out sending anything else. Crops in a language the worker image has no model for are listed as skipped.
 
@@ -240,7 +407,7 @@ Success: a task moves from downloading to running to uploaded, and the event log
 - **Tasks fail at once.** Check the event log for a runtime or slot error. A hello-world check alone is insufficient; the startup preflight exercises the real task limits and mount.
 - **Upload fails.** An upload error is not a completed acceptance test even if the scheduler receives a completion report. Preserve a local result when diagnosing, stop requesting new tasks, and report the upload-server message to the project operator.
 - **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed. Either is a failed task, which the project sees ([boinc.md](boinc.md#allocation-and-recovery)). If every task fails, detach and report it.
-- **Gold downloads fail.** The client fetches from figshare and tile.loc.gov; make sure your network allows both. UNVERIFIED: that the client follows figshare's redirect.
+- **Gold downloads fail.** The client fetches from figshare and tile.loc.gov; make sure your network allows both. Valid production Gold reports on 14 October scored BLN600 crops after the worker's input-hash checks, confirming that the client followed the publisher download path and supplied the expected file. Reuse of cached originals on later tasks was not separately observed; see the [live acceptance record](boinc.md#live-acceptance-record-and-remaining-checks).
 
 ## Detach
 

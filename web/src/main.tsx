@@ -7,6 +7,7 @@ import { NotFound } from "./components/NotFound";
 import { trackPageView } from "./pageview";
 import { DATASETS_PATH, OLD_DATASETS_PATH, pageFor } from "./route";
 import "./styles.css";
+import { preloadBasemap } from "./lib/preloadBasemap";
 
 // The dataset details, privacy and credits pages load only when visited.
 // The API serves index.html for app paths, so all work as direct links;
@@ -16,6 +17,7 @@ const DatasetsPage = lazy(() => import("./status/StatusPage"));
 const CreditsPage = lazy(() => import("./credits/CreditsPage"));
 const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
 const page = pageFor(window.location.pathname);
+if (page === "search") void preloadBasemap();
 // The old path, where a server didn't redirect it: show the new one.
 if (page === "datasets" && window.location.pathname.replace(/\/+$/, "") === OLD_DATASETS_PATH) {
   window.history.replaceState(null, "", `${DATASETS_PATH}${window.location.search}${window.location.hash}`);
