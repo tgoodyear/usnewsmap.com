@@ -5,6 +5,8 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import shutil
+import subprocess
 
 spec = importlib.util.spec_from_file_location(
     "patch_server_apple_gpu",
@@ -60,6 +62,52 @@ bool PLAN_CLASS_SPEC::check(SCHEDULER_REQUEST& sreq, HOST_USAGE& hu) {
 
 
 class PatchServerAppleGpuTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
+    def test_model_batches_are_exclusive_in_executable_scheduler_gate(self):
+        source = r"""
+// Header-free fixture also runs with minimal Command Line Tools installations.
+#define NULL nullptr
+#define assert(value) do { if (!(value)) return __LINE__; } while (false)
+int strcmp(const char* a, const char* b) {
+    while (*a && *a == *b) { ++a; ++b; }
+    return *a - *b;
+}
+const char* strstr(const char* a, const char* b) {
+    for (; *a; ++a) {
+        const char* x = a; const char* y = b;
+        while (*x && *x == *y) { ++x; ++y; }
+        if (!*y) return a;
+    }
+    return nullptr;
+}
+struct PC { int max_batch = 0; bool docker; const char* name; };
+struct WU { int batch; };
+struct { bool debug_version_select = false; } config;
+struct { template<class... T> void printf(T...) {} } log_messages;
+const int MSG_NORMAL = 0;
+bool infeasible(const PC* pc, const WU* wu) {
+GATE
+}
+int main() {
+    const PC classes[] = {
+        {0, true, "docker_mt"}, {0, true, "docker_nvidia_cuda"},
+        {12, true, "docker_mt_2b"}, {18, true, "docker_nvidia_cuda_8b"},
+        {0, false, "mt"}, {8, false, "apple_gpu_8b"},
+        {8, false, "nvidia_cuda_8b"}, {2, false, "nvidia_cuda_2b"}
+    };
+    const int expected[] = {1, 1, 12, 18, 2, 8, 8, 2};
+    const int batches[] = {1, 12, 18, 2, 8};
+    for (int i = 0; i < 8; ++i) {
+        for (int b : batches) { WU wu{b}; assert(infeasible(&classes[i], &wu) == (b != expected[i])); }
+        WU legacy{0}; assert(!infeasible(&classes[i], &legacy));
+    }
+}
+""".replace("GATE", module.BATCH_INFEASIBLE_PATCHED)
+        with tempfile.TemporaryDirectory() as d:
+            binary = str(Path(d) / "scheduler-gate")
+            subprocess.run(["c++", "-std=c++17", "-x", "c++", "-", "-o", binary], input=source, text=True, check=True, capture_output=True)
+            subprocess.run([binary], check=True)
+
     def test_patches_both_eligibility_and_dispatch_branches(self):
         with tempfile.TemporaryDirectory() as d:
             cpp = Path(d) / "plan_class_spec.cpp"

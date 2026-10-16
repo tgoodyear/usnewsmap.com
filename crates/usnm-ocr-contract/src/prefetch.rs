@@ -280,7 +280,7 @@ pub fn decode_where(
 /// node): `[A-Za-z0-9_]`. LoC's names are mostly lowercase, but some aren't
 /// (`curiv_joshuaTree`, `lu_Cypher`).
 fn safe_batch(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    crate::message::is_batch_identifier(s)
 }
 
 /// A page's set.
@@ -418,6 +418,22 @@ mod tests {
             back[1].item_url,
             "https://www.loc.gov/item/sn0/1901-01-01/ed-2/"
         );
+    }
+
+    #[test]
+    fn batch_names_use_the_shared_128_byte_alphabet() {
+        for len in [65, 105, 128] {
+            let batch = format!("nbu_{}", "A".repeat(len - 4));
+            let r = row("sn1_1890-05-03_ed-1_seq-1", &batch, 0.5);
+            let back = decode(Bytes::from(encode(&[r]).unwrap())).unwrap();
+            assert_eq!(back[0].batch, batch);
+        }
+        let r = row(
+            "sn1_1890-05-03_ed-1_seq-1",
+            &format!("nbu_{}", "A".repeat(125)),
+            0.5,
+        );
+        assert!(decode_where(Bytes::from(encode(&[r]).unwrap()), |_| false).is_err());
     }
 
     #[test]

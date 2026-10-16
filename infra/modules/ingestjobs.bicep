@@ -162,14 +162,13 @@ param ocrSeed object = {}
 // max runtime instead, and a batch already downloading then takes at most 45
 // minutes more (the per-batch watchdog), so each command ends on its own.
 var replicaTimeoutSecs = 86400
-// The ingest job gets 48 h (#172): a full rebuild with common-word pairs
-// (#154) sent only about 230 to 460 pages a second on 2026-10-05, so the
-// 23.7M pages take up to about 29 h, after titles-sync (at most 8 h) and
-// before the merge wait (at most 4 h): about 41 h. A release can't resume
-// in a new execution, so a timeout throws the whole rebuild away. The
-// platform can interrupt long replicas for maintenance (`replicaRetryLimit`
-// is 0), which a longer run is more exposed to.
-var ingestReplicaTimeoutSecs = 172800
+// Ordinary ingest keeps 48 h (#172). The #283 dev candidate (one text field,
+// decades, page languages, 60k splits) sends 113.79 docs/s: about 58 h for
+// 23.8M pages, before preparation and merges. Explicit full/staging runs get
+// 96 h: 58 h send + 8 h preparation + 4 h merge + 20% send margin is 82 h.
+// A release cannot resume after timeout. Maintenance can still interrupt a
+// long replica; keep replicaRetryLimit at 0 rather than starting it over.
+var ingestReplicaTimeoutSecs = full || stageIndexStorage ? 345600 : 172800
 // Backfill: 22 h + 45 min watchdog = 22 h 45 min, leaving 75 minutes of
 // margin under the 24 h timeout for the startup enqueue and the last commit.
 var backfillMaxRuntimeSecs = 79200
@@ -181,7 +180,8 @@ var backfillMaxRuntimeSecs = 79200
 // October 2026 rate) or 10.7 h at 620, and waits at most `mergeTimeoutSecs`
 // (4 h; about 1.7 h expected) for its merges, 08 §8.4: 22 h 45 min at the
 // slowest at that rate. With common-word pairs the rate halved, so the
-// ingest job has its own 48 h timeout (`ingestReplicaTimeoutSecs`). A full run that titles-sync didn't
+// ordinary ingest keeps its 48 h timeout; explicit full/staging runs get 96 h
+// (`ingestReplicaTimeoutSecs`). A full run that titles-sync didn't
 // finish releases nothing and fails, so the next execution resumes the sync
 // before it rebuilds (docs/operations.md, "Full rebuild").
 var ingestCurateMaxRuntimeSecs = 21600

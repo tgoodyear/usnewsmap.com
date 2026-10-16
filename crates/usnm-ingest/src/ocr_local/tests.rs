@@ -236,6 +236,10 @@ fn open(dir: &std::path::Path, sub: &str) -> Arc<dyn ObjectStore> {
 /// text) and `dlc_japan` (a Japanese title); `with_tables` runs the damage
 /// pass so LoC's scores come from Step 6's tables.
 async fn fixture(with_tables: bool) -> Fx {
+    fixture_with_batch(with_tables, BATCH).await
+}
+
+async fn fixture_with_batch(with_tables: bool, batch: &str) -> Fx {
     let dir = tempfile::tempdir().unwrap();
     let curated = open(dir.path(), "curated");
     let reference = open(dir.path(), "reference");
@@ -245,7 +249,7 @@ async fn fixture(with_tables: bool) -> Fx {
     let queue: Arc<dyn Queue> = Arc::new(LocalQueue::new(dir.path().join("queue")));
     let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
     let mut batches = Vec::new();
-    for (batch, lccn) in [(BATCH, LCCN), ("dlc_japan", JA_LCCN)] {
+    for (batch, lccn) in [(batch, LCCN), ("dlc_japan", JA_LCCN)] {
         let mut w = PartWriter::new();
         for seq in 1..=9 {
             let k = PageKey::new(lccn, day(), 1, seq).unwrap();
@@ -254,7 +258,11 @@ async fn fixture(with_tables: bool) -> Fx {
                 .unwrap()
                 .is_none());
         }
-        let part = format!("pages/{batch}_ver01/part-0.parquet");
+        let part = if batch.len() + "_ver01".len() <= 128 {
+            format!("pages/{batch}_ver01/part-0.parquet")
+        } else {
+            format!("pages/{batch}/ver01/part-0.parquet")
+        };
         curated
             .put_new(&part, w.finish_part().unwrap().unwrap(), "x")
             .await
@@ -911,6 +919,180 @@ async fn replays_from_quarantine_after_a_fix() {
         .unwrap();
     assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
     assert!(fx.records().await.is_empty(), "quarantine emptied");
+}
+
+#[tokio::test]
+async fn real_loc_batches_seed_enqueue_and_sync_with_original_case() {
+    for batch in [
+        "curiv_joshuaTree",
+        "lu_Cypher",
+        "me_Bissonnette",
+        "vi_White",
+        "wvu_Quote",
+        &format!("nbu_{}", "A".repeat(101)),
+        &format!("nbu_{}", "A".repeat(124)),
+    ] {
+        let fx = fixture_with_batch(true, batch).await;
+        let status = sync::run(
+            &fx.state,
+            "test",
+            &fx.stores,
+            &Options {
+                seed: super::seed::Options {
+                    plan: "mixed-case".into(),
+                    batches: vec![format!("{batch}_ver01")],
+                    window: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.seed.unwrap().queued, 1, "{batch}");
+        let seeded = fx
+            .queue
+            .receive(BULK, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let seeded = usnm_ocr_contract::message::decode(&seeded.text).unwrap().0;
+        assert_eq!(seeded.batch, batch);
+
+        let report = enqueue::enqueue(
+            &fx.state,
+            fx.stores.curated.as_ref(),
+            fx.stores.reference.as_ref(),
+            &fx.queue,
+            &EnqueueOptions {
+                pages: vec![key(9).doc_id()],
+                reason: Reason::User,
+                plan: "mixed-case".into(),
+                batch: Some(batch.into()),
+                include_outstanding: false,
+                dry_run: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.queued, 1, "{batch}: {report:?}");
+        let received = fx
+            .queue
+            .receive(PRIORITY, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let msg = usnm_ocr_contract::message::decode(&received.text)
+            .unwrap()
+            .0;
+        assert_eq!(msg.batch, batch);
+        let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+        assert_eq!(ledger.queued[&key(9).doc_id()].batch, batch);
+
+        for v in [1, 2] {
+            let mut dead = DeadLetter::new(
+                PRIORITY,
+                &format!("mixed-case-{v}"),
+                Some(&msg),
+                Cause::Permanent,
+                None,
+                None,
+                "no image",
+                6,
+                NODE,
+            );
+            dead.v = v;
+            dead.cause = (v == 2).then_some(Cause::Permanent);
+            fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+        }
+        let status = fx.sync().await;
+        assert!(status.last_run.dead_letters_rejected.is_empty(), "{batch}");
+        assert_eq!(status.last_run.dead_letters.values().sum::<u64>(), 2);
+        let files = fx
+            .stores
+            .curated
+            .list(&format!("{ROOT}/deadletter"))
+            .await
+            .unwrap();
+        let body = fx.stores.curated.get(&files[0]).await.unwrap().unwrap();
+        let text = String::from_utf8(body).unwrap();
+        for line in text.lines() {
+            let dead: DeadLetter = serde_json::from_str(line).unwrap();
+            assert_eq!(dead.message.unwrap().batch, batch);
+        }
+    }
+}
+
+#[tokio::test]
+async fn fetched_source_preserves_mixed_case_and_full_length_batches() {
+    use usnm_ocr_contract::{fetched, prefetch};
+
+    for batch in [
+        "curiv_joshuaTree",
+        "lu_Cypher",
+        "me_Bissonnette",
+        "vi_White",
+        "wvu_Quote",
+        &format!("nbu_{}", "A".repeat(61)),
+        &format!("nbu_{}", "A".repeat(101)),
+        &format!("nbu_{}", "A".repeat(124)),
+    ] {
+        let fx = fixture_with_batch(true, batch).await;
+        let excluded = format!("excluded_{}", "B".repeat(119));
+        let rows = [
+            prefetch::ManifestRow::new(&key(1), batch, 1, Some("deu".into()), "detected", 0.5),
+            prefetch::ManifestRow::new(&key(2), &excluded, 1, Some("deu".into()), "detected", 0.5),
+        ];
+        let path = format!("{}/manifest.parquet", crate::ocr_prefetch::dir("v1", None));
+        fx.stores
+            .curated
+            .put_new(&path, prefetch::encode(&rows).unwrap(), "x")
+            .await
+            .unwrap();
+        let pages = [fetched::Fetched {
+            batch: batch.into(),
+            doc_id: key(1).doc_id(),
+        }]
+        .into_iter()
+        .collect();
+        fx.out
+            .put_new(
+                &fetched::path("v1", NODE, "20261012T010500Z"),
+                fetched::encode("v1", &pages).unwrap(),
+                "x",
+            )
+            .await
+            .unwrap();
+        let status = sync::run(
+            &fx.state,
+            "test",
+            &fx.stores,
+            &Options {
+                seed: super::seed::Options {
+                    plan: "mixed-case-fetched".into(),
+                    batches: vec![batch.into()],
+                    window: 1,
+                    source: super::seed::Source::Fetched,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.seed.unwrap().queued, 1, "{batch}");
+        let received = fx
+            .queue
+            .receive(BULK, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let msg = usnm_ocr_contract::message::decode(&received.text)
+            .unwrap()
+            .0;
+        assert_eq!(msg.batch, batch);
+        assert_eq!(msg.page, key(1).to_string());
+    }
 }
 
 #[tokio::test]

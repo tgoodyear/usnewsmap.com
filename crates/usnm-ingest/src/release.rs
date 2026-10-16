@@ -2440,6 +2440,63 @@ impl Release {
                 serde_json::to_vec(record)?,
             ));
         }
+        // Freeze the credits used by this version, and refuse publication if
+        // any serving engine key lacks complete attribution.
+        let local_pages = local
+            .pages
+            .as_ref()
+            .map(|bytes| {
+                usnm_state::ocr_local::OcrLocalPages::decode(bytes, batches.len())
+                    .map_err(|e| anyhow::anyhow!(e))
+            })
+            .transpose()?;
+        // Japanese search text and main-index Latin text may share a page.
+        // Count that page once per engine, while retaining both engines if
+        // the two indexes use different readings of the same page.
+        let mut japanese = BTreeMap::<(&str, &str), BTreeSet<String>>::new();
+        for p in overlay.pages.iter().filter(|p| p.indexable()) {
+            japanese
+                .entry((&p.ocr_source, &p.ocr_engine))
+                .or_default()
+                .insert(p.key.doc_id());
+        }
+        let hidden: BTreeSet<_> = dedup
+            .hidden
+            .iter()
+            .map(|h| (h.doc_id.as_str(), h.batch.as_str()))
+            .collect();
+        for (doc_id, p) in &latin.version.pages {
+            if hidden.contains(&(doc_id.as_str(), p.batch.as_str())) {
+                continue;
+            }
+            japanese
+                .entry((&p.ocr_source, &p.ocr_engine))
+                .or_default()
+                .insert(doc_id.clone());
+        }
+        let keys = japanese.keys().map(|(_, engine)| *engine).chain(
+            local_pages
+                .iter()
+                .flat_map(|p| p.engines.iter().map(|e| e.engine.as_str())),
+        );
+        let mut credits = usnm_ocr_route::ENGINES.credits(keys)?;
+        let pages = japanese.values().flatten().collect::<BTreeSet<_>>().len() as u64;
+        credits.japanese = usnm_ocr_route::credits::JapaneseUsage {
+            pages,
+            by_engine: japanese
+                .into_iter()
+                .map(
+                    |((source, engine), pages)| usnm_ocr_route::credits::EngineUsage {
+                        source: source.to_owned(),
+                        engine: engine.to_owned(),
+                        pages: pages.len() as u64,
+                    },
+                )
+                .collect(),
+        };
+        if !credits.engines.is_empty() {
+            snapshot_files.push((usnm_ocr_route::credits::FILE, serde_json::to_vec(&credits)?));
+        }
         // The Congress set's units and baselines (#229), when it has one.
         if let Some(c) = congress {
             snapshot_files.extend(c.files.iter().map(|(n, b)| (*n, b.clone())));

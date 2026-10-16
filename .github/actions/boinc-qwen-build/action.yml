@@ -1,8 +1,7 @@
 name: boinc-qwen-build
 description: >-
-  Builds the usnm_qwen worker image (ocr/boinc/qwen/Containerfile) and checks that, without a
-  GPU, it runs a unit and returns all three outputs, and that llama-server reads a rendered line
-  with the 2B model on CPU (.github/workflows/boinc-qwen.yml). Pushes nothing.
+  Builds one immutable usnm_qwen payload, checks cold/warm extraction and all three
+  error outputs, and for 2b verifies a rendered-line CPU reading. Pushes nothing.
 inputs:
   image:
     description: The image's repository
@@ -10,11 +9,13 @@ inputs:
   tag:
     description: The local tag to give the image
     required: true
+  model:
+    description: Immutable model payload (2b CPU or 8b GPU)
+    required: true
 runs:
   using: composite
   steps:
-    # The CUDA base and the two models need about 12 GB; the runner's preinstalled toolchains
-    # are removed to make room.
+    # Disposable hosted runner only; never run this cleanup on a volunteer node.
     - name: Free disk space
       shell: bash
       run: |
@@ -25,54 +26,51 @@ runs:
       env:
         IMAGE: ${{ inputs.image }}
         SHA: ${{ inputs.tag }}
+        MODEL: ${{ inputs.model }}
       shell: bash
       run: |
         docker build -f ocr/boinc/qwen/Containerfile \
+          --build-arg "QWEN_MODEL=$MODEL" \
           --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-          --label "org.opencontainers.image.revision=$SHA" \
+          --label "org.opencontainers.image.revision=$GITHUB_SHA" \
           --label "org.opencontainers.image.description=usnewsmap BOINC Qwen3-VL worker (llama.cpp, usnm-boinc)" \
           -t "$IMAGE:$SHA" .
         docker image ls "$IMAGE"
+    - name: Cold and warm extraction in an isolated empty image store
+      env:
+        IMAGE: ${{ inputs.image }}
+        SHA: ${{ inputs.tag }}
+        MODEL: ${{ inputs.model }}
+      shell: bash
+      run: |
+        python3 scripts/boinc/qwen_cold_cache.py --image "$IMAGE:$SHA" --model "$MODEL" --state ".qwen-cold-$MODEL"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always()
+      with:
+        name: qwen-disk-${{ inputs.model }}
+        path: |
+          .qwen-cold-${{ inputs.model }}/measurement.json
+          .qwen-cold-${{ inputs.model }}/daemon.log
+          .qwen-cold-${{ inputs.model }}/load.log
     # Without a GPU: the diagnostics, the probe and a unit that is refused (no job) must still
     # write all three outputs.
     - name: The image runs a unit and always returns its outputs
       env:
         IMAGE: ${{ inputs.image }}
         SHA: ${{ inputs.tag }}
+        MODEL: ${{ inputs.model }}
       shell: bash
       run: |
-        work=$(mktemp -d)
+        work="$PWD/.qwen-invalid-$MODEL"
+        mkdir -p "$work"
         chmod 777 "$work"
         echo '{}' > "$work/qwen.json"
         echo x > "$work/page.jpg"
-        docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=1g -v "$work:/work" "$IMAGE:$SHA"
+        docker run --rm --network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --tmpfs=/tmp:rw,size=1g --cpus=4 --memory=6g --memory-swap=6g --pids-limit=1024 -v "$work:/work" "$IMAGE:$SHA"
         for f in readings.json result.json diag.txt; do
           test -f "$work/$f" || { echo "::error::no $f"; exit 1; }
         done
         jq -e '.unit_error != null' "$work/result.json" > /dev/null
         grep -q '== llama-server probe' "$work/diag.txt"
-        docker run --rm "$IMAGE:$SHA" usnm-boinc qwen probe
+        docker run --rm --network=none "$IMAGE:$SHA" usnm-boinc qwen probe
         cat "$work/diag.txt"
-    # llama-server reads a rendered line with the 2B model on the runner's CPU, through llama.cpp's
-    # CPU fallback in the CUDA image: the CPU version's whole path. The page and its ALTO come from
-    # usnm-boinc's own synthetic page (qwen local-unit --synthetic), so no model but the one in the
-    # image is needed.
-    - name: The image reads a line on CPU
-      env:
-        IMAGE: ${{ inputs.image }}
-        SHA: ${{ inputs.tag }}
-      shell: bash
-      run: |
-        work=$(mktemp -d)
-        chmod 777 "$work"
-        docker run --rm -v "$work:/work" "$IMAGE:$SHA" usnm-boinc qwen local-unit --synthetic \
-          --dir /work --k-crops 2 --timeout-secs 1200
-        docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=1g --memory=6g -v "$work:/work" "$IMAGE:$SHA"
-        cat "$work/diag.txt"
-        jq . "$work/result.json"
-        jq -e '.outcome == "ok" and .device == "cpu" and .model == "qwen3-vl-2b-q8"' "$work/result.json" > /dev/null
-        # llama-server runs as a child of usnm-boinc; its memory must be counted.
-        jq -e '.peak_rss_kib > 1000000' "$work/result.json" > /dev/null ||
-          { echo "::error::peak memory leaves out llama-server"; exit 1; }
-        jq -r '.readings[].text' "$work/readings.json"
-        jq -r '.readings[].text' "$work/readings.json" | grep -qi 'newspaper' || { echo "::error::Qwen did not read the line"; exit 1; }

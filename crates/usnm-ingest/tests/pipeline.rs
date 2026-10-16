@@ -2523,6 +2523,10 @@ struct JaRow<'a> {
 }
 
 async fn put_overlay_part(e: &Env, path: &str, rows: &[JaRow<'_>]) {
+    put_overlay_part_with_engine(e, path, rows, "ndlocr-lite 636d1cf").await;
+}
+
+async fn put_overlay_part_with_engine(e: &Env, path: &str, rows: &[JaRow<'_>], engine: &str) {
     use arrow_array::{
         ArrayRef, Date32Array, FixedSizeBinaryArray, Int16Array, Int32Array, LargeStringArray,
         RecordBatch, StringArray, TimestampMicrosecondArray,
@@ -2560,7 +2564,7 @@ async fn put_overlay_part(e: &Env, path: &str, rows: &[JaRow<'_>]) {
             s(rows.iter().map(|r| r.batch.to_owned()).collect()),
         ),
         ("ocr_source", s(vec!["usnm-ndlocr-lite".into(); rows.len()])),
-        ("ocr_engine", s(vec!["ndlocr-lite test".into(); rows.len()])),
+        ("ocr_engine", s(vec![engine.into(); rows.len()])),
         (
             "loc_text",
             s(rows.iter().map(|r| r.loc_text.to_owned()).collect()),
@@ -2612,6 +2616,36 @@ async fn put_overlay_part(e: &Env, path: &str, rows: &[JaRow<'_>]) {
 /// Our Japanese OCR (#139): a release indexes the overlay's pages in their own
 /// index, newest copy of each page, only for batches in the version, and adds
 /// the pages curation never had to the baselines (not the ones it had).
+#[tokio::test]
+async fn a_japanese_only_unknown_engine_blocks_publication() {
+    let e = env().await;
+    let (early, _, _, _) = curate_early_and_late(&e).await;
+    curate(&e, early).await;
+    let pages = fixture_pages();
+    let p = &pages[0];
+    put_overlay_part_with_engine(
+        &e,
+        "ocr-ja/pages/unknown.parquet",
+        &[JaRow {
+            lccn: &p.lccn,
+            date: p.date,
+            seq: 90,
+            batch: "batch_fx_early",
+            loc_text: "missing",
+            text: "米國と日本の戰爭",
+            ocred_at: 1,
+        }],
+        "uncredited/1 japanese",
+    )
+    .await;
+    let error = e.release_with(5, true, false).await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("missing OCR credit"),
+        "{error:#}"
+    );
+    assert!(e.reference.get("current.json").await.unwrap().is_none());
+}
+
 #[tokio::test]
 async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
     let e = env().await;
@@ -2677,6 +2711,22 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
     assert_eq!(current["ja"]["indexes"], serde_json::json!([ja_id]));
     assert_eq!(current["ja"]["pages"], 4);
     assert_eq!(current["ja"]["fold"], usnm_core::ja::FOLD_VERSION);
+    let credits = e
+        .reference_json(&format!("{}/credits.json", published.index_version))
+        .await;
+    assert_eq!(credits["engines"][0]["key"], "ndlocr-lite 636d1cf");
+    assert_eq!(credits["japanese"]["pages"], 4);
+    assert_eq!(credits["japanese"]["by_engine"][0]["pages"], 4);
+    let rd = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(
+        usnm_api::status::assemble::sources(&rd)
+            .ocr_ja
+            .unwrap()
+            .pages,
+        4
+    );
 
     let ja = e.index(&ja_id);
     assert_eq!(ja.len(), 4, "{:?}", ja.keys());
@@ -2692,7 +2742,7 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
         missing["text"],
         usnm_core::ja::index_text("米國と日本の戰爭", Analyzer::LATEST)
     );
-    assert_eq!(missing["ocr_engine"], "ndlocr-lite test");
+    assert_eq!(missing["ocr_engine"], "ndlocr-lite 636d1cf");
 
     // The missing pages join the baselines once; the garbled one, and the one
     // curation had in spite of its label, were counted already.
@@ -2989,7 +3039,19 @@ async fn our_ocr_latin_text_reaches_the_main_index_once() {
         .iter()
         .collect::<Vec<_>>()
     );
-    assert_eq!(latin["pages"][at(90)]["ocr_engine"], "ndlocr-lite test");
+    let frozen = e.reference_json(&format!("{v}/credits.json")).await;
+    let current = e.reference_json("current.json").await;
+    let ja_index = e.index(current["ja"]["indexes"][0].as_str().unwrap());
+    let unique: std::collections::BTreeSet<_> = ja_index
+        .keys()
+        .chain(latin["pages"].as_object().unwrap().keys())
+        .collect();
+    assert_eq!(frozen["japanese"]["pages"], unique.len() as u64);
+    assert_eq!(
+        frozen["japanese"]["by_engine"][0]["pages"],
+        unique.len() as u64
+    );
+    assert_eq!(latin["pages"][at(90)]["ocr_engine"], "ndlocr-lite 636d1cf");
     assert_eq!(latin["pages"][at(90)]["loc_text"], "missing");
     assert_eq!(latin["pages"][id(blank)]["loc_text"], "empty");
     let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
@@ -3308,6 +3370,15 @@ async fn latin_text_with_nothing_to_add_is_weighed_once() {
 /// and the snapshot hides ours, so the page counts once.
 #[tokio::test]
 async fn a_copy_with_our_text_that_loses_to_locs_is_hidden() {
+    superseded_ocr_copy("empty").await;
+}
+
+#[tokio::test]
+async fn a_superseded_latin_only_copy_loses_its_credits_but_japanese_text_does_not() {
+    superseded_ocr_copy("mixed").await;
+}
+
+async fn superseded_ocr_copy(reason: &str) {
     let e = env().await;
     let (early, _, early_pages, _) = curate_early_and_late(&e).await;
     curate(&e, early).await;
@@ -3326,7 +3397,7 @@ async fn a_copy_with_our_text_that_loses_to_locs_is_hidden() {
             date: blank.date,
             seq: blank.seq,
             batch: "batch_fx_early",
-            loc_text: "empty",
+            loc_text: reason,
             text: "The relocation center held a meeting",
             ocred_at: 1,
         }],
@@ -3359,6 +3430,33 @@ async fn a_copy_with_our_text_that_loses_to_locs_is_hidden() {
         serde_json::json!([{"doc_id": id, "batch": "batch_fx_early"}])
     );
     assert_eq!(v2.pages, early_pages as u64, "the page counts once");
+    let frozen = e
+        .reference
+        .get(&format!("{}/credits.json", v2.index_version))
+        .await
+        .unwrap();
+    let rd = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert!(!rd.ja_latin.contains_key(&id));
+    if reason == "mixed" {
+        // English-only mixed text never entered the Japanese index, and
+        // its main-index copy is hidden: no serving OCR credit remains.
+        assert!(frozen.is_none());
+        assert!(usnm_api::status::assemble::sources(&rd).ocr_ja.is_none());
+    } else {
+        // The Japanese index still serves this reading independently.
+        let frozen: Value = serde_json::from_slice(&frozen.unwrap()).unwrap();
+        assert_eq!(frozen["japanese"]["pages"], 1);
+        assert_eq!(frozen["engines"][0]["key"], "ndlocr-lite 636d1cf");
+        assert_eq!(
+            usnm_api::status::assemble::sources(&rd)
+                .ocr_ja
+                .unwrap()
+                .pages,
+            1
+        );
+    }
 }
 
 /// A later batch that ships a page with no text of LoC's doesn't take over
@@ -5876,6 +5974,18 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     assert_eq!(record["revocations"][0]["reason"], "a bad model");
     assert!(record["estimate_published"].is_null(), "a full base");
     let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    let credits = e.reference_json(&format!("{v}/credits.json")).await;
+    assert_eq!(credits["schema"], 1);
+    let credit = credits["engines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "tesseract/5.5.1 eng")
+        .unwrap();
+    assert_eq!(credit["engine"]["author"], "Tesseract OCR project");
+    assert_eq!(credit["models"][0]["name"], "tessdata/eng.traineddata");
+    assert_eq!(credit["models"].as_array().unwrap().len(), 1);
+    assert_eq!(credit["models"][0]["fetched"], "2026-10-11");
     assert_eq!(manifest["built_from"]["ocr_local"], record["parts"]);
     assert_eq!(manifest["build"]["features"]["ocr_local"], 1);
     let bin = |v: &str| {
@@ -5965,6 +6075,8 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
         .unwrap();
     assert_eq!(refdata.ocr_local.len(), 2);
     assert!(refdata.ocr_local.get(&id(&late[g])).is_some());
+    let frozen = e.reference_json(&format!("{v}/credits.json")).await;
+    assert_eq!(refdata.ocr_credits, Some(frozen));
 }
 
 /// Congress pages curated from the recorded UNT responses (#229), as

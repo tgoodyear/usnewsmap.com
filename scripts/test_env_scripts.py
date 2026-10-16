@@ -253,6 +253,13 @@ class Stubbed(unittest.TestCase):
 
 
 class SearcherRollbackSettings(Stubbed):
+    def test_public_slot_budget_and_max_replicas_are_exported(self):
+        self.committed({"USNM_COMPUTE_CONCURRENCY": 8, "USNM_API_MAX_REPLICAS": 3})
+        run = self.lib('export_stack_settings; printf "%s/%s" '
+                       '"$USNM_COMPUTE_CONCURRENCY" "$USNM_API_MAX_REPLICAS"')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout, "8/3")
+
     def test_public_retention_is_exported_for_both_provision_paths(self):
         for retain in (True, False):
             with self.subTest(retain=retain):
@@ -271,6 +278,56 @@ class SearcherRollbackSettings(Stubbed):
 
 
 @unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
+class DnsWhatIfTemplate(unittest.TestCase):
+    def test_cname_loop_count_does_not_depend_on_runtime_fqdn(self):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
+                              "infra/modules/dns.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        template = json.loads(run.stdout)
+        resources = template["resources"]
+        if isinstance(resources, dict):
+            resources = list(resources.values())
+        hosts = next(r for r in resources if r["type"] == "Microsoft.Network/dnsZones/CNAME")
+        self.assertNotIn("appFqdn", hosts["copy"]["count"])
+        self.assertIn("'www'", hosts["copy"]["count"])
+        self.assertIn("'api'", hosts["copy"]["count"])
+        self.assertEqual(hosts["condition"], "[parameters('deployAppRecords')]")
+        self.assertEqual(template["parameters"]["deployAppRecords"]["defaultValue"],
+                         "[not(empty(parameters('appFqdn')))]")
+        self.assertEqual(hosts["properties"]["CNAMERecord"]["cname"], "[parameters('appFqdn')]")
+        zone = next(r for r in resources if r["type"] == "Microsoft.Network/dnsZones")
+        self.assertNotIn("condition", zone)
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build", "infra/main.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        root = json.loads(run.stdout)
+        dns = root["resources"]["dns"]
+        self.assertEqual(dns["properties"]["parameters"]["deployAppRecords"]["value"],
+                         "[variables('deployApi')]")
+
+
+@unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
+class IngestTimeoutTemplate(unittest.TestCase):
+    def test_only_explicit_full_or_staging_extends_the_ingest_timeout(self):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
+                              "infra/modules/ingestjobs.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        template = json.loads(run.stdout)
+        self.assertEqual(template["variables"]["ingestReplicaTimeoutSecs"],
+                         "[if(or(parameters('full'), parameters('stageIndexStorage')), 345600, 172800)]")
+        resources = template["resources"]
+        if isinstance(resources, dict):
+            resources = list(resources.values())
+        ingest = next(r for r in resources if r.get("name") == "[parameters('ingestJobName')]")
+        backfill = next(r for r in resources if r.get("name") == "[parameters('backfillJobName')]")
+        config = ingest["properties"]["configuration"]
+        self.assertEqual(config["replicaTimeout"], "[variables('ingestReplicaTimeoutSecs')]")
+        self.assertEqual(config["replicaRetryLimit"], 0)
+        self.assertEqual(template["variables"]["replicaTimeoutSecs"], 86400)
+        self.assertEqual(backfill["properties"]["configuration"]["replicaTimeout"],
+                         "[variables('replicaTimeoutSecs')]")
+
+
+@unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
 class SearcherRollbackTemplate(unittest.TestCase):
     """Offline ARM contracts: retention keeps resources, never API routing."""
 
@@ -280,6 +337,57 @@ class SearcherRollbackTemplate(unittest.TestCase):
                               "infra/modules/containerapp.bicep", "--stdout"],
                              cwd=ROOT, capture_output=True, text=True, check=True)
         cls.template = json.loads(run.stdout)
+
+    def test_api_consumes_allocated_slots_without_nested_user_functions(self):
+        self.assertNotIn("functions", self.template)
+        self.assertIsInstance(self.template["resources"], list)
+        variables = self.template["variables"]
+        self.assertEqual(variables["computeEnv"],
+                         [{"name": "USNM_COMPUTE_CONCURRENCY", "value": "[string(parameters('computeSlots'))]"}])
+        self.assertIn("variables('computeEnv')", variables["apiContainer"]["env"])
+        app = next(r for r in self.template["resources"] if r["name"] == "[parameters('name')]")
+        self.assertEqual(app["properties"]["template"]["scale"]["maxReplicas"], "[parameters('maxReplicas')]")
+        self.assertEqual(self.template["parameters"]["maxReplicas"]["minValue"], 1)
+        self.assertEqual(self.template["parameters"]["computeSlots"]["minValue"], 1)
+
+    def test_main_passes_the_same_replica_cap_and_searcher_budget(self):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build", "infra/main.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        template = json.loads(run.stdout)
+        resources = template["resources"]
+        if isinstance(resources, dict):
+            resources = list(resources.values())
+        api = next(r for r in resources if r.get("name") == "api")
+        self.assertEqual(api["properties"]["parameters"]["maxReplicas"]["value"], "[parameters('apiMaxReplicas')]")
+        self.assertEqual(api["properties"]["parameters"]["computeSlots"]["value"], "[variables('apiComputeSlots')]")
+        self.assertEqual(template["variables"]["apiComputeSlots"],
+                         "[__bicep.replicaComputeSlots(parameters('computeConcurrency'), parameters('apiMaxReplicas'), and(equals(parameters('searchBackend'), 'quickwit'), or(parameters('searcherApp'), parameters('indexStorageServe'))))]")
+
+    def test_slot_budget_rounds_down_and_sidecars_keep_the_budget(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            base = Path(directory)
+            (base / "template.bicep").write_text("param slots int\noutput actual int = slots\n")
+            for budget, replicas, shared, expected in [
+                (2, 2, True, 1), (2, 1, True, 2), (8, 2, True, 4),
+                (8, 3, True, 2), (3, 2, True, 1), (2, 2, False, 2),
+                (1, 8, False, 1), (1, 2, True, None), (0, 2, True, None),
+                (2, 0, True, None),
+            ]:
+                with self.subTest(budget=budget, replicas=replicas, shared=shared):
+                    params = base / "case.bicepparam"
+                    params.write_text(
+                        "using './template.bicep'\n"
+                        "import { replicaComputeSlots } from '../infra/api-capacity.bicep'\n"
+                        f"param slots = replicaComputeSlots({budget}, {replicas}, {str(shared).lower()})\n")
+                    run = subprocess.run([os.environ.get("BICEP", "bicep"), "build-params", str(params), "--stdout"],
+                                         capture_output=True, text=True)
+                    if expected is None:
+                        self.assertNotEqual(run.returncode, 0)
+                    else:
+                        self.assertEqual(run.returncode, 0, run.stderr)
+                        result = json.loads(run.stdout)
+                        self.assertEqual(json.loads(result["parametersJson"])["parameters"]["slots"]["value"], expected)
 
     def test_app_and_reader_share_retention_condition(self):
         variables = self.template["variables"]
@@ -308,13 +416,39 @@ class SearcherRollbackTemplate(unittest.TestCase):
         self.assertEqual(app["properties"]["template"]["containers"],
                          "[if(variables('sidecar'), createArray(variables('apiContainer'), variables('quickwitContainer')), createArray(variables('apiContainer')))]")
 
-    def test_api_identity_and_reader_survive_both_rollback_steps(self):
-        self.assertEqual(self.template["variables"]["apiSystemIdentity"], "[variables('quickwit')]")
-        reader = next(r for r in self.template["resources"]
-                      if r["type"] == "Microsoft.Authorization/roleAssignments"
-                      and "parameters('name')" in r["name"]
-                      and "parameters('storageAccountName')" in r["name"])
-        self.assertEqual(reader["condition"], "[variables('apiSystemIdentity')]")
+    def test_api_identity_and_both_readers_drop_with_searcher_app(self):
+        self.assertEqual(self.template["variables"]["apiSystemIdentity"],
+                         "[and(variables('quickwit'), not(parameters('searcherApp')))]")
+        app = next(r for r in self.template["resources"] if r["name"] == "[parameters('name')]")
+        self.assertEqual(app["identity"]["type"],
+                         "[if(variables('apiSystemIdentity'), 'SystemAssigned,UserAssigned', 'UserAssigned')]")
+        readers = [r for r in self.template["resources"]
+                   if r["type"] == "Microsoft.Authorization/roleAssignments"
+                   and "parameters('name')" in r["name"]]
+        self.assertEqual(len(readers), 2)
+        for reader in readers:
+            expected = ("[and(not(empty(parameters('indexStorageAccountName'))), variables('apiSystemIdentity'))]"
+                        if "parameters('indexStorageAccountName')" in reader["name"] else "[variables('apiSystemIdentity')]")
+            self.assertEqual(reader["condition"], expected)
+            self.assertIn(".identity.principalId", reader["properties"]["principalId"])
+            self.assertIn("[resourceId('Microsoft.App/containerApps', parameters('name'))]", reader["dependsOn"])
+
+    def test_index_storage_cutover_keeps_old_sidecar_identity(self):
+        variables = self.template["variables"]
+        # indexStorageServe=true removes the new revision's sidecar, not
+        # the app-level identity needed by its still-serving old revision.
+        self.assertEqual(variables["sidecar"],
+                         "[and(and(variables('quickwit'), not(parameters('searcherApp'))), not(parameters('indexStorageServe')))]")
+        self.assertEqual(variables["apiSystemIdentity"],
+                         "[and(variables('quickwit'), not(parameters('searcherApp')))]")
+
+    def test_rollback_keeps_single_revision_readiness_gated_handoff(self):
+        app = next(r for r in self.template["resources"] if r["name"] == "[parameters('name')]")
+        self.assertEqual(app["properties"]["configuration"]["activeRevisionsMode"], "Single")
+        probes = self.template["variables"]["apiContainer"]["probes"]
+        for kind in ("Startup", "Readiness"):
+            probe = next(p for p in probes if p["type"] == kind)
+            self.assertEqual(probe["httpGet"]["path"], "/readyz")
 
 
 class SettingsLocation(Stubbed):

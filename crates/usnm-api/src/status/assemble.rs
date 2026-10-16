@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Duration, DurationRound, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use usnm_core::names;
 use usnm_state::state::{BatchStatus, RunStatus, MAX_DELTAS};
 use usnm_state::summary::{BatchSummary, RunSummary, Summary};
@@ -93,6 +93,12 @@ pub struct YearPages {
 /// the version has none of it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Sources {
+    /// Attribution frozen with the serving version; absent on old releases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_credits: Option<serde_json::Value>,
+    /// Union of Japanese-index and main-index Latin OCR pages, per engine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_ja: Option<OcrLocalSummary>,
     /// American Stories' text (04 §4.9).
     pub american_stories: Option<AmericanStories>,
     /// Our OCR's Latin-script text of Japanese titles' pages, in the main
@@ -122,6 +128,8 @@ pub struct AmericanStories {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct JaLatinPages {
     pub pages: u64,
+    /// Exact engine keys from the serving version, not the current OCR job.
+    pub by_engine: Vec<EnginePages>,
     /// Why our OCR read them (`missing`, `empty`, `short`, `garbled`,
     /// `mixed`), most pages first.
     pub by_reason: Vec<ReasonPages>,
@@ -145,14 +153,14 @@ pub struct TitleOcrPages {
 
 /// Pages whose main-index document holds our own OCR's text in place of
 /// LoC's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OcrLocalSummary {
     pub pages: u64,
     /// By engine, most pages first.
     pub by_engine: Vec<EnginePages>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnginePages {
     /// `ocr_source`, e.g. `usnm-tesseract`.
     pub source: String,
@@ -340,9 +348,11 @@ pub fn sources(rd: &RefData) -> Sources {
         }
     });
     let ja_latin = (!rd.ja_latin.is_empty()).then(|| {
+        let mut engines: BTreeMap<(&str, &str), u64> = BTreeMap::new();
         let mut reasons: BTreeMap<&str, u64> = BTreeMap::new();
         let mut titles: BTreeMap<&str, u64> = BTreeMap::new();
         for (doc_id, p) in &rd.ja_latin {
+            *engines.entry((&p.ocr_source, &p.ocr_engine)).or_default() += 1;
             *reasons.entry(p.loc_text.as_str()).or_default() += 1;
             let lccn = doc_id.split('_').next().unwrap_or(doc_id);
             *titles.entry(lccn).or_default() += 1;
@@ -369,6 +379,14 @@ pub fn sources(rd: &RefData) -> Sources {
         by_title.sort_by(|a, b| b.pages.cmp(&a.pages).then_with(|| a.lccn.cmp(&b.lccn)));
         JaLatinPages {
             pages: rd.ja_latin.len() as u64,
+            by_engine: engines
+                .into_iter()
+                .map(|((source, engine), pages)| EnginePages {
+                    source: source.to_owned(),
+                    engine: engine.to_owned(),
+                    pages,
+                })
+                .collect(),
             by_reason,
             by_title,
         }
@@ -399,6 +417,13 @@ pub fn sources(rd: &RefData) -> Sources {
         }
     });
     Sources {
+        ocr_credits: rd.ocr_credits.clone(),
+        ocr_ja: rd
+            .ocr_credits
+            .as_ref()
+            .and_then(|v| v.get("japanese"))
+            .and_then(|v| serde_json::from_value::<OcrLocalSummary>(v.clone()).ok())
+            .filter(|v| v.pages > 0),
         american_stories,
         ja_latin,
         ocr_local,
@@ -1225,6 +1250,8 @@ mod tests {
         assert_eq!(
             p.sources,
             Sources {
+                ocr_credits: None,
+                ocr_ja: None,
                 american_stories: None,
                 ja_latin: None,
                 ocr_local: None
@@ -1275,6 +1302,14 @@ mod tests {
         });
         let s = sources(&rd);
         let ja = s.ja_latin.unwrap();
+        assert_eq!(
+            ja.by_engine,
+            vec![EnginePages {
+                source: "usnm-ndlocr".into(),
+                engine: "ndlocr-lite".into(),
+                pages: 3
+            }]
+        );
         assert_eq!(ja.pages, 3);
         let reasons: Vec<_> = ja
             .by_reason

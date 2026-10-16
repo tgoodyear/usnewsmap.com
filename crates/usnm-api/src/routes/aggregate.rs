@@ -209,7 +209,8 @@ pub(crate) async fn aggregate_in(
     snap.refdata.check_source(&req)?;
     let key = cache_key(&snap.refdata, &canonical, &req.query);
     let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
-    let job = Job::search("aggregate", ctx.warm_up, ctx.timeout);
+    let mut job = Job::search("aggregate", ctx.warm_up, ctx.timeout);
+    job.refresh = ctx.refresh_search;
     let search = match log {
         Some((_, Admission::Record)) => Some(searchlog::Search::new(&raw, &req, &serving)),
         _ => None,

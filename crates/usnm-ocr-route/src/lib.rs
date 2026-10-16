@@ -5,7 +5,9 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use anyhow::{bail, Context};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+pub mod credits;
 
 pub const ENGINES_TOML: &str = include_str!("../../../ocr/engines/engines.toml");
 pub static ENGINES: LazyLock<Catalog> =
@@ -25,13 +27,14 @@ pub fn check_tesseract_psm(psm: u64) -> anyhow::Result<()> {
 
 /// Code and weights use exactly the same attribution fields. Presence of
 /// `restricted` or `undecided` is a veto, even when the string is empty.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Attribution {
     #[serde(default)]
     pub license: String,
     pub author: Option<String>,
     pub source: Option<String>,
     pub credit: Option<String>,
+    #[serde(serialize_with = "serialize_date")]
     pub fetched: Option<toml::value::Datetime>,
     pub note: Option<String>,
     pub terms: Option<String>,
@@ -39,21 +42,23 @@ pub struct Attribution {
     pub undecided: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Model {
     pub name: String,
+    /// Published model revision, when the installation has a pinned one.
+    pub version: Option<String>,
     #[serde(flatten)]
     pub attribution: Attribution,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Profile {
     pub id: String,
     pub models: Vec<String>,
     pub languages: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Engine {
     pub id: String,
     pub family: String,
@@ -67,13 +72,20 @@ pub struct Engine {
     pub profile: Vec<Profile>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Catalog {
     pub schema: u32,
     pub production_licenses: Vec<String>,
     #[serde(default)]
     pub credit_required: Vec<String>,
     pub engine: Vec<Engine>,
+}
+
+fn serialize_date<S: serde::Serializer>(
+    date: &Option<toml::value::Datetime>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    date.as_ref().map(ToString::to_string).serialize(serializer)
 }
 
 fn present(value: &Option<String>) -> bool {

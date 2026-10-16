@@ -29,23 +29,28 @@
 //! (06 §6.5). After a start, a computation starts only while no visitor's
 //! search is running or queued: once started it keeps the searcher busy
 //! until it ends, and a visitor who arrives meanwhile shares the searcher
-//! with it. A publish doesn't wait: the old version serves visitors
-//! meanwhile, and a run that waited for them through a busy spell could spend
+//! with it. A searcher restart gives way in the same way. A publish doesn't
+//! wait: the old version serves visitors meanwhile, and a run that waited for them through a busy spell could spend
 //! its budget and swap in a version it hadn't warmed. Each computation has
 //! `config.prewarm_query_timeout` (the searcher's own limit per call still
 //! applies), all within `config.prewarm_budget` before a publish, or
-//! `config.prewarm_startup_budget` after a start. Nothing here fails: a
-//! warm-up that times out or errors is logged and the version serves anyway.
+//! `config.prewarm_startup_budget` after a start or searcher restart. Nothing
+//! here fails: a warm-up that times out or errors is logged and the version
+//! serves anyway.
 //!
 //! Searches from the log are logged by rank only (`search-log-3`), never by
 //! their text, and their errors by kind only: an error message can quote
 //! the query.
 //!
 //! When the searcher restarts under a running API (its own app, #267, or a
-//! sidecar restarted alone), the API runs the start's warm-up again
+//! sidecar restarted alone), the API runs another warm-up
 //! ([`Trigger::SearcherRestart`]): the searcher has lost its caches, and
-//! nothing else would warm them. It reads and computes as a start does, and
-//! stays ready meanwhile: the API itself is warm.
+//! nothing else would warm them. Unlike a start, it bypasses both response
+//! caches for searches, recomputing even responses the API already holds.
+//! Places and coverage still use their caches: they need no searcher. The
+//! run keeps the start's budget and gives way to visitors, and stays ready
+//! meanwhile. Cached responses remain available to visitors during refreshes
+//! and after failed ones; refreshes do not join visitors' cache-read flights.
 //!
 //! Warm-ups run one at a time, whatever started them (`WarmUps` in the
 //! crate root): one that starts while another runs waits for its turn, first
@@ -140,9 +145,8 @@ impl Trigger {
         }
     }
 
-    /// Whether visitors are served the version being warmed: the run reads
-    /// what the caches hold rather than computing it, and gives way to
-    /// visitors' searches.
+    /// Whether visitors are served the version being warmed: the run gives
+    /// way to visitors' searches.
     fn serving(self) -> bool {
         match self {
             Self::Startup | Self::SearcherRestart => true,
@@ -189,7 +193,7 @@ pub struct Report {
     /// Searches the run computed (or tried to), whatever came of them.
     pub computed: usize,
     /// Time computations waited for visitors' searches to end (after a
-    /// start).
+    /// start or searcher restart).
     pub gave_way: Duration,
     pub elapsed: Duration,
 }
@@ -431,6 +435,7 @@ impl Run<'_> {
             snap: self.snap.clone(),
             timeout: limit,
             warm_up: true,
+            refresh_search: self.trigger == Trigger::SearcherRestart,
         };
         let state = self.state;
         let served = tokio::time::timeout(limit, async move {
@@ -719,7 +724,7 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
         private: true,
     }));
 
-    let pending: Vec<&Search> = if trigger.serving() {
+    let pending: Vec<&Search> = if trigger == Trigger::Startup {
         run.load_cached(&searches).await
     } else {
         searches.iter().collect()

@@ -1,0 +1,4 @@
+# Independent 2B LoRA trial; no network or credentials inside the training container.
+workdir = "/work"
+use_gpu = true
+create_args = "--network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=16g --memory-swap=16g --pids-limit=1024 --shm-size=1g --tmpfs=/tmp:rw,size=2g"

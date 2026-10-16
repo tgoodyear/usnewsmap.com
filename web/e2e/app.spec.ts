@@ -852,3 +852,48 @@ test("a page found only in American Stories' text is marked, and the page count 
   await expect(page.locator(".summary .tooltip")).toHaveCount(0);
   await expect(page.getByRole("tooltip", { includeHidden: true })).toHaveCount(0);
 });
+
+test("OCR credits cover every engine in the serving inventory", async ({ page, request }) => {
+  const statusResponse = await request.get("/v1/status");
+  expect(statusResponse.ok()).toBeTruthy();
+  const status = await statusResponse.json();
+  const sources = status.published.sources;
+  await page.goto("/credits");
+  await expect(page).toHaveTitle("OCR credits · US News Map");
+  await expect(page.getByText(`Serving version: ${status.published.index_version}.`)).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  for (const engine of [
+    ...(sources?.ocr_ja?.by_engine ?? sources?.ja_latin?.by_engine ?? []),
+    ...(sources?.ocr_local?.by_engine ?? []),
+  ]) {
+    if (engine.pages > 0) await expect(page.getByRole("heading", { name: engine.engine, exact: true })).toBeVisible();
+  }
+  await expect(page.getByRole("link", { name: "Privacy", exact: true })).toHaveAttribute("href", "/privacy");
+  const accessibility = await new AxeBuilder({ page }).analyze();
+  expect(accessibility.violations).toEqual([]);
+});
+
+test("OCR credits render the engine fragment directly", async ({ page }) => {
+  await page.route("**/v1/status", (route) =>
+    route.fulfill({
+      json: {
+        schema: 1,
+        published: {
+          index_version: "credits-fixture",
+          sources: {
+            ja_latin: null,
+            ocr_ja: {
+              pages: 3,
+              by_engine: [{ source: "usnm-ndlocr-lite", engine: "ndlocr-lite 636d1cf", pages: 3 }],
+            },
+            ocr_local: null,
+          },
+        },
+      },
+    }),
+  );
+  await page.goto("/credits#ndlocr-lite%20636d1cf");
+  await expect(page.getByRole("heading", { name: "ndlocr-lite 636d1cf", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "DINOv3 License" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});

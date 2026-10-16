@@ -62,17 +62,10 @@ pub fn safe_segment(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
-/// `<batch>_ver<NN>`, the batch's directory name, if `batch` is a base
-/// batch name (lowercase letters, digits and `_`).
+/// `<batch>_ver<NN>`, preserving the case of a queue-valid base batch.
 pub fn batch_dir(batch: &str, version: u16) -> Option<String> {
-    let ok = !batch.is_empty()
-        && batch.len() <= 64
-        && batch
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        && !batch.starts_with('_')
-        && version > 0;
-    ok.then(|| format!("{batch}_ver{version:02}"))
+    (usnm_ocr_contract::message::is_base_batch_name(batch) && version > 0)
+        .then(|| format!("{batch}_ver{version:02}"))
 }
 
 /// The issue's directory name: `<YYYYMMDD><EE>`.
@@ -100,7 +93,21 @@ pub fn jp2_url_of(iiif_root: &str, service_root: &str, iiif_base: &str) -> Optio
     let id = iiif_base
         .strip_prefix(iiif_root)?
         .strip_prefix("service:")?;
-    if id.is_empty() || id.contains("..") || !id.split(':').all(safe_segment) {
+    if id.is_empty()
+        || id.contains("..")
+        || !id.split(':').all(|s| {
+            safe_segment(s)
+                || s.strip_prefix("batch_").is_some_and(|dir| {
+                    dir.rsplit_once("_ver").is_some_and(|(name, v)| {
+                        v.parse::<u16>()
+                            .ok()
+                            .and_then(|v| batch_dir(name, v))
+                            .as_deref()
+                            == Some(dir)
+                    })
+                })
+        })
+    {
         return None;
     }
     Some(format!("{service_root}{}.jp2", id.replace(':', "/")))
@@ -467,6 +474,45 @@ nothex  data/sn1/1/1890050301/0001.jp2
             None,
             "no way out of the tree"
         );
+    }
+
+    #[test]
+    fn mixed_case_batch_paths_preserve_loc_spelling() {
+        for name in [
+            "curiv_joshuaTree",
+            "lu_Cypher",
+            "me_Bissonnette",
+            "vi_White",
+            "wvu_Quote",
+            &format!("nbu_{}", "A".repeat(124)),
+        ] {
+            let dir = batch_dir(name, 1).unwrap();
+            assert_eq!(dir, format!("{name}_ver01"));
+            let awardee = name.split_once('_').unwrap().0;
+            let base =
+                storage_batch_url("https://tile.loc.gov/storage-services/service/ndnp/", &dir);
+            assert_eq!(base, format!("https://tile.loc.gov/storage-services/service/ndnp/{awardee}/batch_{name}_ver01/"));
+            let jp2 = file_url(&base, "sn83045081", "reel", "1904072901", "0812.jp2");
+            let iiif =
+                crate::loc::iiif_base("https://tile.loc.gov/image-services/iiif/", &jp2).unwrap();
+            assert!(iiif.contains(&format!("batch_{name}_ver01")));
+            assert_eq!(
+                jp2_url_of(
+                    "https://tile.loc.gov/image-services/iiif/",
+                    "https://tile.loc.gov/storage-services/service/",
+                    &iiif
+                ),
+                Some(jp2)
+            );
+        }
+        for name in [
+            "NBU_gage",
+            "nbu_bad-name",
+            "nbu_name_ver01",
+            &format!("nbu_{}", "A".repeat(125)),
+        ] {
+            assert_eq!(batch_dir(name, 1), None, "{name}");
+        }
     }
 
     #[test]

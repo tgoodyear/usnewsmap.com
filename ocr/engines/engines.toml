@@ -17,6 +17,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/eng.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -26,6 +27,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/deu.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -35,6 +37,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/deu_latf.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -44,6 +47,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/srp.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -53,6 +57,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/srp_latn.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -62,6 +67,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/rus.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -71,6 +77,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/ces.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -80,6 +87,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/pol.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -161,6 +169,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/frak2021.traineddata"
+version = "0.905"
 license = "CC0-1.0"
 author = "Stefan Weil, UB Mannheim"
 source = "https://zenodo.org/records/10125246/files/frak2021-0.905.traineddata"

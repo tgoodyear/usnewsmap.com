@@ -70,14 +70,24 @@ pub fn root() -> String {
     format!("audit/damage/v{}", damage::VERSION)
 }
 
-/// A batch version's page table.
+/// A batch version's page table; long batches get their own path segment.
 pub fn table_path(batch: &str, version: u16) -> String {
-    format!("{}/{batch}_ver{version:02}.parquet", root())
+    let file = format!("{batch}_ver{version:02}.parquet");
+    if file.len() <= 128 {
+        format!("{}/{file}", root())
+    } else {
+        format!("{}/{batch}/ver{version:02}.parquet", root())
+    }
 }
 
-/// A batch version's per-title summary, written after its table.
+/// A batch version's per-title summary, splitting long names as for its table.
 pub fn summary_path(batch: &str, version: u16) -> String {
-    format!("{}/{batch}_ver{version:02}.summary.json", root())
+    let file = format!("{batch}_ver{version:02}.summary.json");
+    if file.len() <= 128 {
+        format!("{}/{file}", root())
+    } else {
+        format!("{}/{batch}/ver{version:02}.summary.json", root())
+    }
 }
 
 /// The list of tables that make up an index version.
@@ -1067,6 +1077,31 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn batch_paths_preserve_existing_keys_and_bound_long_segments() {
+        assert_eq!(
+            super::table_path("nbu_gage", 1),
+            format!("{}/nbu_gage_ver01.parquet", super::root())
+        );
+        assert_eq!(
+            super::summary_path("nbu_gage", 1),
+            format!("{}/nbu_gage_ver01.summary.json", super::root())
+        );
+        for len in [100, 104, 105, 112, 128] {
+            let batch = format!("nbu_{}", "A".repeat(len - 4));
+            for version in [1, u16::MAX] {
+                for path in [
+                    super::table_path(&batch, version),
+                    super::summary_path(&batch, version),
+                ] {
+                    usnm_store::validate_path(&path).unwrap();
+                    assert!(path.contains(&batch));
+                    assert!(path.contains(&format!("ver{version:02}")));
+                }
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

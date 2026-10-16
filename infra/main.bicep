@@ -7,6 +7,7 @@
 
 targetScope = 'subscription'
 
+import { replicaComputeSlots } from 'api-capacity.bicep'
 import { guardrailPolicyNames } from 'guardrails.bicep'
 import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
 import { lakeOpen, nodeIpList, publicAccountIds } from 'public-accounts.bicep'
@@ -30,6 +31,14 @@ param allowedOrigins array = []
 
 @description('0 lets dev scale to zero; production keeps one warm replica.')
 param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
+
+@description('Maximum API replicas; also divides the visitor computation budget when one remote searcher is shared (#364).')
+@minValue(1)
+param apiMaxReplicas int = 2
+
+@description('Visitor computations allowed per searcher. Remote searchers divide this budget by API max replicas, rounding down; sidecars keep it per replica.')
+@minValue(1)
+param computeConcurrency int = 2
 
 @description('fixtures: the API serves its baked synthetic data. quickwit: reference data from Blob and a read-only Quickwit sidecar over qw-index (needs published indexes).')
 @allowed(['fixtures', 'quickwit'])
@@ -710,6 +719,9 @@ module diagnostics 'modules/diagnostics.bicep' = {
 
 // A new environment has no image to pull until CI pushes to its registry.
 var deployApi = useAcr || !empty(apiImage)
+// Evaluate the helper before runtime outputs enter the API module: a nested
+// user function there makes ARM short-circuit dependent modules during what-if.
+var apiComputeSlots = replicaComputeSlots(computeConcurrency, apiMaxReplicas, searchBackend == 'quickwit' && (searcherApp || indexStorageServe))
 
 module api 'modules/containerapp.bicep' = if (deployApi) {
   scope: rg
@@ -738,6 +750,8 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     cosmosEndpoint: cosmos.outputs.endpoint
     allowedOrigins: siteOrigins
     minReplicas: apiMinReplicas
+    maxReplicas: apiMaxReplicas
+    computeSlots: apiComputeSlots
     searchBackend: searchBackend
     searcherApp: searcherApp
     searcherAppRetain: searcherAppRetain
@@ -1103,6 +1117,7 @@ module dns 'modules/dns.bicep' = if (!empty(dnsZoneName)) {
     tags: tags
     zoneName: dnsZoneName
     appFqdn: deployApi ? api!.outputs.fqdn : ''
+    deployAppRecords: deployApi
     staticIp: containerEnv.outputs.staticIp
     verificationId: containerEnv.outputs.customDomainVerificationId
     apexTxtValues: dnsApexTxtValues[?dnsZoneName] ?? []

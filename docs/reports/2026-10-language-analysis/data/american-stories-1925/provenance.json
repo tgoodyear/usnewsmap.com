@@ -1,0 +1,81 @@
+{
+  "azure_account": "stusnmdffapzy",
+  "azure_sources": {
+    "curated/american-stories/years/1925.json": {
+      "bytes": 118,
+      "sha256": "9c674f97e112cf11143b347a34100121899ece401d0c9234d69b693e6fd6f1c3"
+    },
+    "curated/audit/american-stories-pages-v20261006-2-caj-usnm-jaone-prod-puy2mrs.json": {
+      "bytes": 8467,
+      "sha256": "a9dcad970b82f28ee055d22442dce548bca57ff0239adb0be844a1cfa7861fbd"
+    },
+    "reference/pages-v20261006-2/batches.json": {
+      "bytes": 1483815,
+      "sha256": "2ae256a1be5dbf1d9703ac95b43ebd4e7c070420f1f9c399e8c6ecd8bcf5ab28"
+    },
+    "reference/pages-v20261006-2/titles.json": {
+      "bytes": 1324071,
+      "sha256": "54c8a822e637d38c6912485fd5a43301324d23b939e47f3819b0a7ed2e41419e"
+    }
+  },
+  "date": "2026-10-15",
+  "execution_notes": "Existing Azure audit job image and identity; command override only; read/download/list only, no store writes or locks. Initial upstream run l16nwoa completed but its output was unavailable after replica cleanup; repeated once with console retention. Log Analytics returned only partial/no logs; console artifacts were decoded and their SHA-256 checked.",
+  "input_files": {
+    "imported-doc-ids.txt.gz": {
+      "bytes": 229605,
+      "sha256": "5df1fb4522787ea0f33b9858b918f7447e1d00673e8e08d2909355396d7e7187"
+    },
+    "loc-batches.json": {
+      "bytes": 116073,
+      "sha256": "fa79502e62f39b5d16fc4e34eaf248979738b2b41bf3ccfe6f0fdc322afc4737"
+    },
+    "loc-image-examples.json": {
+      "bytes": 3932,
+      "sha256": "49d032cba4995f0c5679248deda75500ca9ea08e63aebf458afd93c1597f96a3"
+    },
+    "original-audit.json": {
+      "bytes": 8467,
+      "sha256": "a9dcad970b82f28ee055d22442dce548bca57ff0239adb0be844a1cfa7861fbd"
+    },
+    "sample.csv.gz": {
+      "bytes": 171060,
+      "sha256": "0108063f573f30795060ea9e064456e68f4838d4af6e26621b92a124e70dc628"
+    },
+    "upstream-scan-names.txt.gz": {
+      "bytes": 960965,
+      "sha256": "522f0a6dbbe8d7a1252e78e345d1561013d6fc8fdee009e38fa509a55ff440ce"
+    }
+  },
+  "issue": 327,
+  "loc_listing": {
+    "bytes": 1773894,
+    "datasets": 3010,
+    "retained": "loc-batches.json (170 sampled batches only)",
+    "sha256": "7ced5ce120b1f6d1db0337c50d6c175e428d99111de398e3204e4ae9fa6c01df",
+    "url": "https://www.loc.gov/collections/chronicling-america/?fo=json&c=1&at=datasets"
+  },
+  "reference_version": "pages-v20261006-2",
+  "remote_result_sha256": {
+    "sample": "516db575b6a6b5284289fed43f9b002b41191a0ab423c1a6ba8a74878ecd3429",
+    "upstream": "d1753567ec041ef572a0995050bc040827cace66c8bb675df1862945b60f41a0"
+  },
+  "sample_execution": "caj-usnm-jaone-prod-2wmdyo5",
+  "sampling": "BLAKE2b(doc_id UTF-8, digest_size=8), big-endian integer % 10000 < 1000; date.year == 1925; first catalog language == eng (empty defaults to eng)",
+  "upstream": {
+    "lfs": {
+      "oid": "cdb9d9e84405fdf6689de9f4d2682476a678f087a0b0300454fe6ec02c96d102",
+      "pointerSize": 135,
+      "size": 1406233845
+    },
+    "license": "CC BY 4.0; Dell et al. (2023), American Stories, arXiv:2308.12477",
+    "oid": "750648739c068e3e187ae60729ea44f2295bddbf",
+    "path": "faro_1925.tar.gz",
+    "revision": "77e27fa69c4788dfaad1c9efd8a226d5a32d3e9a",
+    "size": 1406233845,
+    "type": "file",
+    "url": "https://huggingface.co/datasets/dell-research-harvard/AmericanStories/resolve/77e27fa69c4788dfaad1c9efd8a226d5a32d3e9a/faro_1925.tar.gz",
+    "validation": "gzip trailer and Content-Length checked by american_stories.tar_stream; LFS SHA-256 is upstream metadata, not independently recomputed by this run",
+    "xetHash": "4c5f383ae6fe5bf00d86df17b33201e84a869c549d1db24ec7c0364a5773d931"
+  },
+  "upstream_execution": "caj-usnm-jaone-prod-xvwm3uc"
+}

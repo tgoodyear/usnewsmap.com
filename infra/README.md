@@ -99,6 +99,13 @@ response or failed read/what-if fails closed and cannot be overridden.
 Guard failures are not retried. A first deployment is recognized only by
 `DeploymentStackNotFound`, not by an arbitrary failed read.
 
+Keep resource-loop counts independent of runtime outputs. The DNS CNAME
+loop always enumerates `www` and `api`, with the root's static API-deployment
+flag controlling each record. Using an unresolved API FQDN to size the loop
+makes ARM skip the entire DNS module; using it as the record condition
+still hides existing CNAMEs. The guard correctly refuses the missing zone.
+Resolve such incomplete plans rather than approving serving DNS removal.
+
 For a deliberately approved removal, repeat the exact **old** leaf name:
 
 ```sh

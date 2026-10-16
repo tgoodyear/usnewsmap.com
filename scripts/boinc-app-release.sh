@@ -7,7 +7,7 @@
 # usnm_surya (#516) and usnm_qwen (#522) have their own worker images and two plan classes, one per version:
 #   scripts/boinc-app-release.sh --env prod --app usnm_surya --version 1.0 --plan-class docker_mt \
 #     --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
-#   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_nvidia_cuda \
+#   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_nvidia_cuda_8b \
 #     --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
 #
 # Steps (contrib-compute/docs/app-release.md):
@@ -38,7 +38,7 @@
 # key status and podman) and prints the plan.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
   exit 2
 }
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false
@@ -75,9 +75,9 @@ case "$KIND" in
     [ -z "$BINARY$BINARY_SHA" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--binary and --extra-file are only valid with --kind native"
     case "$APP:$PLAN_CLASS" in
       usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker | usnm_quality:docker) ;;
-      usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt | usnm_qwen:docker_nvidia_cuda)
+      usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train)
         [ -n "$WORKER_OVERRIDE" ] || die "$APP has its own worker image: give --worker-image" ;;
-      *) die "--app and --plan-class must be usnm_ocr, usnm_assess, usnm_gold or usnm_quality with docker, or usnm_surya or usnm_qwen with docker_mt or docker_nvidia_cuda (scripts/boinc/install.py)" ;;
+      *) die "unsupported --app and --plan-class: Qwen uses docker_mt_2b (2B) or docker_nvidia_cuda_8b (8B); see scripts/boinc/install.py" ;;
     esac
     ;;
   native)
@@ -261,6 +261,12 @@ elif [ -z "$WORKER_IMAGE" ]; then
 else
   ghcr_public "$WORKER_IMAGE" ||
     die "$WORKER_IMAGE is not anonymously readable or lacks the required native Linux architecture for $PLATFORM"
+  if [ "$APP" = usnm_qwen ]; then
+    model=2b
+    [ "$PLAN_CLASS" != docker_nvidia_cuda_8b ] || model=8b
+    python3 scripts/boinc/qwen_disk.py --image "$WORKER_IMAGE" --model "$model" ||
+      die "Qwen image model/disk policy does not match the plan class"
+  fi
   echo "1. worker image $WORKER_IMAGE: anonymous pull works"
 fi
 

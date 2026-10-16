@@ -1,3 +1,4 @@
+import { creditHref } from "../lib/ocrCredits";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ApiError, type SearchParams } from "../api/client";
 import type { HitItem, HitSort } from "../api/types";
@@ -31,7 +32,7 @@ const SORT_LABELS: Record<HitSort, string> = {
 
 /** Why a page is marked "Our OCR" (#139). */
 const OCR_NOTE =
-  "The Library of Congress has no searchable text for this page. We read it ourselves with NDLOCR-Lite, text-recognition software from Japan's National Diet Library. Expect some misread characters.";
+  "Machine-read text: we read this page again from its image to replace missing or poorly read Library of Congress text. Expect some misread characters. See the engine and model credits.";
 
 /** Place drill-down (F-03): pages by date or by mentions, with snippets and LoC links. */
 export function PlacePanel({
@@ -111,11 +112,11 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
         {h.ocr && !site && (
           <>
             {" "}
-            <span className="badge badge--ocr" title={OCR_NOTE}>
+            <a className="badge badge--ocr" title={OCR_NOTE} href={creditHref(h.ocr.engine)}>
               Our OCR
               {/* The title isn't announced reliably or shown on touch: say it in text too. */}
               <span className="visually-hidden">. {OCR_NOTE}</span>
-            </span>
+            </a>
           </>
         )}
         {asNote && (

@@ -23,7 +23,10 @@ recovery window for `curated/` and `reference/`. The maintainer decided on
   zone. Do not exempt it in `publicAccountIds`; log writes/deletes.
 - Keep all existing lake grants. Add container-scoped Contributor for the
   writer system identity and ingest user identity, Reader for the parallel
-  searcher system identity and the API system identity during transition.
+  searcher system identity and the API system identity during transition
+  when `USNM_SEARCHER_APP=false`. The permanent standalone-searcher opt-in
+  removes the API identity and its grants (#365); `USNM_INDEX_STORAGE_SERVE`
+  alone does not, so the old lake-sidecar revision can finish serving.
 - Quickwit Azure URIs select containers, not accounts. Point the writer's
   account configuration and the parallel searcher's YAML at the new account;
   both metastore and index root stay `azure://qw-index`. Do not copy a

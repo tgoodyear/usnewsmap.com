@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 SERVICE = re.compile(r"[A-Za-z0-9_-]{1,80}\.service\Z")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
-START_TIMEOUT = 660
+START_TIMEOUT = 2460
 PREFS = {
     "run_on_batteries": "0", "run_if_user_active": "0", "run_gpu_if_user_active": "0",
     "idle_time_to_run": "5", "max_ncpus_pct": "100", "cpu_usage_limit": "100",
@@ -137,11 +137,11 @@ Delegate=yes
 ProtectControlGroups=false
 ProtectHome=read-only
 ReadWritePaths={data_dir} /tmp /var/tmp
-TimeoutStartSec=10min
+TimeoutStartSec=40min
 ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} --service={service}{job_args}
 """
     # Separate, service-selected config; do not replace a user's global Podman configuration.
-    containers = '[engine]\ncgroup_manager="systemd"\nconmon_cgroup="pod"\n'
+    containers = f'[engine]\ncgroup_manager="systemd"\nconmon_cgroup="pod"\nimage_copy_tmp_dir="{data_dir}/usnm-podman-tmp"\n'
     storage = f'[storage]\ndriver="overlay"\nrunroot="/run/{runtime}/containers"\ngraphroot="{data_dir}/usnm-podman-storage"\n'
     return config_dir, dropin, containers, storage
 
@@ -451,6 +451,9 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None):
     preflight_dir = Path("/usr/local/lib/usnm-boinc-volunteer")
     preflight_dir.mkdir(parents=True, exist_ok=True)
     write_file(preflight_dir / "preflight.py", Path(__file__).with_name("volunteer_preflight.py").read_text(), mode=0o755)
+    write_file(preflight_dir / "qwen_disk.py", Path(__file__).with_name("qwen_disk.py").read_text(), mode=0o644)
+    write_file(preflight_dir / "qwen-disk-policy.json",
+               (Path(__file__).resolve().parents[2] / "ocr/boinc/qwen/disk-policy.json").read_text(), mode=0o644)
     write_file(data_dir / "cc_config.xml", cc, uid=account.pw_uid, gid=account.pw_gid)
     write_file(data_dir / "global_prefs_override.xml", prefs, uid=account.pw_uid, gid=account.pw_gid)
     prepare_slots(data_dir, account.pw_uid, account.pw_gid, trust)

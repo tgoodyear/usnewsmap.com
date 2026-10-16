@@ -19,14 +19,12 @@
 // image (and with it the site) never restarts it. The API app then has the
 // api container alone and calls the searcher at its internal ingress; the
 // searcher app gets a system-assigned identity and its read-only role on
-// `qw-index`. The API app keeps its own identity and role meanwhile: the
-// old revision's sidecar serves until the new revision is ready, and turning
-// the setting off brings the sidecar back to a role that has already
-// reached Blob. They go in a later change, once the searcher app is kept
-// (docs/operations.md, "Searcher app"). Off, this module deploys exactly
-// what it did before. searcherAppRetain keeps the app and its role during
-// rollback while the API returns to its sidecar; clear it only after that
-// revision is ready and serving (docs/operations.md, "Searcher app").
+// `qw-index`. The API has no system-assigned identity or index reader role
+// in this mode: the maintainer chose to keep the searcher app (#365).
+// searcherAppRetain keeps the app and its role during rollback while the
+// API recreates its identity and reader roles and returns to its sidecar.
+// Clear retention only after role propagation and the sidecar revision's
+// readiness and search checks (docs/operations.md, "Searcher app").
 
 param location string
 param tags object
@@ -47,7 +45,11 @@ param indexSearcherName string = ''
 param indexStorageServe bool = false
 param storageAccountName string
 param minReplicas int
+@minValue(1)
 param maxReplicas int = 2
+@description('Allocated visitor computation slots per API replica, calculated by main.bicep from the searcher budget and API maximum replicas.')
+@minValue(1)
+param computeSlots int = 2
 @description('Proxies appending to X-Forwarded-For: 1 = Container Apps ingress only.')
 param trustedProxyHops int = 1
 @allowed(['fixtures', 'quickwit'])
@@ -88,15 +90,14 @@ var quickwit = searchBackend == 'quickwit'
 var sidecar = quickwit && !searcherApp && !indexStorageServe
 var searcherOn = quickwit && searcherApp
 var searcherDeployed = quickwit && (searcherApp || searcherAppRetain)
+var computeEnv = [{ name: 'USNM_COMPUTE_CONCURRENCY', value: string(computeSlots) }]
 var indexSearcherOn = quickwit && !empty(indexStorageAccountName)
-// The API app's system-assigned identity and its role on the index stay with
-// any Quickwit backend, not only with the sidecar. Turning the searcher app
-// on doesn't remove them: identity is the app's, not a revision's, so
-// removing it would cut off the old revision's sidecar, which serves until
-// the new revision is ready (and the stack would delete its role). Turning
-// it off then needs no new identity or role propagation for the sidecar.
-// Dropping them is a deliberate later change (docs/operations.md).
-var apiSystemIdentity = quickwit
+// Drop the API identity only for the permanent standalone-searcher setting.
+// Unlike `sidecar`, this must not depend on indexStorageServe: that cutover
+// keeps the old revision's sidecar and lake grants working (ADR-0021).
+// Rollback recreates the identity and grants; retain the standalone searcher
+// until they reach Blob and the sidecar revision is ready (#362, #365).
+var apiSystemIdentity = quickwit && !searcherApp
 
 // The searcher sidecar's node config, from infra/quickwit/searcher.yaml.
 // CI applies the same file on every deploy (scripts/ci/roll-api.sh), so it
@@ -176,7 +177,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv)
+  env: concat(backendEnv, apiEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv, computeEnv)
   probes: [
     {
       // A start loads the published version (loadSecs), then warms the
@@ -445,8 +446,8 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
 }
 
 // Read-only, and only the index: the sidecar can't write splits or the
-// metastore, and can't read anything else. Kept with the searcher app too
-// (apiSystemIdentity).
+// metastore, and can't read anything else. Retained during index-storage
+// cutover, but removed with the permanent standalone searcher setting.
 resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (apiSystemIdentity) {
   scope: account::blobs::index
   name: guid(account::blobs::index.id, app.id, blobReader)

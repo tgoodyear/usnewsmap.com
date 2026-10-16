@@ -45,6 +45,30 @@ class Check(unittest.TestCase):
             query,
         )
 
+    def test_searcher_panels_select_one_reporter_before_aggregation(self):
+        doc = json.loads((check.ROOT / "infra/workbooks/api.json").read_text())
+        caches = (check.ROOT / "ops/queries/searcher-caches.kql").read_text()
+        threads = (check.ROOT / "ops/queries/searcher-threads.kql").read_text()
+        prefix = caches[caches.index("let reports ="):caches.index("let m =")]
+        self.assertIn(prefix, threads)
+        self.assertIn('coalesce(tostring(Properties["usnm.searcher"]), AppRoleInstance)', prefix)
+        self.assertIn('Minute = bin(TimeGenerated, 1m)', prefix)
+        self.assertIn('summarize arg_min(AppRoleInstance, *) by Minute, Searcher', prefix)
+        self.assertIn('join kind=inner reporters on Minute, Searcher, AppRoleInstance', prefix)
+        for name in ("searcher-caches", "searcher-cache-mb", "searcher-cache-misses"):
+            query = next(i["content"]["query"] for i in doc["items"] if i["name"] == name)
+            self.assertIn(prefix, query, name)
+            self.assertIn('Name startswith "api.searcher_"', prefix)
+            if name == "searcher-caches":
+                without_comments = lambda text: "\n".join(
+                    line for line in text.splitlines() if not line.startswith("//")
+                )
+                self.assertEqual(without_comments(caches), without_comments(query))
+            else:
+                self.assertIn("Searcher", query[query.index("| summarize Mb" if name.endswith("-mb") else "| summarize Count"):])
+        for query in (caches, threads):
+            self.assertIn("Replica = Searcher", query)
+
     def problems(self, doc):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "a.json"

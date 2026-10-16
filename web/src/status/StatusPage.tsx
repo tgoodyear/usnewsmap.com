@@ -7,7 +7,7 @@ import { count, health, relative, span, when } from "./format";
 import { STATE_LABEL, headline, rightNow, steps, localDate } from "./now";
 import { TERMS } from "./terms";
 import { Brand } from "../components/Brand";
-import { InTheIndex, Languages, OurOcr, Places, TheDatasets, VersionsSection, lastPublished } from "./Datasets";
+import { InTheIndex, Languages, OurOcr, Places, TheDatasets, VersionsSection, lastPublished } from "./DatasetSections";
 import { Bar, Stats, Table, Time, Unavailable } from "./parts";
 
 const REFRESH_MS = 30_000;
@@ -82,7 +82,7 @@ export default function DatasetsPage() {
         <a href="https://www.loc.gov/ndnp/" target="_blank" rel="noopener noreferrer">
           NEH and Library of Congress
         </a>
-        ). <a href="/privacy">Privacy</a>
+        ). <a href="/privacy">Privacy</a> · <a href="/credits">OCR credits</a>
       </footer>
     </div>
   );

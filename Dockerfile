@@ -5,6 +5,7 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web ./
+COPY ocr/engines/engines.toml /ocr/engines/engines.toml
 # Same origin as the API: VITE_API_BASE stays empty.
 RUN npm run build && node scripts/precompress.mjs dist
 

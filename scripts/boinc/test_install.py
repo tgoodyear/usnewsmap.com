@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 spec = importlib.util.spec_from_file_location("boinc_install", Path(__file__).with_name("install.py"))
@@ -74,16 +75,31 @@ class InstallTest(unittest.TestCase):
         for name in ["usnm_quality_in", "usnm_quality_out"]:
             self.assertTrue((self.project / "templates" / name).is_file())
         self.assertIn("<sticky/>", (self.project / "templates" / "usnm_quality_in").read_text())
-        cpu = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_qwen", "docker_mt")
-        gpu = module.install(self.project, self.wrapper, IMAGE, "1.1", "usnm_qwen", "docker_nvidia_cuda")
-        self.assertIn("use_gpu = true", (gpu / "job_usnm_qwen_1.1_x86_64-pc-linux-gnu_docker_nvidia_cuda.toml").read_text())
-        self.assertNotIn("use_gpu", (cpu / "job_usnm_qwen_1.0_x86_64-pc-linux-gnu_docker_mt.toml").read_text())
+        cpu = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_qwen", "docker_mt_2b")
+        gpu = module.install(self.project, self.wrapper, IMAGE, "1.1", "usnm_qwen", "docker_nvidia_cuda_8b")
+        self.assertIn("use_gpu = true", (gpu / "job_usnm_qwen_1.1_x86_64-pc-linux-gnu_docker_nvidia_cuda_8b.toml").read_text())
+        self.assertNotIn("use_gpu", (cpu / "job_usnm_qwen_1.0_x86_64-pc-linux-gnu_docker_mt_2b.toml").read_text())
+        self.assertIn("# usnm_disk_cold_bytes=34359738368", (cpu / "job_usnm_qwen_1.0_x86_64-pc-linux-gnu_docker_mt_2b.toml").read_text())
+        self.assertIn("# usnm_disk_cold_bytes=51539607552", (gpu / "job_usnm_qwen_1.1_x86_64-pc-linux-gnu_docker_nvidia_cuda_8b.toml").read_text())
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_qwen", "docker_nvidia_cuda")
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_qwen", "docker_mt")
         for name in ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"]:
             self.assertTrue((self.project / "templates" / name).is_file())
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_quality", "docker_mt")
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_qwen", "docker")
+
+    def test_training_is_a_separate_gpu_only_app(self):
+        target = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_qwen_train", "docker_nvidia_train")
+        self.assertIn("use_gpu = true", next(target.glob("job_*.toml")).read_text())
+        for name in ("usnm_qwen_train_in", "usnm_qwen_train_out"):
+            self.assertTrue((self.project / "templates" / name).is_file())
+        for plan in ("docker", "docker_mt", "docker_nvidia_cuda"):
+            with self.assertRaises(ValueError):
+                module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_qwen_train", plan)
 
     def test_platforms_coexist_at_one_version_without_shared_download_collisions(self):
         staged_downloads = {}
@@ -195,6 +211,12 @@ class InstallTest(unittest.TestCase):
                     binary=bin_unix,
                     extra_files=bad_extras,
                 )
+        self.assertFalse((self.project / "apps/usnm_qwen").exists())
+
+        with patch.object(module.json, "loads", return_value={"native_bundle_bound_bytes": 1}):
+            with self.assertRaisesRegex(ValueError, "2 GiB disk envelope"):
+                module.install(self.project, version="1.0", app="usnm_qwen", plan_class="mt",
+                               kind="native", binary=bin_unix)
         self.assertFalse((self.project / "apps/usnm_qwen").exists())
 
         for plan_class, platform, gpu, expected_model_template in (

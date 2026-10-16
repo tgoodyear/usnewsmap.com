@@ -1,4 +1,4 @@
-//! Cache warm-up before a version serves: at a reload and at start.
+//! Cache warm-up at reload, startup, and searcher restart.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -766,6 +766,12 @@ async fn the_most_frequent_logged_searches_are_warmed_after_the_examples() {
     assert_eq!(status, StatusCode::OK);
     assert!(backend.calls() > calls);
 
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::SearcherRestart).await;
+    assert_eq!(report.from_log, 2, "{report:?}");
+    assert_eq!(report.cached, 0, "{report:?}");
+    assert_eq!(report.computed, prewarm::examples().len() + 2, "{report:?}");
+    assert_eq!(report.ok, queries, "{report:?}");
+
     log.shutdown(Duration::from_secs(5)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -927,6 +933,99 @@ async fn after_a_start_cached_searches_are_read_not_computed() {
     let reads = store.reads.load(Ordering::SeqCst);
     assert_eq!(visit_examples(&state, &slow, "fixture-v1").await, 0);
     assert_eq!(store.reads.load(Ordering::SeqCst), reads);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_searcher_restart_bypasses_blob_and_memory_without_losing_cached_responses() {
+    let dir = temp_reference("restart-cached");
+    let cache = dir.join("cache");
+    let mut cfg = config();
+    cfg.persist_after = Duration::ZERO;
+    let backend = Counting::new(Duration::ZERO, false);
+    let first = Arc::new(
+        reloading_state(&dir, cfg.clone(), backend.clone())
+            .await
+            .with_response_store(Arc::new(LocalStore::new(&cache))),
+    );
+    prewarm::run(&first, first.snapshot.load_full(), Trigger::Startup).await;
+    let (_, distinct) = load_examples(&first, &backend, "fixture-v1").await;
+    for _ in 0..200 {
+        if persisted(&cache, "fixture-v1") == distinct {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(persisted(&cache, "fixture-v1"), distinct);
+
+    let restarted = Counting::new(Duration::ZERO, false);
+    let store = Gauged::new(&cache, Duration::ZERO);
+    let state = Arc::new(
+        reloading_state(&dir, cfg.clone(), restarted.clone())
+            .await
+            .with_response_store(store.clone()),
+    );
+    for _ in 0..2 {
+        let before = restarted.calls();
+        let report =
+            prewarm::run(&state, state.snapshot.load_full(), Trigger::SearcherRestart).await;
+        assert_eq!(report.cached, 0, "{report:?}");
+        assert_eq!(report.computed, prewarm::examples().len(), "{report:?}");
+        assert_eq!(
+            report.examples_warm,
+            prewarm::examples().len(),
+            "{report:?}"
+        );
+        assert_eq!(report.ok, report.queries, "{report:?}");
+        assert!(restarted.calls() > before);
+        assert_eq!(store.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(visit_examples(&state, &restarted, "fixture-v1").await, 0);
+    }
+
+    // Failed refreshes must leave the API's already-warm responses usable.
+    let rejected = Counting::rejecting();
+    let failing = Arc::new(
+        reloading_state(&dir, cfg, rejected.clone())
+            .await
+            .with_response_store(store),
+    );
+    prewarm::run(&failing, failing.snapshot.load_full(), Trigger::Startup).await;
+    let report = prewarm::run(
+        &failing,
+        failing.snapshot.load_full(),
+        Trigger::SearcherRestart,
+    )
+    .await;
+    assert_eq!(report.failed, prewarm::examples().len(), "{report:?}");
+    assert_eq!(report.cached, 0, "{report:?}");
+    assert_eq!(report.computed, prewarm::examples().len(), "{report:?}");
+    assert_eq!(visit_examples(&failing, &rejected, "fixture-v1").await, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_searcher_restart_gives_way_and_stops_at_the_startup_budget() {
+    let dir = temp_reference("restart-budget");
+    let mut cfg = config();
+    cfg.compute_concurrency = 2;
+    cfg.prewarm_startup_budget = Duration::from_millis(100);
+    let backend = Counting::new(Duration::from_secs(2), false);
+    let state = Arc::new(reloading_state(&dir, cfg.clone(), backend.clone()).await);
+    let visitor = visitor_search(&state).await;
+    let before = backend.calls();
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::SearcherRestart).await;
+    assert_eq!(backend.calls(), before, "{report:?}");
+    assert_eq!(report.computed, 0, "{report:?}");
+    assert_eq!(report.skipped, prewarm::examples().len(), "{report:?}");
+    assert!(report.gave_way >= Duration::from_millis(50), "{report:?}");
+    visitor.abort();
+
+    let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::SearcherRestart).await;
+    assert_eq!(report.computed, 1, "{report:?}");
+    assert_eq!(report.timed_out, 1, "{report:?}");
+    assert_eq!(report.skipped, prewarm::examples().len() - 1, "{report:?}");
+    assert!(report.elapsed < Duration::from_secs(1), "{report:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1139,21 +1238,36 @@ async fn examples_warm_counts_what_the_cache_still_holds() {
 #[tokio::test]
 async fn a_searcher_restart_warms_again_while_the_replica_stays_ready() {
     // The searcher restarted under a running API (its own app, #267): the
-    // API runs the start's warm-up again and keeps serving.
+    // API recomputes cached searches and keeps serving.
     let dir = temp_reference("searcher-restart");
     let backend = Counting::new(Duration::from_millis(20), false);
     let state = Arc::new(reloading_state(&dir, config(), backend.clone()).await);
 
+    let startup = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert_eq!(startup.examples_warm, prewarm::examples().len());
     let before = backend.calls();
     let rewarm = spawn_searcher_warm_up(state.clone()).expect("a warm-up after the restart");
     assert_eq!(readyz(&state).await, StatusCode::OK);
+    let ex = &prewarm::examples()[0];
+    let (status, _) = get(
+        &state,
+        &format!("/v1/aggregate?{}&v=fixture-v1", ex.aggregate),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "cached visitors still get responses"
+    );
     rewarm.await.unwrap();
     assert!(backend.calls() > before, "the warm-up searched nothing");
     assert_eq!(visit_examples(&state, &backend, "fixture-v1").await, 0);
 
-    // The next restart warms again.
+    // The next restart warms again, even though every response is cached.
+    let before = backend.calls();
     let again = spawn_searcher_warm_up(state.clone()).expect("a later restart's warm-up");
     again.await.unwrap();
+    assert!(backend.calls() > before);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

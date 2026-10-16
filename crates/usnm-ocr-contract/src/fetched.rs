@@ -115,7 +115,7 @@ fn schema() -> SchemaRef {
 
 /// A batch name safe as one path segment, as the manifest's.
 fn safe_batch(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    crate::message::is_batch_identifier(s)
 }
 
 impl Fetched {
@@ -247,6 +247,24 @@ mod tests {
         assert_eq!(back.len(), 3);
         assert!(pages.iter().all(|p| back.contains(&p.batch, &p.doc_id)));
         assert!(!back.contains("nbu_gage", "sn2_1901-01-01_ed-2_seq-9"));
+    }
+
+    #[test]
+    fn batch_names_use_the_shared_128_byte_alphabet() {
+        for len in [65, 105, 128] {
+            let batch = format!("nbu_{}", "A".repeat(len - 4));
+            let pages = [page(&batch, "sn1_1890-05-03_ed-1_seq-1")]
+                .into_iter()
+                .collect();
+            let back = decode(Bytes::from(encode("v1", &pages).unwrap())).unwrap();
+            assert!(back.contains(&batch, "sn1_1890-05-03_ed-1_seq-1"));
+            assert!(!back.contains(&batch.to_ascii_lowercase(), "sn1_1890-05-03_ed-1_seq-1"));
+        }
+        let bad = page(
+            &format!("nbu_{}", "A".repeat(125)),
+            "sn1_1890-05-03_ed-1_seq-1",
+        );
+        assert!(encode("v1", &[bad].into_iter().collect()).is_err());
     }
 
     #[test]

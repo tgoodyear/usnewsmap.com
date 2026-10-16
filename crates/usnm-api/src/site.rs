@@ -5,7 +5,7 @@
 //!   image build wrote next to each one.
 //! - Paths that look like app routes (no file extension, not under
 //!   `/assets/`) get `index.html`, so client-side routes survive a reload.
-//!   The app's own pages (`/`, `/datasets`, `/privacy`) are 200; any other
+//!   The app's own pages (`/`, `/datasets`, `/privacy`, `/credits`) are 200; any other
 //!   such path gets the same shell with a 404, and the app shows a not-found
 //!   page. Missing files are a plain 404. `/privacy` gets its own title,
 //!   canonical link and `og:url` in the shell, since it is indexed.
@@ -117,7 +117,7 @@ fn decoded_len(segment: &str) -> usize {
 fn is_app_page(path: &str) -> bool {
     matches!(
         path.trim_end_matches('/'),
-        "" | "/datasets" | "/privacy" | "/index.html"
+        "" | "/datasets" | "/privacy" | "/credits" | "/index.html"
     )
 }
 
@@ -132,28 +132,29 @@ fn datasets_redirect(uri: &Uri) -> Option<String> {
     })
 }
 
-/// The shell for `path`: the privacy page's head names that page, not the
-/// home page, because search engines index it.
+/// Indexable static pages name themselves in the head, not the home page.
 fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
-    if path.trim_end_matches('/') != "/privacy" {
-        return index;
-    }
+    let (page, title) = match path.trim_end_matches('/') {
+        "/privacy" => ("privacy", "Privacy"),
+        "/credits" => ("credits", "OCR credits"),
+        _ => return index,
+    };
     let Ok(html) = String::from_utf8(index) else {
         return Vec::new();
     };
     html.replacen(
         "<title>US News Map</title>",
-        "<title>Privacy · US News Map</title>",
+        &format!("<title>{title} · US News Map</title>"),
         1,
     )
     .replacen(
         r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
-        r#"<link rel="canonical" href="https://usnewsmap.com/privacy" />"#,
+        &format!(r#"<link rel="canonical" href="https://usnewsmap.com/{page}" />"#),
         1,
     )
     .replacen(
         r#"<meta property="og:url" content="https://usnewsmap.com/" />"#,
-        r#"<meta property="og:url" content="https://usnewsmap.com/privacy" />"#,
+        &format!(r#"<meta property="og:url" content="https://usnewsmap.com/{page}" />"#),
         1,
     )
     .into_bytes()
@@ -318,6 +319,8 @@ mod tests {
             "/datasets/",
             "/privacy",
             "/privacy/",
+            "/credits",
+            "/credits/",
             "/index.html",
             "/index.html/",
         ] {
@@ -337,6 +340,15 @@ mod tests {
         ] {
             assert!(!is_app_page(path), "{path}");
         }
+    }
+
+    #[test]
+    fn the_credits_page_names_itself_in_the_head() {
+        let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
+        let html = String::from_utf8(shell_for("/credits/", index.to_vec())).unwrap();
+        assert!(html.contains("<title>OCR credits · US News Map</title>"));
+        assert!(html.contains(r#"href="https://usnewsmap.com/credits""#));
+        assert!(html.contains(r#"content="https://usnewsmap.com/credits""#));
     }
 
     #[test]

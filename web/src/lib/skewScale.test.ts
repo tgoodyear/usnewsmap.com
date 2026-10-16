@@ -113,3 +113,10 @@ describe("evidence", () => {
     expect(skewInfo({ ...s, expected: 3, observed: 4 }, 500, null).dir).toBe(1);
   });
 });
+
+it("names the additional OCR profile language codes", () => {
+  expect(languageName("bos")).toBe("Bosnian");
+  expect(languageName("nob")).toBe("Norwegian Bokmål");
+  expect(languageName("nno")).toBe("Norwegian Nynorsk");
+  expect(languageName("grc")).toBe("Ancient Greek");
+});

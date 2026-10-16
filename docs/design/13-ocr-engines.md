@@ -1057,9 +1057,42 @@ Node 2's GPUs aren't known yet. Before Turing, vLLM and the mistral.rs prebuilds
 ## 13.13 Open questions
 
 - **The spike** (§13.11, step 1). If rootless podman behind a shared API socket doesn't work on AlmaLinux 9.8 with SELinux enforcing, ADR-0016 is amended.
-- **Licences.** The three readings left open were settled on 2026-10-11, so nothing checked so far is undecided (§13.7.2). The credits page that tiers 1 and 2 require isn't built yet (#372), and neither are `engines.toml` and the gate (§13.11 step 7, #371).
+- **Licences.** The three readings left open were settled on 2026-10-11, so nothing checked so far is undecided (§13.7.2). The credits page that tiers 1 and 2 require is `/credits` (#372); `engines.toml` and the shared gate are implemented (§13.11 step 7, #371).
 - **wordfreq's data** is CC BY-SA 4.0, plus the Google Books Ngram terms. The exported lists keep that licence, with a README naming wordfreq 3.1.1 and its sources, and the crate's licence metadata notes the data files (12 Step 4). The same holds for `crates/usnm-core/data/english-words.txt` and `english-shared-words.txt`, which main already commits as wordfreq exports. The new export follows `scripts/build-english-words.py`, and the port carries over `ja-ocr/wordlists/haw.txt` (CC0) and `yi.txt` (CC BY-SA 4.0) with their recorded licences.
 - **Tesseract on node 1:** how many instances the two cores carry, and whether `deu_latf+deu` or another profile wins on the German pages.
 - **The registry token exchange** with an Arc identity.
 - **`podman --remote` without a home** under the hardened unit (§13.6.1), not yet tried on node 1.
 - **Node 2's GPUs**, which decide the model server and the vision-language candidates.
+
+### OCR credits page (#372)
+
+`/credits` reads the serving version's per-engine page counts from
+`/v1/status` (`published.sources.ocr_local.by_engine` and
+`published.sources.ocr_ja.by_engine`). The latter is the union of Japanese
+search-index pages and main-index Latin-script replacements, deduplicated
+per page and engine. Hidden main-index copies are excluded; a reading still
+served independently by the Japanese index keeps its credit. It is frozen
+in the release, not taken from the latest
+OCR job; older releases fall back to `ja_latin.by_engine` when available. Each “Our OCR”
+badge links to the exact engine key's fragment; the footer and “Pages we
+read ourselves” also link to the page.
+
+Vite parses `ocr/engines/engines.toml` at build time for both the page and
+its tests. Only serving engines and their selected profile models appear;
+the pre-catalog Japanese NDLOCR-Lite pipeline uses its catalog credit and
+bundled DINOv3 model. Survey inventory alone is not evidence of use.
+Unknown serving keys or incomplete credits produce an explicit error, and
+the end-to-end inventory coverage test fails rather than silently omitting
+them. Licence links, mandatory attribution, and attributed-tier evidence
+come directly from the catalog. Model revisions absent from the existing
+serving inventory are labelled as unrecorded rather than invented. Current
+worker image pins are checked against the catalog but are not evidence of
+the model revision that produced a retained short-key reading; those
+revisions remain unrecorded until per-reading digests can verify them.
+
+New releases freeze the used catalog entries and mandatory-attribution list
+in `credits.json`, checked by the reference manifest and exposed as
+`published.sources.ocr_credits`. Publication fails if a serving engine key
+cannot be credited. The page prefers that frozen snapshot; only releases
+predating this file use the catalog bundled at web build time. This keeps
+credits for a serving version independent of later catalog edits.

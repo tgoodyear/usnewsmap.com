@@ -1,7 +1,9 @@
 """Exercise the publish transaction on a temporary share, without a database."""
 import os
+import importlib.util
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 import unittest
 
@@ -58,6 +60,67 @@ class PublishTests(unittest.TestCase):
         self.assertEqual((template.stat().st_ino, template.stat().st_mtime_ns), template_before)
         self.assertEqual(len((self.project / 'calls').read_text().splitlines()), 6)
         self.assertFalse((self.project / '.usnm-publish.lock').exists())
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_all_container_classes_publish_and_pass_actual_php_verification(self):
+        # Execute the production PHP allowlist/lookup, not the usual no-op PHP stub.
+        php = shutil.which('php')
+        (self.root / 'php').write_text(f'#!/bin/sh\nexec "{php}" "$@"\n')
+        (self.project / 'html/inc/boinc_db.inc').write_text('''<?php
+class BoincApp {
+    static function lookup($query) { return (object)["id" => 1]; }
+}
+class BoincPlatform {
+    static function lookup($query) { return (object)["id" => 2]; }
+}
+class BoincAppVersion {
+    static function enum($query) {
+        $plan = getenv("APPVER_PLAN_CLASS");
+        if (strpos($query, "plan_class='$plan'") === false) { exit(9); }
+        return [(object)["id" => 3]];
+    }
+}
+''')
+        repo = Path(__file__).resolve().parents[3]
+        spec = importlib.util.spec_from_file_location('boinc_install', repo / 'scripts/boinc/install.py')
+        install = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(install)
+        for app, plan in install.JOB_TOML:
+            with self.subTest(app=app, plan=plan):
+                subdir = f'x86_64-pc-linux-gnu__{plan}'
+                src = self.source / f'apps/{app}/1.0/{subdir}'
+                src.mkdir(parents=True)
+                (src / 'docker_wrapper').write_text(f'{app}-{plan}')
+                result = subprocess.run(
+                    ['bash', str(self.script)], capture_output=True, text=True,
+                    env={**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'container',
+                         'APPVER_APP': app, 'APPVER_VERSION': '1.0',
+                         'APPVER_PLATFORM': 'x86_64-pc-linux-gnu', 'APPVER_PLAN_CLASS': plan,
+                         'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'Verified {app} 1.0 x86_64-pc-linux-gnu {plan}', result.stdout)
+                self.assertTrue((self.project / f'apps/{app}/1.0/{subdir}/docker_wrapper').is_file())
+
+    def test_container_publication_rejects_wrong_or_legacy_model_classes(self):
+        for app, plan, platform in (
+            ('usnm_qwen', 'docker_mt', 'x86_64-pc-linux-gnu'),
+            ('usnm_qwen', 'docker_nvidia_cuda', 'x86_64-pc-linux-gnu'),
+            ('usnm_surya', 'docker_mt_2b', 'x86_64-pc-linux-gnu'),
+            ('usnm_ocr', 'docker_nvidia_cuda_8b', 'x86_64-pc-linux-gnu'),
+            ('usnm_qwen', 'docker_mt_2b', 'aarch64-unknown-linux-gnu'),
+            ('usnm_qwen', 'docker_nvidia_cuda_8b', 'windows_x86_64'),
+        ):
+            with self.subTest(app=app, plan=plan, platform=platform):
+                result = subprocess.run(
+                    ['bash', str(self.script)], capture_output=True, text=True,
+                    env={**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'container',
+                         'APPVER_APP': app, 'APPVER_VERSION': '1.0', 'APPVER_PLATFORM': platform,
+                         'APPVER_PLAN_CLASS': plan,
+                         'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+                )
+                self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.project / 'calls').exists())
 
     def test_changed_platform_or_template_is_refused_before_registration(self):
         self.assertEqual(self.publish('x86_64-pc-linux-gnu').returncode, 0)

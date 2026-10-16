@@ -236,7 +236,7 @@ impl Options {
             }
         }
         for b in &self.batches {
-            if !usnm_store::is_safe_segment(b) {
+            if !usnm_ocr_contract::message::is_base_batch_name(base_batch(b)) {
                 bail!("unsafe seed batch name {b:?}");
             }
         }
@@ -489,10 +489,15 @@ fn rank_path(key: &str, batch: &RunBatch, titles: &HashMap<String, Vec<String>>)
         h.update(b";");
     }
     let tag = &crate::source::hex(&h.finalize())[..12];
-    format!(
-        "{ROOT}/seed/rank/{key}/{}_ver{:02}-{tag}.json",
-        batch.batch, batch.curated.version
-    )
+    let file = format!("{}_ver{:02}-{tag}.json", batch.batch, batch.curated.version);
+    if file.len() <= 128 {
+        format!("{ROOT}/seed/rank/{key}/{file}")
+    } else {
+        format!(
+            "{ROOT}/seed/rank/{key}/{}/ver{:02}-{tag}.json",
+            batch.batch, batch.curated.version
+        )
+    }
 }
 
 /// Where a plan's finished units are listed, per set of filters: units
