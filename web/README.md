@@ -40,9 +40,127 @@ Build-time settings:
 - **Snippets** are split into text and `<mark>` segments and rendered as text nodes. No API HTML is ever injected.
 - **Accessibility.** A Table tab mirrors the map. Playback works from the keyboard: `Space`, `←`/`→` (`Shift` for 10), `Home`/`End`. The current date is announced in a live region. Reduced motion is honored. Without WebGL2, the table is shown instead of the map.
 - **Page views** (`src/pageview.ts`, 07 §7.8). One per page load, sent with `navigator.sendBeacon` to `/v1/beacon`: the page name and title, and on the first page the referrer's origin and the landing URL's `utm_*` tags. Never the search or other query parameters. Do Not Track and Global Privacy Control turn it off, and nothing is stored in the browser. The privacy page (`/privacy`) describes it for visitors.
+- **Basemap startup.** The entry bundle warms the initial permalink/default viewport’s tiles, sprites and label glyphs before the lazy map stack loads (up to 40 requests; skipped with `VITE_BASEMAP_STYLE=none`). TileJSON resolves the provider’s current tile URLs at runtime. Dots fade in after the basemap’s first loaded idle, or after a two-second fallback if the provider is slow/blocked; reduced motion disables the fade. Requests use the browser HTTP cache, not persistent application storage.
 - **Performance.** The map stack is lazy-loaded; the critical-path JS is about 99 KB gzip (budget 250 KB).
 
-Not yet built: compare mode, the first-appearance and state-choropleth layers, the coverage overlay, embed mode, export, and the share dialog beyond copying the link.
+## States layer
+
+Choose **States** under Map layer (or share `layer=states`). Modern borders
+apply even to historical territories. Census public-domain boundaries are
+prepared reproducibly; see [the asset source and preparation](src/assets/README.md).
+Alaska, Hawaii and territories remain at their true positions.
+
+`engine/states.ts` reduces both sparse cubes to state prefix sums once per
+search, then uses the same cumulative/trailing window as points. Crucially,
+the denominator includes **all coverage places**, including places with no
+matches; aligning coverage only to matching places would inflate state rates.
+Unknown/missing place states go to Unassigned, never disappear from the
+table. If the API caps matching places (5,000), a visible warning marks
+incomplete numerators; the missing tail cannot be assigned or recovered in
+the client. No real-query cap survey has been performed. No API changes or
+extra aggregate/coverage requests are introduced.
+
+First-pass decisions for #452:
+
+- Page-weighted matches per 1,000 pages published, not raw counts or per-title
+  rates. Both raw counts remain in the tooltip, sortable table and CSV.
+- Minimum denominator: one page. No arbitrary suppression threshold; the
+  legend warns that small counts are noisy. Zero pages is grey/unknown
+  (not rate zero), while pages with no matches are light neutral. The legend's
+  no-pages swatch is additionally hatched; map no-pages fills are solid grey.
+- Five quantiles of positive state rates in the **current window**, with
+  zero a separate neutral class. Ties remain together and can leave empty
+  classes, explicitly labelled. Breaks change with scrubbing; the legend
+  changes with them. No raw/rate toggle.
+- Desktop click adds a state filter; existing search filters remove it.
+  Touch taps pin details with explicit Filter and Dismiss buttons, so the
+  initial tap does not accidentally filter. The states table is the keyboard
+  path, with the same filter action and a CSV download.
+- States is unavailable for non-Pages measures, newspaper-filtered searches,
+  Congress, or unavailable coverage baselines. Unsupported shared links draw
+  points instead. The layer selector stays hidden in Table/no-WebGL contexts;
+  an already-selected States layer retains its accessible table there.
+- Geometry is reused across frames; only fill attributes change.
+  Unavailable coverage never draws no-pages fills. Escape dismisses hover
+  or pinned state details regardless of keyboard focus. Small positive rates
+  retain significant digits, and legend precision increases when needed to
+  distinguish unequal thresholds.
+  Opt-in reproducible performance gates and the measured hardware/backend
+  limitations are described below. Functional test success is not proof
+  of the performance budgets.
+
+### States performance measurements
+
+Run against the synthetic API serving the production web build, not production:
+
+```sh
+# 5,000 places, 120 buckets, 600,000 cells in each cube; 2,000 timed frames.
+USNM_STATES_PERF=1 npm test -- src/engine/states.performance.test.ts
+
+# PW_BASE_URL points at the local synthetic API serving web/dist.
+# USNM_STATES_GPU=metal explicitly selects native Apple GPU rendering on macOS.
+USNM_STATES_PERF=1 USNM_STATES_GPU=metal PW_BASE_URL=http://127.0.0.1:18092 \
+  npm run e2e -- e2e/states.performance.spec.ts --project=desktop --workers=1
+```
+
+The scrub gate asserts **p95 ≤2 ms**, after 200 warm-up frames, including totals,
+quantiles and all fill-colour lookups. Preparation is reported separately; this
+does not measure the rest of React or deck.gl's draw. On **Apple M1 / macOS arm64,
+Node 25.8.2**, the isolated 2026-10-15 run measured preparation **16.679 ms**,
+median **0.014 ms**, p95 **0.023 ms**, maximum **0.100 ms** across 2,000 frames.
+A concurrent test run had p95 **0.080 ms** but a **12.780 ms** maximum outlier.
+This is a percentile gate, **not a guarantee that every frame is ≤2 ms**.
+
+The browser gate asserts a maximum **300 ms** over five fresh browser processes
+with Chrome's shader disk and program caches disabled. It
+measures asset Resource Timing `responseEnd` to the first deck draw plus two
+animation frames, allowing a browser paint opportunity. The mark
+`usnm-states-first-paint` is a **presentation proxy**, not a GPU-fence or
+compositor timestamp. It uses fixture data and a local plain basemap with the
+map loaded before selecting States; it is not a real-data basemap benchmark.
+The test checks that no geometry resource was requested before States selection.
+`usnm-states-parsed` and `usnm-states-first-draw` additionally separate JSON
+decoding and CPU draw submission from the subsequent paint opportunity. Neither
+draw submission nor two animation frames proves GPU completion.
+The paint proxy waits until the basemap-gated overlay has nonzero opacity;
+an invisible deck draw is not counted as visible paint. The benchmark waits
+for the initial basemap/overlay fade to finish before selecting States.
+
+On the same Apple M1 with **Chromium 153.0.8010.12, ANGLE Metal native GPU**,
+the initial run measured **489.4, 45.6, 49.4, 50.1, 44.9 ms**: the first cold
+draw **failed** the 300 ms target. A repeat process, with driver caches retained,
+measured **64.2, 39.6, 48.1, 47.7, 48.4 ms**, passing the gate.
+Default headless Chromium used **SwiftShader software Vulkan**, not the Apple
+GPU, and measured **2,165.6, 1,677.3, 1,586.5, 1,511.1, 1,485.3 ms**, failing.
+These runs do **not** establish the cold first-paint target on a representative
+mid-range laptop. That acceptance remains outstanding; warm-cache success
+must not conceal the cold/backend failures.
+
+On 2026-10-16, the process-isolated native-Metal gate measured **60.8, 45.5,
+52.3, 58.4, 51.3 ms**. The corresponding CPU first-draw intervals were **43.4,
+40.3, 48.9, 42.8, 47.4 ms**, and JSON decoding completed **4.3–10.4 ms** after
+the asset arrived. An independent five-process run measured **46.8–84.6 ms**
+for the paint proxy. Disabling Chrome caches did **not** reproduce the original
+489.4 ms failure: the persistent Apple GPU-driver cache remains uncontrolled.
+These are browser-cold, potentially driver-warm results, **not a cold-driver
+pass or an optimization claim**. Clearing shared machine/OS caches or rebooting
+was deliberately not attempted. A driver-cold capture on representative
+hardware, including GPU/compositor completion if strict actual presentation is
+required, remains a release blocker. The first failed run did not capture the
+new intermediate marks, so attributing its excess time to shader compilation
+or to the two animation frames would be speculation.
+After integrating the initial basemap readiness gate, the visibility-aware
+five-process native-Metal run measured **52.9, 52.8, 54.7, 81.4, 67.7 ms**.
+The same uncontrolled-driver-cache limitation applies; no cold pass is claimed.
+
+Read-only public metadata on 2026-10-15 (`pages-v20261010-2`) listed **1,617
+places**, none missing state codes; all codes are represented by the boundary
+asset, including PR and VI. The published catalog is below `MAX_PLACES=5,000`,
+so no query over those known places can exceed it today. This is not a survey
+of real queries or orphaned index place IDs. The tested truncation warning
+remains necessary for future growth.
+
+Not yet built: compare mode, the first-appearance layer, the coverage overlay, embed mode, export beyond the available CSV downloads, and the share dialog beyond copying the link.
 
 ## Search engines and link previews
 

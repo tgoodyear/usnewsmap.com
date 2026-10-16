@@ -100,8 +100,8 @@ class StartBridge(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def run_script(self, *args, **extra):
-        return subprocess.run([SCRIPT, "--env", "prod", *args], cwd=ROOT, env={**self.env, **extra},
+    def run_script(self, *args, env_name="prod", **extra):
+        return subprocess.run([SCRIPT, "--env", env_name, *args], cwd=ROOT, env={**self.env, **extra},
                               capture_output=True, text=True)
 
     def calls(self):
@@ -192,15 +192,24 @@ class StartBridge(unittest.TestCase):
                 "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated",
                 "REFERENCE_URL": "https://d/reference", "OUT_URL": "https://x/ocr-out"}
         tmpl = json.dumps({"containers": [{"name": "handoff", "env": [{"name": k, "value": v} for k, v in base.items()]}]})
-        r = self.run_script("--target", "handoff", "--step", "collect", "--var", "JOB_ID=" + "a" * 64,
-                            STUB_TEMPLATE=tmpl)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        update = [c for c in self.calls() if c.startswith("containerapp job update")][0]
-        self.assertIn("--name usnm-boinc-handoff-caj-prod --resource-group rg-usnm-prod", update)
-        self.assertIn("HANDOFF_STEP=collect", update)
-        self.assertNotIn("BRIDGE_STEP", update)
+        settings_home = os.path.join(self.tmp, "settings")
+        for env_name in ("prod", "dev"):
+            env_dir = os.path.join(settings_home, env_name)
+            os.makedirs(env_dir)
+            with open(os.path.join(env_dir, ".env"), "w") as f:
+                f.write(f'AZURE_SUBSCRIPTION_ID="{SUB}"\n')
+                f.write(f'AZURE_RESOURCE_GROUP="rg-usnm-{env_name}"\n')
+                f.write(f'BOINC_HANDOFF_JOB="usnm-boinc-handoff-caj-{env_name}"\n')
+            r = self.run_script("--target", "handoff", "--step", "collect", "--var", "JOB_ID=" + "a" * 64,
+                                env_name=env_name, STUB_TEMPLATE=tmpl, STUB_SUB=SUB,
+                                USNM_SETTINGS_HOME=settings_home)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            update = [c for c in self.calls() if c.startswith("containerapp job update")][-1]
+            self.assertIn(f"--name usnm-boinc-handoff-caj-{env_name} --resource-group rg-usnm-{env_name}", update)
+            self.assertIn("HANDOFF_STEP=collect", update)
+            self.assertNotIn("BRIDGE_STEP", update)
         r = self.run_script("--target", "handoff", "--step", "collect", "--var", "HANDOFF_STEP=x",
-                            STUB_TEMPLATE=tmpl)
+                            STUB_TEMPLATE=tmpl, USNM_SETTINGS_HOME=settings_home)
         self.assertEqual(r.returncode, 1)
 
 

@@ -75,6 +75,14 @@ The Azure Files share mounts over SMB with `mfsymlinks` plus explicit uid/gid, m
 options. The MySQL server's `require_secure_transport` is OFF: BOINC's clients do not request TLS,
 and #464 tracks the gated migration to required TLS. The database is private to the VNet.
 
+To record a work-volume sample, run
+`scripts/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record
+containing aggregate workunit and result counts plus BOINC's recent-credit user/host counts;
+the workbook reads it from console logs. Workunit validation, assimilation and file-deletion
+counts are separate, potentially overlapping flags. The bridge job is manual-triggered, so
+the time chart gains a point only when this step is run.
+
+`scripts/build-boinc-images.sh` builds and pins the server/bridge artifacts.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
 designated signing host without exporting its private key. These are release inputs, not
 steps printed after every deployment. See [app-release.md](app-release.md) for signing and

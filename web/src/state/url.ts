@@ -6,7 +6,7 @@ import type { SearchParams } from "../api/client";
 import type { BucketUnit, HitSort, Mode } from "../api/types";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
-export type Layer = "points" | "heat";
+export type Layer = "points" | "heat" | "states";
 /**
  * What the map measures: pages with a match (`raw`), the relative rate
  * against other places (`skew`, doc 11), or when each place's matches
@@ -168,7 +168,7 @@ export function parseView(search: string): ViewState {
     series: congress ? parseSeries(s.get("series")) : [],
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
-    layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
+    layer: oneOf(s.get("layer"), ["points", "heat", "states"] as const, DEFAULTS.layer),
     norm: supportedNorm(
       oneOf(s.get("norm"), ["raw", "skew", "when"] as const, DEFAULTS.norm),
       parseLccns(s.get("lccn")),
