@@ -8,11 +8,11 @@ OPTIONS = "/usr/local/share/usnm/mysql-tls.cnf"
 PHP_CONNECT = f"""\
 function usnm_mysql_tls_connect($host, $user, $password, $database, $port) {{
     $conn = mysqli_init();
+    // mysqlnd rejects MYSQLI_OPT_SSL_VERIFY_SERVER_CERT; use its connection flag.
     if (!$conn ||
-        !mysqli_options($conn, MYSQLI_OPT_SSL_VERIFY_SERVER_CERT, true) ||
         !mysqli_ssl_set($conn, null, null, "{CA}", null, null) ||
         !mysqli_real_connect($conn, $host, $user, $password, $database, $port,
-            null, MYSQLI_CLIENT_SSL)) {{
+            null, MYSQLI_CLIENT_SSL | MYSQLI_CLIENT_SSL_VERIFY_SERVER_CERT)) {{
         return false;
     }}
     $status = $conn->query("SHOW SESSION STATUS LIKE 'Ssl_cipher'");

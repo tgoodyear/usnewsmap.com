@@ -135,6 +135,10 @@ choose it now. Notes:
   while enforcement is OFF. Do not restart/deploy production as part of this PR.
   Local connector mocks and patch/syntax checks are prerequisites, **not** live
   Azure/TLS acceptance or proof of uninterrupted production operation.
+  The [local disposable TLS fixture](db-tls-acceptance.md) exercises the actual
+  pinned Python, both PHP APIs, C++ `DB_CONN` and CLI against a TLS-required
+  MariaDB server, including certificate/hostname/plaintext negatives. It does
+  not replace Azure MySQL or full persisted-project migration acceptance.
 
 - CPU credits. B1ms has 20% baseline CPU. The transitioner and feeder poll constantly. If the
   credit balance drains, MySQL throttles to 20%. We alarm on the CPU-credit metric and move to
