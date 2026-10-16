@@ -271,14 +271,16 @@ On Linux, submission gives only the staged download inputs (`page` and
 `request.json`) mode `0644`, before their atomic rename and before `create_work`.
 These files are meant to be downloaded by volunteers; the separate Apache
 identity must be able to read them. The dispatch journal and original input
-snapshots retain owner-only access. The project administrator must also give
-Apache traversal access to the download fan-out directories; submission does
-not change existing directory ownership or ACLs. Check both file access and
+snapshots retain owner-only access. Submission adds any missing `0755` bits to
+download fan-out directories, including new directories regardless of umask;
+it does not change their ownership or ACLs. Check both file access and
 traversal with the actual web-server identity on the deployed filesystem.
 
 The server bridge wrapper submits directly and preserves the CLI's exit status.
 It does not scan the download or hand-off trees to broaden permissions after
-submission. Operator hand-offs need access to the private journal's owner.
+submission. The hand-off directory (`$HANDOFF_DIR`) stays private: `submit` and
+`reconcile` run as the same user, and nothing reads that directory under another
+identity. Operator hand-offs therefore need access to the journal owner's files.
 Deploy the updated bridge image containing both this CLI and wrapper together.
 
 A `published` bridge entry means its native output pair is in `ocr-out`, not that

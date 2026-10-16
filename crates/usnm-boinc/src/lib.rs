@@ -75,7 +75,7 @@ pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         Some(std::fs::Permissions::from_mode(0o644))
     };
-    // Other platforms have no mode bits to set; the web server there is not BOINC's Apache.
+    // The BOINC server is Linux-only, so `None` is fine on other platforms.
     #[cfg(not(unix))]
     let permissions = None;
     atomic_with_permissions(path, bytes, permissions)
