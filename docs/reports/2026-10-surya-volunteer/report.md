@@ -10,9 +10,10 @@ Podman runtime can pass through an NVIDIA GPU.
 Do not widen the sample or draw a production-routing conclusion from this
 document. First publish the GPU app through the normal signed release process,
 then run the four-page probe on an attached NVIDIA host, including rootless
-Podman/CDI if that is the target runtime. Record host evidence in the campaign
-output before treating GPU support as accepted. The existing probe commands
-and required digests are in [docs/boinc-surya.md](../../boinc-surya.md).
+Podman with CDI if that is the target runtime. Record host evidence in the
+campaign output before treating GPU support as accepted. The existing probe
+commands and required digests are in
+[docs/boinc-surya.md](../../boinc-surya.md).
 
 ## Results
 
@@ -28,8 +29,8 @@ from the local CI runner or the 8-page engine survey.
 | Worst English | tiled / whole / capped | — | — | — | — | — | — | — | — |
 
 The pilot must report per-mode word-bag quality against LoC, gold-set metrics
-where page IDs overlap, CPU/GPU device agreement, all outcomes including
-timeouts and no-GPU results, and the observed resource peaks. Set the
+where page IDs overlap, agreement between the CPU and GPU devices, all outcomes
+including timeouts and no-GPU results, and the observed resource peaks. Set the
 cross-host Dice threshold from the pilot pairs rather than treating the probe
 floor as a production threshold.
 
@@ -39,8 +40,9 @@ floor as a production threshold.
   was blocked by production deployment authorization.
 - Run a bounded probe on a real attached NVIDIA GPU host and verify device
   passthrough, including the intended container runtime.
-- Add/use the stratified sample and Surya collection/scoring workflow to
-  produce the report above before widening to a few hundred pages per group.
+- Add or use the stratified sample and the Surya collection and scoring
+  workflow to produce the report above before widening to a few hundred pages
+  per group.
 - Reassess resource bounds from volunteer measurements. The current shared
   workunit memory bound is 12 GiB to cover the CPU peak measured in round 1;
   the GPU container has an 8 GiB cap.

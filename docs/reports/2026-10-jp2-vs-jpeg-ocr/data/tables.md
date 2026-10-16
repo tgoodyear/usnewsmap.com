@@ -101,4 +101,4 @@ xychart-beta
     bar [0.665, 0.841, 0.458]
 ```
 
-First bar series is JP2, second is IIIF JPEG.
+The first bar series is JP2 and the second is the IIIF JPEG.
