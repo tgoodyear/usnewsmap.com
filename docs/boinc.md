@@ -655,6 +655,25 @@ usnm-boinc gold-run --bundle usnm-ocr-gold-v1.tar --cache CACHE --work WORK \
   --out gold-result.json [--tesseract tesseract] [--psm 3] [--dpi 300] [--limit N]
 ```
 
+For another engine, replace `--tesseract` with `--engine-cmd /path/to/adapter
+--engine-name NAME --engine-version VERSION`. The executable receives exactly
+two arguments: the crop image path and its bundle language. It must write only
+UTF-8 OCR text to stdout and exit zero. Use an adapter executable for extra
+flags; no shell expansion is performed. Each crop has the same timeout; output
+is capped at 16 MiB. External commands require Unix; their process group is
+killed on completion, failure, timeout and cancellation, including ordinary
+adapter subprocesses. Detached sessions are outside this containment (use a
+container for untrusted engines). Failed command output (including stderr) is never copied
+into the report. The profile is the bundle language; psm/dpi describe Tesseract
+only and do not configure an external engine. Name/version are explicit operator
+metadata, not independently verified image identity.
+
+`gold-run` does not download files, but it cannot sandbox an arbitrary executable.
+Run the **entire invocation** in a container with `--network=none` (as for the
+stock worker), with preinstalled engine/models and a staged cache; never give
+the adapter reference text. This option is for local experiments, not the
+locked `usnm_gold` BOINC job or its trust reports.
+
 `gold-result.json` holds `bundle_version`, the manifest's sha256, the engine
 (name, version, psm, dpi), one row per crop (counts only: reference characters,
 character edits, reference words, word edits, the model profile and the time),
