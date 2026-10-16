@@ -1404,6 +1404,8 @@ The keep-set scans are intended to be copied to a Cold-tier container, `scans` i
    scripts/provision.sh --env prod
    ```
 
+   If the full-stack preview includes unrelated active-job changes, do not apply it just to grant archive access. `bash scripts/ocr-node/grant-archive-uploader.sh --env prod --dry-run` previews only the same deterministic archive role assignment, and the command without `--dry-run` applies only that assignment. It validates the existing Arc principal and archive read/write-only role, adds no OCR group membership, and preserves the main template's resource identity for subsequent full provisions.
+
 3. **The unit.** Install the worker binary of a release on pve-big (the scan-fetch container has it; the host needs its own copy at `/usr/local/bin/usnm-ocr-worker`), the user `usnm` in the `himds` group (as for the Serial Set unit), and the units:
 
    ```sh
