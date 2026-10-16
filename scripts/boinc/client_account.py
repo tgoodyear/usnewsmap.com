@@ -108,12 +108,20 @@ def snapshot(rpc, expected_id, expected_name):
         "pending_results": len(pending),
         "scheduler_rpc_in_progress": project is not None and flag(project, "scheduler_rpc_in_progress"),
         "no_new_tasks": project is not None and flag(project, "dont_request_more_work"),
+        "suspended_via_gui": project is not None and flag(project, "suspended_via_gui"),
         "account_manager": project is not None and flag(project, "attached_via_acct_mgr"),
     }
 
 
 def project_operation(rpc, operation):
     rpc.call("project_" + operation, {"project_url": MASTER})
+
+
+def attach_preflight(rpc, current):
+    if current.get("suspended_via_gui"):
+        raise ValueError("GUI-suspended project refused; owner pause must not be cleared")
+    if flag(rpc.call("get_cc_status"), ".//disallow_attach"):
+        raise ValueError("Client disallows attachment; no project mutation performed")
 
 
 def check_private_logging(rpc):
@@ -255,6 +263,7 @@ def protect_preferences(rpc, data_dir, backup_dir):
 def rejoin(rpc, key, expected_id, expected_name, timeout=300, original_no_work=None,
            data_dir=None, backup_dir=None):
     current = snapshot(rpc, expected_id, expected_name)
+    attach_preflight(rpc, current)
     if current["account_manager"]:
         raise ValueError("Account-manager project must not be detached independently")
     if original_no_work is None:
@@ -274,6 +283,7 @@ def rejoin(rpc, key, expected_id, expected_name, timeout=300, original_no_work=N
             current = snapshot(rpc, expected_id, expected_name)
             if current["pending_results"] or current["scheduler_rpc_in_progress"]:
                 return {**current, "status": "draining; no detach performed"}
+            attach_preflight(rpc, current)
             project_operation(rpc, "detach")
             if snapshot(rpc, expected_id, expected_name)["attached"]:
                 raise RuntimeError("Project detach did not complete; no duplicate attach attempted")
@@ -340,6 +350,7 @@ def main():
             else:
                 if result["account_manager"]:
                     raise ValueError("Account-manager project must not be detached independently")
+                attach_preflight(rpc, result)
                 state = migration_state(state_file, result, args.expected_user_id, identity)
                 with network_policy(rpc):
                     result = rejoin(rpc, key, args.expected_user_id, args.expected_user_name,

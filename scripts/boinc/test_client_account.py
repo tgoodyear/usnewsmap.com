@@ -22,12 +22,29 @@ class ClientAccountTests(unittest.TestCase):
     def setUp(self):
         self.real_guard = account.network_guard
         self.real_protection = account.protect_preferences
+        self.real_preflight = account.attach_preflight
         protection = patch.object(account, "protect_preferences")
         guard = patch.object(account, "network_guard", return_value=nullcontext())
+        preflight = patch.object(account, "attach_preflight")
         protection.start()
         guard.start()
+        preflight.start()
         self.addCleanup(protection.stop)
         self.addCleanup(guard.stop)
+        self.addCleanup(preflight.stop)
+
+    def test_gui_suspension_is_refused_before_any_client_mutation(self):
+        rpc = Mock()
+        with self.assertRaisesRegex(ValueError, "GUI-suspended"):
+            self.real_preflight(rpc, state(suspended_via_gui=True))
+        rpc.call.assert_not_called()
+
+    def test_attach_disabled_client_is_refused_before_any_project_mutation(self):
+        rpc = Mock()
+        rpc.call.return_value = ET.fromstring("<reply><disallow_attach/></reply>")
+        with self.assertRaisesRegex(ValueError, "disallows attachment"):
+            self.real_preflight(rpc, state())
+        self.assertEqual([call.args[0] for call in rpc.call.call_args_list], ["get_cc_status"])
 
     def test_only_private_weak_key_for_expected_account(self):
         with tempfile.TemporaryDirectory() as directory:

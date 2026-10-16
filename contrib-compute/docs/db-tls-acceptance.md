@@ -338,6 +338,9 @@ pre-existing user no-new-tasks hold. Therefore user-held and account-manager
 projects are refused **without changing them**, rather than claiming a safe hold
 that the client cannot provide. A helper-owned drain hold is distinguished by
 its journal and resumes the original work-enabled policy after rejoining.
+An independent GUI project suspension is also refused, including on reinvocation;
+`disallow_attach` is checked before journaling or any project mutation so a valid
+attachment is never detached from a client that prohibits reattachment.
 
 Before attachment, capture effective global resource preferences and protect
 them using the supported local-override RPC, preventing a new account's scheduler
