@@ -90,7 +90,9 @@ assignments to host 9 and no assignments to other hosts.
 
 Both dry-run and apply verify the active registered Linux Intel app version 1.0:
 its published Dockerfile must verify against the project's code-signing public
-key and contain the campaign's exact image digest. Workunits specify
+key and contain the campaign's exact image digest. Stock `update_versions` stages
+app-version files directly in `download/`, not in the hashed workunit-input
+hierarchy returned by `dir_hier_path`. Workunits specify
 `app_version_num=100`, so a later release cannot take over still-pending pilot
 jobs. Do not replace files within version 1.0 after publication.
 
