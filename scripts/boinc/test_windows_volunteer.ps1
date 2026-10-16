@@ -349,6 +349,87 @@ Test-Case 'RPC authorization failure is redacted and actionable' {
     } 'Cannot query the local BOINC client'
 }
 
+Test-Case 'status mode is local and read-only: attachment then task summary, nothing else' {
+    Set-FlowMocks
+    Set-Mock Get-ProjectTaskSummary {
+        param($Installation)
+        $script:Calls.Add('tasks')
+        return [pscustomobject]@{ Total = 0; ByState = [ordered]@{} }
+    }
+    Invoke-WindowsStatus -Directory ''
+    Assert-True (($script:Calls -join ',') -eq 'status,tasks') 'no readiness, network, consent, Manager or install in status mode'
+}
+
+Test-Case 'status mode without an installation or attachment is actionable' {
+    Set-FlowMocks
+    $script:Installation = $null
+    Assert-Throws { Invoke-WindowsStatus -Directory '' } 'not installed'
+    Set-FlowMocks
+    Set-Mock Test-ProjectAttached { param($Installation) $script:Calls.Add('status'); return $false }
+    Set-Mock Get-ProjectTaskSummary { param($Installation) $script:Calls.Add('tasks') }
+    Assert-Throws { Invoke-WindowsStatus -Directory '' } 'not attached'
+    Assert-True (-not $script:Calls.Contains('tasks')) 'no task query when not attached'
+}
+
+Test-Case 'task summary counts only this project, by state, from a read-only query' {
+    Set-Mock Invoke-BoundedProcess {
+        param($File, $Arguments, $Directory)
+        Assert-True ($Arguments -eq '--get_tasks') 'read-only command only'
+        Assert-True ($Directory -eq $PSScriptRoot) 'boinccmd reads local RPC auth from the data directory'
+        $output = @(
+            '======== Tasks ========',
+            '1) -----------',
+            '   name: usnm_qwen_1',
+            '   project URL: https://boinc.usnewsmap.com/',
+            '   state: downloaded',
+            '   active_task_state: EXECUTING',
+            '2) -----------',
+            '   name: other_1',
+            '   project URL: https://other.example/',
+            '   state: downloaded',
+            '   active_task_state: EXECUTING',
+            '3) -----------',
+            '   name: usnm_qwen_2',
+            '   project URL: https://boinc.usnewsmap.com/',
+            '   state: uploaded',
+            '   active_task_state: UNINITIALIZED',
+            '4) -----------',
+            '   name: usnm_qwen_3',
+            '   project URL: https://boinc.usnewsmap.com.evil.invalid/',
+            '   state: downloaded',
+            '   active_task_state: UNINITIALIZED',
+            '5) -----------',
+            '   name: usnm_qwen_4',
+            '   project URL: https://boinc.usnewsmap.com/',
+            '   state: compute error',
+            '   active_task_state: UNINITIALIZED',
+            '6) -----------',
+            '   name: usnm_qwen_5',
+            '   project URL: https://boinc.usnewsmap.com/',
+            '   state: upload failed',
+            '   active_task_state: UNINITIALIZED'
+        ) -join "`n"
+        return [pscustomobject]@{ ExitCode = 0; Output = $output; ErrorOutput = '' }
+    }
+    $summary = Get-ProjectTaskSummary ([pscustomobject]@{ Directory = $PSScriptRoot; DataDirectory = $PSScriptRoot })
+    Assert-True ($summary.Total -eq 4) "four usnewsmap tasks, got $($summary.Total)"
+    Assert-True ($summary.ByState['executing'] -eq 1) 'running task reported by its active state'
+    Assert-True ($summary.ByState['uploaded'] -eq 1) 'finished task reported by its state'
+    Assert-True ($summary.ByState['compute error'] -eq 1) 'multi-word failure state kept whole'
+    Assert-True ($summary.ByState['upload failed'] -eq 1) 'multi-word upload failure kept whole'
+    Assert-True (-not $summary.ByState.Contains('compute')) 'failure state is not truncated to its first word'
+}
+
+Test-Case 'task summary redacts RPC failures like the attachment check' {
+    Set-Mock Invoke-BoundedProcess {
+        param($File, $Arguments, $Directory)
+        return [pscustomobject]@{ ExitCode = 1; Output = 'private output must not be printed'; ErrorOutput = 'Authorization failure' }
+    }
+    Assert-Throws {
+        Get-ProjectTaskSummary ([pscustomobject]@{ Directory = $PSScriptRoot; DataDirectory = $PSScriptRoot })
+    } 'Cannot query the local BOINC client'
+}
+
 Test-Case 'HTTP errors do not count as scheduler acceptance' {
     Set-Mock Invoke-WebRequest { throw 'network details' }
     Assert-Throws { Test-ProjectReachable } 'not scheduler acceptance'
