@@ -200,18 +200,44 @@ scheduler rules may reject 8.2.11 until the server release containing this
 version-gate correction is deployed. This does not change the separately
 documented Linux multi-CPU/GPU pilot requirements or task resource limits.
 
-1. **Install Podman** (via Podman Desktop or Homebrew/installer so `podman` is available in `/opt/podman/bin/podman` or standard `PATH`).
-2. **Size the Podman Machine VM**: for multi-CPU or 6 GiB workloads (`usnm_surya`, or running tasks comfortably alongside `usnm_ocr`), initialize or resize the Podman machine with at least 4 CPUs, 8 GiB RAM, and 30 GiB disk:
+1. **Install Podman** (via Podman Desktop or Homebrew/installer). The stable client recognizes `/opt/podman/bin/podman`, `/usr/local/bin/podman`, and Apple Silicon Homebrew's `/opt/homebrew/bin/podman`. Restart BOINC normally after installation so its cached runtime-path detection is refreshed; finish/report existing tasks first.
+2. **Inspect and size BOINC's own VM**, not a separate VM belonging to your login account. The installed `Run_Podman` helper runs Podman as `boinc_project`, with configuration and data under `/Library/Application Support/BOINC podman`. Plain `podman machine init` in your Terminal account does **not** configure the runtime BOINC uses:
 
    ```sh
-   podman machine init --cpus 4 --memory 8192 --disk-size 30
-   podman machine start
+   "/Library/Application Support/BOINC Data/Run_Podman" "$(command -v podman)" machine list
    ```
 
-   Note that the BOINC client also manages its own Podman VM through `Run_Podman` at startup and omits Docker/Podman capability from scheduler requests until that VM is running (`client/cs_scheduler.cpp`).
+   BOINC normally creates and starts its VM at startup and omits container
+   capability from scheduler requests until it is running
+   (`client/cs_scheduler.cpp`). If no BOINC-owned VM exists, a bounded **ordinary
+   OCR** profile tested with stable 8.2.11 is 2 CPUs, 4 GiB RAM, and 30 GiB disk.
+   With the client stopped and no outstanding tasks, initialize it through the
+   same helper:
 
-3. **Verify `Run_Podman` pause/resume**: upstream `docker_wrapper` release 22 failed to resume paused containers on macOS because `Run_Podman` re-joins its arguments into a second shell command, causing the unquoted `|` in `--format "{{.Names}}|{{.Status}}"` to be parsed as a shell pipe (`client/Run_Podman.cpp`, `docker_wrapper.cpp` `get_container_state`). Our Mac app versions build `docker_wrapper` from the pinned BOINC commit with `scripts/boinc/patch-mac-wrapper.py` applied so `--format` pipe quoting survives `Run_Podman` and pause/resume works ([details](notes/boinc-buda-arm-evaluation.md)). After attaching, verify in Activity Monitor / `podman ps` that suspending and resuming a task in BOINC Manager pauses and unpauses the container cleanly without duplicate-name errors.
-4. **Status**: `UNVERIFIED` end-to-end on live volunteer Mac hosts until a reserved server cohort completes download, execution, pause/resume, upload, validation, and bridge collection.
+   ```sh
+   "/Library/Application Support/BOINC Data/Run_Podman" "$(command -v podman)" machine init --cpus 2 --memory 4096 --disk-size 30 -v /Library:/Library
+   "/Library/Application Support/BOINC Data/Run_Podman" "$(command -v podman)" machine start
+   ```
+
+   Do not reinitialize an existing machine. To resize one, first finish/report
+   all tasks and stop the client, then use the helper's `machine stop`,
+   `machine set --cpus 2 --memory 4096`, and `machine start` commands before
+   reopening Manager. Never stop the VM under running tasks.
+
+   Budget **1.5 GiB per concurrent ordinary OCR task plus VM overhead**; the
+   scheduler sees the Mac's host RAM, not just the VM allocation. A conservative
+   pilot uses one project task at a time via
+   `<project_max_concurrent>1</project_max_concurrent>` inside the project's
+   existing `app_config.xml` `<app_config>` element, followed by Manager's
+   **Read config files** command. Preserve any existing app configuration.
+   Higher concurrency requires proportionately more guest RAM and host
+   headroom. This small OCR profile is **not** a Surya profile: the current
+   Surya CPU job requires **12 GiB**, so the previous 8 GiB example was
+   insufficient. Separate multi-CPU/GPU admission and publication requirements
+   still apply.
+
+3. **Verify `Run_Podman` pause/resume**: upstream `docker_wrapper` release 22 failed to resume paused containers on macOS because `Run_Podman` re-joins its arguments into a second shell command, causing the unquoted `|` in `--format "{{.Names}}|{{.Status}}"` to be parsed as a shell pipe (`client/Run_Podman.cpp`, `docker_wrapper.cpp` `get_container_state`). Our Mac app versions build `docker_wrapper` from the pinned BOINC commit with `scripts/boinc/patch-mac-wrapper.py` applied so `--format` pipe quoting survives `Run_Podman` and pause/resume works ([details](notes/2026-10-15-boinc-cross-platform-distribution.md)). This is a project application fix, not a replacement for the installed BOINC client/helper. After attaching, verify in Activity Monitor and the helper's `podman ps` output that suspending and resuming a task in BOINC Manager pauses and unpauses the container cleanly without duplicate-name errors.
+4. **Status**: runtime readiness measured on Computer 1 (M1/16 GiB) with the unmodified stable **BOINC 8.2.11**, Homebrew **Podman 6.1.4**, and the BOINC-owned ARM VM above. Live client RPC reported that runtime after an idle-client restart. The pinned ARM OCR worker enforced `cpu.max=100000 100000`, `memory.max=1610612736`, `memory.swap.max=0`, `pids.max=64`, `NoNewPrivs=1`, and only `DAC_OVERRIDE`. This is **not** end-to-end acceptance: a reserved server cohort must still complete signed download, execution, client-controlled pause/resume, upload, validation, and bridge collection; Intel Mac acceptance remains unverified.
 
 ### 1.3 Windows (`windows_x86_64`)
 
