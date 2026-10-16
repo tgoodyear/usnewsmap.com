@@ -74,6 +74,25 @@ class OperatorWorkspace(unittest.TestCase):
             for path in paths:
                 shutil.rmtree(path)
 
+    def test_failed_execution_log_is_printed_and_never_fails_the_caller(self):
+        stub = r"""
+az() {
+  case "$*" in
+    *"workspace list"*) echo ws-id ;;
+    *"log-analytics query"*) [[ "$*" == *"'bad-exec-'"* ]] && echo '[{"TimeGenerated":"t1","Log_s":"Error: boom"}]' || echo '[]' ;;
+  esac
+}
+"""
+        command = (stub + "set -euo pipefail; ENV_NAME=prod; SUBSCRIPTION=s; die() { exit 1; }; "
+                   ". scripts/lib/boinc.sh; boinc_execution_log bad-exec 0; boinc_execution_log quiet-exec 0; "
+                   "boinc_execution_log 'x; rm' 0; echo done")
+        result = subprocess.run(["bash", "-c", command], cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "done")
+        self.assertIn("t1  Error: boom", result.stderr)
+        self.assertIn("no log lines for quiet-exec yet", result.stderr)
+        self.assertNotIn("x; rm", result.stderr)
+
     def test_release_staging_paths_match_image_build_paths(self):
         release = Path(ROOT, "scripts/boinc-app-release.sh").read_text()
         container = Path(ROOT, "contrib-compute/images/appver/Containerfile").read_text()
