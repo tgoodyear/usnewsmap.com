@@ -1,5 +1,10 @@
 # Releasing a BOINC app version
 
+Runtime rebuilds retain the deployed feeder's `--allapps` interleaving and
+1,000 shared-memory work slots so older queued applications cannot starve newer
+canaries. Re-rendering an existing project also leaves already-correct config/key
+symlinks intact; a runtime upgrade must not transiently remove its signing paths.
+
 `scripts/boinc-app-release.sh` builds, stages, signs and publishes one app version on the
 live server in one command:
 
