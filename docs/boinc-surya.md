@@ -6,7 +6,7 @@ Status: a probe of a few pages, to find out whether volunteers' container runtim
 
 ## What a unit is
 
-One page per workunit: the page's full-size IIIF JPEG from LoC (`page.jpg`) and the job (`surya.json`). The host reads the page in up to three input modes:
+One page per workunit: the page's full-size IIIF JPEG from LoC (`page.jpg`) and the job (`surya.json`). Staging also keeps LoC's ALTO as `loc.xml` (or records `loc.xml.missing`) on the server for later quality scoring; it is never sent to a volunteer. The ALTO request uses the shared LoC pacer and the same hold-on-block behavior as scan staging. The host reads the page in up to three input modes:
 
 | Mode     | Input                                                                                                                                      |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -69,7 +69,9 @@ A unit that can't run at all (an input whose checksum doesn't match, an engine t
 
 Vision-language output can differ between GPUs, and between CPU and GPU, so the threshold is measured, not assumed. Until the probe has measured it, `compare` accepts any Dice of 0.5 or more (`PROBE_MIN_DICE`), which only rejects unrelated text, and the logged pairs give the distribution to set it from.
 
-`rsc_fpops_est` is 1e14 (round 1's median 18,753 CPU-seconds per tiled page at a few GFLOPS per core) and `rsc_memory_bound` 8 GiB. Round 1 peaked at 11.8 GB with 8 threads on a whole node, but BOINC compares the bound with the share of memory the volunteer allows, so 12 GiB would keep most 16 GB GPU hosts out. Both get revised once the probe has measured peaks and times.
+`rsc_fpops_est` is 1e14 (round 1's median 18,753 CPU-seconds per tiled page at a few GFLOPS per core) and `rsc_memory_bound` 12 GiB, rounded up from the measured 11.8 GB CPU peak. A workunit can be sent to either version, so the shared admission bound must cover the CPU version even though the GPU container is capped at 8 GiB. This conservatively excludes hosts whose BOINC memory allowance is below 12 GiB; revise it only after pilot measurements.
+
+The ALTO staged with each page is retained so the Surya outputs can be scored against LoC with the existing report tooling. There is not yet a Surya collector that produces the large-sample quality report; the attached-host pilot and its output are prerequisites to setting the agreement threshold and widening the sample.
 
 ## Running a campaign
 
@@ -129,4 +131,5 @@ docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=1g --gpus all -v
 
 - That rootless Podman with a CDI specification gives the container the GPU through the stock wrapper (the probe's question).
 - That llama.cpp's CUDA build falls back to its CPU backends on a host without a GPU outside the CI runner.
-- Peak memory and time on volunteers' hosts, and so the plan classes' limits and the workunit bounds.
+- Peak memory and time on volunteers' hosts, and so the plan classes' limits.
+- Quality against LoC and the gold set for a stratified multi-hundred-page sample.
