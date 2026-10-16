@@ -127,6 +127,29 @@ TasksMax=256
 """
 
 
+# A former OCR node that now runs only BOINC: the whole machine, minus headroom for the OS.
+DEDICATED_NODE_SLICE = """[Slice]
+CPUWeight=1
+IOWeight=1
+MemoryMax=85%
+MemorySwapMax=0
+TasksMax=1024
+"""
+DEDICATED_PREFS = {"run_if_user_active": "1", "ram_max_used_busy_pct": "80", "ram_max_used_idle_pct": "80"}
+OCR_WORKER = "usnm-ocr-worker.service"
+
+
+def check_ocr_worker_retired():
+    load = run(["systemctl", "show", OCR_WORKER, "--property=LoadState", "--value"])
+    if load == "not-found":
+        return
+    enabled = run(["systemctl", "show", OCR_WORKER, "--property=UnitFileState", "--value"])
+    active = run(["systemctl", "show", OCR_WORKER, "--property=ActiveState", "--value"])
+    if enabled not in ["disabled", "masked"] or active not in ["inactive", "failed"]:
+        raise SetupError(f"Dedicated-node mode needs {OCR_WORKER} drained and disabled first: "
+                         f"sudo systemctl disable --now {OCR_WORKER}")
+
+
 def check_ocr_identity(user, uid, other_uids):
     if user != "boinc" or uid == 0 or uid in other_uids:
         raise SetupError("OCR-node mode requires a dedicated boinc UID distinct from usnm and usnmeng.")
@@ -139,7 +162,9 @@ def check_ocr_service_groups(uid, service):
         raise SetupError(str(error)) from error
 
 
-def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None, ocr_node=False):
+def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None, ocr_node=False, dedicated_node=False):
+    if ocr_node and dedicated_node:
+        raise SetupError("Choose either --ocr-node or --dedicated-node.")
     config_dir = Path("/etc/usnm-boinc-volunteer") / service
     runtime = f"user/{uid}/usnm-boinc-{service.removesuffix('.service')}"
     preflight = "/usr/local/lib/usnm-boinc-volunteer/preflight.py"
@@ -147,6 +172,8 @@ def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None, ocr_no
     job_args = "".join(f" --job-toml={path}" for path in normalized_tomls)
     if ocr_node:
         job_args += f" --ocr-node-uid={uid}"
+    if dedicated_node:
+        job_args += f" --dedicated-node-uid={uid}"
     dropin = f"""# Managed by scripts/boinc/setup_volunteer.py. See docs/boinc-volunteer.md.
 [Unit]
 Requires=user@{uid}.service
@@ -169,7 +196,7 @@ ReadWritePaths={data_dir} /tmp /var/tmp
 TimeoutStartSec=40min
 ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} --service={service}{job_args}
 """
-    if ocr_node:
+    if ocr_node or dedicated_node:
         dropin += f"Slice=user-{uid}.slice\nNice=19\nIOSchedulingClass=idle\n"
     # Separate, service-selected config; do not replace a user's global Podman configuration.
     containers = f'[engine]\ncgroup_manager="systemd"\nconmon_cgroup="pod"\nimage_copy_tmp_dir="{data_dir}/usnm-podman-tmp"\n'
@@ -271,14 +298,14 @@ def resolve_launch(service):
     return binary, working, dir_overrides
 
 
-def check_effective(service, data_dir, config_dir, uid, image=None, job_toml=None, job_tomls=None, ocr_node=False):
+def check_effective(service, data_dir, config_dir, uid, image=None, job_toml=None, job_tomls=None, ocr_node=False, dedicated_node=False):
     expected_job_tomls = [f"--job-toml={path}" for path in normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)]
-    if ocr_node:
-        expected_job_tomls.append(f"--ocr-node-uid={uid}")
+    if ocr_node or dedicated_node:
+        expected_job_tomls.append(f"--ocr-node-uid={uid}" if ocr_node else f"--dedicated-node-uid={uid}")
         check_ocr_service_groups(uid, service)
         for unit in [service, f"user@{uid}.service"]:
             if run(["systemctl", "show", unit, "--property=Slice", "--value"]) != f"user-{uid}.slice":
-                raise SetupError("Both BOINC and its rootless user session must use the capped BOINC user slice.")
+                raise SetupError("Both BOINC and its rootless user session must use the dedicated BOINC user slice.")
     user_unit = f"user@{uid}.service"
     requires = run(["systemctl", "show", service, "--property=Requires", "--value"]).split()
     after = run(["systemctl", "show", service, "--property=After", "--value"]).split()
@@ -394,7 +421,17 @@ def prepare_slots(data_dir, uid, gid, trust=None):
         os.close(parent_fd)
 
 
-def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, ocr_node=False):
+def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, ocr_node=False, dedicated_node=False, ncpus=None):
+    if ocr_node and dedicated_node:
+        raise SetupError("Choose either --ocr-node or --dedicated-node.")
+    if ncpus is not None and not dedicated_node:
+        raise SetupError("--ncpus applies only to --dedicated-node; other profiles use one CPU.")
+    host_cpus = os.cpu_count() or 1
+    ncpus = (host_cpus if ncpus is None else ncpus) if dedicated_node else 1
+    if not 1 <= ncpus <= host_cpus:
+        raise SetupError(f"--ncpus must be between 1 and this host's {host_cpus} CPUs.")
+    cc_options = {"ncpus": str(ncpus), "no_gpus": "1"}
+    prefs_values = {**PREFS, **DEDICATED_PREFS} if dedicated_node else PREFS
     normalized_tomls = normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)
     if not SERVICE.fullmatch(service) or (data_dir is not None and not SAFE_PATH.fullmatch(str(data_dir))) or not IMAGE.fullmatch(image):
         raise SetupError("Use a plain systemd service name, an absolute path without spaces/special characters, and a registry image pinned by full sha256 digest.")
@@ -412,7 +449,9 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
     account = pwd.getpwnam(user)
     if account.pw_uid == 0:
         raise SetupError("BOINC must already run as an unprivileged service user.")
-    if ocr_node:
+    if dedicated_node:
+        check_ocr_worker_retired()
+    if ocr_node or dedicated_node:
         other_uids = []
         for name in ["usnm", "usnmeng"]:
             try:
@@ -423,6 +462,7 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
         if any(entry.pw_uid == account.pw_uid and entry.pw_name != user for entry in pwd.getpwall()):
             raise SetupError("The BOINC UID has an account alias; use a truly separate identity.")
         check_ocr_service_groups(account.pw_uid, service)
+    if ocr_node:
         for unit in [service, f"user@{account.pw_uid}.service"]:
             if run(["systemctl", "show", unit, "--property=ActiveState", "--value"]) not in ["inactive", "failed"]:
                 raise SetupError("OCR-node setup requires an inactive, drained BOINC client and user session.")
@@ -459,19 +499,26 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
     selinux = bool(shutil.which("getenforce") and run(["getenforce"]) != "Disabled")
     if selinux and (not shutil.which("semanage") or not shutil.which("restorecon")):
         raise SetupError("Install SELinux policy-management tools (RHEL: policycoreutils-python-utils) first.")
-    config_dir, dropin, containers, storage = profile(service, data_dir, image, account.pw_uid, job_tomls=normalized_tomls, ocr_node=ocr_node)
-    cc = merge_xml(data_dir / "cc_config.xml", "cc_config", {"ncpus": "1", "no_gpus": "1"}, "options")
-    prefs = merge_xml(data_dir / "global_prefs_override.xml", "global_preferences", PREFS)
+    config_dir, dropin, containers, storage = profile(service, data_dir, image, account.pw_uid, job_tomls=normalized_tomls,
+                                                      ocr_node=ocr_node, dedicated_node=dedicated_node)
+    cc = merge_xml(data_dir / "cc_config.xml", "cc_config", cc_options, "options")
+    prefs = merge_xml(data_dir / "global_prefs_override.xml", "global_preferences", prefs_values)
     print(f"Service: {service}; unprivileged user: {user}; data stays at {data_dir}")
     print(f"Worker image: {image}")
     print("Install rootless Podman configuration and a mandatory startup slot/limits/pause check.")
-    print("Set one BOINC CPU, no GPUs, idle after 5 minutes, no battery use, no task buffer, and 50% memory allowance (task containers remain capped at 1536 MiB).")
+    if dedicated_node:
+        print(f"Set {ncpus} BOINC CPUs, no GPUs, run while users are logged in, no task buffer, and 80% memory allowance (task containers keep their own caps).")
+    else:
+        print("Set one BOINC CPU, no GPUs, idle after 5 minutes, no battery use, no task buffer, and 50% memory allowance (task containers remain capped at 1536 MiB).")
     print("Preserve accounts and unrelated preferences; back up changed XML before writing.")
     print("Enable the user's systemd session at boot; allow writable cgroups for rootless resource controls.")
     print(f"SELinux: {'label only ' + str(data_dir / 'slots') + ' as container_file_t' if selinux else 'disabled/not installed; no policy changes'}")
     if ocr_node:
         print("OCR-node opt-in: whole dedicated UID slice capped at 25% of ONE CPU, 2 GiB, no swap, 256 tasks; nice 19 / idle IO.")
         print("BOINC remains stopped and disabled. No worker unit/account/runtime is modified.")
+    if dedicated_node:
+        print(f"Dedicated node: {OCR_WORKER} is retired; the dedicated UID slice replaces the 25% OCR-node cap with "
+              "85% of memory, no swap, 1024 tasks and lowest CPU/IO weight; nice 19 / idle IO. BOINC is enabled at boot.")
     if not apply:
         print("Preview only. Re-run with --apply to install and verify" +
               (" without starting BOINC." if ocr_node else " and start this profile."))
@@ -487,8 +534,8 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
         for path in [data_dir / "cc_config.xml", data_dir / "global_prefs_override.xml"]:
             if path.is_symlink():
                 raise SetupError(f"{path} is a symlink. Configure its owner-managed target manually; this helper will not replace it.")
-        cc = merge_xml(data_dir / "cc_config.xml", "cc_config", {"ncpus": "1", "no_gpus": "1"}, "options")
-        prefs = merge_xml(data_dir / "global_prefs_override.xml", "global_preferences", PREFS)
+        cc = merge_xml(data_dir / "cc_config.xml", "cc_config", cc_options, "options")
+        prefs = merge_xml(data_dir / "global_prefs_override.xml", "global_preferences", prefs_values)
     except Exception:
         if was_active:
             run(["systemctl", "start", service], timeout=START_TIMEOUT)
@@ -522,19 +569,35 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
         run(["semanage", "fcontext", operation, "--type", "container_file_t", pattern])
         run(["restorecon", "-RF", str(slots)], user=account.pw_uid, group=account.pw_gid)
     run(["loginctl", "enable-linger", user])
-    if ocr_node:
-        slice_config = Path(f"/etc/systemd/system/user-{account.pw_uid}.slice.d/zz-usnm-ocr-node.conf")
-        slice_config.parent.mkdir(parents=True, exist_ok=True)
+    if ocr_node or dedicated_node:
+        slice_dir = Path(f"/etc/systemd/system/user-{account.pw_uid}.slice.d")
+        slice_config = slice_dir / "zz-usnm-ocr-node.conf"
+        dedicated_config = slice_dir / "zz-usnm-dedicated-node.conf"
+        slice_dir.mkdir(parents=True, exist_ok=True)
         backup(slice_config, backups)
-        write_file(slice_config, OCR_NODE_SLICE, mode=0o644)
+        backup(dedicated_config, backups)
+        if ocr_node:
+            dedicated_config.unlink(missing_ok=True)
+            write_file(slice_config, OCR_NODE_SLICE, mode=0o644)
+        else:
+            write_file(dedicated_config, DEDICATED_NODE_SLICE, mode=0o644)
+            slice_config.unlink(missing_ok=True)
+        # Drop runtime-only `systemctl set-property --runtime` overrides so the files above are what applies.
+        runtime_dir = Path(f"/run/systemd/system.control/user-{account.pw_uid}.slice.d")
+        if runtime_dir.is_dir() and not runtime_dir.is_symlink():
+            for path in runtime_dir.glob("50-*.conf"):
+                path.unlink()
         run(["systemctl", "daemon-reload"])
     run(["systemctl", "start", f"user@{account.pw_uid}.service"])
     write_file(target, dropin, mode=0o644)
     run(["systemctl", "daemon-reload"])
-    check_effective(service, data_dir, config_dir, account.pw_uid, image, job_tomls=normalized_tomls, ocr_node=ocr_node)
+    check_effective(service, data_dir, config_dir, account.pw_uid, image, job_tomls=normalized_tomls,
+                    ocr_node=ocr_node, dedicated_node=dedicated_node)
     if ocr_node:
         print("Capped OCR-node profile installed; BOINC is still stopped and disabled. Validate dev/baseline before starting explicitly.")
         return
+    if dedicated_node:
+        run(["systemctl", "enable", service])
     run(["systemctl", "start", service], timeout=START_TIMEOUT)
     print("Profile installed; BOINC started only after its preflight passed. Attach through BOINC Manager, then check one task's upload and validation.")
 
@@ -547,13 +610,17 @@ def main():
     parser.add_argument("--job-toml", type=Path, action="append", default=None, help="Task job.toml whose limits the preflight must verify")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--ocr-node", action="store_true", help="Opt-in capped dedicated BOINC UID; install without starting/enabling BOINC")
+    parser.add_argument("--dedicated-node", action="store_true",
+                        help="Former OCR node retired to BOINC only: lift the OCR-node cap, use --ncpus CPUs, enable and start BOINC")
+    parser.add_argument("--ncpus", type=int, help="CPUs BOINC may use with --dedicated-node (default: all)")
     args = parser.parse_args()
     try:
         image = args.image
         if image is None:
             settings = Path(__file__).resolve().parents[2] / "contrib-compute/infra/boinc/env/prod.json"
             image = json.loads(settings.read_text())["images"]["worker"]
-        setup(args.service, args.data_dir, image, args.apply, job_tomls=args.job_toml, ocr_node=args.ocr_node)
+        setup(args.service, args.data_dir, image, args.apply, job_tomls=args.job_toml, ocr_node=args.ocr_node,
+              dedicated_node=args.dedicated_node, ncpus=args.ncpus)
     except (SetupError, OSError, KeyError, TypeError, ValueError, ET.ParseError, subprocess.TimeoutExpired) as error:
         print(f"Volunteer setup failed: {error}", file=sys.stderr)
         print("After an installation failure, BOINC may remain stopped. Inspect journalctl -u " + args.service + " and the setup backups before retrying.", file=sys.stderr)
