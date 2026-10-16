@@ -421,7 +421,7 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
         uid = os.geteuid()
         expected = {
             "HOME": str(data_dir),
-            "XDG_RUNTIME_DIR": f"/run/usnm-boinc-{uid}-{service.removesuffix('.service')}",
+            "XDG_RUNTIME_DIR": f"/run/user/{uid}/usnm-boinc-{service.removesuffix('.service')}",
             "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
             "CONTAINERS_CONF": f"/etc/usnm-boinc-volunteer/{service}/containers.conf",
             "CONTAINERS_STORAGE_CONF": f"/etc/usnm-boinc-volunteer/{service}/storage.conf",
