@@ -8,8 +8,8 @@ from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[2]
 SUBSCRIPTION = "25bf257c-c94e-4d61-bba3-edc635f46602"
-SERVER = "sha256:58b159d396706ebce55f9aec32904621ac7b354411d5c9bfb0f83fbb4ed046bf"
-BRIDGE = "sha256:e61c5ff8d50c9e4e04bbb52dcfaf58be29806841cb9ba8d1880bd80eb36730ea"
+SERVER = "sha256:d596fa1e26ce18ca1213297f16b3c692aca2481ceac572d19028340ade84ba54"
+BRIDGE = "sha256:3e89b6f349e45ec919e9276863838fc439b54a2fff6af0d0a6dea8b331bbff0d"
 WORKER = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:851f7f575fe84cf4d4fd238c8e280f2ac20bfe312b5dafbda2951262dbd67054"
 
 

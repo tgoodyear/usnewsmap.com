@@ -69,6 +69,13 @@ active rates is `$3.6288`; B1ms is `$0.408`; 20 GiB MySQL storage prorated over
 730 hours is about `$0.0756`; Basic ACR is `$0.1666`: **$4.279 known subtotal**,
 not a total quote. One hour of bridge/init jobs adds `$0.0756`.
 
+The same API returned Standard LRS transaction-optimized Files storage
+`$0.06/GB-month`, reads `$0.0015/10,000`, writes `$0.015/10,000`, and Standard
+Key Vault operations `$0.03/10,000`. Other SMB operation classes and excess
+registry storage are additional. A Private Link meter could not be resolved
+reliably from the API (empty results / HTTP 429); obtain that quote before
+approval rather than substituting a remembered rate or treating it as free.
+
 Private endpoint/data, SMB stored bytes/operations, DNS, Key Vault operations,
 backup overage, bandwidth and applicable ACA environment charges are additional.
 The API also lists `$0.10/environment-management-hour`; include `$2.40/day`
@@ -179,16 +186,16 @@ operator scripts (including #619). These commands are **not authorized now**.
 4. Import reviewed artifacts without changing production source tags:
 
    ```sh
-   SERVER_DIGEST=sha256:58b159d396706ebce55f9aec32904621ac7b354411d5c9bfb0f83fbb4ed046bf
-   BRIDGE_DIGEST=sha256:e61c5ff8d50c9e4e04bbb52dcfaf58be29806841cb9ba8d1880bd80eb36730ea
+   SERVER_DIGEST=sha256:d596fa1e26ce18ca1213297f16b3c692aca2481ceac572d19028340ade84ba54
+   BRIDGE_DIGEST=sha256:3e89b6f349e45ec919e9276863838fc439b54a2fff6af0d0a6dea8b331bbff0d
    for item in "server:$SERVER_DIGEST" "bridge:$BRIDGE_DIGEST"; do
      kind=${item%%:*}
      digest=${item#*:}
      az acr import --subscription "$SUB" --name "$DEV_REG" \
        --source "crusnmprodffapzy.azurecr.io/usnm-boinc-$kind@$digest" \
-       --image "usnm-boinc-$kind:reviewed-1d3ce091"
+       --image "usnm-boinc-$kind:reviewed-957413a9"
      test "$(az acr repository show --subscription "$SUB" --name "$DEV_REG" \
-       --image "usnm-boinc-$kind:reviewed-1d3ce091" --query digest -o tsv)" = "$digest"
+       --image "usnm-boinc-$kind:reviewed-957413a9" --query digest -o tsv)" = "$digest"
    done
    ```
 
@@ -204,6 +211,17 @@ operator scripts (including #619). These commands are **not authorized now**.
    registration and actual public project-config health checks. It must not
    print ready if the hostname/certificate/DB initialization is unsuccessful.
    Keep preview IDs, job execution IDs and redacted logs.
+
+   There is also a runtime-path preflight before this app phase: existing
+   `supervisord.conf` writes an absolute system-temp PID and several bridge
+   campaign steps use default-temp stamps. The current operator session forbids
+   those paths. #610 fixes **image-build staging only**, not every runtime path.
+   Prepare/review a dev-only runtime PID/stamp configuration, rebuild and
+   revalidate the resulting dev manifest before starting those consumers under
+   that constraint. Do not silently run the forbidden paths or claim #610 fixed
+   runtime staging. The base-only preview/provisioning phase has no such
+   container execution. Its cost/scope decision can therefore be made separately
+   from the subsequent runtime-harness approval.
 
 ## Acceptance order and evidence
 
@@ -249,10 +267,12 @@ operator scripts (including #619). These commands are **not authorized now**.
    dev OCR/assessment collection and a comparable throughput baseline are
    prerequisites, not documents to mark complete.
 
-This makes a real dev runtime reachable using current lifecycle tooling; it does
-not claim that every acceptance harness, measurement or scientific calibration
-already exists. Each missing negative-peer/migration/RHEL fixture is an explicit
-next implementation step, not a reason to reuse production or invent a pass.
+This provides executable, independently previewable bootstrap/import/lifecycle
+commands for a real dev environment, rather than requiring the full application
+dev stack. It does not claim that the runtime-path preflight or every acceptance
+harness, measurement or scientific calibration already exists. Each missing
+negative-peer/migration/RHEL fixture is an explicit next implementation step,
+not a reason to reuse production or invent a pass.
 
 ## Teardown is part of the approval
 
@@ -265,3 +285,24 @@ parent zone, shared registry, subscription policies or existing application dev
 stack. Verify resource absence and cost exports; stopping MySQL alone leaves
 storage/endpoints/registry costs and is not teardown. Retain the expiry/owner and
 an explicit teardown command review before provisioning.
+
+The scoped teardown commands, after checking the stack's complete resource
+inventory against the approved dev resources and two dev DNS record IDs, are:
+
+```sh
+az stack group show --subscription "$SUB" --resource-group usnm-boinc-rg-dev \
+  --name usnm-boinc-dev --query resources -o json
+# Stop on any unexpected resource, unsupported deletion or out-of-sync error.
+# Never use a stack error bypass, and never delete the production BOINC stack.
+az stack group delete --subscription "$SUB" --resource-group usnm-boinc-rg-dev \
+  --name usnm-boinc-dev --action-on-unmanage deleteResources \
+  --resources-without-delete-support fail --yes
+az group delete --subscription "$SUB" --name usnm-boinc-rg-dev --yes
+test "$(az group exists --subscription "$SUB" --name usnm-boinc-rg-dev)" = false
+```
+
+Before deleting the stack, record its dev managed environment's
+`infrastructureResourceGroup` and verify that group's `managedBy` points to the
+dev environment. Verify its automatic removal afterwards; any retained group
+needs a new owned-resource inspection before manual deletion. The subscription
+deployment history may remain as evidence; it is not billable compute.
