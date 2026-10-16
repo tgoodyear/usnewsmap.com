@@ -24,7 +24,7 @@ Regenerate with `python3 fixtures/generate.py` (deterministic).
 
 ## Recorded Congress responses (`congress/govinfo/`)
 
-`congress/govinfo/` is **not** synthetic either: it holds responses recorded from GovInfo on 11 October 2026 for the Serial Set fetch (`usnm_ingest::congress::serialset`, #229 phase 2), hand-trimmed so the tests never touch the network. The Serial Set is a US government publication in the public domain. No PDF is committed: the tests stand in a placeholder for each PDF and read the page texts below in place of `pdftotext`, and the one test of the real `pdftotext` (skipped where it isn't installed) writes a tiny PDF of its own.
+`congress/govinfo/` is **not** synthetic either: it holds responses recorded from GovInfo on 11 October 2026 for the Serial Set fetch (`usnm_ingest::congress::serialset`, #229 phase 2), hand-trimmed so the tests never touch the network. The Serial Set is a US government publication in the public domain. No PDF is committed: the tests use a placeholder in place of each PDF and read the page texts below instead of running `pdftotext`, and the one test of the real `pdftotext` (skipped where it isn't installed) writes a tiny PDF of its own.
 
 - `SERIALSET_sitemap_index.xml`: the sitemap index (`/sitemap/SERIALSET_sitemap_index.xml`), cut to two of its 182 yearly sitemaps, 1820 and 1990, with their `lastmod`.
 - `SERIALSET_1820_sitemap.xml`, `SERIALSET_1990_sitemap.xml`: those years' sitemaps, cut to seven of their 197 and 837 packages: the volume packages of serials 25, 33 and 13993, serial 25's first document (which has no MODS file here, so the fixture server answers 404 for it), serial 33's documents 9 and 20 (H. Doc. 16-42 and 16-53), and serial 13993's document 21 (H. Doc. 101-183).
