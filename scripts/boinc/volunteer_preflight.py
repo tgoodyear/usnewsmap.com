@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import grp
 from typing import NamedTuple
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import shlex
@@ -530,6 +532,30 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
             "disk_cold_required_bytes": required, "disk_free_bytes": disk_free}
 
 
+def check_ocr_groups(uid, service, runner=None, actual=False):
+    runner = runner or run
+    account = pwd.getpwuid(uid)
+    if account.pw_name != "boinc" or uid == 0:
+        raise PreflightError("OCR-node mode requires the dedicated boinc account.")
+    groups = set(os.getgrouplist(account.pw_name, account.pw_gid))
+    if actual:
+        groups.update(os.getgroups())
+        groups.add(os.getegid())
+    for unit in [service, f"user@{uid}.service"]:
+        if not unit:
+            raise PreflightError("OCR-node group checks require the client service name.")
+        for prop in ["Group", "SupplementaryGroups"]:
+            for name in runner(["systemctl", "show", unit, f"--property={prop}", "--value"]).split():
+                groups.add(int(name) if name.isdecimal() else grp.getgrnam(name).gr_gid)
+    for name in ["root", "docker", "sudo", "wheel", "himds", "usnm", "usnmeng", "usnmocr"]:
+        try:
+            forbidden = grp.getgrnam(name).gr_gid
+        except KeyError:
+            continue
+        if forbidden in groups:
+            raise PreflightError(f"The dedicated BOINC client and user session must not belong to {name}.")
+
+
 def check_ocr_node_slice(uid, cgroup_root=Path("/sys/fs/cgroup"), membership=None):
     if uid <= 0 or os.geteuid() != uid:
         raise PreflightError("OCR-node preflight must run as the dedicated BOINC UID.")
@@ -564,8 +590,9 @@ def main():
     try:
         if args.ocr_node_uid is not None:
             check_ocr_node_slice(args.ocr_node_uid)
+            check_ocr_groups(args.ocr_node_uid, args.service, actual=True)
         result = preflight(args.data_dir, args.image, service=args.service, job_tomls=args.job_toml)
-    except (PreflightError, OSError, ValueError, json.JSONDecodeError) as error:
+    except (PreflightError, OSError, KeyError, ValueError, json.JSONDecodeError) as error:
         print(f"BOINC host preflight FAILED: {error}", file=sys.stderr)
         return 1
     print("BOINC host preflight passed: " + json.dumps(result, sort_keys=True))

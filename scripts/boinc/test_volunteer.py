@@ -478,6 +478,36 @@ class SetupTest(unittest.TestCase):
         _, normal, _, _ = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
         self.assertNotIn("Slice=", normal)
 
+    def test_ocr_group_checks_include_account_service_and_user_manager_grants(self):
+        account = namedtuple("Account", "pw_name pw_gid")("boinc", 999)
+        group = namedtuple("Group", "gr_gid")
+        mapping = {"boinc": 999, "root": 0, "usnmocr": 601, "himds": 602}
+
+        def resolve(name):
+            if name not in mapping:
+                raise KeyError(name)
+            return group(mapping[name])
+
+        with patch.object(pre.pwd, "getpwuid", return_value=account), \
+             patch.object(pre.os, "getgrouplist", return_value=[999]) as memberships, \
+             patch.object(pre.grp, "getgrnam", side_effect=resolve), \
+             patch.object(pre.os, "getgroups", return_value=[999, 602]), \
+             patch.object(pre.os, "getegid", return_value=999):
+            pre.check_ocr_groups(999, "boinc-client.service", runner=lambda _: "")
+            for unit in ["boinc-client.service", "user@999.service"]:
+                for prop, value in [("Group", "usnmocr"), ("SupplementaryGroups", "601"),
+                                    ("SupplementaryGroups", "himds")]:
+                    def runner(args):
+                        return value if args[2] == unit and args[3] == f"--property={prop}" else ""
+                    with self.assertRaises(pre.PreflightError):
+                        pre.check_ocr_groups(999, "boinc-client.service", runner=runner)
+            memberships.return_value = [999, 602]
+            with self.assertRaisesRegex(pre.PreflightError, "himds"):
+                pre.check_ocr_groups(999, "boinc-client.service", runner=lambda _: "")
+            memberships.return_value = [999]
+            with self.assertRaisesRegex(pre.PreflightError, "himds"):
+                pre.check_ocr_groups(999, "boinc-client.service", runner=lambda _: "", actual=True)
+
     def test_ocr_preflight_reads_aggregate_kernel_limits_not_container_flags(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

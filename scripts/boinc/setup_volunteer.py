@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import grp
 import json
 import os
 from pathlib import Path
@@ -14,6 +13,11 @@ import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+
+try:
+    from volunteer_preflight import check_ocr_groups, PreflightError
+except ModuleNotFoundError:
+    from scripts.boinc.volunteer_preflight import check_ocr_groups, PreflightError
 
 SERVICE = re.compile(r"[A-Za-z0-9_-]{1,80}\.service\Z")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
@@ -126,6 +130,13 @@ TasksMax=256
 def check_ocr_identity(user, uid, other_uids):
     if user != "boinc" or uid == 0 or uid in other_uids:
         raise SetupError("OCR-node mode requires a dedicated boinc UID distinct from usnm and usnmeng.")
+
+
+def check_ocr_service_groups(uid, service):
+    try:
+        check_ocr_groups(uid, service, runner=run)
+    except (PreflightError, KeyError) as error:
+        raise SetupError(str(error)) from error
 
 
 def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None, ocr_node=False):
@@ -264,6 +275,7 @@ def check_effective(service, data_dir, config_dir, uid, image=None, job_toml=Non
     expected_job_tomls = [f"--job-toml={path}" for path in normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)]
     if ocr_node:
         expected_job_tomls.append(f"--ocr-node-uid={uid}")
+        check_ocr_service_groups(uid, service)
         for unit in [service, f"user@{uid}.service"]:
             if run(["systemctl", "show", unit, "--property=Slice", "--value"]) != f"user-{uid}.slice":
                 raise SetupError("Both BOINC and its rootless user session must use the capped BOINC user slice.")
@@ -410,13 +422,7 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
         check_ocr_identity(user, account.pw_uid, other_uids)
         if any(entry.pw_uid == account.pw_uid and entry.pw_name != user for entry in pwd.getpwall()):
             raise SetupError("The BOINC UID has an account alias; use a truly separate identity.")
-        groups = set(os.getgrouplist(user, account.pw_gid))
-        for name in ["root", "docker", "usnm", "usnmeng", "usnmocr"]:
-            try:
-                if grp.getgrnam(name).gr_gid in groups:
-                    raise SetupError(f"The dedicated BOINC account must not belong to {name}.")
-            except KeyError:
-                pass
+        check_ocr_service_groups(account.pw_uid, service)
         for unit in [service, f"user@{account.pw_uid}.service"]:
             if run(["systemctl", "show", unit, "--property=ActiveState", "--value"]) not in ["inactive", "failed"]:
                 raise SetupError("OCR-node setup requires an inactive, drained BOINC client and user session.")

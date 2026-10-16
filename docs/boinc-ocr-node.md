@@ -29,6 +29,11 @@ with its existing working directory owned by that account (normally
 of at least 65,536 subordinate UIDs **and** GIDs, distinct from `usnm` and
 `usnmeng`. Select ranges from the node's actual allocation inventory; never
 reuse the engine account's ranges, API socket, groups or image storage.
+Account-database memberships **and** systemd `Group`/`SupplementaryGroups`
+for both the BOINC client and user manager are checked. Worker/runtime groups,
+`docker`, privilege groups and Arc's `himds` group are forbidden; `himds` would
+allow access to the node's managed-identity challenge. Startup repeats these
+checks and checks its actual process groups before any probe or work.
 Review the service definition/package in dev before installation; do not
 replace/restart the OCR worker unit or modify its Podman configuration.
 
