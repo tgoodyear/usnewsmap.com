@@ -4,9 +4,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/ocr-dashboard.yml
-      - crates/usnm-ocr-dash/**
-      - crates/usnm-ocr-contract/**
-      - crates/usnm-core/**
+      - crates/**
+      - ocr/engines/engines.toml
+      - ocr/engines/tesseract/models.lock
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -27,6 +27,7 @@ jobs:
     timeout-minutes: 25
     env:
       RUSTFLAGS: -D warnings
+      USNM_GIT_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
