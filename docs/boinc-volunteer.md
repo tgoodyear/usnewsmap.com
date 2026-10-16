@@ -236,9 +236,15 @@ normal Manager flow used for production:
    use, and reviewed CPU, memory and disk limits. Local Manager preferences affect
    **all projects**; do not overwrite settings blindly.
 2. At **<https://boinc.usnewsmap.com/>**, create your own account or sign in to your
-   existing one. Review normal **project preferences**, including CPU/GPU choices
-   and any experimental-participation checkbox when available. Do not share an
-   account/key with another volunteer. Pilot work is limited to selected cohorts.
+   existing one. Review normal **project preferences**, including CPU/GPU choices.
+   Once the reviewed server-side gate is deployed, experimental consent is the
+   ordinary project-preferences checkbox **“Experimental native NVIDIA Qwen
+   canary (unvalidated; opt in)”** at
+   [project preferences](https://boinc.usnewsmap.com/usnmocr/prefs.php?subset=project)
+   (for the currently selected venue, if applicable); off/default denies the
+   canary. This preference may not appear before the server rollout. Never use
+   a script, alternate client setting, or re-attachment to enable it. Do not share
+   an account/key with another volunteer. Pilot work is limited to selected cohorts.
 3. In Manager choose **Tools → Add project** (or **Add project/account manager**),
    enter `https://boinc.usnewsmap.com/`, and sign in with that same account.
    Passwords go only into Manager or the HTTPS account site, never into this
@@ -267,6 +273,11 @@ Do not sideload executables/models, create `app_info.xml`, or delete sticky cach
 models (`C:\ProgramData\BOINC\projects\boinc.usnewsmap.com\` by default) to switch
 cohorts. Nothing must be reconfigured or reattached when the server graduates an
 app version.
+
+If a task fails, leave its normal BOINC report/diagnostic path intact; this
+onboarding does not ask volunteers to harvest or manually upload log files or
+share account keys. The Manager Event Log is for local troubleshooting, not a
+required support-ticket attachment.
 
 **UNVERIFIED live Windows acceptance:** local attachment and an HTTP 200 response
 are not scheduler acceptance or useful results. A real authorized host still must
