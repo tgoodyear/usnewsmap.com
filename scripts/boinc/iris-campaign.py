@@ -60,7 +60,7 @@ def prepare(dataset: Path, out: Path, image: str):
         seen_images = set()
         for row in source["crops"]:
             crop_id = row["crop_id"]
-            if not re.fullmatch(r"pub-overproof-ca-[0-9]{3}", crop_id) or crop_id in seen:
+            if not re.fullmatch(r"pub-(?:overproof-ca|reichsanzeiger-lines)-[0-9]{3}", crop_id) or crop_id in seen:
                 raise ValueError("invalid or duplicate newspaper crop")
             seen.add(crop_id)
             path = (dataset / row["image"]).resolve(strict=True)
@@ -73,8 +73,16 @@ def prepare(dataset: Path, out: Path, image: str):
                 raise ValueError("pilot requires 100 distinct images, not duplicate crops")
             seen_images.add(row["image_sha256"])
             provenance = row["provenance"]
-            if provenance.get("for_scoring") is not True or "public domain" not in provenance["source_license"]:
+            if (provenance.get("for_scoring") is not True
+                    or "public domain" not in provenance["source_license"].lower()):
                 raise ValueError("expected public-domain newspaper evaluation image")
+            if crop_id.startswith("pub-reichsanzeiger-lines-") and (
+                provenance.get("source_dataset") != "reichsanzeiger"
+                or not provenance.get("source_attribution")
+                or provenance.get("ground_truth_status") != "GT"
+                or not provenance.get("line_ids")
+            ):
+                raise ValueError("Reichsanzeiger crops require attributed PAGE ground truth and line IDs")
             with Image.open(path) as picture:
                 if picture.format != "JPEG":
                     raise ValueError(f"{crop_id}: pilot input must be JPEG")
