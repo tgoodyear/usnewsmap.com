@@ -13,7 +13,8 @@ class DaemonConfig(unittest.TestCase):
     def test_intel_pilot_has_distinct_eligibility_and_assigned_dispatch(self):
         root = Path(__file__).parent
         config = ET.parse(root / "config.xml.template")
-        self.assertEqual(config.findtext("./config/enable_assigned_jobs"), "1")
+        self.assertEqual(config.findtext("./config/enable_assignment"), "1")
+        self.assertIsNone(config.find("./config/enable_assigned_jobs"))
         plans = ET.parse(root / "plan_class_spec.xml")
         classes = [p for p in plans.findall("plan_class") if p.findtext("name") == "docker_intel_opencl_4b"]
         self.assertEqual(len(classes), 1)

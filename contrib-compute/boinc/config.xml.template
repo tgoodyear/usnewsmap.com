@@ -39,7 +39,7 @@
         <enable_privacy_by_default>1</enable_privacy_by_default>
         <show_results>1</show_results>
         <one_result_per_user_per_wu/>
-        <enable_assigned_jobs>1</enable_assigned_jobs>
+        <enable_assignment>1</enable_assignment>
         <min_sendwork_interval>30</min_sendwork_interval>
         <max_wus_in_progress>4</max_wus_in_progress>
         <daily_result_quota>200</daily_result_quota>
