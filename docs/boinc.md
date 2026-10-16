@@ -851,6 +851,10 @@ publication after an I/O failure is safe to retry; existing matching files are
 not replaced. This is not BLN licence clearance or sticky-client acceptance.
 Verify anonymous HTTP GET bytes and headers separately; proving client reuse
 still requires two units on the same compatible attached host.
+In a fresh bridge job, the wrapper writes only `download_dir` and the committed
+template's fanout to the container-local config target. It refuses an existing
+local config or unexpected shared config symlink, never replaces that symlink,
+and never fetches credentials. The server replica's own config is unaffected.
 
 A unit left with a `submitting` marker is handled as for the assessment.
 

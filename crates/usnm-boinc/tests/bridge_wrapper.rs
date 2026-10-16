@@ -83,17 +83,36 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
 
 #[test]
 fn gold_mirror_loc_dispatch_never_fetches_secrets_or_submits_work() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{symlink, PermissionsExt};
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let calls = root.join("calls");
     let library = root.join("lib.sh");
+    let templates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contrib-compute/images/server")
+        .canonicalize()
+        .unwrap();
+    let config_template = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contrib-compute/boinc/config.xml.template");
+    std::fs::create_dir_all(root.join("project")).unwrap();
+    std::fs::create_dir_all(root.join("templates")).unwrap();
+    std::fs::copy(
+        templates.join("gold-mirror-config.py"),
+        root.join("templates/gold-mirror-config.py"),
+    )
+    .unwrap();
+    std::fs::copy(config_template, root.join("templates/config.xml.template")).unwrap();
+    symlink(
+        root.join("local/config.xml"),
+        root.join("project/config.xml"),
+    )
+    .unwrap();
     std::fs::write(
         &library,
         format!(
-            "PROJ='{}/project'\nfetch_secrets() {{ exit 91; }}\nrender_config() {{ exit 92; }}\n\
+            "PROJ='{0}/project'\nSECRETS='{0}/local'\nTEMPLATES='{0}/templates'\nfetch_secrets() {{ exit 91; }}\nrender_config() {{ exit 92; }}\n\
          log() {{ echo \"$*\" >&2; }}\nfail() {{ log \"$*\"; exit 1; }}\n",
             root.display()
         ),
@@ -142,5 +161,16 @@ fn gold_mirror_loc_dispatch_never_fetches_secrets_or_submits_work() {
             root.display(),
             root.display()
         )
+    );
+    let config = std::fs::read_to_string(root.join("local/config.xml")).unwrap();
+    assert!(config.contains("<uldl_dir_fanout>1024</uldl_dir_fanout>"));
+    assert!(config.contains(&format!(
+        "<download_dir>{}/project/download/</download_dir>",
+        root.display()
+    )));
+    assert!(!config.contains("db_"));
+    assert_eq!(
+        std::fs::read_link(root.join("project/config.xml")).unwrap(),
+        root.join("local/config.xml")
     );
 }

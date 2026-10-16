@@ -280,6 +280,8 @@ case "$step" in
     exec usnm-boinc gold prepare --bundle "$GOLD/bundle.tar" --root "$GOLD" ;;
   gold-mirror-loc)
     # No database, secrets, publisher fetches, bundle or BLN600 reads.
+    python3 "$TEMPLATES/gold-mirror-config.py" --project "$PROJ" \
+      --config "$SECRETS/config.xml" --template "$TEMPLATES/config.xml.template"
     exec usnm-boinc gold mirror-loc --root "$GOLD" --project "$PROJ" ;;
   gold-bundle)
     # No database or secrets: this step only talks to the datasets' publishers and writes the share.
