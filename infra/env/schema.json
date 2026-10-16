@@ -41,6 +41,12 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_API_IMAGE_TAG": {
+      "x-usnm-visibility": "public",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
+      "description": "API-only ACR tag; when omitted, follows USNM_IMAGE_TAG."
+    },
     "USNM_API_MAX_REPLICAS": {
       "x-usnm-visibility": "public",
       "type": "integer",
@@ -318,6 +324,12 @@
     "USNM_SEARCHER_APP_RETAIN": {
       "x-usnm-visibility": "public",
       "type": "boolean"
+    },
+    "USNM_SCHEDULED_INGEST_IMAGE_TAG": {
+      "x-usnm-visibility": "public",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
+      "description": "Primary ingest job ACR tag only; when omitted, follows USNM_IMAGE_TAG. Does not override backfill, sync or other ingest-image jobs."
     },
     "USNM_SEARCH_BACKEND": {
       "x-usnm-visibility": "public",
