@@ -71,8 +71,8 @@ class DbTlsPatch(unittest.TestCase):
     def test_php_both_paths_share_verified_connection_and_reject_plaintext(self):
         script = """<?php
 namespace DbTlsTest;
-const MYSQLI_OPT_SSL_VERIFY_SERVER_CERT = 21;
 const MYSQLI_CLIENT_SSL = 2048;
+const MYSQLI_CLIENT_SSL_VERIFY_SERVER_CERT = 1073741824;
 $cipher = 'cipher';
 class Conn {
     function query($q) { return $this; }
@@ -80,12 +80,12 @@ class Conn {
     function close() {}
 }
 function mysqli_init() { return new Conn; }
-function mysqli_options($c, $o, $v) { return $o === 21 && $v === true; }
+function mysqli_options($c, $o, $v) { throw new \\Exception('mysqlnd does not support this option'); }
 function mysqli_ssl_set($c, $k, $cert, $ca, $p, $cipher) {
     return $ca === '/usr/local/share/usnm/mysql-ca.pem';
 }
 function mysqli_real_connect($c, $h, $u, $p, $d, $port, $socket, $flags) {
-    return $flags === MYSQLI_CLIENT_SSL && $h === 'db.example.org';
+    return $flags === (MYSQLI_CLIENT_SSL | MYSQLI_CLIENT_SSL_VERIFY_SERVER_CERT) && $h === 'db.example.org';
 }
 """ + patch.PHP_CONNECT + """
 if (!usnm_mysql_tls_connect('db.example.org', 'u', 'p', 'db', 3306)) exit(1);

@@ -164,6 +164,20 @@ jobs:
           persist-credentials: false
       - run: find contrib-compute/boinc/html -name '*.php' -print0 | xargs -0 -n1 php -l
 
+  boinc-db-tls:
+    name: BOINC actual database TLS (private disposable fixture)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py
+      - run: shellcheck -x -S warning scripts/boinc/check-db-tls.sh
+      - run: scripts/boinc/check-db-tls.sh
+
   # The BOINC server image and the bridge job image (contrib-compute/images). Built, smoke-tested
   # and not pushed: where they are published is the maintainer's step (docs/images.md).
   contrib-images:
