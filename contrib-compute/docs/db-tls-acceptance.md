@@ -305,6 +305,12 @@ user ID. Never pass the key itself as an argument. The canonical production URL 
 `https://boinc.usnewsmap.com/`; legacy/duplicate attachments require reconciliation
 instead of silently creating a second project.
 
+Stock BOINC 8.2 GUI-RPC authentication requires `MD5(nonce + GUI password)`.
+This is a transient, loopback-only protocol challenge, not a stored password
+hash; a narrowly documented CodeQL password-storage-query suppression covers
+that mandatory interoperability line only. It does not claim MD5 is suitable
+for password storage or permit remote, plaintext GUI-RPC exposure.
+
 The supported client rejects attaching an already attached URL. For an explicitly
 authorized managed-client rejoin, the helper first requests no new tasks and
 refuses to detach while any project result or scheduler RPC remains. Reinvoke

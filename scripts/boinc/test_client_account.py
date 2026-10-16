@@ -110,6 +110,18 @@ class ClientAccountTests(unittest.TestCase):
             account.snapshot(rpc, 42, "example")
         self.assertEqual(rpc.call.call_count, 1)
 
+    def test_credential_bearing_debug_logging_is_rejected(self):
+        rpc = Mock()
+        rpc.call.return_value = ET.fromstring("<reply><log_flags/></reply>")
+        account.check_private_logging(rpc)
+        for name in ("gui_rpc_debug", "http_debug", "http_xfer_debug"):
+            rpc.call.return_value = ET.fromstring(f"<reply><log_flags><{name}/></log_flags></reply>")
+            with self.assertRaises(ValueError):
+                account.check_private_logging(rpc)
+        rpc.call.return_value = ET.fromstring("<reply/>")
+        with self.assertRaises(ValueError):
+            account.check_private_logging(rpc)
+
     def test_rpc_fixed_loopback_framing_and_private_error(self):
         connection = Mock()
         connection.recv.side_effect = [b"<reply><nonce>challenge</nonce></reply>\x03",

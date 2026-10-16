@@ -40,7 +40,9 @@ class RPC:
         if not nonce:
             self.close()
             raise RuntimeError("Client did not return an authentication challenge")
-        digest = hashlib.md5((nonce + password).encode()).hexdigest()
+        # Stock BOINC GUI-RPC mandates this nonce challenge, not password storage.
+        # The protocol is restricted to loopback; substituting a KDF breaks it.
+        digest = hashlib.md5((nonce + password).encode()).hexdigest()  # lgtm[py/weak-sensitive-data-hashing]
         if self.call("auth2", {"nonce_hash": digest}).find(".//authorized") is None:
             self.close()
             raise RuntimeError("Client GUI-RPC authentication failed")
@@ -66,7 +68,10 @@ class RPC:
         reply = ET.fromstring(message)
         if reply.find(".//unauthorized") is not None or reply.find(".//error") is not None:
             raise RuntimeError(f"Client rejected {operation}; response withheld for privacy")
-        error = int(reply.findtext(".//error_num", "0"))
+        try:
+            error = int(reply.findtext(".//error_num", "0"))
+        except ValueError:
+            raise RuntimeError("Malformed GUI-RPC error number; response withheld for privacy") from None
         if error:
             raise RuntimeError(f"Client rejected {operation} (error {error})")
         return reply
@@ -103,6 +108,15 @@ def snapshot(rpc, expected_id, expected_name):
 
 def project_operation(rpc, operation):
     rpc.call("project_" + operation, {"project_url": MASTER})
+
+
+def check_private_logging(rpc):
+    configuration = rpc.call("get_cc_config")
+    if configuration.find(".//log_flags") is None:
+        raise ValueError("Cannot verify client logging privacy; no account change performed")
+    for name in ("gui_rpc_debug", "http_debug", "http_xfer_debug"):
+        if flag(configuration, ".//" + name):
+            raise ValueError("Disable credential-bearing client debug logging before account attachment")
 
 
 def already_using_key(data_dir, key):
@@ -179,6 +193,7 @@ def main():
     try:
         result = snapshot(rpc, args.expected_user_id, args.expected_user_name)
         if args.apply:
+            check_private_logging(rpc)
             if (result["attached"] and result["expected_user_verified"] and result["expected_name_verified"]
                     and result["host_id"] and already_using_key(args.data_dir, key)):
                 result.update(status="already attached with supplied weak key", key_kind="weak")
