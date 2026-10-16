@@ -221,7 +221,7 @@ pub fn units_dir(root: &Path) -> PathBuf {
     root.join("units")
 }
 
-fn assignment_enabled(config: &str) -> anyhow::Result<bool> {
+pub(crate) fn assignment_enabled(config: &str) -> anyhow::Result<bool> {
     use quick_xml::{events::Event, Reader};
     let mut reader = Reader::from_str(config);
     let mut path = Vec::new();

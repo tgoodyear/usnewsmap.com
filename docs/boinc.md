@@ -886,9 +886,13 @@ bytes/identities remain compatible. Use a fresh campaign root per host and
 image. It refuses until the project's active XML config explicitly has
 `<enable_assignment>1</enable_assignment>`. This PR does **not** enable assignment
 on production: first verify scheduler/assignment behavior in dev and calibrate
-the first campaign. Automatic discovery/issuance for new hosts, live canonical
-host-query acceptance, and periodic spot-checks remain rollout blockers; no
-automatic publication or scheduler configuration has been deployed.
+the first campaign. Live acceptance of discovery/issuance for new hosts, canonical
+host-query acceptance, and periodic spot-check activation remain rollout blockers;
+no automatic publication or scheduler configuration has been deployed.
+The OFF-by-default [host-trust follow-up controller](boinc-host-trust-followups.md)
+now provides bounded automatic host discovery/first-gold issuance and sampled
+independent-host OCR rerun/comparison commands. Dispatch requires an explicit
+`--execute`; no timer, trust promotion or assignment enablement is installed.
 
 ### Build the gold bundle
 

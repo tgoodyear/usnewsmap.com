@@ -29,6 +29,9 @@ use usnm_state::{
 use usnm_store::{queue::LocalQueue, ObjectStore};
 const IMAGE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ALTO: &str = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation><fileName>page</fileName></sourceImageInformation></Description><Layout><Page WIDTH="1000" HEIGHT="1000"><PrintSpace><TextBlock><TextLine><String CONTENT="HELLO"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+#[cfg(unix)]
+#[path = "support/host_trust_followups.rs"]
+mod host_trust_followups;
 struct Fixture {
     tmp: tempfile::TempDir,
     state: State,
