@@ -1752,6 +1752,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -3183,6 +3184,7 @@ dependencies = [
  "md-5",
  "moka",
  "opentelemetry",
+ "opentelemetry_sdk",
  "quick-xml",
  "reqwest",
  "rustix",
