@@ -98,9 +98,38 @@ choose it now. Notes:
 - MyISAM. `post`, `thread` and `profile` are MyISAM in `schema.sql`. We turn off forums and
   profiles. Whether the server rejects MyISAM is UNVERIFIED; the `schema.sql` we apply is
   tested on a throwaway server first.
-- TLS. Whether the BOINC C++ and PHP clients connect with `require_secure_transport = ON` is
-  UNVERIFIED. If they do not, set it `OFF`. That is acceptable only because the server has
-  private access only.
+- TLS. `require_secure_transport` remains OFF pending #464's dev migration gate;
+  do not flip it on a production deployment merely because the base image builds.
+  `scripts/boinc/patch-server-db-tls.py` patches the pinned source's Python
+  `db_base`, **both** PHP connection paths, and C++ `DB_CONN`; CLI consumers pass
+  verified TLS flags. Python's Bookworm mysqlclient cannot use `ssl_mode` against
+  MariaDB, so an explicit immutable option file enforces TLS and verification.
+  All three patched paths reject an empty session cipher. The image builds a
+  dedicated bundle from Debian's DigiCert Global Root G2 **and Microsoft RSA Root
+  Certificate Authority 2017**, as required by [Azure's current rotation
+  guidance](https://learn.microsoft.com/en-us/azure/mysql/security/security-tls-how-to-connect).
+  No leaf pin, disabled verification, or silent plaintext fallback is permitted.
+  Certificate roots are verified at image build, not fetched at runtime.
+
+  **Migration gate (not yet executed):** build the new base/server/bridge images
+  together (base cache key includes patch and options). In an isolated dev
+  project/database, initialize with enforcement ON and show non-empty
+  `SHOW SESSION STATUS LIKE 'Ssl_cipher'` for Python, both PHP APIs and a C++
+  utility. Exercise the web pages, `get_project_config.php`, scheduler RPC,
+  feeder, transitioner, validator and assimilator. A wrong hostname, untrusted
+  CA and TLS-disabled test server must all fail for each client type.
+  Existing projects contain **copies**, not symlinks, of PHP, Python and daemon/CGI
+  binaries: rebuild alone is insufficient. Back up the dev project and rehearse
+  BOINC's `upgrade`/project installation from the new source with all daemons
+  stopped, preserving config, keys, apps and spool. Inventory every installed
+  binary/library against the patched image before resuming. Only after this is
+  independently verified should a separately reviewed production maintenance
+  plan migrate the project, verify live sessions while enforcement remains OFF,
+  then turn it ON. Rollback restores the complete project and matching image
+  while enforcement is OFF. Do not restart/deploy production as part of this PR.
+  Local connector mocks and patch/syntax checks are prerequisites, **not** live
+  Azure/TLS acceptance or proof of uninterrupted production operation.
+
 - CPU credits. B1ms has 20% baseline CPU. The transitioner and feeder poll constantly. If the
   credit balance drains, MySQL throttles to 20%. We alarm on the CPU-credit metric and move to
   `Standard_B2s` (4 GiB RAM variants cost more; section 6) when it does.

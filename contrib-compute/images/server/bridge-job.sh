@@ -303,7 +303,8 @@ if [ "$step" = spool-out ]; then
   (umask 077; { echo '[client]'; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; echo "password=$(cat "$SECRETS/db-runtime")"; } > "$mycnf")
   # The canonical result's host (BOINC's result.hostid); JOB_ID is [A-Za-z0-9_-] (above).
   # UNVERIFIED against a live database.
-  if host=$(mysql --defaults-extra-file="$mycnf" --batch --skip-column-names "$DB_NAME" \
+  if host=$(mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
+      --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
       -e "SELECT r.hostid FROM workunit w JOIN result r ON r.id = w.canonical_resultid WHERE w.name = 'usnm_$JOB_ID'"); then
     if [[ "$host" =~ ^[0-9]+$ ]]; then host_args=(--host-id "$host"); else log "no canonical result host for usnm_$JOB_ID yet"; fi
   else
