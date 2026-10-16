@@ -4,7 +4,7 @@
   "USNM_AMERICAN_STORIES_SEARCH": true,
   "USNM_API_IMAGE_TAG": "00fbdd968f3cc87a619d5ec05916a4e34a9c9ee7",
   "USNM_BOINC_GROUP": true,
-  "USNM_BOINC_HANDOFF_IMAGE": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:fb1d3b6ada4e69388547d67f493b84f7ff4298fcf0bcffd55cccd60d167bf058",
+  "USNM_BOINC_HANDOFF_IMAGE": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:2c39c8bcd67d2ad2d6d469c6fde935cd795961bd7104fc986216f9834193c192",
   "USNM_BROWSE_PAGES": true,
   "USNM_BUDGET_START": "2026-10-01",
   "USNM_COSMOS_FREE_TIER": true,
