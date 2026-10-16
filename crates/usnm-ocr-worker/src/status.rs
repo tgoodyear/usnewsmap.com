@@ -46,6 +46,8 @@ pub struct About {
     pub version: String,
     pub concurrency: u32,
     pub engine: String,
+    pub models: Vec<String>,
+    pub routes: BTreeMap<String, String>,
     pub scan_cache_url: Option<String>,
 }
 
@@ -272,6 +274,8 @@ impl Tracker {
             .and_then(|(p, _)| std::fs::metadata(p).ok());
         let mut in_flight: Vec<InFlight> = i.in_flight.values().cloned().collect();
         in_flight.sort_by_key(|p| p.started_at);
+        let mut routes = self.about.routes.clone();
+        routes.extend(i.routes.clone());
         WorkerStatus {
             schema: usnm_ocr_contract::status::SCHEMA,
             node_id: self.about.node_id.clone(),
@@ -281,8 +285,8 @@ impl Tracker {
             concurrency: self.about.concurrency,
             engine: self.about.engine.clone(),
             engine_version: String::new(),
-            models: Vec::new(),
-            routes: i.routes.clone(),
+            models: self.about.models.clone(),
+            routes,
             scan_cache_url: self.about.scan_cache_url.clone(),
             loc_hold_secs: self.scans.as_ref().and_then(|s| {
                 s.held_until().map(|t| {
@@ -591,9 +595,14 @@ mod tests {
             node_id: "usnm-ocr-node1".into(),
             concurrency: 4,
             engine: "usnm-tesseract".into(),
+            models: vec!["deu".into(), "frak2021".into()],
+            routes: [("deu".into(), "frak2021".into())].into(),
             ..About::default()
         };
         let t = Arc::new(Tracker::new(about.clone(), Some(journal.clone()), None).unwrap());
+        let initial = t.status();
+        assert_eq!(initial.models, ["deu", "frak2021"]);
+        assert_eq!(initial.routes["deu"], "frak2021");
         t.begin("m1", "sn1_1890-01-01_ed-1_seq-1", "deu", "ocr-bulk");
         t.begin("m2", "sn1_1890-01-01_ed-1_seq-2", "deu", "ocr-bulk");
         // The same page again, under another message: tracked apart.

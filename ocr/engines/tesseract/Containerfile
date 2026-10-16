@@ -28,7 +28,8 @@ RUN set -eu; mkdir -p /models; cd /models; \
     grep -v '^#' /models.lock | while read -r name url sum; do \
       [ -n "$name" ] || continue; \
       mkdir -p "$(dirname "$name")"; \
-      curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$name" "$url"; \
+      curl -fsSL --retry 30 --retry-all-errors --retry-delay 5 --retry-max-time 900 \
+        --connect-timeout 30 --max-time 600 -o "$name" "$url"; \
       echo "$sum  $name" | sha256sum --check --quiet; \
     done
 
