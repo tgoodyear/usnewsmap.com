@@ -95,6 +95,37 @@ class DevAcceptance(unittest.TestCase):
                 self.assertEqual(result.returncode, 9, result.stderr)
                 self.assertFalse(any(line.startswith("group delete") for line in log.read_text().splitlines()))
 
+    def test_documented_import_uses_existing_entra_identity_and_verifies_digests(self):
+        doc = Path(ROOT, "contrib-compute/docs/dev-acceptance.md").read_text()
+        section = doc.split("4. Import reviewed artifacts", 1)[1]
+        command = re.search(r"```sh\n(.*?)\n[ \t]*```", section, re.S).group(1)
+        for denied in ("0", "1"):
+            with self.subTest(source_read_denied=denied), tempfile.TemporaryDirectory() as directory:
+                az = Path(directory, "az")
+                az.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$AZ_LOG"\n'
+                              'case "$*" in\n'
+                              '  "acr show "*) [[ "$DENIED" == 0 ]] || exit 9; '
+                              'echo /subscriptions/offline/resourceGroups/source/providers/Microsoft.ContainerRegistry/registries/source;;\n'
+                              '  "acr repository show "*usnm-boinc-server:*) echo "$EXPECTED_SERVER";;\n'
+                              '  "acr repository show "*usnm-boinc-bridge:*) echo "$EXPECTED_BRIDGE";;\n'
+                              'esac\n')
+                az.chmod(0o755)
+                log = Path(directory, "az.log")
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", command], capture_output=True, text=True,
+                                        env={**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
+                                             "AZ_LOG": str(log), "DENIED": denied, "SUB": "offline-test",
+                                             "DEV_REG": "usnmboinccrdevabc123",
+                                             "EXPECTED_SERVER": PLAN.SERVER, "EXPECTED_BRIDGE": PLAN.BRIDGE})
+                self.assertEqual(result.returncode, 9 if denied == "1" else 0, result.stderr)
+                imports = [line for line in log.read_text().splitlines() if line.startswith("acr import")]
+                self.assertEqual(len(imports), 0 if denied == "1" else 2)
+                for line in imports:
+                    self.assertIn("--name usnmboinccrdevabc123", line)
+                    self.assertIn("--registry /subscriptions/offline/", line)
+                    self.assertIn("--source usnm-boinc-", line)
+                    self.assertNotIn(".azurecr.io/", line)
+                    self.assertNotIn("--password", line)
+
 
 if __name__ == "__main__":
     unittest.main()

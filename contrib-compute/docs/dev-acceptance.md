@@ -187,18 +187,26 @@ operator scripts (including #619). These commands are **not authorized now**.
 4. Import reviewed artifacts without changing production source tags:
 
    ```sh
+   SOURCE_ACR_ID=$(az acr show --subscription "$SUB" --name crusnmprodffapzy \
+     --query id -o tsv)
    SERVER_DIGEST=sha256:d596fa1e26ce18ca1213297f16b3c692aca2481ceac572d19028340ade84ba54
    BRIDGE_DIGEST=sha256:3e89b6f349e45ec919e9276863838fc439b54a2fff6af0d0a6dea8b331bbff0d
    for item in "server:$SERVER_DIGEST" "bridge:$BRIDGE_DIGEST"; do
      kind=${item%%:*}
      digest=${item#*:}
      az acr import --subscription "$SUB" --name "$DEV_REG" \
-       --source "crusnmprodffapzy.azurecr.io/usnm-boinc-$kind@$digest" \
+       --registry "$SOURCE_ACR_ID" --source "usnm-boinc-$kind@$digest" \
        --image "usnm-boinc-$kind:reviewed-957413a9"
      test "$(az acr repository show --subscription "$SUB" --name "$DEV_REG" \
        --image "usnm-boinc-$kind:reviewed-957413a9" --query digest -o tsv)" = "$digest"
    done
    ```
+
+   The explicit source resource ID selects
+   [Microsoft Entra authentication](https://learn.microsoft.com/azure/container-registry/container-registry-import-images#import-container-images-from-an-azure-container-registry-in-the-same-microsoft-entra-tenant),
+   not an anonymous pull from the private production registry. Use existing
+   source read permissions only; stop if they are insufficient rather than
+   adding production grants. Target import/read permissions are dev-only.
 
    Promote the generated `runtime-settings.json` into the **dev** settings via
    review/commit. Its worker index is the separately published compatible v2
