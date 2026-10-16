@@ -5,6 +5,11 @@ volunteer engine for Japanese scans. It uses the same upstream revision and
 conversion as `Dockerfile.ja-ocr` and `ja-ocr/jaocr.py`, without the Flet desktop UI.
 Engine-level routing is tracked in [#624](https://github.com/tgoodyear/usnewsmap.com/issues/624).
 
+**Status:** the pinned contract engine is implemented. BOINC staging, the worker
+app image, redundant validation and collection into `ocr-ja/` are phase 2, after
+#624 merges. Do not submit NDLOCR workunits yet; the image below is an engine
+image, not a released BOINC worker app.
+
 ## Pinned engine and contract
 
 Build from the repository root:
@@ -97,7 +102,7 @@ python3 scripts/boinc/smoke-ndlocr.py IMAGE "$PWD/ndlocr-page-probe" "$PWD/page.
 Record architecture, CPU quota, page dimensions and model/runtime identity before
 comparing hosts or increasing the campaign.
 
-## Operations after merge
+## Operations after BOINC integration
 
 1. Publish the reviewed engine/worker image by digest and sign/publish the BOINC
    app version. The engine workflow supports main-only manual publication:
