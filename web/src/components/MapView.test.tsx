@@ -3,6 +3,14 @@ import { cleanup, render } from "@testing-library/react";
 
 // MapLibre and deck.gl need WebGL; stand in for the parts MapView calls.
 const maps: FakeMap[] = [];
+const config = vi.hoisted(() => ({ style: "https://tiles.openfreemap.org/styles/positron" }));
+vi.mock("../lib/basemap", () => ({
+  get STYLE_URL() {
+    return config.style;
+  },
+  US_CENTER: [-96, 38.5],
+  DEFAULT_ZOOM: 3.3,
+}));
 class FakeMap {
   zoom: number;
   center: { lng: number; lat: number };
@@ -18,7 +26,14 @@ class FakeMap {
   }
   getZoom = () => this.zoom;
   getCenter = () => this.center;
-  on() {}
+  handlers: Record<string, (() => void)[]> = {};
+  on(event: string, handler: () => void) {
+    (this.handlers[event] ??= []).push(handler);
+  }
+  emit(event: string) {
+    this.handlers[event]?.forEach((handler) => handler());
+  }
+  areTilesLoaded = vi.fn(() => true);
   addControl() {}
   remove() {}
 }
@@ -50,6 +65,53 @@ describe("MapView", () => {
   afterEach(() => {
     cleanup();
     maps.length = 0;
+    vi.useRealTimers();
+    config.style = "https://tiles.openfreemap.org/styles/positron";
+  });
+
+  it("holds the overlay until load and an idle with loaded tiles, only once", () => {
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />);
+    const element = getByTestId("map");
+    const m = maps[0]!;
+    expect(element.classList.contains("map--basemap-ready")).toBe(false);
+    m.emit("idle");
+    expect(element.classList.contains("map--basemap-ready")).toBe(false);
+    m.emit("load");
+    m.areTilesLoaded.mockReturnValue(false);
+    m.emit("idle");
+    expect(element.classList.contains("map--basemap-ready")).toBe(false);
+    m.areTilesLoaded.mockReturnValue(true);
+    m.emit("idle");
+    expect(element.classList.contains("map--basemap-ready")).toBe(true);
+    m.areTilesLoaded.mockReturnValue(false);
+    m.emit("idle");
+    expect(element.classList.contains("map--basemap-ready")).toBe(true);
+  });
+
+  it("reveals the overlay after two seconds if the basemap is blocked", () => {
+    vi.useFakeTimers();
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />);
+    vi.advanceTimersByTime(1999);
+    expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(true);
+  });
+
+  it("shows the offline style immediately and cleans up its timer on unmount", () => {
+    vi.useFakeTimers();
+    config.style = "none";
+    const { getByTestId, unmount } = render(<MapView {...props} zoom={null} center={null} />);
+    expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(true);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels the fallback when unmounted while waiting", () => {
+    vi.useFakeTimers();
+    const { unmount } = render(<MapView {...props} zoom={null} center={null} />);
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("leaves a gesture in progress alone when a re-render repeats the URL viewport", () => {
