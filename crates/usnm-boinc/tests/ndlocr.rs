@@ -31,6 +31,9 @@ fn job(reason: &str) -> Job {
 fn files(dir: &Path, job: &Job, text: &str) -> Vec<PathBuf> {
     let lines: String = text.lines().map(|line| format!("<LINE X=\"10\" Y=\"10\" WIDTH=\"900\" HEIGHT=\"100\" STRING=\"{line}\" CONF=\"0.95\"/>")).collect();
     let xml = format!("<OCRDATASET><PAGE WIDTH=\"1000\" HEIGHT=\"2000\"><TEXTBLOCK>{lines}</TEXTBLOCK></PAGE></OCRDATASET>");
+    files_with_xml(dir, job, text, &xml)
+}
+fn files_with_xml(dir: &Path, job: &Job, text: &str, xml: &str) -> Vec<PathBuf> {
     let alto = ndlocr_to_alto(
         xml.as_bytes(),
         Geometry::default(),
@@ -116,6 +119,38 @@ fn validator_checks_hashes_layout_job_and_cross_host_similarity() {
     r.elapsed_ms = 600001;
     atomic(&a[2], &serde_json::to_vec(&r).unwrap()).unwrap();
     assert!(ndlocr::load(&a).is_err());
+}
+#[test]
+fn validator_preserves_lines_when_layout_and_upstream_text_orders_differ() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = job("missing");
+    let xml = r#"<OCRDATASET><PAGE WIDTH="1000" HEIGHT="2000">
+<TEXTBLOCK><LINE X="10" Y="10" WIDTH="900" HEIGHT="100" ORDER="2" STRING="新聞"/>
+<LINE X="10" Y="110" WIDTH="900" HEIGHT="100" ORDER="3" STRING="新聞"/></TEXTBLOCK>
+<TEXTBLOCK><LINE X="10" Y="210" WIDTH="900" HEIGHT="100" ORDER="1" STRING="記事"/></TEXTBLOCK>
+</PAGE></OCRDATASET>"#;
+    let text = "新聞\n新聞\n記事";
+    let valid = files_with_xml(&dir.path().join("valid"), &j, text, xml);
+    ndlocr::load(&valid).unwrap();
+    for (name, altered) in [
+        ("deleted", "新聞\n記事"),
+        ("duplicated", "新聞\n新聞\n新聞\n記事"),
+        ("substituted", "聞新\n新聞\n記事"),
+        ("repartitioned", "新\n聞新聞\n記事"),
+    ] {
+        let files = files_with_xml(&dir.path().join(name), &j, altered, xml);
+        assert!(
+            ndlocr::load(&files)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("ALTO/text disagree"),
+            "{name}"
+        );
+    }
+    let reordered = files_with_xml(&dir.path().join("reordered"), &j, "記事\n新聞\n新聞", xml);
+    ndlocr::load(&reordered).unwrap();
+    assert!(ndlocr::compare(&valid, &reordered).is_err());
 }
 #[tokio::test]
 async fn canonical_collection_uses_release_overlay_and_replays_accepted_bytes() {
