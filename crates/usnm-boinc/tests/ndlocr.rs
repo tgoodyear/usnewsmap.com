@@ -263,3 +263,49 @@ async fn submission_stages_public_inputs_and_never_blindly_retries() {
     ndlocr::submit(&root, &project, doc).await.unwrap();
     assert!(unit.join("submitted").exists());
 }
+
+#[test]
+fn worker_rejects_wrong_installed_image_before_loading_models() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = job("missing");
+    atomic(
+        &dir.path().join(ndlocr::JOB_FILE),
+        &serde_json::to_vec(&j).unwrap(),
+    )
+    .unwrap();
+    atomic(&dir.path().join("page"), b"scan").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_usnm-boinc"))
+        .args(["work", "--dir"])
+        .arg(dir.path())
+        .env("USNM_NDLOCR_IMAGE", format!("sha256:{}", "b".repeat(64)))
+        .env_remove("NDLOCR_ROOT")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("engine image differs"));
+    assert!(!dir.path().join("result.json").exists());
+}
+
+#[tokio::test]
+async fn invalid_stage_metadata_is_rejected_before_fetching_scans() {
+    let dir = tempfile::tempdir().unwrap();
+    for page in [
+        "bulk:jpn:sn83025517_1945-01-01_ed-1_seq-4:dlc_ballston_ver01",
+        "mixed:eng:sn83025517_1945-01-01_ed-1_seq-4:dlc_ballston_ver01",
+    ] {
+        let error = ndlocr::stage(
+            dir.path(),
+            &[page.parse().unwrap()],
+            job("missing").engine,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("classification") || error.to_string().contains("needs jpn"),
+            "{error:#}"
+        );
+        assert!(!dir.path().join("hold").exists());
+    }
+}

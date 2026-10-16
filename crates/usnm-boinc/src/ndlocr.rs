@@ -386,7 +386,7 @@ pub async fn work(dir: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for name in OUTPUTS {
+        for name in OUTPUTS.into_iter().chain(["fraction_done"]) {
             std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o644))?;
         }
     }
