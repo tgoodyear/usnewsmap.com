@@ -13,7 +13,7 @@ from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 
 MAX_BYTES = 1024 * 1024
-MAX_COUNT = 2**53 - 1
+MAX_COUNT = 10**12
 
 
 def timestamp(value):

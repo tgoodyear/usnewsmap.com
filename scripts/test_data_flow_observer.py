@@ -79,6 +79,18 @@ class Observer(unittest.TestCase):
             self.assertEqual(len(events), 4)
             self.assertEqual(failures[0]["code"], "local-ocr-unavailable")
 
+    def test_dashboard_counter_limit_is_inclusive_and_oversize_is_source_isolated(self):
+        self.assertEqual(observer.count(10**12), 10**12)
+        payload = self.local()
+        payload["fetch"]["sets"][0].update(fetched=10**12 + 1, total=10**12 + 1)
+        with patch.object(observer, "fetch", side_effect=[json.dumps(payload).encode(), XML]):
+            events, failures = observer.collect("http://local/", "https://project/", NOW)
+        self.assertEqual(len(events), 4)
+        self.assertEqual(failures[0]["code"], "local-ocr-unavailable")
+        value = observer.snapshot(events, failures, NOW)
+        self.assertTrue(all(stage["count"] is None or stage["count"] <= 10**12
+                            for stage in value["stages"]))
+
     def test_wrong_local_json_shapes_cannot_suppress_boinc_observation(self):
         for malformed in [{"fetch": None}, {"fetch": []},
                           {"fetch": {"status": []}}, {"fetch": {"status": {"updated_at": "2026-10-16T19:55:00Z"},
