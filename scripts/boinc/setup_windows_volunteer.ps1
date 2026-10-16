@@ -134,6 +134,14 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed) {
     if (-not $gpu -and -not $CpuAllowed) {
         throw 'No eligible NVIDIA CUDA GPU found (driver >= 551.61 and >= 3000 MiB free VRAM). Update the official NVIDIA Windows driver, close GPU-heavy apps and retry. AMD/Intel GPUs are not supported for this native CUDA pilot. For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically.'
     }
+    $service = Get-Service -Name BOINC -ErrorAction SilentlyContinue
+    if ($service) {
+        if (-not $CpuAllowed) {
+            throw 'BOINC is installed as a Windows service, which cannot access GPUs. Finish/report existing work, then use the official installer Advanced options to remove Service install before GPU volunteering. This helper will not stop/reconfigure the service. -AllowCpuOnly permits optional CPU participation without enabling GPU access.'
+        }
+        Write-Warning 'Existing BOINC service detected: GPU access is unavailable in service mode. Only optional CPU participation is possible until you review the official installation.'
+        $gpu = $null
+    }
     $diskGiB = 12
     if ($gpu -and $gpu.FreeMiB -ge 7000) { $diskGiB = 18 }
     $root = [IO.Path]::GetPathRoot($DataDirectory)

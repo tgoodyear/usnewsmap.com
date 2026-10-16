@@ -176,6 +176,15 @@ Test-Case 'malformed GPU output fails closed' {
     Assert-True ($null -eq (Select-NvidiaGpu 'NVIDIA unknown, new, lots')) 'malformed CSV rejected'
 }
 
+Test-Case 'bounded subprocess captures both streams and actual exit code' {
+    $shell = (Get-Process -Id $PID).Path
+    $result = Invoke-BoundedProcess $shell `
+        '-NoProfile -NonInteractive -Command "[Console]::Out.Write(''probe''); [Console]::Error.Write(''diagnostic''); exit 7"' `
+        $PSScriptRoot
+    Assert-True ($result.ExitCode -eq 7) 'nonzero exit preserved'
+    Assert-True ($result.Output -eq 'probe' -and $result.ErrorOutput -eq 'diagnostic') 'streams captured without leaking them'
+}
+
 function Set-ReadinessMocks {
     Set-Mock Assert-NativeWindows {}
     Set-Mock Get-CimInstance {
@@ -183,6 +192,7 @@ function Set-ReadinessMocks {
         return [pscustomobject]@{ BuildNumber = 22631; ProductType = 1; TotalVisibleMemorySize = 16GB / 1KB }
     }
     Set-Mock Get-Command { param($Name, $CommandType, $ErrorAction) return $null }
+    Set-Mock Get-Service { param($Name, $ErrorAction) return $null }
     Set-Mock Test-Path { param($LiteralPath) return $false }
     Set-Mock New-Object {
         param($TypeName, $ArgumentList)
@@ -205,6 +215,20 @@ Test-Case 'unsupported Windows has actionable error' {
         return [pscustomobject]@{ BuildNumber = 17763; ProductType = 1; TotalVisibleMemorySize = 16GB / 1KB }
     }
     Assert-Throws { Get-WindowsReadiness $PSScriptRoot $true } 'Older Windows'
+}
+
+Test-Case 'existing service-mode client cannot claim GPU readiness' {
+    Set-ReadinessMocks
+    Set-Mock Get-Command {
+        param($Name, $CommandType, $ErrorAction)
+        return [pscustomobject]@{ Source = 'mock-nvidia-smi.exe' }
+    }
+    Set-Mock Invoke-BoundedProcess {
+        param($File, $Arguments, $Directory)
+        return [pscustomobject]@{ ExitCode = 0; Output = 'NVIDIA test, 560.94, 12000, 11000'; ErrorOutput = '' }
+    }
+    Set-Mock Get-Service { param($Name, $ErrorAction) return [pscustomobject]@{ Name = 'BOINC' } }
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'Windows service'
 }
 
 Test-Case 'insufficient RAM and cold disk cannot count as ready' {
