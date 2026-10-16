@@ -3,8 +3,8 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context};
 use chrono::{DateTime, Utc};
@@ -18,6 +18,8 @@ use crate::loc::Scan;
 const MAX_BYTES: usize = 4 << 20;
 // The worker tries the original scan, then at most one JPEG fallback.
 const MAX_READS: usize = 2;
+const MAX_PENDING: usize = 16;
+const MAX_WAIT: Duration = Duration::from_millis(250);
 
 #[derive(Serialize)]
 struct Observation {
@@ -68,7 +70,7 @@ struct Snapshot {
 pub(crate) struct Capture {
     root: PathBuf,
     started: Instant,
-    state: Mutex<Snapshot>,
+    state: Mutex<Option<Snapshot>>,
 }
 
 impl std::fmt::Debug for Snapshot {
@@ -91,7 +93,7 @@ impl Capture {
         Self {
             root: root.into(),
             started: Instant::now(),
-            state: Mutex::new(Snapshot {
+            state: Mutex::new(Some(Snapshot {
                 metadata_schema: 1,
                 run_id: run_id.into(),
                 doc_id: doc_id.into(),
@@ -121,12 +123,12 @@ impl Capture {
                 error_kind: None,
                 observations: Vec::with_capacity(MAX_READS),
                 run_record: None,
-            }),
+            })),
         }
     }
 
     // Poisoning must not hide lost metadata or panic while dropping a cancelled page.
-    fn state(&self) -> std::sync::MutexGuard<'_, Snapshot> {
+    fn state(&self) -> std::sync::MutexGuard<'_, Option<Snapshot>> {
         self.state.lock().unwrap_or_else(|e| {
             tracing::error!("run metadata lock poisoned; recovering observations");
             e.into_inner()
@@ -134,7 +136,8 @@ impl Capture {
     }
 
     pub(crate) fn input(&self, scan: &Scan) {
-        let mut s = self.state();
+        let mut state = self.state();
+        let Some(s) = state.as_mut() else { return };
         if s.observations.len() == MAX_READS {
             tracing::error!(run_id = %s.run_id, "run metadata read limit exceeded");
             return;
@@ -155,7 +158,8 @@ impl Capture {
     }
 
     pub(crate) fn start(&self, planned: Option<(String, ReadInfo)>) {
-        let mut s = self.state();
+        let mut state = self.state();
+        let Some(s) = state.as_mut() else { return };
         if let Some(o) = s.observations.last_mut() {
             o.engine_started_at = Some(Utc::now());
             o.started = Some(Instant::now());
@@ -169,14 +173,22 @@ impl Capture {
     }
 
     pub(crate) fn instance(&self, info: ReadInfo) {
-        if let Some(o) = self.state().observations.last_mut() {
+        if let Some(o) = self
+            .state()
+            .as_mut()
+            .and_then(|s| s.observations.last_mut())
+        {
             o.info = Some(info);
             o.info_source = Some("instance");
         }
     }
 
     pub(crate) fn ended(&self, result: &Result<EngineOutput, EngineError>) {
-        if let Some(o) = self.state().observations.last_mut() {
+        if let Some(o) = self
+            .state()
+            .as_mut()
+            .and_then(|s| s.observations.last_mut())
+        {
             o.engine_finished_at = Some(Utc::now());
             o.seconds_wall = o.started.take().map(|t| t.elapsed().as_secs_f64());
             match result {
@@ -217,13 +229,17 @@ impl Capture {
             Ok(serde_json::from_str(&line)?)
         })();
         match result {
-            Ok(value) => self.state().run_record = Some(value),
+            Ok(value) => {
+                if let Some(s) = self.state().as_mut() {
+                    s.run_record = Some(value);
+                }
+            }
             Err(e) => tracing::error!(error = %e, "run metadata record serialization failed"),
         }
     }
 
-    pub(crate) fn finish(&self, status: &'static str, error_kind: Option<&'static str>) {
-        let mut s = self.state();
+    fn snapshot(&self, status: &'static str, error_kind: Option<&'static str>) -> Option<Snapshot> {
+        let mut s = self.state().take()?;
         s.status = status;
         s.error_kind = error_kind;
         s.finished_at = Some(Utc::now());
@@ -236,14 +252,139 @@ impl Capture {
                 o.seconds_wall = o.started.take().map(|t| t.elapsed().as_secs_f64());
             }
         }
-        if let Err(e) = publish(&self.root, &s) {
-            // Like the status journal, this must not replace the page's original error.
+        Some(s)
+    }
+
+    pub(crate) async fn finish(
+        &self,
+        status: &'static str,
+        error_kind: Option<&'static str>,
+        deadline: Instant,
+    ) {
+        if let Some(snapshot) = self.snapshot(status, error_kind) {
+            if let Some(mut pending) = enqueue(self.root.clone(), snapshot) {
+                pending.wait(deadline).await;
+            }
+        }
+    }
+
+    pub(crate) fn cancelled(&self) {
+        if let Some(snapshot) = self.snapshot("abandoned", Some("shutdown")) {
+            // Drop cannot wait. Pending's guard explicitly reports unconfirmed durability;
+            // the bounded writer may still complete publication before process exit.
+            drop(enqueue(self.root.clone(), snapshot));
+        }
+    }
+}
+
+struct Job {
+    root: PathBuf,
+    snapshot: Snapshot,
+    dispatch: tracing::Dispatch,
+    span: tracing::Span,
+    ack: tokio::sync::oneshot::Sender<()>,
+}
+
+struct Pending {
+    run_id: String,
+    ack: tokio::sync::oneshot::Receiver<()>,
+    completed: bool,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if !self.completed {
             tracing::error!(
-                run_id = %s.run_id, error = %format!("{e:#}"),
-                "run metadata publication failed; local observation was not confirmed durable"
+                run_id = %self.run_id,
+                "run metadata wait ended before publication; durability unconfirmed"
             );
         }
     }
+}
+
+impl Pending {
+    async fn wait(&mut self, deadline: Instant) {
+        // Never wait past the page's original budget or retain its queue message
+        // indefinitely for slow metadata storage.
+        let until =
+            tokio::time::Instant::from_std(deadline).min(tokio::time::Instant::now() + MAX_WAIT);
+        if let Ok(result) = tokio::time::timeout_at(until, &mut self.ack).await {
+            self.completed = true;
+            if result.is_err() {
+                tracing::error!(
+                    run_id = %self.run_id,
+                    "run metadata writer stopped; durability unconfirmed"
+                );
+            }
+        }
+    }
+}
+
+fn enqueue(root: PathBuf, snapshot: Snapshot) -> Option<Pending> {
+    // A dedicated thread, not spawn_blocking: a hung fsync must not hold Tokio's
+    // runtime shutdown open. At most 16 pending snapshots plus one active write.
+    static WRITER: OnceLock<Result<mpsc::SyncSender<Job>, io::Error>> = OnceLock::new();
+    let writer = WRITER.get_or_init(|| start_writer(publish));
+    let sender = match writer {
+        Ok(sender) => sender,
+        Err(e) => {
+            tracing::error!(run_id = %snapshot.run_id, error = %e, "run metadata writer unavailable; durability unconfirmed");
+            return None;
+        }
+    };
+    enqueue_to(sender, root, snapshot)
+}
+
+fn start_writer(
+    publisher: impl Fn(&Path, &Snapshot) -> anyhow::Result<()> + Send + 'static,
+) -> io::Result<mpsc::SyncSender<Job>> {
+    let (sender, receiver) = mpsc::sync_channel::<Job>(MAX_PENDING);
+    std::thread::Builder::new()
+        .name("ocr-run-metadata".into())
+        .spawn(move || {
+            for job in receiver {
+                tracing::dispatcher::with_default(&job.dispatch, || {
+                    job.span.in_scope(|| {
+                        if let Err(e) = publisher(&job.root, &job.snapshot) {
+                            tracing::error!(
+                                run_id = %job.snapshot.run_id, error = %format!("{e:#}"),
+                                "run metadata publication failed; local observation was not confirmed durable"
+                            );
+                        }
+                    });
+                });
+                let _ = job.ack.send(());
+            }
+        })
+        .map(|_| sender)
+}
+
+fn enqueue_to(
+    sender: &mpsc::SyncSender<Job>,
+    root: PathBuf,
+    snapshot: Snapshot,
+) -> Option<Pending> {
+    let run_id = snapshot.run_id.clone();
+    let (ack, receiver) = tokio::sync::oneshot::channel();
+    let job = Job {
+        root,
+        snapshot,
+        dispatch: tracing::dispatcher::get_default(Clone::clone),
+        span: tracing::Span::current(),
+        ack,
+    };
+    if let Err(e) = sender.try_send(job) {
+        tracing::error!(
+            run_id, error = %e,
+            "run metadata writer queue unavailable; observation not published"
+        );
+        return None;
+    }
+    Some(Pending {
+        run_id,
+        ack: receiver,
+        completed: false,
+    })
 }
 
 /// Check the optional destination before the queue loop starts.
@@ -405,8 +546,8 @@ mod tests {
         assert!(prepare(Path::new("")).is_err());
     }
 
-    #[test]
-    fn publication_failure_is_explicitly_logged() {
+    #[tokio::test]
+    async fn publication_failure_is_explicitly_logged() {
         struct Errors(std::sync::Arc<AtomicUsize>);
         impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Errors {
             fn on_event(
@@ -426,13 +567,98 @@ mod tests {
         let capture = Capture {
             root,
             started: Instant::now(),
-            state: Mutex::new(snapshot()),
+            state: Mutex::new(Some(snapshot())),
         };
         let errors = std::sync::Arc::new(AtomicUsize::new(0));
         let subscriber = tracing_subscriber::registry().with(Errors(errors.clone()));
-        tracing::subscriber::with_default(subscriber, || {
-            capture.finish("failed", Some("fetch"));
-        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+        capture
+            .finish(
+                "failed",
+                Some("fetch"),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await;
         assert_eq!(errors.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_publication_wait_is_capped_by_budget_and_fixed_wait() {
+        let (sender, ack) = tokio::sync::oneshot::channel();
+        let mut pending = Pending {
+            run_id: "test".into(),
+            ack,
+            completed: false,
+        };
+        let started = tokio::time::Instant::now();
+        pending
+            .wait((started + Duration::from_secs(60)).into_std())
+            .await;
+        assert_eq!(started.elapsed(), MAX_WAIT);
+        assert!(!pending.completed);
+        drop(sender);
+
+        let (_sender, ack) = tokio::sync::oneshot::channel();
+        let mut pending = Pending {
+            run_id: "test".into(),
+            ack,
+            completed: false,
+        };
+        let started = tokio::time::Instant::now();
+        pending
+            .wait((started + Duration::from_millis(10)).into_std())
+            .await;
+        assert_eq!(started.elapsed(), Duration::from_millis(10));
+        assert!(!pending.completed);
+    }
+
+    #[tokio::test]
+    async fn blocked_writer_leaves_executor_responsive_and_queue_bounded() {
+        use std::sync::{Arc, Condvar};
+        struct Release(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                *self.0 .0.lock().unwrap() = true;
+                self.0 .1.notify_all();
+            }
+        }
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let release = Release(gate.clone());
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let started = Mutex::new(Some(started));
+        let writer = start_writer(move |_, _| {
+            assert_eq!(std::thread::current().name(), Some("ocr-run-metadata"));
+            if let Some(signal) = started.lock().unwrap().take() {
+                let _ = signal.send(());
+            }
+            let (lock, condition) = &*gate;
+            let _guard = condition
+                .wait_while(lock.lock().unwrap(), |open| !*open)
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let mut active = enqueue_to(&writer, PathBuf::from("."), snapshot()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut queued = Vec::new();
+        for _ in 0..MAX_PENDING {
+            queued.push(enqueue_to(&writer, PathBuf::from("."), snapshot()).unwrap());
+        }
+        assert!(enqueue_to(&writer, PathBuf::from("."), snapshot()).is_none());
+        // With one runtime thread, this deadline cannot fire if publication blocks it.
+        active
+            .wait(Instant::now() + Duration::from_millis(10))
+            .await;
+        assert!(!active.completed);
+        drop(release);
+        active.wait(Instant::now() + Duration::from_secs(5)).await;
+        assert!(active.completed);
+        for pending in &mut queued {
+            pending.wait(Instant::now() + Duration::from_secs(5)).await;
+            assert!(pending.completed);
+        }
     }
 }

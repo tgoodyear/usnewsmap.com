@@ -262,7 +262,7 @@ impl Drop for CancelledRead<'_> {
             self.worker
                 .report_failed_read(self.key, self.run_id, self.trace, None);
             if let Some(c) = &self.trace.metadata {
-                c.finish("abandoned", Some("shutdown"));
+                c.cancelled();
             }
         }
     }
@@ -801,7 +801,7 @@ impl Worker {
                 Err(Failure::Transient(kind, _)) => ("failed", Some(*kind)),
                 Err(Failure::Abandoned) => ("abandoned", Some("budget")),
             };
-            c.finish(status, kind);
+            c.finish(status, kind, deadline).await;
         }
         result
     }
@@ -2093,6 +2093,22 @@ mod tests {
             .await
             .is_err());
         drop(page);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count = std::fs::read_dir(&root).map_or(0, |files| {
+                    files
+                        .filter_map(Result::ok)
+                        .filter(|f| f.path().extension().is_some_and(|e| e == "json"))
+                        .count()
+                });
+                if count == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
         let rows = metadata_files(&root);
         assert_eq!(rows.len(), 2);
         let kinds: std::collections::BTreeSet<_> = rows

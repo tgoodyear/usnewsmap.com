@@ -43,19 +43,19 @@ Redeliveries mint fresh run IDs and files, even for the same page. Invalid messa
 and dequeue-limit dead letters do not reach processing and are not captured.
 The object is an execution envelope, **not** a second `RunRecord` schema:
 
-| Field(s) | JSON value |
-| --- | --- |
-| `metadata_schema` | `1`, the envelope version |
-| `run_id`, `doc_id`, `node`, `worker_version`, `ocr_source` | Strings naming this attempt, canonical page, worker and engine source |
-| `language`, `batch`, `reason` | Checked queue-message strings |
-| `damage_before`, `queued_at` | Queue score or null; parsed UTC RFC3339 timestamp or null |
-| `dpi`, `dpi_source` | Configured integer resolution; `"assumed"` (not a measured scan resolution) |
-| `execution_config` | Known engine runtime configuration, or null for engines that do not expose it |
-| `worker_config` | Object: `concurrency`, `visibility_seconds`, `abandon_at`, `page_timeout_seconds` |
-| `started_at`, `finished_at`, `seconds_wall` | UTC RFC3339 page-processing timestamps and measured monotonic elapsed seconds |
-| `status`, `error_kind` | Page execution: `ok`, `failed` or `abandoned`; classified error token or null |
-| `observations` | Ordered array, at most two reads: original scan then optional JPEG retry |
-| `run_record` | Existing `usnm_ocr_contract::runs::to_json_line` object, including `"schema":1`, or null |
+| Field(s)                                                   | JSON value                                                                               |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `metadata_schema`                                          | `1`, the envelope version                                                                |
+| `run_id`, `doc_id`, `node`, `worker_version`, `ocr_source` | Strings naming this attempt, canonical page, worker and engine source                    |
+| `language`, `batch`, `reason`                              | Checked queue-message strings                                                            |
+| `damage_before`, `queued_at`                               | Queue score or null; parsed UTC RFC3339 timestamp or null                                |
+| `dpi`, `dpi_source`                                        | Configured integer resolution; `"assumed"` (not a measured scan resolution)              |
+| `execution_config`                                         | Known engine runtime configuration, or null for engines that do not expose it            |
+| `worker_config`                                            | Object: `concurrency`, `visibility_seconds`, `abandon_at`, `page_timeout_seconds`        |
+| `started_at`, `finished_at`, `seconds_wall`                | UTC RFC3339 page-processing timestamps and measured monotonic elapsed seconds            |
+| `status`, `error_kind`                                     | Page execution: `ok`, `failed` or `abandoned`; classified error token or null            |
+| `observations`                                             | Ordered array, at most two reads: original scan then optional JPEG retry                 |
+| `run_record`                                               | Existing `usnm_ocr_contract::runs::to_json_line` object, including `"schema":1`, or null |
 
 `run_record` is populated once output conversion succeeds, before uploads. It is
 the **same** `RunRecord` written to the existing runs Parquet, including full
@@ -98,9 +98,12 @@ overwrite a run, including on replay; a collision is an explicit error.
 Only `*.json` files are importable. A process/machine crash can leave ignored
 `.pending-*` files, and a hard kill before publication cannot produce a completed
 observation. No startup recovery guesses outcomes from these staging files.
-There is no background queue or accumulation across pages: at most two observations
-and one record are retained per in-flight page; serialized files are capped at
-4 MiB, and individual records at 2 MiB before JSON-line allocation.
+Capture retains at most two observations
+and one record per in-flight page. Publication moves an owned snapshot
+to a dedicated blocking-I/O thread with a process-wide capacity of 16 pending
+snapshots plus one active write. Enqueuing never blocks: a full/unavailable writer
+queue is an explicit ERROR and that observation is not published. Serialized files
+are capped at 4 MiB, and individual records at 2 MiB before JSON-line allocation.
 This is local per-attempt publication, not an extra Blob transaction.
 Use a persistent local filesystem supporting atomic publication and fsync.
 
@@ -108,6 +111,12 @@ The destination is checked before taking queue work; an invalid/unwritable
 destination fails startup. A later serialization/publication/fsync failure is
 explicitly logged at ERROR as unconfirmed metadata durability, but never replaces
 the page's original result/error or changes queue retry/dead-letter behavior.
+Normal page completion waits for publication for at most 250 ms, never past the
+page's original budget. Cancellation submits without waiting. A dropped/timed-out
+wait explicitly logs unconfirmed durability; the writer may still publish later.
+The dedicated thread does not block Tokio's executor or runtime shutdown. Shutdown
+does not wait indefinitely for slow storage; pending writes may be lost at process
+exit, with unconfirmed-durability logs rather than a claim they were persisted.
 Disk retention/import and alerts for these errors are the operator's responsibility.
 
 A separate importer can use only Python's standard library: `json.load()` each
