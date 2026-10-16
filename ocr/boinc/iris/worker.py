@@ -17,6 +17,7 @@ Process RSS excludes i915/shmem allocations charged to the container: it is not 
 """
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import json
 import os
@@ -391,13 +392,15 @@ def print_summary(result: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None, paths: Paths = Paths(), command: list[str] | None = None,
          timeout: float = c.TIMEOUT_SECONDS) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    if argv == ["--inference-child"]:
+    parser = argparse.ArgumentParser(description="Run one usnm_iris BOINC crop", allow_abbrev=False)
+    parser.add_argument("--infer", action="store_true", help=argparse.SUPPRESS)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code)
+    if args.infer:
         return child(paths)
-    if argv:
-        print("usnm_iris worker takes no arguments", file=sys.stderr)
-        return 2
-    command = command or [sys.executable, "-I", str(Path(__file__).resolve()), "--inference-child"]
+    command = command or [sys.executable, "-I", str(Path(__file__).resolve()), "--infer"]
     try:
         result = supervise(paths, command, timeout)
     except Exception as exc:  # noqa: BLE001

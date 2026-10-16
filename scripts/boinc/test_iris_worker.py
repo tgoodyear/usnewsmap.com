@@ -223,7 +223,7 @@ class WorkerTest(unittest.TestCase):
     def run_worker(self):
         """The inference child in-process (the fakes do not cross a process boundary)."""
         with patch("sys.stderr"):
-            self.assertEqual(w.main(["--inference-child"], self.paths), 0)
+            self.assertEqual(w.main(["--infer"], self.paths), 0)
         data = (self.paths.scratch / c.RESULT_FILE).read_bytes()
         self.assertLessEqual(len(data), c.MAX_RESULT_BYTES)
         result = c.parse_result_bytes(data, self.job)
@@ -397,7 +397,7 @@ class WorkerTest(unittest.TestCase):
     def test_takes_no_arguments(self):
         with patch("sys.stderr"):
             self.assertEqual(w.main(["--dir", "/etc"], self.paths), 2)
-            self.assertEqual(w.main(["--inference-child", "x"], self.paths), 2)
+            self.assertEqual(w.main(["--infer", "x"], self.paths), 2)
         self.assertFalse((self.paths.work / c.RESULT_FILE).exists())
 
 
