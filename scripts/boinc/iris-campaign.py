@@ -23,6 +23,8 @@ COUNT = 100
 HOST_ID = 9
 APP = "usnm_iris"
 BATCH = 104
+VERSION_NUM = 100
+PLAN_CLASS = "docker_intel_opencl_4b"
 IMAGE = re.compile(r"ghcr\.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64}\Z")
 IDENTITY = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -136,6 +138,7 @@ def create_work_args(identity):
         raise ValueError("invalid workunit identity")
     return [
         "--appname", APP, "--wu_name", f"usnm_iris_{identity}",
+        "--app_version_num", str(VERSION_NUM),
         "--wu_template", "templates/usnm_iris_in",
         "--result_template", "templates/usnm_iris_out",
         "--target_host", str(HOST_ID), "--batch", str(BATCH),
@@ -149,12 +152,73 @@ def create_work_args(identity):
     ]
 
 
+def verify_registered_image(project, image):
+    import MySQLdb
+
+    config = ET.parse(project / "config.xml").find("config")
+    connection = MySQLdb.connect(
+        host=config.findtext("db_host"), user=config.findtext("db_user"),
+        passwd=config.findtext("db_passwd"), db=config.findtext("db_name"),
+        ssl={"ca": "/usr/local/share/usnm/mysql-ca.pem"},
+    )
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT av.xml_doc FROM app_version av JOIN app a ON a.id=av.appid "
+            "JOIN platform p ON p.id=av.platformid "
+            "WHERE a.name=%s AND av.version_num=%s AND av.plan_class=%s "
+            "AND p.name=%s AND av.deprecated=0",
+            (APP, VERSION_NUM, PLAN_CLASS, "x86_64-pc-linux-gnu"),
+        )
+        versions = cursor.fetchall()
+        if len(versions) != 1:
+            raise ValueError("expected exactly one registered active Iris version 1.0")
+        verify_version_files(project, image, versions[0][0])
+    finally:
+        connection.close()
+
+
+def verify_version_files(project, image, xml_doc):
+    if isinstance(xml_doc, bytes):
+        xml_doc = xml_doc.decode("utf-8")
+    version = ET.fromstring("<version>" + xml_doc + "</version>")
+    refs = [ref for ref in version.findall(".//file_ref") if ref.findtext("open_name") == "Dockerfile"]
+    if len(refs) != 1:
+        raise ValueError("registered app version must contain one Dockerfile")
+    name = refs[0].findtext("file_name")
+    if not name or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise ValueError("invalid registered Dockerfile name")
+    infos = [info for info in version.findall(".//file_info") if info.findtext("name") == name]
+    if len(infos) != 1 or not infos[0].findtext("file_signature"):
+        raise ValueError("registered Dockerfile lacks code signature")
+    output = subprocess.run(
+        [str(project / "bin/dir_hier_path"), name], cwd=project,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    path = Path(output)
+    path = (path if path.is_absolute() else project / path).resolve(strict=True)
+    if not path.is_relative_to((project / "download").resolve()):
+        raise ValueError("registered Dockerfile outside download directory")
+    data = path.read_bytes()
+    if data != f"FROM {image}\n".encode():
+        raise ValueError("campaign image differs from registered signed app version")
+    with tempfile.TemporaryDirectory(prefix="iris-signature-") as directory:
+        signature = Path(directory) / "Dockerfile.sig"
+        signature.write_text(infos[0].findtext("file_signature"))
+        subprocess.run(
+            ["/usr/local/boinc/lib/crypt_prog", "-verify", str(path),
+             str(signature), str(project / "keys/code_sign_public")],
+            check=True, capture_output=True, text=True,
+        )
+
+
 def submit(root, project, apply=False):
     campaign = load_campaign(root)
     project = project.resolve(strict=True)
     config = ET.parse(project / "config.xml")
     if config.findtext("./config/enable_assigned_jobs") != "1":
         raise ValueError("host-target dispatch requires enable_assigned_jobs=1")
+    verify_registered_image(project, campaign["worker_image"])
     if not apply:
         return {"dry_run": True, "jobs": COUNT, "host_id": HOST_ID,
                 "example": create_work_args(campaign["jobs"][0]["id"])}

@@ -84,6 +84,12 @@ written before `create_work`; uncertain dispatch stops rather than duplicating
 work. Audit the database before explicit recovery. Confirm exactly 100
 assignments to host 9 and no assignments to other hosts.
 
+Both dry-run and apply verify the active registered Linux Intel app version 1.0:
+its published Dockerfile must verify against the project's code-signing public
+key and contain the campaign's exact image digest. Workunits specify
+`app_version_num=100`, so a later release cannot take over still-pending pilot
+jobs. Do not replace files within version 1.0 after publication.
+
 The validator binds results to trusted staged jobs and retains diagnostics before
 rejecting failed inference. `report.json` records pending, successful, and failed
 jobs and whitespace-normalized character error rate against published references.

@@ -69,7 +69,7 @@ class IrisCampaignTest(unittest.TestCase):
                 work.append(args)
                 return SimpleNamespace(returncode=0)
 
-            with patch.object(campaign.subprocess, "run", side_effect=run):
+            with patch.object(campaign, "verify_registered_image"), patch.object(campaign.subprocess, "run", side_effect=run):
                 self.assertEqual(campaign.submit(root, project)["jobs"], 100)
                 self.assertEqual(work, [])
                 self.assertEqual(campaign.submit(root, project, True)["submitted"], 100)
@@ -93,10 +93,10 @@ class IrisCampaignTest(unittest.TestCase):
                     return SimpleNamespace(stdout=str(project / "download" / args[1]))
                 raise subprocess.CalledProcessError(1, args)
 
-            with patch.object(campaign.subprocess, "run", side_effect=run):
+            with patch.object(campaign, "verify_registered_image"), patch.object(campaign.subprocess, "run", side_effect=run):
                 with self.assertRaises(subprocess.CalledProcessError):
                     campaign.submit(root, project, True)
-            with patch.object(campaign.subprocess, "run") as retry:
+            with patch.object(campaign, "verify_registered_image"), patch.object(campaign.subprocess, "run") as retry:
                 with self.assertRaisesRegex(ValueError, "uncertain"):
                     campaign.submit(root, project, True)
                 retry.assert_not_called()
@@ -110,6 +110,7 @@ class IrisCampaignTest(unittest.TestCase):
         for key, expected in (
             ("--target_host", "9"), ("--batch", "104"),
             ("--appname", "usnm_iris"), ("--min_quorum", "1"),
+            ("--app_version_num", "100"),
             ("--target_nresults", "1"), ("--max_total_results", "1"),
             ("--rsc_memory_bound", "9663676416"),
         ):
@@ -122,6 +123,51 @@ class IrisCampaignTest(unittest.TestCase):
         for identity in ("../escape", "x" * 64, "", "a" * 63, "a" * 64 + "\n"):
             with self.assertRaises(ValueError):
                 campaign.create_work_args(identity)
+
+    def test_dispatch_checks_registered_image_even_in_dry_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "campaign"
+            self.stage(root)
+            project = Path(directory) / "project"
+            project.mkdir()
+            (project / "config.xml").write_text(
+                "<boinc><config><enable_assigned_jobs>1</enable_assigned_jobs></config></boinc>"
+            )
+            with patch.object(campaign, "verify_registered_image", side_effect=ValueError("image mismatch")):
+                with self.assertRaisesRegex(ValueError, "image mismatch"):
+                    campaign.submit(root, project)
+
+    def test_registered_signed_dockerfile_must_match_campaign(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "download").mkdir()
+            image = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "a" * 64
+            raw = f"FROM {image}\n".encode()
+            dockerfile = project / "download/Dockerfile_fixture"
+            dockerfile.write_bytes(raw)
+            xml = (
+                "<file_info><name>Dockerfile_fixture</name>"
+                "<file_signature>published-signature</file_signature></file_info>"
+                "<file_ref><file_name>Dockerfile_fixture</file_name>"
+                "<open_name>Dockerfile</open_name></file_ref>"
+            )
+            with patch.object(campaign.subprocess, "run", return_value=SimpleNamespace(stdout=str(dockerfile))) as run:
+                campaign.verify_version_files(project, image, xml.encode())
+                self.assertEqual(run.call_args.args[0][1], "-verify")
+                with self.assertRaisesRegex(ValueError, "differs"):
+                    campaign.verify_version_files(project, image.replace("a" * 64, "b" * 64), xml)
+                dockerfile.write_text("changed")
+                with self.assertRaisesRegex(ValueError, "differs"):
+                    campaign.verify_version_files(project, image, xml)
+                dockerfile.write_bytes(raw)
+                run.side_effect = [
+                    SimpleNamespace(stdout=str(dockerfile)),
+                    subprocess.CalledProcessError(1, ["crypt_prog", "-verify"]),
+                ]
+                with self.assertRaises(subprocess.CalledProcessError):
+                    campaign.verify_version_files(project, image, xml)
+            with self.assertRaisesRegex(ValueError, "signature"):
+                campaign.verify_version_files(project, image, xml.replace("published-signature", ""))
 
     def test_exact_character_error_distance(self):
         self.assertEqual(campaign.edit_distance("kitten", "sitting"), 3)
