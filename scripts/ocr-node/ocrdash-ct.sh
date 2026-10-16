@@ -95,10 +95,6 @@ in_ct() { pct exec "$CTID" -- "$@"; }
 if [ -n "$PIPELINE_SNAPSHOT" ]; then
   [[ $PIPELINE_SNAPSHOT =~ ^/[A-Za-z0-9/_.-]+$ ]] ||
     die "--pipeline-snapshot: an absolute existing path inside the container"
-  in_ct runuser -u ocrdash -- test -r "$PIPELINE_SNAPSHOT" ||
-    die "ocrdash can't read --pipeline-snapshot inside the container"
-  in_ct test -f "$PIPELINE_SNAPSHOT" ||
-    die "--pipeline-snapshot must be a regular file"
 fi
 
 if $CREATE; then
@@ -130,6 +126,13 @@ if $CREATE; then
     mkdir -p /etc/usnm"
   in_ct su -s /bin/sh ocrdash -c 'test -r /tank/ocr/scans/status-full.json || ls /tank/ocr/scans > /dev/null' ||
     die "ocrdash can't read /tank/ocr/scans"
+fi
+
+if [ -n "$PIPELINE_SNAPSHOT" ]; then
+  in_ct runuser -u ocrdash -- test -r "$PIPELINE_SNAPSHOT" ||
+    die "ocrdash can't read --pipeline-snapshot inside the container"
+  in_ct test -f "$PIPELINE_SNAPSHOT" ||
+    die "--pipeline-snapshot must be a regular file"
 fi
 
 if $INSTALL; then
@@ -251,7 +254,7 @@ if [ -n "$PIPELINE_SNAPSHOT" ] && ! $CONFIGURE; then
     trap '\''rm -f "$new"'\'' EXIT
     cp -p "$file" "$new"
     sed "/^USNM_OCRDASH_PIPELINE_SNAPSHOT=/d" "$file" > "$new"
-    printf "USNM_OCRDASH_PIPELINE_SNAPSHOT=%s\n" "$1" >> "$new"
+    printf "\nUSNM_OCRDASH_PIPELINE_SNAPSHOT=%s\n" "$1" >> "$new"
     mv -f "$new" "$file"
     systemctl restart usnm-ocrdash.service
   ' sh "$PIPELINE_SNAPSHOT"
