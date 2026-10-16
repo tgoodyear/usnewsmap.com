@@ -133,7 +133,7 @@ class CatalogTests(unittest.TestCase):
                "sha256": HASH, "download_ms": 2050}
         index.write_text(c.canonical(row) + "\n")
         evidence = self.work / "cached-evidence.jsonl"
-        self.cli("ingest-cached-scans", "--index", str(index), "--scan-root", str(scan_root),
+        self.cli("ingest-cached-scans", "--index", str(index), "--scan-root", str(scan_root), "--cache-set", "keep",
                  "--evidence-out", str(evidence), "--batch-id", "cached-1",
                  "--source", "pve-big-stat")
         item = c.query(self.db, "artifact", {})["items"][0]
@@ -147,25 +147,25 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(c.timestamp(fetched), fetched)
         scan.unlink()
         c.ingest_cached_scans(self.db, index, scan_root,
-                              self.work / "cached-missing.jsonl", "cached-2", "pve-big-stat")
+                              self.work / "cached-missing.jsonl", "cached-2", "pve-big-stat", "keep")
         self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["state"], "missing")
         self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["condition"], "absent")
         # Wrong-size files are not considered present either.
         scan.write_bytes(b"x")
         c.ingest_cached_scans(self.db, index, scan_root,
-                              self.work / "cached-size.jsonl", "cached-3", "pve-big-stat")
+                              self.work / "cached-size.jsonl", "cached-3", "pve-big-stat", "keep")
         self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["state"], "missing")
         self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["condition"], "size_mismatch")
         self.assertIn("artifact_size_mismatch", {i["code"] for i in c.snapshot(self.db)["issues"]})
         with self.assertRaises(c.CatalogError):
-            c.ingest_cached_scans(self.db, index, scan_root, evidence, "cached-4", "pve-big-stat")
+            c.ingest_cached_scans(self.db, index, scan_root, evidence, "cached-4", "pve-big-stat", "keep")
         self.assertEqual(c.ingest(self.db, evidence)["inserted"], 0)
         # Untrusted cache coordinates cannot traverse outside the provided root.
         row["batch"] = "../escape"
         index.write_text(c.canonical(row) + "\n")
         with self.assertRaises(c.CatalogError):
             c.ingest_cached_scans(self.db, index, scan_root,
-                                  self.work / "bad.jsonl", "bad", "pve-big-stat")
+                                  self.work / "bad.jsonl", "bad", "pve-big-stat", "keep")
         self.assertFalse((self.work / "bad.jsonl").exists())
 
     def test_actual_worker_capture_success_failures_roundtrip(self):
@@ -221,6 +221,48 @@ class CatalogTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join(timeout=5)
+
+    def test_producer_sidecars_format_and_explicit_cache_set(self):
+        row = {"doc_id": "2017270200_1885-08-20_ed-1_seq-4", "batch": "nbu_irisvirginica",
+               "batch_version": 1, "loc_url": "https://tile.loc.gov/scan",
+               "iiif_base": "https://tile.loc.gov/image-service", "resolution": "full",
+               "fetched_at": "2026-10-11T22:32:31.635966037Z", "bytes": 4,
+               "sha256": HASH, "download_ms": 2050, "user_agent": "test-sidecar-agent",
+               "format": "jp2", "md5": None}
+        root = self.work / "scans"
+        path = root / "buffer/nbu_irisvirginica/2017270200/1885-08-20/1/4.jp2"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"jp2!")
+        index = self.work / "sidecar-index.jsonl"
+        index.write_text(c.canonical(row) + "\n")
+        evidence = self.work / "buffer-evidence.jsonl"
+        self.cli("ingest-cached-scans", "--index", str(index), "--scan-root", str(root),
+                 "--cache-set", "buffer", "--evidence-out", str(evidence),
+                 "--batch-id", "buffer-jp2", "--source", "cache-stat")
+        item = c.query(self.db, "artifact", {})["items"][0]["data"]
+        self.assertEqual(item["state"], "present")
+        self.assertEqual(item["reference"], str(path.relative_to(root)))
+        self.assertEqual(item["location"], "cached-scans-buffer")
+        self.assertNotIn("tile.loc.gov", evidence.read_text())
+        self.assertNotIn("test-sidecar-agent", evidence.read_text())
+        row["format"] = "jpeg"
+        row["md5"] = "ff" * 16
+        path = root / "keep/nbu_irisvirginica/2017270200/1885-08-20/1/4.jpg"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"jpg!")
+        index.write_text(c.canonical(row) + "\n")
+        c.ingest_cached_scans(self.db, index, root, self.work / "keep-evidence.jsonl",
+                              "keep-jpeg", "cache-stat", "keep")
+        self.assertEqual(len(c.query(self.db, "artifact", {})["items"]), 2)
+        # Missing set coordinates fail at argparse rather than inventing absent evidence.
+        process = subprocess.run([sys.executable, str(SCRIPT), "--db", str(self.db),
+                                  "ingest-cached-scans", "--index", str(index), "--scan-root", str(root),
+                                  "--evidence-out", str(self.work / "no-set.jsonl"),
+                                  "--batch-id", "no-set", "--source", "cache-stat"],
+                                 capture_output=True, text=True, timeout=5)
+        self.assertEqual(process.returncode, 2)
+        self.assertIn("--cache-set", process.stderr)
+        self.assertFalse((self.work / "no-set.jsonl").exists())
 
     def test_worker_adapter_rejects_malformed_unknown_and_oversized(self):
         fixture = json.loads((ROOT / "scripts/fixtures/data_catalog/worker-timeout.json").read_text())
@@ -411,7 +453,7 @@ class CatalogTests(unittest.TestCase):
         record.update(models_json='{"password":"never-store-model-secret"}',
                       options_json='{"text":"never-store-OCR-text"}',
                       engine_stats_json='{"text":"never-store-engine-text"}',
-                      image_ref="https://registry.invalid/image?sig=never-store-SAS",
+                      image_ref="https://registry.invalid/image?" + urllib.parse.urlencode({"sig": "never-store-SAS"}),
                       adapter="never-store-adapter", node="never-store-node",
                       ocr_engine="never-store-engine-tag")
         self.ingest(event("r", "run", payload={"run_record": record}))
@@ -427,7 +469,7 @@ class CatalogTests(unittest.TestCase):
                              ("page_id", "unqualified"), ("observed_at", "2026-01-01")):
             cases.append(event(**{field: value}))
         for field, value in (("sha256", "short"), ("state", "ready"),
-                             ("reference", "https://blob/scan?sig=secret"),
+                             ("reference", "https://blob/scan?" + urllib.parse.urlencode({"sig": "secret"})),
                              ("reference", "../private"), ("reference", "/absolute"),
                              ("artifact_id", "password")):
             value_event = event()

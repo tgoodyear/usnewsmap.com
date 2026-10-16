@@ -497,10 +497,11 @@ def ingest(db, batch):
         conn.close()
 
 
-def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source):
+def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source, cache_set):
     """Bounded index adapter: local stat is presence evidence, never checksum verification."""
     token(batch_id)
     token(source)
+    require(cache_set in ("keep", "buffer"), "explicit cache_set keep or buffer required")
     root = Path(scan_root).resolve(strict=True)
     require(root.is_dir(), "scan root must be a directory")
     out = Path(evidence_out)
@@ -514,8 +515,16 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source):
             require(number <= MAX_EVENTS and total <= MAX_BATCH and len(raw) <= MAX_LINE,
                     "index exceeds bounded batch; split locally before importing")
             entry = load_json(raw)
-            obj(entry, ("doc_id", "batch", "batch_version", "loc_url", "resolution",
-                        "fetched_at", "bytes", "sha256", "download_ms"))
+            require(isinstance(entry, dict), "cached scan index row must be an object")
+            obj({k: v for k, v in entry.items() if k not in ("iiif_base", "user_agent", "format", "md5")},
+                ("doc_id", "batch", "batch_version", "loc_url", "resolution",
+                 "fetched_at", "bytes", "sha256", "download_ms"))
+            for key in ("loc_url", "iiif_base", "user_agent", "md5"):
+                if key in entry:
+                    require(entry[key] is None or (isinstance(entry[key], str) and len(entry[key]) <= 8192),
+                            "invalid discarded cache metadata")
+            scan_format = entry.get("format", "jpeg")
+            require(scan_format in ("jpeg", "jp2"), "unsupported cached scan format")
             token(entry["doc_id"])
             require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", entry["batch"]),
                     "invalid cached scan batch")
@@ -532,7 +541,8 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source):
                                  entry["doc_id"])
             require(match is not None, "unsupported cached scan doc_id")
             paper, date, edition, sequence = match.groups()
-            reference = f"keep/{entry['batch']}/{paper}/{date}/{int(edition)}/{int(sequence)}.jpg"
+            extension = "jp2" if scan_format == "jp2" else "jpg"
+            reference = f"{cache_set}/{entry['batch']}/{paper}/{date}/{int(edition)}/{int(sequence)}.{extension}"
             candidate = root / reference
             require(candidate.resolve().is_relative_to(root), "cached scan escapes scan root")
             require(not any(parent.is_symlink() for parent in
@@ -547,7 +557,8 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source):
                 present = False
                 condition = "absent"
             payload = {"artifact_id": "scan", "sha256": entry["sha256"],
-                       "version": entry["sha256"], "location": "cached-scans",
+                       "version": entry["sha256"],
+                       "location": "cached-scans" if cache_set == "keep" else "cached-scans-buffer",
                        "reference": reference, "state": "present" if present else "missing",
                        "condition": condition,
                        "fetched_at": entry["fetched_at"], "bytes": entry["bytes"]}
@@ -901,7 +912,10 @@ Do not expose it through an unauthenticated proxy. Local files/exports are trust
 operator inputs; use filesystem access controls, never include text or credentials
 in identifiers or references. Retain evidence on durable storage; SQLite is disposable.
 ingest-cached-scans explicitly adapts bounded index-full.jsonl slices plus actual local
-stat of <scan-root>/keep/<batch>/<paper>/<date>/<edition>/<sequence>.jpg. Index alone
+stat of <scan-root>/<cache-set>/<batch>/<paper>/<date>/<edition>/<sequence>.<jpg|jp2>.
+--cache-set keep|buffer is REQUIRED because indexes do not encode set membership.
+Producer Sidecar fields iiif_base,user_agent,format,md5 are accepted but free-form fields
+are discarded; format determines extension (jpeg defaults for legacy rows). Index alone
 does NOT establish presence. Regular file and matching size => present, never verified;
 absent/size mismatch => missing. Does not fetch or read image bytes. Original nanosecond
 fetched_at and byte length are retained; observed_at is adapter stat observation time.
@@ -926,6 +940,7 @@ def main(argv=None):
     p = subs.add_parser("ingest-cached-scans", help="bounded cache index + local stat, NOT verification")
     p.add_argument("--index", required=True)
     p.add_argument("--scan-root", required=True)
+    p.add_argument("--cache-set", required=True, choices=("keep", "buffer"))
     p.add_argument("--evidence-out", required=True)
     p.add_argument("--batch-id", required=True)
     p.add_argument("--source", required=True)
@@ -956,7 +971,7 @@ def main(argv=None):
             result = ingest(args.db, args.batch)
         elif args.command == "ingest-cached-scans":
             result = ingest_cached_scans(args.db, args.index, args.scan_root,
-                                         args.evidence_out, args.batch_id, args.source)
+                                         args.evidence_out, args.batch_id, args.source, args.cache_set)
         elif args.command == "ingest-worker":
             result = ingest_worker(args.db, args.input, args.evidence_out, args.batch_id, args.source)
         elif args.command == "query":
