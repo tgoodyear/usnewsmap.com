@@ -169,6 +169,9 @@ def adapt_run(record, page_id):
         require(isinstance(load_json(record[key]), dict), "RunRecord JSON field must be an object")
     for key in ("image_digest", "models_digest", "routing_digest"):
         if record[key] is not None:
+            if key in ("image_digest", "models_digest") and record[key] == "local":
+                continue  # Existing RunRecord convention: digest unavailable for local adapters.
+            require(record[key].startswith("sha256:"), "expected sha256-prefixed digest")
             sha(record[key], prefixed=True)
     for key in ("image_sha256", "text_sha256"):
         if record[key] is not None:
@@ -603,7 +606,10 @@ Every JSONL line has exactly:
   "location":"archive","reference":"container/path/scan.jp2","state":"verified"}}
 Artifact state: present|verified|missing. Verification is source evidence, not a fetch.
 kind=run payload={"run_record":<actual RunRecord JSON with schema:1 from runs.rs>}.
-RunRecord must have exact v1 fields and full SHA-256 hashes. Free-form JSON, image_ref,
+RunRecord must have exact v1 fields. image_sha256/text_sha256 are full bare hashes;
+image_digest/models_digest allow the existing 'local' sentinel (digest unavailable),
+otherwise digest fields require sha256:<64 lowercase hex>. No hash is fabricated.
+Free-form JSON, image_ref,
 adapter, node and OCR engine strings are validated/discarded, not served; configuration
 is represented by a hash. Source-qualified page suffix must equal RunRecord.doc_id.
 kind=page_state payload={"stage":"accepted","state":"present","run_id":null};

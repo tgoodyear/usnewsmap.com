@@ -101,6 +101,24 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(projection["config_sha256"], c.adapt_run(run_record(), PAGE)["config_sha256"])
         self.assertNotIn("text_sha256", projection)
 
+    def test_existing_local_engine_digest_sentinels(self):
+        record = run_record()
+        record.update(image_digest="local", models_digest="local", models_json="{}")
+        self.ingest(event("local-run", "run", payload={"run_record": record}))
+        data = c.query(self.db, "run", {})["items"][0]["data"]
+        self.assertEqual(data["image_digest"], "local")
+        self.assertEqual(data["models_digest"], "local")
+        self.assertEqual(data["image_sha256"], HASH)
+        for key in ("image_digest", "models_digest", "routing_digest"):
+            malformed = copy.deepcopy(record)
+            malformed[key] = "unknown"
+            with self.subTest(key=key), self.assertRaises(c.CatalogError):
+                c.adapt_run(malformed, PAGE)
+        malformed = copy.deepcopy(record)
+        malformed["routing_digest"] = "local"
+        with self.assertRaises(c.CatalogError):
+            c.adapt_run(malformed, PAGE)
+
     def test_cli_end_to_end_and_snapshot_freshness(self):
         batch = self.batch([event(), event("r1", "run"), event("a1", "page_state"),
                             event("s1", "stage", T1)])
