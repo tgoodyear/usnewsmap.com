@@ -50,8 +50,11 @@ TLS, hostname verification and the explicit CA. The account needs read-only
 not grant access automatically. Connector errors are not echoed, because they
 may contain sensitive diagnostics. No host/user/account database rows are changed.
 
-`prepared` contains `prepared.json` and `bundle.tar` from the existing `gold
-prepare` command. `trust` is the existing calibrated v2 list: no default CER or
+`prepared` contains `prepared.json`, `bundle.tar` **and the complete `cache/`
+original-file set** from the existing `gold prepare` command. Each prepared remote
+must be present under `cache/<remotes[*].name>` and match its size, MD5 and SHA-256.
+Metadata and the bundle alone are not sufficient for mirrored gold submission.
+`trust` is the existing calibrated v2 list: no default CER or
 new approval is invented. `jobs_root` is the server-local root containing the
 exported OCR job journals and staged inputs, not the controller root.
 
@@ -73,6 +76,11 @@ Campaign roots are bound to the prepared bundle/manifest, complete engine
 configuration and host. Native gold write-ahead markers make retries stable.
 Each campaign stores one checksum-bound bundle; per-host regular-file hard links
 share its storage instead of retaining a full bundle copy per volunteer.
+Original cache files are checksum-verified and stored once in the shared campaign,
+then hard-linked into every per-host `cache/`; no original bytes are recopied per
+host. The prepared source may be on another filesystem; controller per-host roots
+must share a filesystem supporting regular-file hard links. Native gold submission then verifies and mirrors
+these originals into the BOINC download tree before dispatch.
 The shared validator expectations writer is locked and refuses updates over its
 16 MiB reader limit **before** replacing the previous readable file. If that
 bound is reached, stop for a reviewed sharding/retention decision; never delete

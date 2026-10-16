@@ -157,6 +157,7 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     c.validate()?;
     let trust = Trust::load(&c.trust)?;
     let prepared = gold::prepare::read(&c.prepared)?;
+    gold::submit::job(&prepared, &c.engine, 0)?;
     let inventory =
         hosts(&query(c, "SELECT id FROM host WHERE id>0 ORDER BY id LIMIT 100001").await?)?;
     ensure!(
@@ -202,6 +203,34 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
                 atomic(&dest, &bytes)?;
             }
         }
+        for original in &prepared.remotes {
+            ensure!(
+                gold::job::remote_name_ok(&original.name),
+                "invalid prepared original name"
+            );
+            let source = c.prepared.join("cache").join(&original.name);
+            let bytes = read(&source, gold::job::MAX_REMOTE as usize)?;
+            use md5::Digest as _;
+            let md5: String = md5::Md5::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            ensure!(
+                bytes.len() as u64 == original.bytes
+                    && boinc::sha256(&bytes) == original.sha256
+                    && md5 == original.md5,
+                "prepared original differs from its checksums"
+            );
+            let dest = shared.join("cache").join(&original.name);
+            if dest.exists() {
+                ensure!(
+                    read(&dest, gold::job::MAX_REMOTE as usize)? == bytes,
+                    "shared campaign original changed"
+                );
+            } else {
+                atomic(&dest, &bytes)?;
+            }
+        }
     }
     let mut issued = Vec::new();
     for host in pending {
@@ -221,17 +250,16 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
             } else {
                 gold::job::MAX_BUNDLE as usize
             };
-            let bytes = read(&source, limit)?;
             let dest = root.join(name);
-            if dest.exists() {
-                ensure!(
-                    read(&dest, limit)? == bytes,
-                    "onboarding campaign input changed"
-                );
-            } else {
-                std::fs::create_dir_all(&root)?;
-                std::fs::hard_link(&source, &dest)?;
-            }
+            link_input(&source, &dest, limit)?;
+        }
+        for original in &prepared.remotes {
+            let name = Path::new("cache").join(&original.name);
+            link_input(
+                &shared.join(&name),
+                &root.join(&name),
+                gold::job::MAX_REMOTE as usize,
+            )?;
         }
         let s = gold::submit::run(&gold::submit::Options {
             root,
@@ -251,6 +279,20 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
         }
     }
     Ok(issued)
+}
+
+fn link_input(source: &Path, dest: &Path, limit: usize) -> anyhow::Result<()> {
+    let bytes = read(source, limit)?;
+    if dest.exists() {
+        ensure!(
+            read(dest, limit)? == bytes,
+            "onboarding campaign input changed"
+        );
+    } else {
+        std::fs::create_dir_all(dest.parent().context("input has no parent")?)?;
+        std::fs::hard_link(source, dest)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
