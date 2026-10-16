@@ -121,6 +121,8 @@ class Observer(unittest.TestCase):
         catalog.update(observed_at="2026-10-15T12:00:00Z",
                        runs={"total": 4, "pages": 2},
                        artifacts={"locations": 10, "verified": 1, "missing": 2},
+                       coverage=["Bounded local sample; not a full inventory"],
+                       issues=[{"code": "size_mismatch", "detail": "One local file has an unexpected size."}],
                        stages=[
                            observer.stage("runs", "Runs", 4, "2026-10-14T12:00:00Z", ""),
                            observer.stage("artifacts", "Artifacts", 10, "2026-10-15T12:00:00Z", ""),
@@ -135,6 +137,8 @@ class Observer(unittest.TestCase):
         self.assertEqual(value["observed_at"], "2026-10-14T12:00:00Z")
         self.assertIsNone(next(s for s in value["stages"] if s["id"] == "accepted")["count"])
         self.assertIn("partial", value["coverage"][0])
+        self.assertIn("Bounded local sample; not a full inventory", value["coverage"])
+        self.assertIn("size_mismatch", [issue["code"] for issue in value["issues"]])
 
     def test_runs_only_catalog_does_not_turn_unknown_artifacts_into_zero(self):
         catalog = observer.snapshot([], [], NOW)

@@ -44,6 +44,14 @@ def object_value(value):
     return value
 
 
+def bounded_text(value, limit):
+    if not isinstance(value, str) or not value or len(value) > limit:
+        raise ValueError("Invalid catalog text")
+    if any(ord(character) < 32 or 127 <= ord(character) < 160 for character in value):
+        raise ValueError("Catalog text contains control characters")
+    return value
+
+
 def observed(value, now):
     result = timestamp(value)
     if result > now + timedelta(seconds=60):
@@ -292,11 +300,27 @@ def add_catalog(value, path, now=None):
             if expected:
                 raise ValueError("Nonempty catalog totals have no stage")
             evidence[identifier] = {"state": "unknown", "count": None, "observed_at": None}
+    coverage = catalog["coverage"]
+    issues = catalog["issues"]
+    if not isinstance(coverage, list) or len(coverage) > 32:
+        raise ValueError("Invalid catalog coverage")
+    coverage = [bounded_text(item, 128) for item in coverage]
+    if not isinstance(issues, list) or len(issues) > 128:
+        raise ValueError("Invalid catalog issues")
+    issues = [{"code": bounded_text(object_value(item)["code"], 64),
+               "detail": bounded_text(item["detail"], 512)} for item in issues]
     value["runs"], value["artifacts"] = runs, artifacts
     value["coverage"][0] = "Aggregate observer joined to a partial page-evidence catalog; not a full corpus inventory."
+    room = 32 - len(value["coverage"])
+    value["coverage"].extend(coverage[:room] if len(coverage) <= room else
+                             coverage[:room - 1] + ["Additional catalog coverage omitted; query the catalog directly."])
     value["issues"] = [issue for issue in value["issues"] if issue["code"] != "partial-coverage"]
     value["issues"].append({"code": "partial-catalog",
                             "detail": "Catalog totals cover imported evidence only. Unconnected validation/import/index stages remain unknown."})
+    room = 128 - len(value["issues"])
+    value["issues"].extend(issues[:room] if len(issues) <= room else
+                           issues[:room - 1] + [{"code": "catalog-issues-truncated",
+                                                "detail": "Additional catalog issues omitted; query the catalog directly."}])
     replacements = {
         "artifact_verified": ("artifacts", "Cataloged verified locations", artifacts["verified"]),
         "run_history": ("runs", "Cataloged engine runs", runs["total"]),
