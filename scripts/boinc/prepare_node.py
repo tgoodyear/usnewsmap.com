@@ -17,6 +17,9 @@ SERVICE = "usnm-boinc-canary.service"
 DATA = Path("/var/lib/usnm-boinc-canary")
 INSTALL = Path("/opt/usnm-boinc-canary")
 UNIT_PATH = Path("/etc/systemd/system") / SERVICE
+DROPIN_PATH = Path(str(UNIT_PATH) + ".d")
+SUBID_PATHS = (Path("/etc/subuid"), Path("/etc/subgid"))
+CGROUP_CONTROLLERS = Path("/sys/fs/cgroup/cgroup.controllers")
 MARKER = "# Managed by scripts/boinc/prepare_node.py; isolated dev only."
 UNIT = f"""{MARKER}
 [Unit]
@@ -101,15 +104,15 @@ def prepare(bundle, baseline, apply=False):
         pass
     else:
         raise ValueError("Existing boinc account: never adopt or replace an existing identity")
-    for path in (DATA, INSTALL, UNIT_PATH):
+    for path in (DATA, INSTALL, UNIT_PATH, DROPIN_PATH):
         if os.path.lexists(path):
             raise ValueError(f"Refusing existing path {path}")
     for name in ("podman", "newuidmap", "newgidmap", "loginctl", "systemctl", "useradd", "usermod"):
         if not shutil.which(name):
             raise ValueError(f"Missing existing host prerequisite {name}; no packages installed")
-    if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
+    if not CGROUP_CONTROLLERS.is_file():
         raise ValueError("cgroup v2 is required")
-    start = allocation(Path("/etc/subuid").read_text(), Path("/etc/subgid").read_text())
+    start = allocation(*(path.read_text() for path in SUBID_PATHS))
     print(json.dumps({"service": SERVICE, "home": str(DATA), "install": str(INSTALL),
                       "source_commit": COMMIT, "checksums": checksums,
                       "subordinate_ids": [start, start + 65535], "apply": apply,
@@ -119,11 +122,13 @@ def prepare(bundle, baseline, apply=False):
     if os.geteuid() != 0:
         raise ValueError("--apply requires root")
     run("useradd", "--system", "--user-group", "--create-home", "--home-dir", str(DATA),
-        "--shell", "/sbin/nologin", "boinc")
+        "--shell", "/sbin/nologin", "--password", "!", "boinc")
     account = pwd.getpwnam("boinc")
     run("usermod", "--add-subuids", f"{start}-{start + 65535}",
         "--add-subgids", f"{start}-{start + 65535}", "boinc")
     (INSTALL / "bin").mkdir(parents=True)
+    INSTALL.chmod(0o755)
+    (INSTALL / "bin").chmod(0o755)
     for name in ("boinc", "boinccmd"):
         target = INSTALL / "bin" / name
         shutil.copyfile(bundle / "install/bin" / name, target)
@@ -134,7 +139,8 @@ def prepare(bundle, baseline, apply=False):
                   env={"PATH": "/usr/bin:/bin", "HOME": str(DATA)})
     if not version.startswith("8.2.13 "):
         raise ValueError("Actual RHEL client version did not match")
-    UNIT_PATH.write_text(UNIT)
+    with UNIT_PATH.open("x") as stream:
+        stream.write(UNIT)
     UNIT_PATH.chmod(0o644)
     run("systemctl", "daemon-reload")
     if run("systemctl", "show", SERVICE, "--property=ActiveState", "--value") != "inactive":
@@ -151,12 +157,21 @@ def stop():
     if os.geteuid() != 0 or not UNIT_PATH.read_text().startswith(MARKER):
         raise ValueError("Rollback requires root and this helper's managed canary unit")
     account = pwd.getpwnam("boinc")
-    if account.pw_uid == 0 or account.pw_dir != str(DATA):
+    if (account.pw_uid == 0 or account.pw_dir != str(DATA)
+            or any(other.pw_uid == account.pw_uid and other.pw_name != "boinc"
+                   for other in pwd.getpwall())):
         raise ValueError("Unexpected BOINC identity; refusing rollback")
-    run("systemctl", "stop", SERVICE)
-    run("systemctl", "disable", SERVICE)
-    run("loginctl", "disable-linger", "boinc")
-    run("systemctl", "stop", f"user@{account.pw_uid}.service")
+    errors = []
+    for args in (("systemctl", "stop", SERVICE),
+                 ("systemctl", "disable", SERVICE),
+                 ("loginctl", "disable-linger", "boinc"),
+                 ("systemctl", "stop", f"user@{account.pw_uid}.service")):
+        try:
+            run(*args)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            errors.append(str(error))
+    if errors:
+        raise RuntimeError("Rollback attempted every cleanup operation: " + "; ".join(errors))
     print("Canary/client and dedicated user manager stopped; lingering disabled. Evidence/account retained.")
 
 
