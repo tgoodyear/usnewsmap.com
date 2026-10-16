@@ -480,3 +480,9 @@ One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth
 **Client:** the pipeline talks to the Cosmos **REST API** directly (`crates/usnm-ingest/src/cosmos.rs`) with Entra ID tokens: point read, create, **replace with `If-Match`** (for claims, commits and locks), upsert and a one-field query, retrying 429s. That is the whole surface the pipeline needs, and it avoids depending on the beta Rust SDK. Finding newly curated batches uses a status query rather than the change feed; at ~3k batch items the query costs little.
 
 **Resilience:** the API doesn't read Cosmos on the search path. Only the dataset details page (`/v1/status`, [06 §6.3.6](06-api-design.md#636-get-v1status)) reads it, read-only, at most once a minute per API replica and three queries at a time. If Cosmos is throttled or down, the site keeps serving, the page shows its last reading as stale, and only the pipeline pauses. Continuous backup (7-day, free tier) covers mistakes, and state can be rebuilt from Parquet plus the LoC batch list if ever lost.
+
+The provisioned free-tier account explicitly retains automatic failover on
+redeployment; the serverless fallback sets it off. This does not add a region
+or make the current single-region account region-redundant. Omitting the
+property would reset production's existing `true` setting during an otherwise
+unrelated stack release.

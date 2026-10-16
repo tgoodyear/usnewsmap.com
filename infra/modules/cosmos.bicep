@@ -23,6 +23,8 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
   properties: {
     databaseAccountOfferType: 'Standard'
     enableFreeTier: freeTier
+    // Retain production's existing setting; omission resets it on redeployment.
+    enableAutomaticFailover: freeTier
     capabilities: freeTier ? [] : [{ name: 'EnableServerless' }]
     locations: [{ locationName: location, failoverPriority: 0, isZoneRedundant: false }]
     consistencyPolicy: { defaultConsistencyLevel: 'Session' }
