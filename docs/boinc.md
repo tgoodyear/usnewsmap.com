@@ -664,6 +664,14 @@ developed separately in
 [#444](https://github.com/tgoodyear/usnewsmap.com/pull/444); it is not part of
 this pilot's default validator or a claim of public-volunteer readiness.
 
+Replicas of one workunit go to different **hosts**
+(`one_result_per_host_per_wu`), not different accounts. The project's own hosts
+share one account, and with the per-account rule they could take only one of
+each quorum-2 pair, so they idled while the second copies waited for another
+user. The cost: a volunteer with several hosts can supply both copies of a unit.
+Gold units and spot checks (Host trust below) are the guard against that, not
+the quorum.
+
 ## Live acceptance exercise
 
 Complete one real task on a stock client and server, then test keyboard activity
