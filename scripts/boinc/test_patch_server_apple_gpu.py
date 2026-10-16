@@ -64,52 +64,6 @@ bool PLAN_CLASS_SPEC::check(SCHEDULER_REQUEST& sreq, HOST_USAGE& hu) {
 
 class PatchServerAppleGpuTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
-    def test_raw_effective_venue_consent_rejects_whitespace_before_boinc_trims_it(self):
-        source = r"""
-#define assert(value) do { if (!(value)) return __LINE__; } while (false)
-int strcmp(const char* a, const char* b) {
-    while (*a && *a == *b) { ++a; ++b; } return *a - *b;
-}
-int strncmp(const char* a, const char* b, unsigned long n) {
-    while (n && *a && *a == *b) { ++a; ++b; --n; } return n ? *a - *b : 0;
-}
-const char* strstr(const char* a, const char* b) {
-    for (; *a; ++a) {
-        const char* x=a; const char* y=b;
-        while (*x && *x==*y) {++x; ++y;}
-        if (!*y) return a;
-    } return nullptr;
-}
-bool parse_str(const char*, const char*, char*, int) { return true; }
-bool gate(const char* name, const char* buf) {
-    char tag[256], value[256];
-GATE
-    return p;
-}
-int main() {
-    const char* names[] = {"nvidia_cuda_2b", "nvidia_cuda_8b"};
-    for (const char* name : names) {
-        assert(gate(name, "<qwen_native_cuda_canary>1</qwen_native_cuda_canary>"));
-        const char* preferences[] = {
-            "", "<qwen_native_cuda_canary>0</qwen_native_cuda_canary>",
-            "<qwen_native_cuda_canary> 1 </qwen_native_cuda_canary>",
-            "<qwen_native_cuda_canary>\n1\n</qwen_native_cuda_canary>",
-            "<qwen_native_cuda_canary>1 </qwen_native_cuda_canary>",
-            "<qwen_native_cuda_canary> 1</qwen_native_cuda_canary>",
-            "<qwen_native_cuda_canary>01</qwen_native_cuda_canary>"
-        };
-        for (const char* prefs : preferences) { assert(!gate(name, prefs)); }
-    }
-    assert(gate("docker_nvidia_train", ""));
-}
-""".replace("GATE", module.CANARY_PREF_PATCHED)
-        with tempfile.TemporaryDirectory() as folder:
-            binary = str(Path(folder) / "scheduler-canary")
-            subprocess.run(["c++", "-std=c++17", "-x", "c++", "-", "-o", binary],
-                           input=source, text=True, check=True, capture_output=True)
-            subprocess.run([binary], check=True)
-
-    @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
     def test_model_batches_are_exclusive_in_executable_scheduler_gate(self):
         source = r"""
 // Header-free fixture also runs with minimal Command Line Tools installations.
@@ -127,12 +81,15 @@ const char* strstr(const char* a, const char* b) {
     }
     return nullptr;
 }
-struct PC { int max_batch = 0; bool docker; const char* name; };
-struct WU { int batch; };
+struct PC { int max_batch = 0; bool docker; const char* name; int min_wu_id=0, max_wu_id=0; };
+struct WU { int batch; int id=100; };
 struct { bool debug_version_select = false; } config;
 struct { template<class... T> void printf(T...) {} } log_messages;
 const int MSG_NORMAL = 0;
 bool infeasible(const PC* pc, const WU* wu) {
+    // Unchanged pinned BOINC WU range checks precede the patched batch gate.
+    if (pc->min_wu_id && wu->id < pc->min_wu_id) return true;
+    if (pc->max_wu_id && wu->id > pc->max_wu_id) return true;
 GATE
 }
 int main() {
@@ -147,6 +104,20 @@ int main() {
     for (int i = 0; i < 8; ++i) {
         for (int b : batches) { WU wu{b}; assert(infeasible(&classes[i], &wu) == (b != expected[i])); }
         WU legacy{0}; assert(!infeasible(&classes[i], &legacy));
+    }
+    const char* native_names[] = {"nvidia_cuda_2b", "nvidia_cuda_8b"};
+    const int ids[] = {0, 1, 2, 100, 2147483647};
+    for (const char* name : native_names) {
+        int batch = strcmp(name, "nvidia_cuda_2b") ? 8 : 2;
+        PC closed{batch, false, name, 2, 1};
+        for (int id : ids) {
+            WU wu{batch, id}; assert(infeasible(&closed, &wu));
+        }
+        PC bounded{batch, false, name, 100, 100};
+        WU allowed{batch,100}, before{batch,99}, after{batch,101}, wrong{12,100};
+        assert(!infeasible(&bounded, &allowed));
+        assert(infeasible(&bounded, &before) && infeasible(&bounded, &after));
+        assert(infeasible(&bounded, &wrong));
     }
 }
 """.replace("GATE", module.BATCH_INFEASIBLE_PATCHED)
@@ -165,7 +136,7 @@ int main() {
             self.assertEqual(patched.count(module.DISPATCH_PATCHED), 1)
             self.assertEqual(patched.count(module.BATCH_INFEASIBLE_PATCHED), 1)
             self.assertEqual(patched.count(module.BATCH_CHECK_PATCHED), 1)
-            self.assertEqual(patched.count(module.CANARY_PREF_PATCHED), 1)
+            self.assertNotIn("qwen_native_cuda_canary", patched)
             self.assertNotIn(module.ELIGIBILITY_ORIGINAL, patched)
             self.assertNotIn(module.DISPATCH_ORIGINAL, patched)
             self.assertNotIn(module.BATCH_INFEASIBLE_ORIGINAL, patched)
@@ -181,10 +152,8 @@ int main() {
             SNIPPET.replace(module.DISPATCH_ORIGINAL, "// missing dispatch"),
             SNIPPET.replace(module.BATCH_INFEASIBLE_ORIGINAL, "// missing batch gate"),
             SNIPPET.replace(module.BATCH_CHECK_ORIGINAL, "// missing batch check"),
-            SNIPPET.replace(module.CANARY_PREF_ORIGINAL, "// missing consent gate"),
             SNIPPET + "\n" + module.ELIGIBILITY_ORIGINAL + "\n",
             SNIPPET + "\n" + module.DISPATCH_ORIGINAL + "\n",
-            SNIPPET + "\n" + module.CANARY_PREF_ORIGINAL + "\n",
         ):
             with self.subTest(bad=bad):
                 with self.assertRaisesRegex(ValueError, "expected exactly 1"):

@@ -103,9 +103,9 @@
     </plan_class>
     <plan_class>
         <name>nvidia_cuda_8b</name>
-        <project_prefs_tag>qwen_native_cuda_canary</project_prefs_tag>
-        <project_prefs_regex>^1$</project_prefs_regex>
-        <project_prefs_default_true>0</project_prefs_default_true>
+        <!-- Closed until an operator opens one audited workunit; never an account flag. -->
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
         <gpu_type>nvidia</gpu_type>
         <cuda/>
         <!-- Native apps do not use the container extension introduced in 8.2.13. -->
@@ -120,9 +120,8 @@
     </plan_class>
     <plan_class>
         <name>nvidia_cuda_2b</name>
-        <project_prefs_tag>qwen_native_cuda_canary</project_prefs_tag>
-        <project_prefs_regex>^1$</project_prefs_regex>
-        <project_prefs_default_true>0</project_prefs_default_true>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
         <gpu_type>nvidia</gpu_type>
         <cuda/>
         <min_core_client_version>80211</min_core_client_version>

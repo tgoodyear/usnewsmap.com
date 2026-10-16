@@ -32,8 +32,11 @@ not every task produces a change to the public search index.
 
 BOINC downloads a task, runs the project's application and sends back results
 and task diagnostics. You do not need to transcribe pages yourself. Experimental
-and production tasks use the same account, client and automatic return process;
-experimental participation, when available, uses normal project preferences.
+and production tasks use the same account, client and automatic return process.
+**Normal project participation includes both production and experimental tasks,
+including Qwen.** There is no experiment-specific checkbox or repeated profile
+update. Your normal CPU/GPU choices and resource limits apply to both. Operators
+phase experimental campaigns server-side; joining does not guarantee available work.
 
 Donating compute is not cost-free: CPU/GPU use consumes electricity, produces
 heat, may increase fan noise, and needs disk space and download bandwidth.
@@ -202,8 +205,8 @@ Container apps on macOS require Podman (Docker Desktop is not supported by BOINC
 
 **Start here for native NVIDIA GPU volunteering.** Use the same one-time setup
 for experimental Qwen and production work: one official BOINC client, one account,
-one project attachment, and the usual BOINC Manager controls. Experimental
-participation, when offered, is consent in the **normal project preferences**;
+one project attachment, and the usual BOINC Manager controls. Participation includes
+both experimental and production work under your normal CPU/GPU/resource choices;
 cohort selection and signed application versions are server-side. There is no
 experimental script flag, alternate client, `app_info.xml`, manual runtime/model
 installation, or remove/re-attach step.
@@ -305,13 +308,13 @@ or work around an enforced Group Policy; ask your administrator instead.
   same command; this only relaxes the local GPU check, does not enable CPU work,
   and does not promise a published CPU app. Ask the operator about `usnm_quality`
   or the multi-threaded Qwen CPU class before expecting work.
-- **Release status (2026-10-15): native Windows Qwen signed publication/live
-  acceptance is pending.** The native CUDA canary change targets stable BOINC
-  **8.2.11+**; older deployed scheduler rules may still require 8.2.13 until that
-  reviewed server change rolls out. Do not install a development client just to
-  work around a pending rollout. A successful attachment can safely wait for
-  publication/eligibility, and does not imply that Qwen or any other Windows app
-  is currently available. No WSL2, Podman, Docker, VM, or CUDA toolkit is needed
+- **Release status (2026-10-16): native Windows Qwen 1.3 is signed and published;
+  live GPU/pause/validation and automatic failure-report acceptance remain
+  unverified.** Native CUDA supports stable BOINC **8.2.11+**. Operators open only
+  bounded workunit cohorts while validating it. A successful attachment can safely
+  wait for eligible work, without another experiment preference update. Do not
+  install a development client to work around a closed cohort.
+  No WSL2, Podman, Docker, VM, or CUDA toolkit is needed
   for native apps.
 
 #### Account, attachment, and normal BOINC controls
@@ -325,14 +328,13 @@ normal Manager flow used for production:
    **all projects**; do not overwrite settings blindly.
 2. At **<https://boinc.usnewsmap.com/>**, create your own account or sign in to your
    existing one. Review normal **project preferences**, including CPU/GPU choices.
-   Once the reviewed server-side gate is deployed, experimental consent is the
-   ordinary project-preferences checkbox **“Experimental native NVIDIA Qwen
-   canary (unvalidated; opt in)”** at
-   [project preferences](https://boinc.usnewsmap.com/usnmocr/prefs.php?subset=project)
-   (for the currently selected venue, if applicable); off/default denies the
-   canary. This preference may not appear before the server rollout. Never use
-   a script, alternate client setting, or re-attachment to enable it. Do not share
-   an account/key with another volunteer. Pilot work is limited to selected cohorts.
+   Participation includes production and experimental tasks; no Qwen-specific
+   enrollment or repeated profile update is needed. Existing experiment-flag
+   values are ignored after the project-participation policy rollout.
+   [Project preferences](https://boinc.usnewsmap.com/usnmocr/prefs.php?subset=project)
+   still control CPU/GPU choices for the host's venue. Never enable a GPU you do
+   not want to use. Do not share an account/key with another volunteer.
+   Operators bound pilot campaigns server-side.
 3. In Manager choose **Tools → Add project** (or **Add project/account manager**),
    enter `https://boinc.usnewsmap.com/`, and sign in with that same account.
    Passwords go only into Manager or the HTTPS account site, never into this
@@ -349,7 +351,7 @@ normal Manager flow used for production:
 5. In Manager's **Event Log**, confirm the NVIDIA GPU is detected and look for
    **Scheduler request completed**. Use normal project **Update** after changing
    account preferences. No work can mean unpublished apps, a closed cohort,
-   consent not given, or resource/preference limits; it does not mean you need
+   or resource/preference limits; it does not mean you need
    WSL. For connection errors check DNS, clock, firewall/proxy and the HTTPS site.
    For login errors recover your account on that site; never post account keys.
 
