@@ -775,31 +775,41 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
             return None
         return values if all(math.isfinite(v) for v in values) and values[2] > 0 and values[3] > 0 else None
 
-    # altotext numbers every direct TextLine child of every TextBlock in this same order.
     line_meta = []
     for block in root.iter():
         if _local(block) != "TextBlock":
             continue
         block_rect = rect(block)
         for line in block:
-            if _local(line) == "TextLine":
-                line_meta.append((block_rect, rect(line)))
+            if _local(line) != "TextLine":
+                continue
+            strings = []
+            for el in line:
+                if _local(el) != "String":
+                    continue
+                try:
+                    box = tuple(float(el.get(k, 0)) * scale for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT"))
+                except ValueError:
+                    box = None
+                strings.append((el.get("CONTENT", ""), box,
+                                "HPOS" in el.attrib and "VPOS" in el.attrib))
+            line_meta.append((block_rect, rect(line), strings))
 
-    words = altotext.parse(xml, scale)[1]
-    lines: dict[int, list] = {}
-    for x, y, ww, h, c, ln in words:
-        lines.setdefault(ln, []).append((x, y, ww, h, c))
-
-    line_heights = {}
+    line_heights = []
     char_widths = []
-    for x, y, ww, h, c, ln in words:
-        if math.isfinite(h) and h > 0 and (not page_height or h < page_height * 0.15):
-            line_heights.setdefault(ln, []).append(h)
-        if c and math.isfinite(ww) and ww > 0:
-            char_widths.append(ww / len(c))
-    typical_height = statistics.median(
-        statistics.median(values) for values in line_heights.values() if values
-    ) if line_heights else None
+    for _, _, strings in line_meta:
+        heights = []
+        for c, box, has_origin in strings:
+            if box is None:
+                continue
+            _, _, ww, h = box
+            if has_origin and math.isfinite(h) and h > 0 and (not page_height or h < page_height * 0.15):
+                heights.append(h)
+            if c and has_origin and math.isfinite(ww) and ww > 0:
+                char_widths.append(ww / len(c))
+        if heights:
+            line_heights.append(statistics.median(heights))
+    typical_height = statistics.median(line_heights) if line_heights else None
     typical_char_width = statistics.median(char_widths) if char_widths else None
 
     def plausible(box, containing, text):
@@ -868,16 +878,20 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
         return repaired if plausible(repaired, containing, text) else None
 
     out = []
-    for ln in sorted(lines):
-        ws = lines[ln]
-        text = " ".join(c for *_, c in ws if c)
-        block_rect, line_rect = line_meta[ln - 1] if ln <= len(line_meta) else (None, None)
-        valid = [box for x, y, ww, h, c in ws
-                 if (box := string_rect((x, y, ww, h), block_rect, c)) is not None]
+    for line_no, (block_rect, line_rect, strings) in enumerate(line_meta, 1):
+        if not strings:
+            continue
+        text = " ".join(c for c, _, _ in strings if c)
+        valid = []
+        for c, box, has_origin in strings:
+            if has_origin:
+                repaired = string_rect(box, block_rect, c)
+                if repaired:
+                    valid.append(repaired)
         if not valid and plausible(line_rect, block_rect, text):
             valid = [line_rect]
         if not valid and text.strip():
-            raise ValueError(f"ALTO TextLine {ln} has no plausible geometry; refusing to emit an invalid crop")
+            raise ValueError(f"ALTO TextLine {line_no} has no plausible geometry; refusing to emit an invalid crop")
         box = (box_of([(x, y) for x, y, *_ in valid] +
                       [(x + ww, y + h) for x, y, ww, h in valid]) if valid else None)
         out.append({"text": text, "box": box})

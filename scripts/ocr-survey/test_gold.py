@@ -361,7 +361,7 @@ class Overproof(unittest.TestCase):
         xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="300"><PrintSpace>
         <TextBlock HPOS="10" VPOS="10" WIDTH="200" HEIGHT="80">
         <TextLine HPOS="10" VPOS="10" WIDTH="200" HEIGHT="20">
-        <String HPOS="10" VPOS="10" WIDTH="400" HEIGHT="300" CONTENT="Text"/>
+        <String HPOS="invalid" VPOS="10" WIDTH="400" HEIGHT="300" CONTENT="Text"/>
         </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
         self.assertEqual(gold.alto_lines(xml, 400), [{"text": "Text", "box": [10, 10, 210, 30]}])
 
