@@ -340,8 +340,8 @@ pub struct LocConfig {
     /// Treat an answer that is not the file asked for as a block: a 2xx
     /// HTML page (a bot challenge such as Cloudflare's "Just a moment...")
     /// or a body that can't be read holds the server and fails at once,
-    /// with no retry. Off for the worker, whose behaviour is unchanged;
-    /// on for the BOINC staging steps.
+    /// with no retry. Enabled by the worker, prefetch and BOINC staging;
+    /// none of their LoC routes expects HTML.
     pub html_is_block: bool,
 }
 
@@ -408,6 +408,7 @@ enum Probe {
 }
 
 /// A successful GET.
+#[derive(Debug)]
 struct Got {
     body: Bytes,
     /// Sending to the end of the body.
@@ -676,6 +677,9 @@ impl LocClient {
         self.pacer(server).wait().await;
         match self.http.get(url).send().await {
             Ok(resp) if resp.status().is_success() => {
+                if self.cfg.html_is_block && html_page(&resp).is_some() {
+                    return Probe::Failed(None);
+                }
                 match read_limited(resp, MAX_ITEM_BYTES).await {
                     Ok(_) => {
                         if let Some(h) = self.health(server) {
@@ -731,6 +735,20 @@ impl LocClient {
             .map(|g| g.expect("a 404 is an error unless asked for"))
     }
 
+    fn block_hold(&self, server: Server, status: StatusCode, reason: &'static str) {
+        self.pacer(server).hold(self.cfg.backoff);
+        self.metrics.loc_slowdowns.add(
+            1,
+            &[
+                KeyValue::new("status", i64::from(status.as_u16())),
+                KeyValue::new("server", server.name()),
+                KeyValue::new("reason", reason),
+                KeyValue::new("retry_after", false),
+                KeyValue::new("capped", false),
+            ],
+        );
+    }
+
     /// [`Self::get`], with `missing_ok` answering `None` for a 404 or 410.
     async fn fetch(
         &self,
@@ -755,7 +773,7 @@ impl LocClient {
                 Ok(resp) if resp.status().is_success() => {
                     if self.cfg.html_is_block {
                         if let Some(why) = html_page(&resp) {
-                            pacer.hold(self.cfg.backoff);
+                            self.block_hold(server, resp.status(), "html_challenge");
                             tracing::warn!(
                                 url,
                                 server = server.name(),
@@ -767,6 +785,7 @@ impl LocClient {
                             )));
                         }
                     }
+                    let status = resp.status();
                     match read_limited(resp, max).await {
                         Ok(b) => {
                             if title.is_some() {
@@ -778,7 +797,7 @@ impl LocClient {
                             }));
                         }
                         Err(e) if self.cfg.html_is_block => {
-                            pacer.hold(self.cfg.backoff);
+                            self.block_hold(server, status, "unreadable_body");
                             return Err(FetchError::Transient(format!(
                             "{url}: the answer's body could not be read ({e}), which is how a block or challenge page can look; holding"
                         )));
@@ -841,6 +860,14 @@ impl LocClient {
                             &[
                                 KeyValue::new("status", i64::from(status.as_u16())),
                                 KeyValue::new("server", server.name()),
+                                KeyValue::new(
+                                    "reason",
+                                    if self.cfg.html_is_block && challenge(&resp).is_some() {
+                                        "html_challenge"
+                                    } else {
+                                        "http_status"
+                                    },
+                                ),
                                 KeyValue::new("retry_after", asked.is_some()),
                                 // Retry-After over an hour, cut to one.
                                 KeyValue::new("capped", capped),
@@ -991,6 +1018,7 @@ impl LocClient {
     /// service). A 429, 503 or 403 holds the storage service as any of its
     /// answers would.
     async fn locate(&self, url: &str) -> Result<Option<String>, FetchError> {
+        let mut last = "held".to_owned();
         for attempt in 1..=self.cfg.attempts.max(1) {
             self.storage.wait().await;
             let resp = match self.http_here.get(url).send().await {
@@ -1024,6 +1052,31 @@ impl LocClient {
                 let wait = self.cfg.backoff * attempt;
                 let d = retry_after(&resp).map_or(wait, |(r, _)| r.max(wait));
                 self.storage.hold(d);
+                let why = self.cfg.html_is_block.then(|| challenge(&resp)).flatten();
+                self.metrics.loc_slowdowns.add(
+                    1,
+                    &[
+                        KeyValue::new("status", i64::from(status.as_u16())),
+                        KeyValue::new("server", Server::Storage.name()),
+                        KeyValue::new(
+                            "reason",
+                            if why.is_some() {
+                                "html_challenge"
+                            } else {
+                                "http_status"
+                            },
+                        ),
+                        KeyValue::new(
+                            "retry_after",
+                            resp.headers().contains_key(reqwest::header::RETRY_AFTER),
+                        ),
+                        KeyValue::new("capped", retry_after(&resp).is_some_and(|(_, c)| c)),
+                    ],
+                );
+                last = format!("HTTP {}", status.as_u16());
+                if let Some(why) = why {
+                    last = format!("{last} ({why}): blocked");
+                }
                 tracing::warn!(
                     status = status.as_u16(),
                     server = "storage",
@@ -1033,11 +1086,11 @@ impl LocClient {
                 continue;
             }
             if self.cfg.html_is_block {
-                // Staging: only a 404 or 410 is an absent batch; a challenge
+                // Only a 404 or 410 is an absent batch; a challenge
                 // page or a server error is a block, never "not there".
                 if status.is_success() {
                     if let Some(why) = html_page(&resp) {
-                        self.storage.hold(self.cfg.backoff);
+                        self.block_hold(Server::Storage, status, "html_challenge");
                         return Err(FetchError::Transient(format!(
                             "{url} answered HTTP {} with {why} instead of a redirect: a bot challenge or block page; holding",
                             status.as_u16()
@@ -1054,7 +1107,7 @@ impl LocClient {
             }
             return Ok(None);
         }
-        Err(FetchError::Transient(format!("giving up on {url}: held")))
+        Err(FetchError::Transient(format!("giving up on {url}: {last}")))
     }
 
     /// Seed the storage service's known-good item from the last JP2 an
@@ -1338,9 +1391,16 @@ impl LocClient {
     }
 }
 
-/// Why a 2xx answer is a web page rather than a file: an HTML content
-/// type. None for anything else (images, JSON, XML, text manifests).
+/// Why a 2xx answer is a web page rather than a file: a challenge header
+/// or HTML content type. None for images, JSON, XML and text manifests.
 fn html_page(resp: &reqwest::Response) -> Option<String> {
+    if resp
+        .headers()
+        .get("cf-mitigated")
+        .is_some_and(|v| v == "challenge")
+    {
+        return challenge(resp);
+    }
     let ct = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)?
@@ -1958,8 +2018,8 @@ mod tests {
         .unwrap()
     }
 
-    /// An HTML page in place of a file: unchanged for the worker (the flag
-    /// is off), a hold at once for the staging steps (on).
+    /// The compatibility opt-out still works; production callers enable
+    /// the flag and hold at once.
     #[tokio::test]
     async fn an_html_answer_is_a_hold_only_when_asked() {
         let s = StandIn::start().await;
@@ -1988,6 +2048,262 @@ mod tests {
         assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
         assert!(e.to_string().contains("Cloudflare challenge"), "{e}");
         assert!(staging.held_until().is_some());
+    }
+
+    #[tokio::test]
+    async fn challenges_hold_each_route_without_retry_or_cache() {
+        let s = StandIn::start().await;
+        for (server, path) in [
+            (Server::Api, "/item/sn1/1890-05-03/ed-1/"),
+            (Server::Tile, "/iiif/page/full/full/0/default.jpg"),
+            (Server::Storage, "/scan.jp2"),
+        ] {
+            let loc = LocClient::new(LocConfig {
+                html_is_block: true,
+                backoff: Duration::from_millis(50),
+                ..batch_client(&s, Duration::ZERO, None, true).cfg
+            })
+            .unwrap();
+            s.script(path, Scripted::Challenge(200));
+            let url = format!("{}{path}", s.root);
+            let error = loc
+                .get(&url, server, MAX_IMAGE_BYTES, None)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, FetchError::Transient(_)), "{error}");
+            assert!(
+                error.to_string().contains("Cloudflare challenge"),
+                "{error}"
+            );
+            assert_eq!(s.hits(path), 1, "a challenge must not be retried");
+            assert!(loc.pacer(server).held_until().is_some());
+            if server == Server::Storage {
+                assert!(loc.tile.held_until().is_none(), "independent budgets");
+            }
+        }
+
+        let loc = LocClient::new(LocConfig {
+            html_is_block: true,
+            ..batch_client(&s, Duration::ZERO, None, false).cfg
+        })
+        .unwrap();
+        let path = "/item/sn1/1890-05-03/ed-1/";
+        s.script(path, Scripted::Challenge(200));
+        let error = loc.issue_pages(&key(1)).await.unwrap_err();
+        assert!(
+            error.to_string().contains("Cloudflare challenge"),
+            "{error}"
+        );
+        assert!(loc.items.get(&issue_id(&key(1))).await.is_none());
+        let path = "/scan.jp2";
+        s.script(path, Scripted::Challenge(200));
+        loc.get(&format!("{}{path}", s.root), Server::Storage, 1024, None)
+            .await
+            .unwrap_err();
+        assert!(loc.tile.held_until().is_some(), "shared image/storage hold");
+    }
+
+    #[tokio::test]
+    async fn a_challenge_probe_is_not_a_healthy_item() {
+        let s = StandIn::start().await;
+        let path = "/item/sn1/1890-05-03/ed-1/";
+        let loc = LocClient::new(LocConfig {
+            html_is_block: true,
+            ..batch_client(&s, Duration::ZERO, None, false).cfg
+        })
+        .unwrap();
+        s.script(path, Scripted::Challenge(200));
+        assert!(matches!(
+            loc.probe(Server::Api, &format!("{}{path}", s.root)).await,
+            Probe::Failed(_)
+        ));
+        assert!(loc.health.lock().unwrap().last_ok.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_challenge_names_the_block_and_holds() {
+        let s = StandIn::start().await;
+        for server in [Server::Api, Server::Tile, Server::Storage] {
+            let loc = LocClient::new(LocConfig {
+                html_is_block: true,
+                attempts: 1,
+                backoff: Duration::from_millis(50),
+                ..batch_client(&s, Duration::ZERO, None, false).cfg
+            })
+            .unwrap();
+            s.script("/blocked", Scripted::Challenge(403));
+            let error = loc
+                .get(&format!("{}/blocked", s.root), server, 1024, None)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, FetchError::Transient(_)), "{error}");
+            assert!(error.to_string().contains("HTTP 403"), "{error}");
+            assert!(
+                error.to_string().contains("Cloudflare challenge"),
+                "{error}"
+            );
+            assert!(loc.pacer(server).held_until().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn challenge_holds_are_counted_with_distinct_reasons() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::{
+            data::{AggregatedMetrics, MetricData},
+            InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
+        };
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exporter.clone()).build())
+            .build();
+        let s = StandIn::start().await;
+        let mut loc = LocClient::new(LocConfig {
+            html_is_block: true,
+            attempts: 1,
+            ..batch_client(&s, Duration::ZERO, None, true).cfg
+        })
+        .unwrap();
+        loc.metrics = Metrics::new(&provider.meter("loc-test"));
+        for (path, response) in [
+            ("/html", Scripted::Challenge(200)),
+            ("/forbidden", Scripted::Challenge(403)),
+            ("/busy", Scripted::Status(429)),
+        ] {
+            s.script(path, response);
+            loc.get(&format!("{}{path}", s.root), Server::Api, 1024, None)
+                .await
+                .unwrap_err();
+        }
+        loc.block_hold(Server::Tile, StatusCode::OK, "unreadable_body");
+        provider.force_flush().unwrap();
+        let mut reasons = Vec::new();
+        for resource in exporter.get_finished_metrics().unwrap() {
+            for scope in resource.scope_metrics() {
+                for metric in scope.metrics().filter(|m| m.name() == "ocr.loc_slowdowns") {
+                    let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                        panic!("slowdowns must remain a counter");
+                    };
+                    for point in sum.data_points() {
+                        assert_eq!(point.value(), 1);
+                        reasons.extend(
+                            point
+                                .attributes()
+                                .filter(|a| a.key.as_str() == "reason")
+                                .map(|a| a.value.to_string()),
+                        );
+                    }
+                }
+            }
+        }
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            [
+                "html_challenge",
+                "html_challenge",
+                "http_status",
+                "unreadable_body"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_body_holds_without_retry() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/scan.jp2", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+                assert!(request.len() < 4096);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort")
+                .await
+                .unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        let loc = LocClient::new(LocConfig {
+            html_is_block: true,
+            attempts: 3,
+            backoff: Duration::from_millis(100),
+            ..LocConfig::default()
+        })
+        .unwrap();
+        let error = loc.get(&url, Server::Tile, 1024, None).await.unwrap_err();
+        assert!(matches!(error, FetchError::Transient(_)), "{error}");
+        assert!(
+            error.to_string().contains("body could not be read"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("challenge"), "{error}");
+        assert!(!error.to_string().contains("giving up"), "{error}");
+        assert!(loc.tile.held_until().is_some());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn html_content_types_and_header_only_challenges_are_blocks() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route(
+                "/html",
+                axum::routing::get(|| async {
+                    ([("content-type", "Text/HTML; charset=utf-8")], "<html/>")
+                }),
+            )
+            .route(
+                "/xhtml",
+                axum::routing::get(|| async {
+                    ([("content-type", "application/xhtml+xml")], "<html/>")
+                }),
+            )
+            .route(
+                "/header",
+                axum::routing::get(|| async { ([("cf-mitigated", "challenge")], "blocked") }),
+            )
+            .route(
+                "/xml",
+                axum::routing::get(|| async { ([("content-type", "application/xml")], "<mets/>") }),
+            )
+            .route(
+                "/json",
+                axum::routing::get(|| async { ([("content-type", "application/json")], "{}") }),
+            )
+            .route(
+                "/text",
+                axum::routing::get(|| async { ([("content-type", "text/plain")], "manifest") }),
+            )
+            .route(
+                "/image",
+                axum::routing::get(|| async { ([("content-type", "image/jpeg")], "jpeg") }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for path in ["html", "xhtml", "header", "xml", "json", "text", "image"] {
+            let loc = LocClient::new(LocConfig {
+                html_is_block: true,
+                ..LocConfig::default()
+            })
+            .unwrap();
+            let got = loc
+                .get(&format!("{root}/{path}"), Server::Tile, 1024, None)
+                .await;
+            if matches!(path, "html" | "xhtml" | "header") {
+                assert!(
+                    matches!(got, Err(FetchError::Transient(_))),
+                    "{path}: {got:?}"
+                );
+                assert!(loc.held_until().is_some(), "{path}");
+            } else {
+                assert!(got.is_ok(), "{path}: {got:?}");
+                assert!(loc.held_until().is_none(), "{path}");
+            }
+        }
+        server.abort();
     }
 
     /// The batch lookup through Chronicling America: for staging, a
