@@ -23,6 +23,11 @@ Operator staging uses a unique mode-0700 directory beneath the checkout and a
 private directory beneath the signing host's root home, removed on exit. Build
 inputs stay on those filesystems rather than relying on system temporary storage.
 
+On macOS, prefix release commands with `COPYFILE_DISABLE=1` so BSD tar does not
+inject AppleDouble `._*` sidecars from downloaded files' extended metadata.
+These are not runtime dependencies; do not bypass the logical-name, payload-hash,
+or signature checks to include them.
+
 ### Native NVIDIA experimental canary
 
 Native `nvidia_cuda_2b` and `nvidia_cuda_8b` are experimental and default-deny:
@@ -95,6 +100,26 @@ app runs; inspect their standard BOINC exit status/stderr/event reports rather
 than promising an application summary exists. Server receipt of those reports
 must still be verified with real canary results; no manual volunteer log upload
 is part of the onboarding flow.
+
+#### Production delivery snapshot (2026-10-16)
+
+The coherent runtime from `00fbdd96` was deployed after paired-pin PR #648:
+the served CGI matches the image, the normal opt-in preference defaults off,
+and the public About/footer changes are present. Signed Windows native version
+1.3 is registered as app versions 18 (`nvidia_cuda_2b`) and 19
+(`nvidia_cuda_8b`). Each complete 38-file application payload is
+1,122,771,473 bytes, excluding the separately staged model weights. All 76
+server-side file hashes and anonymous download headers were verified; both
+drivers' signatures and anonymous full driver/lock downloads were also checked.
+Large DLLs were not downloaded again merely to repeat those checks.
+
+This is **publication**, not Windows GPU or failure-report acceptance. The
+inventoried Windows GPU host has not opted in; neither native version has an
+assigned result. Do not force consent or submit a native canary without an
+eligible explicitly consenting host. Real GPU inference, ordinary server receipt
+of the bounded failure summary, and isolated live disk-only rejection remain
+open acceptance items in #559. The earlier CPU quorum canary 74 is independent
+evidence, not a substitute for these Windows checks.
 
 ### Holding legacy Qwen dispatch
 
