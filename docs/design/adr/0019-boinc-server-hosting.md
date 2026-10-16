@@ -1,11 +1,11 @@
 # ADR-0019: Hosting for the stock BOINC server
 
-- **Status:** Proposed
+- **Status:** Accepted; production deployment recorded in #470
 - **Date:** 2026-10
 - **Extends:** ADR-0015 (on-prem OCR workers) and ADR-0016 (pluggable OCR engines)
-- **Amends:** ADR-0009 for the BOINC project server only, in three places (decision 5)
+- **Amends:** ADR-0009 for the BOINC project server only, in three places (decision 6)
 - **Code and docs:** [`contrib-compute/`](../../../contrib-compute/README.md)
-- **Follow-up:** [ADR-0020](0020-boinc-buda-evaluation.md) evaluates BUDA; separate science apps remain the proposed choice while the server spike is pending.
+- **Follow-up:** [ADR-0020](0020-boinc-buda-evaluation.md) evaluates BUDA; separate science apps remain the proposed choice.
 
 ## Context
 
@@ -15,11 +15,12 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
 
 ## Decision
 
-1. **The server is stock BOINC, hosted as one Container App with a MySQL flexible server**, in Bicep (`contrib-compute/infra/boinc/`). It is one replica, never scaled to zero, because the feeder and the scheduler share memory and the daemons poll continuously. The daemons are the stock ones from #441's `ocr/boinc/daemons.xml`, plus the standard feeder, transitioner, file_deleter and db_purge.
-2. **The project directory is an Azure Files share**, behind a private endpoint, mounted into the app and into a bridge job. The share holds `download/`, `upload/`, `results/` (the assimilator spool), `apps/` and hand-off folders.
-3. **`usnm-boinc submit` and `reconcile` run in a manual-trigger Container Apps Job in the same environment**, from the server image plus the `usnm-boinc` binary. Stock `create_work` and `dir_hier_path` need the project tree, `config.xml` and the database, which exist only there. `export` and `collect` stay on the maintainer's side, where the scan cache, the ledger and the Entra credential for `ocr-out` are. The job holds no storage credential for `ocr-out` or `curated`.
-4. **The master URL is a custom domain on the Container App.** Static Web Apps (Free) hosts only human-readable pages, because `get_project_config.php` and the account RPCs are PHP. The master URL is `https://boinc.usnewsmap.com/` (prod) or `https://boinc-dev.usnewsmap.com/` (dev, which holds no resources unless a focused experiment is running). Setup is a `boinc` CNAME to the app's FQDN, an `asuid` TXT record, and a Container Apps managed certificate (UNVERIFIED that one works with this environment). The master URL never changes once volunteers attach.
-5. **Secrets.** Everything uses Entra identities except three things, each forced by the platform or by BOINC, and each an exception to ADR-0009:
+1. **The stock BOINC server runs as one Container App with a private MySQL flexible server in `westus2`**, defined in `contrib-compute/infra/boinc/`. The server has one replica and does not scale to zero because the feeder and scheduler share memory and the daemons poll continuously. The daemons are those in #441's `ocr/boinc/daemons.xml` plus the stock feeder, transitioner, file_deleter and db_purge.
+2. **The project tree and hand-off folders live on a private Azure Files share.** The app and its jobs mount the share over SMB with `mfsymlinks` and explicit uid/gid and mode options; `mfsymlinks` provides the symlink behavior BOINC's project tree needs. The account is private-endpoint only.
+3. **Submission, reconciliation, secrets creation, project initialization and app-version publication run in Container Apps Jobs inside the VNet.** The bridge job runs `usnm-boinc submit`/`reconcile`; the secrets job creates runtime and upload secrets only when absent; the init job runs the server entrypoint's safe ensure-project mode; and the publish job installs the selected signed app version. Each job has the share, identity and settings it needs. `export` and `collect` remain on the maintainer side; the bridge jobs have no access to `ocr-out` or `curated`.
+4. **The project uses the app's shared Azure Container Registry.** The stack does not create a second registry. It grants `AcrPull` on the existing shared registry to the BOINC runtime and secrets-job identities; registry admin and anonymous pull remain disabled. Server and bridge images are built and pinned by digest using ACR Tasks; input-keyed `usnm-boinc-base` and `usnm-boinc-bridge-bin` images avoid repeating the slow build layers.
+5. **The master URL is a custom domain on the Container App.** Production is `https://boinc.usnewsmap.com/`; dev is `https://boinc-dev.usnewsmap.com/` and is empty unless an experiment is running. Bicep creates the CNAME and `asuid` TXT records in the existing public DNS zone. `scripts/provision-boinc.sh` advances the app binding and managed certificate through deployment stages; the production endpoint and DigiCert managed certificate were reported working in #470. Static Web Apps (Free) hosts only human-readable pages; the master URL must not change after volunteers attach.
+6. **Secrets.** Everything uses Entra identities except three things, each forced by the platform or by BOINC, and each an exception to ADR-0009:
    - the MySQL password, held in Key Vault and read by the app's managed identity, because BOINC reads a fixed password from `config.xml` and cannot use Entra tokens;
    - the key of the Azure Files account, because the Container Apps Azure Files mount takes an account key;
    - the Log Analytics shared key that the Container Apps environment configuration takes.
@@ -28,8 +29,9 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
 
    The upload-signing key pair is kept apart from the code-signing key, which stays offline. `scripts/ci/no-shared-keys.sh` doesn't scan `contrib-compute/`; these are the places it would flag.
 
-6. **The images are built from `contrib-compute/images/`** (the server and the bridge job; [docs/images.md](../../../contrib-compute/docs/images.md)), from a pinned BOINC commit, because the tag the design first named lacks `batch_collect_assimilator`. The worker image's registry is in the addendum.
-7. **Where #441 and this hosting may not fit are recorded, not worked around**: the Docker wrapper on the client side needs Docker only on volunteers' machines, not on the server (`docs/verified-facts.md`); the bridge's single `--root`, the permissions of the Docker job under `--cap-drop=ALL`, and Azure Files semantics are open (`docs/design.md`, section 7).
+7. **Network and database settings match the deployed stack.** The VNet contains the Key Vault private DNS zone `privatelink.vaultcore.azure.net` and its link. MySQL `require_secure_transport` is explicitly OFF because BOINC's clients do not request TLS; #464 tracks the migration to required TLS. The MySQL endpoint is private in the VNet, with no public endpoint.
+8. **The images are built from `contrib-compute/images/`** (the server and bridge job; [docs/images.md](../../../contrib-compute/docs/images.md)), from pinned BOINC source. `scripts/build-boinc-images.sh` uses ACR Tasks and caches the input-keyed `usnm-boinc-base` and `usnm-boinc-bridge-bin` images. The worker image's registry is in the addendum.
+9. **Where #441 and this hosting may not fit are recorded, not worked around**: the Docker wrapper on the client side needs Docker only on volunteers' machines, not on the server (`docs/verified-facts.md`); the bridge's single `--root`, the permissions of the Docker job under `--cap-drop=ALL`, and Azure Files permission/locking semantics are open (`docs/design.md`, section 7).
 
 ## Alternatives
 
@@ -42,7 +44,7 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
 
 - The project gains a public scheduler, an upload handler and a web UI, and the work to keep them patched. The design's section 5 covers the controls.
 - #441's pilot trusts its friends: the default validator checks nothing. Anything open to anonymous volunteers needs more validation, which is out of scope here.
-- Nothing is deployed. The design lists what is unverified: the MySQL flexible server's fit with BOINC's tables, Azure Files semantics under Container Apps, and the Docker-wrapper plan class on a current server build.
+- PR #470 records a successful production deployment, project initialization, public health checks, running daemons and the managed certificate. This ADR and the source configuration describe that deployment; they are not a new live acceptance test. The design keeps remaining unverified behavior explicit.
 
 ## Addendum (2026-10-13): where the worker image is published
 
@@ -63,7 +65,7 @@ Implemented by `.github/workflows/boinc-worker.yml` (docs/boinc.md, "Publish the
 - _Docker Hub._ Anonymous pulls are rate limited per client address (UNVERIFIED for current limits), which fails for volunteers behind shared addresses.
 - _Ship the image from the project server as a file._ BOINC's Docker wrapper does not do that.
 
-**Consequences.** The registry digest exists only after the first push, so `bootstrap.sh --worker-image` cannot be run for real until then. GHCR's terms and retention for public packages are the maintainer's to check (UNVERIFIED).
+**Consequences.** The registry digest exists only after the first push. GHCR's terms and retention for public packages are the maintainer's to check (UNVERIFIED).
 
 ## Addendum: native worker index and Mac wrapper candidates (#476)
 

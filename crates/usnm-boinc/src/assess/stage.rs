@@ -131,7 +131,9 @@ async fn page(
     // First, so a page LoC does not have still shows in the nonresponse list.
     atomic(&unit.join("sample.json"), &serde_json::to_vec(row)?)?;
     let key = PageKey::from_doc_id(&row.doc_id)?;
-    let profile = engine::route(&row.lang, installed).context("no locked model for language")?;
+    let selected = engine::route(&row.lang, installed)
+        .context("selected engine/profile unavailable on this Tesseract node")?;
+    let profile = selected.profile;
     let (resolved, jp2) = match src.jp2(&key, &row.batch, row.batch_version).await {
         Ok(Some(p)) => p,
         Ok(None) => {
@@ -204,6 +206,7 @@ async fn page(
         },
         inputs,
         engine: boinc::Engine {
+            kind: selected.kind,
             image: opts.engine_image.clone(),
             version: opts.engine_version.clone(),
             profile: profile.clone(),

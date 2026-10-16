@@ -23,6 +23,7 @@ TEMPLATES = {
     # template, which depends on the bundle.
     "usnm_gold": ["usnm_gold_out"],
     # The Surya 2 test (#516): its own worker image, a CPU and a GPU version.
+    "usnm_ndlocr": ["usnm_ndlocr_in", "usnm_ndlocr_out"],
     "usnm_surya": ["usnm_surya_in", "usnm_surya_out"],
     # The OCR quality estimate (#522): the CPU app runs in the worker image under the docker
     # class; the Qwen app has its own image, a CPU and a GPU version.
@@ -44,6 +45,7 @@ JOB_TOML = {
     ("usnm_ocr", "docker"): "ocr/boinc/job.toml",
     ("usnm_assess", "docker"): "ocr/boinc/job.toml",
     ("usnm_gold", "docker"): "ocr/boinc/job.toml",
+    ("usnm_ndlocr", "docker"): "ocr/boinc/ndlocr-lite/job.toml",
     ("usnm_surya", "docker_mt"): "ocr/boinc/surya/job-cpu.toml",
     ("usnm_surya", "docker_nvidia_cuda"): "ocr/boinc/surya/job-gpu.toml",
     ("usnm_quality", "docker"): "ocr/boinc/job.toml",

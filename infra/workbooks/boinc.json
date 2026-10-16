@@ -4,7 +4,7 @@
     {
       "type": 1,
       "content": {
-        "json": "## usnm BOINC\nThe BOINC server app and its jobs (bridge, gold bundle, app version publish, init, secrets), from the platform's events in `ContainerAppSystemLogs_CL` and the containers' output in `ContainerAppConsoleLogs_CL` in this workspace. Times are UTC; the workspace keeps 30 days.\n\nThe BOINC daemons (feeder, transitioner, validators, assimilator, file deleter) are started by `bin/start` and write to log files on the project share, not to stdout, so their lines are not here. Work volume (results in progress, users, hosts) is on the project's [server status page](https://boinc.usnewsmap.com/server_status.php)."
+        "json": "## usnm BOINC\nThe BOINC server app and its jobs (bridge, gold bundle, app version publish, init, secrets), from the platform's events in `ContainerAppSystemLogs_CL` and the containers' output in `ContainerAppConsoleLogs_CL` in this workspace. Times are UTC; the workspace keeps 30 days.\n\nThe BOINC daemons (feeder, transitioner, validators, assimilator, file deleter) are started by `bin/start` and write to log files on the project share, not to stdout, so their lines are not here. Work-volume samples are aggregate-only records emitted by the bridge's manual `work-volume` step; workunits are counted by their validation, assimilation and deletion flags, which can overlap. Active users and hosts match BOINC's status page definition (recent average credit above 1)."
       },
       "name": "title"
     },
@@ -47,6 +47,77 @@
         "resourceType": "microsoft.operationalinsights/workspaces"
       },
       "name": "parameters"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let samples = ContainerAppConsoleLogs_CL\n| extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n    Msg = column_ifexists(\"Log_s\", \"\")\n| where App startswith \"usnm-boinc\"\n| where Msg contains \"boinc_work_volume\"\n| extend m = parse_json(Msg)\n| where tostring(m.event) == \"boinc_work_volume\"\n| where toint(m.schema_version) == 1;\nlet latest = samples | top 1 by TimeGenerated desc;\nlatest\n| project TimeGenerated,\n    Workunits = tolong(m.workunits.total),\n    ValidationNo = tolong(m.workunits.need_validate.no),\n    ValidationYes = tolong(m.workunits.need_validate.yes),\n    AssimilationInit = tolong(m.workunits.assimilate_state.init),\n    AssimilationReady = tolong(m.workunits.assimilate_state.ready),\n    AssimilationDone = tolong(m.workunits.assimilate_state.done),\n    AssimilationOther = tolong(m.workunits.assimilate_state.other),\n    FileDeletionInit = tolong(m.workunits.file_delete_state.init),\n    FileDeletionReady = tolong(m.workunits.file_delete_state.ready),\n    FileDeletionDone = tolong(m.workunits.file_delete_state.done),\n    FileDeletionError = tolong(m.workunits.file_delete_state.error),\n    FileDeletionOther = tolong(m.workunits.file_delete_state.other),\n    Results = tolong(m.results.total),\n    ResultInactive = tolong(m.results.server_state.inactive),\n    ResultUnsent = tolong(m.results.server_state.unsent),\n    ResultInProgress = tolong(m.results.server_state.in_progress),\n    ResultOver = tolong(m.results.server_state.over),\n    ResultOther = tolong(m.results.server_state.other),\n    ActiveUsers = tolong(m.active_users),\n    ActiveHosts = tolong(m.active_hosts)",
+        "size": 0,
+        "title": "Latest work-volume state counts",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "workvolume-states"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let samples = ContainerAppConsoleLogs_CL\n| extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n    Msg = column_ifexists(\"Log_s\", \"\")\n| where App startswith \"usnm-boinc\"\n| where Msg contains \"boinc_work_volume\"\n| extend m = parse_json(Msg)\n| where tostring(m.event) == \"boinc_work_volume\"\n| where toint(m.schema_version) == 1;\nlet latest = samples | top 1 by TimeGenerated desc;\nlatest\n| mv-expand Tile = pack_array(\n    pack(\"Name\", \"Workunits\", \"Value\", todouble(m.workunits.total)),\n    pack(\"Name\", \"Workunits not needing validation\", \"Value\", todouble(m.workunits.need_validate.no)),\n    pack(\"Name\", \"Workunits waiting validation\", \"Value\", todouble(m.workunits.need_validate.yes)),\n    pack(\"Name\", \"Workunits ready to assimilate\", \"Value\", todouble(m.workunits.assimilate_state.ready)),\n    pack(\"Name\", \"Workunits ready for file deletion\", \"Value\", todouble(m.workunits.file_delete_state.ready)),\n    pack(\"Name\", \"Results\", \"Value\", todouble(m.results.total)),\n    pack(\"Name\", \"Inactive results\", \"Value\", todouble(m.results.server_state.inactive)),\n    pack(\"Name\", \"Unsent results\", \"Value\", todouble(m.results.server_state.unsent)),\n    pack(\"Name\", \"Results in progress\", \"Value\", todouble(m.results.server_state.in_progress)),\n    pack(\"Name\", \"Completed results\", \"Value\", todouble(m.results.server_state.over)),\n    pack(\"Name\", \"Active users\", \"Value\", todouble(m.active_users)),\n    pack(\"Name\", \"Active hosts\", \"Value\", todouble(m.active_hosts)))\n| project Name = tostring(Tile.Name), Value = todouble(Tile.Value)",
+        "size": 0,
+        "title": "Latest work volume",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "tiles",
+        "timeContextFromParameter": "TimeRange",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Name",
+            "formatter": 1
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 12,
+            "formatOptions": {
+              "palette": "auto"
+            },
+            "numberFormat": {
+              "unit": 0,
+              "options": {
+                "style": "decimal"
+              }
+            }
+          },
+          "showBorder": false
+        }
+      },
+      "name": "workvolume-latest"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let samples = ContainerAppConsoleLogs_CL\n| extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n    Msg = column_ifexists(\"Log_s\", \"\")\n| where App startswith \"usnm-boinc\"\n| where Msg contains \"boinc_work_volume\"\n| extend m = parse_json(Msg)\n| where tostring(m.event) == \"boinc_work_volume\"\n| where toint(m.schema_version) == 1;\nsamples\n| summarize arg_max(TimeGenerated, Msg) by Bucket = bin(TimeGenerated, {TimeRange:grain})\n| extend TimeGenerated = Bucket, m = parse_json(Msg)\n| project TimeGenerated,\n    Workunits = tolong(m.workunits.total),\n    WaitingValidation = tolong(m.workunits.need_validate.yes),\n    AssimilationReady = tolong(m.workunits.assimilate_state.ready),\n    FileDeletionReady = tolong(m.workunits.file_delete_state.ready),\n    Results = tolong(m.results.total),\n    ResultsInactive = tolong(m.results.server_state.inactive),\n    ResultsUnsent = tolong(m.results.server_state.unsent),\n    ResultsInProgress = tolong(m.results.server_state.in_progress),\n    ResultsOver = tolong(m.results.server_state.over),\n    ActiveUsers = tolong(m.active_users),\n    ActiveHosts = tolong(m.active_hosts)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Work-volume samples over time",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "workvolume-chart"
     },
     {
       "type": 3,

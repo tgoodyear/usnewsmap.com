@@ -25,12 +25,10 @@ pub struct Summary {
 /// slow hosts, and each mode has its own deadline inside the unit anyway.
 pub const FPOPS_EST: &str = "1e14";
 pub const FPOPS_BOUND: &str = "2e16";
-/// 8 GiB. Round 1 peaked at 11.8 GB with 8 threads on the whole node; the
-/// CPU version's container is capped at 12 GiB and the GPU version's at
-/// 8 GiB (`ocr/boinc/surya/`). BOINC compares this with the share of the
-/// host's memory the volunteer allows, so 12 GiB would keep most 16 GB
-/// GPU hosts out of the probe. Revisit with the probe's peaks.
-pub const MEMORY_BOUND: &str = "8589934592";
+/// 12 GiB, rounded up from round 1's 11.8 GB peak with 8 threads. A workunit
+/// can be sent to either version, so this must admit the CPU version's
+/// measured peak even though the GPU container itself is capped at 8 GiB.
+pub const MEMORY_BOUND: &str = "12884901888";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {
     let mut args: Vec<String> = [
@@ -144,6 +142,10 @@ mod tests {
         assert_eq!(names[1].1, JOB_FILE);
         let args = create_work_args(&j);
         assert!(args.contains(&"templates/usnm_surya_in".to_string()));
+        assert_eq!(
+            args[args.iter().position(|a| a == "--rsc_memory_bound").unwrap() + 1],
+            MEMORY_BOUND
+        );
         assert!(args.ends_with(&[names[0].0.clone(), names[1].0.clone()]));
     }
 }

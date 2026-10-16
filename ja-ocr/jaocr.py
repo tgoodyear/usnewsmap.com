@@ -607,7 +607,14 @@ STATUS_EVERY = timedelta(minutes=2)
 
 def alto_pages(curated) -> set[str]:
     """doc_ids with ALTO, from the listing alone."""
-    return {Path(n).name.removesuffix(".xml") for n in curated.list(f"{PREFIX}/alto/") if n.endswith(".xml")}
+    pages = set()
+    for name in curated.list(f"{PREFIX}/alto/"):
+        if not name.endswith(".xml"):
+            continue
+        stem = Path(name).name.removesuffix(".xml")
+        boinc = re.fullmatch(r"(.+)\.boinc-[0-9a-f]{64}", stem)
+        pages.add(boinc.group(1) if boinc else stem)
+    return pages
 
 
 def progress(curated, rows: list[dict]) -> dict:

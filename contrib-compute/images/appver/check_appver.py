@@ -22,7 +22,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-APPS = ("usnm_ocr", "usnm_assess", "usnm_gold", "usnm_surya", "usnm_quality", "usnm_qwen_train", "usnm_qwen")
+APPS = ("usnm_ndlocr", "usnm_ocr", "usnm_assess", "usnm_gold", "usnm_surya", "usnm_quality", "usnm_qwen_train", "usnm_qwen")
 PLATFORMS = (
     "x86_64-pc-linux-gnu",
     "aarch64-unknown-linux-gnu",

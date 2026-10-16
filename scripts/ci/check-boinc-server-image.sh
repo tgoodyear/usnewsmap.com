@@ -26,6 +26,8 @@ for f in tools/make_project tools/xadd tools/update_versions tools/upgrade; do
 done
 [ -x /usr/local/lib/usnm-boinc/docker_wrapper ] || { echo "missing docker_wrapper" >&2; exit 1; }
 [ -x /usr/local/bin/bridge-job ] || { echo "missing bridge-job" >&2; exit 1; }
+test -r /usr/local/lib/usnm-boinc/work-volume.py
+python3 /usr/local/lib/usnm-boinc/work-volume.py --help >/dev/null
 php -m | grep -qx mysqli
 apache2ctl -M 2>/dev/null | grep -q php
 python3 -c "import MySQLdb"

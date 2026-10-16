@@ -98,6 +98,8 @@
 #   BRIDGE_STEP=register-apps   copies this image's project.xml into the project and runs
 #                               bin/xadd, which adds the apps and platforms the database lacks
 #                               and leaves the others (safe to repeat)
+#   BRIDGE_STEP=work-volume     writes one JSON line of aggregate workunit, result, active-user
+#                               and active-host counts to stdout; safe to repeat
 #
 # Start a step with scripts/start-boinc-bridge.sh, which sets these on the job: an
 # `az containerapp job start --env-vars` override drops the job's own settings and the share.
@@ -282,7 +284,8 @@ case "$step" in
       --max-cer "${GOLD_MAX_CER:?set GOLD_MAX_CER from campaign calibration}" --out "$SHARE_DIR/gold/trust.json" ;;
 esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
-  [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] && [ "$step" != register-apps ]; then
+  [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
+  [ "$step" != register-apps ] && [ "$step" != work-volume ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -314,6 +317,29 @@ if [ "$step" = spool-out ]; then
   [ -f "$SHARE_DIR/gold/trust.json" ] && trust_args=(--trust "$SHARE_DIR/gold/trust.json")
   usnm-boinc handoff put-spool --to-url "$HANDOFF_URL" --spool "$spool" --job "$JOB_ID" \
     ${host_args[@]+"${host_args[@]}"} ${trust_args[@]+"${trust_args[@]}"}
+  exit 0
+fi
+if [ "$step" = work-volume ]; then
+  mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
+  mycnf="$SECRETS/mysql-runtime.cnf"
+  trap 'rm -f "$mycnf" "$SECRETS/db-runtime"' EXIT
+  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+  (umask 077; python3 - "$mycnf" "$SECRETS/db-runtime" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+def quote(value):
+    for before, after in (("\\", "\\\\"), ('"', '\\"'), ("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t")):
+        value = value.replace(before, after)
+    return '"' + value + '"'
+
+values = {"host": os.environ["DB_HOST"], "user": os.environ["DB_RUNTIME_USER"],
+          "password": Path(sys.argv[2]).read_bytes().decode("utf-8").removesuffix("\n")}
+Path(sys.argv[1]).write_text("[client]\n" + "".join(f"{key}={quote(value)}\n" for key, value in values.items()))
+PY
+  )
+  python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
   exit 0
 fi
 fetch_secrets
@@ -404,5 +430,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
 esac

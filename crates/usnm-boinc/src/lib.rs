@@ -30,6 +30,7 @@ use usnm_store::ObjectStore;
 pub mod assess;
 pub mod gold;
 pub mod handoff;
+pub mod ndlocr;
 pub mod quality;
 pub mod qwen;
 pub mod scans;
@@ -75,18 +76,16 @@ pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         Some(std::fs::Permissions::from_mode(0o644))
     };
-    // Other platforms have no mode bits to set; the web server there is not BOINC's Apache.
+    // The BOINC server is Linux-only, so `None` is fine on other platforms.
     #[cfg(not(unix))]
     let permissions = None;
     atomic_with_permissions(path, bytes, permissions)
 }
 
-/// Creates missing directories as 0755 whatever the umask, so the web-server
-/// identity can traverse new download fan-out directories. Every directory that
-/// was missing (made here or by a concurrent caller), the first existing ancestor
-/// when it has the same owner, and the direct parent, which
-/// stock `dir_hier_path` may already have made under the same umask, gains any
-/// missing 0755 bits; other bits (setgid, group write) stay.
+/// Creates missing directories as exactly 0755 whatever the umask, so the
+/// web-server identity can traverse new download fan-out directories. Existing
+/// directories, including ones made by a concurrent caller, gain any missing
+/// 0755 bits; other bits (setgid, group write) stay.
 pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -107,12 +106,15 @@ pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
         let ancestor = cur.filter(|_| !missing.is_empty());
         for d in missing.into_iter().rev() {
             match std::fs::create_dir(d) {
-                Ok(()) => {}
+                Ok(()) => {
+                    std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755))?;
+                }
                 // Another submitter made it, perhaps under its own umask.
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {
+                    traversable(d)?;
+                }
                 Err(e) => return Err(e).with_context(|| format!("creating {}", d.display())),
             }
-            traversable(d)?;
         }
         // A peer submitter may have just made the first existing ancestor under its
         // umask. Repair it only if it has our new directory's owner, so a directory
@@ -382,8 +384,9 @@ pub async fn export(
             .context("selected title is not published")?;
         let language = ocr_local::enqueue::message_language(row.lang.as_deref(), title_languages)
             .context("page has no mapped detected or title language")?;
-        let profile = engine::route(&language, &installed)
-            .context("no locked Tesseract model for page language")?;
+        let selected = engine::route(&language, &installed)
+            .context("selected engine/profile unavailable on this Tesseract node")?;
+        let profile = selected.profile;
         let now = Utc::now();
         let mut job = Job {
             v: boinc::VERSION,
@@ -406,6 +409,7 @@ pub async fn export(
                 md5: side.md5,
             },
             engine: boinc::Engine {
+                kind: selected.kind,
                 image: opts.image.clone(),
                 version: "5.5.0".into(),
                 profile: profile.clone(),
@@ -526,7 +530,7 @@ pub async fn import(
     let row = usnm_overlay::OverlayRow {
         key: key.clone(),
         batch: record.job.message.batch.clone(),
-        ocr_source: "usnm-tesseract".into(),
+        ocr_source: format!("usnm-{}", record.job.engine.kind.family()),
         ocr_engine: record.job.engine_tag()?.to_string(),
         loc_text: record.job.message.reason.as_str().into(),
         text,
