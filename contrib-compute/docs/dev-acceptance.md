@@ -135,6 +135,7 @@ operator scripts (including #619). These commands are **not authorized now**.
    requires inventory/ownership reconciliation, not an overwrite.
 
    ```sh
+   set -euo pipefail
    SUB=25bf257c-c94e-4d61-bba3-edc635f46602
    : "${BOINC_DEV_EXPIRES_AT:?Set the approved UTC teardown deadline}"
    test "$(az account show --subscription "$SUB" --query id -o tsv)" = "$SUB"
@@ -290,14 +291,15 @@ The scoped teardown commands, after checking the stack's complete resource
 inventory against the approved dev resources and two dev DNS record IDs, are:
 
 ```sh
+set -euo pipefail
 az stack group show --subscription "$SUB" --resource-group usnm-boinc-rg-dev \
   --name usnm-boinc-dev --query resources -o json
 # Stop on any unexpected resource, unsupported deletion or out-of-sync error.
 # Never use a stack error bypass, and never delete the production BOINC stack.
 az stack group delete --subscription "$SUB" --resource-group usnm-boinc-rg-dev \
   --name usnm-boinc-dev --action-on-unmanage deleteResources \
-  --resources-without-delete-support fail --yes
-az group delete --subscription "$SUB" --name usnm-boinc-rg-dev --yes
+  --resources-without-delete-support fail --yes &&
+az group delete --subscription "$SUB" --name usnm-boinc-rg-dev --yes &&
 test "$(az group exists --subscription "$SUB" --name usnm-boinc-rg-dev)" = false
 ```
 

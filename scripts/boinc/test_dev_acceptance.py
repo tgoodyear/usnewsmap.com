@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -76,6 +77,23 @@ class DevAcceptance(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("beneath checkout target/", result.stderr)
+
+    def test_documented_teardown_stops_before_group_delete_on_stack_errors(self):
+        doc = Path(ROOT, "contrib-compute/docs/dev-acceptance.md").read_text()
+        teardown = doc.split("## Teardown is part of the approval", 1)[1]
+        command = re.search(r"```sh\n(.*?)\n```", teardown, re.S).group(1)
+        for phase in ("stack group show", "stack group delete"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                az = Path(directory, "az")
+                az.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$AZ_LOG"\n'
+                              'if [[ "$*" == "$FAIL_PHASE "* ]]; then exit 9; fi\n')
+                az.chmod(0o755)
+                log = Path(directory, "az.log")
+                result = subprocess.run(["bash", "-c", command], capture_output=True, text=True,
+                                        env={**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
+                                             "AZ_LOG": str(log), "FAIL_PHASE": phase, "SUB": "offline-test"})
+                self.assertEqual(result.returncode, 9, result.stderr)
+                self.assertFalse(any(line.startswith("group delete") for line in log.read_text().splitlines()))
 
 
 if __name__ == "__main__":
