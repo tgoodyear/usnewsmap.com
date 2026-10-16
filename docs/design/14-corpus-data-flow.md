@@ -1,6 +1,7 @@
 # 14: Corpus data, runs and processing flow
 
-Status: implementation in progress. Tracking: [#704](https://github.com/tgoodyear/usnewsmap.com/issues/704).
+Status: initial catalog and dashboard deployed; source coverage remains partial.
+Tracking: [#704](https://github.com/tgoodyear/usnewsmap.com/issues/704).
 
 ## Goal and boundaries
 
@@ -214,3 +215,62 @@ The existing Cold-tier scan archive is a separate recovery copy, not the public
 BOINC input mirror. Its documented complete verification at
 2026-10-16T11:26:03Z covered 148,127 scans. A later partial verification or local
 file stat does not replace that dated acceptance or prove current cloud presence.
+
+## Deployed baseline and run ingestion
+
+CT 212 runs `usnm-data-catalog.service` on `127.0.0.1:8764`, beside the
+dashboard and five-minute observer. The database and retained evidence are under
+`/var/lib/usnm-data-flow`; executables are under `/usr/local/lib/usnm-data-flow`.
+The query listener is not exposed through the LAN dashboard. Administrators can
+query it through the existing host access:
+
+```bash
+ssh root@pve-big.tjg.fyi \
+  'pct exec 212 -- curl --fail --silent http://127.0.0.1:8764/health'
+```
+
+`/page?page_id=loc%3A<doc_id>` returns page evidence; `/runs` and `/executions`
+support bounded filters and pagination. `/health` means the catalog is readable,
+not that the pipeline is ready.
+
+The initial bootstrap observes 128 real cached scans and independently hashes
+one scan. It also includes one isolated local worker run to check metadata
+capture/import. That instrumentation run used the available English model,
+not a calibrated target-language experiment; its source is
+`instrumentation-smoke-eng-not-quality`. No output was submitted for acceptance,
+curated import or indexing.
+
+For subsequent worker runs, enable
+`USNM_OCR_RUN_METADATA_DIR` on a persistent, worker-writable local directory when
+deploying a compatible worker at a safe workload boundary. This is opt-in; no
+active worker was restarted for this rollout. The
+[worker contract](../../crates/usnm-ocr-worker/README.md#local-page-run-metadata-opt-in)
+describes success, failure, retry and durability semantics.
+
+Copy completed `*.json` captures through the administrative path, retaining the
+originals. Import each with a new evidence filename and stable batch/source IDs:
+
+```bash
+python3 scripts/data_catalog.py --db catalog.sqlite ingest-worker \
+  --input capture.json --evidence-out run-001.jsonl \
+  --batch-id run-001 --source worker-node3
+python3 scripts/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
+```
+
+The adapter accepts captures up to 64 KiB; larger captures fail explicitly even
+though the worker can publish larger records. Never truncate them or silently
+drop fields. Replay a previously exported JSONL with `ingest --batch`, rather
+than regenerating it. Rebuilding a new database from the retained batches must
+preserve run/artifact counts and page-query results. Keep a consistent SQLite
+backup or rebuild from evidence; do not copy live database fragments.
+
+The dashboard binary rollback and prior environment are retained under
+`/var/backups/usnm-data-flow-20261016-102e948f-attempt2`. To remove catalog
+integration, stop its query service and restore the saved `aggregate-only.conf`
+to the observer's service drop-in directory, then reload systemd and rerun the
+observer. This does not stop OCR or BOINC work.
+
+Corpus-wide inventory, automatic worker transport/retention, BOINC and
+`ocr-file` capture, and authoritative validation/import/index exporters remain
+separate rollout steps. Do not enable an uncalibrated corpus-wide job merely
+because the control plane is online.
