@@ -58,7 +58,7 @@ boinc_az_check
 # The publish job (main.bicep) runs the last published app version, images.appver.
 PUBLISH_IMAGE=${PUBLISH_OVERRIDE:-$APPVER_IMAGE}
 
-work=$(mktemp -d)
+work=$(boinc_workdir)
 trap 'rm -rf "$work"' EXIT
 # No secret goes in the parameters: the template makes the admin password itself.
 names_file="$(dirname "$0")/../infra/names/$ENV_NAME.json"
