@@ -45,7 +45,7 @@ function Set-FlowMocks {
     Set-Mock Assert-NativeWindows {}
     Set-Mock Get-BoincInstallation { param($Directory) return $script:Installation }
     Set-Mock Get-WindowsReadiness {
-        param($DataDirectory, $CpuAllowed)
+        param($DataDirectory, $CpuAllowed, $DeferDiskCheck)
         $script:Calls.Add('readiness')
         return [pscustomobject]@{
             RamGiB = 16; DiskGiB = 18
@@ -132,6 +132,31 @@ Test-Case 'cancelled/incomplete installer cannot claim success' {
     Assert-True (-not $script:Calls.Contains('manager')) 'no proceeding with missing client'
 }
 
+Test-Case 'fresh install defers default-volume check then verifies chosen data location' {
+    Set-FlowMocks
+    $script:Installation = $null
+    $script:CustomData = Join-Path $PSScriptRoot 'custom-mounted-data'
+    Set-Mock Get-WindowsReadiness {
+        param($DataDirectory, $CpuAllowed, $DeferDiskCheck)
+        if (-not $script:Installation) {
+            Assert-True $DeferDiskCheck 'unselected default location cannot block installer'
+        } else {
+            Assert-True (-not $DeferDiskCheck) 'post-install disk check mandatory'
+            Assert-True ($DataDirectory -eq $script:CustomData) 'chosen data directory checked'
+        }
+        $script:Calls.Add('readiness')
+        return [pscustomobject]@{ RamGiB = 16; DiskGiB = 18; Gpu = $null }
+    }
+    Set-Mock Install-OfficialBoinc {
+        $script:Calls.Add('install')
+        $script:Installation = [pscustomobject]@{
+            Directory = $PSScriptRoot; DataDirectory = $script:CustomData; Version = [version]'8.2.11'
+        }
+    }
+    Invoke-WindowsOnboarding $true $true $false ''
+    Assert-True (($script:Calls -join ',') -eq 'readiness,network,install,readiness,consent,manager,prompt,status') 'custom volume verified before client launch'
+}
+
 Test-Case 'old running client is never interrupted for upgrade' {
     Set-FlowMocks
     $script:Installation.Version = [version]'8.0.2'
@@ -194,11 +219,7 @@ function Set-ReadinessMocks {
     Set-Mock Get-Command { param($Name, $CommandType, $ErrorAction) return $null }
     Set-Mock Get-Service { param($Name, $ErrorAction) return $null }
     Set-Mock Test-Path { param($LiteralPath) return $false }
-    Set-Mock New-Object {
-        param($TypeName, $ArgumentList)
-        Assert-True ($TypeName -eq 'IO.DriveInfo') 'only disk metadata queried'
-        return [pscustomobject]@{ IsReady = $true; AvailableFreeSpace = 50GB }
-    }
+    Set-Mock Get-DataFreeBytes { param($Directory) return 50GB }
 }
 
 Test-Case 'disk headroom accounts for every supported large GPU even while busy' {
@@ -252,16 +273,51 @@ Test-Case 'existing service-mode client cannot claim GPU readiness' {
 
 Test-Case 'insufficient RAM and cold disk cannot count as ready' {
     Set-ReadinessMocks
-    Set-Mock New-Object {
-        param($TypeName, $ArgumentList)
-        return [pscustomobject]@{ IsReady = $true; AvailableFreeSpace = 5GB }
-    }
+    Set-Mock Get-DataFreeBytes { param($Directory) return 5GB }
     Assert-Throws { Get-WindowsReadiness $PSScriptRoot $true } '12 GiB free'
     Set-Mock Get-CimInstance {
         param($ClassName)
         return [pscustomobject]@{ BuildNumber = 22631; ProductType = 1; TotalVisibleMemorySize = 4GB / 1KB }
     }
     Assert-Throws { Get-WindowsReadiness $PSScriptRoot $true } '6 GiB host RAM'
+}
+
+Test-Case 'mounted data-directory query does not substitute drive-letter free space' {
+    $script:MountedData = Join-Path $PSScriptRoot 'mounted-data'
+    Set-Mock Test-Path { param($LiteralPath, $PathType) return $true }
+    Set-Mock Get-DirectoryFreeBytes {
+        param($Directory)
+        Assert-True ($Directory -eq $script:MountedData) 'pass full mounted directory, not drive root'
+        return 5GB
+    }
+    Assert-True ((Get-DataFreeBytes $script:MountedData) -eq 5GB) 'backing-volume space returned unchanged'
+}
+
+Test-Case 'missing data directory queries nearest existing parent' {
+    $script:DataParent = $PSScriptRoot
+    Set-Mock Test-Path {
+        param($LiteralPath, $PathType)
+        return $LiteralPath -eq $script:DataParent
+    }
+    Set-Mock Get-DirectoryFreeBytes {
+        param($Directory)
+        Assert-True ($Directory -eq $script:DataParent) 'nearest existing parent retained'
+        return 20GB
+    }
+    Assert-True ((Get-DataFreeBytes (Join-Path $PSScriptRoot 'not-created-yet')) -eq 20GB) 'parent volume inspected'
+}
+
+Test-Case 'deferred preinstall check still validates hardware but never queries model disk' {
+    Set-ReadinessMocks
+    Set-Mock Get-DataFreeBytes { param($Directory) throw 'must defer model disk check' }
+    $ready = Get-WindowsReadiness $PSScriptRoot $true $true
+    Assert-True ($ready.DiskGiB -eq 12) 'required allowance still reported'
+}
+
+Test-Case 'native directory-aware disk API works on Windows without changing host' {
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        Assert-True ((Get-DirectoryFreeBytes $PSScriptRoot) -gt 0) 'Windows native directory space query succeeds'
+    }
 }
 
 Test-Case 'attachment query is local read-only, captures output and never passes a password' {

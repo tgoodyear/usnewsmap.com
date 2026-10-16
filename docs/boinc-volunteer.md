@@ -163,7 +163,12 @@ preferences, or attach a project. After reviewing the preview:
 eligible client is reused. If you already installed BOINC, `-Apply` alone suffices.
 A nonstandard program location can be supplied with
 `-BoincDirectory 'D:\Applications\BOINC'`; the existing registry data directory is
-preserved. The helper refuses to upgrade a running older client/Manager: finish
+preserved. For a fresh installation, hardware is checked first but model-space
+verification waits until you select the real data directory in the installer's
+Advanced options; a full default C: volume does not block choosing D:. Existing
+installations check their current data directory. Disk queries follow the actual
+directory's backing volume, including NTFS mount points/junctions, rather than
+assuming the drive-letter root. The helper refuses to upgrade a running older client/Manager: finish
 and report existing work, then exit them first. It never kills/restarts BOINC.
 
 For a new/older installation, you must type `YES` before the download and again

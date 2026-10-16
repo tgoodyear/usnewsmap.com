@@ -109,7 +109,41 @@ function Assert-NativeWindows {
     }
 }
 
-function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed) {
+function Get-DirectoryFreeBytes([string]$Directory) {
+    if (-not ('UsnmOnboarding.DiskSpace' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace UsnmOnboarding {
+    public static class DiskSpace {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetDiskFreeSpaceEx(
+            string path, out ulong available, out ulong total, out ulong free);
+    }
+}
+'@
+    }
+    [uint64]$available = 0; [uint64]$total = 0; [uint64]$free = 0
+    if (-not [UsnmOnboarding.DiskSpace]::GetDiskFreeSpaceEx($Directory, [ref]$available, [ref]$total, [ref]$free)) {
+        throw 'Cannot inspect the BOINC data directory volume. Check that its mount/drive is connected and accessible to your normal user.'
+    }
+    return $available
+}
+
+function Get-DataFreeBytes([string]$Directory) {
+    $existing = [IO.Path]::GetFullPath($Directory)
+    while (-not (Test-Path -LiteralPath $existing -PathType Container)) {
+        $parent = [IO.Directory]::GetParent($existing)
+        if (-not $parent) { throw 'No accessible parent directory for BOINC data. Check its data-directory setting and mounted volume.' }
+        $existing = $parent.FullName
+    }
+    # Query the directory itself, not its drive-letter root: Windows follows
+    # mount points/junctions and reports the actual backing volume and user quota.
+    return (Get-DirectoryFreeBytes $existing)
+}
+
+function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$DeferDiskCheck = $false) {
     Assert-NativeWindows
     $os = Get-CimInstance Win32_OperatingSystem
     if ([int]$os.BuildNumber -lt 19045 -or [int]$os.ProductType -ne 1) {
@@ -146,9 +180,7 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed) {
     }
     $diskGiB = 12
     if ($gpus | Where-Object { $_.TotalMiB -ge 7000 }) { $diskGiB = 18 }
-    $root = [IO.Path]::GetPathRoot($DataDirectory)
-    $drive = New-Object IO.DriveInfo $root
-    if (-not $drive.IsReady -or $drive.AvailableFreeSpace -lt ($diskGiB * 1GB)) {
+    if (-not $DeferDiskCheck -and (Get-DataFreeBytes $DataDirectory) -lt ($diskGiB * 1GB)) {
         throw "Need at least $diskGiB GiB free on the BOINC data volume (cold model download/unpacking). Free space without deleting shared sticky model files, then retry."
     }
     return [pscustomobject]@{ RamGiB = $ramGiB; Gpu = $gpu; DiskGiB = $diskGiB }
@@ -251,7 +283,10 @@ function Invoke-WindowsOnboarding {
     $installation = Get-BoincInstallation $Directory
     $dataDirectory = Join-Path $env:ProgramData 'BOINC'
     if ($installation) { $dataDirectory = $installation.DataDirectory }
-    $ready = Get-WindowsReadiness $dataDirectory $CpuAllowed
+    $ready = Get-WindowsReadiness $dataDirectory $CpuAllowed (-not $installation)
+    if (-not $installation) {
+        Write-Host 'BOINC data location is not yet selected. Model-space verification is deferred until the installer finishes; choose a volume with sufficient space in Advanced options.'
+    }
     Write-Host "Native Windows preview: $($ready.RamGiB) GiB RAM; reserve $($ready.DiskGiB) GiB disk in BOINC preferences."
     if ($ready.Gpu) {
         Write-Host "NVIDIA: $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.FreeMiB) MiB currently free."
