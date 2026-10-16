@@ -79,6 +79,12 @@ class ClientAccountTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 account.weak_key(path, 42)
             path.chmod(0o600)
+            path.write_text("42_" + "a" * 31)
+            with self.assertRaisesRegex(ValueError, "weak account key"):
+                account.weak_key(path, 42)
+            path.write_text("42_" + "a" * 33)
+            with self.assertRaisesRegex(ValueError, "weak account key"):
+                account.weak_key(path, 42)
             path.write_text("a" * 32)
             with self.assertRaises(ValueError):
                 account.weak_key(path, 42)
@@ -201,6 +207,7 @@ class ClientAccountTests(unittest.TestCase):
                                 "<run_if_user_active>0</run_if_user_active>"
                                 "<work_buf_min_days>0</work_buf_min_days>"
                                 "<work_buf_additional_days>0</work_buf_additional_days>"
+                                "<niu_max_ncpus_pct>0.000000</niu_max_ncpus_pct>"
                                 "<start_hour>9</start_hour><end_hour>17</end_hour>"
                                 "<net_start_hour>20</net_start_hour><net_end_hour>22</net_end_hour>"
                                 "</global_preferences></reply>")
@@ -210,9 +217,11 @@ class ClientAccountTests(unittest.TestCase):
             for element in day:
                 if element.tag != "day_of_week":
                     element.text = format(float(element.text), ".2f")
+        effective = deepcopy(protected)
+        effective.find(".//niu_max_ncpus_pct").text = "100.000000"
         rpc = Mock()
         rpc.call.side_effect = [working, ET.fromstring("<reply/>"), ET.fromstring("<reply/>"),
-                                protected, protected]
+                                protected, effective]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             original = "<global_preferences><cpu_usage_limit>30</cpu_usage_limit></global_preferences>"
@@ -225,6 +234,7 @@ class ClientAccountTests(unittest.TestCase):
             self.assertEqual(payload.findtext("max_ncpus_pct"), "25")
             self.assertIsNone(payload.find("mod_time"))
             self.assertEqual(len(payload.findall("day_prefs")), 7)
+            self.assertEqual(payload.findtext("niu_max_ncpus_pct"), "0.000000")
 
     def test_inherited_weekly_schedules_override_new_scheduler_days(self):
         preferences = ET.fromstring(

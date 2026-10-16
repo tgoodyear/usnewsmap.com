@@ -337,7 +337,14 @@ def protect_preferences(rpc, data_dir, backup_dir):
             return None
         schedules = schedule_intervals(root, require_explicit=True)
         schedule_tags = {"day_prefs", "start_hour", "end_hour", "net_start_hour", "net_end_hour"}
-        return ([(element.tag, (element.text or "").strip(),
+        def scalar(element):
+            value = (element.text or "").strip()
+            # Stock CPU scheduling treats zero as unlimited; the override parser
+            # serializes that same niu_max_ncpus_pct setting as 100 instead.
+            if element.tag == "niu_max_ncpus_pct" and float(value) == 0:
+                return "100.000000"
+            return value
+        return ([(element.tag, scalar(element),
                   tuple(ET.tostring(child, encoding="unicode") for child in element))
                  for element in root if element.tag not in metadata | schedule_tags], schedules)
     if values(stored) != values(preferences) or values(effective) != values(preferences):
