@@ -129,7 +129,11 @@ with os.fdopen(fd, "w") as f:
     f.write(t)
 PY
   chown root:boincadm "$SECRETS/config.xml"
-  ln -sfn "$SECRETS/config.xml" "$PROJ/config.xml"
-  rm -rf "${PROJ:?}/keys"
-  ln -sfn "$SECRETS/keys" "$PROJ/keys"
+  if [ "$(readlink "$PROJ/config.xml" 2>/dev/null || true)" != "$SECRETS/config.xml" ]; then
+    ln -sfn "$SECRETS/config.xml" "$PROJ/config.xml"
+  fi
+  if [ "$(readlink "$PROJ/keys" 2>/dev/null || true)" != "$SECRETS/keys" ]; then
+    rm -rf "${PROJ:?}/keys"
+    ln -sfn "$SECRETS/keys" "$PROJ/keys"
+  fi
 }

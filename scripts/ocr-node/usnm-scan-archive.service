@@ -1,6 +1,6 @@
 # The scan archive upload (#442, ADR-0018): `usnm-ocr-worker archive-scans`
-# on the host that holds /tank/ocr/scans, as the host's Arc identity (a
-# member of the OCR nodes' Entra group), never through a laptop. It uploads
+# on the host that holds /tank/ocr/scans, as the host's Arc identity with
+# an archive-only grant (not OCR group membership), never through a laptop. It uploads
 # the keep set's scans that aren't in the archive yet, on the Cold tier,
 # create-only, and exits non-zero if any scan failed or didn't match its
 # sidecar (the timer starts it again). Not enabled by anything in this
