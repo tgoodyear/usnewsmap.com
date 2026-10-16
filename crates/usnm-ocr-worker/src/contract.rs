@@ -371,6 +371,9 @@ impl ContractEngine {
 
     /// The first profile that reads `language`.
     fn profile(&self, language: &str) -> Option<&str> {
+        if crate::engine::EngineKind::for_language(language).family() != self.hello.engine.family {
+            return None;
+        }
         self.hello
             .profiles
             .iter()
@@ -742,7 +745,7 @@ impl ContractEngine {
                     dpi: Some(layout.alto_dpi.unwrap_or(f64::from(self.opts.dpi))),
                     ..usnm_alto::ParseOptions::default()
                 };
-                let page = usnm_alto::parse(&raw, &opts).map_err(|e| {
+                let mut page = usnm_alto::parse(&raw, &opts).map_err(|e| {
                     use usnm_alto::{AltoError, ParseError};
                     // A broken limit is the protocol's; the instance goes.
                     let limit = matches!(
@@ -770,6 +773,8 @@ impl ContractEngine {
                     )
                     .into());
                 }
+                // A boxed String can hold an entire line, not a word.
+                page.granularity = inst.hello.granularity;
                 page
             }
             Layout::Boxes => {
@@ -1255,6 +1260,26 @@ impl Engine for ContractEngine {
         self.profile(language).is_some()
     }
 
+    fn routes(&self) -> BTreeMap<String, String> {
+        let mut routes = BTreeMap::new();
+        for profile in &self.hello.profiles {
+            for language in &profile.languages {
+                if self.profile(language) == Some(profile.id.as_str()) {
+                    routes.insert(language.clone(), profile.id.clone());
+                }
+            }
+        }
+        routes
+    }
+
+    fn models(&self) -> Vec<String> {
+        self.hello
+            .models
+            .iter()
+            .map(|model| model.name.clone())
+            .collect()
+    }
+
     fn dpi(&self) -> u32 {
         self.opts.dpi
     }
@@ -1422,7 +1447,7 @@ mod tests {
 
     /// [`script_engine`], running `before` before each instance's hello.
     pub(super) async fn script_engine_with(dir: &Path, before: &str, body: &str) -> ContractEngine {
-        let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"silent","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[{"name":"test-model","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":["test-model"],"tunable":[]}],"type":"hello"}"#;
+        let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"tesseract","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[{"name":"test-model","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":["test-model"],"tunable":[]}],"type":"hello"}"#;
         let script = dir.join("adapter");
         std::fs::write(
             &script,
@@ -1437,7 +1462,7 @@ mod tests {
         let mut catalog = usnm_ocr_route::ENGINES.clone();
         let mut engine = catalog.engine[0].clone();
         engine.id = "silent".into();
-        engine.family = "silent".into();
+        engine.family = "tesseract".into();
         engine.model[0].name = "test-model".into();
         catalog.engine.push(engine);
         ContractEngine::start_with_catalog(
@@ -1504,6 +1529,28 @@ mod tests {
         e.catalog = original;
         e.hello.engine.family = "wrong-family".into();
         assert!(!e.can_read("eng"));
+        e.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn contract_routes_only_the_selected_engine_and_still_checks_licenses() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = silent_engine(dir.path()).await;
+        e.hello.profiles[0].languages.push("jpn".into());
+        assert!(e.can_read("eng"));
+        assert!(!e.can_read("jpn"));
+        e.hello.engine.family = "ndlocr-lite".into();
+        e.catalog.engine.last_mut().unwrap().family = "ndlocr-lite".into();
+        e.hello.profiles[0].id = "default".into();
+        assert!(!e.can_read("eng"));
+        assert!(e.can_read("jpn"));
+        assert!(e
+            .describe("jpn")
+            .unwrap()
+            .0
+            .starts_with("ndlocr-lite/1 profile=default "));
+        e.catalog.engine.last_mut().unwrap().production = false;
+        assert!(!e.can_read("jpn"));
         e.shutdown().await;
     }
 

@@ -51,11 +51,12 @@ pub struct Metrics {
     /// loc.gov answers asking us to slow down, by `status` (429, 503),
     /// `server` (api or tile) and whether a `Retry-After` came with it.
     pub loc_slowdowns: Counter<u64>,
-    /// Engine time per page, by `engine`, `models` and `language`.
+    /// Sum of engine read times per page, by `engine`, `models`, `language`
+    /// and whether the page needed the JPEG fallback.
     pub ocr_seconds: Histogram<f64>,
-    /// Time to get a page's scan, by `outcome` and `source`: `loc` (the
-    /// issue lookup and the image from loc.gov, a cache miss included) or
-    /// `cache` (read and checked from the prefetch cache).
+    /// Time to get a page's scan, by `outcome`, `source` and `jpeg_fallback`:
+    /// `loc` (the image from loc.gov, a cache miss included) or `cache`
+    /// (read and checked from the prefetch cache).
     pub image_fetch_seconds: Histogram<f64>,
 }
 
@@ -93,12 +94,12 @@ impl Metrics {
             ocr_seconds: meter
                 .f64_histogram("ocr.ocr_seconds")
                 .with_unit("s")
-                .with_description("Engine time per page")
+                .with_description("Sum of engine read times per page")
                 .build(),
             image_fetch_seconds: meter
                 .f64_histogram("ocr.image_fetch_seconds")
                 .with_unit("s")
-                .with_description("Time to get a page's scan, from loc.gov or the prefetch cache")
+                .with_description("Time to get a page's scan, including JPEG fallbacks")
                 .build(),
         }
     }

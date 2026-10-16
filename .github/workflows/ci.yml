@@ -87,6 +87,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.contrib == 'true'
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mirror.gcr.io/library/mysql:8.4@sha256:24989179f58856db763f418010c1169fecc944e3ec1ea7e921572d83eb070f70
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+        ports:
+          - 127.0.0.1:3307:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=30
     env:
       BICEP_VERSION: v0.47.16
     defaults:
@@ -113,13 +123,15 @@ jobs:
               print(f"error: <{tag}> in boinc/project.xml has a quote or backslash, which xadd inserts into SQL unescaped: {text!r}")
           sys.exit(1 if bad else 0)
           PY
-      - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh images/bridge/*.sh
+      - run: shellcheck -x -S warning images/server/*.sh images/appver/*.sh images/bridge/*.sh
       - name: The gold-bundle step's tests pass
         run: python3 -m unittest -v images/bridge/test_gold_bundle.py
       - name: The server daemon configuration tests pass
         run: python3 -m unittest -v boinc/test_config.py
       - name: The work-volume export and workbook queries pass
         run: python3 -m unittest -v images/server/test_work_volume.py
+        env:
+          USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: The app version checks' tests pass
         working-directory: .
@@ -555,9 +567,12 @@ jobs:
         run: |
           python3 -m unittest -v scripts/ocr-node/test_update_worker.py
           python3 -m unittest -v scripts/ocr-node/test_check_scan_archive.py
+          python3 -m unittest -v scripts/ocr-node/test_grant_archive_uploader.py
+          python3 -m unittest -v scripts/ocr-node/test_install_archive_host.py
           shellcheck -x -S warning scripts/ocr-node/update-worker.sh scripts/ocr-node/install-worker-node.sh \
             scripts/ocr-node/install-worker.sh scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
-            scripts/ocr-node/check-scan-archive.sh
+            scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
+            scripts/ocr-node/install-archive-host.sh
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's

@@ -19,7 +19,7 @@ case "$APPVER_KIND" in
   container)
     APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS:-docker}
     case "$APPVER_APP:$APPVER_PLAN_CLASS" in
-      usnm_ocr:docker|usnm_assess:docker|usnm_gold:docker|usnm_quality:docker|usnm_surya:docker_mt|usnm_surya:docker_nvidia_cuda|usnm_qwen:docker_mt_2b|usnm_qwen:docker_nvidia_cuda_8b|usnm_qwen_train:docker_nvidia_train) ;;
+      usnm_ndlocr:docker|usnm_ocr:docker|usnm_assess:docker|usnm_gold:docker|usnm_quality:docker|usnm_surya:docker_mt|usnm_surya:docker_nvidia_cuda|usnm_qwen:docker_mt_2b|usnm_qwen:docker_nvidia_cuda_8b|usnm_qwen_train:docker_nvidia_train) ;;
       *) fail "unsupported container app/plan class: $APPVER_APP:$APPVER_PLAN_CLASS" ;;
     esac
     [ "$APPVER_PLATFORM" = x86_64-pc-linux-gnu ] || [ "$APPVER_PLAN_CLASS" = docker ] || fail "$APPVER_PLATFORM supports only plan class docker"
@@ -139,7 +139,7 @@ if (!preg_match('/^usnm_[a-z_]+$/D', $name)
     fwrite(STDERR, "Invalid app-version verification inputs\n"); exit(1);
 }
 $allowed = $kind === "container"
-    ? ["usnm_ocr:docker", "usnm_assess:docker", "usnm_gold:docker", "usnm_quality:docker",
+    ? ["usnm_ndlocr:docker", "usnm_ocr:docker", "usnm_assess:docker", "usnm_gold:docker", "usnm_quality:docker",
        "usnm_surya:docker_mt", "usnm_surya:docker_nvidia_cuda",
        "usnm_qwen:docker_mt_2b", "usnm_qwen:docker_nvidia_cuda_8b", "usnm_qwen_train:docker_nvidia_train"]
     : ($kind === "native"

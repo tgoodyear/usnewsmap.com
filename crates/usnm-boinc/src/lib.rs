@@ -30,6 +30,7 @@ use usnm_store::ObjectStore;
 pub mod assess;
 pub mod gold;
 pub mod handoff;
+pub mod ndlocr;
 pub mod quality;
 pub mod qwen;
 pub mod scans;
@@ -75,7 +76,7 @@ pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         Some(std::fs::Permissions::from_mode(0o644))
     };
-    // Other platforms have no mode bits to set; the web server there is not BOINC's Apache.
+    // The BOINC server is Linux-only, so `None` is fine on other platforms.
     #[cfg(not(unix))]
     let permissions = None;
     atomic_with_permissions(path, bytes, permissions)
@@ -383,8 +384,9 @@ pub async fn export(
             .context("selected title is not published")?;
         let language = ocr_local::enqueue::message_language(row.lang.as_deref(), title_languages)
             .context("page has no mapped detected or title language")?;
-        let profile = engine::route(&language, &installed)
-            .context("no locked Tesseract model for page language")?;
+        let selected = engine::route(&language, &installed)
+            .context("selected engine/profile unavailable on this Tesseract node")?;
+        let profile = selected.profile;
         let now = Utc::now();
         let mut job = Job {
             v: boinc::VERSION,
@@ -407,6 +409,7 @@ pub async fn export(
                 md5: side.md5,
             },
             engine: boinc::Engine {
+                kind: selected.kind,
                 image: opts.image.clone(),
                 version: "5.5.0".into(),
                 profile: profile.clone(),
@@ -527,7 +530,7 @@ pub async fn import(
     let row = usnm_overlay::OverlayRow {
         key: key.clone(),
         batch: record.job.message.batch.clone(),
-        ocr_source: "usnm-tesseract".into(),
+        ocr_source: format!("usnm-{}", record.job.engine.kind.family()),
         ocr_engine: record.job.engine_tag()?.to_string(),
         loc_text: record.job.message.reason.as_str().into(),
         text,

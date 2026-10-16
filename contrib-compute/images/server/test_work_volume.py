@@ -2,7 +2,10 @@
 
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +19,75 @@ ROOT = HERE.parents[2]
 
 
 class WorkVolume(unittest.TestCase):
+    def test_runtime_defaults_preserve_carriage_returns(self):
+        source = (HERE / "bridge-job.sh").read_text().split('if [ "$step" = work-volume ]; then\n', 1)[1]
+        setup = source.split('  python3 "$TEMPLATES/work-volume.py"', 1)[0]
+        for password, escaped in (("internal\rreturn", "internal\\rreturn"),
+                                  ("internal\r\nreturn", "internal\\r\\nreturn"),
+                                  ("trailing\r", "trailing\\r"),
+                                  ("trailing\r\n", "trailing\\r\\n")):
+            with self.subTest(password=repr(password)):
+                with tempfile.TemporaryDirectory(prefix="work-volume-") as directory:
+                    script = '''
+set -eu
+kv_get() { printf '%s\\n' "$SYNTHETIC_PASSWORD" > "$2"; }
+''' + setup + '\ntrap - EXIT\n'
+                    subprocess.run(
+                        ["bash", "-c", script], check=True, capture_output=True,
+                        env={**os.environ, "SECRETS": directory, "DB_HOST": "localhost",
+                             "DB_RUNTIME_USER": "synthetic", "SYNTHETIC_PASSWORD": password},
+                    )
+                    self.assertEqual(
+                        (Path(directory) / "mysql-runtime.cnf").read_bytes(),
+                        ('[client]\nhost="localhost"\nuser="synthetic"\npassword="'
+                         + escaped + '"\n').encode("utf-8"),
+                    )
+
+    def test_runtime_defaults_are_valid_and_private(self):
+        source = (HERE / "bridge-job.sh").read_text().split('if [ "$step" = work-volume ]; then\n', 1)[1]
+        setup = source.split('  python3 "$TEMPLATES/work-volume.py"', 1)[0]
+        with tempfile.TemporaryDirectory(prefix="work-volume-") as directory:
+            directory = Path(directory)
+            password = ' synthetic#;"\\value\twith spaces '
+            script = '''
+set -eu
+kv_get() { printf '%s\\n' "$SYNTHETIC_PASSWORD" > "$2"; }
+''' + setup + '\ntrap - EXIT\n'
+            result = subprocess.run(
+                ["bash", "-c", script], check=True, capture_output=True, text=True,
+                env={**os.environ, "SECRETS": str(directory), "DB_HOST": "localhost",
+                     "DB_RUNTIME_USER": "synthetic", "SYNTHETIC_PASSWORD": password},
+            )
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "")
+            defaults = directory / "mysql-runtime.cnf"
+            self.assertEqual(defaults.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(defaults.read_text(), '[client]\nhost="localhost"\nuser="synthetic"\n'
+                             + 'password' + '=" synthetic#;\\"\\\\value\\twith spaces "\n')
+            if shutil.which("mysql"):
+                parsed = subprocess.run(
+                    ["mysql", f"--defaults-file={defaults}", "--help"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(parsed.returncode, 0)
+            if os.environ.get("USNM_WORK_VOLUME_MYSQL_PORT"):
+                connection = ["mysql", "--protocol=TCP", "--host=127.0.0.1",
+                              f"--port={os.environ['USNM_WORK_VOLUME_MYSQL_PORT']}"]
+                admin = connection[:1] + ["--no-defaults"] + connection[1:] + ["--user=root"]
+                quoted = password.replace("\\", "\\\\").replace("'", "''")
+                subprocess.run(admin, input="CREATE USER 'synthetic'@'%' IDENTIFIED BY '"
+                               + quoted + "';", text=True, capture_output=True, check=True)
+                try:
+                    authenticated = subprocess.run(
+                        connection[:1] + [f"--defaults-file={defaults}"] + connection[1:]
+                        + ["--batch", "--skip-column-names", "--execute=SELECT 1"],
+                        capture_output=True, text=True, check=True,
+                    )
+                    self.assertEqual(authenticated.stdout, "1\n")
+                finally:
+                    subprocess.run(admin, input="DROP USER 'synthetic'@'%';",
+                                   text=True, capture_output=True, check=True)
+
     def test_emits_one_aggregate_json_line(self):
         values = list(range(len(work_volume.FIELDS)))
         result = subprocess.CompletedProcess([], 0, "\t".join(map(str, values)) + "\n")
@@ -46,6 +118,9 @@ class WorkVolume(unittest.TestCase):
         self.assertNotIn("email_addr", command[-1])
         self.assertNotIn("hostid", command[-1])
         self.assertNotIn("IDENTITY_HEADER", line)
+        for option in ("--ssl", "--ssl-verify-server-cert",
+                       "--ssl-ca=/usr/local/share/usnm/mysql-ca.pem"):
+            self.assertIn(option, command)
 
     def test_empty_tables_emit_zero_counts(self):
         result = subprocess.CompletedProcess([], 0, "\t".join(["0"] * len(work_volume.FIELDS)))
@@ -96,6 +171,46 @@ class WorkVolume(unittest.TestCase):
                       "server_state.other"):
             self.assertIn(state, states)
         self.assertIn("bin(TimeGenerated, {TimeRange:grain})", chart)
+
+
+@unittest.skipUnless(os.environ.get("USNM_WORK_VOLUME_MYSQL_PORT"),
+                     "set USNM_WORK_VOLUME_MYSQL_PORT for the isolated MySQL fixture")
+class WorkVolumeSQL(unittest.TestCase):
+    # Only the columns read by QUERY, with types from BOINC 22bbebe0 db/schema.sql.
+    # Temporary tables disappear on disconnect; no durable schema is modified.
+    SCHEMA = """
+CREATE TEMPORARY TABLE workunit (
+  need_validate SMALLINT NOT NULL, assimilate_state INTEGER NOT NULL,
+  file_delete_state INTEGER NOT NULL);
+CREATE TEMPORARY TABLE result (server_state INTEGER NOT NULL);
+CREATE TEMPORARY TABLE `user` (expavg_credit DOUBLE NOT NULL);
+CREATE TEMPORARY TABLE host (expavg_credit DOUBLE NOT NULL);
+"""
+
+    def query(self, fixture=""):
+        result = subprocess.run(
+            ["mysql", "--no-defaults", "--protocol=TCP", "--host=127.0.0.1",
+             f"--port={os.environ['USNM_WORK_VOLUME_MYSQL_PORT']}", "--user=root",
+             "--database=mysql", "--batch", "--raw", "--skip-column-names"],
+            input=self.SCHEMA + fixture + work_volume.QUERY + ";",
+            capture_output=True, text=True, check=True,
+        )
+        [line] = result.stdout.splitlines()
+        return list(map(int, line.split("\t")))
+
+    def test_empty_tables(self):
+        self.assertEqual(self.query(), [0] * len(work_volume.FIELDS))
+
+    def test_all_states_and_recent_credit_threshold(self):
+        values = self.query("""
+INSERT INTO workunit VALUES (0,0,0),(1,1,1),(1,2,2),(0,9,3),(1,1,9);
+INSERT INTO result VALUES (1),(2),(4),(5),(9),(0),(4);
+INSERT INTO `user` VALUES (0),(1),(1.01),(2);
+INSERT INTO host VALUES (-1),(1),(1.01);
+""")
+        self.assertEqual(values, [5, 2, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1,
+                                  7, 1, 1, 2, 1, 2, 2, 1])
+        self.assertEqual(work_volume.payload(values)["results"]["total"], 7)
 
 
 if __name__ == "__main__":

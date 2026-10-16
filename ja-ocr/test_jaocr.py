@@ -198,6 +198,22 @@ class Resilience(unittest.TestCase):
             self.assertEqual(status["done"]["pages"], 1)
             self.assertIsNone(status["eta"])
 
+    def test_boinc_alto_names_count_as_completed_without_hiding_legacy(self):
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            rows = [{"doc_id": f"sn1_1945-01-01_ed-1_seq-{s}", "lccn": "sn1", "date": "1945-01-01",
+                     "edition": 1, "seq": s} for s in (1, 2)]
+            cur.write(f"ocr-ja/alto/{rows[0]['doc_id']}.xml", b"<alto/>")
+            cur.write(f"ocr-ja/alto/{rows[1]['doc_id']}.boinc-{'a' * 64}.xml", b"<alto/>")
+            self.assertEqual(jaocr.alto_pages(cur), {r["doc_id"] for r in rows})
+            self.assertEqual(jaocr.progress(cur, rows)["done"], {"pages": 2, "issues": 1})
+            cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
+            from unittest.mock import patch
+            with patch.object(jaocr, "done_pages", return_value={r["doc_id"] for r in rows}), \
+                 patch.object(jaocr, "ocr_issue") as ocr, patch.object(jaocr, "ndlocr_version", return_value="test"):
+                jaocr.run(cur, cur, jaocr.Path("/unused"), None, "test")
+                ocr.assert_not_called()
+
     def test_progress_counts_pages_with_alto(self):
         with tempfile.TemporaryDirectory() as d:
             cur = jaocr.LocalStore(d)

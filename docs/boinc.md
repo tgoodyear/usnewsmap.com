@@ -9,7 +9,10 @@ A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
 (#456); see [boinc-assessment.md](boinc-assessment.md). A third, `usnm_gold`,
 scores a host's engine on public ground truth ([Gold check](#gold-check)).
 A fourth, `usnm_surya`, runs Surya 2 on volunteer CPUs and NVIDIA GPUs (#516);
-see [boinc-surya.md](boinc-surya.md). A fifth and sixth, `usnm_quality` and
+see [boinc-surya.md](boinc-surya.md). The dedicated `usnm_ndlocr` CPU app stages
+Japanese pages through the NDLOCR-Lite/default route, validates two readings by
+character similarity and collects into curated `ocr-ja`; see
+[boinc-ndlocr-lite.md](boinc-ndlocr-lite.md). A fifth and sixth, `usnm_quality` and
 `usnm_qwen`, score per-page OCR quality without ground truth and transcribe
 deterministic word crops with Qwen3-VL (#522); see
 [boinc-quality.md](boinc-quality.md).
@@ -53,7 +56,22 @@ explicit page selection + cached scans
 
 First build the existing engine image. Keep its pinned base, package snapshot,
 and `models.lock`, including `frak2021`; the BOINC worker verifies the selected
-models' bytes at execution. Then build the BOINC image using that engine image's
+models' bytes at execution. The lock includes Spanish (`spa`), French (`fra`),
+Italian (`ita`), Yiddish (`yid`, then `heb` fallback), Hebrew (`heb`), Danish
+(`dan`), Norwegian (`nor`, for `nor`/`nob`/`nno`), Finnish (`fin`), Swedish (`swe`),
+Lithuanian (`lit`), Slovenian (`slv`), Hungarian (`hun`) and Slovak (`slk`).
+These thirteen tessdata_best additions are pinned to the same revision as the
+existing Apache-2.0 models and add 126,180,270 bytes (120.33 MiB) of model data
+to both images before compression. The BOINC Containerfile inherits them from
+the Tesseract image; it has no separate model list.
+
+After changing the lock, republish **both** images. Run and score a pilot per
+new language with the existing quality checks (including #522) before replacing
+LoC text. Yiddish also needs the reader work in #328; Danish and Norwegian
+1880s–1910s may need Fraktur routing (#325). Adding models alone does not
+perform these operational steps.
+
+Then build the BOINC image using that engine image's
 immutable digest (these examples run from the repository root):
 
 ```sh
@@ -280,7 +298,9 @@ identity on the deployed filesystem.
 
 The server bridge wrapper submits directly and preserves the CLI's exit status.
 It does not scan the download or hand-off trees to broaden permissions after
-submission. Operator hand-offs need access to the private journal's owner.
+submission. The hand-off directory (`$HANDOFF_DIR`) stays private: `submit` and
+`reconcile` run as the same user, and nothing reads that directory under another
+identity. Operator hand-offs therefore need access to the journal owner's files.
 Deploy the updated bridge image containing both this CLI and wrapper together.
 
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
@@ -918,3 +938,27 @@ cgroup limits. Keep the production issuance/campaign separate from this
 documentation checklist.
 
 Volunteers' steps are in [boinc-volunteer.md](boinc-volunteer.md).
+
+### Engine routing
+
+Production selection is shared through `usnm_ocr_contract::routing::EngineKind`
+and `EngineRoute { kind, profile }`. `EngineKind::for_language` chooses
+`NdlocrLite` (`ndlocr-lite`) for `jpn` and `Tesseract` for every other language.
+`usnm_ocr_worker::engine::candidates` exposes engine/profile preferences
+(Japanese: `default`); `route(language, installed)` resolves only capabilities
+of a Tesseract node, returning an `EngineRoute` or `None`. Sampling's existing
+`no_model` counter includes an unavailable selected engine, not just missing
+Tesseract weights. There is no Japanese fallback to Tesseract.
+
+`boinc::Engine.kind` carries that selection through job identity, validation,
+result matching and the `ocr_engine` family. It defaults to Tesseract and is
+omitted when serializing Tesseract jobs, preserving existing JSON, identity
+hashes and ledger tags. Tesseract-only BOINC workers reject other kinds before
+checking models or starting Tesseract. The dedicated NDLOCR-Lite worker validates
+`job.engine.kind`, its pinned image, version, profile and model digest; use
+`usnm-boinc ndlocr stage/submit/collect`, not the native Tesseract exporter.
+For on-prem contract adapters, the hello's family must match the selected
+engine and its models must pass the catalog's existing production gate. The
+historical survey-only NDLOCR-Lite entry remains separate from the pinned
+production entry.
+Dashboard routes retain the engine/version as well as the profile.

@@ -124,6 +124,10 @@ impl Job {
     pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.v == VERSION, "unsupported assessment job version");
         ensure!(
+            self.engine.kind == crate::routing::EngineKind::for_language(&self.language),
+            "engine does not match language route"
+        );
+        ensure!(
             is_sha256(&self.id) && self.id == self.identity()?,
             "job identity mismatch"
         );
@@ -333,6 +337,7 @@ mod tests {
 
     fn engine() -> Engine {
         Engine {
+            kind: crate::routing::EngineKind::Tesseract,
             image: format!("sha256:{}", "a".repeat(64)),
             version: "5.5.0".into(),
             profile: "eng".into(),
@@ -478,6 +483,10 @@ mod tests {
             engine_base: format!("sha256:{}", "f".repeat(64)),
         };
         j.id = j.identity().unwrap();
+        assert_eq!(
+            j.id,
+            "15d9ec732d62ea0f1c92a9951435ea3f3067bb09398aa0a6e34c780522544326"
+        );
         j.validate().unwrap();
         j.mode = Mode::Ocr;
         assert!(j.validate().is_err());

@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 usnm-core.workspace = true
+usnm-ocr-adapter = { path = "../usnm-ocr-adapter" }
 usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-ocr-quality.workspace = true
 usnm-ocr-survey.workspace = true

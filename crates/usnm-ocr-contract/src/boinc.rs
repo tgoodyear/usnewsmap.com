@@ -67,6 +67,11 @@ pub struct Scan {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Engine {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::routing::EngineKind::is_tesseract"
+    )]
+    pub kind: crate::routing::EngineKind,
     /// Full digest of the released BOINC worker image, not the base image.
     pub image: String,
     pub version: String,
@@ -110,6 +115,10 @@ impl Job {
     pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.v == VERSION, "unsupported BOINC job version");
         self.message.validate()?;
+        ensure!(
+            self.engine.kind == crate::routing::EngineKind::for_language(&self.message.language),
+            "engine does not match language route"
+        );
         ensure!(
             self.batch_version > 0 && self.batch_version <= 32767,
             "invalid batch version"
@@ -171,7 +180,7 @@ impl Job {
             .strip_prefix("sha256:")
             .ok_or_else(|| anyhow::anyhow!("invalid image digest"))?;
         Ok(OcrEngineTag::new(Fields {
-            family: "tesseract",
+            family: self.engine.kind.family(),
             version: &self.engine.version,
             profile: &self.engine.profile,
             image: Digest::short(image)?,
@@ -220,5 +229,68 @@ impl ResultManifest {
             bail!("text is not UTF-8");
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "pipeline"))]
+mod routing_tests {
+    use super::*;
+    use crate::routing::EngineKind;
+
+    #[test]
+    fn legacy_tesseract_job_is_byte_identical() {
+        let legacy = include_str!("fixtures/boinc-tesseract.json").trim_end();
+        let job: Job = serde_json::from_str(legacy).unwrap();
+        assert_eq!(job.engine.kind, EngineKind::Tesseract);
+        assert_eq!(serde_json::to_string(&job).unwrap(), legacy);
+        assert_eq!(
+            job.identity().unwrap(),
+            "05a1b237ca490126d365648bed704bd0e04c72979922ef98d86514e9b79de777"
+        );
+        job.validate().unwrap();
+        assert_eq!(job.engine_tag().unwrap().to_string(),
+            "tesseract/5.5.0 profile=eng image=sha256:aaaaaaaaaaaa models=sha256:0123456789ab route=boinc@r1 contract=0");
+    }
+
+    #[test]
+    fn engine_kind_is_bound_to_identity_validation_results_and_tag() {
+        let mut job: Job =
+            serde_json::from_str(include_str!("fixtures/boinc-tesseract.json")).unwrap();
+        job.message.language = "jpn".into();
+        job.id = job.identity().unwrap();
+        assert!(job.validate().is_err());
+        let tesseract_id = job.id.clone();
+        job.engine.kind = EngineKind::NdlocrLite;
+        assert_ne!(job.identity().unwrap(), tesseract_id);
+        job.engine.version = "1.0.0".into();
+        job.engine.profile = "default".into();
+        assert!(job.validate().is_err()); // stale identity
+        job.id = job.identity().unwrap();
+        job.validate().unwrap();
+        let wire = serde_json::to_string(&job).unwrap();
+        assert!(wire.contains("\"kind\":\"ndlocr-lite\""));
+        assert_eq!(serde_json::from_str::<Job>(&wire).unwrap(), job);
+        assert!(job
+            .engine_tag()
+            .unwrap()
+            .to_string()
+            .starts_with("ndlocr-lite/1.0.0 profile=default "));
+        let result = ResultManifest {
+            v: VERSION,
+            job_id: job.id.clone(),
+            scan_sha256: job.scan.sha256.clone(),
+            engine: job.engine.clone(),
+            text_sha256: sha256(b"text"),
+            alto_sha256: sha256(b"alto"),
+            elapsed_ms: 1,
+            completed_at: "2026-10-10T12:00:00Z".into(),
+        };
+        result.matches(&job, b"text", b"alto").unwrap();
+        let mut wrong = result;
+        wrong.engine.kind = EngineKind::Tesseract;
+        assert!(wrong.matches(&job, b"text", b"alto").is_err());
+        job.message.language = "eng".into();
+        job.id = job.identity().unwrap();
+        assert!(job.validate().is_err());
     }
 }

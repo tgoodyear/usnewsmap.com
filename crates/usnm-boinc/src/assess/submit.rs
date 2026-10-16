@@ -103,13 +103,7 @@ pub async fn stage_file(project: &Path, physical: &str, bytes: &[u8]) -> anyhow:
     } else {
         project.join(path)
     };
-    atomic(&path, bytes)?;
-    #[cfg(unix)]
-    {
-        // Apache serves the download tree through the BOINC group.
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664))?;
-    }
+    crate::atomic_download(&path, bytes)?;
     Ok(())
 }
 

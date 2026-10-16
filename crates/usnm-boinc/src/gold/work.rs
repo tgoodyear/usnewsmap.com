@@ -102,6 +102,7 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         .collect();
     for p in profiles {
         crate::worker::check_models(&boinc::Engine {
+            kind: engine::EngineKind::Tesseract,
             image: job.engine.image.clone(),
             version: job.engine.version.clone(),
             profile: p.to_string(),
