@@ -20,8 +20,9 @@ ROOT = HERE.parents[2]
 
 class WorkVolume(unittest.TestCase):
     def test_runtime_defaults_preserve_carriage_returns(self):
-        source = (HERE / "bridge-job.sh").read_text().split('if [ "$step" = work-volume ]; then\n', 1)[1]
-        setup = source.split('  python3 "$TEMPLATES/work-volume.py"', 1)[0]
+        source = (HERE / "bridge-job.sh").read_text().split(
+            'if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then\n', 1)[1]
+        setup = source.split('  if [ "$step" = batch-inventory ]; then', 1)[0]
         for password, escaped in (("internal\rreturn", "internal\\rreturn"),
                                   ("internal\r\nreturn", "internal\\r\\nreturn"),
                                   ("trailing\r", "trailing\\r"),
@@ -44,8 +45,9 @@ kv_get() { printf '%s\\n' "$SYNTHETIC_PASSWORD" > "$2"; }
                     )
 
     def test_runtime_defaults_are_valid_and_private(self):
-        source = (HERE / "bridge-job.sh").read_text().split('if [ "$step" = work-volume ]; then\n', 1)[1]
-        setup = source.split('  python3 "$TEMPLATES/work-volume.py"', 1)[0]
+        source = (HERE / "bridge-job.sh").read_text().split(
+            'if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then\n', 1)[1]
+        setup = source.split('  if [ "$step" = batch-inventory ]; then', 1)[0]
         with tempfile.TemporaryDirectory(prefix="work-volume-") as directory:
             directory = Path(directory)
             password = ' synthetic#;"\\value\twith spaces '
