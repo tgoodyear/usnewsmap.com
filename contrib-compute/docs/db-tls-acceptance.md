@@ -293,3 +293,27 @@ Production `require_secure_transport` remains OFF. Keep #464 open until these
 remaining gates and a reviewed migration plan are satisfied. #631 remains draft;
 preserve current production pins. The paid dev/DNS proposal in #634 remains
 unapproved; this fixture does not authorize it, trust calibration or node rollout.
+
+## Private managed-client account attachment
+
+`scripts/boinc/client_account.py` uses the stock BOINC GUI-RPC protocol on loopback.
+Preview with `--data-dir`, `--port`, `--expected-user-id`, and
+`--expected-user-name`; it prints only whitelisted attribution/status fields, not
+the account name, authenticators, or raw RPC replies. Explicit `--apply --key-file`
+accepts only a regular, nonsymlink, private weak-key file matching the expected
+user ID. Never pass the key itself as an argument. The canonical production URL is
+`https://boinc.usnewsmap.com/`; legacy/duplicate attachments require reconciliation
+instead of silently creating a second project.
+
+The supported client rejects attaching an already attached URL. For an explicitly
+authorized managed-client rejoin, the helper first requests no new tasks and
+refuses to detach while any project result or scheduler RPC remains. Reinvoke
+after draining; it does not abort, reset, or discard existing work. A drained
+rejoin requires repeated quiet snapshots, uses the supplied weak key only in the
+private RPC payload, preserves an existing no-new-tasks preference, and waits a
+bounded time for the actual scheduler's expected user/name and nonzero host ID.
+Account-manager projects are refused. Other projects, client resource preferences,
+and historical server records are not rewritten. A standard detach can remove
+unused project downloads; inventory caches and obtain the explicit rejoin
+authorization before using it. This does not provision resources, activate the
+optional OCR-node profile, grant GPU consent, or change server pins/TLS policy.
