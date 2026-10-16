@@ -10,6 +10,7 @@ pub mod hosts;
 pub mod html;
 pub mod net;
 pub mod nodes;
+pub mod pipeline;
 pub mod sset;
 pub mod tail;
 pub mod view;
@@ -36,6 +37,7 @@ use crate::sset::Ssets;
 use crate::view::{Settings, View};
 
 pub struct App {
+    pub pipeline: Mutex<pipeline::Pipeline>,
     pub fetch: Mutex<Fetch>,
     pub nodes: Mutex<Nodes>,
     pub hosts: Mutex<Hosts>,
@@ -56,6 +58,7 @@ impl App {
     /// Read the files: the fetcher's, the hosts', the seed plan. Blocking.
     pub fn poll_files(&self) {
         let now = Utc::now();
+        self.pipeline.lock().expect("pipeline lock").poll(now);
         self.fetch.lock().expect("fetch lock").poll(now);
         self.hosts.lock().expect("hosts lock").poll(now);
         if let Some(p) = &self.seed_plan_path {
@@ -104,15 +107,18 @@ impl App {
         let hosts = self.hosts.lock().expect("hosts lock");
         let ssets = self.ssets.lock().expect("ssets lock");
         let seed = self.seed_plan.lock().expect("seed lock").clone();
-        view::build(
+        let now = Utc::now();
+        let mut v = view::build(
             &mut fetch,
             &nodes,
             &hosts,
             &ssets,
             seed,
             &self.settings,
-            Utc::now(),
-        )
+            now,
+        );
+        v.pipeline = self.pipeline.lock().expect("pipeline lock").view(now);
+        v
     }
 }
 
@@ -159,6 +165,7 @@ async fn api(State(app): State<Arc<App>>, Path(part): Path<String>) -> Response 
     };
     let body = match part {
         "view" => serde_json::to_value(&v),
+        "pipeline" => serde_json::to_value(&v.pipeline),
         "hosts" => serde_json::to_value(&v.hosts),
         "fetch" => serde_json::to_value(&v.fetch),
         "nodes" => serde_json::to_value(&v.nodes),
@@ -264,6 +271,7 @@ mod tests {
 
     fn app(dir: &std::path::Path) -> Arc<App> {
         Arc::new(App {
+            pipeline: Mutex::new(pipeline::Pipeline::new(None, 900)),
             fetch: Mutex::new(Fetch::new(dir.to_owned(), None)),
             nodes: Mutex::new(Nodes::open(dir.join("state"), &[]).unwrap()),
             hosts: Mutex::new(Hosts::new(Vec::new())),
@@ -313,6 +321,55 @@ mod tests {
         body: &str,
     ) -> (StatusCode, String) {
         call_on(router(app), from, method, uri, body).await.0
+    }
+
+    #[tokio::test]
+    async fn pipeline_api_is_read_only_and_matches_the_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let now = Utc::now();
+        let path = dir.path().join("pipeline.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&pipeline::tests::fixture(now)).unwrap(),
+        )
+        .unwrap();
+        *a.pipeline.lock().unwrap() = pipeline::Pipeline::new(Some(path), 900);
+        a.poll_files();
+        let (status, body) =
+            call(a.clone(), "198.51.100.50", "GET", "/api/pipeline.json", "").await;
+        assert_eq!(status, StatusCode::OK);
+        let mut p: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(p["stale"], false);
+        assert_eq!(p["snapshot"]["stages"][0]["count"], 1234);
+        assert!(p["retrieved_at"].is_string());
+        let (_, view) = call(a.clone(), "198.51.100.50", "GET", "/api/view.json", "").await;
+        let mut view: serde_json::Value = serde_json::from_str(&view).unwrap();
+        for pipeline in [&mut p, &mut view["pipeline"]] {
+            pipeline.as_object_mut().unwrap().remove("age_secs");
+            for stage in pipeline["stage_freshness"].as_array_mut().unwrap() {
+                stage.as_object_mut().unwrap().remove("age_secs");
+            }
+        }
+        assert_eq!(view["pipeline"], p);
+        assert_eq!(
+            call(
+                a.clone(),
+                "198.51.100.50",
+                "PUT",
+                "/api/pipeline.json",
+                "{}"
+            )
+            .await
+            .0,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+        assert_eq!(
+            call(a, "203.0.113.3", "GET", "/api/pipeline.json", "")
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
     }
 
     async fn call_on(

@@ -310,8 +310,11 @@ enum Command {
         /// times, outcome; no text), appended to across restarts.
         #[arg(long, env = "USNM_OCR_STATUS_JOURNAL")]
         status_journal: Option<PathBuf>,
+        /// Durable local page/engine execution JSON (no OCR text); unset disables capture.
+        #[arg(long, env = "USNM_OCR_RUN_METADATA_DIR")]
+        run_metadata_dir: Option<PathBuf>,
         #[command(flatten)]
-        engine: EngineArgs,
+        engine: Box<EngineArgs>,
     },
     /// Publish the scan server's fetched list once (12 Step 11): read
     /// `<scan server>/index/full.jsonl` and write the full-size scans'
@@ -563,6 +566,54 @@ mod cli_tests {
     use super::*;
 
     #[test]
+    fn run_metadata_flag_and_environment_are_opt_in() {
+        const NAME: &str = "USNM_OCR_RUN_METADATA_DIR";
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var(NAME, value),
+                    None => std::env::remove_var(NAME),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os(NAME));
+        std::env::remove_var(NAME);
+        let args = [
+            "usnm-ocr-worker",
+            "run",
+            "--queue-url",
+            "queue",
+            "--out-url",
+            "output",
+            "--node-id",
+            "node",
+        ];
+        let path = |cli: Cli| match cli.command {
+            Command::Run {
+                run_metadata_dir, ..
+            } => run_metadata_dir,
+            _ => panic!("expected run"),
+        };
+        assert!(path(Cli::try_parse_from(args).unwrap()).is_none());
+        std::env::set_var(NAME, "environment-metadata");
+        assert_eq!(
+            path(Cli::try_parse_from(args).unwrap()),
+            Some(PathBuf::from("environment-metadata"))
+        );
+        assert_eq!(
+            path(
+                Cli::try_parse_from(
+                    args.into_iter()
+                        .chain(["--run-metadata-dir", "flag-metadata"])
+                )
+                .unwrap()
+            ),
+            Some(PathBuf::from("flag-metadata"))
+        );
+    }
+
+    #[test]
     fn drain_on_stop_can_be_enabled_through_environment() {
         struct RestoreEnv(Option<std::ffi::OsString>);
 
@@ -724,6 +775,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             status_listen,
             status_allow,
             status_journal,
+            run_metadata_dir,
             engine,
         } => {
             check_node_id(&node_id)?;
@@ -746,6 +798,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 shutdown_grace: Duration::from_secs(shutdown_grace_secs),
                 drain_on_stop,
                 page_timeout: Duration::from_secs(engine.page_timeout_secs),
+                run_metadata_dir,
                 ..Config::default()
             };
             if Duration::from_secs(engine.page_timeout_secs) >= cfg.budget() {

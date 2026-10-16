@@ -95,6 +95,17 @@ struct Cli {
     /// A seed plan to show: a flat JSON object.
     #[arg(long, env = "USNM_OCRDASH_SEED_PLAN")]
     seed_plan: Option<PathBuf>,
+    /// Local corpus-catalog JSON snapshot, read-only; no database or cloud access.
+    #[arg(long, env = "USNM_OCRDASH_PIPELINE_SNAPSHOT")]
+    pipeline_snapshot: Option<PathBuf>,
+    /// Maximum age of source evidence in seconds (not the snapshot generation time).
+    #[arg(
+        long,
+        env = "USNM_OCRDASH_PIPELINE_MAX_AGE_SECS",
+        default_value_t = 900,
+        value_parser = clap::value_parser!(u64).range(1..=604800)
+    )]
+    pipeline_max_age_secs: u64,
     /// The Azure workbook of the OCR nodes, linked for what only Azure has.
     #[arg(long, env = "USNM_OCRDASH_WORKBOOK_URL")]
     workbook_url: Option<String>,
@@ -154,6 +165,10 @@ async fn main() -> anyhow::Result<()> {
         sset_pushers.insert(name, Allow::new(vec![source]));
     }
     let app = Arc::new(App {
+        pipeline: Mutex::new(usnm_ocr_dash::pipeline::Pipeline::new(
+            cli.pipeline_snapshot.clone(),
+            cli.pipeline_max_age_secs,
+        )),
         fetch: Mutex::new(Fetch::new(cli.scans.clone(), cli.manifest.clone())),
         nodes: Mutex::new(Nodes::open(cli.state_dir.clone(), &workers)?),
         hosts: Mutex::new(Hosts::new(cli.host_file.clone())),

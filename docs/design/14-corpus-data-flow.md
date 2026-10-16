@@ -186,3 +186,31 @@ identities, interrupted transactions, out-of-order events, missing sources,
 future/stale timestamps, bounded filtered queries, HTML escaping and explicit
 error states. Deployment must verify live JSON and HTML, unchanged TLS/access
 controls, current node inventory, and restart persistence.
+
+## Initial operator interface
+
+The catalog and observer use Python's standard library. Evidence ingestion and
+query serving are separate commands:
+
+```bash
+python3 scripts/data_catalog.py --db catalog.sqlite ingest --batch evidence.jsonl
+python3 scripts/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
+python3 scripts/data_catalog.py --db catalog.sqlite serve --host 127.0.0.1 --port 8764
+```
+
+Retain the imported evidence files: rebuilding means replaying them into a new
+database, not querying the upstream source again. Keep evidence, SQLite and its
+WAL on local persistent storage. The optional `usnm-data-catalog.service` exposes
+only loopback queries; use an administrative SSH tunnel rather than opening a
+public port.
+
+`data_flow_observer.py` joins the catalog snapshot to local OCR and public BOINC
+counters. Its optional five-minute timer writes
+`/var/lib/usnm-data-flow/pipeline.json`; the dashboard reads that file and serves
+`/api/pipeline.json`. A fresh aggregate refresh does not refresh old page
+observations. The timer does not ingest page records or allocate work.
+
+The existing Cold-tier scan archive is a separate recovery copy, not the public
+BOINC input mirror. Its documented complete verification at
+2026-10-16T11:26:03Z covered 148,127 scans. A later partial verification or local
+file stat does not replace that dated acceptance or prove current cloud presence.
