@@ -714,8 +714,9 @@ a summary per source and overall, the `--limit` if one was given (a limited
 run is partial), and the crops that were skipped with the
 reason (not staged, checksum mismatch, no installed model, engine error,
 over the limit). It
-holds no page text and no transcription. The project ships no BLN600 crop and
-no LoC image: the client gets them from their publishers and cuts them itself.
+holds no page text and no transcription. The project does not ship derived
+BLN600 crops or LoC crops: it mirrors the unchanged original files from the
+publisher/LoC fetch cache, and the client cuts the crops locally.
 
 ### As BOINC work: `usnm_gold`
 
@@ -725,26 +726,47 @@ its checks are `usnm_boinc::gold::job`; the code is `crates/usnm-boinc/src/gold/
 
 **Inputs and delivery.** A unit's inputs, in input template order:
 
-| Open name              | From                                                                     | On the host  |
-| ---------------------- | ------------------------------------------------------------------------ | ------------ |
-| `gold.json`            | the project server                                                       | per unit     |
-| `bundle.tar`           | the project server (shareable files only)                                | sticky, kept |
-| `<sha256>.zip`, `.jpg` | the publisher: BLN600's zip from figshare, page images from tile.loc.gov | sticky, kept |
+| Open name              | From                                                               | On the host  |
+| ---------------------- | ------------------------------------------------------------------ | ------------ |
+| `gold.json`            | the project server                                                 | per unit     |
+| `bundle.tar`           | the project server (shareable files only)                          | sticky, kept |
+| `<sha256>.zip`, `.jpg` | the project server's mirror of figshare and tile.loc.gov originals | sticky, kept |
 
-The originals are `create_work --remote_file URL BYTES MD5` inputs: the BOINC
-client downloads each from the publisher's URL and checks its size and md5, so
-the project server never stores or serves them. That keeps BLN600 (CC BY-NC-ND)
-and the LoC images where the licence and #457 put them. The tar and originals
-are marked `<sticky/>` and `<no_delete/>` in the input template, intended for
-reuse across a host's gold units; live client evidence has not confirmed that
-the generated work retains these flags or avoids repeat downloads (see the
-acceptance record below). All are `<copy_file/>`, because the container sees
-only the slot. The open names are the cache names `gold-run` reads, so the slot
-is the cache and the run step needs no network: the container keeps
-`--network=none` from `job.toml`. The worker checks every input's size and
-sha256 against the job, the manifest's digest and version, the Tesseract
-version and base image, and the model bytes of each profile it used, then
-writes `gold-result.json`.
+`gold prepare` downloads the originals into the campaign cache and records
+their sizes, MD5s and SHA-256s in `prepared.json`. Before creating work,
+`gold submit` verifies each cached file against those values and mirrors it
+once into the BOINC project's ordinary download hierarchy under a
+content-addressed physical name. `create_work` receives those staged filenames,
+not `--remote_file` URLs; the volunteer client transfers the project copy,
+not the publisher copy. A pre-existing mirror file must match the prepared
+manifest or submission stops without replacing it.
+
+The [Figshare v2 record](https://doi.org/10.15131/shef.data.25439023.v2)
+identifies CC BY-NC-ND 4.0 and credits Callum Booth, Alan Thomas and Robert
+Gaizauskas. The [CC BY-NC-ND 4.0 deed](https://creativecommons.org/licenses/by-nc-nd/4.0/deed.en)
+and [legal code](https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode.en)
+describe sharing subject to NonCommercial use, appropriate credit and a license
+link, and do not permit sharing adaptations. The staged zip is copied
+unchanged. The bundle's `licenses/bln600/` directory preserves the source
+`LICENSE` and `readme.md`, plus `SOURCE.json` and `ATTRIBUTION.txt`; the bundle
+is delivered as a separate sticky input alongside the zip. This records the
+published conditions; the locked v1 `SOURCE.json` is retained as historical
+source metadata, not a legal determination or confirmation that a particular
+deployment qualifies as NonCommercial. Before enabling a mirror, the operator
+must verify the project and hosting use against the source terms.
+Do not distribute BLN600-derived crops or re-encoded images. The LoC images
+are likewise transferred from the verified mirror.
+
+The tar and originals are marked `<sticky/>` and `<no_delete/>` in the input
+template, intended for reuse across a host's gold units. Live client evidence
+has not confirmed that the generated work retains these flags or avoids repeat
+downloads (see the acceptance record below). All are `<copy_file/>`, because
+the container sees only the slot. Their open names match the cache names
+`gold-run` reads, so the slot is the cache and the run step needs no network:
+the container keeps `--network=none` from `job.toml`. The worker checks every
+input's size and sha256 against the job, the manifest's digest and version, the
+Tesseract version and base image, and the model bytes of each profile it used,
+then writes `gold-result.json`.
 
 **Result.** `gold-result.json` is the report above, run on the whole bundle
 (no `--limit`), with a `boinc` block: job id, worker image and base digests,
@@ -806,6 +828,8 @@ scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v
 ```
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
+These commands describe the code path; no production mirror or campaign is
+enabled by this change.
 
 A unit left with a `submitting` marker is handled as for the assessment.
 
@@ -925,18 +949,19 @@ or runtime detail below.
 
 | Acceptance check                                                                             | Evidence and status                                                                                                                                                                                                                                                                                            |
 | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Figshare redirect, BLN600 MD5 and bridge access to figshare / tile.loc.gov                   | **Passed end to end:** the campaign prepared the publisher inputs and valid tasks scored the BLN600 and LoC-backed samples. The worker's input hash checks and server validation passed.                                                                                                                       |
+| Legacy campaign: publisher fetch, BLN600 MD5 and bridge access to figshare / tile.loc.gov    | **Passed end to end on 14 October:** the campaign prepared publisher inputs and valid tasks scored BLN600 and LoC-backed samples. This predates project mirroring; it is not mirror acceptance evidence.                                                                                                       |
 | Wrapper slot contains `init_data.xml`                                                        | **Passed end to end:** accepted reports carried host IDs 2 and 3.                                                                                                                                                                                                                                              |
 | Validator finds the expected bundle data                                                     | **Passed in production; mechanism unverified:** `script_validator` accepted all six reports. The run did not establish whether `PROJECT_DIR` and `PROJECT` were present or the fallback/`USNM_GOLD_EXPECTED` path was used.                                                                                    |
-| `<sticky/>` / `<no_delete/>` survive `create_work --remote_file`; a second unit reuses files | **Partly verified:** production WUs 1 and 4 retain both flags in their database XML (16 October 2026). Each host returned multiple valid units, but no transfer log or before/after cache record established that later units avoided downloads.                                                               |
+| `<sticky/>` / `<no_delete/>` survive `create_work --remote_file`; a second unit reuses files | **Partly verified:** production WUs 1 and 4 retain both flags in their database XML (16 October 2026). No transfer log or before/after cache record established that later units avoided downloads.                                                                                                            |
+| Current ordinary-file mirror path                                                            | **Not deployed or live-tested:** `gold submit` verifies originals against `prepared.json` and stages them as ordinary project downloads; repeat-unit cache behavior still needs client transfer evidence.                                                                                                      |
 | Real-host duration and resource use                                                          | **Partly measured:** two Gold results in the related live acceptance recorded 163.618 s elapsed each; the host's cgroup limits were 1 CPU, 1.5 GiB memory, no swap and 64 PIDs. Peak memory and disk consumption were not measured, so `rsc_fpops_est=5e12` remains a guess.                                   |
 | Volunteer guide on a clean Debian/Ubuntu host                                                | **Debian host readiness passed:** clean Debian 13 x86-64 full VM, official BOINC 8.2.13, Podman 5.4.2 and AppArmor enabled; setup and restart passed mandatory slot, isolation, kernel-limit and pause/resume probes (16 October 2026). No project attached; new task acceptance and Ubuntu remain unverified. |
 
 For a repeatable acceptance record, retain per-host and per-workunit evidence for
 these same checks: result upload and validation; the result's non-null host ID
 matched to the server's canonical host; client transfer/cache evidence across
-two units on one host; publisher-input hash checks; validator success and how it
-resolved its expected-data directory; `gold-prepare` completion; task elapsed
+two units on one host; mirrored-file hashes against `prepared.json`; validator
+success and how it resolved its expected-data directory; `gold-prepare` completion; task elapsed
 time, peak memory and disk; and the clean-host guide's command output. Do not
 infer cache reuse from multiple successful tasks or infer peak resource use from
 cgroup limits. Keep the production issuance/campaign separate from this

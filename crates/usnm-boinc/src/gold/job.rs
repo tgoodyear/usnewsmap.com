@@ -2,9 +2,9 @@
 //! engine on the public gold bundle and returns counts only (no page text, no transcription).
 //!
 //! The workunit's inputs are the job (`gold.json`), the bundle tar, and the original files the
-//! bundle names (the BLN600 zip, Library of Congress page images). The BOINC client downloads
-//! the originals from their publishers, not from the project server, and keeps them, and the
-//! tar, as sticky files, so a host fetches each once. The run step has no network.
+//! bundle names (the BLN600 zip, Library of Congress page images). The project mirrors verified
+//! originals into its download tree; BOINC clients receive them as sticky project downloads.
+//! The run step has no network.
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 use usnm_ocr_contract::boinc::{is_sha256, sha256};

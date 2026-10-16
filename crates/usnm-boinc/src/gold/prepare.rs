@@ -2,12 +2,12 @@
 //!
 //! Verifies the bundle, then fetches each original file it names (the BLN600 zip from its
 //! publisher, the page images from loc.gov) into a server cache, one request at a time, at least
-//! [`MIN_GAP`] apart, keeping a file only if its sha256 matches. The server never serves these:
-//! BOINC's `create_work --remote_file` needs each one's size and md5, so the client can fetch it
-//! from the publisher and check it, and the validator needs each crop's reference counts. Both
-//! are computed here and written to `prepared.json` with no text in it. The bundle tar itself
-//! (shareable files only) is copied to `bundle.tar` under the campaign root and served by the
-//! project as a sticky input.
+//! [`MIN_GAP`] apart, keeping a file only if its sha256 matches. It records each original's size,
+//! md5 and sha256 in `prepared.json`; `gold submit` verifies those values again before mirroring
+//! the unchanged file into the BOINC project's download tree as an ordinary sticky input. The
+//! validator's crop reference counts are also written to `prepared.json`, with no text in it.
+//! The bundle tar itself (shareable files only) is copied to `bundle.tar` under the campaign root
+//! and served by the project as a sticky input.
 use crate::atomic;
 use anyhow::{ensure, Context};
 use serde::{Deserialize, Serialize};

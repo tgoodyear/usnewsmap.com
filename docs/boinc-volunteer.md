@@ -436,7 +436,7 @@ The OCR text from `usnm_ocr` is what the project uses. It is published as ALTO a
 **The gold check, `usnm_gold`.** Bundle version 1 ([ocr-gold-set.md](ocr-gold-set.md#volunteer-bundle)):
 
 - `bundle.tar`, 9.6 MB, from the project server: crops and transcriptions the licences allow us to share, with their licence files.
-- The BLN600 zip, 68 MB, from figshare, and 18 page images from tile.loc.gov. Your BOINC client fetches these from the publishers, not from us, and checks each one's size and md5.
+- The BLN600 zip, 68 MB, and 18 page images, served by the BOINC project from its verified mirror. Your client checks each file and keeps it as a sticky input.
 
 The input template marks all of these `<sticky/>` and `<no_delete/>` (written by `usnm-boinc gold submit`). On 14 October 2026, production hosts returned multiple valid Gold tasks, but no client transfer log was retained to confirm that a later task reused each file without downloading it again; see the [live acceptance record](boinc.md#live-acceptance-record-and-remaining-checks). By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. The NC licences allow non-commercial use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
 
@@ -454,7 +454,7 @@ Network, step by step:
 | ----------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------- |
 | scheduler requests, downloads of inputs, uploads of results | the BOINC client                           | `https://boinc.usnewsmap.com/`                    |
 | worker image (container apps only)                          | Podman (or Docker), started by the wrapper | the registry named in the app version             |
-| gold originals                                              | the BOINC client                           | figshare (BLN600) and tile.loc.gov                |
+| gold originals                                              | the BOINC client                           | the BOINC project's download server               |
 | the task itself                                             | nobody                                     | no network inside containers; loopback-only local |
 
 What leaves your machine: the result files in the table in section 3, and what any stock BOINC client sends its project (host description, account details). The project stores your email address, name, IP address and account key. Privacy is on by default, and you can delete your account ([design](../contrib-compute/docs/design.md), Privacy). Web server and scheduler logs keep IP addresses for 30 days.
@@ -477,7 +477,7 @@ Success: a task moves from downloading to running to uploaded, and the event log
 - **Tasks fail at once.** Check the event log for a runtime or slot error. A hello-world check alone is insufficient; the startup preflight exercises the real task limits and mount.
 - **Upload fails.** An upload error is not a completed acceptance test even if the scheduler receives a completion report. Preserve a local result when diagnosing, stop requesting new tasks, and report the upload-server message to the project operator.
 - **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed. Either is a failed task, which the project sees ([boinc.md](boinc.md#allocation-and-recovery)). If every task fails, detach and report it.
-- **Gold downloads fail.** The client fetches from figshare and tile.loc.gov; make sure your network allows both. Valid production Gold reports on 14 October scored BLN600 crops after the worker's input-hash checks, confirming that the client followed the publisher download path and supplied the expected file. Reuse of cached originals on later tasks was not separately observed; see the [live acceptance record](boinc.md#live-acceptance-record-and-remaining-checks).
+- **Gold downloads fail.** Make sure your network allows the BOINC project's download server. The 14 October production reports predate the project mirror and only establish that publisher-sourced inputs passed the worker's hash checks; they do not establish mirror or sticky-cache acceptance. See the [live acceptance record](boinc.md#live-acceptance-record-and-remaining-checks).
 
 ## Detach
 
