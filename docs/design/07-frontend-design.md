@@ -110,6 +110,22 @@ Every frame is **O(P)**: about 3,000 subtractions, then a single deck.gl attribu
 
 Legends are always visible and state the unit ("pages containing the phrase"). Colors come from a color-vision-deficiency-safe palette and are validated in both light and dark themes.
 
+**States implementation (#452).** `layer=states` is available for Pages on the map,
+without newspaper filters or Congress, when coverage baselines exist. The first
+pass uses solid grey for no pages (a hatched legend swatch), light neutral for no
+matches, and five positive-rate quantiles that follow the current window, keeping
+ties together. Counts are summed before division, including coverage-only places:
+reducing coverage to matching places would inflate rates. Modern Census 2024
+borders include DC and five territories. A lazy content-hashed GeoJSON asset
+measures 16,221 bytes gzip. The sortable states table is the keyboard equivalent,
+includes Unassigned and CSV, and stays available without WebGL. Desktop clicks
+add a state filter; mobile taps pin details with explicit Filter/Dismiss controls.
+Truncated matching-place lists show a warning, never invent an allocation of the
+missing tail. The minimum denominator is one page with a small-count warning,
+not an arbitrary suppression threshold. See the [web implementation decisions](../../web/README.md#states-layer)
+and [reproducible Census preparation](../../web/src/assets/README.md).
+The 300 ms first-paint and 2 ms scrub targets are not yet measured on target hardware.
+
 ## 7.5 URL state (permalinks)
 
 ```

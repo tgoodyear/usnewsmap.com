@@ -42,7 +42,49 @@ Build-time settings:
 - **Page views** (`src/pageview.ts`, 07 §7.8). One per page load, sent with `navigator.sendBeacon` to `/v1/beacon`: the page name and title, and on the first page the referrer's origin and the landing URL's `utm_*` tags. Never the search or other query parameters. Do Not Track and Global Privacy Control turn it off, and nothing is stored in the browser. The privacy page (`/privacy`) describes it for visitors.
 - **Performance.** The map stack is lazy-loaded; the critical-path JS is about 99 KB gzip (budget 250 KB).
 
-Not yet built: compare mode, the first-appearance and state-choropleth layers, the coverage overlay, embed mode, export, and the share dialog beyond copying the link.
+## States layer
+
+Choose **States** under Map layer (or share `layer=states`). Modern borders
+apply even to historical territories. Census public-domain boundaries are
+prepared reproducibly; see [the asset source and preparation](src/assets/README.md).
+Alaska, Hawaii and territories remain at their true positions.
+
+`engine/states.ts` reduces both sparse cubes to state prefix sums once per
+search, then uses the same cumulative/trailing window as points. Crucially,
+the denominator includes **all coverage places**, including places with no
+matches; aligning coverage only to matching places would inflate state rates.
+Unknown/missing place states go to Unassigned, never disappear from the
+table. If the API caps matching places (5,000), a visible warning marks
+incomplete numerators; the missing tail cannot be assigned or recovered in
+the client. No real-query cap survey has been performed. No API changes or
+extra aggregate/coverage requests are introduced.
+
+First-pass decisions for #452:
+
+- Page-weighted matches per 1,000 pages published, not raw counts or per-title
+  rates. Both raw counts remain in the tooltip, sortable table and CSV.
+- Minimum denominator: one page. No arbitrary suppression threshold; the
+  legend warns that small counts are noisy. Zero pages is grey/unknown
+  (not rate zero), while pages with no matches are light neutral. The legend's
+  no-pages swatch is additionally hatched; map no-pages fills are solid grey.
+- Five quantiles of positive state rates in the **current window**, with
+  zero a separate neutral class. Ties remain together and can leave empty
+  classes, explicitly labelled. Breaks change with scrubbing; the legend
+  changes with them. No raw/rate toggle.
+- Desktop click adds a state filter; existing search filters remove it.
+  Touch taps pin details with explicit Filter and Dismiss buttons, so the
+  initial tap does not accidentally filter. The states table is the keyboard
+  path, with the same filter action and a CSV download.
+- States is unavailable for non-Pages measures, newspaper-filtered searches,
+  Congress, or unavailable coverage baselines. Unsupported shared links draw
+  points instead. The layer selector stays hidden in Table/no-WebGL contexts;
+  an already-selected States layer retains its accessible table there.
+- Geometry is reused across frames; only fill attributes change.
+  The 300 ms post-download first-paint and 2 ms / 5,000-place scrub targets
+  have **not been measured on a mid-range laptop**; passing functional tests
+  must not be read as those performance measurements.
+
+Not yet built: compare mode, the first-appearance layer, the coverage overlay, embed mode, export beyond the available CSV downloads, and the share dialog beyond copying the link.
 
 ## Search engines and link previews
 
