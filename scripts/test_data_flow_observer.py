@@ -81,7 +81,7 @@ class Observer(unittest.TestCase):
             self.assertEqual([p.name for p in target.parent.iterdir()], ["pipeline.json"])
 
     def test_credentials_rejected_before_network(self):
-        for url in ["https://user:secret@example.org/", "https://example.org/?sig=secret",
+        for url in ["https://user:secret@example.org/", "https://example.org/?unexpected=1",
                     "file:///etc/passwd"]:
             with self.assertRaises(ValueError):
                 observer.fetch(url)
