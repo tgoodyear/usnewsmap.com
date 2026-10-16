@@ -77,47 +77,48 @@ and #464 tracks the gated migration to required TLS. The database is private to 
 
 To record a work-volume sample, run
 `scripts/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record
-containing aggregate workunit and result counts plus BOINC's recent-credit user/host counts;
+containing aggregate workunit and result counts plus BOINC's recent-credit user and host counts;
 the workbook reads it from console logs. Its KQL uses a fuzzy union of both Container Apps
 resource-specific tables (`ContainerAppConsoleLogs`, `ContainerAppSystemLogs`) and legacy `_CL`
-tables, mapping their unsuffixed and `_s` columns while removing identical rows if both sources
-are present. The standard system-log schema has no execution-name column, so the workbook reports
-job activity/events rather than claiming to count job executions.
-Workunit validation, assimilation and file-deletion counts are separate, potentially overlapping
-flags. The bridge job is manual-triggered, so the time chart gains a point only when this step is
-run.
+tables, mapping their unsuffixed and `_s` columns and removing identical rows when both sources
+are present. The standard system-log schema has no execution-name column, so the workbook
+reports job activity and events rather than claiming to count job executions. Workunit
+validation, assimilation and file-deletion counts are separate, potentially overlapping flags.
+The bridge job is manual-triggered, so the time chart gains a point only when this step is run.
 
 #### Work-volume acceptance after #633
 
 Release #633's successful lifecycle jobs are not exporter acceptance: execution
 `usnm-boinc-bridge-caj-prod-yjzy92x` failed with the sanitized aggregate-query error.
-The follow-up for #510 reproduces a checked-in work-volume option-file defect:
+The follow-up for #510 reproduces a defect in the checked-in work-volume option file:
 the generated file had a literal masked line instead of a password option, which
-MySQL rejects before executing SQL. The work-volume branch now quotes and escapes
-the tmpfs option values. TLS and certificate verification remain mandatory.
-This reproduction does not prove that the deployed failure had the same cause.
+MySQL rejects before executing SQL. The work-volume branch now quotes and escapes the
+tmpfs option values. TLS and certificate verification remain mandatory. This
+reproduction does not prove that the deployed failure had the same cause.
 
 CI runs the unchanged aggregate query against MySQL 8.4 using synthetic temporary
-tables with the referenced columns/types from BOINC commit `22bbebe0`, including
-empty tables, all state buckets and the recent-credit threshold. It also checks
-option-file permissions, parsing and authentication with a synthetic password.
-To run these tests locally, point `USNM_WORK_VOLUME_MYSQL_PORT` at a disposable,
-loopback-only MySQL 8.4 fixture with an empty-password root account, then run
+tables with the referenced columns and types from BOINC commit `22bbebe0`,
+including empty tables, all state buckets and the recent-credit threshold. It
+also checks option-file permissions, parsing and authentication with a synthetic
+password. To run these tests locally, point `USNM_WORK_VOLUME_MYSQL_PORT` at a
+disposable, loopback-only MySQL 8.4 fixture with an empty-password root account,
+then run
 `python3 -m unittest -v contrib-compute/images/server/test_work_volume.py` from
-the repository root. Never point this fixture test at a deployed database.
-These tests do not establish the production schema or runtime grants.
+the repository root. Never point this fixture test at a deployed database. These
+tests do not establish the production schema or runtime grants.
 
 Keep #510 acceptance open until an authorized operator can:
 
-1. Build and release the reviewed server/bridge images through the normal PR and
-   provisioning process; record the deployed digest and revision. Do not patch
-   the running container or dispatch volunteer work.
+1. Build and release the reviewed server and bridge images through the normal PR
+   and provisioning process; record the deployed digest and revision. Do not
+   patch the running container or dispatch volunteer work.
 2. From the bridge's VNet and runtime identity, verify the installed client
    version, readable CA bundle, certificate-verified TLS connection, effective
    SELECT access on `workunit`, `result`, `user` and `host`, and the referenced
-   column names/types. Do not print the option file, credentials, raw rows or
+   column names and types. Do not print the option file, credentials, raw rows or
    unrestricted database errors. If the query still fails, retain only an
-   allowlisted numeric MySQL error code/SQLSTATE and failure stage for diagnosis.
+   allowlisted numeric MySQL error code or SQLSTATE and the failure stage for
+   diagnosis.
 3. Run `scripts/start-boinc-bridge.sh --env prod --step work-volume`, record its
    execution ID and successful exit, and verify exactly one schema-version-1
    aggregate event in the BOINC workspace.
@@ -130,11 +131,11 @@ ARM metadata confirms both table schemas. The current workspace-context query id
 `InsufficientAccessError` when querying tables, while the authorized resource-context Logs API
 route to the BOINC Container Apps environment succeeds. That route returned no rows from
 `ContainerAppSystemLogs` or `ContainerAppConsoleLogs` over the last 30 days, so actual status
-values, app/job filter hits, a deployed work-volume sample, and workbook output against data
-remain unverified. No Azure grants or configuration were changed. Keep live acceptance open
-until an authorized operator can verify a recent sample and the workbook results.
+values, app and job filter hits, a deployed work-volume sample, and workbook output against
+data remain unverified. No Azure grants or configuration were changed. Keep live acceptance
+open until an authorized operator can verify a recent sample and the workbook results.
 
-`scripts/build-boinc-images.sh` builds and pins the server/bridge artifacts.
+`scripts/build-boinc-images.sh` builds and pins the server and bridge artifacts.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
 designated signing host without exporting its private key. These are release inputs, not
 steps printed after every deployment. See [app-release.md](app-release.md) for signing and
@@ -145,7 +146,7 @@ acceptance boundaries. The code-signing private key stays offline.
 The bridge CLI stages public download inputs with mode `0644` before publication
 and before `create_work`, so Apache can read them immediately. The hand-off
 journal and original input snapshots remain owner-only. The bridge wrapper
-executes the CLI directly; it performs no post-submission chmod/chgrp scan.
+executes the CLI directly; it performs no chmod or chgrp scan after submission.
 Rebuild and deploy the bridge image with the updated CLI and wrapper together.
 Ensure the Apache identity can traverse the existing download fan-out directories
 and read a staged scan and request on the deployed Azure Files mount. Local
@@ -155,4 +156,4 @@ POSIX-mode regressions do not verify Azure Files ACLs or mount behavior.
 
 - **Guardrails.** ADR-0019 documents the dedicated BOINC resource group and the two required policy waivers for Azure Files shared-key mounting and the Log Analytics shared key.
 - **Network path.** Key Vault and the Files share are private-endpoint only. The secrets and init jobs run inside the VNet; the maintainer still needs a VNet path for the manual share hand-off.
-- **Remaining checks:** full Azure Files POSIX permission and lock semantics; the MySQL runtime grants and MyISAM/8.4 compatibility; required-TLS migration (#464); job managed-identity behavior beyond the successful deployment checks; shared-memory and image-size bounds.
+- **Remaining checks.** Full Azure Files POSIX permission and lock semantics; the MySQL runtime grants and MyISAM/8.4 compatibility; required-TLS migration (#464); job managed-identity behavior beyond the successful deployment checks; shared-memory and image-size bounds.

@@ -17,6 +17,21 @@ ROOT = Path(__file__).resolve().parents[2]
 CARGO = shutil.which("cargo")
 
 class Dispatch(unittest.TestCase):
+    def test_boinc_build_paths_exclude_markdown_after_positive_patterns(self):
+        for workflow in (ROOT / ".github/workflows").glob("boinc-*.yml"):
+            paths = re.search(r"(?m)^    paths:\n((?:      .*\n)+)", workflow.read_text())
+            self.assertIsNotNone(paths, workflow.name)
+            patterns = [
+                line.strip()[2:].strip("'\"")
+                for line in paths[1].splitlines() if line.strip().startswith("- ")
+            ]
+            if any("**" in pattern for pattern in patterns):
+                with self.subTest(workflow=workflow.name):
+                    self.assertEqual(patterns[-1], "!**/*.md")
+                    self.assertIn(f".github/workflows/{workflow.name}", patterns)
+                    self.assertTrue(any(not p.startswith("!") and "**" in p
+                                        for p in patterns[:-1]))
+
     def flags(self, scope=None, event="workflow_dispatch", ref="refs/heads/main"):
         env = dict(os.environ, GITHUB_EVENT_NAME=event, GITHUB_REF=ref,
                    GITHUB_OUTPUT="/dev/stdout")

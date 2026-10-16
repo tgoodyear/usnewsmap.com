@@ -6,19 +6,20 @@ a copy so installations need no source checkout. An explicit `--engines` file
 replaces, rather than supplements, that copy. Unknown schemas, duplicate ids
 or names, empty profiles, and dangling model references fail loading.
 
-The inventory includes checked engines/models not yet implemented. Only
-Tesseract and the pinned CPU NDLOCR-Lite adapter have production profiles here.
-`production = false` keeps the other engines unroutable; recording a cleared model does not deploy it. Code
-not separately checked in the design stays `unknown`, not implicitly Apache.
-No tier-2 or credit-required profiles are added before the credits page (#372).
+The inventory includes checked engines and models that aren't implemented yet.
+Only Tesseract and the pinned CPU NDLOCR-Lite adapter have production profiles
+here. `production = false` keeps the other engines unroutable, and recording a
+cleared model does not deploy it. Code the design didn't check separately stays
+`unknown`; it is not assumed to be Apache. No tier-2 or credit-required profiles
+are added before the credits page (#372).
 
 Tesseract image builds download the unchanged `tesseract/models.lock` URLs
 with certificate verification and verify each SHA-256 before accepting it.
-Downloads allow 30 retries including TLS/connect failures, with a 30-second
-connection timeout, 600-second per-attempt timeout and 900-second retry-start
-budget. An in-progress final attempt can extend beyond that budget (at most
-1500 seconds per model including the final attempt). Exhaustion or a checksum
-mismatch fails the build; no alternate endpoint or unverified model is used.
+Downloads allow 30 retries, including TLS and connection failures: 30-second
+connect timeout, 600-second attempt timeout, 900-second retry-start budget.
+An in-progress final attempt can extend the total to 1500 seconds per model.
+Exhausted retries or checksum mismatches fail the build without alternate
+endpoints or unverified models.
 
 ## Credits data shape
 
@@ -28,11 +29,12 @@ mismatch fails the build; no alternate endpoint or unverified model is used.
   code's attribution fields below, and nested `model` and `profile` arrays.
 - `[[engine.model]]`: `name` (unique within its engine, e.g.
   `tessdata/eng.traineddata`), optional `version` (published revision), plus the
-  same attribution fields as the code. Pinned image model versions must match
-  their engine image's `models.lock` (`tesseract/` or `ndlocr-lite/`); the web catalog test checks them. These pins do not
-  prove the revision of a serving reading: short engine keys omit model
-  digests, so release credits and legacy web fallbacks leave those model
-  revisions unrecorded instead of relabelling old text with today's pin.
+  same attribution fields as the code. A pinned image model's version must
+  match its engine image's `models.lock` (`tesseract/` or `ndlocr-lite/`); the
+  web catalog test checks them. These pins don't prove which revision read a
+  served page: short engine keys omit model digests, so release credits and the
+  web's legacy fallbacks leave those model revisions unrecorded rather than
+  labelling old text with today's pin.
 - `[[engine.profile]]`: `id` (unique within its engine), nonempty `models`
   (exact model names), and nonempty `languages` (ISO 639-3 strings). File order
   is the preference order for the current minimal Tesseract route.
@@ -42,18 +44,19 @@ Attribution fields are direct TOML keys, **not embedded JSON, Markdown or HTML**
 | Key          | TOML type                           | Meaning                                                                          |
 | ------------ | ----------------------------------- | -------------------------------------------------------------------------------- |
 | `license`    | string                              | SPDX id, project `LicenseRef-*`, `none`, or `unknown`                            |
-| `author`     | string                              | Author/publisher, as named by the source                                         |
+| `author`     | string                              | Author or publisher, as named by the source                                      |
 | `source`     | string                              | Source URL; for attributed weights, the download source                          |
 | `credit`     | string                              | Plain-text, human-readable credit line (render as text)                          |
-| `fetched`    | local date (`YYYY-MM-DD`, unquoted) | Recorded source/fetch date from the design's checked snapshot                    |
+| `fetched`    | local date (`YYYY-MM-DD`, unquoted) | The source or fetch date recorded in the design's checked snapshot               |
 | `note`       | string                              | Evidence, including absence of a licence and where checked for `none`            |
 | `terms`      | string                              | Licence-text URL; required for cleared `LicenseRef-*` entries                    |
 | `restricted` | optional string                     | Quoted restrictive clause and its source link; presence always vetoes production |
 | `undecided`  | optional string                     | Open maintainer decision and terms link; presence always vetoes production       |
 
 The web build parses this TOML directly (Vite's `ocr-credit-catalog` plugin);
-`web/src/credits/data.ts` selects serving engines and profile models, and
-unit/e2e tests reject missing credits. No generated list is maintained.
+`web/src/credits/data.ts` selects the serving engines and profile models, and
+the unit and end-to-end tests reject missing credits. No generated list is
+maintained.
 
 For the credits page, identify code by `engine.id` and weights by
 `(engine.id, model.name)`. Read each entry's `credit`, `author`, `source` and
@@ -62,9 +65,10 @@ Render `none` as “no explicit licence”; link SPDX ids to `spdx.org/licenses/
 and `LicenseRef-*` ids through `terms`. Mark `credit_required` licences as
 mandatory attribution. Escape all strings when rendering HTML. Engine
 `production` is an eligibility flag, not evidence that every inventoried model
-is used: select model credits through the production profiles/routes (and later
-the release's usage inventory). The current minimal route names all Tesseract
-profiles via `auto`; unused tier-2 Tesseract entries are inventory only.
+is used. Select model credits through the production profiles and routes (and
+later the release's usage inventory). The current minimal route names all
+Tesseract profiles via `auto`; unused tier-2 Tesseract entries are inventory
+only.
 
 ## The shared gate
 
@@ -81,25 +85,25 @@ single gate used by both worker implementations and `routes check`:
 4. Custom cleared licences also need nonblank `terms` for the credits link.
 
 Only the maintainer changes tier decisions. The catalog does not infer terms
-from a model's training data or from its engine's code licence. Future engine
-build/runtime limits can coexist as additional engine/profile keys; they do
-not change this gate.
+from a model's training data or from its engine's code licence. Future limits
+on engine builds or runtimes can be added as further engine or profile keys;
+they do not change this gate.
 
 `usnm-ocr-worker routes check [--engines PATH] [--routes PATH]` validates the
 licences of every candidate and cascade target in the route file; `auto`
 checks every profile of that engine. The default route file is
-`ocr/routing/routes.toml`. Full matching and node-capability/lock validation
-are later design steps, not claimed by this command yet.
+`ocr/routing/routes.toml`. Full matching and the validation of node
+capabilities and locks are later design steps; this command doesn't do them yet.
 
 Tesseract modes `--psm 0`, `1` and `12` implicitly read `osd.traineddata`.
 Both the direct worker and text adapter refuse these modes until OSD is
 cataloged, gated and included in provenance. The default mode 3 is unchanged.
 
-New releases also freeze the used engine and selected model entries in
-`credits.json`, using `usnm-ocr-route::Catalog::credits`. Unknown keys block
-publication. The API verifies the file against the reference manifest and
-returns it in `published.sources.ocr_credits`; the web page prefers that copy
-over its build-time fallback for older releases. Japanese per-engine counts
-cover the union of the serving Japanese search index and main-index Latin
-replacements, deduplicated per page and engine, and are frozen alongside
-the credits. They do not come from the current OCR job.
+A new release also freezes the entries of the engine used and the models
+selected in `credits.json`, using `usnm-ocr-route::Catalog::credits`. Unknown
+keys block publication. The API verifies the file against the reference
+manifest and returns it in `published.sources.ocr_credits`; the web page
+prefers that copy over its build-time fallback for older releases. The Japanese
+per-engine counts cover the union of the serving Japanese search index and the
+main index's Latin replacements, deduplicated per page and engine, and are
+frozen with the credits. They do not come from the current OCR job.

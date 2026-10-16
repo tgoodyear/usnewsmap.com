@@ -20,11 +20,11 @@ node scripts/prepare-states.mjs \
   --names src/lib/stateNames.json
 ```
 
-The script verifies the source SHA256, uses the lockfile-pinned mapshaper,
-retains 3% of vertices with `keep-shapes`, rounds to 0.001 degrees, sorts by
-state code, and retains only `STUSPS` and `NAME`. It verifies the 56 features
-and a maximum gzip size of 100,000 bytes. The generated asset measures
-**16,221 bytes gzip** (`node:zlib`, level 9). Vite emits a content-hashed
-`/assets/states-*.geojson` URL, fetched only when States is first drawn and
-cached immutably by the API. No Azure resource or external runtime request
-is needed.
+The script verifies the source's SHA256, uses the mapshaper pinned in the
+lockfile, keeps 3% of the vertices with `keep-shapes`, rounds to 0.001 degrees,
+sorts by state code and keeps only `STUSPS` and `NAME`. It checks that there
+are 56 features and that the gzip size is at most 100,000 bytes. The generated
+asset is **16,221 bytes** gzipped (`node:zlib`, level 9). Vite emits it at a
+content-hashed `/assets/states-*.geojson` URL; it is fetched only when States
+is first drawn, and the API serves it as immutable. It needs no Azure resource
+and no request to another service at run time.

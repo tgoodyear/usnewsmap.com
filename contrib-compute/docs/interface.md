@@ -43,4 +43,4 @@ Where this page and #441 differ, #441 wins; it is the client base.
 
 ## Account creation and privacy
 
-`boinccmd --create_account URL email password name`, or attach with an existing key: `boinccmd --project_attach URL key`. Whether account creation is open or needs an invite code is the maintainer's choice (design.md 5.2). Do not share one account key across unrelated deployments.
+Create an account with `boinccmd --create_account URL email password name`, or attach with an existing key: `boinccmd --project_attach URL key`. Whether account creation is open or needs an invite code is the maintainer's choice (design.md 5.2). Do not share one account key across unrelated deployments.

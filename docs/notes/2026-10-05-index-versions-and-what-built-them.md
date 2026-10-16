@@ -47,6 +47,6 @@ The timing in a capture is the backend's own, recorded when the result was compu
 
 ## What is left
 
-- **A second capture**, of `pages-v20261005-1`, and the first `diff`. That is the before/after for the [common-word pairs note](2026-10-05-phrases-through-common-word-pairs.md) and the first version where the Japanese searches should answer `200`.
+- **A second capture**, of `pages-v20261005-1`, and the first `diff`. That is the before and after for the [common-word pairs note](2026-10-05-phrases-through-common-word-pairs.md) and the first version where the Japanese searches should answer `200`.
 - **Captures cost a quiet hour.** A search no cache holds is computed in full, one at a time; 63 of them at 4–60 s each is most of an hour on the live searcher. Whether to capture every version or only those whose build record differs in a way that could change results (template, features, analyzer) is a judgment the build record now makes possible.
 - **Reconstructed records are an inference.** The commit is the last image pushed before the execution started; an execution that was started between a push and CI's image build would be attributed to the previous commit. Recorded builds replace the inference from the next release on.

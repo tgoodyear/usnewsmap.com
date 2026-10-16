@@ -50,7 +50,7 @@ The API app (`ca-usnm-{env}`) serves the built SPA from its own image. `USNM_SIT
 ## Consequences
 
 - **The site shares the API's availability.** A broken revision or replica takes both down. The site is of little use without the API, and a revision rollback restores both at once.
-- **No global edge.** Everything is served from East US 2. Hashed assets are cached by browsers indefinitely, so mostly first visits from far away are slower. Front Door can go in front later without redesign, which is also the growth-profile answer to press spikes.
+- **No global edge.** Everything is served from East US 2. Hashed assets are cached by browsers indefinitely, so it is mostly first visits from far away that are slower. Front Door can go in front later without redesign, which is also the growth-profile answer to press spikes.
 - **Static traffic uses the API's replica** (0.25 vCPU; max 2 replicas). Precompressed files keep that cheap. Page and asset requests count toward the Container Apps free 2M requests a month.
 - **A site-only change rebuilds and rolls the image.** That takes a few minutes and has no downtime.
 - **The site and the API can never be on mismatched versions.**

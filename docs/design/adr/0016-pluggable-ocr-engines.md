@@ -25,7 +25,7 @@
 
 **American Stories was missing.** The first engine list left out the pipeline Dell Research Harvard used to build the American Stories dataset from Chronicling America scans. Its text is already indexed alongside LoC's (#218), and it reads English only. But NDNP Open OCR reuses its layout model, and its legibility classifier may be a damage signal, so it is being added to the survey as a fifth container.
 
-**What the engines look like.** The [engine catalog](../13-ocr-engines.md#1312-engine-catalog), fact-checked on 2026-10-10, covers close to 40 engines, pipelines and model servers. Three things follow from it:
+**What the engines look like.** The [engine catalog](../13-ocr-engines.md#1312-engine-catalog), fact-checked on 2026-10-10, covers close to 40 engines, pipelines and model servers. Four things follow from it:
 
 - Only Tesseract, NDNP Open OCR and Kraken write ALTO, in three dialects: v3 in pixels, v3 in inch1200 at an assumed 300 dpi, and v4 in pixels with polygons. The others return word, line or block boxes, or no geometry at all.
 - Most are Python libraries. Tesseract and Kraken have CLIs. American Stories' pipeline and NDLOCR-Lite are run today as scripts that load their models on every call. Most vision-language models can run behind llama.cpp's or vLLM's OpenAI-compatible servers.
@@ -71,11 +71,11 @@
 6. **Routing is versioned data.**
    - `ocr/engines/engines.toml` lists the engines, their profiles, limits and licence gate.
    - `ocr/routing/routes.toml` holds ordered rules. A rule matches language, script, title, batch, date range, queue reason and damage score, and names an engine and profile, with fallbacks.
-   - A profile carries default options (Tesseract: `psm = 3`), and a route's options override them. The dpi comes with the image (300 for a full scan), so every route, the catch-all included, reads at the dpi main passes today.
+   - A profile carries default options (Tesseract: `psm = 3`), and a route's options override them. The dpi comes with the image (300 for a full scan), so every route, the catch-all included, reads at the dpi that main passes today.
    - A re-route is a reviewed change to these files with a version bump, and needs no new worker binary. The first release installs the files on the node with the worker. Later, CI publishes them to the registry as one artifact, and the worker polls for it.
    - Messages carry ISO 639-3 and base batch names (no `_verNN`). Validation (12 Step 7) rejects MARC-only codes such as `ger` and `cze`, which then dead-letter at once. `usnm_core::lang` (12 Step 4) maps MARC codes and LoC's pass-through names to ISO 639-3 for the seeder and the survey.
    - A node with no usable engine (image missing, breaker open, cgroup check failed) stops taking messages and backs off, so an engine outage on a one-node fleet doesn't use up the queue's receives.
-   - When only some engines are down, the worker peeks, and receives past messages for those engines with a bounded defer: each such message is received at most twice with the usual 1,800 s hide and left, then moved to `ocr-deadletter` with cause `unroutable`, which the seeder queues again after a growing wait and outside the page's limit of 3 attempts. Nodes can't change a message's visibility or put it back on a work queue, so this costs each blocked message up to 3 of its receives, and other engines' pages keep moving. Engines a node can never run get a queue per capability ([13 §13.7.6](../13-ocr-engines.md#1376-choosing-a-candidate)).
+   - When only some engines are down, the worker peeks, and receives past messages for those engines with a bounded defer. Each such message is received at most twice with the usual 1,800 s hide and left, then moved to `ocr-deadletter` with cause `unroutable`. The seeder queues it again after a growing wait, outside the page's limit of 3 attempts. Nodes can't change a message's visibility or put it back on a work queue, so this costs each blocked message up to 3 of its receives, and other engines' pages keep moving. Engines a node can never run get a queue per capability ([13 §13.7.6](../13-ocr-engines.md#1376-choosing-a-candidate)).
    - Each route has at least one candidate. `fallback_after` (receives per candidate before the next) defaults to 2 and is at least 1.
 7. **Provenance on every page.**
    - `ocr_source` is `usnm-<engine family>`.
@@ -135,33 +135,33 @@ We compared three full designs. This decision is the one with a container per en
 
 ## Optional BOINC batch transport (#438)
 
-The [BOINC pilot](../../boinc.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models/routing and native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.
+The [BOINC pilot](../../boinc.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models and routing and the native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.
 
 ### OCR credits page (#372)
 
 `/credits` reads the serving version's per-engine page counts from
 `/v1/status` (`published.sources.ocr_local.by_engine` and
-`published.sources.ocr_ja.by_engine`). The latter is the union of Japanese
-search-index pages and main-index Latin-script replacements, deduplicated
-per page and engine. Hidden main-index copies are excluded; a reading still
-served independently by the Japanese index keeps its credit. It is frozen
-in the release, not taken from the latest
-OCR job; older releases fall back to `ja_latin.by_engine` when available. Each “Our OCR”
-badge links to the exact engine key's fragment; the footer and “Pages we
-read ourselves” also link to the page.
+`published.sources.ocr_ja.by_engine`). `ocr_ja.by_engine` is the union of
+Japanese search-index pages and main-index Latin-script replacements,
+deduplicated per page and engine. Hidden main-index copies are excluded; a
+reading still served independently by the Japanese index keeps its credit.
+The counts are frozen in the release, not taken from the latest OCR job;
+older releases fall back to `ja_latin.by_engine` when available. Each “Our
+OCR” badge links to the exact engine key's fragment; the footer and “Pages
+we read ourselves” also link to the page.
 
 Vite parses `ocr/engines/engines.toml` at build time for both the page and
 its tests. Only serving engines and their selected profile models appear;
 the pre-catalog Japanese NDLOCR-Lite pipeline uses its catalog credit and
 bundled DINOv3 model. Survey inventory alone is not evidence of use.
 Unknown serving keys or incomplete credits produce an explicit error, and
-the end-to-end inventory coverage test fails rather than silently omitting
-them. Licence links, mandatory attribution, and attributed-tier evidence
-come directly from the catalog. Model revisions absent from the existing
-serving inventory are labelled as unrecorded rather than invented. Current
-worker image pins are checked against the catalog but are not evidence of
-the model revision that produced a retained short-key reading; those
-revisions remain unrecorded until per-reading digests can verify them.
+the end-to-end inventory coverage test fails instead of leaving them out.
+Licence links, mandatory attribution and attributed-tier evidence come
+from the catalog. Model revisions absent from the existing serving
+inventory are labelled as unrecorded. Current worker image pins are
+checked against the catalog, but they are not evidence of the model
+revision that produced a retained short-key reading; those revisions stay
+unrecorded until per-reading digests can verify them.
 
 New releases freeze the used catalog entries and mandatory-attribution list
 in `credits.json`, checked by the reference manifest and exposed as

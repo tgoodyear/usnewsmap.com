@@ -4,9 +4,9 @@
 
 ## The question
 
-Our earlier notes—[BUDA evaluation](2026-10-14-buda-evaluation.md), [BUDA Mac tests without a project server](2026-10-14-buda-mac-offline-tests.md), [Native ARM64 BOINC worker on the Mac](2026-10-14-buda-native-arm64.md), and [Native BOINC worker builds and Mac release tooling](2026-10-14-boinc-native-arm-build.md)—established that Apple Silicon Macs (`arm64-apple-darwin`) can run the native `linux/arm64` OCR worker image inside BOINC's Podman VM with all cgroup v2 resource limits, read-only root filesystem, network isolation, and `CAP_DAC_OVERRIDE` enforced. However, every pause/restart test failed: pausing a task succeeded, but restarting the paused container exited 1 on a duplicate container name.
+Our earlier notes ([BUDA evaluation](2026-10-14-buda-evaluation.md), [BUDA Mac tests without a project server](2026-10-14-buda-mac-offline-tests.md), [Native ARM64 BOINC worker on the Mac](2026-10-14-buda-native-arm64.md), and [Native BOINC worker builds and Mac release tooling](2026-10-14-boinc-native-arm-build.md)) established that Apple Silicon Macs (`arm64-apple-darwin`) can run the native `linux/arm64` OCR worker image inside BOINC's Podman VM with all cgroup v2 resource limits, read-only root filesystem, network isolation, and `CAP_DAC_OVERRIDE` enforced. Every pause and restart test failed, however: pausing a task succeeded, but restarting the paused container exited 1 on a duplicate container name.
 
-How do we fix `docker_wrapper` on macOS so that `Run_Podman` container state queries survive the setuid helper's second shell invocation and pause/resume works reliably?
+How do we fix `docker_wrapper` on macOS so that container state queries through `Run_Podman` survive the setuid helper's second shell invocation and pause and resume work reliably?
 
 ## What we did
 
@@ -18,9 +18,9 @@ ps --all --filter "name=^<container_name>$" --format "{{.Names}}|{{.Status}}"
 
 On macOS, `docker_wrapper` does not invoke `/opt/podman/bin/podman` directly. Instead, `lib/hostinfo.cpp` sets `docker_cli_prog` to the setuid helper `/Library/Application Support/BOINC Data/Run_Podman <podman_path>`. When `docker_wrapper` passes the command string to `popen()`, the outer shell strips the double quotes around `{{.Names}}|{{.Status}}` before `Run_Podman` receives its `argv`. `client/Run_Podman.cpp` then concatenates its `argv` tokens with spaces into a new command string and passes that string to a second shell. In that second shell, the now-unquoted `|` in `{{.Names}}|{{.Status}}` is parsed as a shell pipeline (`{{.Names}} | {{.Status}}`), which fails with a shell parse error on stderr, produces empty stdout, and returns exit status `0` from `Run_Podman`. Because stdout is empty, `get_container_state()` concludes the paused container does not exist, attempts `podman create` with the same container name, and aborts on the duplicate name.
 
-To fix this deterministically in our signed Mac wrapper builds without requiring volunteers to modify their Apple-signed `/Library/Application Support/BOINC Data/Run_Podman` helper:
+To fix this in our signed Mac wrapper builds without asking volunteers to modify their Apple-signed `/Library/Application Support/BOINC Data/Run_Podman` helper, we:
 
-1. Added `scripts/boinc/patch-mac-wrapper.py`, which patches `samples/docker_wrapper/docker_wrapper.cpp` in the checked-out upstream BOINC tree (`22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`) so the `--format` argument in `get_container_state()` is escaped/quoted for `Run_Podman`'s second shell pass and the `|` delimiter is not interpreted as a shell pipe.
+1. Added `scripts/boinc/patch-mac-wrapper.py`, which patches `samples/docker_wrapper/docker_wrapper.cpp` in the checked-out upstream BOINC tree (`22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`) so the `--format` argument in `get_container_state()` is escaped and quoted for `Run_Podman`'s second shell pass and the `|` delimiter is not interpreted as a shell pipe.
 2. Updated `scripts/boinc/build-mac-wrapper.sh` to run `python3 "$root/scripts/boinc/patch-mac-wrapper.py"` against the checked-out BOINC source before invoking `make -C "$work/samples/docker_wrapper" -f Makefile_mac` for `docker_wrapper_arm64` and `docker_wrapper_x86_64`.
 
 ## What we measured

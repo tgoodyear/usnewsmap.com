@@ -7,26 +7,28 @@
 ## Context
 
 The lake's account-wide versioning and blob soft delete retain every split
-Quickwit deletes after a merge/prune (#245). Retention was reduced from
+Quickwit deletes after a merge or a prune (#245). Retention was reduced from
 14 to 3 days (#416) to contain that derived-data cost, shortening the
 recovery window for `curated/` and `reference/`. The maintainer decided on
 12 October to separate the index at the next full rebuild (#283).
 
 ## Decision
 
-- Gate creation/writes behind `USNM_INDEX_STORAGE=false` by default. The
-  account is `usnmqwst{env}{suffix}`, named centrally under ADR-0017. Keep
-  its `qw-index` container Hot and disable versioning and blob/container
-  soft delete. Recovery is a retained index version or a rebuild.
-- Follow ADR-0009: Entra only, no shared keys/SAS, no public access or trusted
-  service bypass. Use a Blob private endpoint and the existing private DNS
-  zone. Do not exempt it in `publicAccountIds`; log writes/deletes.
+- Gate creation and writes behind `USNM_INDEX_STORAGE=false` by default.
+  The account is `usnmqwst{env}{suffix}`, named centrally under ADR-0017.
+  Keep its `qw-index` container Hot and disable versioning and blob and
+  container soft delete. Recovery is a retained index version or a rebuild.
+- Follow ADR-0009: Entra only, no shared keys or SAS, no public access or
+  trusted service bypass. Use a Blob private endpoint and the existing
+  private DNS zone. Do not exempt it in `publicAccountIds`; log writes and
+  deletes.
 - Keep all existing lake grants. Add container-scoped Contributor for the
-  writer system identity and ingest user identity, Reader for the parallel
-  searcher system identity and the API system identity during transition
-  when `USNM_SEARCHER_APP=false`. The permanent standalone-searcher opt-in
-  removes the API identity and its grants (#365); `USNM_INDEX_STORAGE_SERVE`
-  alone does not, so the old lake-sidecar revision can finish serving.
+  writer system identity and the ingest user identity. Add Reader for the
+  parallel searcher system identity and for the API system identity during
+  the transition, while `USNM_SEARCHER_APP=false`. The permanent
+  standalone-searcher opt-in removes the API identity and its grants (#365).
+  `USNM_INDEX_STORAGE_SERVE` alone does not, so the old lake-sidecar revision
+  can finish serving.
 - Quickwit Azure URIs select containers, not accounts. Point the writer's
   account configuration and the parallel searcher's YAML at the new account;
   both metastore and index root stay `azure://qw-index`. Do not copy a
@@ -38,20 +40,21 @@ recovery window for `curated/` and `reference/`. The maintainer decided on
   lake version retained as `previous_version`, and prune protects newer runs.
 - Verify the parallel internal searcher, then promote the pending pointer
   and set `USNM_INDEX_STORAGE_SERVE=true`. The API's URL changes in a new
-  revision; the old revision/searcher keeps serving until readiness switches
-  traffic. Coordinate the pointer/reader window with API image rolls and
-  cold starts, as the runbook specifies. Neither flag is cleared afterwards.
+  revision; the old revision and searcher keep serving until readiness
+  switches traffic. Coordinate the pointer/reader window with API image
+  rolls and cold starts, as the runbook specifies. Neither flag is cleared
+  afterwards.
 - Keep the lake rollback through the next verified new-account release.
   Prune each account through Quickwit, dry-run first. Then restore lake
   retention with `USNM_LAKE_BLOB_SOFT_DELETE_DAYS=14` (default remains 3).
-  Leave the experiment's `qw-cluster`/`qw-bench` unchanged.
+  Leave the experiment's `qw-cluster` and `qw-bench` unchanged.
 
 ## Consequences
 
 The protected lake no longer pays to retain future merge inputs. The new
 account has no blob-level recovery, and a second searcher costs compute
 while cross-account rollback is retained. A rollback across accounts must
-restore both the pointer and reader selection, with writers paused; a
+restore both the pointer and reader selection, with writers paused. A
 pointer alone is insufficient. Disabling account creation is destructive
 stack cleanup, never a rollback mechanism. The old empty container and
 roles can be removed separately after retirement. The defaults and shared

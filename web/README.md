@@ -40,65 +40,61 @@ Build-time settings:
 - **Snippets** are split into text and `<mark>` segments and rendered as text nodes. No API HTML is ever injected.
 - **Accessibility.** A Table tab mirrors the map. Playback works from the keyboard: `Space`, `←`/`→` (`Shift` for 10), `Home`/`End`. The current date is announced in a live region. Reduced motion is honored. Without WebGL2, the table is shown instead of the map.
 - **Page views** (`src/pageview.ts`, 07 §7.8). One per page load, sent with `navigator.sendBeacon` to `/v1/beacon`: the page name and title, and on the first page the referrer's origin and the landing URL's `utm_*` tags. Never the search or other query parameters. Do Not Track and Global Privacy Control turn it off, and nothing is stored in the browser. The privacy page (`/privacy`) describes it for visitors.
-- **Basemap startup.** The entry bundle warms the initial permalink/default viewport’s tiles, sprites and label glyphs before the lazy map stack loads (up to 40 requests; skipped with `VITE_BASEMAP_STYLE=none`). TileJSON resolves the provider’s current tile URLs at runtime. Dots fade in after the basemap’s first loaded idle, or after a two-second fallback if the provider is slow/blocked; reduced motion disables the fade. Requests use the browser HTTP cache, not persistent application storage.
+- **Basemap startup.** The entry bundle warms the tiles, sprites and label glyphs of the initial viewport (the permalink's, or the default) before the lazy map stack loads (up to 40 requests; skipped with `VITE_BASEMAP_STYLE=none`). TileJSON resolves the provider's current tile URLs at runtime. Dots fade in after the basemap's first loaded idle, or after a two-second fallback if the provider is slow or blocked; reduced motion disables the fade. Requests use the browser HTTP cache, not persistent application storage.
 - **Performance.** The map stack is lazy-loaded; the critical-path JS is about 99 KB gzip (budget 250 KB).
 
 ## States layer
 
 Choose **States** under Map layer (or share `layer=states`). Modern borders
-apply even to historical territories. Census public-domain boundaries are
-prepared reproducibly; see [the asset source and preparation](src/assets/README.md).
-Alaska, Hawaii and territories remain at their true positions.
+apply even to historical territories. The boundaries are the Census Bureau's
+public-domain ones, prepared by a script; see
+[the asset source and preparation](src/assets/README.md). Alaska, Hawaii and
+the territories stay at their true positions.
 
-`engine/states.ts` reduces both sparse cubes to state prefix sums once per
-search, then uses the same cumulative/trailing window as points. Crucially,
-the denominator includes **all coverage places**, including places with no
-matches; aligning coverage only to matching places would inflate state rates.
-Unknown/missing place states go to Unassigned, never disappear from the
-table. If the API caps matching places (5,000), a visible warning marks
-incomplete numerators; the missing tail cannot be assigned or recovered in
-the client. No real-query cap survey has been performed. No API changes or
-extra aggregate/coverage requests are introduced.
+`engine/states.ts` builds state prefix sums from both sparse cubes once per
+search, using the same cumulative or trailing window as points. Denominators
+include **all coverage places**, even those without matches, to avoid inflated
+rates. Missing or unknown states appear as Unassigned. The API's 5,000-place cap
+triggers an incomplete-numerator warning; the client cannot recover omitted
+matches. Real-query cap frequency has not been surveyed. No API changes or
+extra aggregate or coverage requests are needed.
 
 First-pass decisions for #452:
 
 - Page-weighted matches per 1,000 pages published, not raw counts or per-title
   rates. Both raw counts remain in the tooltip, sortable table and CSV.
-- Minimum denominator: one page. No arbitrary suppression threshold; the
-  legend warns that small counts are noisy. Zero pages is grey/unknown
-  (not rate zero), while pages with no matches are light neutral. The legend's
-  no-pages swatch is additionally hatched; map no-pages fills are solid grey.
+- Minimum denominator: one page, with no suppression. The legend warns about
+  noisy small counts. No pages means unknown: solid grey on the map, hatched
+  grey in the legend. Pages without matches use light neutral.
 - Five quantiles of positive state rates in the **current window**, with
-  zero a separate neutral class. Ties remain together and can leave empty
-  classes, explicitly labelled. Breaks change with scrubbing; the legend
-  changes with them. No raw/rate toggle.
-- Desktop click adds a state filter; existing search filters remove it.
-  Touch taps pin details with explicit Filter and Dismiss buttons, so the
-  initial tap does not accidentally filter. The states table is the keyboard
-  path, with the same filter action and a CSV download.
-- States is unavailable for non-Pages measures, newspaper-filtered searches,
-  Congress, or unavailable coverage baselines. Unsupported shared links draw
-  points instead. The layer selector stays hidden in Table/no-WebGL contexts;
-  an already-selected States layer retains its accessible table there.
-- Geometry is reused across frames; only fill colours change. States uses a
-  MapLibre GeoJSON source with promoted state-code IDs and feature-state fill
-  colours, inserted below the first symbol layer so labels stay readable.
-  Direct States entry also defers constructing the unused deck overlay until
-  a different layer actually needs it. This deliberately replaces #452's recommended deck `GeoJsonLayer`: cold
-  luma pipeline creation serialized expensive link-status queries. Points,
-  Heat and other measures retain the existing deck overlay; States does not
-  prefetch geometry or change that overlay's basemap-readiness gate.
-  If the initial basemap style fails, a plain local style enables native fills;
-  an initial request that never settles is bounded by the existing two-second
-  fallback. Errors in tiles or fonts of an already parsed style do not replace
-  it or discard state geometry.
-  Unavailable coverage never draws no-pages fills. Escape dismisses hover
-  or pinned state details regardless of keyboard focus. Small positive rates
-  retain significant digits, and legend precision increases when needed to
-  distinguish unequal thresholds.
-  Opt-in reproducible performance gates and the measured hardware/backend
-  limitations are described below. Functional test success is not proof
-  of the performance budgets.
+  zero a separate neutral class. Ties stay together and can leave empty
+  classes, which are labelled as such. Breaks change with scrubbing, and the
+  legend changes with them. There is no toggle between raw counts and rates.
+- Desktop clicks add a state filter; existing search filters remove it.
+  Touch taps pin details with Filter and Dismiss buttons. The keyboard-accessible
+  table offers the same filter action and a CSV download.
+- States is unavailable for measures other than Pages, searches filtered by
+  newspaper, Congress, and versions whose coverage baseline is unavailable. A
+  shared link that asks for it in one of those cases draws points instead.
+  The layer selector stays hidden in the Table tab and without WebGL; a
+  States layer already selected keeps its accessible table there.
+- Geometry is reused; only fill colours change. A MapLibre GeoJSON source
+  promotes state codes to feature IDs and sets colours through feature state,
+  below the first symbol layer. Direct States entry defers the deck overlay
+  until another layer needs it. This replaces #452's proposed deck
+  `GeoJsonLayer`, whose cold luma pipeline serialized costly link-status
+  queries. Points, Heat and other measures retain deck. States does not prefetch
+  geometry or change deck's basemap-readiness gate.
+- If the initial basemap style fails, a plain local style enables the native
+  fills, and an initial request that never settles is bounded by the existing
+  two-second fallback. Errors in the tiles or fonts of a style already parsed
+  neither replace it nor discard the state geometry. Unavailable coverage
+  never draws no-pages fills.
+- Escape dismisses hover or pinned details regardless of focus. Small positive
+  rates keep significant digits; legend precision increases to distinguish
+  unequal thresholds.
+- Performance gates and hardware limits follow. Functional tests do not
+  establish performance budgets.
 
 ### States performance measurements
 
@@ -124,65 +120,60 @@ node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal
 node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal --parallel
 ```
 
-The scrub gate asserts **measured maximum ≤2 ms** (and reports p95), after 200 warm-up frames, including totals,
-quantiles and all fill-colour lookups. Preparation is reported separately; this
-does not measure the rest of React or deck.gl's draw. On **Apple M1 / macOS arm64,
-Node 25.8.2**, the isolated 2026-10-15 run measured preparation **16.679 ms**,
-median **0.014 ms**, p95 **0.023 ms**, maximum **0.100 ms** across 2,000 frames.
-A concurrent test run had p95 **0.080 ms** but a **12.780 ms** maximum outlier.
-The original gate checked only p95; the follow-up now also fails on any measured
-sample above 2 ms. Even a passing run is **not a guarantee about future frames**.
+After 200 warm-up frames, the scrub gate requires **every measured frame ≤2 ms**
+and reports p95. It times totals, quantiles and all fill-colour lookups, excluding
+preparation, React and deck.gl draw. On **Apple M1 (macOS arm64, Node 25.8.2)**,
+the isolated 2026-10-15 run measured **16.679 ms** preparation and, over 2,000
+frames, **0.014 ms** median, **0.023 ms** p95 and **0.100 ms** maximum.
+A concurrent run had **0.080 ms** p95 but a **12.780 ms** maximum. The former
+p95-only gate would miss that failure. Passing does not guarantee future frames.
 
-The browser gate asserts a maximum **300 ms** over five fresh browser processes
-**per entry path**: selecting States on a ready basemap, and a direct
-`layer=states` URL without prewarming the basemap. Chrome's shader disk and
-program caches are disabled. It measures asset Resource Timing `responseEnd`
-to the first rendered native state features plus two animation frames. The mark
-`usnm-states-first-paint` is a **presentation proxy**, not a GPU-fence or
-compositor timestamp. Independently, Chromium CDP screencast frame-swap
-timestamps bound the arrival-to-composited-frame interval. The captured frame
-must contain an Illinois-centre pixel matching one of the actual legend's five
-colours, alpha-blended over the known fixture background (within rounding
-tolerance), not just a non-background pixel. This excludes a blank initial
-page, unrelated UI and CPU callbacks. Frame capture/delivery overhead is not
-subtracted. This is composited browser-frame evidence, not physical display
-scanout timing.
+The browser gate requires **≤300 ms** in five fresh processes **per entry path**:
+selecting States on a ready basemap, or opening `layer=states` without basemap
+prewarming. Chrome shader disk and program caches are disabled. Timing starts at
+the asset's Resource Timing `responseEnd` and ends after native features render
+plus two animation frames. `usnm-states-first-paint` is a **presentation proxy**,
+not a GPU fence or compositor timestamp.
 
-The benchmark uses fixture data and a local plain basemap, not real tiles or
-network conditions. Selection checks that no geometry was requested before
-States; the direct URL is already an explicit States selection.
-`usnm-states-parsed` and `usnm-states-first-draw` additionally separate JSON
-decoding and CPU render completion. The proxy waits for a visible map canvas;
-native fills do not live in the separately gated deck canvas.
+Separate CDP screencast frame-swap timestamps bound asset-to-composited-frame
+time. An Illinois-centre pixel must match one of five legend colours blended
+over the fixture background, within rounding tolerance. A merely non-background
+pixel, unrelated UI or CPU callback cannot pass. Capture and delivery overhead
+is included; physical display scanout is not measured.
+
+Tests use fixture data and a plain local basemap, excluding real tiles and
+network conditions. Selection verifies no earlier geometry request; direct URLs
+already select States. `usnm-states-parsed` and `usnm-states-first-draw` separate
+JSON decoding and CPU render completion. The proxy waits for a visible map
+canvas; native fills are outside the separately gated deck canvas.
 
 #### Native MapLibre follow-up (2026-10-16)
 
-On **Apple M1 / macOS arm64 / Chromium 153.0.8010.12 / ANGLE Metal**, unique
-executable vertex-shader variants measured these asset-arrival intervals:
+On an **Apple M1 (macOS arm64, Chromium 153.0.8010.12, ANGLE Metal)**, with
+unique executable vertex-shader variants, the intervals from asset arrival
+were:
 
 | Entry path        | Native draw + two-frame proxy (ms) | Composited state-colour frame (ms) |
 | ----------------- | ---------------------------------- | ---------------------------------- |
 | Select States     | 143.6, 143.0, 151.2, 133.9, 152.6  | 133.4, 129.3, 144.3, 123.8, 145.0  |
 | Direct States URL | 236.8, 251.5, 248.7, 255.8, 241.6  | 244.4, 240.6, 237.9, 263.4, 248.4  |
 
-All ten composited proof pixels were `[189,212,222,255]`, within rounding
-tolerance of the legend ramp over the fixture background. Three new vertex
-program variants were recorded after selection; direct entry recorded five,
-including map startup. No geometry was fetched in Points mode.
-These measured runs meet 300 ms **on this hardware/backend and fixture**.
-They do not certify another laptop, real basemap latency, software rendering,
-or a globally cold driver. No shared OS/driver caches were cleared.
+All ten proof pixels were `[189,212,222,255]`, matching the blended legend ramp.
+Selection recorded three new vertex variants; direct entry recorded five,
+including map startup. Points mode fetched no geometry. The 300 ms pass applies
+only to this hardware, backend and fixture, excluding other laptops, real
+basemap latency, software rendering and fully cold drivers. Shared OS and
+driver caches were not cleared.
 
-After reducing sparse-remap and per-frame allocations (details below), five
-fresh, otherwise isolated Node processes measured 2,000-frame strict maxima
-**0.0602, 0.0558, 0.0574, 0.0998, 0.0519 ms**; preparation **10.0–10.3 ms**
-and p95 **0.0162–0.0170 ms**. A five-process batch run concurrently with the
-browser suite had three strict failures: maxima **6.1104, 3.7456, 5.9017 ms**.
-Only the 3.7456 ms frame overlapped recorded GC (**3.7077 ms**); the others
-have no proven GC attribution. No failed sample is excluded or converted
-to a pass. The isolated measurements demonstrate the arithmetic budget on
-this host, **not a hard wall-time guarantee under contention/GC**. The strict
-assertion remains in place. Neither budget is a production measurement.
+After reducing sparse-remap and per-frame allocations (below), five isolated
+Node processes measured 2,000-frame maxima of **0.0602, 0.0558, 0.0574, 0.0998,
+0.0519 ms**, preparation **10.0–10.3 ms** and p95 **0.0162–0.0170 ms**.
+Five processes concurrent with the browser suite had three failures:
+**6.1104, 3.7456, 5.9017 ms** maxima. Only the 3.7456 ms frame overlapped
+recorded GC (**3.7077 ms**); the other causes are unproven. Failed samples remain
+failures. Isolated runs meet the arithmetic budget on this host, without
+guaranteeing wall time under contention or GC. The strict assertion remains;
+neither budget is a production measurement.
 
 #### Historical deck-renderer measurements and discarded alternatives
 
@@ -193,24 +184,26 @@ measured **64.2, 39.6, 48.1, 47.7, 48.4 ms**, passing the gate.
 Default headless Chromium used **SwiftShader software Vulkan**, not the Apple
 GPU, and measured **2,165.6, 1,677.3, 1,586.5, 1,511.1, 1,485.3 ms**, failing.
 These historical runs did **not** establish the cold first-paint target;
-warm-cache success did not waive the cold/backend failures.
+success with a warm cache did not waive the failures on a cold driver and on
+the software backend.
 
 On 2026-10-16, the process-isolated native-Metal gate measured **60.8, 45.5,
 52.3, 58.4, 51.3 ms**. The corresponding CPU first-draw intervals were **43.4,
 40.3, 48.9, 42.8, 47.4 ms**, and JSON decoding completed **4.3–10.4 ms** after
 the asset arrived. An independent five-process run measured **46.8–84.6 ms**
 for the paint proxy. Disabling Chrome caches did **not** reproduce the original
-489.4 ms failure: the persistent Apple GPU-driver cache remains uncontrolled.
-These are browser-cold, potentially driver-warm results, **not a cold-driver
-pass or an optimization claim**. Clearing shared machine/OS caches or rebooting
-was deliberately not attempted. A driver-cold capture on representative
-hardware, including GPU/compositor completion if strict actual presentation is
-required, remained a release blocker for that renderer. The first failed run did not capture the
-new intermediate marks, so attributing its excess time to shader compilation
-or to the two animation frames would be speculation.
-After integrating the initial basemap readiness gate, the visibility-aware
-five-process native-Metal run measured **52.9, 52.8, 54.7, 81.4, 67.7 ms**.
-The same uncontrolled-driver-cache limitation applies; no cold pass is claimed.
+489.4 ms failure: the persistent Apple GPU driver cache remains outside the
+test's control. These results are browser-cold and possibly driver-warm,
+**not a cold-driver pass or an optimization claim**. Clearing the shared
+machine and OS caches, or rebooting, was not attempted. A capture on a cold
+driver on representative hardware, including GPU or compositor completion if
+strict actual presentation is required, remained a release blocker for that
+renderer. The first failed run did not capture the new intermediate marks, so
+attributing its excess time to shader compilation or to the two animation
+frames would be guesswork. After the initial basemap readiness gate was added,
+the visibility-aware five-process native-Metal run measured **52.9, 52.8,
+54.7, 81.4, 67.7 ms**. The same limit applies, since the driver cache is
+uncontrolled; no cold pass is claimed.
 
 The optional shader diagnostic wraps all vertex shader
 entry points with a random, executable **1–2 × 10⁻⁸ clip-space offset**. This
@@ -218,107 +211,114 @@ subpixel perturbation discourages reusing exactly the same compiled program,
 unlike changing a comment. It checks that at least three new native programs
 were instrumented (the earlier deck diagnostic required its two programs).
 It is **test-only**, not a production shader or a simulated mid-range laptop.
-It cannot reset driver/compiler infrastructure, prove a cache miss at every
-driver layer. The separate frame-colour proof now measures compositor output.
+It cannot reset the driver or compiler infrastructure, or prove a cache miss
+at every driver layer. The separate frame-colour proof measures compositor
+output.
 
 On the same M1, the first five-variant run of the original renderer measured
 **547.1, 280.1, 270.8, 266.5, 273.8 ms** (CPU first draw **530.3 ms** in
 the first sample), reproducing a cold miss without clearing shared OS caches.
 A later matched original-renderer run measured **289.4, 252.6, 260.7, 269.9,
 276.0 ms**. An experimental simpler line-segment border shader measured
-**273.2–280.6 ms**, but did not convincingly beat the matched original;
-that renderer change was discarded. The initial compiler/global-cache state
-still confounds the comparison. No optimization or resolved cold budget is
-claimed. In a separate software-renderer diagnostic, CPU draw **73.2 ms**
-versus proxy **1,398.5 ms** located most delay after CPU submission; native
-Metal CPU **63.0 ms** versus proxy **77.7 ms** did not reproduce the original
-native cold miss. Synchronous shader program-status checks in that native
-sample cost **8.8 + 8.5 ms**. These observations must not be extrapolated to
-the uninstrumented original 489.4 ms sample.
+**273.2–280.6 ms**, which did not clearly beat the matched original, so that
+renderer change was discarded. The initial state of the compiler and the
+global cache still confounds the comparison. No optimization or resolved cold
+budget is claimed. In a separate diagnostic on the software renderer, a CPU
+draw of **73.2 ms** against a proxy of **1,398.5 ms** located most of the
+delay after CPU submission; on native Metal, a CPU draw of **63.0 ms** against
+a proxy of **77.7 ms** did not reproduce the original native cold miss.
+Synchronous shader program-status checks in that native sample cost
+**8.8 + 8.5 ms**. These observations do not carry over to the uninstrumented
+original 489.4 ms sample.
 
 #### Cold-link root cause and minimal reproduction (2026-10-16)
 
-The shader diagnostic additionally times WebGL compilation/link/status calls,
-records parameter enums and captures caller stacks for stalls ≥1 ms. On the
-same M1/Chromium 153 native Metal, a run measured **307.0, 285.0, 262.5, 257.5,
-291.7 ms** (the first sample **fails**). Post-asset synchronous WebGL calls
-accounted for **227.3–255.6 ms**; the two dominant calls were
-`getProgramParameter(LINK_STATUS = 0x8b82)`, **133–152 ms** for polygon fill
-and **94–104 ms** for borders. The stack enters luma.gl 9.4.2
-`WEBGLSharedRenderPipeline._linkShaders → _getLinkStatus`, during the two
-deck Models' construction. This locates the measured delay before CPU draw,
-independently of basemap visibility. A later run's five proxies passed
-**271.4–284.5 ms**, without resolving the prior cold failures.
+The shader diagnostic also times WebGL compile, link and status calls,
+records the parameter enums and captures caller stacks for stalls of 1 ms or
+more. On the same M1, Chromium 153 and native Metal, a run measured **307.0,
+285.0, 262.5, 257.5, 291.7 ms** (the first sample **fails**). Synchronous
+WebGL calls after the asset arrived accounted for **227.3–255.6 ms**; the two
+dominant calls were `getProgramParameter(LINK_STATUS = 0x8b82)`, at
+**133–152 ms** for the polygon fill and **94–104 ms** for the borders. The
+stack enters luma.gl 9.4.2's
+`WEBGLSharedRenderPipeline._linkShaders → _getLinkStatus` while the two deck
+Models are constructed. That places the measured delay before the CPU draw,
+whether or not the basemap is visible. A later run's five proxies passed at
+**271.4–284.5 ms**, which does not resolve the earlier cold failures.
 
-`probe-states-shaders.mjs` captures the app-generated States shader programs once,
-then links unique executable variants in five fresh browser processes on a
-blank page, with no React, deck, basemap, state geometry or drawing. It reports
-host CPU/backend/version, verifies link success and writes no files. Serial
-immediate status queries took **226.6, 255.5, 243.7, 238.5, 244.8 ms**.
-The enqueue-both/nonblocking-KHR-poll control took **151.5, 145.3, 146.7,
-143.3, 157.3 ms**, with zero measured blocking in final status checks.
-This is a **dependency pipeline scheduling bottleneck, not proof of a
-fundamental hardware lower bound** or an implemented app improvement.
+`probe-states-shaders.mjs` captures the States shader programs the app
+generates once, then links unique executable variants in five fresh browser
+processes on a blank page, with no React, deck, basemap, state geometry or
+drawing. It reports the host's CPU, backend and version, verifies that the
+links succeeded and writes no files. Serial immediate status queries took
+**226.6, 255.5, 243.7, 238.5, 244.8 ms**. The control, which enqueues both
+programs and polls KHR completion without blocking, took **151.5, 145.3,
+146.7, 143.3, 157.3 ms**, with no measured blocking in the final status
+checks. This is a **scheduling bottleneck in the dependency's pipeline, not
+proof of a fundamental hardware lower bound** or an improvement implemented in
+the app.
 
 The device supports `KHR_parallel_shader_compile`, but luma.gl 9.4.2 disables
-its asynchronous-compilation feature by default. Merely enabling that device
-flag was tested: it moves the **133 + 95 ms** stalls to
-`getProgramParameter(ACTIVE_ATTRIBUTES = 0x8b89)` in synchronous shader-layout
-introspection during render-pipeline construction. Five proxies still measured
-**263.7–298.6 ms** after previous compiler warm-up. That experimental flag
-was discarded: it does not remove serialization, and a warm-cache pass does
-not certify initial cold behavior.
+its asynchronous-compilation feature by default. Enabling that device flag on
+its own was tested: it moves the **133 + 95 ms** stalls to
+`getProgramParameter(ACTIVE_ATTRIBUTES = 0x8b89)`, in the synchronous
+shader-layout introspection during render-pipeline construction. Five proxies
+still measured **263.7–298.6 ms** after an earlier compiler warm-up. That
+experimental flag was discarded: it does not remove the serialization, and a
+warm-cache pass says nothing about cold behavior.
 
-A separate flat/unlit polygon-shader specialization was also tested and
-discarded: its initial proxy was **454.8 ms**, including **447.1 ms** to CPU
-draw. None of these discarded alternatives changes production. A safe
-dependency-level fix would need to defer **both** linking-status checks and
-shader-layout introspection until asynchronous program completion, while
-preserving layer readiness, picking and error handling. Simply overriding GL
-queries, enabling an experimental flag, or prefetching/delaying the asset
-would not constitute that fix. The raw parallel control is a minimal
-reproducer for pursuing that dependency change. At that stage the 300 ms app
-requirement remained unmet, not waived. The retained native renderer above
-avoids those deck Models rather than overriding private luma behavior.
-With the native build, the raw three-program serial control measured
-**133.0–139.2 ms** and the enqueue-all/poll control **76.7–80.6 ms**. These
-blank-page controls are not app paint measurements.
+A separate flat, unlit specialization of the polygon shader was also tested
+and discarded: its initial proxy was **454.8 ms**, including **447.1 ms** to
+CPU draw. None of these discarded alternatives changes production. A safe fix
+in the dependency would need to defer **both** the link-status checks and the
+shader-layout introspection until the program completes asynchronously, while
+preserving layer readiness, picking and error handling. Overriding GL
+queries, enabling an experimental flag, or prefetching or delaying the asset
+would not be that fix. The raw parallel control is a minimal reproducer for
+pursuing that change in the dependency. At that stage the app's 300 ms
+requirement remained unmet, not waived. The native renderer kept above avoids
+those deck Models rather than overriding luma's private behavior. With the
+native build, the raw three-program serial control measured
+**133.0–139.2 ms** and the enqueue-all-then-poll control **76.7–80.6 ms**.
+These blank-page controls are not measurements of the app's paint.
 
-The latest 5,000-place arithmetic gate (2,000 frames) measured preparation
-**19.009 ms**, p95 **0.023875 ms**, maximum **0.493375 ms**. This validates
-the scoped arithmetic budget on this host, not the shader/draw budget or an
-every-frame timing guarantee on other hardware.
-A subsequent run alongside the MapView unit suite measured p95 **0.028125 ms**
-but maximum **4.663916 ms**. That run passed the old percentile-only gate but
-does **not** meet a strict every-measured-frame 2 ms requirement. The new
-maximum assertion retains such outliers as failures rather than hiding them.
-The first isolated run with the strict maximum assertion correctly **failed**:
-preparation **16.134 ms**, p95 **0.024541 ms**, maximum **5.113209 ms**.
-No CPU/GC/scheduler attribution was recorded for that outlier; it cannot
-honestly be attributed to garbage collection or dismissed as unrelated.
+The latest 5,000-place arithmetic gate (2,000 frames) measured preparation at
+**19.009 ms**, a p95 of **0.023875 ms** and a maximum of **0.493375 ms**. This
+validates the scoped arithmetic budget on this host, not the shader and draw
+budget or a guarantee about every frame on other hardware. A later run
+alongside the MapView unit suite measured a p95 of **0.028125 ms** but a
+maximum of **4.663916 ms**. That run passed the old gate, which checked only
+the percentile, but does **not** meet a strict 2 ms requirement on every
+measured frame. The new maximum assertion keeps such outliers as failures
+rather than hiding them. The first isolated run with the strict maximum
+assertion **failed**, as it should: preparation **16.134 ms**, p95
+**0.024541 ms**, maximum **5.113209 ms**. No CPU, GC or scheduler cause was
+recorded for that outlier, so it can neither be attributed to garbage
+collection nor dismissed as unrelated.
 
-The continued scrub investigation now reports GC entries overlapping any
-over-budget frame, without subtracting them from the measured wall time.
-It also reduces real allocation pressure: state preparation remaps sparse
-place indices during prefix accumulation instead of allocating two temporary
-600,000-entry arrays; per-window prefix scratch buffers are reused privately
-(returned rows remain independent); quantile collection no longer creates
+The scrub investigation's follow-up reports the GC entries that overlap any
+over-budget frame, without subtracting them from the measured wall time. It
+also reduces allocation pressure. State preparation remaps sparse place
+indices during prefix accumulation instead of allocating two temporary
+600,000-entry arrays. Per-window prefix scratch buffers are reused privately,
+and the returned rows stay independent. Quantile collection no longer creates
 one small array per state, and colour lookup no longer allocates a closure
-per row. Unit tests preserve input cubes and prior-window snapshots.
-After these changes, one run measured preparation **12.598 ms**, p95
-**0.017500 ms**, maximum **3.064042 ms**, overlapping a recorded
-**3.038375 ms** GC pause. That run's strict maximum gate **failed**; the GC
-pause is real observed wall time, not a reason to waive it. Prior instrumented
-outliers **5.693417 ms** and **4.423750 ms** likewise overlapped recorded
-GC pauses of **5.605417 ms** and **4.363625 ms**. These are observed runs,
-not a controlled causal benchmark proving any maximum-latency improvement.
+per row. The unit tests check that input cubes and prior-window snapshots are
+preserved. After these changes, one run measured preparation at **12.598 ms**,
+a p95 of **0.017500 ms** and a maximum of **3.064042 ms**, which overlapped a
+recorded GC pause of **3.038375 ms**. That run's strict maximum gate
+**failed**; the GC pause is real observed wall time, not a reason to waive
+it. Earlier instrumented outliers of **5.693417 ms** and **4.423750 ms**
+likewise overlapped recorded GC pauses of **5.605417 ms** and **4.363625 ms**.
+These are observed runs, not a controlled benchmark that proves any
+improvement in maximum latency.
 
-Read-only public metadata on 2026-10-15 (`pages-v20261010-2`) listed **1,617
-places**, none missing state codes; all codes are represented by the boundary
-asset, including PR and VI. The published catalog is below `MAX_PLACES=5,000`,
-so no query over those known places can exceed it today. This is not a survey
-of real queries or orphaned index place IDs. The tested truncation warning
-remains necessary for future growth.
+The public metadata read on 2026-10-15 (`pages-v20261010-2`) listed **1,617
+places**, none without a state code, and the boundary asset has every code,
+PR and VI included. The published catalog is below `MAX_PLACES=5,000`, so no
+query over those known places can exceed the cap today. This is not a survey
+of real queries or of orphaned place IDs in the index. The truncation
+warning, which is tested, stays for future growth.
 
 Not yet built: compare mode, the first-appearance layer, the coverage overlay, embed mode, export beyond the available CSV downloads, and the share dialog beyond copying the link.
 
