@@ -25,7 +25,7 @@ changes the public index.
 
 BOINC downloads tasks and applications, runs them, and returns results and
 diagnostics automatically. **Participation includes production and experimental
-tasks, including Qwen**, through the same account and client. Your CPU, GPU and
+tasks, including Qwen**, through the same account and client. Your CPU/GPU and
 resource choices apply to both; experiments need no separate checkbox.
 Operators control campaign rollout.
 
