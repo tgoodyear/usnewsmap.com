@@ -199,7 +199,7 @@ pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
                 });
                 continue;
             };
-            profile
+            profile.profile
         } else {
             r.lang.clone()
         };

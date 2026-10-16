@@ -894,3 +894,26 @@ Then run `gold-prepare` as above.
 - run time and memory on a real host; `rsc_fpops_est` 5e12 is a guess.
 
 Volunteers' steps are in [boinc-volunteer.md](boinc-volunteer.md).
+
+### Engine routing
+
+Production selection is shared through `usnm_ocr_contract::routing::EngineKind`
+and `EngineRoute { kind, profile }`. `EngineKind::for_language` chooses
+`NdlocrLite` (`ndlocr-lite`) for `jpn` and `Tesseract` for every other language.
+`usnm_ocr_worker::engine::candidates` exposes engine/profile preferences
+(Japanese: `default`); `route(language, installed)` resolves only capabilities
+of a Tesseract node, returning an `EngineRoute` or `None`. Sampling's existing
+`no_model` counter includes an unavailable selected engine, not just missing
+Tesseract weights. There is no Japanese fallback to Tesseract.
+
+`boinc::Engine.kind` carries that selection through job identity, validation,
+result matching and the `ocr_engine` family. It defaults to Tesseract and is
+omitted when serializing Tesseract jobs, preserving existing JSON, identity
+hashes and ledger tags. Tesseract-only BOINC workers reject other kinds before
+checking models or starting Tesseract. An NDLOCR-Lite worker can dispatch on
+`job.engine.kind`, using the existing pinned image, version, profile and model
+digest fields; its engine image and staging support are separate work (#626).
+For on-prem contract adapters, the hello's family must match the selected
+engine and its models must pass the catalog's existing production gate. The
+current survey-only NDLOCR-Lite catalog entry does not enable execution.
+Dashboard routes retain the engine/version as well as the profile.
