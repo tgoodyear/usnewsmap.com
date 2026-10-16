@@ -13,8 +13,9 @@ joined PC can sit idle for a while. That is normal.
 - Windows 11, or Windows 10 22H2 with current updates, on an Intel or AMD
   64-bit PC. Windows on ARM and Windows Server are not supported.
 - For GPU work, an NVIDIA GPU with the official NVIDIA driver 551.61 or newer
-  and at least 3 GB of free video memory. AMD and Intel GPUs can only do CPU
-  work.
+  and at least 3 GB of free video memory. A PC without one (AMD or Intel
+  graphics, or no GPU) can only offer CPU time: add `-AllowCpuOnly` to both
+  helper commands below. CPU work is optional and not always available.
 - 6 GB of RAM and 12 GB of free disk, or 18 GB if your GPU has 7 GB or more of
   video memory.
 
@@ -32,15 +33,19 @@ joined PC can sit idle for a while. That is normal.
    .\scripts\boinc\setup_windows_volunteer.ps1
    ```
 
-   If Windows refuses to run the script, allow scripts for this window only
-   and try again:
+   If Windows refuses to run the script, run `Get-ExecutionPolicy -List`.
+   When the effective policy is `Restricted` and both `MachinePolicy` and
+   `UserPolicy` are `Undefined`, allow scripts for this window only and try
+   again:
 
    ```powershell
    Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
    ```
 
-   If it is still blocked because the ZIP came from the internet, unblock that
-   one file: `Unblock-File .\scripts\boinc\setup_windows_volunteer.ps1`.
+   Any other policy was set on purpose: do not lower it; ask whoever manages
+   the PC. If the script is still blocked because the ZIP came from the
+   internet, unblock that one file:
+   `Unblock-File .\scripts\boinc\setup_windows_volunteer.ps1`.
 
 4. Run it for real:
 

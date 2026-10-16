@@ -397,14 +397,27 @@ Test-Case 'task summary counts only this project, by state, from a read-only que
             '   name: usnm_qwen_3',
             '   project URL: https://boinc.usnewsmap.com.evil.invalid/',
             '   state: downloaded',
+            '   active_task_state: UNINITIALIZED',
+            '5) -----------',
+            '   name: usnm_qwen_4',
+            '   project URL: https://boinc.usnewsmap.com/',
+            '   state: compute error',
+            '   active_task_state: UNINITIALIZED',
+            '6) -----------',
+            '   name: usnm_qwen_5',
+            '   project URL: https://boinc.usnewsmap.com/',
+            '   state: upload failed',
             '   active_task_state: UNINITIALIZED'
         ) -join "`n"
         return [pscustomobject]@{ ExitCode = 0; Output = $output; ErrorOutput = '' }
     }
     $summary = Get-ProjectTaskSummary ([pscustomobject]@{ Directory = $PSScriptRoot; DataDirectory = $PSScriptRoot })
-    Assert-True ($summary.Total -eq 2) "two usnewsmap tasks, got $($summary.Total)"
+    Assert-True ($summary.Total -eq 4) "four usnewsmap tasks, got $($summary.Total)"
     Assert-True ($summary.ByState['executing'] -eq 1) 'running task reported by its active state'
     Assert-True ($summary.ByState['uploaded'] -eq 1) 'finished task reported by its state'
+    Assert-True ($summary.ByState['compute error'] -eq 1) 'multi-word failure state kept whole'
+    Assert-True ($summary.ByState['upload failed'] -eq 1) 'multi-word upload failure kept whole'
+    Assert-True (-not $summary.ByState.Contains('compute')) 'failure state is not truncated to its first word'
 }
 
 Test-Case 'task summary redacts RPC failures like the attachment check' {

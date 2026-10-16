@@ -291,8 +291,10 @@ function Get-ProjectTaskSummary($Installation) {
         if ($block -notmatch '(?im)^\s*project URL:\s*https://boinc\.usnewsmap\.com/\s*$') { continue }
         $total++
         $state = 'unknown'
-        if ($block -match '(?im)^\s*state:\s*(\S+)') { $state = $Matches[1].ToLowerInvariant() }
-        if ($block -match '(?im)^\s*active_task_state:\s*(\S+)' -and $Matches[1] -ne 'UNINITIALIZED') {
+        # States can be more than one word ("compute error", "upload failed"):
+        # keep the whole value so a failure is reported as one.
+        if ($block -match '(?im)^\s*state:\s*(.+?)\s*$') { $state = $Matches[1].ToLowerInvariant() }
+        if ($block -match '(?im)^\s*active_task_state:\s*(.+?)\s*$' -and $Matches[1] -ne 'UNINITIALIZED') {
             $state = $Matches[1].ToLowerInvariant()
         }
         if ($summary.Contains($state)) { $summary[$state]++ } else { $summary[$state] = 1 }
