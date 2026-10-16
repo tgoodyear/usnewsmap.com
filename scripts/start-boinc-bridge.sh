@@ -87,9 +87,12 @@ ALLOW_DIRTY=false
 boinc_load_settings
 boinc_az_check
 if [ "$TARGET" = handoff ]; then
-  names_file=infra/names/$ENV_NAME.json
-  job=$(jq -er .boincHandoffJob "$names_file") || die "no boincHandoffJob in $names_file"
-  JOB_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
+  # shellcheck source=scripts/lib/env.sh
+  . scripts/lib/env.sh
+  job=$(aget BOINC_HANDOFF_JOB)
+  [ -n "$job" ] || die "the stack $STACK has no BOINC_HANDOFF_JOB output; run scripts/provision.sh --env $ENV_NAME"
+  JOB_RG=$(aget AZURE_RESOURCE_GROUP)
+  [ -n "$JOB_RG" ] || die "the stack $STACK has no AZURE_RESOURCE_GROUP output; run scripts/provision.sh --env $ENV_NAME"
   PROVISION="scripts/provision.sh --env $ENV_NAME"
   LOGS="the main environment's Log Analytics workspace (ContainerAppConsoleLogs)"
 else

@@ -192,16 +192,35 @@ class StartBridge(unittest.TestCase):
                 "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated",
                 "REFERENCE_URL": "https://d/reference", "OUT_URL": "https://x/ocr-out"}
         tmpl = json.dumps({"containers": [{"name": "handoff", "env": [{"name": k, "value": v} for k, v in base.items()]}]})
+        settings_home = os.path.join(self.tmp, "settings")
+        env_dir = os.path.join(settings_home, "prod")
+        os.makedirs(env_dir)
+        with open(os.path.join(env_dir, ".env"), "w") as f:
+            f.write('AZURE_RESOURCE_GROUP="rg-usnm-prod"\n')
+            f.write('BOINC_HANDOFF_JOB="usnm-boinc-handoff-caj-prod"\n')
         r = self.run_script("--target", "handoff", "--step", "collect", "--var", "JOB_ID=" + "a" * 64,
-                            STUB_TEMPLATE=tmpl)
+                            STUB_TEMPLATE=tmpl, USNM_SETTINGS_HOME=settings_home)
         self.assertEqual(r.returncode, 0, r.stderr)
-        update = [c for c in self.calls() if c.startswith("containerapp job update")][0]
+        update = [c for c in self.calls() if c.startswith("containerapp job update")][-1]
         self.assertIn("--name usnm-boinc-handoff-caj-prod --resource-group rg-usnm-prod", update)
         self.assertIn("HANDOFF_STEP=collect", update)
         self.assertNotIn("BRIDGE_STEP", update)
         r = self.run_script("--target", "handoff", "--step", "collect", "--var", "HANDOFF_STEP=x",
-                            STUB_TEMPLATE=tmpl)
+                            STUB_TEMPLATE=tmpl, USNM_SETTINGS_HOME=settings_home)
         self.assertEqual(r.returncode, 1)
+
+    def test_dev_handoff_output_comes_from_dev_environment_settings(self):
+        settings_home = os.path.join(self.tmp, "settings")
+        env_dir = os.path.join(settings_home, "dev")
+        os.makedirs(env_dir)
+        with open(os.path.join(env_dir, ".env"), "w") as f:
+            f.write('BOINC_HANDOFF_JOB="usnm-boinc-handoff-caj-dev"\n')
+        command = "ENV_NAME=dev; die() { exit 1; }; . scripts/lib/env.sh; aget BOINC_HANDOFF_JOB"
+        output = subprocess.check_output(
+            ["bash", "-c", command], cwd=ROOT,
+            env={**os.environ, "USNM_SETTINGS_HOME": settings_home}, text=True,
+        )
+        self.assertEqual(output, "usnm-boinc-handoff-caj-dev\n")
 
 
 class BaseVarsMatchBicep(unittest.TestCase):
