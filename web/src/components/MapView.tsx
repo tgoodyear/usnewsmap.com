@@ -1,14 +1,16 @@
 // Map (07 §7.4): MapLibre basemap with a deck.gl overlay. Loaded lazily so
 // the map stack stays off the critical path.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { Feature, FeatureCollection, Geometry } from "geojson";
 import { Map as MapLibreMap, NavigationControl, setWorkerUrl, type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 // MapLibre finds its worker relative to its own module at runtime, which a
 // bundler can't follow; bundle the worker explicitly and hand it the URL.
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { ScatterplotLayer } from "@deck.gl/layers";
+import { GeoJsonLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import type { Layer, Norm } from "../state/url";
 import { colorFor, timeColor } from "../lib/scale";
@@ -17,11 +19,18 @@ import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
 import { DEFAULT_ZOOM, STYLE_URL, US_CENTER } from "../lib/basemap";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
+import { stateColor, stateDescription, type StateTotal } from "../engine/states";
+import boundariesUrl from "../assets/states.geojson?url";
+
+type StateFeature = Feature<Geometry, { STUSPS: string; NAME: string }>;
 
 interface Props {
   points: MapPoint[];
   layer: Layer;
   norm: Norm;
+  states?: StateTotal[];
+  stateBreaks?: number[];
+  onStateFilter?: (code: string) => void;
   /** The largest circle's value: pages with a match, or expected matches in the relative-rate view. */
   maxValue: number;
   selected: string;
@@ -81,6 +90,30 @@ const PLAIN_STYLE: StyleSpecification = {
 };
 
 export default function MapView(props: Props) {
+  const boundaries = useQuery({
+    queryKey: ["state-boundaries"],
+    queryFn: async ({ signal }) => {
+      const response = await fetch(boundariesUrl, { signal });
+      if (!response.ok) throw new Error("State boundaries could not be loaded");
+      const data = (await response.json()) as FeatureCollection<Geometry, StateFeature["properties"]>;
+      performance.mark("usnm-states-parsed");
+      return data;
+    },
+    enabled: props.layer === "states" && props.norm === "raw",
+    staleTime: Infinity,
+    retry: false,
+  });
+  const [stateTip, setStateTip] = useState<{ code: string; x: number; y: number; pinned: boolean } | null>(null);
+  useEffect(() => {
+    if (!stateTip) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setStateTip(null);
+    };
+    document.addEventListener("keydown", dismiss);
+    return () => document.removeEventListener("keydown", dismiss);
+  }, [stateTip]);
+  const stateRows = useRef(new Map<string, StateTotal>());
+  const paintMeasured = useRef(false);
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const overlay = useRef<MapboxOverlay | null>(null);
@@ -229,7 +262,7 @@ export default function MapView(props: Props) {
     m.jumpTo({ center: [lng, lat], zoom });
   }, [zoom, lng, lat]);
 
-  const { points, layer, norm, maxValue, selected } = props;
+  const { points, layer, norm, maxValue, selected, states, stateBreaks } = props;
   useEffect(() => {
     const o = overlay.current;
     if (!o) return;
@@ -237,83 +270,199 @@ export default function MapView(props: Props) {
     // have zero radius. A fixed-size dataset lets deck.gl update attribute
     // values in place on each playback step instead of rebuilding buffers.
     drawn.current = { points, maxValue, layer, norm };
+    stateRows.current = new Map((states ?? []).map((r) => [r.code, r]));
+    if (tooltip.current) tooltip.current.hidden = true;
     const layers =
-      norm === "skew"
-        ? [
-            new ScatterplotLayer<MapPoint>({
-              id: "skew",
-              data: points,
-              stroked: true,
-              radiusUnits: "pixels",
-              lineWidthUnits: "pixels",
-              getRadius: (p) => skewRadius(p, maxValue),
-              // Hollow rings (county or state precision) carry the colour on the ring.
-              getFillColor: (p) => (p.precision === "city" ? skewFill(p) : [0, 0, 0, 0]),
-              // A hollow ring keeps its colour when selected (the colour is all it shows); the wider
-              // line marks the selection. A filled city circle gets a dark outline instead.
-              getLineColor: (p) =>
-                p.precision !== "city"
-                  ? skewFill(p)
-                  : p.id === selected
-                    ? [20, 20, 20, 255]
-                    : [40, 40, 40, skewAlpha(p) === ALPHA_CLEAR ? 170 : 70],
-              getLineWidth: (p) =>
-                !p.skew || p.skew.pages <= 0
-                  ? 0
-                  : p.precision === "city"
-                    ? p.id === selected
-                      ? 3
-                      : 1
-                    : p.id === selected
-                      ? 4.5
-                      : 2.5,
-              updateTriggers: {
-                getRadius: [maxValue, points],
-                getFillColor: [points],
-                getLineColor: [points, selected],
-                getLineWidth: [selected, points],
-              },
-            }),
-          ]
-        : layer === "heat"
+      layer === "states" && norm === "raw"
+        ? boundaries.data && states && states.length > 0
           ? [
-              new HeatmapLayer<MapPoint>({
-                id: "heat",
-                data: points,
-                getPosition: (p) => p.position,
-                getWeight: (p) => p.value,
-                radiusPixels: 40,
+              new GeoJsonLayer({
+                id: "states",
+                data: boundaries.data,
+                pickable: true,
+                stroked: true,
+                filled: true,
+                getFillColor: (f) =>
+                  stateColor(stateRows.current.get(f.properties?.STUSPS as string), stateBreaks ?? []),
+                getLineColor: [55, 55, 55, 220],
+                lineWidthUnits: "pixels",
+                getLineWidth: 0.8,
+                updateTriggers: { getFillColor: [states, stateBreaks] },
+                onHover: (info) => {
+                  if (!container.current?.classList.contains("map--basemap-ready")) return;
+                  const code = (info.object as StateFeature | undefined)?.properties.STUSPS;
+                  const x = Math.min(info.x + 12, Math.max(0, (container.current?.clientWidth ?? 320) - 280));
+                  setStateTip((old) => (old?.pinned ? old : code ? { code, x, y: info.y, pinned: false } : null));
+                },
+                onClick: (info) => {
+                  if (!container.current?.classList.contains("map--basemap-ready")) return;
+                  const code = (info.object as StateFeature | undefined)?.properties.STUSPS;
+                  if (!code) return;
+                  if (window.matchMedia("(pointer: coarse)").matches) {
+                    setStateTip({ code, x: info.x, y: info.y, pinned: true });
+                  } else {
+                    latest.current.onStateFilter?.(code);
+                  }
+                },
               }),
             ]
-          : [
+          : []
+        : norm === "skew"
+          ? [
               new ScatterplotLayer<MapPoint>({
-                id: "points",
+                id: "skew",
                 data: points,
                 stroked: true,
                 radiusUnits: "pixels",
                 lineWidthUnits: "pixels",
-                // Area ∝ hits, so radius ∝ √hits (perceptually honest).
-                getRadius: (p) => radiusOf(p.value, maxValue),
-                getFillColor: (p) => (p.precision === "city" ? pointColor(p, norm, maxValue) : [0, 0, 0, 0]),
-                getLineColor: (p) => (p.id === selected ? [20, 20, 20, 255] : pointColor(p, norm, maxValue)),
-                getLineWidth: (p) => (p.value <= 0 ? 0 : p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5),
+                getRadius: (p) => skewRadius(p, maxValue),
+                // Hollow rings (county or state precision) carry the colour on the ring.
+                getFillColor: (p) => (p.precision === "city" ? skewFill(p) : [0, 0, 0, 0]),
+                // A hollow ring keeps its colour when selected (the colour is all it shows); the wider
+                // line marks the selection. A filled city circle gets a dark outline instead.
+                getLineColor: (p) =>
+                  p.precision !== "city"
+                    ? skewFill(p)
+                    : p.id === selected
+                      ? [20, 20, 20, 255]
+                      : [40, 40, 40, skewAlpha(p) === ALPHA_CLEAR ? 170 : 70],
+                getLineWidth: (p) =>
+                  !p.skew || p.skew.pages <= 0
+                    ? 0
+                    : p.precision === "city"
+                      ? p.id === selected
+                        ? 3
+                        : 1
+                      : p.id === selected
+                        ? 4.5
+                        : 2.5,
                 updateTriggers: {
-                  getRadius: [maxValue],
-                  getFillColor: [maxValue, norm, points],
-                  getLineColor: [maxValue, selected, norm, points],
+                  getRadius: [maxValue, points],
+                  getFillColor: [points],
+                  getLineColor: [points, selected],
                   getLineWidth: [selected, points],
                 },
               }),
-            ];
+            ]
+          : layer === "heat"
+            ? [
+                new HeatmapLayer<MapPoint>({
+                  id: "heat",
+                  data: points,
+                  getPosition: (p) => p.position,
+                  getWeight: (p) => p.value,
+                  radiusPixels: 40,
+                }),
+              ]
+            : [
+                new ScatterplotLayer<MapPoint>({
+                  id: "points",
+                  data: points,
+                  stroked: true,
+                  radiusUnits: "pixels",
+                  lineWidthUnits: "pixels",
+                  // Area ∝ hits, so radius ∝ √hits (perceptually honest).
+                  getRadius: (p) => radiusOf(p.value, maxValue),
+                  getFillColor: (p) => (p.precision === "city" ? pointColor(p, norm, maxValue) : [0, 0, 0, 0]),
+                  getLineColor: (p) => (p.id === selected ? [20, 20, 20, 255] : pointColor(p, norm, maxValue)),
+                  getLineWidth: (p) => (p.value <= 0 ? 0 : p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5),
+                  updateTriggers: {
+                    getRadius: [maxValue],
+                    getFillColor: [maxValue, norm, points],
+                    getLineColor: [maxValue, selected, norm, points],
+                    getLineWidth: [selected, points],
+                  },
+                }),
+              ];
     // No attribute transitions: deck.gl runs them on the GPU with transform
     // feedback and reads buffers back, which stalls every playback step.
-    o.setProps({ layers });
-  }, [points, layer, norm, maxValue, selected]);
+    let paintFrame = 0;
+    let measuring = false;
+    o.setProps({
+      layers,
+      onAfterRender: () => {
+        if (layer !== "states" || layers.length === 0 || paintMeasured.current || measuring) return;
+        const asset = performance.getEntriesByType("resource").find((entry) => entry.name.endsWith(boundariesUrl)) as
+          PerformanceResourceTiming | undefined;
+        if (!asset) return;
+        measuring = true;
+        if (performance.getEntriesByName("usnm-states-first-draw").length === 0) {
+          performance.measure("usnm-states-first-draw", { start: asset.responseEnd, end: performance.now() });
+        }
+        // Never count a draw behind the basemap opacity gate as a visible paint.
+        // This is a presentation proxy, not a compositor/GPU fence timestamp.
+        const measurePaint = () => {
+          const canvas = container.current?.querySelector("#search-overlay");
+          if (!canvas || Number(getComputedStyle(canvas).opacity) <= 0) {
+            paintFrame = requestAnimationFrame(measurePaint);
+            return;
+          }
+          paintMeasured.current = true;
+          performance.measure("usnm-states-first-paint", {
+            start: asset.responseEnd,
+            end: performance.now(),
+            detail: "First deck draw plus two animation frames, waiting for visible overlay; presentation proxy",
+          });
+        };
+        paintFrame = requestAnimationFrame(() => {
+          paintFrame = requestAnimationFrame(measurePaint);
+        });
+      },
+    });
+    return () => cancelAnimationFrame(paintFrame);
+  }, [points, layer, norm, maxValue, selected, states, stateBreaks, boundaries.data]);
+
+  const tipRow =
+    layer === "states" && norm === "raw" && stateTip ? states?.find((r) => r.code === stateTip.code) : undefined;
 
   return (
     <div className="map-wrap">
       <div ref={container} className="map map--gated" data-testid="map" />
       <div ref={tooltip} className="map-tooltip" role="tooltip" hidden />
+      {layer === "states" && boundaries.isError && (
+        <div className="map-state-error" role="alert">
+          State boundaries could not be loaded.{" "}
+          <button type="button" className="button button--quiet" onClick={() => void boundaries.refetch()}>
+            Retry boundaries
+          </button>
+          . The states table remains available.
+        </div>
+      )}
+      {layer === "states" && boundaries.isPending && (
+        <p className="map-state-error" role="status">
+          Loading state boundaries…
+        </p>
+      )}
+      {tipRow && stateTip && (
+        <div
+          className={`map-state-tip${stateTip.pinned ? " map-state-tip--pinned" : ""}`}
+          role={stateTip.pinned ? "group" : "tooltip"}
+          aria-label={stateTip.pinned ? `${tipRow.name} details` : undefined}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setStateTip(null);
+          }}
+          style={stateTip.pinned ? undefined : { left: stateTip.x, top: Math.max(0, stateTip.y - 90) }}
+        >
+          <p>{stateDescription(tipRow)}</p>
+          {stateTip.pinned && (
+            <>
+              <button
+                type="button"
+                className="button button--quiet"
+                onClick={() => {
+                  props.onStateFilter?.(tipRow.code);
+                  setStateTip(null);
+                }}
+              >
+                Add state filter: {tipRow.name}
+              </button>
+              <button type="button" className="button button--quiet" onClick={() => setStateTip(null)}>
+                Dismiss state details
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
