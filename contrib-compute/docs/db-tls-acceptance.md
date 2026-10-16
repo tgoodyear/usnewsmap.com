@@ -183,6 +183,59 @@ and comparable OCR throughput against an agreed non-disruption rule. Local
 server success does not authorize account installation or node activation, and
 does not make paid Azure resources the only possible dev path.
 
+### Existing-resource node readiness
+
+Build the actual pinned stable client away from a production OCR node:
+
+```sh
+scripts/boinc/build-node-client-container.sh --out "$PWD/target/boinc-node-client"
+```
+
+The pinned AlmaLinux 9 builder uses the existing `build-node-client.sh`
+(`ae68f3290ac82d08b4d9767acfe0daaccaeeb883`, stable 8.2.13), one make job, and
+an amd64 container bounded to 1.5 GiB build memory. It exports binaries, source
+commit, build image ID and relative SHA256SUMS; it never installs on a node.
+Actual configure requires `zlib-devel` as well as curl/OpenSSL development
+packages. CI builds the real client and retains its bundle for seven days.
+An exported bundle still requires actual RHEL ABI/version verification before
+any installation; a successful builder is not host/client acceptance.
+
+Take a genuine read-only worker snapshot **before** installing or starting a
+canary, and again during/after any separately approved bounded cohort:
+
+```sh
+python3 scripts/boinc/observe_node.py \
+  --host claude@usnm-ocr-node4-arcs-prod.tjg.fyi \
+  --window-seconds 900 --out target/node4-before.json
+```
+
+The identical checked-in observer runs through SSH stdin under read-only sudo
+commands, installs no host files and never starts/stops a service. It counts
+actual successful `page done` events in the complete window, not an extrapolated
+gap between selected page samples. It reports pages/hour, median page duration,
+last completion age, errors, engine/language/queue composition, unchanged worker
+PID/start time, CPU/memory cgroup counters, host memory/load and available pressure
+metrics. No page text, credentials or account keys are returned. Output refuses
+to overwrite an existing evidence file.
+
+`baseline_ready` requires an active worker, at least ten successful pages in the
+window, no errors and a completion within five minutes. These are conservative
+**pre-pilot readiness** checks, not calibrated regression/throughput thresholds.
+They must not be used to claim that two windows have equivalent workloads or
+that an after-window passed a non-disruption contract. Choose the bounded
+cohort, observation windows and rollback rule before starting; preserve worker
+PID, queue/engine mix and actual resource deltas in the evidence.
+
+An actual Node 4 pre-pilot snapshot at 2026-10-16 11:22 UTC had one successful
+page in 900 seconds (4/hour), last completion 891 seconds earlier, while three
+existing Tesseract containers each consumed about 96% CPU for 14–15 minutes.
+The production worker was still active, unchanged since October 14, with no
+OOM events. No BOINC account, subordinate IDs, client or service was installed;
+adding pilot load was withheld. An active process alone is not a comparable
+healthy throughput baseline. Let the owner resolve the existing workload or
+obtain a naturally valid fresh baseline rather than restarting/replacing the
+worker, attributing the existing slowdown to BOINC, or purchasing dev resources.
+
 Production `require_secure_transport` remains OFF. Keep #464 open until these
 remaining gates and a reviewed migration plan are satisfied. #631 remains draft;
 preserve current production pins. The paid dev/DNS proposal in #634 remains

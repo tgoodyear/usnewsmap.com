@@ -1,0 +1,6 @@
+FROM mirror.gcr.io/library/almalinux:9@sha256:9819dc675b67b595c2b59e42be7763fca1a8bb217fa5944e04daa22e9a64db16
+RUN dnf -y -q install git gcc-c++ make autoconf automake libtool pkgconf-pkg-config \
+      libcurl-devel openssl-devel zlib-devel ca-certificates tar gzip file \
+ && dnf clean all
+COPY scripts/boinc/build-node-client.sh /checks/build-node-client.sh
+RUN bash /checks/build-node-client.sh --out /build

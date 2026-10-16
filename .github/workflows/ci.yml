@@ -180,6 +180,27 @@ jobs:
       - run: shellcheck -x -S warning scripts/boinc/check-db-tls.sh
       - run: scripts/boinc/check-db-tls.sh
 
+  boinc-node-client:
+    name: BOINC stable node client (EL9 build, no host installation)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the actual pinned client away from production
+        run: |
+          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_observe_node.py
+          shellcheck -x -S warning scripts/boinc/build-node-client-container.sh
+          scripts/boinc/build-node-client-container.sh --out "$PWD/target/boinc-node-client"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boinc-node-client-el9
+          retention-days: 7
+          path: target/boinc-node-client/
+
   # The BOINC server image and the bridge job image (contrib-compute/images). Built, smoke-tested
   # and not pushed: where they are published is the maintainer's step (docs/images.md).
   contrib-images:
