@@ -54,5 +54,6 @@ ENV PATH=/app:$PATH HOME=/tmp \
 # the check is off; the plan class asks for CUDA 12.0 and the diagnostics record the driver.
 ENV NVIDIA_DISABLE_REQUIRE=1
 # Stock docker_wrapper mounts the BOINC slot at /work (job-cpu.toml, job-gpu.toml).
+HEALTHCHECK NONE
 ENTRYPOINT []
 CMD ["/usr/local/bin/usnm-boinc", "work", "--dir", "/work"]

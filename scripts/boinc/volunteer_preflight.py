@@ -411,6 +411,26 @@ def check_disk(paths, required, disk_usage=None, co_located=False):
     return checked
 
 
+def _ensure_runtime_systemd_links(
+    xdg_runtime_dir: Path,
+    uid: int,
+    user_runtime_root: Path = Path("/run/user"),
+) -> None:
+    """Link systemd and bus sockets from /run/user/<uid> into isolated XDG_RUNTIME_DIR.
+
+    Rootless Podman inspects $XDG_RUNTIME_DIR/systemd when creating a container from
+    an image that defines an OCI HEALTHCHECK.
+    """
+    user_dir = user_runtime_root / str(uid)
+    if not xdg_runtime_dir.is_dir() or not user_dir.is_dir():
+        return
+    for name in ("systemd", "bus"):
+        target = user_dir / name
+        link = xdg_runtime_dir / name
+        if target.exists() and not link.exists() and not link.is_symlink():
+            link.symlink_to(target)
+
+
 def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tomls=None):
     runner = runner or run
     if not IMAGE.fullmatch(image):
@@ -419,15 +439,21 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
         raise PreflightError("Run the preflight as the BOINC service user inside its systemd service, not with sudo/root.")
     if service is not None:
         uid = os.geteuid()
+        svc_stem = service.removesuffix(".service")
+        allowed_xdg = {
+            f"/run/usnm-boinc-{uid}-{svc_stem}",
+            f"/run/user/{uid}/usnm-boinc-{svc_stem}",
+        }
         expected = {
             "HOME": str(data_dir),
-            "XDG_RUNTIME_DIR": f"/run/usnm-boinc-{uid}-{service.removesuffix('.service')}",
             "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
             "CONTAINERS_CONF": f"/etc/usnm-boinc-volunteer/{service}/containers.conf",
             "CONTAINERS_STORAGE_CONF": f"/etc/usnm-boinc-volunteer/{service}/storage.conf",
         }
-        if any(os.environ.get(key) != value for key, value in expected.items()):
+        xdg_val = os.environ.get("XDG_RUNTIME_DIR")
+        if xdg_val not in allowed_xdg or any(os.environ.get(key) != value for key, value in expected.items()):
             raise PreflightError("Managed Podman service environment was overridden or unset; resolve conflicting systemd drop-ins or EnvironmentFile settings.")
+        _ensure_runtime_systemd_links(Path(xdg_val), uid)
     limits_list = resolve_job_limits(data_dir, job_toml=job_toml, job_tomls=job_tomls)
     if service is not None:
         (data_dir / "usnm-podman-tmp").mkdir(mode=0o700, exist_ok=True)
