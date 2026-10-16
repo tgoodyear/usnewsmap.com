@@ -531,7 +531,8 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source, ca
             scan_format = entry.get("format", "jpeg")
             require(scan_format in ("jpeg", "jp2"), "unsupported cached scan format")
             token(entry["doc_id"])
-            require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", entry["batch"]),
+            require(isinstance(entry["batch"], str) and
+                    re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", entry["batch"]),
                     "invalid cached scan batch")
             require(type(entry["batch_version"]) is int and entry["batch_version"] > 0,
                     "invalid batch_version")
@@ -718,7 +719,9 @@ def snapshot(db):
             value = load_json(row["data"])
             stage_id = value["stage_id"]
             if ids.count(stage_id) > 1:
-                stage_id = stage_id[:243] + "@" + digest(row["source"])[:12]
+                stage_id = stage_id[:191] + "@" + digest([row["source"], stage_id])
+            require(stage_id not in {stage["id"] for stage in stages},
+                    "aggregate exported stage identity collision")
             provenance = " [source=" + row["source"] + "; observed_at=" + row["observed_at"] + "]"
             stages.append({"id": stage_id, "label": value["label"], "count": value["count"],
                            "state": value["state"],
@@ -736,7 +739,7 @@ def snapshot(db):
         return {"schema_version": 1, "observed_at": observed, "generated_at": now(),
                 "producer": "corpus-catalog", "coverage": coverage, "stages": stages,
                 "runs": {"total": count("""SELECT count(*) FROM
-                    (SELECT DISTINCT source,run_id FROM latest WHERE kind IN ('run','execution'))"""),
+                    (SELECT DISTINCT source,run_id,page_id FROM latest WHERE kind IN ('run','execution'))"""),
                          "pages": count("SELECT count(DISTINCT page_id) FROM latest WHERE kind IN ('run','execution')")},
                 "artifacts": {
                     "locations": count("SELECT count(*) FROM latest WHERE kind='artifact'"),
@@ -758,7 +761,8 @@ def plan_missing(db, page_id, limit=50, after=""):
 def atomic_snapshot(path, value, db):
     path = Path(path)
     require(path.resolve() != Path(db).resolve() and
-            path.resolve() not in (Path(str(db) + "-wal").resolve(), Path(str(db) + "-shm").resolve()),
+            path.resolve() not in tuple(Path(str(db) + suffix).resolve()
+                                        for suffix in ("-wal", "-shm", "-journal")),
             "snapshot must not overwrite catalog")
     require(not path.is_symlink() and (not path.exists() or path.is_file()), "unsafe snapshot path")
     raw = (canonical(value) + "\n").encode()

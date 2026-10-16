@@ -263,6 +263,30 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(process.returncode, 2)
         self.assertIn("--cache-set", process.stderr)
         self.assertFalse((self.work / "no-set.jsonl").exists())
+        for invalid in (None, 123):
+            row["batch"] = invalid
+            index.write_text(c.canonical(row) + "\n")
+            error = self.cli("ingest-cached-scans", "--index", str(index), "--scan-root", str(root),
+                             "--cache-set", "keep", "--evidence-out", str(self.work / "bad-batch.jsonl"),
+                             "--batch-id", "bad-batch", "--source", "cache-stat", code=2)
+            self.assertIn("error", error)
+            self.assertFalse((self.work / "bad-batch.jsonl").exists())
+
+    def test_snapshot_counts_source_run_page_and_long_stage_identities(self):
+        first = event("first", "run")
+        second = event("second", "run", page_id="other:" + PAGE.split(":", 1)[1])
+        self.ingest(first, second)
+        self.assertEqual(c.snapshot(self.db)["runs"], {"total": 2, "pages": 2})
+        events = []
+        for stage_id in ("a" * 255 + "x", "a" * 255 + "y"):
+            for source in ("source1", "source2"):
+                value = event(source + stage_id[-1], "stage", source=source)
+                value["payload"]["stage_id"] = stage_id
+                events.append(value)
+        self.ingest(*events)
+        stages = c.snapshot(self.db)["stages"]
+        self.assertEqual(len(stages), len({stage["id"] for stage in stages}))
+        self.assertTrue(all(len(stage["id"]) <= 256 for stage in stages))
 
     def test_worker_adapter_rejects_malformed_unknown_and_oversized(self):
         fixture = json.loads((ROOT / "scripts/fixtures/data_catalog/worker-timeout.json").read_text())
@@ -639,7 +663,8 @@ class CatalogTests(unittest.TestCase):
     def test_atomic_snapshot_safe_paths_and_existing_schema(self):
         self.ingest(event())
         before = c.snapshot(self.db)
-        for out in (self.db, Path(str(self.db) + "-wal"), Path(str(self.db) + "-shm")):
+        for out in (self.db, Path(str(self.db) + "-wal"), Path(str(self.db) + "-shm"),
+                    Path(str(self.db) + "-journal")):
             with self.assertRaises(c.CatalogError):
                 c.atomic_snapshot(out, before, self.db)
         target = self.work / "target"
