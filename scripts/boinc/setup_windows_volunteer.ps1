@@ -199,11 +199,12 @@ function Install-OfficialBoinc {
             throw 'Official BOINC download failed. Check internet/TLS/proxy access to boinc.berkeley.edu and retry. Nothing executed.'
         }
         Assert-VerifiedInstaller $installer
-        Write-Host 'In Advanced options leave Service install OFF (Windows services cannot use the GPU). If offered, leave the WSL installer OFF at Finish. No WSL/Podman/toolkit is needed.'
+        Write-Host 'In Advanced options leave Service install OFF (Windows services cannot use the GPU) and leave BOINC protected application execution at its secure default. At Finish, verify Launch BOINC Manager is unchecked; its launch is disabled on the installer command line as a safeguard. No WSL/Podman/toolkit is needed.'
         Confirm-Consent 'Signature and SHA256 verified. Open the interactive BOINC installer now? Review its options before installing.'
-        # The upstream bootstrap forwards MSI properties. The WSL property is
-        # also set for installers that offer that optional component.
-        $arguments = 'LAUNCHWSLIMAGEINSTALLER=0 ENABLEPROTECTEDAPPLICATIONEXECUTION3=0 ENABLESCREENSAVER=0 /norestart'
+        # LAUNCHPROGRAM is an upstream SecureCustomProperties MSI property.
+        # Pass zero explicitly because the stock MSI defaults it to one; never
+        # let Finish start the client before the later Manager-launch consent.
+        $arguments = 'LAUNCHPROGRAM=0 /norestart'
         $process = Start-Process -FilePath $installer -ArgumentList $arguments -Verb RunAs -Wait -PassThru
         if ($process.ExitCode -notin @(0, 3010)) {
             throw 'BOINC installer did not complete. Finish/cancel any open installer, review its error, and rerun this helper.'

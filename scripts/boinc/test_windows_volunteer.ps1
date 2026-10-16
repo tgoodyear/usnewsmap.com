@@ -326,8 +326,9 @@ function Set-InstallerMocks {
     Set-Mock Start-Process {
         param($FilePath, $ArgumentList, $Verb, [switch]$Wait, [switch]$PassThru)
         Assert-True ($Verb -eq 'RunAs') 'only installer requests elevation'
-        Assert-True ($ArgumentList -match 'LAUNCHWSLIMAGEINSTALLER=0') 'no WSL auto-launch'
-        Assert-True ($ArgumentList -match 'ENABLEPROTECTEDAPPLICATIONEXECUTION3=0') 'GPU-compatible non-service install'
+        Assert-True ($ArgumentList -match 'LAUNCHPROGRAM=0') 'MSI default must not launch Manager before separate consent'
+        Assert-True ($ArgumentList -notmatch 'ENABLEPROTECTEDAPPLICATIONEXECUTION3=0') 'preserve BOINC protected application execution'
+        Assert-True ($ArgumentList -notmatch 'LAUNCHWSLIMAGEINSTALLER=1') 'no WSL auto-launch'
         Assert-True ($ArgumentList -notmatch 'quiet|silent|password|account') 'interactive, no credentials'
         $script:Calls.Add('execute')
         return [pscustomobject]@{ ExitCode = 0 }

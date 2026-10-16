@@ -171,9 +171,13 @@ before execution. The helper downloads the official recommended **8.2.11 x64**
 installer (about 17 MB), checks its pinned SHA256 **and** Windows Authenticode
 trust/publisher `BOINC`, then opens the interactive installer with its own UAC
 prompt. Do not elevate the whole PowerShell session. In **Advanced** options keep
-**Service install** off: Windows service-mode BOINC cannot use the GPU. If offered,
-keep the optional WSL installer off at Finish. Review all installer options;
-finish/reboot if requested before continuing. The helper removes its installer
+**Service install** off: Windows service-mode BOINC cannot use the GPU. Leave
+BOINC protected-application execution at its secure default; do not disable it.
+At **Finish**, verify **Launch BOINC Manager** is unchecked. The helper explicitly
+passes `LAUNCHPROGRAM=0` to the signed installer's MSI (the upstream default is
+`1`), including upgrades, so Manager/client cannot auto-launch before the separate
+Manager-consent prompt. Leave any optional WSL installer unchecked as well.
+Review all installer options; finish/reboot if requested before continuing. The helper removes its installer
 download afterward and does not change execution policy, firewall rules or TLS
 validation. A hash/signature failure stops without execution; do not bypass it.
 
