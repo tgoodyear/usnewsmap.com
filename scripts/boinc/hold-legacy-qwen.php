@@ -65,6 +65,15 @@ foreach ($before as $key => $value) {
 if (!$valid) {
     fwrite(STDERR, "Invalid or mismatched pre-mutation journal; mutation refused\n"); exit(1);
 }
+$handle = fopen($record, "r+");
+if (!$handle) {
+    fwrite(STDERR, "Cannot reopen journal for synchronization\n"); exit(1);
+}
+$durable = flock($handle, LOCK_EX) && fsync($handle);
+fclose($handle);
+if (!$durable) {
+    fwrite(STDERR, "Journal synchronization failed; mutation refused\n"); exit(1);
+}
 if (!intval($version->deprecated) && !$version->update("deprecated=1")) {
     fwrite(STDERR, "Failed to deprecate app version\n"); exit(1);
 }

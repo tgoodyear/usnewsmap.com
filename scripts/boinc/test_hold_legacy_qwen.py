@@ -78,6 +78,19 @@ function fwrite($handle, $data) {
             self.assertNotEqual(run(7, True).returncode, 0)
             self.assertFalse(state.exists())
             journal.unlink()
+            unsynced = project / "unsynced.php"
+            unsynced.write_text("""<?php
+namespace Usnm\\Boinc\\Hold;
+function fsync($handle) { return false; }
+""")
+            self.assertNotEqual(run(7, True, unsynced).returncode, 0)
+            self.assertIsInstance(json.loads(journal.read_text()), dict)
+            self.assertFalse(state.exists())
+            replay = run(7, True, unsynced)
+            self.assertNotEqual(replay.returncode, 0)
+            self.assertIn("Journal synchronization failed", replay.stderr)
+            self.assertFalse(state.exists())
+            journal.unlink()
             self.assertEqual(run(7, True).returncode, 0)
             self.assertEqual(json.loads(state.read_text()), {"deprecated": 1})
             first = journal.read_bytes()
