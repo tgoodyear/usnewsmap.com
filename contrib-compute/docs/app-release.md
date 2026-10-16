@@ -18,6 +18,31 @@ Operator staging uses a unique mode-0700 directory beneath the checkout and a
 private directory beneath the signing host's root home, removed on exit. Build
 inputs stay on those filesystems rather than relying on system temporary storage.
 
+### Holding legacy Qwen dispatch
+
+Before enabling split-payload inference, inventory app versions, workunits and
+results read-only. For each **legacy Qwen inference container** version only, run
+the reviewed operator tool in the existing server:
+
+```sh
+php scripts/boinc/hold-legacy-qwen.php --project /project/usnmocr --app-version ID
+php scripts/boinc/hold-legacy-qwen.php --project /project/usnmocr --app-version ID --apply
+```
+
+Preview is the default. Apply journals the original state before deprecating that
+exact app version and notifying the feeder. Replaying it is safe. It never
+cancels results, rewrites workunits, changes quorum, or touches OCR, training,
+native, or split-payload versions. In-flight results remain reportable. Preserve
+the journal and before/after queue inventory. Do not re-enable the legacy version
+until its cold bounds and payload are safe.
+
+Partially completed workunits cannot simply be reissued against a new engine
+digest: that would mix campaign identities and lose independent-quorum semantics.
+Leave those originals held with their inputs/results intact pending an explicit
+scientific disposition. Only fully unsent, audited work can be considered for a
+separate idempotently staged campaign with the new engine identity and bounds;
+never edit campaign submission markers or database rows to fake migration.
+
 1. **`--kind container` (default)**: stages a signed `docker_wrapper`, `Dockerfile`, `job.toml`
    and `version.xml` under `apps/<app>/<version>/<platform>__<plan_class>` across the five
    registered platforms (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`,
