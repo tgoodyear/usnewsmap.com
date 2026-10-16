@@ -285,6 +285,10 @@ enum Command {
         /// abandoned (they reappear when their visibility runs out).
         #[arg(long, default_value_t = 60)]
         shutdown_grace_secs: u64,
+        /// On planned stops, stop taking pages and give in-flight pages
+        /// their configured page timeout before abandoning them.
+        #[arg(long, env = "USNM_OCR_DRAIN_ON_STOP")]
+        drain_on_stop: bool,
         /// Also publish the scan server's fetched list for this prefetch
         /// manifest version to `ocr-out/fetched/` every
         /// --publish-every-secs, for the seeder (12 Step 11). Needs
@@ -554,6 +558,43 @@ enum Command {
     },
 }
 
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn drain_on_stop_can_be_enabled_through_environment() {
+        struct RestoreEnv(Option<std::ffi::OsString>);
+
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("USNM_OCR_DRAIN_ON_STOP", value),
+                    None => std::env::remove_var("USNM_OCR_DRAIN_ON_STOP"),
+                }
+            }
+        }
+
+        let _restore = RestoreEnv(std::env::var_os("USNM_OCR_DRAIN_ON_STOP"));
+        std::env::set_var("USNM_OCR_DRAIN_ON_STOP", "true");
+        let cli = Cli::try_parse_from([
+            "usnm-ocr-worker",
+            "run",
+            "--queue-url",
+            "https://example.queue.core.windows.net",
+            "--out-url",
+            "https://example.blob.core.windows.net/ocr-out",
+            "--node-id",
+            "node",
+        ])
+        .expect("parse environment-backed drain setting");
+        match cli.command {
+            Command::Run { drain_on_stop, .. } => assert!(drain_on_stop),
+            _ => panic!("expected run command"),
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum RoutesCommand {
     /// Refuse production candidates whose code or models fail the licence gate.
@@ -677,6 +718,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             scan_cache_url,
             visibility_secs,
             shutdown_grace_secs,
+            drain_on_stop,
             publish_fetched,
             publish_every_secs,
             status_listen,
@@ -702,6 +744,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 once,
                 visibility: Duration::from_secs(visibility_secs),
                 shutdown_grace: Duration::from_secs(shutdown_grace_secs),
+                drain_on_stop,
+                page_timeout: Duration::from_secs(engine.page_timeout_secs),
                 ..Config::default()
             };
             if Duration::from_secs(engine.page_timeout_secs) >= cfg.budget() {
@@ -746,6 +790,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                         version: VERSION.clone(),
                         concurrency: u32::try_from(cfg.concurrency).unwrap_or(u32::MAX),
                         engine: engine.source().to_owned(),
+                        models: engine.models(),
+                        routes: engine.routes(),
                         scan_cache_url: scan_cache_url.clone(),
                     },
                     status_journal.filter(|p| !p.as_os_str().is_empty()),

@@ -38,7 +38,7 @@
 # key status and podman) and prints the plan.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
   exit 2
 }
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false
@@ -75,7 +75,7 @@ case "$KIND" in
     [ -z "$BINARY$BINARY_SHA" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--binary and --extra-file are only valid with --kind native"
     case "$APP:$PLAN_CLASS" in
       usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker | usnm_quality:docker) ;;
-      usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train)
+      usnm_ndlocr:docker | usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train)
         [ -n "$WORKER_OVERRIDE" ] || die "$APP has its own worker image: give --worker-image" ;;
       *) die "unsupported --app and --plan-class: Qwen uses docker_mt_2b (2B) or docker_nvidia_cuda_8b (8B); see scripts/boinc/install.py" ;;
     esac

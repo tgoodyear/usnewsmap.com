@@ -7,17 +7,17 @@ replaces, rather than supplements, that copy. Unknown schemas, duplicate ids
 or names, empty profiles, and dangling model references fail loading.
 
 The inventory includes checked engines/models not yet implemented. Only
-Tesseract has production profiles here. `production = false` keeps every
-other engine unroutable; recording a cleared model does not deploy it. Code
+Tesseract and the pinned CPU NDLOCR-Lite adapter have production profiles here.
+`production = false` keeps the other engines unroutable; recording a cleared model does not deploy it. Code
 not separately checked in the design stays `unknown`, not implicitly Apache.
 No tier-2 or credit-required profiles are added before the credits page (#372).
 
 Tesseract image builds download the unchanged `tesseract/models.lock` URLs
 with certificate verification and verify each SHA-256 before accepting it.
-Downloads allow three retries including TLS/connect failures, with a 60-second
-connection timeout, 180-second per-attempt timeout and 360-second retry-start
+Downloads allow 30 retries including TLS/connect failures, with a 30-second
+connection timeout, 600-second per-attempt timeout and 900-second retry-start
 budget. An in-progress final attempt can extend beyond that budget (at most
-540 seconds per model including the final attempt). Exhaustion or a checksum
+1500 seconds per model including the final attempt). Exhaustion or a checksum
 mismatch fails the build; no alternate endpoint or unverified model is used.
 
 ## Credits data shape
@@ -29,7 +29,7 @@ mismatch fails the build; no alternate endpoint or unverified model is used.
 - `[[engine.model]]`: `name` (unique within its engine, e.g.
   `tessdata/eng.traineddata`), optional `version` (published revision), plus the
   same attribution fields as the code. Pinned image model versions must match
-  `tesseract/models.lock`; the web catalog test checks them. These pins do not
+  their engine image's `models.lock` (`tesseract/` or `ndlocr-lite/`); the web catalog test checks them. These pins do not
   prove the revision of a serving reading: short engine keys omit model
   digests, so release credits and legacy web fallbacks leave those model
   revisions unrecorded instead of relabelling old text with today's pin.

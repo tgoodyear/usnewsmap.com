@@ -1,7 +1,7 @@
 //! OCR engines. Tesseract to start; the engine survey (#296) may add others
 //! behind the same trait.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use async_trait::async_trait;
 use usnm_core::ocr_engine::{Digest, Fields, OcrEngineTag, TagError};
+pub use usnm_ocr_contract::routing::{EngineKind, EngineRoute};
 
 /// What an engine read on a page.
 #[derive(Debug)]
@@ -201,6 +202,14 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     /// costs no image request (12 Step 7). The engine contract (ADR-0016,
     /// #307) answers it from routing.
     fn can_read(&self, language: &str) -> bool;
+    /// The languages and profiles this engine can read before its first page.
+    fn routes(&self) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+    /// The models available to this engine before its first page.
+    fn models(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// The resolution the engine reads scans at: IIIF JPEGs carry none,
     /// so it is assumed (13 §13.4.3), and the stored ALTO records it.
     fn dpi(&self) -> u32 {
@@ -267,26 +276,41 @@ pub const CONTRACT: u32 = 0;
 /// against.
 pub const MODELS_LOCK: &str = include_str!("../../../ocr/engines/tesseract/models.lock");
 
-/// Tesseract profiles for a language, in catalog preference order.
-pub fn candidates(language: &str) -> Vec<String> {
+/// Engine/profile choices for a language, in catalog preference order.
+pub fn candidates(language: &str) -> Vec<EngineRoute> {
+    if EngineKind::for_language(language) == EngineKind::NdlocrLite {
+        return vec![EngineRoute {
+            kind: EngineKind::NdlocrLite,
+            profile: "default".into(),
+        }];
+    }
     usnm_ocr_route::ENGINES
         .engine("tesseract-5.5")
         .expect("built-in Tesseract")
         .profile
         .iter()
         .filter(|p| p.languages.iter().any(|l| l == language))
-        .map(|p| p.id.clone())
+        .map(|p| EngineRoute {
+            kind: EngineKind::Tesseract,
+            profile: p.id.clone(),
+        })
         .collect()
 }
 
-/// The first cleared profile whose models are all installed.
-pub fn route(language: &str, installed: &BTreeSet<String>) -> Option<String> {
+/// The first cleared route available on a Tesseract-only node.
+/// Other engines use `EngineKind::for_language` and their contract hello
+/// profiles, subject to the same catalog production gate.
+pub fn route(language: &str, installed: &BTreeSet<String>) -> Option<EngineRoute> {
     route_with_catalog(
         &usnm_ocr_route::ENGINES,
         "tesseract-5.5",
         language,
         installed,
     )
+    .map(|profile| EngineRoute {
+        kind: EngineKind::Tesseract,
+        profile,
+    })
 }
 
 fn route_with_catalog(
@@ -295,6 +319,9 @@ fn route_with_catalog(
     language: &str,
     installed: &BTreeSet<String>,
 ) -> Option<String> {
+    if EngineKind::for_language(language) != EngineKind::Tesseract {
+        return None;
+    }
     catalog
         .engine(engine_id)
         .ok()?
@@ -1310,6 +1337,25 @@ impl Engine for Tesseract {
         self.route(language).is_some()
     }
 
+    fn routes(&self) -> BTreeMap<String, String> {
+        let Ok(engine) = self.catalog.engine(&tesseract_id(&self.version)) else {
+            return BTreeMap::new();
+        };
+        let mut routes = BTreeMap::new();
+        for profile in &engine.profile {
+            for language in &profile.languages {
+                if self.route(language).as_deref() == Some(profile.id.as_str()) {
+                    routes.insert(language.clone(), profile.id.clone());
+                }
+            }
+        }
+        routes
+    }
+
+    fn models(&self) -> Vec<String> {
+        self.installed.iter().cloned().collect()
+    }
+
     fn dpi(&self) -> u32 {
         self.dpi
     }
@@ -1497,22 +1543,110 @@ mod tests {
     use super::*;
 
     #[test]
+    fn japanese_selects_ndlocr_but_is_unavailable_to_tesseract() {
+        assert_eq!(
+            candidates("jpn"),
+            vec![EngineRoute {
+                kind: EngineKind::NdlocrLite,
+                profile: "default".into(),
+            }]
+        );
+        let installed = BTreeSet::from(["jpn".into(), "eng".into()]);
+        assert!(route("jpn", &installed).is_none());
+        let tess = Tesseract {
+            catalog: usnm_ocr_route::ENGINES.clone(),
+            runner: Runner::Host("tesseract".into()),
+            sandbox: None,
+            version: "5.5.0".into(),
+            installed,
+            psm: 3,
+            dpi: 300,
+            threads: 1,
+            timeout: Duration::from_secs(1200),
+        };
+        assert!(!tess.can_read("jpn"));
+        assert!(tess.engine_for("jpn").is_none());
+    }
+
+    #[test]
+    fn all_other_languages_keep_the_catalogs_tesseract_preferences() {
+        let tess = usnm_ocr_route::ENGINES.engine("tesseract-5.5").unwrap();
+        for language in tess.profile.iter().flat_map(|p| &p.languages) {
+            if language == "jpn" {
+                continue;
+            }
+            let expected: Vec<_> = tess
+                .profile
+                .iter()
+                .filter(|p| p.languages.contains(language))
+                .map(|p| EngineRoute {
+                    kind: EngineKind::Tesseract,
+                    profile: p.id.clone(),
+                })
+                .collect();
+            assert_eq!(candidates(language), expected, "{language}");
+        }
+        assert!(candidates("unknown").is_empty());
+    }
+
+    #[test]
     fn routes_german_to_fraktur_when_installed() {
         let set = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<BTreeSet<_>>();
         assert_eq!(
-            route("deu", &set(&["deu", "deu_latf", "eng"])).as_deref(),
+            route("deu", &set(&["deu", "deu_latf", "eng"]))
+                .map(|r| r.profile)
+                .as_deref(),
             Some("deu_latf+deu")
         );
         assert_eq!(
-            route("deu", &set(&["deu", "deu_latf", "frak2021"])).as_deref(),
+            route("deu", &set(&["deu", "deu_latf", "frak2021"]))
+                .map(|r| r.profile)
+                .as_deref(),
             Some("frak2021")
         );
-        assert_eq!(route("deu", &set(&["deu"])).as_deref(), Some("deu"));
+        assert_eq!(
+            route("deu", &set(&["deu"])).map(|r| r.profile).as_deref(),
+            Some("deu")
+        );
         assert_eq!(route("pol", &set(&["deu", "eng"])), None);
         assert_eq!(route("deu", &set(&["eng"])), None);
-        assert_eq!(route("srp", &set(&["srp"])).as_deref(), Some("srp"));
-        assert_eq!(route("ces", &set(&["ces"])).as_deref(), Some("ces"));
-        assert_eq!(route("eng", &set(&["eng", "osd"])).as_deref(), Some("eng"));
+        assert_eq!(
+            route("srp", &set(&["srp"])).map(|r| r.profile).as_deref(),
+            Some("srp")
+        );
+        assert_eq!(
+            route("ces", &set(&["ces"])).map(|r| r.profile).as_deref(),
+            Some("ces")
+        );
+        assert_eq!(
+            route("eng", &set(&["eng", "osd"]))
+                .map(|r| r.profile)
+                .as_deref(),
+            Some("eng")
+        );
+    }
+
+    #[test]
+    fn startup_status_includes_installed_models_and_resolved_routes() {
+        let installed = ["deu", "eng", "frak2021"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let tesseract = Tesseract {
+            catalog: usnm_ocr_route::ENGINES.clone(),
+            runner: Runner::Host("tesseract".into()),
+            sandbox: None,
+            version: "5.5.0".into(),
+            installed,
+            psm: 3,
+            dpi: 300,
+            threads: 1,
+            timeout: Duration::from_secs(600),
+        };
+        assert_eq!(tesseract.models(), ["deu", "eng", "frak2021"]);
+        let routes = tesseract.routes();
+        assert_eq!(routes.get("deu").map(String::as_str), Some("frak2021"));
+        assert_eq!(routes.get("eng").map(String::as_str), Some("eng"));
     }
 
     #[test]
@@ -1525,10 +1659,14 @@ mod tests {
             .map(str::to_owned)
             .collect();
         for l in ["ces", "deu", "eng", "pol", "rus", "srp"] {
-            let profile = route(l, &lock).unwrap_or_else(|| panic!("no route for {l}"));
+            let selected = route(l, &lock).unwrap_or_else(|| panic!("no route for {l}"));
+            let profile = selected.profile;
             assert!(models_digest(MODELS_LOCK, &profile).is_some(), "{profile}");
         }
-        assert_eq!(route("deu", &lock).as_deref(), Some("frak2021"));
+        assert_eq!(
+            route("deu", &lock).map(|r| r.profile).as_deref(),
+            Some("frak2021")
+        );
         assert_eq!(models_digest(MODELS_LOCK, "frk"), None);
     }
 

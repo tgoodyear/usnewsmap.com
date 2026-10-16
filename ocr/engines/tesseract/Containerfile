@@ -30,8 +30,8 @@ RUN set -eu; mkdir -p /models; cd /models; \
       [ -n "$name" ] || continue; \
       mkdir -p "$(dirname "$name")"; \
       printf 'Fetching pinned model %s\n' "$name"; \
-      curl -fsSL --connect-timeout 60 --max-time 180 \
-        --retry 3 --retry-all-errors --retry-max-time 360 -o "$name" "$url"; \
+      curl -fsSL --retry 30 --retry-all-errors --retry-delay 5 --retry-max-time 900 \
+        --connect-timeout 30 --max-time 600 -o "$name" "$url"; \
       echo "$sum  $name" | sha256sum --check --quiet; \
     done
 

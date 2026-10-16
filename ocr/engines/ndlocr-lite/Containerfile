@@ -1,0 +1,35 @@
+# Build from the repository root. No network is needed when reading a page.
+ARG RUST_IMAGE=rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+FROM ${RUST_IMAGE} AS build
+ARG BUILD_JOBS=2
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-ocr-adapter --bin usnm-ocr-adapter-ndlocr-lite
+
+FROM ${PYTHON_IMAGE} AS source
+ARG NDLOCR_COMMIT=636d1cfeb1331f89f4048f416e49e23a09a714b5
+ADD --checksum=sha256:2081a0f25394729c1073ef0a91594d57710e21005d40d0f5ec528d4d9564afbe \
+    https://github.com/ndl-lab/ndlocr-lite/archive/${NDLOCR_COMMIT}.tar.gz /source.tar.gz
+RUN mkdir /opt/ndlocr-lite \
+ && tar -xzf /source.tar.gz -C /opt/ndlocr-lite --strip-components=1 \
+ && rm /source.tar.gz \
+ && rm -rf /opt/ndlocr-lite/train /opt/ndlocr-lite/ndlocr-lite-gui /opt/ndlocr-lite/resource \
+ && printf '%s\n' "$NDLOCR_COMMIT" > /opt/ndlocr-lite/COMMIT
+COPY ocr/engines/ndlocr-lite/models.lock /opt/ndlocr-lite/models.lock
+RUN cd /opt/ndlocr-lite \
+ && grep -v '^#' models.lock | awk 'NF {print $3 "  " $1}' | sha256sum --check --quiet \
+ && grep -v '^flet' requirements.txt > /requirements-headless.txt \
+ && python -m pip install --no-cache-dir --prefix=/install -r /requirements-headless.txt
+
+FROM ${PYTHON_IMAGE}
+COPY --from=source /install/ /usr/local/
+COPY --from=source /opt/ndlocr-lite/ /opt/ndlocr-lite/
+COPY ocr/engines/ndlocr-lite/LICENSE ocr/engines/ndlocr-lite/LICENSE-DINOv3 ocr/engines/ndlocr-lite/NOTICE /opt/ndlocr-lite/src/model/
+COPY --from=build /src/target/release/usnm-ocr-adapter-ndlocr-lite /usr/local/bin/
+RUN python -c 'import importlib.util; assert importlib.util.find_spec("flet") is None' \
+ && mkdir /in /out && chown 10001:10001 /out
+ENV NDLOCR_ROOT=/opt/ndlocr-lite NDLOCR_COMMIT=636d1cfeb1331f89f4048f416e49e23a09a714b5 PYTHONDONTWRITEBYTECODE=1
+USER 10001
+ENTRYPOINT ["/usr/local/bin/usnm-ocr-adapter-ndlocr-lite"]
+CMD ["--contract", "1", "--threads", "1"]

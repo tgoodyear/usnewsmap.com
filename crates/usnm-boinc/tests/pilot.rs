@@ -976,14 +976,16 @@ pathlib.Path({marker}).write_text("inputs readable when create_work started")
         );
         project
     }
-    async fn submit_with_private_umask(
+    async fn submit_with_umask(
         fx: &Fixture,
         project: &Path,
         id: &str,
+        umask: &str,
     ) -> std::process::Output {
         // Change only the child process's umask; parallel Rust tests keep theirs.
         tokio::process::Command::new("sh")
-            .args(["-c", "umask 077; exec \"$@\"", "boinc-submit"])
+            .args(["-c", "umask \"$1\"; shift; exec \"$@\"", "boinc-submit"])
+            .arg(umask)
             .arg(env!("CARGO_BIN_EXE_usnm-boinc"))
             .arg("submit")
             .arg("--root")
@@ -1009,7 +1011,7 @@ pathlib.Path({marker}).write_text("inputs readable when create_work started")
                     usnm_boinc::atomic(&path, b"old private input").unwrap();
                 }
             }
-            let output = submit_with_private_umask(&fx, &project, &id).await;
+            let output = submit_with_umask(&fx, &project, &id, "077").await;
             assert!(
                 output.status.success(),
                 "{}",
@@ -1036,7 +1038,7 @@ pathlib.Path({marker}).write_text("inputs readable when create_work started")
         let id = fx.export().await;
         let project = project(&fx, &id, false, true);
         assert!(!project.join("download/fan").exists());
-        let output = submit_with_private_umask(&fx, &project, &id).await;
+        let output = submit_with_umask(&fx, &project, &id, "077").await;
         assert!(
             output.status.success(),
             "{}",
@@ -1051,11 +1053,49 @@ pathlib.Path({marker}).write_text("inputs readable when create_work started")
     }
 
     #[tokio::test]
+    async fn new_fanout_dirs_are_exactly_0755_with_permissive_umask() {
+        let fx = Fixture::new("eng").await;
+        let id = fx.export().await;
+        let project = project(&fx, &id, false, true);
+        std::fs::set_permissions(
+            project.join("download"),
+            std::fs::Permissions::from_mode(0o2770),
+        )
+        .unwrap();
+
+        let output = submit_with_umask(&fx, &project, &id, "002").await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::metadata(project.join("download"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o2775
+        );
+        for dir in ["download/fan", "download/fan/3a"] {
+            assert_eq!(
+                std::fs::metadata(project.join(dir))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                0o755,
+                "{dir}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn staging_failure_never_dispatches_or_exposes_the_journal() {
         let fx = Fixture::new("eng").await;
         let id = fx.export().await;
         let project = project(&fx, &id, true, false);
-        let output = submit_with_private_umask(&fx, &project, &id).await;
+        let output = submit_with_umask(&fx, &project, &id, "077").await;
         assert!(!output.status.success());
         assert!(!project.join("dispatched").exists());
         assert_eq!(

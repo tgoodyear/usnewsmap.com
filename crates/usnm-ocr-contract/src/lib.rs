@@ -40,3 +40,6 @@ pub mod quality;
 /// File-based jobs for the vision-language readings on BOINC (#522): the
 /// GPU app `usnm_qwen`, with its CPU fallback.
 pub mod qwen;
+
+/// Engine-level production routing shared by jobs and workers.
+pub mod routing;
