@@ -422,6 +422,17 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
 }
 
 fn link_input(source: &Path, dest: &Path, limit: usize) -> anyhow::Result<()> {
+    link_input_with(source, dest, limit, |s, d| std::fs::hard_link(s, d))
+}
+
+/// Hard-links where the filesystem can; Azure Files SMB can't (EOPNOTSUPP), so the
+/// already verified bytes are written atomically instead.
+fn link_input_with(
+    source: &Path,
+    dest: &Path,
+    limit: usize,
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     let bytes = read(source, limit)?;
     if dest.exists() {
         ensure!(
@@ -430,7 +441,10 @@ fn link_input(source: &Path, dest: &Path, limit: usize) -> anyhow::Result<()> {
         );
     } else {
         std::fs::create_dir_all(dest.parent().context("input has no parent")?)?;
-        std::fs::hard_link(source, dest)?;
+        match link(source, dest) {
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => atomic(dest, &bytes)?,
+            r => r?,
+        }
     }
     Ok(())
 }
@@ -771,6 +785,33 @@ mod tests {
         );
         assert!(gold_status("7\t5\t3\n").is_err());
         assert!(gold_status("7\t5\t3\t5\t255\t4G\n").is_err());
+    }
+
+    #[test]
+    fn onboarding_inputs_are_copied_where_hard_links_are_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("shared/bundle");
+        atomic(&source, b"bundle").unwrap();
+        let unsupported =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        let dest = dir.path().join("host/7/bundle");
+        link_input_with(&source, &dest, 64, unsupported).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"bundle");
+        // A retry accepts the identical copy and refuses a changed one.
+        link_input_with(&source, &dest, 64, unsupported).unwrap();
+        atomic(&dest, b"other").unwrap();
+        assert!(link_input_with(&source, &dest, 64, unsupported).is_err());
+        // Other link errors still fail.
+        let denied =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(link_input_with(&source, &dir.path().join("host/8/bundle"), 64, denied).is_err());
+        let linked = dir.path().join("host/9/bundle");
+        link_input(&source, &linked, 64).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(&linked).unwrap().ino(),
+            std::fs::metadata(&source).unwrap().ino()
+        );
     }
 
     fn trust() -> Trust {

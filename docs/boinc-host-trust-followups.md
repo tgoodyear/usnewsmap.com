@@ -78,8 +78,9 @@ Campaign roots bind the prepared bundle, manifest, complete engine configuration
 and host. Native gold write-ahead markers stabilize retries. One checksum-bound
 bundle and checksum-verified cache serve each campaign, with regular-file hard
 links into per-host roots and `cache/`; original bytes are not recopied per host.
-Those roots must share a filesystem supporting hard links; the prepared source
-may live elsewhere.
+Where the filesystem can't hard-link (Azure Files SMB returns EOPNOTSUPP), each
+per-host input is an atomic copy of the same verified bytes instead. The prepared
+source may live elsewhere.
 Native gold submission verifies and mirrors originals into BOINC downloads.
 
 The shared validator expectations writer is locked and refuses updates over its
