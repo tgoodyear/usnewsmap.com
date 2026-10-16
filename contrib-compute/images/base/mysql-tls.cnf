@@ -1,0 +1,4 @@
+[client]
+ssl-enforce=1
+ssl-verify-server-cert=1
+ssl-ca=/usr/local/share/usnm/mysql-ca.pem

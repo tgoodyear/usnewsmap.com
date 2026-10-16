@@ -18,6 +18,7 @@ RUN apt-get update \
       python3-distutils python3-setuptools \
  && rm -rf /var/lib/apt/lists/*
 COPY scripts/boinc/patch-server-apple-gpu.py /opt/usnm-build/patch-server-apple-gpu.py
+COPY scripts/boinc/patch-server-db-tls.py /usr/local/lib/patch-server-db-tls.py
 RUN git init /usr/local/boinc \
  && cd /usr/local/boinc \
  && git remote add origin https://github.com/BOINC/boinc.git \
@@ -25,6 +26,7 @@ RUN git init /usr/local/boinc \
  && git checkout --detach FETCH_HEAD \
  && test "$(git rev-parse HEAD)" = "${BOINC_COMMIT}" \
  && python3 /opt/usnm-build/patch-server-apple-gpu.py --source /usr/local/boinc/sched/plan_class_spec.cpp \
+ && python3 /usr/local/lib/patch-server-db-tls.py --source /usr/local/boinc \
  && rm -f /opt/usnm-build/patch-server-apple-gpu.py \
  && ./_autosetup \
  && ./configure --disable-client --disable-manager \
@@ -44,6 +46,16 @@ RUN apt-get update \
  && useradd --create-home --uid 1000 boincadm \
  && adduser www-data boincadm
 COPY --from=build /usr/local/boinc /usr/local/boinc
+# Azure's 2026 rotation requires BOTH roots. Use the maintained Debian trust
+# package, not a network download during startup or a pinned leaf certificate.
+COPY contrib-compute/images/base/mysql-tls.cnf /usr/local/share/usnm/mysql-tls.cnf
+RUN cat /usr/share/ca-certificates/mozilla/DigiCert_Global_Root_G2.crt \
+        /usr/share/ca-certificates/mozilla/Microsoft_RSA_Root_Certificate_Authority_2017.crt \
+        > /usr/local/share/usnm/mysql-ca.pem \
+ && test "$(grep -c 'BEGIN CERTIFICATE' /usr/local/share/usnm/mysql-ca.pem)" = 2 \
+ && openssl verify -CAfile /usr/local/share/usnm/mysql-ca.pem \
+        /usr/share/ca-certificates/mozilla/DigiCert_Global_Root_G2.crt \
+        /usr/share/ca-certificates/mozilla/Microsoft_RSA_Root_Certificate_Authority_2017.crt
 # The docker_wrapper that install.py (PR #441) puts in the signed app version: built here from the
 # same pinned source, so the wrapper has the workdir and create_args settings job.toml needs.
 # (the Makefile may add a release suffix to the binary's name, so find it)

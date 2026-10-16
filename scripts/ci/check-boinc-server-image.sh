@@ -29,6 +29,13 @@ done
 php -m | grep -qx mysqli
 apache2ctl -M 2>/dev/null | grep -q php
 python3 -c "import MySQLdb"
+php -l html/inc/db.inc
+php -l html/inc/db_conn.inc
+test -r /usr/local/share/usnm/mysql-tls.cnf
+test "$(grep -c "BEGIN CERTIFICATE" /usr/local/share/usnm/mysql-ca.pem)" = 2
+openssl verify -CAfile /usr/local/share/usnm/mysql-ca.pem \
+  /usr/share/ca-certificates/mozilla/DigiCert_Global_Root_G2.crt \
+  /usr/share/ca-certificates/mozilla/Microsoft_RSA_Root_Certificate_Authority_2017.crt
 # The signing tool must be here; the code-signing PRIVATE key must not be.
 if find / -xdev -name code_sign_private 2>/dev/null | grep -q .; then echo "code_sign_private is in the image" >&2; exit 1; fi
 echo "tools ok"'

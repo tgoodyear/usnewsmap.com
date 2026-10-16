@@ -98,7 +98,7 @@ enum Commands {
         #[arg(long)]
         work: PathBuf,
     },
-    /// Score this host's Tesseract on the gold bundle, offline; writes counts only, no text.
+    /// Score an engine on the gold bundle, offline; writes counts only, no text.
     GoldRun {
         #[arg(long)]
         bundle: PathBuf,
@@ -111,6 +111,13 @@ enum Commands {
         out: PathBuf,
         #[arg(long, default_value = "tesseract")]
         tesseract: PathBuf,
+        /// Executable called directly with IMAGE LANGUAGE arguments; UTF-8 text on stdout.
+        #[arg(long, requires_all = ["engine_name", "engine_version"], conflicts_with = "tesseract")]
+        engine_cmd: Option<PathBuf>,
+        #[arg(long, requires = "engine_cmd")]
+        engine_name: Option<String>,
+        #[arg(long, requires = "engine_cmd")]
+        engine_version: Option<String>,
         #[arg(long, default_value_t = 3)]
         psm: u8,
         #[arg(long, default_value_t = 300)]
@@ -308,6 +315,9 @@ enum Gold {
         /// How many units the campaign has; units already submitted are skipped.
         #[arg(long, default_value_t = 20)]
         units: u32,
+        /// Optional targeted gold campaign; requires the server's enable_assignment.
+        #[arg(long)]
+        target_host: Option<u64>,
         /// The worker image's full digest (sha256:...).
         #[arg(long)]
         engine_image: String,
@@ -344,7 +354,7 @@ enum Gold {
         #[arg(long, required = true)]
         reports: Vec<PathBuf>,
         /// The highest overall CER that passes.
-        #[arg(long, default_value_t = usnm_boinc::trust::DEFAULT_MAX_CER)]
+        #[arg(long)]
         max_cer: f64,
         #[arg(long)]
         out: PathBuf,
@@ -917,6 +927,9 @@ async fn main() -> anyhow::Result<()> {
             work,
             out,
             tesseract,
+            engine_cmd,
+            engine_name,
+            engine_version,
             psm,
             dpi,
             timeout_secs,
@@ -927,6 +940,11 @@ async fn main() -> anyhow::Result<()> {
                 cache,
                 work,
                 tesseract,
+                command: engine_cmd.map(|executable| usnm_boinc::gold::CommandEngine {
+                    executable,
+                    name: engine_name.expect("required by clap"),
+                    version: engine_version.expect("required by clap"),
+                }),
                 psm,
                 dpi,
                 timeout_secs,
@@ -1037,6 +1055,7 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
             root,
             project,
             units,
+            target_host,
             engine_image,
             engine_base,
             engine_version,
@@ -1046,6 +1065,7 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
                 root,
                 project,
                 units,
+                target_host,
                 engine: usnm_boinc::gold::job::Engine {
                     base: engine_base,
                     dpi: 300,

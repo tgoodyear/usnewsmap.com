@@ -78,7 +78,8 @@ init_project() {
   trap 'rmdir "$SHARE_DIR/.usnm-init.lock"' EXIT
   # The run-time user needs no schema rights. UNVERIFIED that these grants are enough.
   local rt; rt="$(cat "$SECRETS/db-runtime")"
-  mysql --defaults-extra-file="$mycnf" <<SQL
+  mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
+    --ssl-ca=/usr/local/share/usnm/mysql-ca.pem <<SQL
 CREATE USER IF NOT EXISTS '$DB_RUNTIME_USER'@'%' IDENTIFIED BY '$rt';
 ALTER USER '$DB_RUNTIME_USER'@'%' IDENTIFIED BY '$rt';
 GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.* TO '$DB_RUNTIME_USER'@'%';
