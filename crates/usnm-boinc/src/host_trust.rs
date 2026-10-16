@@ -29,8 +29,20 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
+    pub fn parse(path: &Path) -> anyhow::Result<Self> {
         let c: Self = serde_json::from_slice(&read(path, 16 << 10)?)?;
+        ensure!(c.root.is_absolute(), "controller root must be absolute");
+        Ok(c)
+    }
+
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let c = Self::parse(path)?;
+        c.validate()?;
+        Ok(c)
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        let c = self;
         ensure!(
             !c.database.is_empty()
                 && c.database.len() <= 64
@@ -80,7 +92,7 @@ impl Config {
             .all(|p| p.is_absolute()),
             "configuration paths must be absolute"
         );
-        Ok(c)
+        Ok(())
     }
 }
 
@@ -142,6 +154,7 @@ async fn canonical_host(c: &Config, workunit: &str) -> anyhow::Result<u64> {
 /// Discover hosts centrally, skip same-image trusted hosts, and issue at most one gold unit
 /// per host and campaign. Native gold submission journals handle uncertain dispatch.
 pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
+    c.validate()?;
     let trust = Trust::load(&c.trust)?;
     let prepared = gold::prepare::read(&c.prepared)?;
     let inventory =
@@ -170,6 +183,26 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
         return Ok(pending.into_iter().take(c.max_hosts).collect());
     }
     let _lock = Lock::take(&c.root)?;
+    let shared = c.root.join("onboard").join(&campaign).join("shared");
+    if !pending.is_empty() {
+        for name in [gold::prepare::PREPARED, gold::prepare::BUNDLE_COPY] {
+            let limit = if name == gold::prepare::PREPARED {
+                16 << 20
+            } else {
+                gold::job::MAX_BUNDLE as usize
+            };
+            let bytes = read(&c.prepared.join(name), limit)?;
+            let dest = shared.join(name);
+            if dest.exists() {
+                ensure!(
+                    read(&dest, limit)? == bytes,
+                    "shared campaign input changed"
+                );
+            } else {
+                atomic(&dest, &bytes)?;
+            }
+        }
+    }
     let mut issued = Vec::new();
     for host in pending {
         let root = c
@@ -182,7 +215,7 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
             continue;
         }
         for name in [gold::prepare::PREPARED, gold::prepare::BUNDLE_COPY] {
-            let source = c.prepared.join(name);
+            let source = shared.join(name);
             let limit = if name == gold::prepare::PREPARED {
                 16 << 20
             } else {
@@ -196,7 +229,8 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
                     "onboarding campaign input changed"
                 );
             } else {
-                atomic(&dest, &bytes)?;
+                std::fs::create_dir_all(&root)?;
+                std::fs::hard_link(&source, &dest)?;
             }
         }
         let s = gold::submit::run(&gold::submit::Options {
@@ -291,8 +325,8 @@ fn spot_args(s: &Spot) -> Vec<String> {
         "1073741824".into(),
         "--delay_bound".into(),
         "259200".into(),
-        format!("{}_page", s.job),
-        format!("{}_request_json", s.job),
+        format!("{}_page", s.workunit),
+        format!("{}_request_json", s.workunit),
     ]
     .into()
 }
@@ -300,6 +334,7 @@ fn spot_args(s: &Spot) -> Vec<String> {
 /// Sample existing OCR jobs, replay their unchanged inputs on a different trusted host.
 /// The independent workunit name cannot replace the original canonical result.
 pub async fn spot_submit(c: &Config, jobs: &Path, execute: bool) -> anyhow::Result<Vec<String>> {
+    c.validate()?;
     let ids: Vec<String> = serde_json::from_slice(&read(jobs, 1 << 20)?)?;
     ensure!(ids.len() <= 10000, "too many candidate jobs");
     let ids: BTreeSet<_> = ids.into_iter().collect();
@@ -340,7 +375,7 @@ pub async fn spot_submit(c: &Config, jobs: &Path, execute: bool) -> anyhow::Resu
                 )?)?,
                 "spot-check assignment must be explicitly enabled by the operator"
             );
-            stage_inputs(c, &record.job).await?;
+            stage_inputs(c, &record.job, &spot.workunit).await?;
             spot.stage = "submitting".into();
             atomic(&path, &serde_json::to_vec_pretty(&spot)?)?;
             let status = Command::new(c.project.join("bin/create_work"))
@@ -363,7 +398,7 @@ pub async fn spot_submit(c: &Config, jobs: &Path, execute: bool) -> anyhow::Resu
     Ok(made)
 }
 
-async fn stage_inputs(c: &Config, job: &boinc::Job) -> anyhow::Result<()> {
+async fn stage_inputs(c: &Config, job: &boinc::Job, workunit: &str) -> anyhow::Result<()> {
     let input = crate::dir(&c.jobs_root, &job.id)?;
     let request = read(&input.join("request.json"), boinc::MAX_JSON)?;
     ensure!(
@@ -376,7 +411,7 @@ async fn stage_inputs(c: &Config, job: &boinc::Job) -> anyhow::Result<()> {
         "staged scan changed"
     );
     for (name, bytes) in [("page", scan), ("request_json", request)] {
-        let physical = format!("{}_{}", job.id, name);
+        let physical = format!("{workunit}_{name}");
         let output = Command::new(c.project.join("bin/dir_hier_path"))
             .arg(&physical)
             .current_dir(&c.project)
@@ -422,16 +457,21 @@ pub async fn spot_compare(
     spot_spool: &Path,
 ) -> anyhow::Result<bool> {
     ensure!(boinc::is_sha256(id), "invalid job id");
+    ensure!(c.root.is_absolute(), "controller root must be absolute");
     let _lock = Lock::take(&c.root)?;
     let path = c.root.join("spots").join(id);
     atomic(
         &path.join("comparison.json"),
         br#"{"status":"unverified","agrees":false}"#,
     )?;
+    c.validate()?;
     let spot: Spot = serde_json::from_slice(&read(&path.join("submission.json"), 4096)?)?;
     let record = load(&c.jobs_root, id)?;
     ensure!(
-        spot.job == id && spot.image == record.job.engine.image && spot.stage == "submitted",
+        spot.job == id
+            && spot.image == record.job.engine.image
+            && spot.image == c.engine.image
+            && spot.stage == "submitted",
         "invalid spot journal"
     );
     let trust = Trust::load(&c.trust)?;
@@ -460,6 +500,57 @@ pub async fn spot_compare(
         }))?,
     )?;
     Ok(agrees)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Quarantine {
+    pub at: String,
+    pub engine_image: String,
+    pub host_id: Option<u64>,
+    pub job: String,
+    pub reason: String,
+    pub workunit: String,
+}
+
+/// Read-only, bounded view of the existing collector's held results and reasons.
+pub fn quarantine(root: &Path) -> anyhow::Result<Vec<Quarantine>> {
+    let path = root.join("quarantine");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    ensure!(
+        std::fs::symlink_metadata(&path)?.file_type().is_dir(),
+        "quarantine must be a regular directory"
+    );
+    let mut rows = Vec::new();
+    for (n, entry) in std::fs::read_dir(path)?.enumerate() {
+        ensure!(n < 10000, "quarantine view exceeds safety bound");
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(id) = name.to_str().filter(|id| boinc::is_sha256(id)) else {
+            continue;
+        };
+        ensure!(
+            entry.file_type()?.is_dir(),
+            "quarantine entry must be a regular directory"
+        );
+        if matches!(
+            load(root, id)?.stage,
+            crate::Stage::Published | crate::Stage::Failed
+        ) {
+            continue;
+        }
+        let row: Quarantine =
+            serde_json::from_slice(&read(&entry.path().join("reason.json"), 16 << 10)?)?;
+        ensure!(
+            row.job == id && row.workunit == format!("usnm_{id}"),
+            "quarantine identity mismatch"
+        );
+        rows.push(row);
+    }
+    rows.sort_by(|a, b| a.job.cmp(&b.job));
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -498,7 +589,10 @@ mod tests {
         assert!(args.windows(2).any(|a| a == ["--target_host", "2"]));
         assert_eq!(
             &args[args.len() - 2..],
-            [format!("{id}_page"), format!("{id}_request_json")]
+            [
+                format!("{}_page", s.workunit),
+                format!("{}_request_json", s.workunit)
+            ]
         );
         assert!(plan(&id, &image, 3, &t).is_err());
         assert!(plan(&id, &format!("sha256:{}", "c".repeat(64)), 1, &t).is_err());

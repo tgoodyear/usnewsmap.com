@@ -1,5 +1,5 @@
 use super::*;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::{Command, Output};
 
 struct Controller {
@@ -212,6 +212,18 @@ async fn planning_is_read_only_and_onboarding_is_capped_retry_stable_and_does_no
     success(&c.command("onboard").arg("--execute").output().unwrap());
     assert_eq!(c.calls().lines().count(), 2);
     assert!(c.calls().contains("--target_host 4"));
+    let onboard = c.root.join("onboard");
+    let campaign = std::fs::read_dir(onboard)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let shared = std::fs::metadata(campaign.join("shared/bundle.tar")).unwrap();
+    for host in ["3", "4"] {
+        let linked = std::fs::metadata(campaign.join(host).join("bundle.tar")).unwrap();
+        assert_eq!((shared.dev(), shared.ino()), (linked.dev(), linked.ino()));
+    }
     success(&c.command("onboard").arg("--execute").output().unwrap());
     assert_eq!(c.calls().lines().count(), 2);
     assert!(!c.calls().contains("--target_host 1"));
@@ -271,7 +283,9 @@ async fn spot_replay_is_idempotent_and_uncertainty_never_retries() {
     success(&c.spot(true, false));
     assert_eq!(c.calls().lines().count(), 1);
     assert!(c.calls().contains("--target_host 2"));
-    assert!(c.calls().contains(&format!("{}_request_json", c.id)));
+    assert!(c
+        .calls()
+        .contains(&format!("usnm_spot_{}_1_2_request_json", c.id)));
 }
 
 #[tokio::test]
@@ -282,6 +296,17 @@ async fn independent_canonical_results_validate_and_never_publish_or_change_trus
     success(&c.compare(2));
     assert_eq!(c.comparison()["agrees"], true);
     assert_eq!(c.comparison()["quorum"], 2);
+    let defaults = c.fx.tmp.path().join("mysql.cnf");
+    std::fs::set_permissions(&defaults, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!c.compare(2).status.success());
+    assert_eq!(c.comparison()["agrees"], false);
+    std::fs::set_permissions(&defaults, std::fs::Permissions::from_mode(0o600)).unwrap();
+    success(&c.compare(2));
+    std::fs::remove_file(&defaults).unwrap();
+    assert!(!c.compare(2).status.success());
+    assert_eq!(c.comparison()["agrees"], false);
+    write(&defaults, "[client]\n");
+    std::fs::set_permissions(&defaults, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(!c.compare(1).status.success());
     assert_eq!(c.comparison()["agrees"], false);
     assert_eq!(c.comparison()["status"], "unverified");
@@ -311,6 +336,37 @@ async fn independent_canonical_results_validate_and_never_publish_or_change_trus
 }
 
 #[tokio::test]
+async fn spot_physical_inputs_survive_original_workunit_cleanup() {
+    let c = Controller::new().await;
+    let source = c.fx.options.root.join("jobs").join(&c.id);
+    for (logical, physical) in [("page", "page"), ("request.json", "request_json")] {
+        write(
+            &c.project
+                .join("download")
+                .join(format!("{}_{}", c.id, physical)),
+            std::fs::read(source.join(logical)).unwrap(),
+        );
+    }
+    success(&c.spot(true, false));
+    for (logical, physical) in [("page", "page"), ("request.json", "request_json")] {
+        std::fs::remove_file(
+            c.project
+                .join("download")
+                .join(format!("{}_{}", c.id, physical)),
+        )
+        .unwrap();
+        let spot = c
+            .project
+            .join("download")
+            .join(format!("usnm_spot_{}_1_2_{}", c.id, physical));
+        assert_eq!(
+            std::fs::read(spot).unwrap(),
+            std::fs::read(source.join(logical)).unwrap()
+        );
+    }
+    assert_eq!(c.calls().lines().count(), 1);
+}
+#[tokio::test]
 async fn valid_but_different_text_is_a_failed_quorum_and_config_rejects_unsafe_defaults() {
     let c = Controller::new().await;
     success(&c.spot(true, false));
@@ -334,4 +390,41 @@ async fn valid_but_different_text_is_a_failed_quorum_and_config_rejects_unsafe_d
     )
     .unwrap();
     assert!(!c.command("onboard").output().unwrap().status.success());
+}
+
+#[tokio::test]
+async fn quarantine_view_is_read_only_and_excludes_released_or_failed_jobs() {
+    let c = Controller::new().await;
+    let path =
+        c.fx.options
+            .root
+            .join("quarantine")
+            .join(&c.id)
+            .join("reason.json");
+    write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "at":"2026-10-16T00:00:00Z", "engine_image":IMAGE, "host_id":null,
+            "job": c.id, "reason":"no host id for this result", "workunit": format!("usnm_{}", c.id)
+        }))
+        .unwrap(),
+    );
+    let before = std::fs::read(&path).unwrap();
+    let rows = usnm_boinc::host_trust::quarantine(&c.fx.options.root).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].reason, "no host id for this result");
+    assert_eq!(rows[0].host_id, None);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let mut r = usnm_boinc::load(&c.fx.options.root, &c.id).unwrap();
+    for stage in [Stage::Published, Stage::Failed] {
+        r.stage = stage;
+        usnm_boinc::save(&c.fx.options.root, &r).unwrap();
+        assert!(usnm_boinc::host_trust::quarantine(&c.fx.options.root)
+            .unwrap()
+            .is_empty());
+    }
+    assert!(usnm_boinc::host_trust::quarantine(&c.root)
+        .unwrap()
+        .is_empty());
+    assert!(!c.root.exists());
 }

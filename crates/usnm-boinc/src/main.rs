@@ -161,6 +161,11 @@ enum Commands {
 }
 #[derive(Subcommand)]
 enum HostTrust {
+    /// Read existing quarantine reasons without connecting to BOINC or modifying results.
+    Quarantine {
+        #[arg(long)]
+        root: PathBuf,
+    },
     /// Discover BOINC hosts and issue one gold unit per untrusted host/campaign.
     Onboard {
         #[arg(long)]
@@ -968,6 +973,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::HostTrust { command } => {
             use usnm_boinc::host_trust as x;
             match command {
+                HostTrust::Quarantine { root } => {
+                    println!("{}", serde_json::to_string_pretty(&x::quarantine(&root)?)?);
+                }
                 HostTrust::Onboard { config, execute } => {
                     let hosts = x::onboard(&x::Config::load(&config)?, execute).await?;
                     println!("{}", serde_json::to_string(&hosts)?);
@@ -987,7 +995,7 @@ async fn main() -> anyhow::Result<()> {
                     spot_spool,
                 } => {
                     anyhow::ensure!(
-                        x::spot_compare(&x::Config::load(&config)?, &job, &original_spool, &spot_spool).await?,
+                        x::spot_compare(&x::Config::parse(&config)?, &job, &original_spool, &spot_spool).await?,
                         "independent OCR spot check disagrees; inspect comparison.json; no trust or publication changed"
                     );
                 }

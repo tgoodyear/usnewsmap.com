@@ -70,8 +70,14 @@ operator supplying host IDs. Inventory is bounded to 100,000 hosts; larger
 projects fail closed instead of silently skipping hosts.
 
 Campaign roots are bound to the prepared bundle/manifest, complete engine
-configuration and host. Native gold write-ahead markers make retries stable:
-submitted hosts are skipped without starving new hosts behind the per-pass cap.
+configuration and host. Native gold write-ahead markers make retries stable.
+Each campaign stores one checksum-bound bundle; per-host regular-file hard links
+share its storage instead of retaining a full bundle copy per volunteer.
+The shared validator expectations writer is locked and refuses updates over its
+16 MiB reader limit **before** replacing the previous readable file. If that
+bound is reached, stop for a reviewed sharding/retention decision; never delete
+expectations for pending units to force another submission.
+Submitted hosts are skipped without starving new hosts behind the per-pass cap.
 A `submitting` marker blocks the pass and is **never automatically retried**.
 Inspect that campaign's deterministic workunit on BOINC, then use the existing
 gold reconciliation procedure (rename `submitting` to `submitted` if present;
@@ -105,7 +111,10 @@ or lack of a second trusted host fail closed. At most `max_spots` (1–100) new
 workunits are issued per pass.
 
 The duplicate uses `usnm_spot_<job>_<source-host>_<target-host>`, the original job
-request and verified scan bytes, and `create_work --target_host`. Its outputs
+request and verified scan bytes, and `create_work --target_host`. Verified inputs
+are staged under **spot-specific physical filenames**, retaining the worker's
+logical `page` and `request.json` names, so original-workunit file cleanup cannot
+remove the second host's downloads. Its outputs
 cannot replace the original `usnm_<job>` canonical spool. Each duplicate requests
 one result with no automatic replacement; together with the original, the
 comparison requires **two independent hosts**, not two results from one host.
@@ -138,7 +147,8 @@ malicious-volunteer protection.
 
 `spots/<job>/comparison.json` records only job/image/host IDs, quorum, time and
 agreement/reason; it does not contain page text or connector diagnostics. Every
-attempt first invalidates an older comparison. Errors leave `status: unverified`
+attempt whose config/root and job can be parsed first invalidates an older
+comparison, before connector preflight. Errors leave `status: unverified`
 and `agrees: false`; valid mismatches record `text-disagreement` and exit nonzero.
 Only validated comparisons have `status: verified`; this includes a verified
 **disagreement**, so inspect `agrees` too. This file does not authorize future
@@ -152,3 +162,15 @@ retroactively block an already published original or add a new automatic
 publication gate. A scheduled controller, additional-host live acceptance, gold
 calibration, assignment canary and any publication-policy change require their
 separate approved rollout; #527 stays open until those operational criteria pass.
+
+## Show currently held results
+
+```sh
+usnm-boinc host-trust quarantine --root /approved/handoff
+```
+
+This read-only command lists existing collector quarantine records, including
+host/image/job IDs, time and refusal reasons. It needs no database connection or
+controller config. It omits old quarantine artifacts whose jobs were subsequently
+published or marked failed, does not delete evidence, and refuses malformed
+records or symlinks. The view is bounded to 10,000 directory entries.
