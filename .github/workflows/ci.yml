@@ -180,6 +180,45 @@ jobs:
       - run: shellcheck -x -S warning scripts/boinc/check-db-tls.sh
       - run: scripts/boinc/check-db-tls.sh
 
+  boinc-node-client:
+    name: BOINC stable node client (EL9 build, no host installation)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the actual pinned client away from production
+        run: |
+          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_observe_node.py
+          shellcheck -x -S warning scripts/boinc/build-node-client-container.sh
+          scripts/boinc/build-node-client-container.sh --out "$PWD/target/boinc-node-client"
+      - name: Archive and re-extract the retained executable bundle
+        run: |
+          tar -C target -czf target/boinc-node-client.tar.gz boinc-node-client
+          mkdir target/client-archive-check
+          tar -C target/client-archive-check -xzf target/boinc-node-client.tar.gz
+          cd target/client-archive-check/boinc-node-client
+          sha256sum -c SHA256SUMS
+          test -x install/bin/boinc
+          test -x install/bin/boinccmd
+          test "$(cat runtime-memory-max)" = 1610612736
+          test "$(cat runtime-cpu-max)" = "100000 100000"
+      - name: The exported client loads on EL10 without a host install
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -v "$PWD/target/client-archive-check/boinc-node-client/install:/client:ro" \
+            mirror.gcr.io/library/almalinux:10@sha256:838c2fafefb1a8a0d7f8cdbc3b0551c2a2b1eb0cd87aad6d62aecadb18311f1b \
+            /bin/sh -ec 'ldd /client/bin/boinc; ldd /client/bin/boinccmd; /client/bin/boinc --version; /client/bin/boinccmd --version'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boinc-node-client-el9
+          retention-days: 7
+          path: target/boinc-node-client.tar.gz
+
   # The BOINC server image and the bridge job image (contrib-compute/images). Built, smoke-tested
   # and not pushed: where they are published is the maintainer's step (docs/images.md).
   contrib-images:
