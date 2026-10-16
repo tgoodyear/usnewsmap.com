@@ -3,6 +3,7 @@
 
 import argparse
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
@@ -174,7 +175,7 @@ def collect(ocr_url, boinc_url, now=None):
         try:
             stages = parse(fetch(url))
             events.extend({"source": source, "stage": item} for item in stages)
-        except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
+        except (OSError, HTTPException, ValueError, KeyError, TypeError, RecursionError, ET.ParseError):
             # Keep remote bodies, URL strings and diagnostic details out of telemetry.
             failures.append({"code": f"{source}-unavailable",
                              "detail": f"{source} evidence could not be read or validated."})
@@ -260,21 +261,56 @@ def add_catalog(value, path, now=None):
         raise ValueError("Inconsistent catalog run counts")
     if at is None and (any(runs.values()) or any(artifacts.values())):
         raise ValueError("Nonempty catalog has no source timestamp")
+    catalog_stages = catalog["stages"]
+    if not isinstance(catalog_stages, list) or len(catalog_stages) > 256:
+        raise ValueError("Invalid catalog stage inventory")
+    evidence = {}
+    for candidate in catalog_stages:
+        candidate = object_value(candidate)
+        identifier = candidate["id"]
+        if identifier not in ("runs", "artifacts"):
+            continue
+        if identifier in evidence:
+            raise ValueError("Duplicate catalog evidence stage")
+        state = candidate["state"]
+        if state not in ("observed", "unknown", "blocked"):
+            raise ValueError("Invalid catalog evidence state")
+        amount = count(candidate["count"]) if candidate["count"] is not None else None
+        source_at = observed(candidate["observed_at"], now) if candidate["observed_at"] is not None else None
+        expected = runs["total"] if identifier == "runs" else artifacts["locations"]
+        if state == "observed" and (amount is None or source_at is None):
+            raise ValueError("Observed catalog evidence requires a count and timestamp")
+        if state == "unknown" and amount is not None:
+            raise ValueError("Unknown catalog evidence cannot have a count")
+        if amount is not None and (amount != expected or source_at is None):
+            raise ValueError("Inconsistent catalog evidence stage")
+        if amount is None and expected:
+            raise ValueError("Nonempty catalog totals have no stage evidence")
+        evidence[identifier] = {"state": state, "count": amount, "observed_at": source_at}
+    for identifier, expected in (("runs", runs["total"]), ("artifacts", artifacts["locations"])):
+        if identifier not in evidence:
+            if expected:
+                raise ValueError("Nonempty catalog totals have no stage")
+            evidence[identifier] = {"state": "unknown", "count": None, "observed_at": None}
     value["runs"], value["artifacts"] = runs, artifacts
     value["coverage"][0] = "Aggregate observer joined to a partial page-evidence catalog; not a full corpus inventory."
     value["issues"] = [issue for issue in value["issues"] if issue["code"] != "partial-coverage"]
     value["issues"].append({"code": "partial-catalog",
                             "detail": "Catalog totals cover imported evidence only. Unconnected validation/import/index stages remain unknown."})
     replacements = {
-        "artifact_verified": ("Cataloged verified locations", artifacts["verified"]),
-        "run_history": ("Cataloged engine runs", runs["total"]),
+        "artifact_verified": ("artifacts", "Cataloged verified locations", artifacts["verified"]),
+        "run_history": ("runs", "Cataloged engine runs", runs["total"]),
     }
     for item in value["stages"]:
         if item["id"] in replacements:
-            label, amount = replacements[item["id"]]
-            item.update(label=label, count=amount if at else None,
-                        state="observed" if at else "unknown", observed_at=at,
+            identifier, label, amount = replacements[item["id"]]
+            source = evidence[identifier]
+            item.update(label=label, count=amount if source["count"] is not None else None,
+                        state=source["state"], observed_at=source["observed_at"],
                         detail="Imported page evidence only; source age is independent of live aggregate refresh.")
+    times = [timestamp(item["observed_at"]) for item in value["stages"]
+             if item.get("observed_at") is not None]
+    value["observed_at"] = utc(min(times)) if times else None
     return value
 
 
@@ -291,7 +327,7 @@ def main():
     if args.catalog_snapshot:
         try:
             add_catalog(value, args.catalog_snapshot)
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
             failures.append({"code": "catalog-unavailable",
                              "detail": "Page-evidence catalog snapshot could not be read or validated."})
             value["issues"].append(failures[-1])

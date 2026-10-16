@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from http.client import IncompleteRead
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("observer", Path(__file__).with_name("data_flow_observer.py"))
@@ -69,6 +70,15 @@ class Observer(unittest.TestCase):
         self.assertEqual(failures[0]["code"], "local-ocr-unavailable")
         self.assertNotIn("private diagnostics", json.dumps(failures))
 
+    def test_truncated_http_and_deep_json_preserve_healthy_source(self):
+        for broken in [IncompleteRead(b"truncated", 100), b"[" * 2000 + b"]" * 2000]:
+            with self.subTest(broken=type(broken)), patch.object(
+                observer, "fetch", side_effect=[broken, XML]
+            ):
+                events, failures = observer.collect("http://local/", "https://project/", NOW)
+            self.assertEqual(len(events), 4)
+            self.assertEqual(failures[0]["code"], "local-ocr-unavailable")
+
     def test_wrong_local_json_shapes_cannot_suppress_boinc_observation(self):
         for malformed in [{"fetch": None}, {"fetch": []},
                           {"fetch": {"status": []}}, {"fetch": {"status": {"updated_at": "2026-10-16T19:55:00Z"},
@@ -110,16 +120,39 @@ class Observer(unittest.TestCase):
         catalog = observer.snapshot([], [], NOW)
         catalog.update(observed_at="2026-10-15T12:00:00Z",
                        runs={"total": 4, "pages": 2},
-                       artifacts={"locations": 10, "verified": 1, "missing": 2})
+                       artifacts={"locations": 10, "verified": 1, "missing": 2},
+                       stages=[
+                           observer.stage("runs", "Runs", 4, "2026-10-14T12:00:00Z", ""),
+                           observer.stage("artifacts", "Artifacts", 10, "2026-10-15T12:00:00Z", ""),
+                       ])
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.json"
             path.write_text(json.dumps(catalog))
             value = observer.add_catalog(observer.snapshot([], [], NOW), path, NOW)
         self.assertEqual(value["runs"]["total"], 4)
         item = next(s for s in value["stages"] if s["id"] == "run_history")
-        self.assertEqual(item["observed_at"], "2026-10-15T12:00:00Z")
+        self.assertEqual(item["observed_at"], "2026-10-14T12:00:00Z")
+        self.assertEqual(value["observed_at"], "2026-10-14T12:00:00Z")
         self.assertIsNone(next(s for s in value["stages"] if s["id"] == "accepted")["count"])
         self.assertIn("partial", value["coverage"][0])
+
+    def test_runs_only_catalog_does_not_turn_unknown_artifacts_into_zero(self):
+        catalog = observer.snapshot([], [], NOW)
+        catalog.update(observed_at="2026-10-16T19:00:00Z",
+                       runs={"total": 1, "pages": 1},
+                       stages=[
+                           observer.stage("runs", "Runs", 1, "2026-10-15T12:00:00Z", ""),
+                           {"id": "artifacts", "state": "unknown", "count": None, "observed_at": None},
+                       ])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps(catalog))
+            value = observer.add_catalog(observer.snapshot([], [], NOW), path, NOW)
+        artifact = next(s for s in value["stages"] if s["id"] == "artifact_verified")
+        self.assertEqual(artifact["state"], "unknown")
+        self.assertIsNone(artifact["count"])
+        self.assertIsNone(artifact["observed_at"])
+        self.assertEqual(next(s for s in value["stages"] if s["id"] == "run_history")["count"], 1)
 
     def test_catalog_cannot_smuggle_inconsistent_or_untimestamped_counts(self):
         catalog = observer.snapshot([], [], NOW)
