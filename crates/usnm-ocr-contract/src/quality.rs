@@ -184,11 +184,11 @@ pub struct ConfusionPair {
 
 pub const VERSION: u32 = 1;
 /// `quality.json`: the job holds the function-word list and optional bundle pages.
-pub const MAX_JOB_JSON: usize = 512 * 1024;
+pub const MAX_JOB_JSON: usize = 2 * 1024 * 1024;
 /// `result.json`.
-pub const MAX_RESULT_JSON: usize = 2 * 1024 * 1024;
+pub const MAX_RESULT_JSON: usize = 8 * 1024 * 1024;
 /// `confusions.json`.
-pub const MAX_CONFUSIONS: usize = 2 * 1024 * 1024;
+pub const MAX_CONFUSIONS: usize = 8 * 1024 * 1024;
 /// `diag.txt`.
 pub const MAX_DIAG: usize = 64 * 1024;
 /// `texts.json`: every text we hold of the page, with regions.
@@ -198,11 +198,11 @@ pub const MAX_PLACES: usize = 8 * 1024 * 1024;
 pub const MAX_ALTO: usize = crate::boinc::MAX_ALTO;
 pub const MAX_SCAN: usize = crate::boinc::MAX_SCAN;
 /// Maximum size of a bundled multi-page `page.jpg`, `loc.xml`, and `texts.json`.
-pub const MAX_BUNDLE_SCAN: usize = 256 * 1024 * 1024;
-pub const MAX_BUNDLE_ALTO: usize = 128 * 1024 * 1024;
-pub const MAX_BUNDLE_TEXTS: usize = 32 * 1024 * 1024;
-/// Maximum number of pages in a single `usnm_quality` workunit bundle.
-pub const MAX_BUNDLE_PAGES: usize = 64;
+pub const MAX_BUNDLE_SCAN: usize = 1024 * 1024 * 1024;
+pub const MAX_BUNDLE_ALTO: usize = 512 * 1024 * 1024;
+pub const MAX_BUNDLE_TEXTS: usize = 128 * 1024 * 1024;
+/// Maximum number of pages in a single `usnm_quality` workunit bundle (~10–15 min runtime).
+pub const MAX_BUNDLE_PAGES: usize = 500;
 /// Longest error text kept in a result.
 pub const MAX_ERROR: usize = 1024;
 pub const MAX_READERS: usize = 8;

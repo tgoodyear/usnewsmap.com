@@ -36,6 +36,22 @@ pub const FPOPS_BOUND: &str = "1e14";
 pub const MEMORY_BOUND: &str = "1610612736";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {
+    let n_pages = job.pages.len().max(1);
+    let fpops_est = if n_pages == 1 {
+        FPOPS_EST.to_owned()
+    } else {
+        format!("{n_pages}e12")
+    };
+    let fpops_bound = if n_pages == 1 {
+        FPOPS_BOUND.to_owned()
+    } else {
+        format!("{n_pages}e14")
+    };
+    let disk_bound = if job.pages.is_empty() {
+        "1073741824"
+    } else {
+        "2147483648"
+    };
     let mut args: Vec<String> = [
         "--appname",
         APP,
@@ -56,13 +72,13 @@ pub fn create_work_args(job: &Job) -> Vec<String> {
         "--max_success_results",
         "3",
         "--rsc_fpops_est",
-        FPOPS_EST,
+        &fpops_est,
         "--rsc_fpops_bound",
-        FPOPS_BOUND,
+        &fpops_bound,
         "--rsc_memory_bound",
         MEMORY_BOUND,
         "--rsc_disk_bound",
-        "1073741824",
+        disk_bound,
         "--delay_bound",
         "259200",
     ]

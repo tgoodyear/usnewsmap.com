@@ -366,13 +366,14 @@ All 4 active volunteer nodes attached to `boinc.usnewsmap.com` picked up and exe
 | **`pve-big.tjg.fyi` `CT 100` (`boinc-test`)** | `x86_64-pc-linux-gnu (docker)` | 12 vCPUs / 8 GiB RAM (`10` `usnm_quality` + `1` `usnm_qwen` via `app_config.xml`) | `~2.0 tasks/sec` (`~120 tasks/min`) |
 | **`pve-big.tjg.fyi` `CT 101` (`boinc-volunteer-2`)** | `x86_64-pc-linux-gnu (docker)` | 12 vCPUs / 8 GiB RAM (`10` `usnm_quality` + `1` `usnm_qwen` via `app_config.xml`) | `~2.0 tasks/sec` (`~120 tasks/min`) |
 | **`pve-laptop.tjg.fyi` `CT 110` (`boinc-laptop`)** | `x86_64-pc-linux-gnu (docker)` | 6 vCPUs / 10 GiB RAM | Continuous 4–6 concurrent `usnm_quality` tasks |
+| **`usnm-ocr-node4-arcs-prod` (`Host 8`)** | `x86_64-pc-linux-gnu (docker)` | 4 vCPUs / 16 GiB RAM | Continuous `usnm_quality` & `usnm_gold` execution |
 | **`macOS` (`Apple-Computer.tjg.fyi`)** | `arm64-apple-darwin (native)` | Apple M1 8-core / 8 GiB RAM | **`~0.9–1.1s/page`** native execution |
 
-Within the first 30 minutes of `v1-wave5` dispatch (as of `16:45:01 UTC` on `server_status.php`), **`1,748` replica tasks (`~874` workunits)** had already completed and validated, with **`103` tasks in progress** and **`8,149` tasks ready to send**.
+All 5 online hosts (`Host 1`, `Host 2`, `Host 6`, `Host 8`, `Host 9`) actively pulled and returned validated `v1-wave5` results (`~6,400+` of `10,000` replica tasks completed and `~3,100+` workunits assimilated into `/project/usnmocr/results/0` as of `18:05 UTC`, with `0` `v1-wave5` task errors).
 
 ### 8.2 Root Causes Resolved & Repeatable Large-Scale Campaign Publishing Runbook
 
-Executing a 5,000-workunit campaign surfaced five friction points that have now been permanently fixed and codified in the repository:
+Executing a 5,000-workunit campaign surfaced seven operational lessons that have now been permanently fixed and codified in the repository:
 
 1. **VNet Subnet Rules on Curated Storage (`stusnmdffapzy`):**
    - *Finding:* `stusnmdffapzy` (`curated`) had `defaultAction: Deny` with empty `virtualNetworkRules`, blocking Container Apps jobs from reading `american-stories` and `ocr-local` Parquet tables.
@@ -380,13 +381,19 @@ Executing a 5,000-workunit campaign surfaced five friction points that have now 
 2. **Schema Normalization in `usnm-boinc` & `usnm-ocr-contract`:**
    - *Finding:* Raw exports from `curated` contained whitespace in `ocr_engine` (`source`), `"rect"` vs `"box"` keys in region JSON, inverted bounding boxes on a handful of American Stories rows, and alphanumeric `--group` names (`wave5` / `v1-wave5`).
    - *Fix:* `usnm_ocr_contract::quality::Region` now accepts `#[serde(rename = "box", alias = "rect")]`; `normalize_source` replaces whitespace/control characters and caps reader sources at `<= 128` bytes; `join_texts` filters degenerate region boxes; and `quality stage` validates `--group` with `quality::check_name` (`[a-z0-9-]`).
-3. **Multi-Page Bundling (`--bundle-size` / `QUALITY_BUNDLE_SIZE`) in `usnm-boinc quality stage` & `bridge-job.sh`:**
-   - *Finding:* Staging and submitting 5,000 single-page workunits over Azure Files SMB required 25,000 file creations + 5,000 `create_work` invocations (~25 minutes across 10 shards).
-   - *Fix:* `usnm-boinc quality stage` now accepts `--bundle-size <1..20>` (exposed as `QUALITY_BUNDLE_SIZE` in `bridge-job.sh`), staging individual pages into `<root>/pages/<doc_id>` and packing them into multi-page bundle workunits in `<root>/units/bundle-<idx>-<first_doc_id>`. Setting `QUALITY_BUNDLE_SIZE=10` (or `20`) packs 5,000 pages into **500 (or 250) workunits**, allowing a 5,000-page campaign to stage and submit in a single `start-boinc-bridge.sh` run.
-4. **BOINC `server_status.php` 1-Hour Cache TTL (`STATUS_PAGE_TTL = 3600`):**
-   - *Finding:* Stock BOINC caches `html/cache/f2/server_status.php_job_status` for `3600` seconds (`STATUS_PAGE_TTL`), causing `server_status.php` (and `?xml=1`) to display `0` unsent / `0` in progress for up to an hour after a batch is submitted.
+3. **10–15 Minute (`0.17–0.25 hr`) Workunit Sizing via Multi-Page Bundling (`--bundle-size 300–500`):**
+   - *Finding:* Single-page `usnm_quality` workunits (`0.01 hours` = `~1–3.6s` total wall time on `server_status.php`, vs `0.11 hours` for `usnm_gold` and `0.47 hours` for `usnm_qwen`) are far too small: ~75% of wall time is spent on HTTP transfers (4 download files + 3 upload files per workunit), container startup, and scheduler RPCs; `5,000` pages created `10,000` MySQL `result` rows and `5,000` SMB directories (causing `quality-collect` to spend ~6 minutes in SMB metadata lookups).
+   - *Fix:* Raised `MAX_BUNDLE_PAGES` to `500` (`MAX_BUNDLE_SCAN = 1 GiB`, `MAX_BUNDLE_ALTO = 512 MiB`, `MAX_BUNDLE_TEXTS = 128 MiB`, `MAX_RESULT_JSON = 8 MiB`, `MAX_CONFUSIONS = 8 MiB`), scaled `create_work`'s `--rsc_fpops_est` (`N * 1e12`) and `--rsc_fpops_bound` (`N * 1e14`) proportionally with bundle page count `N`, and set `QUALITY_BUNDLE_SIZE` default to **`300` pages per workunit** in `bridge-job.sh`. Because `usnm_quality` packs all `N` pages into a single concatenated `page.jpg`, `loc.xml`, and `texts.json` indexed by `[offset, bytes, sha256]` slices (`BundleSlice`) and checkpoints `quality_checkpoint.json` after every single page (~1.8s granularity), a **300–500 page bundle runs for 10–15 minutes (`0.17–0.25 hours`)**, still downloads only 4 non-sticky files, and reduces workunit count, HTTP transfers, and SMB file operations by **300×–500×** (`5,000` pages = `10–17` workunits; `1,000,000` pages = `2,000–3,334` workunits).
+4. **High-Throughput Scheduler Dispatch Limits (`config.xml.template`):**
+   - *Finding:* Fast tasks caused hosts to hit `daily_result_quota = 200` (`max_jobs_per_day` in `host_app_version`) within minutes and wait `31` seconds (`min_sendwork_interval = 30`) with only `4` tasks/CPU (`max_wus_in_progress = 4`).
+   - *Fix:* Updated `contrib-compute/boinc/config.xml.template` to `min_sendwork_interval = 2`, `max_wus_in_progress = 32`, `daily_result_quota = 50000`, and `max_wus_to_send = 64`.
+5. **Multi-Host Account Contention Under `feeder --allapps` (`125` Slots/App):**
+   - *Finding:* `feeder -d 2 --allapps` divides `<shmem_work_items>1000</shmem_work_items>` across all 8 registered apps (`125` shared-memory slots per app). When multiple volunteer hosts (`Host 1` macOS, `Host 8` `usnm-ocr-node4`, `Host 9` `boinc-laptop`) shared the same BOINC user ID (`USER#2`) while `<one_result_per_user_per_wu/>` was active, all 125 `usnm_quality` shared-memory slots filled with `_1` replicas whose `_0` replica had been completed by another `USER#2` host, stalling all `USER#2` hosts until another user (`USER#3` or `USER#5`) drained those slots.
+   - *Fix:* Ensure each multi-node fleet host uses a distinct BOINC account (as `pve-onboard.sh --account-name <host>` does for `CT 100` and `CT 101`) or rely on BOINC's per-host workunit exclusion (`hostid_0 != hostid_1`) when multiple trusted hosts run under one operator account.
+6. **BOINC `server_status.php` 1-Hour Cache TTL (`STATUS_PAGE_TTL = 3600`):**
+   - *Finding:* Stock BOINC caches `html/cache/f2/server_status.php_job_status` for `3600` seconds (`STATUS_PAGE_TTL`), causing `server_status.php` (and `?xml=1`) to display stale counts for up to an hour after submission.
    - *Fix:* `entrypoint.sh` now sets `STATUS_PAGE_TTL` to `60` seconds in `html/project/cache_parameters.inc`, `bridge-job.sh` purges `html/cache/f2/server_status.php_job_status` immediately after `quality-submit` and `qwen-submit`, and operators can query `https://boinc.usnewsmap.com/server_status.php?counts=1` at any time for uncached real-time DB counts.
-5. **Repeatable 4-Command Publishing Procedure:**
+7. **Repeatable 4-Command Publishing Procedure (Targeting 10–15 Min Workunits):**
    ```sh
    # 1. Upload campaign sample (<campaign>.jsonl) to boinc-handoff/quality-samples/
    az storage blob upload --auth-mode login --account-name stusnmoffapzy \
@@ -396,12 +403,12 @@ Executing a 5,000-workunit campaign surfaced five friction points that have now 
    scripts/start-boinc-bridge.sh --env prod --target handoff --step texts-export \
      --var HANDOFF_SAMPLE=<campaign>.jsonl --wait-mins 30
 
-   # 3. Stage pages and pack into 10-page bundle workunits on the BOINC share
+   # 3. Stage pages and pack into 300-page (~10-15 min) bundle workunits on the BOINC share
    scripts/start-boinc-bridge.sh --env prod --step quality-stage \
      --var QUALITY_CAMPAIGN=<campaign> \
      --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff \
      --var QUALITY_SAMPLE=<campaign>.jsonl --var QUALITY_GROUP=<campaign> \
-     --var QUALITY_LANGS=eng --var QUALITY_BUNDLE_SIZE=10 --var QUALITY_MAX=5000 \
+     --var QUALITY_LANGS=eng --var QUALITY_BUNDLE_SIZE=300 --var QUALITY_MAX=5000 \
      --var QUALITY_ENGINE_IMAGE=sha256:<worker-digest> --wait-mins 45
 
    # 4. Submit bundled workunits to BOINC and invalidate status cache
