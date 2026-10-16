@@ -411,8 +411,9 @@ only for a host that passed the gold check.
   `REFERENCE_URL` and `OUT_URL`. Its image is the setting `USNM_BOINC_HANDOFF_IMAGE`
   (`infra/env/<env>.json`): `images.bridge` from `contrib-compute/infra/boinc/env/<env>.json`,
   so a new bridge image means updating both. `scripts/start-boinc-bridge.sh --target handoff`
-  starts it with a run's settings. The main stack exports its name as `BOINC_HANDOFF_JOB`;
-  `scripts/provision.sh` saves that output with the environment's other stack outputs.
+  starts it with a run's settings. It reads the job name and resource group from the main
+  stack's outputs saved by `scripts/provision.sh`, so it doesn't need an
+  `infra/names/<env>.json` entry.
 
 The role assignments:
 

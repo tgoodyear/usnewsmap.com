@@ -82,20 +82,29 @@ for v in ${VARS[@]+"${VARS[@]}"}; do
 done
 cd "$(dirname "$0")/.."
 ALLOW_DIRTY=false
-# shellcheck source=scripts/lib/boinc.sh
-. scripts/lib/boinc.sh
-boinc_load_settings
-boinc_az_check
 if [ "$TARGET" = handoff ]; then
   # shellcheck source=scripts/lib/env.sh
   . scripts/lib/env.sh
+  command -v az > /dev/null || die "az is not installed"
+  command -v jq > /dev/null || die "jq is not installed"
+  SUBSCRIPTION=$(aget AZURE_SUBSCRIPTION_ID)
+  [ -n "$SUBSCRIPTION" ] || die "AZURE_SUBSCRIPTION_ID isn't set for $ENV_NAME; run scripts/provision.sh --env $ENV_NAME"
+  [ "$(az account show --subscription "$SUBSCRIPTION" --query id -o tsv 2> /dev/null)" = "$SUBSCRIPTION" ] ||
+    die "az cannot see subscription $SUBSCRIPTION (az login --tenant <its tenant> first)"
+  baz() { az "$@" --subscription "$SUBSCRIPTION" --only-show-errors; }
   job=$(aget BOINC_HANDOFF_JOB)
   [ -n "$job" ] || die "the stack $STACK has no BOINC_HANDOFF_JOB output; run scripts/provision.sh --env $ENV_NAME"
   JOB_RG=$(aget AZURE_RESOURCE_GROUP)
   [ -n "$JOB_RG" ] || die "the stack $STACK has no AZURE_RESOURCE_GROUP output; run scripts/provision.sh --env $ENV_NAME"
+  baz group show --name "$JOB_RG" --query name -o none ||
+    die "no resource group $JOB_RG: it comes from the main stack (scripts/provision.sh --env $ENV_NAME)"
   PROVISION="scripts/provision.sh --env $ENV_NAME"
   LOGS="the main environment's Log Analytics workspace (ContainerAppConsoleLogs)"
 else
+  # shellcheck source=scripts/lib/boinc.sh
+  . scripts/lib/boinc.sh
+  boinc_load_settings
+  boinc_az_check
   job=$(boinc_output bridgeJobName)
   [ -n "$job" ] || die "the stack $BOINC_STACK has no bridge job (are the images in $BOINC_SETTINGS deployed? scripts/provision-boinc.sh --env $ENV_NAME)"
   JOB_RG=$BOINC_RG
