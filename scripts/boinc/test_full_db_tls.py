@@ -14,6 +14,27 @@ SPEC.loader.exec_module(full)
 
 
 class FullTlsEvidenceTests(unittest.TestCase):
+    def test_http_200_database_error_pages_are_not_success(self):
+        full.validate_page("index.php", 200, b"<h1>usnewsmap OCR</h1>")
+        full.validate_page("get_project_config.php", 200, b"<project_config/>")
+        for error in (
+            b"Database error", b"Database Error", b"Can't connect to database",
+            b"can't CONNECT TO DATABASE", b"Cannot connect to database",
+            b"Unable to connect", b"Fatal error", b"Uncaught mysqli_sql_exception",
+        ):
+            for path in ("index.php", "server_status.php"):
+                with self.assertRaises(AssertionError):
+                    full.validate_page(path, 200, b"<html>" + error + b"</html>")
+        for status, body in ((200, b""), (500, b"server error")):
+            with self.assertRaises(AssertionError):
+                full.validate_page("index.php", status, body)
+
+    def test_fixture_tags_are_unique_per_invocation_not_shared_per_commit(self):
+        wrapper = (DIRECTORY.parent / "check-full-db-tls.sh").read_text()
+        self.assertIn("uuid.uuid4().hex", wrapper)
+        self.assertIn('tag="$name"', wrapper)
+        self.assertNotIn("git rev-parse", wrapper)
+
     def test_roles_require_actual_specific_database_queries(self):
         for query, role in (
             ("select * from platform where deprecated=0", "feeder"),

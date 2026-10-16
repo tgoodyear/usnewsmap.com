@@ -2,7 +2,7 @@
 set -euo pipefail
 image=""
 local_image=""
-while [ "$#" -gt 0 ]; do
+while [ $# -gt 0 ]; do
   case "$1" in
     --server-image) image=${2:?}; shift 2 ;;
     --local-server-image) local_image=${2:?}; shift 2 ;;
@@ -19,8 +19,8 @@ else
   exit 2
 fi
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-tag="usnm-boinc-full-tls:$(git rev-parse --short HEAD)"
 name="usnm-full-tls-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+tag="$name"
 cleanup() {
   docker logs "$name-db" 2>/dev/null || true
   docker rm -f "$name-app" "$name-db" >/dev/null 2>&1 || true

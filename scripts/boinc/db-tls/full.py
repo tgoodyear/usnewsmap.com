@@ -172,13 +172,20 @@ def web():
     for path in ("get_project_config.php", "server_status.php", "index.php"):
         with urllib.request.urlopen(f"http://127.0.0.1/{path}", timeout=10) as response:
             data = response.read()
-            assert response.status == 200 and data
-            assert b"Database Error" not in data and b"Unable to connect" not in data
-            assert b"fatal error" not in data.lower() and b"uncaught" not in data.lower()
-            if path == "get_project_config.php":
-                assert ET.fromstring(data).tag == "project_config"
+            validate_page(path, response.status, data)
         emit("actual-web", endpoint=path, bytes=len(data))
     scheduler_rpc()
+
+
+def validate_page(path, status, data):
+    assert status == 200 and data, "missing successful web response"
+    lowered = data.lower()
+    assert not any(message in lowered for message in (
+        b"database error", b"can't connect to database", b"cannot connect to database",
+        b"unable to connect", b"fatal error", b"uncaught",
+    )), "web endpoint returned an error page"
+    if path == "get_project_config.php":
+        assert ET.fromstring(data).tag == "project_config"
 
 
 def scheduler_rpc(case=None):
