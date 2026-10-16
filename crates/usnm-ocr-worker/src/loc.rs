@@ -400,11 +400,12 @@ struct ApiHealth {
     item_errors: std::collections::VecDeque<(Instant, String)>,
 }
 
-/// What a check of the known-good item found.
-enum Probe {
-    Ok,
+/// Why a known-good item cannot establish that the server is serving.
+enum ProbeFailure {
     /// It failed too: a hold, for at least this long if it said so.
     Failed(Option<Duration>),
+    /// A strict block already held and counted; stop the original fetch.
+    Blocked(FetchError),
 }
 
 /// A successful GET.
@@ -609,12 +610,7 @@ impl LocClient {
     /// Whether a fast, bare 503 for item `url` of `title` on `server` is
     /// an item error rather than a hold (the module notes), and if not, how
     /// long a failed check asked to wait. Records it if it is.
-    async fn item_error(
-        &self,
-        server: Server,
-        url: &str,
-        title: &str,
-    ) -> Result<(), Option<Duration>> {
+    async fn item_error(&self, server: Server, url: &str, title: &str) -> Result<(), ProbeFailure> {
         /// Whether item errors from too many titles, with this one, are
         /// inside the window.
         fn too_many_titles(h: &mut ApiHealth, title: &str) -> bool {
@@ -639,47 +635,50 @@ impl LocClient {
             false
         }
         let Some(health) = self.health(server) else {
-            return Err(None);
+            return Err(ProbeFailure::Failed(None));
         };
         let check = {
             let mut h = health.lock().expect("health lock");
             if too_many_titles(&mut h, title) {
-                return Err(None);
+                return Err(ProbeFailure::Failed(None));
             }
             let now = Instant::now();
             if h.known_good.as_deref() == Some(url) {
-                return Err(None);
+                return Err(ProbeFailure::Failed(None));
             }
             match (&h.known_good, h.last_ok) {
                 (_, Some(at)) if now.duration_since(at) <= ITEM_ERROR_OK_WITHIN => None,
                 (Some(good), _) => Some(good.clone()),
-                (None, _) => return Err(None),
+                (None, _) => return Err(ProbeFailure::Failed(None)),
             }
         };
         if let Some(good) = check {
-            match self.probe(server, &good).await {
-                Probe::Ok => {}
-                Probe::Failed(d) => return Err(d),
-            }
+            self.probe(server, &good).await?;
         }
         // Checked again with the record, under one lock: callers that
         // waited on probes together can't all pass the titles rule.
         let mut h = health.lock().expect("health lock");
         if too_many_titles(&mut h, title) {
-            return Err(None);
+            return Err(ProbeFailure::Failed(None));
         }
         h.item_errors.push_back((Instant::now(), title.to_owned()));
         Ok(())
     }
 
     /// One paced request for the known-good item, outside the caches.
-    async fn probe(&self, server: Server, url: &str) -> Probe {
+    async fn probe(&self, server: Server, url: &str) -> Result<(), ProbeFailure> {
         self.pacer(server).wait().await;
         match self.http.get(url).send().await {
+            Ok(resp) if self.cfg.html_is_block && html_page(&resp).is_some() => {
+                self.block_hold(server, resp.status(), "html_challenge");
+                Err(ProbeFailure::Blocked(FetchError::Transient(format!(
+                    "{url}: known-good item answered HTTP {} with {}; a bot challenge or block page; holding",
+                    resp.status().as_u16(),
+                    html_page(&resp).expect("checked HTML response")
+                ))))
+            }
             Ok(resp) if resp.status().is_success() => {
-                if self.cfg.html_is_block && html_page(&resp).is_some() {
-                    return Probe::Failed(None);
-                }
+                let status = resp.status();
                 match read_limited(resp, MAX_ITEM_BYTES).await {
                     Ok(_) => {
                         if let Some(h) = self.health(server) {
@@ -687,9 +686,15 @@ impl LocClient {
                             h.known_good = Some(url.to_owned());
                             h.last_ok = Some(Instant::now());
                         }
-                        Probe::Ok
+                        Ok(())
                     }
-                    Err(_) => Probe::Failed(None),
+                    Err(e) if self.cfg.html_is_block => {
+                        self.block_hold(server, status, "unreadable_body");
+                        Err(ProbeFailure::Blocked(FetchError::Transient(format!(
+                            "{url}: known-good item's body could not be read ({e}); a possible block or challenge; holding"
+                        ))))
+                    }
+                    Err(_) => Err(ProbeFailure::Failed(None)),
                 }
             }
             Ok(resp) => {
@@ -698,11 +703,11 @@ impl LocClient {
                     server = server.name(),
                     "the known-good item failed too"
                 );
-                Probe::Failed(retry_after(&resp).map(|(d, _)| d))
+                Err(ProbeFailure::Failed(retry_after(&resp).map(|(d, _)| d)))
             }
             Err(e) => {
                 tracing::warn!(error = %e.without_url(), server = server.name(), "the known-good item failed too");
-                Probe::Failed(None)
+                Err(ProbeFailure::Failed(None))
             }
         }
     }
@@ -824,6 +829,7 @@ impl LocClient {
                         // a hold.
                         let bare = status == StatusCode::SERVICE_UNAVAILABLE
                             && !resp.headers().contains_key(reqwest::header::RETRY_AFTER)
+                            && !(self.cfg.html_is_block && challenge(&resp).is_some())
                             && sent.elapsed() < ITEM_ERROR_FAST;
                         // On the storage service, where 503s under load
                         // look the same, only a second fast, bare 503 for
@@ -847,7 +853,8 @@ impl LocClient {
                                         "{url} returned HTTP 503 at once while other items answered"
                                     )));
                                 }
-                                Err(d) => checked = d,
+                                Err(ProbeFailure::Failed(d)) => checked = d,
+                                Err(ProbeFailure::Blocked(e)) => return Err(e),
                             }
                         }
                         let capped = asked.is_some_and(|(_, c)| c);
@@ -2115,9 +2122,67 @@ mod tests {
         s.script(path, Scripted::Challenge(200));
         assert!(matches!(
             loc.probe(Server::Api, &format!("{}{path}", s.root)).await,
-            Probe::Failed(_)
+            Err(ProbeFailure::Blocked(_))
         ));
         assert!(loc.health.lock().unwrap().last_ok.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_challenge_probe_stops_the_original_fetch_and_names_the_block() {
+        for status in [200, 403] {
+            let s = StandIn::start().await;
+            let loc = LocClient::new(LocConfig {
+                html_is_block: true,
+                backoff: Duration::from_millis(100),
+                ..batch_client(&s, Duration::ZERO, None, false).cfg
+            })
+            .unwrap();
+            loc.set_known_good(format!("{}/good", s.root));
+            s.script("/item", Scripted::Status(503));
+            s.script("/good", Scripted::Challenge(status));
+            let error = loc
+                .get(&format!("{}/item", s.root), Server::Api, 1024, Some("sn2"))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, FetchError::Transient(_)), "{error}");
+            assert!(error.to_string().contains("known-good item"), "{error}");
+            assert!(
+                error.to_string().contains("Cloudflare challenge"),
+                "{error}"
+            );
+            assert_eq!(s.hits("/item"), 1, "do not retry after a probe challenge");
+            assert_eq!(s.hits("/good"), 1);
+            assert!(loc.api.held_until().is_some());
+            assert!(loc.health.lock().unwrap().item_errors.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_503_challenge_cannot_be_an_item_error_after_a_healthy_item() {
+        let s = StandIn::start().await;
+        let loc = LocClient::new(LocConfig {
+            html_is_block: true,
+            attempts: 1,
+            backoff: Duration::from_millis(100),
+            ..batch_client(&s, Duration::ZERO, None, false).cfg
+        })
+        .unwrap();
+        s.put("/good", b"{}".to_vec());
+        loc.get(&format!("{}/good", s.root), Server::Api, 1024, Some("sn1"))
+            .await
+            .unwrap();
+        s.script("/item", Scripted::Challenge(503));
+        let error = loc
+            .get(&format!("{}/item", s.root), Server::Api, 1024, Some("sn2"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, FetchError::Transient(_)), "{error}");
+        assert!(
+            error.to_string().contains("Cloudflare challenge"),
+            "{error}"
+        );
+        assert!(loc.api.held_until().is_some());
+        assert!(loc.health.lock().unwrap().item_errors.is_empty());
     }
 
     #[tokio::test]
