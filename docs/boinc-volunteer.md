@@ -37,9 +37,9 @@ work finishes. Local computing preferences affect other BOINC projects too.
 
 This pilot may have no work or supported app for your device. You can install
 BOINC and register or attach later. Start with the
-[Windows setup](#13-windows-windows_x86_64),
+[Linux quick start](boinc-linux.md), [Windows setup](#13-windows-windows_x86_64),
 [macOS setup](#12-macos-arm64-apple-darwin-apple-silicon-and-x86_64-apple-darwin-intel)
-or [Linux setup](#11-linux-x86_64-pc-linux-gnu-and-aarch64-unknown-linux-gnu),
+or the [Linux reference](#11-linux-x86_64-pc-linux-gnu-and-aarch64-unknown-linux-gnu),
 then review [resources, network and privacy](#4-resources-network-and-privacy).
 
 ## 1. Set up and check the host
