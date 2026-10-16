@@ -25,7 +25,7 @@
 #   BRIDGE_STEP=gold-submit     GOLD_ENGINE_IMAGE=sha256:... GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
 #                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_UNITS=20]
 #   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>; writes <campaign>/out
-#   BRIDGE_STEP=gold-trust      [GOLD_MAX_CER=0.10]; writes $SHARE_DIR/gold/trust.json from this
+#   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold>; writes $SHARE_DIR/gold/trust.json from this
 #                               campaign's out/reports.jsonl, for `usnm-boinc collect --trust`
 #   BRIDGE_STEP=gold-bundle     builds the bundle v1 from its publishers onto the share, checks it
 #                               against the committed lock and writes <campaign>/bundle.tar
@@ -279,7 +279,7 @@ case "$step" in
   gold-trust)
     # No database or secrets: reads this campaign's reports and writes the share's trust list.
     exec usnm-boinc gold trust --reports "$GOLD/out/reports.jsonl" \
-      --max-cer "${GOLD_MAX_CER:-0.10}" --out "$SHARE_DIR/gold/trust.json" ;;
+      --max-cer "${GOLD_MAX_CER:?set GOLD_MAX_CER from campaign calibration}" --out "$SHARE_DIR/gold/trust.json" ;;
 esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] && [ "$step" != register-apps ]; then
@@ -303,7 +303,8 @@ if [ "$step" = spool-out ]; then
   (umask 077; { echo '[client]'; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; echo "password=$(cat "$SECRETS/db-runtime")"; } > "$mycnf")
   # The canonical result's host (BOINC's result.hostid); JOB_ID is [A-Za-z0-9_-] (above).
   # UNVERIFIED against a live database.
-  if host=$(mysql --defaults-extra-file="$mycnf" --batch --skip-column-names "$DB_NAME" \
+  if host=$(mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
+      --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
       -e "SELECT r.hostid FROM workunit w JOIN result r ON r.id = w.canonical_resultid WHERE w.name = 'usnm_$JOB_ID'"); then
     if [[ "$host" =~ ^[0-9]+$ ]]; then host_args=(--host-id "$host"); else log "no canonical result host for usnm_$JOB_ID yet"; fi
   else
@@ -364,10 +365,16 @@ case "$step" in
   gold-submit)
     stamp="$(mktemp)"
     rc=0
+    target_args=()
+    if [ -n "${GOLD_TARGET_HOST:-}" ]; then
+      [[ "$GOLD_TARGET_HOST" =~ ^[1-9][0-9]*$ ]] || fail "GOLD_TARGET_HOST must be positive"
+      target_args=(--target-host "$GOLD_TARGET_HOST")
+    fi
     usnm-boinc gold submit --root "$GOLD" --project "$PROJ" \
       --engine-image "${GOLD_ENGINE_IMAGE:?set GOLD_ENGINE_IMAGE}" \
       --engine-base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
-      --engine-version "${GOLD_ENGINE_VERSION:-5.5.0}" --units "${GOLD_UNITS:-20}" || rc=$?
+      --engine-version "${GOLD_ENGINE_VERSION:-5.5.0}" --units "${GOLD_UNITS:-20}" \
+      ${target_args[@]+"${target_args[@]}"} || rc=$?
     for d in "$PROJ/download" "$PROJ/templates" "$PROJ/gold"; do
       [ -d "$d" ] || continue
       find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true

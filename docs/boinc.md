@@ -638,6 +638,10 @@ Upstream references:
 
 ## Gold check
 
+For an optional, aggregate-capped client beside an OCR node's existing queue
+worker, see [the dev-first OCR-node plan](boinc-ocr-node.md) (#472). It does not
+enable or attach production clients.
+
 A volunteer host can score its engine on the public gold bundle
 ([ocr-gold-set.md](ocr-gold-set.md#volunteer-bundle), #457) and report CER and
 WER together with the bundle version. Two steps, because the task container
@@ -765,7 +769,8 @@ scripts/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=
 scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_SPOOL=/project/usnmocr/results/<batch>
 # Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
-scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 10
+scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
+  --var GOLD_MAX_CER=<calibrated-threshold> --wait-mins 10
 ```
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
@@ -778,12 +783,16 @@ A unit left with a `submitting` marker is handled as for the assessment.
 well-formed result. So `collect` can gate publication on the gold check (#468):
 a result counts only when the host that returned it has a gold report for the
 same engine image (the worker image digest) with overall CER at or below a
-threshold, 0.10 unless `--max-cer` says otherwise.
+threshold. There is **no default scientific threshold**: calibrate on the first
+campaign for the locked image, bundle, languages and scoring configuration;
+record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) explicitly.
+An earlier MVP's 0.10 was not calibrated. Trust format v2 deliberately rejects
+old v1 lists; rebuild before using the updated collector.
 
 ```sh
 # Build the trust list from one or more campaigns' reports.
 usnm-boinc gold trust --reports <share>/gold/v1-tess550/out/reports.jsonl \
-  [--reports ...] [--max-cer 0.10] --out <share>/gold/trust.json
+  [--reports ...] --max-cer CALIBRATED_THRESHOLD --out <share>/gold/trust.json
 # The canonical result's host, from the project database:
 #   select r.hostid from workunit w join result r on r.id = w.canonical_resultid
 #   where w.name = 'usnm_JOB_ID';
@@ -797,8 +806,33 @@ back: `collect` copies its spool files and a `reason.json` to
 `<root>/quarantine/<job>/`, publishes nothing, leaves the job's stage as it was
 and exits non-zero. Once the host passes a gold unit, rebuild `trust.json` and
 run `collect` again. Without `--trust`, `collect` publishes as before; production
-collection should pass it. The host id is the client's own claim, so this is a
+collection must use the existing hand-off `collect` step: it always requires
+trust and a canonical host for successful work, refusing missing lists/hosts.
+`spool-out` already queries `workunit.canonical_resultid -> result.hostid`;
+the hand-off rejects an operator override conflicting with that host.
+Only terminal failure markers bypass trust to mark failure, never to publish.
+The host id in gold remains the client's own claim, so this is a
 quality signal for trusted volunteers, not an identity check.
+
+Trust is keyed by the **full immutable worker digest**, not a tag, base image
+or engine version. The latest report's `completed_at` per host/image wins,
+regardless of file order; later failures revoke trust and same-time conflicts
+fail closed. Missing CER never grants trust. These timestamps are also client
+claims, not protection against malicious volunteers.
+
+`gold submit --target-host HOST` (bridge: `GOLD_TARGET_HOST`) provides a targeted,
+write-ahead campaign; its persisted campaign nonce and host participate in
+the validated job identity, so fresh roots/hosts cannot collide in workunit
+or spool names and retries keep the same identity. Targeted jobs use protocol
+v2 and require a **newly built/released worker containing this support**;
+do not target old worker images that only understand v1. Untargeted v1 job
+bytes/identities remain compatible. Use a fresh campaign root per host and
+image. It refuses until the project's active XML config explicitly has
+`<enable_assignment>1</enable_assignment>`. This PR does **not** enable assignment
+on production: first verify scheduler/assignment behavior in dev and calibrate
+the first campaign. Automatic discovery/issuance for new hosts, live canonical
+host-query acceptance, and periodic spot-checks remain rollout blockers; no
+automatic publication or scheduler configuration has been deployed.
 
 ### Build the gold bundle
 
