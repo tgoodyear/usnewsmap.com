@@ -4,11 +4,11 @@ Status: written, not built or run. The CI job `contrib-compute (server and bridg
 
 ## What is built
 
-| Image  | Source                              | Contents                                                                                                                                                                                                  |
-| ------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| server | `images/server/Containerfile`       | Debian 12 slim, pinned by digest. Stock BOINC server built from a pinned commit with no patches. Apache with PHP (mod_php), the scheduler and upload CGIs, all daemons under `supervisord`, one container |
-| bridge | `images/bridge/Containerfile`       | The server image plus the `usnm-boinc` binary from PR #441's crate. Entry point `/usr/local/bin/bridge-job`                                                                                               |
-| worker | `ocr/boinc/Containerfile` (PR #441) | Tesseract and `usnm-boinc work`; volunteers' Docker pulls it. Built and pushed by `.github/workflows/boinc-worker.yml` (ADR-0019, addendum)                                                               |
+| Image  | Source                              | Contents                                                                                                                                                                                                                             |
+| ------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| server | `images/server/Containerfile`       | Debian 12 slim, pinned by digest. BOINC server built from a pinned commit with reviewed Apple GPU and database TLS patches. Apache with PHP (mod_php), the scheduler and upload CGIs, all daemons under `supervisord`, one container |
+| bridge | `images/bridge/Containerfile`       | The server image plus the `usnm-boinc` binary from PR #441's crate. Entry point `/usr/local/bin/bridge-job`                                                                                                                          |
+| worker | `ocr/boinc/Containerfile` (PR #441) | Tesseract and `usnm-boinc work`; volunteers' Docker pulls it. Built and pushed by `.github/workflows/boinc-worker.yml` (ADR-0019, addendum)                                                                                          |
 
 One container holds Apache and the daemons because the feeder and the scheduler share a System V shared-memory segment (design.md, section 2.1).
 
@@ -21,7 +21,7 @@ entrypoint renders the project's configuration at container startup.
 
 ### Why the BOINC commit is master, not the 1.6.2 tag
 
-`batch_collect_assimilator`, which PR #441's `daemons.xml` runs, is not in the `server_release/1.6/1.6.2` tree (searched on 2026-10-13) and is in master. The Containerfile pins master at `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c` (2026-10-13). Move to the first release tag that contains it when one exists. The image is still unmodified upstream source.
+`batch_collect_assimilator`, which PR #441's `daemons.xml` runs, is not in the `server_release/1.6/1.6.2` tree (searched on 2026-10-13) and is in master. The Containerfile pins master at `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c` (2026-10-13). Move to the first release tag that contains it when one exists. Reviewed Apple GPU and database TLS patches are applied before compilation; the database policy and persistent-project migration gates remain as described in [design.md](design.md).
 
 ### Facts about the stock tools that shaped the entry point
 
