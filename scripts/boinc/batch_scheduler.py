@@ -35,13 +35,15 @@ def load_config(path):
     require(set(config) == fields and config["schema_version"] == 1, "invalid config fields/version")
     for key, pattern in (
         ("env", r"[a-z][a-z0-9-]{0,30}"), ("account", r"[a-z0-9]{3,24}"),
-        ("plan", r"[A-Za-z0-9-]{1,64}"), ("batch", r"[a-z0-9_]+"),
+        ("plan", r"[A-Za-z0-9-]{1,64}"), ("batch", r"[a-z]{2,10}_[A-Za-z0-9_]+"),
         ("image", r"sha256:[0-9a-f]{64}"),
         ("manifest", r"[A-Za-z0-9][A-Za-z0-9._/-]*"),
         ("scans_root", r"/[A-Za-z0-9_./-]+"), ("manifests_root", r"/[A-Za-z0-9_./-]+"),
     ):
         require(isinstance(config[key], str) and re.fullmatch(pattern, config[key])
                 and ".." not in config[key], f"invalid {key}")
+    require(len(config["batch"]) <= 128 and not re.search(r"_ver[0-9]+$", config["batch"]),
+            "batch must be an unversioned base batch of at most 128 bytes")
     require(not config["manifest"].startswith("/") and
             config["manifest"].endswith("/manifest.parquet"), "invalid manifest snapshot path")
     for key, maximum in (("batch_size", 100), ("max_pending", 10000), ("pages_per_host", 100)):

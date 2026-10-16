@@ -335,6 +335,44 @@ class SchedulerTests(unittest.TestCase):
                 file.unlink()
             directory.rmdir()
 
+    def test_case_sensitive_loc_batch_names_are_preserved_through_export(self):
+        directory = Path(__file__).parent.resolve() / (".case-test-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            path = directory / "config.json"
+            for name in ("curiv_joshuaTree", "lu_Cypher"):
+                with self.subTest(batch=name):
+                    config = copy.deepcopy(self.config)
+                    config["batch"] = name
+                    for page in config["pages"]:
+                        page["scan"] = page["scan"].replace("test_batch", name)
+                    path.write_text(json.dumps(config))
+                    loaded = batch.load_config(path)
+                    self.assertEqual(loaded["batch"], name)
+                    transport = batch.Transport(loaded, directory)
+                    with patch.object(transport, "run", return_value="") as run:
+                        transport.export(loaded["pages"][:1])
+                    self.assertIn("HANDOFF_BATCH=" + name, run.call_args.args[0])
+                    self.assertIn("/keep/" + name + "/", run.call_args_list[0].args[0][-1])
+        finally:
+            (directory / "config.json").unlink()
+            directory.rmdir()
+
+    def test_batch_validation_matches_native_base_batch_shape_and_bound(self):
+        directory = Path(__file__).parent.resolve() / (".batch-name-test-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            path = directory / "config.json"
+            for name in ("LU_Cypher", "lu_Cypher_ver01", "missingawardee", "lu_" + "a" * 126):
+                with self.subTest(batch=name):
+                    config = {**self.config, "batch": name}
+                    path.write_text(json.dumps(config))
+                    with self.assertRaises(ValueError):
+                        batch.load_config(path)
+        finally:
+            (directory / "config.json").unlink()
+            directory.rmdir()
+
     def test_transport_uses_real_steps_and_waits(self):
         transport = batch.Transport(self.config, Path("."))
         with patch.object(transport, "run", return_value="") as run:

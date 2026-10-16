@@ -12,6 +12,8 @@ An operator allocates explicit page keys from one prefetch manifest snapshot,
 one base batch and one native plan to BOINC. Reserve that allocation for this
 controller; do not also dispatch it through an on-prem node plan. The native
 exporter still checks/reserves the ledger and refuses conflicting requests.
+LoC batch names are case-sensitive (`curiv_joshuaTree`, `lu_Cypher`); preserve
+their spelling and use the unversioned base batch, not its `_verNN` directory.
 Unallocated pages remain on-prem work. There is no automatic queue consumption,
 LoC fetching, scanfetch change, worker-image rollover, gold issuance, trust
 override, client attachment, or retry of terminal failures.
