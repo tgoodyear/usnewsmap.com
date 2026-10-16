@@ -18,7 +18,7 @@ done
 [[ $LIMIT =~ ^[1-9][0-9]{0,3}$ ]] && [ "$LIMIT" -le 1000 ] ||
   die "--limit must be 1 to 1000 scans"
 [ "$(id -u)" = 0 ] || die "run as root on the host holding the scans"
-for cmd in jq flock systemd-run; do
+for cmd in jq flock systemd-run systemd-tmpfiles; do
   command -v "$cmd" > /dev/null || die "needs $cmd"
 done
 ROOT=${USNM_OCR_TEST_ROOT:-}
@@ -26,11 +26,10 @@ ROOT=${USNM_OCR_TEST_ROOT:-}
 [ -r "$ROOT/etc/usnm/scan-archive.env" ] || die "missing /etc/usnm/scan-archive.env"
 getent passwd usnm > /dev/null || die "missing service user usnm"
 getent group himds > /dev/null || die "missing Arc token group himds"
-[ -d "$ROOT/var/lib/usnm-scan-archive" ] ||
-  install -d -o usnm -g usnm -m 0755 "$ROOT/var/lib/usnm-scan-archive"
-exec 9>"$ROOT/var/lib/usnm-scan-archive/lock"
+[ -r "$ROOT/etc/tmpfiles.d/usnm-scan-archive.conf" ] || die "install the archive tmpfiles configuration first"
+systemd-tmpfiles --create "$ROOT/etc/tmpfiles.d/usnm-scan-archive.conf"
+exec 9<>"$ROOT/run/lock/usnm-scan-archive/lock"
 flock --exclusive --nonblock 9 || die "an upload, verify or acceptance check holds the archive lock"
-chown usnm:usnm "$ROOT/var/lib/usnm-scan-archive/lock"
 
 TMP=$(mktemp -d)
 trap 'rm -f "$TMP/report.json"; rmdir "$TMP"' EXIT
@@ -43,6 +42,8 @@ check() {
     --uid=usnm --gid=usnm \
     -p SupplementaryGroups=himds \
     -p "EnvironmentFile=$ROOT/etc/usnm/scan-archive.env" \
+    -p UnsetEnvironment=USNM_ARCHIVE_STATE \
+    -p Environment=RUST_LOG=off \
     -p Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token \
     -p Environment=IMDS_ENDPOINT=http://localhost:40342 \
     "$ROOT/usr/local/bin/usnm-ocr-worker" archive-scans --limit "$LIMIT" "$@" > "$TMP/report.json" ||

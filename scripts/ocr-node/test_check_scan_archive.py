@@ -15,12 +15,15 @@ class ArchiveAcceptanceTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         self.root = root
-        for directory in ("bin", "usr/local/bin", "etc/usnm", "var/lib/usnm-scan-archive"):
+        for directory in ("bin", "usr/local/bin", "etc/usnm", "etc/tmpfiles.d",
+                          "run/lock/usnm-scan-archive"):
             (root / directory).mkdir(parents=True)
         (root / "etc/usnm/scan-archive.env").write_text("USNM_ARCHIVE_URL=https://example\n")
         self.stub("id", "echo 0\n")
         self.stub("getent", "exit 0\n")
-        self.stub("chown", "exit 0\n")
+        self.stub("systemd-tmpfiles", "exit 0\n")
+        (root / "etc/tmpfiles.d/usnm-scan-archive.conf").touch()
+        (root / "run/lock/usnm-scan-archive/lock").write_text("preserve")
         self.stub("flock", '[ -z "${STUB_LOCKED:-}" ]\n')
         self.stub("systemd-run", """
 printf '%s\\n' "$*" >> "$STUB_CALLS"
@@ -67,6 +70,9 @@ cat "$STUB_REPORT"
             self.assertIn("SupplementaryGroups=himds", call)
             self.assertIn("archive-scans --limit 2", call)
             self.assertNotIn("--state", call)
+            self.assertIn("UnsetEnvironment=USNM_ARCHIVE_STATE", call)
+            self.assertIn("Environment=RUST_LOG=off", call)
+        self.assertEqual((self.root / "run/lock/usnm-scan-archive/lock").read_text(), "preserve")
         self.assertIn("2 scans verified", result.stdout)
 
     def test_verify_only_never_uploads(self):
@@ -75,6 +81,12 @@ cat "$STUB_REPORT"
         calls = self.calls.read_text().splitlines()
         self.assertEqual(len(calls), 1)
         self.assertIn("--verify", calls[0])
+
+    def test_thousand_scan_boundary_disables_progress_logs(self):
+        self.report.write_text(json.dumps(dict(self.good, scanned=1000, present=1000)))
+        result = self.run_check("--limit", "1000")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls.read_text().count("Environment=RUST_LOG=off"), 3)
 
     def test_bad_limits_fail_before_any_command(self):
         for value in ("0", "-1", "1001", "01", "abc"):
