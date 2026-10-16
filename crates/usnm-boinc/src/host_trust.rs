@@ -306,7 +306,7 @@ async fn next_attempt(
 /// Native gold submission journals handle uncertain dispatch.
 pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     c.validate()?;
-    let trust = Trust::load(&c.trust)?;
+    let trust = Trust::load_or_none_trusted(&c.trust)?;
     let prepared = gold::prepare::read(&c.prepared)?;
     gold::submit::job(&prepared, &c.engine, 0)?;
     let inventory =
