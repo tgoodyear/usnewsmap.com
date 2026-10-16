@@ -96,7 +96,9 @@ export default function MapView(props: Props) {
     queryFn: async ({ signal }) => {
       const response = await fetch(boundariesUrl, { signal });
       if (!response.ok) throw new Error("State boundaries could not be loaded");
-      return (await response.json()) as FeatureCollection<Geometry, StateFeature["properties"]>;
+      const data = (await response.json()) as FeatureCollection<Geometry, StateFeature["properties"]>;
+      performance.mark("usnm-states-parsed");
+      return data;
     },
     enabled: props.layer === "states" && props.norm === "raw",
     staleTime: Infinity,
@@ -360,6 +362,7 @@ export default function MapView(props: Props) {
           PerformanceResourceTiming | undefined;
         if (!asset) return;
         paintMeasured.current = true;
+        performance.measure("usnm-states-first-draw", { start: asset.responseEnd, end: performance.now() });
         // Two frames after deck's draw gives the browser a paint opportunity.
         // This is a presentation proxy, not a compositor/GPU fence timestamp.
         requestAnimationFrame(() =>

@@ -110,12 +110,17 @@ median **0.014 ms**, p95 **0.023 ms**, maximum **0.100 ms** across 2,000 frames.
 A concurrent test run had p95 **0.080 ms** but a **12.780 ms** maximum outlier.
 This is a percentile gate, **not a guarantee that every frame is ≤2 ms**.
 
-The browser gate asserts a maximum **300 ms** over five fresh page loads. It
+The browser gate asserts a maximum **300 ms** over five fresh browser processes
+with Chrome's shader disk and program caches disabled. It
 measures asset Resource Timing `responseEnd` to the first deck draw plus two
 animation frames, allowing a browser paint opportunity. The mark
 `usnm-states-first-paint` is a **presentation proxy**, not a GPU-fence or
 compositor timestamp. It uses fixture data and a local plain basemap with the
 map loaded before selecting States; it is not a real-data basemap benchmark.
+The test checks that no geometry resource was requested before States selection.
+`usnm-states-parsed` and `usnm-states-first-draw` additionally separate JSON
+decoding and CPU draw submission from the subsequent paint opportunity. Neither
+draw submission nor two animation frames proves GPU completion.
 
 On the same Apple M1 with **Chromium 153.0.8010.12, ANGLE Metal native GPU**,
 the initial run measured **489.4, 45.6, 49.4, 50.1, 44.9 ms**: the first cold
@@ -126,6 +131,20 @@ GPU, and measured **2,165.6, 1,677.3, 1,586.5, 1,511.1, 1,485.3 ms**, failing.
 These runs do **not** establish the cold first-paint target on a representative
 mid-range laptop. That acceptance remains outstanding; warm-cache success
 must not conceal the cold/backend failures.
+
+On 2026-10-16, the process-isolated native-Metal gate measured **60.8, 45.5,
+52.3, 58.4, 51.3 ms**. The corresponding CPU first-draw intervals were **43.4,
+40.3, 48.9, 42.8, 47.4 ms**, and JSON decoding completed **4.3–10.4 ms** after
+the asset arrived. An independent five-process run measured **46.8–84.6 ms**
+for the paint proxy. Disabling Chrome caches did **not** reproduce the original
+489.4 ms failure: the persistent Apple GPU-driver cache remains uncontrolled.
+These are browser-cold, potentially driver-warm results, **not a cold-driver
+pass or an optimization claim**. Clearing shared machine/OS caches or rebooting
+was deliberately not attempted. A driver-cold capture on representative
+hardware, including GPU/compositor completion if strict actual presentation is
+required, remains a release blocker. The first failed run did not capture the
+new intermediate marks, so attributing its excess time to shader compilation
+or to the two animation frames would be speculation.
 
 Read-only public metadata on 2026-10-15 (`pages-v20261010-2`) listed **1,617
 places**, none missing state codes; all codes are represented by the boundary

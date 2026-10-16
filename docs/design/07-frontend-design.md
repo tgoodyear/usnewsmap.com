@@ -127,7 +127,11 @@ and [reproducible Census preparation](../../web/src/assets/README.md).
 The [opt-in performance gates and measurements](../../web/README.md#states-performance-measurements)
 report a passing synthetic 5,000-place p95 scrub budget on Apple M1, but a
 native-GPU cold first-paint proxy of 489 ms misses the 300 ms target (warm
-repeats pass). These are not representative target-hardware certification.
+repeats pass). Fresh browser processes with Chrome GPU caches disabled also
+pass, but persistent OS/driver caches remain uncontrolled. Intermediate JSON
+decode/draw marks do not retroactively explain the original slow sample.
+These are not representative target-hardware certification; the cold-driver
+first-paint requirement remains an unwaived release blocker.
 
 ## 7.5 URL state (permalinks)
 
