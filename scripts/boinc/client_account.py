@@ -73,12 +73,13 @@ class RPC:
         reply = ET.fromstring(message)
         if reply.find(".//unauthorized") is not None or reply.find(".//error") is not None:
             raise RuntimeError(f"Client rejected {operation}; response withheld for privacy")
-        try:
-            error = int(reply.findtext(".//error_num", "0"))
-        except ValueError:
-            raise RuntimeError("Malformed GUI-RPC error number; response withheld for privacy") from None
-        if error:
-            raise RuntimeError(f"Client rejected {operation} (error {error})")
+        for value in (reply.findtext(".//error_num", "0"), reply.findtext("status", "0")):
+            try:
+                error = int(value)
+            except ValueError:
+                raise RuntimeError("Malformed GUI-RPC status; response withheld for privacy") from None
+            if error:
+                raise RuntimeError(f"Client rejected {operation} (error {error})")
         return reply
 
 
@@ -122,6 +123,25 @@ def check_private_logging(rpc):
     for name in ("gui_rpc_debug", "http_debug", "http_xfer_debug"):
         if flag(configuration, ".//" + name):
             raise ValueError("Disable credential-bearing client debug logging before account attachment")
+    messages = rpc.call("get_messages", {"seqno": 0}).findall(".//msg")
+    latest = []
+    latest_start = None
+    previous_was_flags = False
+    for index, message in enumerate(messages):
+        body = message.findtext("body", "").strip()
+        is_flags = not message.findtext("project", "") and body.startswith("log flags:")
+        if is_flags:
+            if not previous_was_flags:
+                latest = []
+                latest_start = index
+            latest.extend(body.partition(":")[2].strip().split(", "))
+        previous_was_flags = is_flags
+    if not latest:
+        raise ValueError("No retained effective runtime log-flag evidence; no credential sent")
+    if latest_start == 0 and int(messages[0].findtext("seqno", "0")) > 1:
+        raise ValueError("Runtime log-flag group may be truncated; no credential sent")
+    if {"gui_rpc_debug", "http_debug", "http_xfer_debug"} & set(latest):
+        raise ValueError("Effective runtime debug logging may expose credentials; no credential sent")
 
 
 def already_using_key(data_dir, key):
@@ -134,21 +154,29 @@ def already_using_key(data_dir, key):
     return False
 
 
-def migration_state(path, current, expected_id):
+def client_identity(data_dir, port):
+    authentication = (data_dir / "gui_rpc_auth.cfg").stat()
+    values = (socket.gethostname(), str(data_dir.resolve()), port, authentication.st_dev,
+              authentication.st_ino, authentication.st_mtime_ns, authentication.st_size)
+    return hashlib.sha256(json.dumps(values).encode()).hexdigest()
+
+
+def migration_state(path, current, expected_id, identity):
     if path.exists():
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(descriptor) as stream:
             if os.fstat(stream.fileno()).st_mode & 0o077:
                 raise ValueError("Migration state must be private")
             state = json.load(stream)
-        if state.get("master_url") != MASTER or state.get("expected_user_id") != expected_id:
-            raise ValueError("Migration state belongs to another explicit target")
+        if (state.get("version") != 2 or state.get("client_identity") != identity
+                or state.get("master_url") != MASTER or state.get("expected_user_id") != expected_id):
+            raise ValueError("Migration state belongs to another client/target or unsupported legacy journal")
         if type(state.get("original_no_new_tasks")) is not bool:
             raise ValueError("Malformed original drain preference")
         return state
     if current["no_new_tasks"]:
         raise ValueError("User-held project refused: stock attach cannot atomically retain its hold")
-    state = {"master_url": MASTER, "expected_user_id": expected_id,
+    state = {"version": 2, "client_identity": identity, "master_url": MASTER, "expected_user_id": expected_id,
              "original_no_new_tasks": False}
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
         json.dump(state, stream)
@@ -158,7 +186,7 @@ def migration_state(path, current, expected_id):
 
 
 @contextmanager
-def network_guard(rpc):
+def network_policy(rpc):
     status = rpc.call("get_cc_status")
     mode = int(status.findtext(".//network_mode", "0"))
     permanent = int(status.findtext(".//network_mode_perm", "0"))
@@ -167,8 +195,18 @@ def network_guard(rpc):
     if mode not in names or permanent not in names or not 0 <= delay <= 31536000:
         raise ValueError("Cannot safely preserve the client's current network policy")
     started = time.monotonic()
-    rpc.call("set_network_mode", {"never": None, "duration": 600})
     try:
+        yield
+    finally:
+        remaining = max(0, delay - (time.monotonic() - started))
+        restore = mode if remaining else permanent
+        rpc.call("set_network_mode", {names[restore]: None, "duration": remaining})
+
+
+@contextmanager
+def network_guard(rpc):
+    with network_policy(rpc):
+        rpc.call("set_network_mode", {"never": None, "duration": 600})
         for _ in range(25):
             held = rpc.call("get_cc_status")
             if (held.findtext(".//network_mode") == "3"
@@ -178,10 +216,6 @@ def network_guard(rpc):
         else:
             raise RuntimeError("Client did not establish the temporary network guard")
         yield
-    finally:
-        remaining = max(0, delay - (time.monotonic() - started))
-        restore = mode if remaining else permanent
-        rpc.call("set_network_mode", {names[restore]: None, "duration": remaining})
 
 
 def protect_preferences(rpc, data_dir, backup_dir):
@@ -198,12 +232,15 @@ def protect_preferences(rpc, data_dir, backup_dir):
     if not required.issubset({child.tag for child in preferences}):
         raise ValueError("Incomplete effective resource preferences; no detach performed")
     original = data_dir / "global_prefs_override.xml"
+    if original.is_symlink():
+        raise ValueError("Owner-managed preference symlink requires explicit handling; no detach performed")
     backup = backup_dir / f"global-prefs-before-rejoin-{time.time_ns()}.json"
     with os.fdopen(os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
         json.dump({"original_override": original.read_text() if original.exists() else None,
                    "protected_effective": ET.tostring(preferences, encoding="unicode")}, stream)
     rpc.call("set_global_prefs_override", {"global_preferences": preferences})
     rpc.call("read_global_prefs_override")
+    stored = rpc.call("get_global_prefs_override").find(".//global_preferences")
     effective = rpc.call("get_global_prefs_working").find(".//global_preferences")
     def values(root):
         if root is None:
@@ -211,7 +248,7 @@ def protect_preferences(rpc, data_dir, backup_dir):
         return [(element.tag, (element.text or "").strip(),
                  tuple(ET.tostring(child, encoding="unicode") for child in element))
                 for element in root if element.tag not in metadata]
-    if values(effective) != values(preferences):
+    if values(stored) != values(preferences) or values(effective) != values(preferences):
         raise RuntimeError("Effective resource preferences changed; no detach performed")
 
 
@@ -285,15 +322,29 @@ def main():
         result = snapshot(rpc, args.expected_user_id, args.expected_user_name)
         if args.apply:
             check_private_logging(rpc)
+            identity = client_identity(args.data_dir, args.port)
+            state_file = args.state_file or args.key_file.with_name(f"account-rejoin-{args.port}.json")
             if (result["attached"] and result["expected_user_verified"] and result["expected_name_verified"]
                     and result["host_id"] and already_using_key(args.data_dir, key)):
+                if state_file.exists():
+                    state = migration_state(state_file, result, args.expected_user_id, identity)
+                    if result["account_manager"]:
+                        raise ValueError("Account-manager project recovery requires its owner; no change")
+                    if not state["original_no_new_tasks"] and result["no_new_tasks"]:
+                        project_operation(rpc, "allowmorework")
+                        result = snapshot(rpc, args.expected_user_id, args.expected_user_name)
+                        if result["no_new_tasks"]:
+                            raise RuntimeError("Could not release helper-owned drain hold; journal retained")
+                    state_file.unlink()
                 result.update(status="already attached with supplied weak key", key_kind="weak")
             else:
-                state_file = args.state_file or args.key_file.with_name(f"account-rejoin-{args.port}.json")
-                state = migration_state(state_file, result, args.expected_user_id)
-                result = rejoin(rpc, key, args.expected_user_id, args.expected_user_name,
-                                original_no_work=state["original_no_new_tasks"],
-                                data_dir=args.data_dir, backup_dir=state_file.parent)
+                if result["account_manager"]:
+                    raise ValueError("Account-manager project must not be detached independently")
+                state = migration_state(state_file, result, args.expected_user_id, identity)
+                with network_policy(rpc):
+                    result = rejoin(rpc, key, args.expected_user_id, args.expected_user_name,
+                                    original_no_work=state["original_no_new_tasks"],
+                                    data_dir=args.data_dir, backup_dir=state_file.parent)
                 if result["status"] == "scheduler attribution verified":
                     state_file.unlink()
         print(json.dumps({"master_url": MASTER, **result}, indent=2))

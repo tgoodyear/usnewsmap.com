@@ -1,5 +1,6 @@
 """Offline tests: never contact a client or send real account credentials."""
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -92,12 +93,12 @@ class ClientAccountTests(unittest.TestCase):
     def test_drain_journal_preserves_original_preference_across_two_invocations(self):
         with tempfile.TemporaryDirectory() as directory:
             journal = Path(directory) / "state.json"
-            original = account.migration_state(journal, state(), 42)
+            original = account.migration_state(journal, state(), 42, "a" * 64)
             self.assertFalse(original["original_no_new_tasks"])
             with patch.object(account, "snapshot", return_value=state(pending_results=1)):
                 self.assertIn("draining", account.rejoin(Mock(), "synthetic", 42, "example",
                               original_no_work=original["original_no_new_tasks"])["status"])
-            reloaded = account.migration_state(journal, state(no_new_tasks=True), 42)
+            reloaded = account.migration_state(journal, state(no_new_tasks=True), 42, "a" * 64)
             self.assertFalse(reloaded["original_no_new_tasks"])
             snapshots = [state(no_new_tasks=True)] * 3 + [state(attached=False), state()]
             with patch.object(account, "snapshot", side_effect=snapshots):
@@ -106,7 +107,9 @@ class ClientAccountTests(unittest.TestCase):
             self.assertFalse(result["no_new_tasks"])
             self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(ValueError):
-                account.migration_state(journal, state(), 43)
+                account.migration_state(journal, state(), 43, "a" * 64)
+            with self.assertRaisesRegex(ValueError, "another client"):
+                account.migration_state(journal, state(no_new_tasks=True), 42, "b" * 64)
 
     def test_network_guard_restores_prior_mode_after_exception(self):
         rpc = Mock()
@@ -125,6 +128,32 @@ class ClientAccountTests(unittest.TestCase):
         self.assertEqual(rpc.call.call_args_list[-1].args,
                          ("set_network_mode", {"auto": None, "duration": 0}))
 
+    def test_network_pause_acknowledgement_failure_still_restores_policy(self):
+        rpc = Mock()
+        rpc.call.side_effect = [
+            ET.fromstring("<reply><network_mode>2</network_mode><network_mode_perm>2</network_mode_perm>"
+                          "<network_mode_delay>0</network_mode_delay></reply>"),
+            TimeoutError("injected lost pause acknowledgement"),
+            ET.fromstring("<reply><success/></reply>")]
+        with self.assertRaises(TimeoutError):
+            with self.real_guard(rpc):
+                self.fail("Failed pause must not reach detach")
+        self.assertEqual(rpc.call.call_args_list[-1].args,
+                         ("set_network_mode", {"auto": None, "duration": 0}))
+
+    def test_prior_never_policy_restored_after_final_network_enabling_attach_rpc(self):
+        rpc = Mock()
+        rpc.call.return_value = ET.fromstring(
+            "<reply><network_mode>3</network_mode><network_mode_perm>3</network_mode_perm>"
+            "<network_mode_delay>0</network_mode_delay></reply>")
+        with self.assertRaisesRegex(RuntimeError, "injected"):
+            with account.network_policy(rpc):
+                rpc.call("project_attach", {"authenticator": "synthetic"})
+                rpc.call("project_update")
+                raise RuntimeError("injected")
+        self.assertEqual(rpc.call.call_args_list[-1].args,
+                         ("set_network_mode", {"never": None, "duration": 0}))
+
     def test_resource_preferences_are_protected_and_original_override_backed_up(self):
         working = ET.fromstring("<reply><global_preferences><max_ncpus_pct>25</max_ncpus_pct>"
                                 "<cpu_usage_limit>30</cpu_usage_limit><mod_time>123</mod_time>"
@@ -136,7 +165,8 @@ class ClientAccountTests(unittest.TestCase):
                                 "<work_buf_additional_days>0</work_buf_additional_days>"
                                 "</global_preferences></reply>")
         rpc = Mock()
-        rpc.call.side_effect = [working, ET.fromstring("<reply/>"), ET.fromstring("<reply/>"), working]
+        rpc.call.side_effect = [working, ET.fromstring("<reply/>"), ET.fromstring("<reply/>"),
+                                working, working]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             original = "<global_preferences><cpu_usage_limit>30</cpu_usage_limit></global_preferences>"
@@ -191,16 +221,67 @@ class ClientAccountTests(unittest.TestCase):
 
     def test_credential_bearing_debug_logging_is_rejected(self):
         rpc = Mock()
-        rpc.call.return_value = ET.fromstring("<reply><log_flags/></reply>")
+        runtime = ET.fromstring("<reply><msgs><msg><seqno>1</seqno><project/>"
+                               "<body>log flags: file_xfer, sched_ops, task</body></msg></msgs></reply>")
+        rpc.call.side_effect = [ET.fromstring("<reply><log_flags/></reply>"), runtime]
         account.check_private_logging(rpc)
         for name in ("gui_rpc_debug", "http_debug", "http_xfer_debug"):
-            rpc.call.return_value = ET.fromstring(f"<reply><log_flags><{name}/></log_flags></reply>")
+            rpc.call.side_effect = [ET.fromstring(f"<reply><log_flags><{name}/></log_flags></reply>")]
             with self.assertRaises(ValueError):
                 account.check_private_logging(rpc)
-        rpc.call.return_value = ET.fromstring("<reply/>")
+            unsafe = ET.fromstring(f"<reply><msgs><msg><project/><body>log flags: {name}</body>"
+                                    "<seqno>1</seqno></msg></msgs></reply>")
+            rpc.call.side_effect = [ET.fromstring("<reply/>"), unsafe]
+            with self.assertRaises(ValueError):
+                account.check_private_logging(rpc)
+        rpc.call.side_effect = [ET.fromstring("<reply/>"), runtime]
         account.check_private_logging(rpc)
-        rpc.call.return_value = ET.fromstring("<reply><cc_config><options/></cc_config></reply>")
+        rpc.call.side_effect = [ET.fromstring("<reply><cc_config><options/></cc_config></reply>"), runtime]
         account.check_private_logging(rpc)
+        rpc.call.side_effect = [ET.fromstring("<reply/>"), ET.fromstring("<reply/>")]
+        with self.assertRaisesRegex(ValueError, "No retained effective"):
+            account.check_private_logging(rpc)
+        truncated = ET.fromstring("<reply><msgs><msg><seqno>100</seqno><project/>"
+                                 "<body>log flags: task</body></msg></msgs></reply>")
+        rpc.call.side_effect = [ET.fromstring("<reply/>"), truncated]
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            account.check_private_logging(rpc)
+
+    def test_idempotent_cli_recovers_its_own_completed_hold_without_detach(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key = root / "key"
+            key.write_text("42_" + "a" * 32)
+            key.chmod(0o600)
+            (root / "gui_rpc_auth.cfg").write_text("synthetic-gui-secret")
+            (root / "account_example.xml").write_text(f"<account><master_url>{account.MASTER}</master_url>"
+                                                     f"<authenticator>{key.read_text()}</authenticator></account>")
+            journal = root / "account-rejoin-31416.json"
+            account.migration_state(journal, state(), 42, account.client_identity(root, 31416))
+            rpc = Mock()
+            output = io.StringIO()
+            args = ["account", "--data-dir", str(root), "--expected-user-id", "42",
+                    "--expected-user-name", "example", "--key-file", str(key), "--apply"]
+            with patch("sys.argv", args), patch.object(account, "RPC", return_value=rpc), \
+                    patch.object(account, "check_private_logging"), \
+                    patch.object(account, "snapshot", side_effect=[state(no_new_tasks=True), state()]), \
+                    redirect_stdout(output):
+                account.main()
+            self.assertEqual([call.args[0] for call in rpc.call.call_args_list], ["project_allowmorework"])
+            self.assertFalse(journal.exists())
+            self.assertNotIn(key.read_text(), output.getvalue())
+            self.assertNotIn("example", output.getvalue())
+
+    def test_nonzero_preference_status_is_rejected_even_with_unchanged_working_values(self):
+        connection = Mock()
+        connection.recv.side_effect = [b"<reply><nonce>challenge</nonce></reply>\x03",
+                                        b"<reply><authorized/></reply>\x03",
+                                        b"<reply><status>-1</status></reply>\x03"]
+        with patch.object(account.socket, "create_connection", return_value=connection):
+            rpc = account.RPC(31417, "synthetic")
+            with self.assertRaisesRegex(RuntimeError, "error -1"):
+                rpc.call("set_global_prefs_override", {"global_preferences": ET.Element("global_preferences")})
+            rpc.close()
 
     def test_rpc_fixed_loopback_framing_and_private_error(self):
         connection = Mock()

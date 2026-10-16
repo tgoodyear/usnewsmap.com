@@ -305,6 +305,17 @@ user ID. Never pass the key itself as an argument. The canonical production URL 
 `https://boinc.usnewsmap.com/`; legacy/duplicate attachments require reconciliation
 instead of silently creating a second project.
 
+Credential-bearing debug flags are checked against the latest retained
+**effective runtime** core log-flag dump as well as the on-disk configuration;
+missing or potentially truncated runtime evidence refuses attachment. Stock
+startup and supported config reread emit this dump. Project messages cannot
+substitute for core runtime evidence. The versioned private drain journal is
+bound to this machine, real data path, RPC port, and GUI-auth-file identity;
+legacy/cross-client journals are refused. A successful late-attribution retry
+releases only the validated helper-owned hold and removes its journal without
+detaching again. Network policy is restored after the **last** attach/update RPC,
+including initially unattached clients.
+
 Stock BOINC 8.2 GUI-RPC authentication requires `MD5(nonce + GUI password)`.
 This is a transient, loopback-only protocol challenge, not a stored password
 hash. CodeQL's password-hashing warning requires an explicit audited decision
@@ -338,3 +349,16 @@ are not rewritten. A standard detach can remove unused project downloads;
 inventory caches and obtain explicit rejoin authorization first. This does not
 provision resources, activate the optional OCR-node profile, grant GPU consent,
 or change server pins/TLS policy.
+
+For a dedicated, otherwise empty OCR-node client whose throughput comparison
+remains uncertain, preserve its original `boinccmd --get_cc_status` first.
+Use the installed supported `boinccmd --set_run_mode never` and
+`--set_gpu_mode never` **before** attachment, using its data directory and
+loopback RPC port (no credential arguments). After verified attachment,
+immediately request project `nomorework` and `suspend`. The client stays
+responsive and credit attribution can be checked without executing any new
+BOINC tasks. Stock attach cannot atomically prevent an initial assignment;
+report and preserve any queued results rather than claiming none were assigned.
+Resume only this owned project and restore the recorded computation modes when
+the bounded workload/CPU/memory comparison permits real work. Do not apply this
+empty-client operational hold blindly to a client running other projects.
