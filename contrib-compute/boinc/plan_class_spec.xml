@@ -103,10 +103,14 @@
     </plan_class>
     <plan_class>
         <name>nvidia_cuda_8b</name>
+        <project_prefs_tag>qwen_native_cuda_canary</project_prefs_tag>
+        <project_prefs_regex>^1$</project_prefs_regex>
+        <project_prefs_default_true>0</project_prefs_default_true>
         <gpu_type>nvidia</gpu_type>
         <cuda/>
-        <min_core_client_version>80213</min_core_client_version>
-        <min_cuda_version>12000</min_cuda_version>
+        <!-- Native apps do not use the container extension introduced in 8.2.13. -->
+        <min_core_client_version>80211</min_core_client_version>
+        <min_cuda_version>12040</min_cuda_version>
         <min_nvidia_compcap>600</min_nvidia_compcap>
         <min_gpu_ram_mb>7000</min_gpu_ram_mb>
         <gpu_ram_used_mb>6000</gpu_ram_used_mb>
@@ -116,10 +120,13 @@
     </plan_class>
     <plan_class>
         <name>nvidia_cuda_2b</name>
+        <project_prefs_tag>qwen_native_cuda_canary</project_prefs_tag>
+        <project_prefs_regex>^1$</project_prefs_regex>
+        <project_prefs_default_true>0</project_prefs_default_true>
         <gpu_type>nvidia</gpu_type>
         <cuda/>
-        <min_core_client_version>80213</min_core_client_version>
-        <min_cuda_version>12000</min_cuda_version>
+        <min_core_client_version>80211</min_core_client_version>
+        <min_cuda_version>12040</min_cuda_version>
         <min_nvidia_compcap>500</min_nvidia_compcap>
         <min_gpu_ram_mb>3000</min_gpu_ram_mb>
         <gpu_ram_used_mb>2500</gpu_ram_used_mb>

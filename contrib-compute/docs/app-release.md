@@ -18,6 +18,37 @@ Operator staging uses a unique mode-0700 directory beneath the checkout and a
 private directory beneath the signing host's root home, removed on exit. Build
 inputs stay on those filesystems rather than relying on system temporary storage.
 
+### Native NVIDIA experimental canary
+
+Native `nvidia_cuda_2b` and `nvidia_cuda_8b` are experimental and default-deny:
+the scheduler requires the account's **effective venue** project preference
+`qwen_native_cuda_canary` to equal exactly `1`. Absent, false, or malformed
+preferences do not enroll anyone. The authenticated project preferences page
+(`prefs.php?subset=project`) exposes an unchecked opt-in checkbox; volunteers
+must explicitly save it for the venue used by their host. Unchecking it stops
+future canary assignments, not already assigned tasks. Existing stock application
+selection, CPU/job limits, other preferences and venue editing remain available.
+No operator should silently enroll accounts or edit authenticators.
+
+These native-only classes admit stable BOINC 8.2.11+; unlike containers they do
+not need the 8.2.13 container extension. They require a CUDA 12.4-capable NVIDIA driver (the pinned
+runtime includes CUDA libraries; no toolkit/WSL/Podman), 3 GB/7 GB detected GPU
+memory respectively, and cold disk bounds of 12 GiB/18 GiB. This is admission
+policy, **not measured Windows acceptance**. Signed publication is not evidence
+of successful inference.
+
+Before publication, coordinate deployments in #529 and preserve all existing
+OCR/training pins and queues. Publish only the intended Windows platform version;
+inventory opted-in eligible hosts without publishing identities. Initially stage
+at most **one** audited workunit with two independent results, digest-qualified
+sticky models, the correct native target and existing idempotency journal.
+Record exact workunit/result IDs, then stop submitting until the results have been
+examined. Do not reduce independent quorum to make a single volunteer pass.
+Collect BOINC exit status, bounded stderr, backend/model/runtime identities and
+available resource diagnostics; report missing measurements rather than inferring
+successful CUDA execution from registration. Do not run arbitrary commands on
+volunteers or broaden enrollment to bypass missing hardware/consent.
+
 ### Holding legacy Qwen dispatch
 
 Before enabling split-payload inference, inventory app versions, workunits and
