@@ -365,38 +365,27 @@ case "$step" in
     exec python3 "$TEMPLATES/train/campaign.py" submit --root "$TRAIN" --project "$PROJ" ;;
   assess-submit)
     assess_mode
-    stamp="$(mktemp)"
-    rc=0
-    usnm-boinc assess submit --root "$ASSESS" --project "$PROJ" --mode "$ASSESS_MODE" \
-      --max-units "${ASSESS_MAX:-500}" || rc=$?
-    find "$PROJ/download" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    rm -f "$stamp"
-    exit "$rc" ;;
+    exec usnm-boinc assess submit --root "$ASSESS" --project "$PROJ" --mode "$ASSESS_MODE" \
+      --max-units "${ASSESS_MAX:-500}" ;;
   surya-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates"; do
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    find "$PROJ/templates" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
     rm -f "$stamp"
     exit "$rc" ;;
   quality-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc quality submit --root "$QUALITY" --project "$PROJ" --max-units "${QUALITY_MAX:-500}" || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates"; do
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    find "$PROJ/templates" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
     rm -f "$stamp" "$PROJ/html/cache/f2/server_status.php_job_status" 2>/dev/null || true
     exit "$rc" ;;
   qwen-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc qwen submit --root "$QWEN" --project "$PROJ" --target "${QWEN_TARGET:-container}" --max-units "${QWEN_MAX:-20}" || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates"; do
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    find "$PROJ/templates" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
     rm -f "$stamp" "$PROJ/html/cache/f2/server_status.php_job_status" 2>/dev/null || true
     exit "$rc" ;;
   gold-submit)
@@ -412,7 +401,7 @@ case "$step" in
       --engine-base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
       --engine-version "${GOLD_ENGINE_VERSION:-5.5.0}" --units "${GOLD_UNITS:-20}" \
       ${target_args[@]+"${target_args[@]}"} || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates" "$PROJ/gold"; do
+    for d in "$PROJ/templates" "$PROJ/gold"; do
       [ -d "$d" ] || continue
       find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
     done

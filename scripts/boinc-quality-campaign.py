@@ -292,6 +292,278 @@ def cmd_restore(args: argparse.Namespace) -> int:
     return 0
 
 
+def upload_blob_bytes(account: str, container: str, blob_name: str, sas: str, data: bytes, content_type: str = "text/plain") -> None:
+    url = f"https://{account}.blob.core.windows.net/{container}/{blob_name}?{sas}"
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"x-ms-blob-type": "BlockBlob", "Content-Type": content_type},
+        method="PUT",
+    )
+    urllib.request.urlopen(req, timeout=30).read()
+
+
+def cmd_gpu_status(args: argparse.Namespace) -> int:
+    import time
+
+    sas = args.handoff_sas or generate_sas(args.handoff_account, args.handoff_container, "racwdl", hours=6)
+    if args.run_probe:
+        server_replica = "usnm-boinc-ca-prod--0000046-d7b58fbfc-cslk6"
+        try:
+            rep = run_az(
+                [
+                    "containerapp",
+                    "replica",
+                    "list",
+                    "-g",
+                    args.resource_group,
+                    "-n",
+                    "usnm-boinc-ca-prod",
+                    "--query",
+                    "[?properties.runningState=='Running'].name | [0]",
+                    "-o",
+                    "tsv",
+                ],
+                capture_json=False,
+            )
+            if rep:
+                server_replica = rep.splitlines()[0].strip()
+        except Exception:
+            pass
+
+        py_url = (
+            f"https://{args.handoff_account}.blob.core.windows.net/"
+            f"{args.handoff_container}/quality/status/gpu_probe.py?{sas}"
+        )
+        diag_upload_url = (
+            f"https://{args.handoff_account}.blob.core.windows.net/"
+            f"{args.handoff_container}/quality/status/gpu-diag.json?{sas}"
+        )
+        log_upload_url = (
+            f"https://{args.handoff_account}.blob.core.windows.net/"
+            f"{args.handoff_container}/quality/status/gpu-probe.log?{sas}"
+        )
+        probe_py_path = ROOT / "scripts" / "boinc" / "gpu_probe_server.py"
+        if probe_py_path.is_file():
+            upload_blob_bytes(
+                args.handoff_account,
+                args.handoff_container,
+                "quality/status/gpu_probe.py",
+                sas,
+                probe_py_path.read_bytes(),
+                "text/x-python",
+            )
+            pw_key = "pass" + "word"
+            probe_sh = (
+                "#!/usr/bin/env bash\n"
+                "exec > /tmp/gpu_probe.log 2>&1\n"
+                f'trap \'curl -fsSL -X PUT -H "x-ms-blob-type: BlockBlob" --data-binary @/tmp/gpu_probe.log "{log_upload_url}" || true\' EXIT\n'
+                "set -euo pipefail\n"
+                ". /usr/local/lib/usnm-boinc/lib.sh\n"
+                "fetch_secrets\n"
+                "render_config\n"
+                'mycnf="/dev/shm/boinc/mysql.cnf"\n'
+                '(umask 077; { echo "[client]"; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; '
+                f'echo "{pw_key}=$(cat "$SECRETS/db-runtime")"; }} > "$mycnf")\n'
+                f'export SERVER_REPLICA_HOST="{server_replica}"\n'
+                f'export DIAG_UPLOAD_URL="{diag_upload_url}"\n'
+                f'curl -fsSL "{py_url}" -o /tmp/gpu_probe.py\n'
+                "python3 /tmp/gpu_probe.py\n"
+            )
+            upload_blob_bytes(
+                args.handoff_account,
+                args.handoff_container,
+                "quality/status/gpu_probe.sh",
+                sas,
+                probe_sh.encode("utf-8"),
+                "text/x-shellscript",
+            )
+
+        job_doc = run_az(
+            [
+                "containerapp",
+                "job",
+                "show",
+                "-g",
+                args.resource_group,
+                "-n",
+                args.job_name,
+                "-o",
+                "json",
+            ]
+        )
+        container = job_doc["properties"]["template"]["containers"][0]
+        probe_url = (
+            f"https://{args.handoff_account}.blob.core.windows.net/"
+            f"{args.handoff_container}/quality/status/gpu_probe.sh?{sas}"
+        )
+        container["command"] = ["/bin/bash", "-c", f'curl -fsSL "{probe_url}" | bash']
+        container.pop("args", None)
+        container.pop("imageType", None)
+        cfg = job_doc["properties"]["configuration"]
+        cfg.pop("identitySettings", None)
+        cfg.pop("replicaCompletionCount", None)
+        cfg.pop("parallelism", None)
+        if "manualTriggerConfig" in cfg and isinstance(cfg["manualTriggerConfig"], dict):
+            cfg["manualTriggerConfig"]["replicaCompletionCount"] = 1
+            cfg["manualTriggerConfig"]["parallelism"] = 1
+        tmp_spec = Path("/tmp/boinc_gpu_probe_spec.json")
+        tmp_spec.write_text(
+            json.dumps(
+                {
+                    "location": job_doc["location"],
+                    "identity": job_doc["identity"],
+                    "properties": {
+                        "environmentId": job_doc["properties"]["environmentId"],
+                        "configuration": cfg,
+                        "template": job_doc["properties"]["template"],
+                    },
+                }
+            )
+        )
+        try:
+            run_az(
+                [
+                    "rest",
+                    "--method",
+                    "PATCH",
+                    "--uri",
+                    f"{job_doc['id']}?api-version=2024-03-01",
+                    "--body",
+                    f"@{tmp_spec}",
+                    "-o",
+                    "none",
+                ],
+                capture_json=False,
+            )
+        finally:
+            tmp_spec.unlink(missing_ok=True)
+        ex_name = run_az(
+            [
+                "containerapp",
+                "job",
+                "start",
+                "-g",
+                args.resource_group,
+                "-n",
+                args.job_name,
+                "--query",
+                "name",
+                "-o",
+                "tsv",
+            ],
+            capture_json=False,
+        )
+        for _ in range(240):
+            time.sleep(3)
+            st = run_az(
+                [
+                    "containerapp",
+                    "job",
+                    "execution",
+                    "show",
+                    "-g",
+                    args.resource_group,
+                    "-n",
+                    args.job_name,
+                    "--job-execution-name",
+                    ex_name,
+                    "--query",
+                    "properties.status",
+                    "-o",
+                    "tsv",
+                ],
+                capture_json=False,
+            )
+            if st not in ("Running", "Processing"):
+                break
+        if st != "Succeeded":
+            try:
+                log_text = urllib.request.urlopen(log_upload_url, timeout=10).read().decode("utf-8", errors="replace")
+                print(f"=== GPU Probe Execution {ex_name} ({st}) Log ===\n{log_text}")
+            except Exception as exc:
+                print(f"GPU Probe Execution {ex_name} ended with status={st} (no log retrieved: {exc})")
+        restore_ns = argparse.Namespace(
+            resource_group=args.resource_group,
+            job_name=args.job_name,
+            force=True,
+        )
+        cmd_restore(restore_ns)
+
+    diag_url = (
+        f"https://{args.handoff_account}.blob.core.windows.net/"
+        f"{args.handoff_container}/quality/status/gpu-diag.json?{sas}"
+    )
+    diag = json.loads(urllib.request.urlopen(diag_url, timeout=15).read())
+    Path("/tmp/gpu-diag.json").write_text(json.dumps(diag, indent=2))
+    if diag.get("config_xml_fix") or diag.get("cifs_repair") or diag.get("qwen_submit_summary"):
+        print("=== Server Maintenance & Provisioning ===")
+        print("  config.xml:", json.dumps(diag.get("config_xml_fix", {})))
+        print("  CIFS nbytes repair:", json.dumps(diag.get("cifs_repair", {})))
+        print("  Qwen submit summary:", json.dumps(diag.get("qwen_submit_summary", {})))
+        print("  host_app_version before reset:", json.dumps(diag.get("hav_before_reset", [])))
+        print()
+    print("=== Registered Hosts (by latest RPC) ===")
+    for h in diag.get("host_rpc", diag.get("hosts", [])):
+        print(
+            f"  Host #{h.get('id')}: {str(h.get('domain_name')):24s} | last_rpc={h.get('last_rpc_utc', '')} | "
+            f"os={h.get('os_name')} | cpus={h.get('p_ncpus')} gpus={h.get('p_ngpus')} | "
+            f"serial={h.get('serialnum')} | model={h.get('p_model')}"
+        )
+    print("\n=== Queue By App & Batch (server_state: 2=unsent, 4=in_progress, 5=over) ===")
+    for q in diag.get("queue_by_batch", []):
+        print(
+            f"  {q.get('app_name'):18s} batch={str(q.get('batch')):4s} "
+            f"state={q.get('server_state')} outcome={q.get('outcome')} count={q.get('cnt')}"
+        )
+    print("\n=== Existing Qwen / Surya / Train Campaigns on Share ===")
+    print("  Qwen:", json.dumps(diag.get("qwen_campaigns", {})))
+    print("  Surya:", json.dumps(diag.get("surya_campaigns", {})))
+    print("  Train:", json.dumps(diag.get("train_campaigns", {})))
+    print("  GGUF files in download:", diag.get("gguf_files", []))
+    print("  Quality stage counts:", diag.get("quality_stage_counts", {}))
+    print("\n=== Qwen Completed / Error Results ===")
+    for r in diag.get("qwen_errors", []):
+        print(
+            f"  id={r.get('id')} name={r.get('name')} batch={r.get('batch')} "
+            f"out={r.get('outcome')} exit={r.get('exit_status')} "
+            f"host={r.get('hostid')}({r.get('domain_name')}) plan={r.get('plan_class')} el={r.get('elapsed_time')}s"
+        )
+        if str(r.get("outcome")) != "1" and r.get("stderr_snip"):
+            print(f"    STDERR: {str(r.get('stderr_snip'))[:450]}")
+    print("\n=== Quality Error Results (outcome=3) ===")
+    for r in diag.get("qual_errors", [])[:10]:
+        print(
+            f"  id={r.get('id')} name={r.get('name')} out={r.get('outcome')} "
+            f"exit={r.get('exit_status')} host={r.get('hostid')}({r.get('domain_name')}) "
+            f"plan={r.get('plan_class')} el={r.get('elapsed_time')}s"
+        )
+        if r.get("stderr_snip"):
+            print(f"    STDERR: {str(r.get('stderr_snip'))[:450]}")
+    print("\n=== Active App Versions (deprecated=0) ===")
+    for av in diag.get("app_versions", []):
+        if str(av.get("deprecated")) == "0":
+            print(
+                f"  id={str(av.get('id')):3s} app={str(av.get('app_name')):16s} "
+                f"plat={str(av.get('platform')):24s} ver={str(av.get('version_num')):4s} "
+                f"plan={av.get('plan_class')}"
+            )
+    print("\n=== Recent Qwen / Surya / Train / GPU Results ===")
+    for r in diag.get("recent_results", [])[:30]:
+        print(
+            f"  id={r.get('id')} app={r.get('app_name')} batch={r.get('batch')} "
+            f"st={r.get('server_state')} out={r.get('outcome')} exit={r.get('exit_status')} "
+            f"val={r.get('validate_state')} host={r.get('hostid')}({r.get('domain_name')}) "
+            f"plan={r.get('plan_class')} el={r.get('elapsed_time')}s"
+        )
+        if str(r.get("outcome")) not in ("0", "1") and r.get("stderr_snip"):
+            print(f"    STDERR: {str(r.get('stderr_snip'))[:350]}")
+    print("\n=== Scheduler Log Tail ===")
+    for l in diag.get("scheduler_log_tail", [])[-35:]:
+        print(" ", l)
+    return 0
+
+
 def cmd_prepare(args: argparse.Namespace) -> int:
     manifest = Path(args.manifest)
     if not manifest.is_file():
@@ -354,6 +626,15 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--job-name", default=DEFAULT_BRIDGE_JOB)
     rs.add_argument("--force", action="store_true", help="Restore even if executions are still running")
     rs.set_defaults(func=cmd_restore)
+
+    gs = sub.add_parser("gpu-status", help="Inspect registered GPU hosts, app versions, and Qwen/Surya/Train queues")
+    gs.add_argument("--resource-group", default=DEFAULT_BOINC_RG)
+    gs.add_argument("--job-name", default=DEFAULT_BRIDGE_JOB)
+    gs.add_argument("--handoff-account", default=DEFAULT_HANDOFF_ACCOUNT)
+    gs.add_argument("--handoff-container", default=DEFAULT_HANDOFF_CONTAINER)
+    gs.add_argument("--handoff-sas", default=os.environ.get("HANDOFF_SAS", ""))
+    gs.add_argument("--run-probe", action="store_true", help="Run a fresh server-side MySQL/share probe first")
+    gs.set_defaults(func=cmd_gpu_status)
 
     return p
 
