@@ -3,15 +3,18 @@ import argparse
 import json
 import sys
 
-sys.path.insert(0, "/opt/boinc/py")
+parser = argparse.ArgumentParser()
+parser.add_argument("--host", required=True)
+parser.add_argument("--project-dir", default="/opt/boinc")
+parser.add_argument("--database", default="fixture")
+parser.add_argument("--user", default="fixture")
+args = parser.parse_args()
+sys.path.insert(0, args.project_dir + "/py")
 from Boinc import db_base
 import MySQLdb
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--host", required=True)
-args = parser.parse_args()
 try:
-    db_base.do_connect("fixture", "fixture", "fixture-only", 3306, args.host)
+    db_base.do_connect(args.database, args.user, "fixture-only", 3306, args.host)
 except MySQLdb.Error as error:
     print(json.dumps({"mysql_errno": error.args[0]}), file=sys.stderr)
     raise SystemExit(10) from None

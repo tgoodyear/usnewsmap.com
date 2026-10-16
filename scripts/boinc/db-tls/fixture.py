@@ -29,7 +29,7 @@ def sql(query):
                "--batch", "--skip-column-names", "-e", query).stdout.strip()
 
 
-def start(tls):
+def start(tls, extra_args=()):
     args = ["mariadbd", "--no-defaults", "--user=root", "--datadir=/fixture/data",
             "--socket=/fixture/db.sock", "--pid-file=/fixture/db.pid",
             "--bind-address=127.0.0.1", "--port=3306", "--skip-name-resolve",
@@ -41,7 +41,7 @@ def start(tls):
                  "--ssl-cert=/fixture/server.pem", "--ssl-key=/fixture/server.key"]
     else:
         args += ["--require-secure-transport=OFF", "--skip-ssl"]
-    process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen([*args, *extra_args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(120):
         if process.poll() is not None:
             raise RuntimeError("fixture server exited; inspect local server.log")
