@@ -250,6 +250,19 @@ impl Ndlocr {
             f.seek(SeekFrom::End(-(f.metadata()?.len().min(2048) as i64)))?;
             let mut tail = String::new();
             f.read_to_string(&mut tail)?;
+            if [
+                "PIL.UnidentifiedImageError",
+                "DecompressionBombError",
+                "image file is truncated",
+                "broken data stream when reading image file",
+            ]
+            .iter()
+            .any(|message| tail.contains(message))
+            {
+                return Err(
+                    ReadError::BadInput("NDLOCR-Lite could not decode the scan".into()).into(),
+                );
+            }
             anyhow::bail!("NDLOCR-Lite exit {status}: {tail}");
         }
         Ok(Output {

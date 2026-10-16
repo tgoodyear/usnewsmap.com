@@ -179,3 +179,17 @@ fn catalog_has_all_pinned_models_and_credits_for_the_default_profile() {
     );
     assert_eq!(credit.models[0].attribution.license, "LicenseRef-DINOv3");
 }
+
+#[cfg(unix)]
+#[test]
+fn decoder_errors_are_bad_input_not_engine_outages() {
+    let (_dir, engine, image) =
+        standin("echo 'PIL.UnidentifiedImageError: cannot identify image file' >&2; exit 1");
+    let error = engine
+        .ocr(
+            &image,
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        )
+        .unwrap_err();
+    assert!(matches!(error, usnm_ocr_adapter::ReadError::BadInput(_)));
+}
