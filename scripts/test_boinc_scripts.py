@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -57,6 +58,31 @@ def template(extra=None, drop=None):
     return json.dumps({"containers": [{"name": "bridge", "image": "x.azurecr.io/b@sha256:" + "0" * 64,
                                        "env": env, "volumeMounts": [{"volumeName": "project"}]}],
                        "volumes": [{"name": "project"}]})
+
+
+class OperatorWorkspace(unittest.TestCase):
+    def test_workspaces_are_unique_private_and_beneath_checkout(self):
+        command = 'ENV_NAME=prod; die() { exit 1; }; . scripts/lib/boinc.sh; boinc_workdir; boinc_workdir'
+        output = subprocess.check_output(["bash", "-c", command], cwd=ROOT, text=True)
+        paths = [Path(line) for line in output.splitlines()]
+        try:
+            self.assertEqual(len(set(paths)), 2)
+            for path in paths:
+                self.assertEqual(path.parent, Path(ROOT))
+                self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+        finally:
+            for path in paths:
+                shutil.rmtree(path)
+
+    def test_release_staging_paths_match_image_build_paths(self):
+        release = Path(ROOT, "scripts/boinc-app-release.sh").read_text()
+        container = Path(ROOT, "contrib-compute/images/appver/Containerfile").read_text()
+        self.assertIn('appver_binary="/opt/usnm-appver-build/wrapper-candidate/$binary_name"', release)
+        self.assertIn("COPY wrapper-candidate /opt/usnm-appver-build/wrapper-candidate", container)
+        for name in ("boinc-app-release.sh", "provision-boinc.sh", "build-boinc-images.sh"):
+            text = Path(ROOT, "scripts", name).read_text()
+            self.assertNotIn("mktemp", text)
+            self.assertNotIn("/var/tmp", text)
 
 
 class StartBridge(unittest.TestCase):
