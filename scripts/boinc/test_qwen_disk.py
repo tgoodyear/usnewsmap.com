@@ -17,6 +17,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class QwenDiskTest(unittest.TestCase):
+    def test_native_cuda_canary_is_explicit_opt_in_and_matches_shipped_runtime(self):
+        classes = {node.findtext("name"): node for node in ET.parse(ROOT / "contrib-compute/boinc/plan_class_spec.xml").findall("plan_class")}
+        for name in ("nvidia_cuda_8b", "nvidia_cuda_2b"):
+            with self.subTest(name=name):
+                node = classes[name]
+                self.assertEqual(node.findtext("project_prefs_tag"), "qwen_native_cuda_canary")
+                self.assertEqual(node.findtext("project_prefs_regex"), "^1$")
+                self.assertEqual(node.findtext("project_prefs_default_true"), "0")
+                self.assertEqual(node.findtext("min_cuda_version"), "12040")
+                self.assertEqual(node.findtext("min_core_client_version"), "80211")
+        self.assertIsNone(classes["docker_nvidia_train"].find("project_prefs_tag"))
+        self.assertEqual(classes["docker_nvidia_train"].findtext("min_cuda_version"), "12080")
+        self.assertEqual(classes["docker_nvidia_train"].findtext("min_core_client_version"), "80213")
+        self.assertEqual(classes["docker_nvidia_cuda_8b"].findtext("min_core_client_version"), "80213")
+
     def test_committed_ci_observations_fit_policy_and_keep_models_separate(self):
         p = disk.policy()
         observed = json.loads((ROOT / "ocr/boinc/qwen/measurements/ci-38787485639.json").read_text())
