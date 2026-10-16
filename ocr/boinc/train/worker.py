@@ -206,7 +206,7 @@ def run(root: Path, model_dir: Path) -> dict:
     torch.cuda.manual_seed_all(job["seed"])
     processor = AutoProcessor.from_pretrained(
         model_dir, local_files_only=True, trust_remote_code=False,
-        min_pixels=4096, max_pixels=131072,
+        size={"shortest_edge": 4096, "longest_edge": 131072},
     )
     batches = [encode(processor, row) for row in examples]
     model = Qwen3VLForConditionalGeneration.from_pretrained(
