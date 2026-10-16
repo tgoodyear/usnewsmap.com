@@ -193,12 +193,20 @@ scripts/boinc/build-node-client-container.sh --out "$PWD/target/boinc-node-clien
 
 The pinned AlmaLinux 9 builder uses the existing `build-node-client.sh`
 (`ae68f3290ac82d08b4d9767acfe0daaccaeeb883`, stable 8.2.13), one make job, and
-an amd64 container bounded to 1.5 GiB build memory. It exports binaries, source
-commit, build image ID and relative SHA256SUMS; it never installs on a node.
+an amd64 compilation container capped at one CPU, 1.5 GiB memory with no extra
+swap, and 256 tasks. The dependency-image build is separate; a Docker BuildKit
+`build --memory` flag is not relied upon. The compiler container checks actual
+cgroup limits and exports those readings alongside binaries, source commit,
+dependency image ID and relative SHA256SUMS; it never installs on a node.
 Actual configure requires `zlib-devel` as well as curl/OpenSSL development
-packages. CI builds the real client and retains its bundle for seven days.
-An exported bundle still requires actual RHEL ABI/version verification before
-any installation; a successful builder is not host/client acceptance.
+packages. CI builds the real client and retains a tar archive for seven days,
+preserving executable modes. It re-extracts that archive, verifies executable
+bits/checksums/actual cgroup limits, and runs both loaders plus `boinc --version`
+inside pinned EL10 with no network. This native CI check passed for stable
+8.2.13; local ARM emulation instead fails at EL10 glibc's x86-64-v3 requirement
+before BOINC starts. An exported bundle still requires actual RHEL-host
+ABI/version verification before installation; successful CI is not host/client
+acceptance.
 
 Take a genuine read-only worker snapshot **before** installing or starting a
 canary, and again during/after any separately approved bounded cohort:
@@ -235,6 +243,10 @@ adding pilot load was withheld. An active process alone is not a comparable
 healthy throughput baseline. Let the owner resolve the existing workload or
 obtain a naturally valid fresh baseline rather than restarting/replacing the
 worker, attributing the existing slowdown to BOINC, or purchasing dev resources.
+At 11:44:50 UTC it naturally recovered: 23 successful pages in 900 seconds
+(92/hour), median 115.50 seconds, zero failure events and last completion
+45.8 seconds earlier, with the same worker PID/start. This meets readiness,
+not the still-unexecuted during/after pilot's no-regression acceptance.
 
 Production `require_secure_transport` remains OFF. Keep #464 open until these
 remaining gates and a reviewed migration plan are satisfied. #631 remains draft;

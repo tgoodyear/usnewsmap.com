@@ -14,13 +14,20 @@ done
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 name="usnm-node-client-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
-docker build --platform linux/amd64 --memory 1536m \
+docker build --platform linux/amd64 \
   -f scripts/boinc/NodeClientContainerfile -t "$name" .
-docker create --name "$name" "$name" /bin/true >/dev/null
-mkdir -p "$out"
+mkdir -p "$(dirname "$out")"
+mkdir "$out"
+docker create --platform linux/amd64 --name "$name" \
+  --memory 1536m --memory-swap 1536m --cpus 1 --pids-limit 256 \
+  --cap-drop ALL --security-opt no-new-privileges "$name" >/dev/null
+docker start --attach "$name"
+test "$(docker inspect "$name" --format '{{.State.ExitCode}}')" = 0
 docker cp "$name:/build/install" "$out/install"
 docker cp "$name:/build/source-commit" "$out/source-commit"
 docker cp "$name:/build/SHA256SUMS" "$out/build-SHA256SUMS"
+docker cp "$name:/build/runtime-memory-max" "$out/runtime-memory-max"
+docker cp "$name:/build/runtime-cpu-max" "$out/runtime-cpu-max"
 docker image inspect "$name" --format '{{.Id}}' > "$out/build-image-id"
 python3 - "$out" <<'PY'
 import hashlib

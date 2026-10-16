@@ -22,7 +22,11 @@ class NodeClientBuild(unittest.TestCase):
 import os, pathlib, sys
 args = sys.argv[1:]
 with open(os.environ["CALLS"], "a") as stream: stream.write(" ".join(args) + "\\n")
-if args[0] == "cp":
+if args[0] == "build" and os.environ.get("RACE_OUT"):
+    dst = pathlib.Path(os.environ["RACE_OUT"])
+    dst.mkdir()
+    (dst / "source-commit").write_text("pre-existing evidence")
+elif args[0] == "cp":
     dst = pathlib.Path(args[-1])
     if args[-2].endswith("/install"):
         (dst / "bin").mkdir(parents=True)
@@ -30,6 +34,7 @@ if args[0] == "cp":
     else:
         dst.write_text(os.environ["COMMIT"] + "\\n")
 elif args[:2] == ["image", "inspect"]: print("sha256:" + "a" * 64)
+elif args[0] == "inspect": print("0")
 """)
             docker.chmod(0o755)
             script = SCRIPT.with_name("build-node-client-container.sh")
@@ -42,12 +47,23 @@ elif args[:2] == ["image", "inspect"]: print("sha256:" + "a" * 64)
             self.assertIn("  install/bin/boinc\n", sums)
             self.assertIn("  install/bin/boinccmd\n", sums)
             self.assertEqual((out / "source-commit").read_text().strip(), COMMIT)
-            self.assertIn("--platform linux/amd64 --memory 1536m", log.read_text())
+            calls = log.read_text().splitlines()
+            create = next(line for line in calls if line.startswith("create "))
+            self.assertIn("--memory 1536m --memory-swap 1536m --cpus 1 --pids-limit 256", create)
+            self.assertNotIn("--memory", next(line for line in calls if line.startswith("build ")))
+            self.assertIn("start --attach ", log.read_text())
             self.assertNotIn("systemctl", log.read_text())
             repeated = subprocess.run(["bash", str(script), "--out", str(out)],
                                       env=env, capture_output=True, text=True)
             self.assertNotEqual(repeated.returncode, 0)
             self.assertIn("--out must be a new", repeated.stderr)
+            racing = root / "racing"
+            log.write_text("")
+            result = subprocess.run(["bash", str(script), "--out", str(racing)],
+                                    env=dict(env, RACE_OUT=str(racing)), capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((racing / "source-commit").read_text(), "pre-existing evidence")
+            self.assertFalse(any(line.startswith("cp ") for line in log.read_text().splitlines()))
 
     def test_build_is_pinned_and_never_installs_host_services(self):
         with tempfile.TemporaryDirectory() as tmp:
