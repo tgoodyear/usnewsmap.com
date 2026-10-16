@@ -134,13 +134,18 @@ jobs:
         run: python3 -m unittest -v images/server/test_work_volume.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
+      - name: The bounded volunteer batch scheduler tests pass
+        working-directory: .
+        run: python3 -m unittest -v scripts/boinc/test_batch_scheduler.py contrib-compute/images/server/test_batch_inventory.py
+        env:
+          USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: The app version checks' tests pass
         working-directory: .
         run: |
           python3 -m unittest -v scripts/boinc/test_install.py
           python3 -m unittest -v scripts/boinc/test_volunteer.py scripts/boinc/test_qwen_disk.py scripts/boinc/test_qwen_canary.py scripts/boinc/test_hold_legacy_qwen.py
-          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py
+          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
           python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py

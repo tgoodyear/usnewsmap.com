@@ -22,6 +22,9 @@ character similarity and collects into curated `ocr-ja`; see
 deterministic word crops with Qwen3-VL (#522); see
 [boinc-quality.md](boinc-quality.md).
 Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
+The opt-in [batch controller](boinc-batch-scheduler.md) schedules explicitly
+allocated cached pages with bounded queue backpressure; activation is a separate
+operator-controlled deployment.
 The [transcription post-training pilot](boinc-transcription.md) uses `usnm_qwen`
 for public-gold baseline and adapted-model evaluation.
 

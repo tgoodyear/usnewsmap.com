@@ -100,6 +100,8 @@
 #                               and leaves the others (safe to repeat)
 #   BRIDGE_STEP=work-volume     writes one JSON line of aggregate workunit, result, active-user
 #                               and active-host counts to stdout; safe to repeat
+#   BRIDGE_STEP=batch-inventory BATCH_NONCE=<32 hex> HANDOFF_URL=<container URL>; writes the
+#                               read-only queue/host/journal/spool inventory to scheduler/
 #
 # Start a step with scripts/start-boinc-bridge.sh, which sets these on the job: an
 # `az containerapp job start --env-vars` override drops the job's own settings and the share.
@@ -285,7 +287,7 @@ case "$step" in
 esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
-  [ "$step" != register-apps ] && [ "$step" != work-volume ]; then
+  [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -319,7 +321,7 @@ if [ "$step" = spool-out ]; then
     ${host_args[@]+"${host_args[@]}"} ${trust_args[@]+"${trust_args[@]}"}
   exit 0
 fi
-if [ "$step" = work-volume ]; then
+if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   mycnf="$SECRETS/mysql-runtime.cnf"
   trap 'rm -f "$mycnf" "$SECRETS/db-runtime"' EXIT
@@ -339,7 +341,18 @@ values = {"host": os.environ["DB_HOST"], "user": os.environ["DB_RUNTIME_USER"],
 Path(sys.argv[1]).write_text("[client]\n" + "".join(f"{key}={quote(value)}\n" for key, value in values.items()))
 PY
   )
-  python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
+  if [ "$step" = batch-inventory ]; then
+    [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
+      fail "HANDOFF_URL must name the hand-off container"
+    [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
+    mkdir -p "$HANDOFF_DIR/scheduler"
+    python3 "$TEMPLATES/batch-inventory.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME" \
+      --root "$HANDOFF_DIR" --results "$PROJ/results" --nonce "$BATCH_NONCE" \
+      --out "$HANDOFF_DIR/scheduler/inventory.json"
+    usnm-boinc handoff put --from "$HANDOFF_DIR/scheduler" --to-url "$HANDOFF_URL" --prefix scheduler
+  else
+    python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
+  fi
   exit 0
 fi
 fetch_secrets
