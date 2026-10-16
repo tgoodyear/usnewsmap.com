@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from collections import namedtuple
 import shlex
 from pathlib import Path
@@ -490,6 +491,68 @@ class SetupTest(unittest.TestCase):
         self.assertIn("MemorySwapMax=0", setup.OCR_NODE_SLICE)
         _, normal, _, _ = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
         self.assertNotIn("Slice=", normal)
+
+    def test_dedicated_node_profile_replaces_ocr_cap_but_stays_bounded(self):
+        _, dropin, _, _ = setup.profile(
+            "boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999, dedicated_node=True)
+        self.assertIn("Slice=user-999.slice", dropin)
+        self.assertIn("--dedicated-node-uid=999", dropin)
+        self.assertNotIn("--ocr-node-uid", dropin)
+        self.assertIn("Nice=19", dropin)
+        self.assertNotIn("CPUQuota", setup.DEDICATED_NODE_SLICE)
+        self.assertIn("MemoryMax=85%", setup.DEDICATED_NODE_SLICE)
+        self.assertIn("MemorySwapMax=0", setup.DEDICATED_NODE_SLICE)
+        self.assertIn("TasksMax=1024", setup.DEDICATED_NODE_SLICE)
+        with self.assertRaises(setup.SetupError):
+            setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999,
+                          ocr_node=True, dedicated_node=True)
+        for kwargs in [{"ocr_node": True, "dedicated_node": True}, {"ncpus": 2}, {"dedicated_node": True, "ncpus": 0},
+                       {"dedicated_node": True, "ncpus": (os.cpu_count() or 1) + 1}]:
+            with self.assertRaises(setup.SetupError):
+                setup.setup("boinc-client.service", Path("/var/lib/boinc"), IMAGE, **kwargs)
+
+    def test_dedicated_node_requires_retired_ocr_worker(self):
+        def states(load, enabled, active):
+            values = {"LoadState": load, "UnitFileState": enabled, "ActiveState": active}
+            return lambda args, **_: values[args[3].removeprefix("--property=")]
+
+        for retired in [("not-found", "", "inactive"), ("loaded", "disabled", "inactive"),
+                        ("loaded", "masked", "failed")]:
+            with patch.object(setup, "run", side_effect=states(*retired)):
+                setup.check_ocr_worker_retired()
+        for live in [("loaded", "enabled", "inactive"), ("loaded", "disabled", "active"),
+                     ("loaded", "disabled", "deactivating")]:
+            with patch.object(setup, "run", side_effect=states(*live)):
+                with self.assertRaisesRegex(setup.SetupError, "disable --now"):
+                    setup.check_ocr_worker_retired()
+
+    def test_dedicated_preflight_refuses_live_worker_and_unbounded_slice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "user.slice/user-999.slice"
+            parent.mkdir(parents=True)
+            values = {"memory.max": str(6 * 1024**3), "memory.swap.max": "0", "pids.max": "1024"}
+            for name, value in values.items():
+                (parent / name).write_text(value)
+            membership = "0::/user.slice/user-999.slice/boinc-client.service"
+            retired = {"LoadState": "loaded", "UnitFileState": "disabled", "ActiveState": "inactive"}
+
+            def runner(state):
+                return lambda args: state[args[3].removeprefix("--property=")]
+
+            with patch.object(pre.os, "geteuid", return_value=999):
+                pre.check_dedicated_node(999, root, membership, runner(retired))
+                for key, value in [("UnitFileState", "enabled"), ("ActiveState", "active")]:
+                    with self.assertRaisesRegex(pre.PreflightError, "usnm-ocr-worker"):
+                        pre.check_dedicated_node(999, root, membership, runner({**retired, key: value}))
+                for name, bad in [("memory.max", "max"), ("memory.swap.max", "max"),
+                                  ("pids.max", "max"), ("pids.max", "4096")]:
+                    (parent / name).write_text(bad)
+                    with self.assertRaises(pre.PreflightError):
+                        pre.check_dedicated_node(999, root, membership, runner(retired))
+                    (parent / name).write_text(values[name])
+                with self.assertRaises(pre.PreflightError):
+                    pre.check_dedicated_node(999, root, "0::/system.slice/boinc-client.service", runner(retired))
 
     def test_ocr_group_checks_include_account_service_and_user_manager_grants(self):
         account = namedtuple("Account", "pw_name pw_gid")("boinc", 999)

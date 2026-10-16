@@ -75,7 +75,9 @@ Since 12 October the nodes run RHEL 10.2 from Red Hat's KVM Guest Image, with UE
 | Node                               | Host                                   | VM  | vCPUs, memory | Pages at once                    |
 | ---------------------------------- | -------------------------------------- | --- | ------------- | -------------------------------- |
 | Node 3, `usnm-ocr-node3-arcs-prod` | pve-big, i7-7700K (4 cores, 8 threads) | 203 | 8, 40 GiB     | 7; it publishes the fetched list |
-| Node 4, `usnm-ocr-node4-arcs-prod` | The NUC, i5-4250U (2 cores, 4 threads) | 124 | 4, 8 GiB      | 3                                |
+| Node 4, `usnm-ocr-node4-arcs-prod` | The NUC, i5-4250U (2 cores, 4 threads) | 124 | 4, 8 GiB      | None; BOINC only since 16 October 2026 |
+
+On 16 October 2026 node 4's OCR worker was drained and disabled, and the node became a dedicated BOINC client attached to the project owner's account ([BOINC on an OCR node](../boinc-ocr-node.md#retire-an-ocr-node-to-boinc-only)). Node 3 is the only on-prem queue worker; node 4 keeps its updates and reboot window.
 
 Both install every update daily with `dnf-automatic` and reboot only in a weekly window when an update needs it, after stopping the worker: node 4 on Sundays and node 3 on Wednesdays, at 04:00 US Eastern, so they are never down together ([operations](../operations.md#on-prem-ocr-nodes), "Updates and reboots"). Their first patch, on 12 October, brought each from kernel 6.12.0-211.7.3 to 6.12.0-211.64.1 (169 packages: 165 upgraded, 4 installed; 125 security advisories, 2 of them critical).
 
