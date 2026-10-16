@@ -78,9 +78,14 @@ and #464 tracks the gated migration to required TLS. The database is private to 
 To record a work-volume sample, run
 `scripts/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record
 containing aggregate workunit and result counts plus BOINC's recent-credit user/host counts;
-the workbook reads it from console logs. Workunit validation, assimilation and file-deletion
-counts are separate, potentially overlapping flags. The bridge job is manual-triggered, so
-the time chart gains a point only when this step is run.
+the workbook reads it from console logs. Its KQL uses a fuzzy union of both Container Apps
+resource-specific tables (`ContainerAppConsoleLogs`, `ContainerAppSystemLogs`) and legacy `_CL`
+tables, mapping their unsuffixed and `_s` columns while removing identical rows if both sources
+are present. The standard system-log schema has no execution-name column, so the workbook reports
+job activity/events rather than claiming to count job executions.
+Workunit validation, assimilation and file-deletion counts are separate, potentially overlapping
+flags. The bridge job is manual-triggered, so the time chart gains a point only when this step is
+run.
 
 #### Work-volume acceptance after #633
 
@@ -120,10 +125,14 @@ Keep #510 acceptance open until an authorized operator can:
    drift checks, and verify the latest tiles, state table and time chart consume
    that event.
 
-Live verification requires an authenticated Azure session with access to the
-Container Apps job/execution metadata and BOINC Log Analytics workspace, plus an
-authorized in-VNet runtime check. This sandbox has no authenticated Azure session;
-no deployed sample or workbook success is claimed.
+Live verification requires a recent BOINC log sample and an in-VNet runtime check. Read-only
+ARM metadata confirms both table schemas. The current workspace-context query identity gets
+`InsufficientAccessError` when querying tables, while the authorized resource-context Logs API
+route to the BOINC Container Apps environment succeeds. That route returned no rows from
+`ContainerAppSystemLogs` or `ContainerAppConsoleLogs` over the last 30 days, so actual status
+values, app/job filter hits, a deployed work-volume sample, and workbook output against data
+remain unverified. No Azure grants or configuration were changed. Keep live acceptance open
+until an authorized operator can verify a recent sample and the workbook results.
 
 `scripts/build-boinc-images.sh` builds and pins the server/bridge artifacts.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
