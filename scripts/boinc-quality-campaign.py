@@ -46,29 +46,33 @@ def run_az(args: list[str], capture_json: bool = True):
     return res.stdout.strip()
 
 
-def generate_sas(account: str, container: str, permissions: str = "r", hours: int = 24) -> str:
-    expiry = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%MZ")
+def get_storage_token() -> str:
     return run_az(
         [
-            "storage",
-            "container",
-            "generate-sas",
-            "--account-name",
-            account,
-            "--name",
-            container,
-            "--permissions",
-            permissions,
-            "--expiry",
-            expiry,
-            "--auth-mode",
-            "login",
-            "--as-user",
+            "account",
+            "get-access-token",
+            "--resource",
+            "https://storage.azure.com/",
+            "--query",
+            "accessToken",
             "-o",
             "tsv",
         ],
         capture_json=False,
     )
+
+
+def fetch_blob_bytes(account: str, container: str, blob_name: str, token: str, timeout: int = 15) -> bytes:
+    url = f"https://{account}.blob.core.windows.net/{container}/{blob_name}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "x-ms-version": "2021-08-06",
+        },
+        method="GET",
+    )
+    return urllib.request.urlopen(req, timeout=timeout).read()
 
 
 def fetch_server_counts(url: str = DEFAULT_SERVER_STATUS_URL) -> dict[str, int]:
@@ -95,7 +99,7 @@ def fetch_campaign_status(
     shards: int,
     handoff_account: str,
     handoff_container: str,
-    sas: str,
+    token: str,
 ) -> tuple[int, int, int, int, int, list[tuple[int, str, int, int, int, float]]]:
     total_staged = 0
     total_submitted = 0
@@ -105,12 +109,15 @@ def fetch_campaign_status(
     rows = []
 
     for i in range(shards):
-        url = (
-            f"https://{handoff_account}.blob.core.windows.net/"
-            f"{handoff_container}/quality/{campaign}/status/shard-{i}.json?{sas}"
-        )
         try:
-            data = json.loads(urllib.request.urlopen(url, timeout=5).read())
+            raw = fetch_blob_bytes(
+                handoff_account,
+                handoff_container,
+                f"quality/{campaign}/status/shard-{i}.json",
+                token,
+                timeout=5,
+            )
+            data = json.loads(raw)
         except Exception:
             continue
         active_shards += 1
@@ -132,11 +139,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     import time
 
     campaign = args.campaign
-    sas = args.handoff_sas or generate_sas(args.handoff_account, args.handoff_container, "rl", hours=4)
+    token = get_storage_token()
 
     while True:
         active_shards, done_shards, total_staged, total_submitted, total_errors, rows = fetch_campaign_status(
-            campaign, args.shards, args.handoff_account, args.handoff_container, sas
+            campaign, args.shards, args.handoff_account, args.handoff_container, token
         )
         counts = fetch_server_counts(args.server_status_url)
         if not args.wait or done_shards >= args.shards:
@@ -292,12 +299,17 @@ def cmd_restore(args: argparse.Namespace) -> int:
     return 0
 
 
-def upload_blob_bytes(account: str, container: str, blob_name: str, sas: str, data: bytes, content_type: str = "text/plain") -> None:
-    url = f"https://{account}.blob.core.windows.net/{container}/{blob_name}?{sas}"
+def upload_blob_bytes(account: str, container: str, blob_name: str, token: str, data: bytes, content_type: str = "text/plain") -> None:
+    url = f"https://{account}.blob.core.windows.net/{container}/{blob_name}"
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"x-ms-blob-type": "BlockBlob", "Content-Type": content_type},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "x-ms-version": "2021-08-06",
+            "x-ms-blob-type": "BlockBlob",
+            "Content-Type": content_type,
+        },
         method="PUT",
     )
     urllib.request.urlopen(req, timeout=30).read()
@@ -306,7 +318,8 @@ def upload_blob_bytes(account: str, container: str, blob_name: str, sas: str, da
 def cmd_gpu_status(args: argparse.Namespace) -> int:
     import time
 
-    sas = args.handoff_sas or generate_sas(args.handoff_account, args.handoff_container, "racwdl", hours=6)
+    token = get_storage_token()
+    handoff_url = f"https://{args.handoff_account}.blob.core.windows.net/{args.handoff_container}"
     if args.run_probe:
         server_replica = "usnm-boinc-ca-prod--0000046-d7b58fbfc-cslk6"
         try:
@@ -331,25 +344,16 @@ def cmd_gpu_status(args: argparse.Namespace) -> int:
         except Exception:
             pass
 
-        py_url = (
-            f"https://{args.handoff_account}.blob.core.windows.net/"
-            f"{args.handoff_container}/quality/status/gpu_probe.py?{sas}"
-        )
-        diag_upload_url = (
-            f"https://{args.handoff_account}.blob.core.windows.net/"
-            f"{args.handoff_container}/quality/status/gpu-diag.json?{sas}"
-        )
-        log_upload_url = (
-            f"https://{args.handoff_account}.blob.core.windows.net/"
-            f"{args.handoff_container}/quality/status/gpu-probe.log?{sas}"
-        )
+        py_url = f"{handoff_url}/quality/status/gpu_probe.py"
+        diag_upload_url = f"{handoff_url}/quality/status/gpu-diag.json"
+        log_upload_url = f"{handoff_url}/quality/status/gpu-probe.log"
         probe_py_path = ROOT / "scripts" / "boinc" / "gpu_probe_server.py"
         if probe_py_path.is_file():
             upload_blob_bytes(
                 args.handoff_account,
                 args.handoff_container,
                 "quality/status/gpu_probe.py",
-                sas,
+                token,
                 probe_py_path.read_bytes(),
                 "text/x-python",
             )
@@ -357,7 +361,9 @@ def cmd_gpu_status(args: argparse.Namespace) -> int:
             probe_sh = (
                 "#!/usr/bin/env bash\n"
                 "exec > /tmp/gpu_probe.log 2>&1\n"
-                f'trap \'curl -fsSL -X PUT -H "x-ms-blob-type: BlockBlob" --data-binary @/tmp/gpu_probe.log "{log_upload_url}" || true\' EXIT\n'
+                'st_tok="$(curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" '
+                '"$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$AZURE_CLIENT_ID" | jq -er .access_token)"\n'
+                f'trap \'curl -fsSL -X PUT -H "Authorization: Bearer $st_tok" -H "x-ms-version: 2021-08-06" -H "x-ms-blob-type: BlockBlob" --data-binary @/tmp/gpu_probe.log "{log_upload_url}" || true\' EXIT\n'
                 "set -euo pipefail\n"
                 ". /usr/local/lib/usnm-boinc/lib.sh\n"
                 "fetch_secrets\n"
@@ -366,15 +372,15 @@ def cmd_gpu_status(args: argparse.Namespace) -> int:
                 '(umask 077; { echo "[client]"; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; '
                 f'echo "{pw_key}=$(cat "$SECRETS/db-runtime")"; }} > "$mycnf")\n'
                 f'export SERVER_REPLICA_HOST="{server_replica}"\n'
-                f'export DIAG_UPLOAD_URL="{diag_upload_url}"\n'
-                f'curl -fsSL "{py_url}" -o /tmp/gpu_probe.py\n'
+                f'export HANDOFF_URL="{handoff_url}"\n'
+                f'curl -fsSL -H "Authorization: Bearer $st_tok" -H "x-ms-version: 2021-08-06" "{py_url}" -o /tmp/gpu_probe.py\n'
                 "python3 /tmp/gpu_probe.py\n"
             )
             upload_blob_bytes(
                 args.handoff_account,
                 args.handoff_container,
                 "quality/status/gpu_probe.sh",
-                sas,
+                token,
                 probe_sh.encode("utf-8"),
                 "text/x-shellscript",
             )
@@ -393,11 +399,14 @@ def cmd_gpu_status(args: argparse.Namespace) -> int:
             ]
         )
         container = job_doc["properties"]["template"]["containers"][0]
-        probe_url = (
-            f"https://{args.handoff_account}.blob.core.windows.net/"
-            f"{args.handoff_container}/quality/status/gpu_probe.sh?{sas}"
-        )
-        container["command"] = ["/bin/bash", "-c", f'curl -fsSL "{probe_url}" | bash']
+        probe_url = f"{handoff_url}/quality/status/gpu_probe.sh"
+        container["command"] = [
+            "/bin/bash",
+            "-c",
+            'st_tok="$(curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" '
+            '"$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$AZURE_CLIENT_ID" | jq -er .access_token)" && '
+            f'curl -fsSL -H "Authorization: Bearer $st_tok" -H "x-ms-version: 2021-08-06" "{probe_url}" | bash',
+        ]
         container.pop("args", None)
         container.pop("imageType", None)
         cfg = job_doc["properties"]["configuration"]
@@ -479,7 +488,13 @@ def cmd_gpu_status(args: argparse.Namespace) -> int:
                 break
         if st != "Succeeded":
             try:
-                log_text = urllib.request.urlopen(log_upload_url, timeout=10).read().decode("utf-8", errors="replace")
+                log_text = fetch_blob_bytes(
+                    args.handoff_account,
+                    args.handoff_container,
+                    "quality/status/gpu-probe.log",
+                    token,
+                    timeout=10,
+                ).decode("utf-8", errors="replace")
                 print(f"=== GPU Probe Execution {ex_name} ({st}) Log ===\n{log_text}")
             except Exception as exc:
                 print(f"GPU Probe Execution {ex_name} ended with status={st} (no log retrieved: {exc})")
@@ -490,11 +505,15 @@ def cmd_gpu_status(args: argparse.Namespace) -> int:
         )
         cmd_restore(restore_ns)
 
-    diag_url = (
-        f"https://{args.handoff_account}.blob.core.windows.net/"
-        f"{args.handoff_container}/quality/status/gpu-diag.json?{sas}"
+    diag = json.loads(
+        fetch_blob_bytes(
+            args.handoff_account,
+            args.handoff_container,
+            "quality/status/gpu-diag.json",
+            token,
+            timeout=15,
+        )
     )
-    diag = json.loads(urllib.request.urlopen(diag_url, timeout=15).read())
     Path("/tmp/gpu-diag.json").write_text(json.dumps(diag, indent=2))
     if diag.get("config_xml_fix") or diag.get("cifs_repair") or diag.get("qwen_submit_summary"):
         print("=== Server Maintenance & Provisioning ===")
@@ -605,7 +624,6 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--shards", type=int, default=20, help="Number of shards in the campaign (default: 20)")
     st.add_argument("--handoff-account", default=DEFAULT_HANDOFF_ACCOUNT)
     st.add_argument("--handoff-container", default=DEFAULT_HANDOFF_CONTAINER)
-    st.add_argument("--handoff-sas", default=os.environ.get("HANDOFF_SAS", ""))
     st.add_argument("--server-status-url", default=DEFAULT_SERVER_STATUS_URL)
     st.add_argument("--wait", action="store_true", help="Poll until all shards reach state=done")
     st.add_argument("--poll-seconds", type=int, default=30, help="Polling interval in seconds when --wait is set")
@@ -632,7 +650,6 @@ def build_parser() -> argparse.ArgumentParser:
     gs.add_argument("--job-name", default=DEFAULT_BRIDGE_JOB)
     gs.add_argument("--handoff-account", default=DEFAULT_HANDOFF_ACCOUNT)
     gs.add_argument("--handoff-container", default=DEFAULT_HANDOFF_CONTAINER)
-    gs.add_argument("--handoff-sas", default=os.environ.get("HANDOFF_SAS", ""))
     gs.add_argument("--run-probe", action="store_true", help="Run a fresh server-side MySQL/share probe first")
     gs.set_defaults(func=cmd_gpu_status)
 

@@ -386,10 +386,7 @@ fn validate_readers_list(readers: &[ReaderSpec]) -> anyhow::Result<()> {
 }
 
 fn validate_function_words(words: &[String]) -> anyhow::Result<()> {
-    ensure!(
-        words.len() <= MAX_FUNCTION_WORDS,
-        "too many function words"
-    );
+    ensure!(words.len() <= MAX_FUNCTION_WORDS, "too many function words");
     for w in words {
         ensure!(
             !w.is_empty()
@@ -1262,11 +1259,7 @@ pub(crate) mod tests {
         j.id = j.identity().unwrap();
         j.validate().unwrap();
         assert_eq!(
-            j.pages[1]
-                .inputs
-                .page
-                .extract(&pages_blob, "page")
-                .unwrap(),
+            j.pages[1].inputs.page.extract(&pages_blob, "page").unwrap(),
             p2_jpg
         );
 

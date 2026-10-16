@@ -224,7 +224,9 @@ fn pack_bundles(page_dir: &Path, units_dir: &Path, bundle_size: usize) -> anyhow
             let p = entry.path();
             if p.join(JOB_FILE).exists() {
                 existing_bundles += 1;
-                if let Ok(job) = serde_json::from_slice::<Job>(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?) {
+                if let Ok(job) =
+                    serde_json::from_slice::<Job>(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?)
+                {
                     if job.pages.is_empty() {
                         bundled_docs.insert(job.doc_id);
                     } else {
@@ -266,9 +268,15 @@ fn pack_bundles(page_dir: &Path, units_dir: &Path, bundle_size: usize) -> anyhow
         Ok(())
     };
     for u in unbundled {
-        let p_len = std::fs::metadata(u.join(PAGE_FILE)).map(|m| m.len() as usize).unwrap_or(0);
-        let a_len = std::fs::metadata(u.join(ALTO_FILE)).map(|m| m.len() as usize).unwrap_or(0);
-        let t_len = std::fs::metadata(u.join(TEXTS_FILE)).map(|m| m.len() as usize).unwrap_or(0);
+        let p_len = std::fs::metadata(u.join(PAGE_FILE))
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let a_len = std::fs::metadata(u.join(ALTO_FILE))
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let t_len = std::fs::metadata(u.join(TEXTS_FILE))
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
         let over_size = !chunk.is_empty()
             && (chunk.len() >= bundle_size
                 || scan_bytes + p_len > MAX_BUNDLE_SCAN
@@ -615,25 +623,14 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
             places_bytes = Some(pl);
         }
 
-        let page_slice = BundleSlice::of(
-            page_blob.len() as u64,
-            &p_bytes,
-            &pj.inputs.page.source,
-        );
+        let page_slice = BundleSlice::of(page_blob.len() as u64, &p_bytes, &pj.inputs.page.source);
         page_blob.extend_from_slice(&p_bytes);
 
-        let alto_slice = BundleSlice::of(
-            alto_blob.len() as u64,
-            &a_bytes,
-            &pj.inputs.alto.source,
-        );
+        let alto_slice = BundleSlice::of(alto_blob.len() as u64, &a_bytes, &pj.inputs.alto.source);
         alto_blob.extend_from_slice(&a_bytes);
 
-        let texts_slice = BundleSlice::of(
-            texts_blob.len() as u64,
-            &t_bytes,
-            &pj.inputs.texts.source,
-        );
+        let texts_slice =
+            BundleSlice::of(texts_blob.len() as u64, &t_bytes, &pj.inputs.texts.source);
         texts_blob.extend_from_slice(&t_bytes);
 
         let ours = u_dir.join(OURS_ALTO_FILE);

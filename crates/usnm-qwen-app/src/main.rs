@@ -724,10 +724,9 @@ pub fn crop_png_for_loaded(l: &Loaded, c: &Crop) -> anyhow::Result<Vec<u8>> {
     if l.job.pages.is_empty() {
         crop_png(&l.page, c)
     } else {
-        let (doc, _) = c
-            .id
-            .split_once(':')
-            .context("bundle crop id missing doc_id prefix")?;
+        let (doc, _) =
+            c.id.split_once(':')
+                .context("bundle crop id missing doc_id prefix")?;
         let page = l
             .bundle_pages
             .get(doc)

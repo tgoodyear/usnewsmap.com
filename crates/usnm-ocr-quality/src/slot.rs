@@ -1312,13 +1312,10 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
             t.validate_readers(&p.readers)?;
             b_texts.push(t);
         }
-        let first = b_texts
-            .first()
-            .cloned()
-            .unwrap_or(Texts {
-                page: None,
-                readers: vec![],
-            });
+        let first = b_texts.first().cloned().unwrap_or(Texts {
+            page: None,
+            readers: vec![],
+        });
         (first, b_texts)
     };
     let places_bytes = read_bounded(&resolve_slot_file(work, PLACES_FILE), MAX_PLACES)?;
@@ -1473,10 +1470,7 @@ fn compute_with_deadline(
                     256,
                 );
                 let frac = existing.pages.len() as f64 / total_pages.max(1) as f64;
-                let _ = write_atomic(
-                    &work.join(FRACTION_FILE),
-                    format!("{frac:.6}\n").as_bytes(),
-                );
+                let _ = write_atomic(&work.join(FRACTION_FILE), format!("{frac:.6}\n").as_bytes());
             }
             existing
         }
@@ -1538,10 +1532,7 @@ fn compute_with_deadline(
         cp.pages.push(pr);
         let _ = cp.save(work);
         let frac = cp.pages.len() as f64 / total_pages.max(1) as f64;
-        let _ = write_atomic(
-            &work.join(FRACTION_FILE),
-            format!("{frac:.6}\n").as_bytes(),
-        );
+        let _ = write_atomic(&work.join(FRACTION_FILE), format!("{frac:.6}\n").as_bytes());
     }
 
     let _ = std::fs::remove_file(work.join(CHECKPOINT_FILE));
@@ -1913,11 +1904,17 @@ mod tests {
 
         let mut jpg1 = Vec::new();
         image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(32, 32, image::Luma([220])))
-            .write_to(&mut std::io::Cursor::new(&mut jpg1), image::ImageFormat::Jpeg)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg1),
+                image::ImageFormat::Jpeg,
+            )
             .unwrap();
         let mut jpg2 = Vec::new();
         image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(32, 32, image::Luma([200])))
-            .write_to(&mut std::io::Cursor::new(&mut jpg2), image::ImageFormat::Jpeg)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg2),
+                image::ImageFormat::Jpeg,
+            )
             .unwrap();
 
         let alto1 = br#"<?xml version="1.0" encoding="UTF-8"?>

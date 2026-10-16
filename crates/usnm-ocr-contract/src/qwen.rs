@@ -272,10 +272,9 @@ impl Job {
             if self.pages.is_empty() {
                 check_name(&c.id, "crop id")?;
             } else {
-                let (doc, cid) = c
-                    .id
-                    .split_once(':')
-                    .ok_or_else(|| anyhow::anyhow!("bundle crop id missing doc_id prefix"))?;
+                let (doc, cid) =
+                    c.id.split_once(':')
+                        .ok_or_else(|| anyhow::anyhow!("bundle crop id missing doc_id prefix"))?;
                 check_doc_id(doc)?;
                 check_name(cid, "crop id")?;
             }

@@ -177,6 +177,7 @@ mod tests {
             },
             k_crops: 4,
             language: "eng".into(),
+            pages: vec![],
             readers: texts
                 .readers
                 .iter()

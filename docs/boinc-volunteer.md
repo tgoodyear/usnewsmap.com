@@ -46,12 +46,12 @@ then review [resources, network and privacy](#4-resources-network-and-privacy).
 
 Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/usnewsmap/`):
 
-| Platform | Onboarding Script | Preview (Read-Only) | Apply & Attach |
-|---|---|---|---|
-| **Linux** (`x86_64` / `aarch64`) | `scripts/boinc/setup_volunteer.py` | `python3 scripts/boinc/setup_volunteer.py` | `sudo python3 scripts/boinc/setup_volunteer.py --apply` |
+| Platform                          | Onboarding Script                                          | Preview (Read-Only)                                                                                   | Apply & Attach                                                                              |
+| --------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **Linux** (`x86_64` / `aarch64`)  | `scripts/boinc/setup_volunteer.py`                         | `python3 scripts/boinc/setup_volunteer.py`                                                            | `sudo python3 scripts/boinc/setup_volunteer.py --apply`                                     |
 | **Proxmox VE LXC** (Debian 12 CT) | `contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh` | `DRY_RUN=1 ./contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>` | `./contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>` |
-| **macOS** (Apple Silicon & Intel) | `scripts/boinc/setup_mac_volunteer.py` | `python3 scripts/boinc/setup_mac_volunteer.py` | `python3 scripts/boinc/setup_mac_volunteer.py --apply --account-key <ACCOUNT_KEY>` |
-| **Windows** (`windows_x86_64`) | `scripts/boinc/setup_windows_volunteer.ps1` | `.\scripts\boinc\setup_windows_volunteer.ps1` | `.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc` |
+| **macOS** (Apple Silicon & Intel) | `scripts/boinc/setup_mac_volunteer.py`                     | `python3 scripts/boinc/setup_mac_volunteer.py`                                                        | `python3 scripts/boinc/setup_mac_volunteer.py --apply --authenticator <AUTHENTICATOR>`      |
+| **Windows** (`windows_x86_64`)    | `scripts/boinc/setup_windows_volunteer.ps1`                | `.\scripts\boinc\setup_windows_volunteer.ps1`                                                         | `.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc`                          |
 
 ### Workunit Sizing & Per-Page / Per-Crop Checkpointing
 

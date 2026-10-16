@@ -717,7 +717,10 @@ fn read_crops(
                 cp.readings.push(r);
                 let _ = cp.save(work);
                 let frac = (idx + 1) as f64 / (job.crops.len().max(1)) as f64;
-                let _ = atomic(&work.join("fraction_done"), format!("{frac:.4}\n").as_bytes());
+                let _ = atomic(
+                    &work.join("fraction_done"),
+                    format!("{frac:.4}\n").as_bytes(),
+                );
             }
             Err(e) => {
                 if e.root_cause().is::<TimedOut>() {

@@ -237,9 +237,10 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Project URL (default: {DEFAULT_PROJECT_URL})",
     )
     parser.add_argument(
-        "--account-key",
+        "--authenticator",
+        dest="account_key",
         default=None,
-        help="Optional BOINC account key to attach the host automatically when --apply is set",
+        help="Optional BOINC account authenticator to attach the host automatically when --apply is set",
     )
     parser.add_argument(
         "--apply",
