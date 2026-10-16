@@ -133,7 +133,8 @@ def main():
     process = start(True)
     try:
         sql("CREATE DATABASE fixture; CREATE USER 'fixture'@'127.0.0.1' IDENTIFIED BY 'fixture-only'; "
-            "GRANT ALL ON fixture.* TO 'fixture'@'127.0.0.1';")
+            "GRANT ALL ON fixture.* TO 'fixture'@'127.0.0.1'; "
+            "GRANT ALL ON boinc_fixture.* TO 'fixture'@'127.0.0.1';")
         print(json.dumps({
             "server": sql("SELECT VERSION()"),
             "require_secure_transport": True,
@@ -143,6 +144,7 @@ def main():
             "python_client": run("python3", "-c", "import MySQLdb; print(MySQLdb.get_client_info())").stdout.strip(),
             "cpp_client": run("mariadb_config", "--cc_version").stdout.strip(),
         }), flush=True)
+        print(run("python3", "/checks/schema.py", "--create").stdout.strip(), flush=True)
         matrix("valid", True)
         matrix("wrong-hostname", False, "wrong-db.test")
         shutil.copyfile(ROOT / "wrong-ca.pem", CA)
@@ -171,6 +173,7 @@ def main():
     process = start(True)
     try:
         matrix("tls-restart", True)
+        print(run("python3", "/checks/schema.py").stdout.strip(), flush=True)
     finally:
         stop(process)
     print(json.dumps({"result": "PASS", "scope": "pinned-connectors; not full project lifecycle/migration"}))

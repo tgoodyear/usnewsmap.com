@@ -42,6 +42,12 @@ uniquely named container on exit. The local image/cache remains reusable.
 
 The server starts with `require_secure_transport=ON`. Each of the five consumers
 must report a real nonempty `SHOW SESSION STATUS LIKE 'Ssl_cipher'` result.
+The actual `Boinc.database.create_database` routine used by `make_project` also
+creates a separate synthetic BOINC schema from the pinned `schema.sql`,
+`constraints.sql` and `content.sql` over verified TLS. It checks the core tables
+and initial consent rows, then verifies them again after the database restarts.
+Only the upstream Python build-path template is rendered; database code and SQL
+are not rewritten.
 
 1. Trusted synthetic CA and SAN `tls-db.test`: all five connect encrypted.
 2. Reachable `wrong-db.test` aliases the same server but is absent from the SAN:
@@ -80,9 +86,10 @@ fail-closed behavior; it is not a substitute for the Docker integration run.
 
 ## Remaining release gates
 
-This demonstrates actual **local MariaDB connector** enforcement and verified
-transport. It is not Azure MySQL 8.4/rotating Azure-chain acceptance, full project
-initialization, public PHP/scheduler RPC or every daemon's runtime session.
+This demonstrates actual **local MariaDB connector** enforcement, stock database
+schema creation and verified transport. It is not Azure MySQL 8.4/rotating
+Azure-chain acceptance, full project installation, public PHP/scheduler RPC or
+every daemon's runtime session.
 Database restart/reconnection is not a persisted BOINC project migration:
 existing completed projects retain copied Python/PHP/binaries, so replacement,
 hash inventory, full lifecycle and rollback still need separate acceptance.
