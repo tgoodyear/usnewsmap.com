@@ -323,6 +323,18 @@ and no assignment/backpressure bypass or client-preference change made.
 Current-image canonical campaign acceptance, independently held-out material
 and the fresh Mac OCR lifecycle remain separate gates.
 
+The production inventory on 16 October found 18 canonical Gold reports, all
+with `boinc.engine_image` equal to the historical `9c8eac04...`, including the
+newly observed host 8 result. Registered Linux Gold versions 1.0, 1.1 and 1.2
+all referenced `Dockerfile_1`, whose published contents still pinned that old
+worker. Updating campaign metadata or `images.worker` does not update an
+already signed application. A current-image campaign therefore needs a new
+immutable signed Gold app version as well as matching job metadata. Gold
+1.3 is prepared for Linux x86_64 `docker`, pinned to the measured `80bf2d65...`;
+preparation alone is not registration, canonical execution or trust promotion.
+Its publication does not authorize additional workunits or change the source,
+assignment, backlog or trust gates.
+
 ## Licensing
 
 The library believes the newspapers in Chronicling America are in the public domain or have no known copyright restrictions, and that those published more than 95 years ago are in the public domain in their entirety; newer ones may hold copyrighted third-party material ([Rights and Access](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/)). Pages in the sample run to 1963, so in 2026 crops from pages published in 1931 or later carry that caveat. Transcriptions are original work and go in under the repository's licence.
