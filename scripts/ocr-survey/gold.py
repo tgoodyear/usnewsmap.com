@@ -888,6 +888,13 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
                 repaired = string_rect(box, block_rect, c)
                 if repaired:
                     valid.append(repaired)
+        if valid:
+            x0 = min(x for x, _, _, _ in valid)
+            y0 = min(y for _, y, _, _ in valid)
+            x1 = max(x + ww for x, _, ww, _ in valid)
+            y1 = max(y + h for _, y, _, h in valid)
+            if not plausible((x0, y0, x1 - x0, y1 - y0), block_rect, text):
+                valid = []
         if not valid and plausible(line_rect, block_rect, text):
             valid = [line_rect]
         if not valid and text.strip():

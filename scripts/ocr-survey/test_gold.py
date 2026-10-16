@@ -365,6 +365,15 @@ class Overproof(unittest.TestCase):
         </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
         self.assertEqual(gold.alto_lines(xml, 400), [{"text": "Text", "box": [10, 10, 210, 30]}])
 
+    def test_combined_string_bounds_use_textline_fallback(self):
+        xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="1000"><PrintSpace>
+        <TextBlock HPOS="10" VPOS="0" WIDTH="300" HEIGHT="1000">
+        <TextLine HPOS="10" VPOS="500" WIDTH="200" HEIGHT="20">
+        <String HPOS="10" VPOS="500" WIDTH="80" HEIGHT="20" CONTENT="near"/>
+        <String HPOS="110" VPOS="10" WIDTH="80" HEIGHT="20" CONTENT="far"/>
+        </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
+        self.assertEqual(gold.alto_lines(xml, 400), [{"text": "near far", "box": [10, 500, 210, 520]}])
+
     def test_text_only_rows_validate(self):
         p = {"page_id": "overproof-smh-1", "region": "1", "text": "Some text", "box": None, "image": None}
         m, t = gold.public_rows("overproof-smh", p, 1, None, None, None, None)
