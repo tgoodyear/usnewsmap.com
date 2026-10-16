@@ -34,17 +34,17 @@ Environment=XDG_RUNTIME_DIR=/run/usnm-ocr-worker
 EnvironmentFile=/etc/usnm/ocr-worker.env
 # Local changes (RUST_LOG, say), read after it and never written by a script.
 EnvironmentFile=-/etc/usnm/ocr-worker.local.env
-ExecStart=/usr/local/bin/usnm-ocr-worker run
-# On stop, SIGTERM goes to the worker alone (mixed), so the engine keeps
-# running while the worker gives in-flight pages 60 s (its default
-# --shutdown-grace-secs), then flushes telemetry for at most 30 s. 120 s
-# covers both; then systemd kills what's left, and those pages reappear
-# when their visibility runs out. A longer grace needs a longer timeout.
+ExecStart=/usr/local/bin/usnm-ocr-worker run --drain-on-stop
+# On stop, SIGTERM goes to the worker alone (mixed). It stops taking pages
+# and gives in-flight pages their configured page timeout (1,200 s on the
+# production nodes), then flushes telemetry for at most 30 s. 1,260 s covers
+# both; then systemd kills what's left, and those pages reappear when their
+# visibility runs out.
 # Engine containers run under usnmeng, outside this unit's cgroup; the
 # worker removes a page's container when it gives the page up, and
 # removes exited ones it left behind when it starts.
 KillMode=mixed
-TimeoutStopSec=120
+TimeoutStopSec=1260
 Restart=on-failure
 RestartSec=30
 # Its JSON lines reach syslog on local0, which the Azure Monitor Agent

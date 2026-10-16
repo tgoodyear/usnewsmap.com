@@ -1260,6 +1260,26 @@ impl Engine for ContractEngine {
         self.profile(language).is_some()
     }
 
+    fn routes(&self) -> BTreeMap<String, String> {
+        let mut routes = BTreeMap::new();
+        for profile in &self.hello.profiles {
+            for language in &profile.languages {
+                if self.profile(language) == Some(profile.id.as_str()) {
+                    routes.insert(language.clone(), profile.id.clone());
+                }
+            }
+        }
+        routes
+    }
+
+    fn models(&self) -> Vec<String> {
+        self.hello
+            .models
+            .iter()
+            .map(|model| model.name.clone())
+            .collect()
+    }
+
     fn dpi(&self) -> u32 {
         self.opts.dpi
     }

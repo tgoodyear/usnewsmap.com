@@ -330,7 +330,7 @@ After=dnf-automatic.service
 Type=oneshot
 ExecStart=/usr/local/sbin/usnm-ocr-reboot-if-needed --drain-timeout 1260
 # A oneshot has no start timeout by default; the script bounds itself at
-# 51 minutes (30 waiting for dnf-automatic, 21 stopping), so this is a
+# 52 minutes (30 waiting for dnf-automatic, 22 stopping), so this is a
 # backstop above that.
 TimeoutStartSec=1h
 SyslogIdentifier=usnm-ocr-reboot' && reboot_changed=true

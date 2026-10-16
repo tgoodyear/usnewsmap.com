@@ -20,7 +20,8 @@
 #      usnm-ocr-reboot.service already running, so a window can't reboot
 #      the node mid-offboard; their units and script are removed), the
 #      nightly worker update (usnm-ocr-update.timer, its service and
-#      scripts, #471) and dnf-automatic.timer, then usnm-ocr-worker.service; removes the
+#      scripts, #471) and dnf-automatic.timer, then stops the worker and
+#      waits for its planned-stop drain before disabling it; removes the
 #      engine runtime (ADR-0016: the
 #      engine account usnmeng with its containers, images and subordinate
 #      ids, its Podman API units, the cgroup delegation, the scratch tmpfs
@@ -248,7 +249,13 @@ rm -rf /var/lib/usnm-ocr-reboot /var/lib/usnm-ocr-update /usr/local/libexec/usnm
 systemctl daemon-reload'
 # shellcheck disable=SC2016 # expanded on the node
 REMOTE=''"$UPDATES_REMOVE"'
-systemctl disable --now usnm-ocr-worker.service 2> /dev/null || true
+if systemctl is-active --quiet usnm-ocr-worker.service; then
+  systemctl stop usnm-ocr-worker.service || {
+    echo "error: worker did not stop cleanly; refusing to remove its engine runtime" >&2
+    exit 1
+  }
+fi
+systemctl disable usnm-ocr-worker.service 2> /dev/null || true
 '"$ENGINE_REMOVE"'
 if ! command -v azcmagent > /dev/null; then
   echo "no Connected Machine agent"
@@ -281,7 +288,8 @@ fi'
 if [ -z "$HOST" ]; then
   echo "no --host; if the node still exists, run on it as root:"
   printf '%s\n' "$UPDATES_REMOVE" | while IFS= read -r line; do echo "  $line"; done
-  echo "  systemctl disable --now usnm-ocr-worker.service"
+  echo "  systemctl stop usnm-ocr-worker.service  # drains in-flight pages"
+  echo "  systemctl disable usnm-ocr-worker.service"
   printf '%s\n' "$ENGINE_REMOVE" | while IFS= read -r line; do echo "  $line"; done
   echo "  systemctl stop extd"
   echo "  azcmagent extension remove --all"

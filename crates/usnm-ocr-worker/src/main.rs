@@ -285,6 +285,10 @@ enum Command {
         /// abandoned (they reappear when their visibility runs out).
         #[arg(long, default_value_t = 60)]
         shutdown_grace_secs: u64,
+        /// On planned stops, stop taking pages and give in-flight pages
+        /// their configured page timeout before abandoning them.
+        #[arg(long)]
+        drain_on_stop: bool,
         /// Also publish the scan server's fetched list for this prefetch
         /// manifest version to `ocr-out/fetched/` every
         /// --publish-every-secs, for the seeder (12 Step 11). Needs
@@ -677,6 +681,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             scan_cache_url,
             visibility_secs,
             shutdown_grace_secs,
+            drain_on_stop,
             publish_fetched,
             publish_every_secs,
             status_listen,
@@ -702,6 +707,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 once,
                 visibility: Duration::from_secs(visibility_secs),
                 shutdown_grace: Duration::from_secs(shutdown_grace_secs),
+                drain_on_stop,
+                page_timeout: Duration::from_secs(engine.page_timeout_secs),
                 ..Config::default()
             };
             if Duration::from_secs(engine.page_timeout_secs) >= cfg.budget() {
@@ -746,6 +753,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                         version: VERSION.clone(),
                         concurrency: u32::try_from(cfg.concurrency).unwrap_or(u32::MAX),
                         engine: engine.source().to_owned(),
+                        models: engine.models(),
+                        routes: engine.routes(),
                         scan_cache_url: scan_cache_url.clone(),
                     },
                     status_journal.filter(|p| !p.as_os_str().is_empty()),
