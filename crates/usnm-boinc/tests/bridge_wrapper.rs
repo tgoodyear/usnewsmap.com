@@ -80,3 +80,67 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
         assert_eq!(calls.contains("\nsubmit --root"), submits, "{calls}");
     }
 }
+
+#[test]
+fn gold_mirror_loc_dispatch_never_fetches_secrets_or_submits_work() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let calls = root.join("calls");
+    let library = root.join("lib.sh");
+    std::fs::write(
+        &library,
+        format!(
+            "PROJ='{}/project'\nfetch_secrets() {{ exit 91; }}\nrender_config() {{ exit 92; }}\n\
+         log() {{ echo \"$*\" >&2; }}\nfail() {{ log \"$*\"; exit 1; }}\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let stub = bin.join("usnm-boinc");
+    std::fs::write(
+        &stub,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n", calls.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contrib-compute/images/server/bridge-job.sh"),
+    )
+    .unwrap()
+    .replace(
+        ". /usr/local/lib/usnm-boinc/lib.sh",
+        &format!(". '{}'", library.display()),
+    )
+    .replace("[ -e \"$PROJ/.usnm-initialised\" ] ||", "true ||");
+    let wrapper = root.join("bridge-job.sh");
+    std::fs::write(&wrapper, script).unwrap();
+    let out = std::process::Command::new("bash")
+        .arg(wrapper)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("BRIDGE_STEP", "gold-mirror-loc")
+        .env("GOLD_CAMPAIGN", "v1-tess550")
+        .env("PROJECT_DIR", &root)
+        .env("SHARE_DIR", &root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(calls).unwrap().trim(),
+        format!(
+            "gold mirror-loc --root {}/gold/v1-tess550 --project {}/project",
+            root.display(),
+            root.display()
+        )
+    );
+}
