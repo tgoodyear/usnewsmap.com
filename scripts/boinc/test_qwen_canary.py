@@ -26,7 +26,7 @@ class SchedulerRefresh(unittest.TestCase):
         self.root = Path(self.folder.name)
         self.source = self.root / "image-cgi"
         self.target = self.root / "project-cgi"
-        self.source.write_bytes(b"reviewed scheduler batch and consent gates\n")
+        self.source.write_bytes(b"reviewed scheduler batch and cohort gates\n")
         self.source.chmod(0o755)
         self.target.write_bytes(b"old scheduler\n")
 
@@ -87,6 +87,90 @@ class SchedulerRefresh(unittest.TestCase):
 
 
 class CanaryPreferences(unittest.TestCase):
+    def test_all_shipped_user_surfaces_describe_one_project_participation_policy(self):
+        for name in (
+            "scripts/boinc/setup_windows_volunteer.ps1",
+            "docs/boinc-volunteer.md",
+            "contrib-compute/boinc/html/user/about.php",
+        ):
+            with self.subTest(name=name):
+                source = (ROOT / name).read_text()
+                self.assertIn("production and experimental", source)
+                self.assertNotIn("qwen_native_cuda_canary", source)
+                self.assertIn("CPU/GPU", source)
+        scheduler = (ROOT / "scripts/boinc/patch-server-apple-gpu.py").read_text()
+        self.assertNotIn("qwen_native_cuda_canary", scheduler)
+        driver = (ROOT / "crates/usnm-qwen-app/src/main.rs").read_text()
+        self.assertNotIn("qwen_native_cuda_canary", driver)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP required")
+    def test_operator_cohort_has_one_exact_workunit_stop_and_durable_preview(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        plans = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
+        with tempfile.TemporaryDirectory(prefix=".qwen-cohort-", dir=ROOT) as folder:
+            result = subprocess.run(
+                ["php", "-d", "zend.assertions=1", "-d", "assert.exception=1", "-r", r"""
+require $argv[1];
+$xml = file_get_contents($argv[2]);
+$project = $argv[3];
+file_put_contents("$project/plan_class_spec.xml", $xml);
+$preview = native_qwen_cohort_write($project, "nvidia_cuda_2b", 100, false);
+assert(file_get_contents("$project/plan_class_spec.xml") === $xml);
+assert(!is_dir("$project/ops-issue-559"));
+$applied = native_qwen_cohort_write($project, "nvidia_cuda_2b", 100, true);
+assert(is_file($applied["journal"]));
+$journal = json_decode(file_get_contents($applied["journal"]), true);
+assert($journal["original_xml"] === $xml);
+$updated = simplexml_load_file("$project/plan_class_spec.xml");
+$original = simplexml_load_string($xml);
+foreach ($updated->plan_class as $node) {
+    $name = (string)$node->name;
+    if ($name === "nvidia_cuda_2b") {
+        assert((string)$node->min_wu_id === "100" && (string)$node->max_wu_id === "100");
+    } elseif ($name === "nvidia_cuda_8b") {
+        assert((string)$node->min_wu_id === "2" && (string)$node->max_wu_id === "1");
+    } else {
+        $matching = $original->xpath("plan_class[name='$name']");
+        assert($node->asXML() === $matching[0]->asXML());
+    }
+}
+native_qwen_cohort_write($project, "nvidia_cuda_8b", 101, true);
+native_qwen_cohort_write($project, "nvidia_cuda_2b", 0, true);
+$closed = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($closed->plan_class as $node) {
+    if (in_array((string)$node->name, ["nvidia_cuda_2b","nvidia_cuda_8b"], true)) {
+        assert((int)$node->min_wu_id > (int)$node->max_wu_id);
+    }
+}
+assert(count(glob("$project/.native-qwen-cohort-*")) === 0);
+$wu = (object)["batch"=>2,"rsc_disk_bound"=>12884901888,"min_quorum"=>2,
+    "target_nresults"=>2,"canonical_resultid"=>0,"error_mask"=>0];
+$results = [(object)["server_state"=>2,"sent_time"=>0],(object)["server_state"=>2,"sent_time"=>0]];
+native_qwen_cohort_validate($wu, $results, "nvidia_cuda_2b");
+foreach (["batch"=>12,"rsc_disk_bound"=>34359738368,"min_quorum"=>1,
+    "target_nresults"=>3,"canonical_resultid"=>10,"error_mask"=>1] as $key=>$value) {
+    $bad = clone $wu; $bad->$key = $value; $refused = false;
+    try { native_qwen_cohort_validate($bad, $results, "nvidia_cuda_2b"); }
+    catch (RuntimeException $e) { $refused = true; }
+    assert($refused);
+}
+$results[0]->server_state = 4;
+$refused = false;
+try { native_qwen_cohort_validate($wu, $results, "nvidia_cuda_2b"); }
+catch (RuntimeException $e) { $refused = true; }
+assert($refused);
+$wu->batch = 8; $wu->rsc_disk_bound = 19327352832; $results[0]->server_state = 2;
+native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b");
+foreach ($results as $row) $row->sent_time = 1;
+$refused = false;
+try { native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b"); }
+catch (RuntimeException $e) { $refused = true; }
+assert($refused);
+""", str(helper), str(plans), folder],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell required")
     def test_windows_checksum_append_is_portable_ascii_lf(self):
         workflow = (ROOT / ".github/workflows/boinc-quality-native.yml").read_text()
@@ -137,7 +221,7 @@ class CanaryPreferences(unittest.TestCase):
             MODULE.extend_stock(source + "\nfunction project_specific_prefs_show() {}")
 
     @unittest.skipUnless(shutil.which("php"), "PHP required")
-    def test_authenticated_form_defaults_denies_exact_opt_in_and_preserves_stock(self):
+    def test_project_participation_ignores_legacy_flags_and_preserves_stock(self):
         with tempfile.TemporaryDirectory(prefix=".qwen-canary-test-", dir=ROOT) as folder:
             folder = Path(folder)
             shutil.copyfile(
@@ -157,31 +241,24 @@ function row_defs($label, $key, $a, $b, $prefs) { echo $key; }
                 ["php", "-d", "zend.assertions=1", "-d", "assert.exception=1", "-r", """
 require $argv[1];
 assert(str_contains(project_specific_prefs_default(), '<max_jobs>1</max_jobs>'));
-assert(str_contains(project_specific_prefs_default(), '<qwen_native_cuda_canary>0</qwen_native_cuda_canary>'));
-foreach (['', '0', 'true', '01', ' 1', '1 ', '2'] as $bad) {
-    assert(project_specific_prefs_parse('<qwen_native_cuda_canary>'.$bad.'</qwen_native_cuda_canary>')->qwen_native_cuda_canary === 0);
+assert(!str_contains(project_specific_prefs_default(), 'qwen_native_cuda_canary'));
+foreach (['', '0', '1', 'true', '01', ' 1', '1 ', '2'] as $old) {
+    $prefs = project_specific_prefs_parse('<qwen_native_cuda_canary>'.$old.'</qwen_native_cuda_canary>');
+    assert(!isset($prefs->qwen_native_cuda_canary) && $prefs->max_jobs === 1);
 }
-$prefs = project_specific_prefs_parse('<qwen_native_cuda_canary>1</qwen_native_cuda_canary>');
-assert($prefs->qwen_native_cuda_canary === 1 && $prefs->max_jobs === 1);
 $error = new stdClass;
-foreach ([[], ['qwen_native_cuda_canary'=>'0'], ['qwen_native_cuda_canary'=>['1']]] as $get) {
+foreach ([[], ['qwen_native_cuda_canary'=>'0'], ['qwen_native_cuda_canary'=>'1'], ['qwen_native_cuda_canary'=>['1']]] as $get) {
     $_GET = $get;
-    assert(project_specific_prefs_parse_form($error) === '<max_jobs>1</max_jobs><qwen_native_cuda_canary>0</qwen_native_cuda_canary>'."\\n");
+    assert(project_specific_prefs_parse_form($error) === '<max_jobs>1</max_jobs>');
 }
-$_GET = ['qwen_native_cuda_canary'=>'1'];
-assert(str_contains(project_specific_prefs_parse_form($error), '<qwen_native_cuda_canary>1</qwen_native_cuda_canary>'));
 ob_start(); project_specific_prefs_edit($prefs); $edit = ob_get_clean();
-assert(str_contains($edit, 'stock_edit') && str_contains($edit, ' checked'));
-assert($GLOBALS["row2_label"] === '<label for="qwen_native_cuda_canary">'.QWEN_CANARY_LABEL.'</label>');
-assert(str_contains($edit, 'id="qwen_native_cuda_canary"'));
-$prefs->qwen_native_cuda_canary = 0;
-ob_start(); project_specific_prefs_edit($prefs); $edit = ob_get_clean();
-assert(!str_contains($edit, ' checked'));
-$prefs->qwen_native_cuda_canary = 1;
+assert(str_contains($edit, 'stock_edit') && str_contains($edit, 'production and experimental'));
+assert(!str_contains($edit, 'qwen_native_cuda_canary'));
+assert(str_contains($edit, 'normal CPU/GPU choices'));
 ob_start(); project_specific_prefs_show($prefs); $show = ob_get_clean();
-assert($show === 'stock_showyes');
+assert($show === 'stock_show');
 ob_start(); project_specific_prefs_show($prefs, true); $show = ob_get_clean();
-assert($show === 'stock_showqwen_native_cuda_canary');
+assert($show === 'stock_show');
 """, str(folder / "project_specific_prefs.inc")],
                 capture_output=True, text=True,
             )

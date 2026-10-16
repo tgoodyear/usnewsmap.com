@@ -30,21 +30,40 @@ or signature checks to include them.
 
 ### Native NVIDIA experimental canary
 
-Native `nvidia_cuda_2b` and `nvidia_cuda_8b` are experimental and default-deny:
-the scheduler requires the account's **effective venue** project preference
-`qwen_native_cuda_canary` to equal exactly `1`. Absent, false, or malformed
-preferences do not enroll anyone. The authenticated project preferences page
-(`prefs.php?subset=project`) exposes an unchecked opt-in checkbox; volunteers
-must explicitly save it for the venue used by their host. Unchecking it stops
-future canary assignments, not already assigned tasks. Existing stock application
-selection, CPU/job limits, other preferences and venue editing remain available.
-No operator should silently enroll accounts or edit authenticators.
+Normal project participation includes production and experimental tasks,
+including native `nvidia_cuda_2b` and `nvidia_cuda_8b`. There is no Qwen-specific
+account flag, enrollment step, or repeat profile update. Old stored
+`qwen_native_cuda_canary` values are ignored; do not rewrite account rows.
+Normal effective-venue CPU/GPU choices, resource limits, pause and No new tasks
+controls remain authoritative. Do not enable GPUs or change volunteers' preferences.
 
 Rebuild the BOINC **base and server** through `build-boinc-images.sh` before
-enabling this release. The scheduler patch checks the untrimmed preference in
-the effective-venue buffer, before stock `parse_str()` strips whitespace.
-An XML-only rollout on an old scheduler is insufficient. The base cache key
-includes the patch, so the normal build pipeline will invalidate it.
+enabling this policy. Removing only the web control or XML tag is insufficient:
+the older CGI contains an additional account-flag check. The base cache key
+includes its removal. Verify actual served CGI/image hashes after rollout.
+
+Native NVIDIA campaigns remain operator-bounded, independently of user profiles.
+Shipped plan classes have an impossible WU interval (`min_wu_id=2`, `max_wu_id=1`),
+so publishing a version does not broadly release unvalidated work. After staging
+one audited native workunit through the existing CLI, preview then apply:
+
+```sh
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class nvidia_cuda_2b --workunit ID
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class nvidia_cuda_2b --workunit ID --apply
+# Operator stop: closes BOTH NVIDIA classes, without canceling in-flight results.
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --stop --apply
+```
+
+The helper validates Qwen identity, native model batch/disk bound, independent
+quorum/target 2 and two unsent results, journals the old plan, then atomically
+opens exactly one WU in one class and closes the other. It does not create work,
+modify scientific/account rows, or change resource choices. The unchanged stock
+scheduler range/batch checks enforce the window. Runtime reinitialization or
+deployment copies the closed shipped template: re-audit before reopening, rather
+than assuming an old campaign stayed enabled. Stop immediately after the bounded
+cohort; widening to general unvalidated dispatch is not this helper's scope.
 
 These native-only classes admit stable BOINC 8.2.11+; unlike containers they do
 not need the 8.2.13 container extension. They require a CUDA 12.4-capable NVIDIA driver (the pinned
@@ -76,8 +95,8 @@ project CGI is a copy, not necessarily a link to the new image's executable.
 Server startup atomically refreshes it from the reviewed image before serving,
 preserving already-running CGI requests. Verify the project CGI SHA256 matches
 `/usr/local/boinc/sched/cgi` after the single-active-revision rollout; otherwise
-old batch/consent code can silently prevent or misroute dispatch.
-Inventory opted-in eligible hosts without publishing identities. Initially stage
+old batch/account-gate code can silently prevent or misroute dispatch.
+Inventory ordinarily eligible participating hosts without publishing identities. Initially stage
 at most **one** audited workunit with two independent results, digest-qualified
 sticky models, the correct native target and existing idempotency journal.
 Record exact workunit/result IDs, then stop submitting until the results have been
@@ -85,7 +104,7 @@ examined. Do not reduce independent quorum to make a single volunteer pass.
 Collect BOINC exit status, bounded stderr, backend/model/runtime identities and
 available resource diagnostics; report missing measurements rather than inferring
 successful CUDA execution from registration. Do not run arbitrary commands on
-volunteers or broaden enrollment to bypass missing hardware/consent.
+volunteers or override CPU/GPU/resource choices to bypass missing hardware.
 
 Native failures write a nonzero `boinc_finish_called` and exit nonzero, so the
 ordinary BOINC UI can show **Computation error**. A fixed-schema, bounded
@@ -104,8 +123,9 @@ is part of the onboarding flow.
 #### Production delivery snapshot (2026-10-16)
 
 The coherent runtime from `00fbdd96` was deployed after paired-pin PR #648:
-the served CGI matches the image, the normal opt-in preference defaults off,
-and the public About/footer changes are present. Signed Windows native version
+the served CGI matched the image and the public About/footer changes were present.
+That earlier rollout used an experiment flag; the new project-participation policy
+removes it and requires a fresh coordinated runtime rollout. Signed Windows native version
 1.3 is registered as app versions 18 (`nvidia_cuda_2b`) and 19
 (`nvidia_cuda_8b`). Each complete 38-file application payload is
 1,122,771,473 bytes, excluding the separately staged model weights. All 76
@@ -114,9 +134,9 @@ drivers' signatures and anonymous full driver/lock downloads were also checked.
 Large DLLs were not downloaded again merely to repeat those checks.
 
 This is **publication**, not Windows GPU or failure-report acceptance. The
-inventoried Windows GPU host has not opted in; neither native version has an
-assigned result. Do not force consent or submit a native canary without an
-eligible explicitly consenting host. Real GPU inference, ordinary server receipt
+native versions had no assigned results at that snapshot. No extra experiment
+opt-in is now required; use an ordinarily eligible host with its existing GPU choice
+honored and the operator's bounded window deployed. Real GPU inference, ordinary server receipt
 of the bounded failure summary, and isolated live disk-only rejection remain
 open acceptance items in #559. The earlier CPU quorum canary 74 is independent
 evidence, not a substitute for these Windows checks.

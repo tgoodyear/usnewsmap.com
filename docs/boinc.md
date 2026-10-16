@@ -1,6 +1,11 @@
 # BOINC batch pilot
 
 An opt-in worker pool for trusted friends, alongside the on-prem OCR nodes.
+Joining the project includes production and experimental tasks, including Qwen,
+under the same normal CPU/GPU choices and resource limits. There is no separate
+experiment account flag or repeated profile update. Operators bound experimental
+campaigns server-side; the native NVIDIA workunit window and stop procedure are
+documented in [app release](../contrib-compute/docs/app-release.md).
 Design issue: [#438](https://github.com/tgoodyear/usnewsmap.com/issues/438).
 The pilot uses stock BOINC, one cached page per task, and the repository's
 Tesseract 5.5.0/model lock and language routing. It publishes native ALTO and
