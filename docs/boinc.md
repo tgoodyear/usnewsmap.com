@@ -280,7 +280,9 @@ identity on the deployed filesystem.
 
 The server bridge wrapper submits directly and preserves the CLI's exit status.
 It does not scan the download or hand-off trees to broaden permissions after
-submission. Operator hand-offs need access to the private journal's owner.
+submission. The hand-off directory (`$HANDOFF_DIR`) stays private: `submit` and
+`reconcile` run as the same user, and nothing reads that directory under another
+identity. Operator hand-offs therefore need access to the journal owner's files.
 Deploy the updated bridge image containing both this CLI and wrapper together.
 
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
