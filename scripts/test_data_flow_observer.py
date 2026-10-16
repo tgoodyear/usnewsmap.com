@@ -124,8 +124,8 @@ class Observer(unittest.TestCase):
                        coverage=["Bounded local sample; not a full inventory"],
                        issues=[{"code": "size_mismatch", "detail": "One local file has an unexpected size."}],
                        stages=[
-                           observer.stage("runs", "Runs", 4, "2026-10-14T12:00:00Z", ""),
-                           observer.stage("artifacts", "Artifacts", 10, "2026-10-15T12:00:00Z", ""),
+                           observer.stage("runs", "Runs", 2, "2026-10-14T12:00:00Z", ""),
+                           observer.stage("artifacts", "Artifacts", 3, "2026-10-15T12:00:00Z", ""),
                        ])
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.json"
@@ -139,6 +139,23 @@ class Observer(unittest.TestCase):
         self.assertIn("partial", value["coverage"][0])
         self.assertIn("Bounded local sample; not a full inventory", value["coverage"])
         self.assertIn("size_mismatch", [issue["code"] for issue in value["issues"]])
+        self.assertEqual(value["artifacts"]["locations"], 10)
+        self.assertEqual(next(s for s in value["stages"] if s["id"] == "artifact_verified")["count"], 1)
+
+    def test_combined_inventory_retains_mandatory_stages_within_dashboard_budget(self):
+        apps = b"".join(
+            f"<app><name>usnm_app{index}</name><unsent>2</unsent><in_progress>1</in_progress></app>".encode()
+            for index in range(28))
+        body = XML.replace(XML[XML.index(b"<app>"):XML.index(b"</app>") + 6], apps)
+        events = [{"source": "local", "stage": item}
+                  for item in observer.local_stages(self.local(), NOW)]
+        events += [{"source": "boinc", "stage": item} for item in observer.boinc_stages(body, NOW)]
+        value = observer.snapshot(events, [], NOW)
+        self.assertEqual(len(value["stages"]), 64)
+        for identifier in ("boinc_unsent", "boinc_in_progress", "scan_cached",
+                           "scan_planned", "scan_remaining", "accepted", "artifact_verified"):
+            self.assertIn(identifier, [item["id"] for item in value["stages"]])
+        self.assertIn("stage-detail-truncated", [issue["code"] for issue in value["issues"]])
 
     def test_runs_only_catalog_does_not_turn_unknown_artifacts_into_zero(self):
         catalog = observer.snapshot([], [], NOW)

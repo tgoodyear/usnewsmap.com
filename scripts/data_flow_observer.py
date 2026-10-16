@@ -233,6 +233,23 @@ def snapshot(events, failures, now=None):
         stages.append({"id": identifier, "label": label, "count": None,
                        "state": "unknown", "observed_at": None,
                        "detail": "Source adapter not connected; aggregate status cannot establish this stage."})
+    mandatory = {"scan_cached", "scan_planned", "scan_remaining", "boinc_unsent",
+                 "boinc_in_progress", "artifact_verified", "run_history",
+                 "accepted", "imported", "indexed"}
+    room = 64 - sum(item["id"] in mandatory for item in stages)
+    retained = []
+    for item in stages:
+        if item["id"] in mandatory:
+            retained.append(item)
+        elif room:
+            retained.append(item)
+            room -= 1
+    omitted = len(stages) - len(retained)
+    stages = retained
+    issues = list(failures)
+    if omitted:
+        issues.append({"code": "stage-detail-truncated",
+                       "detail": f"Omitted {omitted} worker/application detail stages to fit the dashboard limit; source totals are retained."})
     return {
         "schema_version": 1, "observed_at": utc(at) if at else None,
         "generated_at": utc(now), "producer": "corpus-catalog",
@@ -243,7 +260,7 @@ def snapshot(events, failures, now=None):
         ],
         "stages": stages, "runs": {"total": 0, "pages": 0},
         "artifacts": {"locations": 0, "verified": 0, "missing": 0},
-        "issues": failures + [{"code": "partial-coverage",
+        "issues": issues + [{"code": "partial-coverage",
                               "detail": "Zero catalog totals mean no page evidence loaded, not an empty corpus."}],
     }
 
@@ -285,14 +302,16 @@ def add_catalog(value, path, now=None):
             raise ValueError("Invalid catalog evidence state")
         amount = count(candidate["count"]) if candidate["count"] is not None else None
         source_at = observed(candidate["observed_at"], now) if candidate["observed_at"] is not None else None
-        expected = runs["total"] if identifier == "runs" else artifacts["locations"]
+        total = runs["total"] if identifier == "runs" else artifacts["locations"]
         if state == "observed" and (amount is None or source_at is None):
             raise ValueError("Observed catalog evidence requires a count and timestamp")
         if state == "unknown" and amount is not None:
             raise ValueError("Unknown catalog evidence cannot have a count")
-        if amount is not None and (amount != expected or source_at is None):
+        count_invalid = (amount != runs["pages"] if identifier == "runs" else
+                         amount is not None and (amount > total or bool(amount) != bool(total)))
+        if amount is not None and (count_invalid or source_at is None):
             raise ValueError("Inconsistent catalog evidence stage")
-        if amount is None and expected:
+        if amount is None and total:
             raise ValueError("Nonempty catalog totals have no stage evidence")
         evidence[identifier] = {"state": state, "count": amount, "observed_at": source_at}
     for identifier, expected in (("runs", runs["total"]), ("artifacts", artifacts["locations"])):
