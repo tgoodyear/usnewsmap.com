@@ -92,10 +92,20 @@ def validate_bundle(bundle):
     return expected
 
 
+def service_properties(*properties):
+    text = run("systemctl", "show", SERVICE, *(f"--property={name}" for name in properties))
+    return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+
 def prepare(bundle, baseline, apply=False):
     checksums = validate_bundle(bundle)
     pid = run("systemctl", "show", "usnm-ocr-worker.service", "--property=MainPID", "--value")
     validate_baseline(baseline, pid)
+    state = service_properties("LoadState", "ActiveState", "FragmentPath", "SourcePath",
+                               "UnitFileState", "DropInPaths")
+    if (state.get("LoadState") != "not-found" or state.get("ActiveState") != "inactive"
+            or any(state.get(name) for name in ("FragmentPath", "SourcePath", "UnitFileState", "DropInPaths"))):
+        raise ValueError("Existing installed or loaded canary service; never shadow it")
     if os.uname().machine != "x86_64":
         raise ValueError("This exported client is x86_64 only")
     try:
@@ -161,6 +171,9 @@ def stop():
             or any(other.pw_uid == account.pw_uid and other.pw_name != "boinc"
                    for other in pwd.getpwall())):
         raise ValueError("Unexpected BOINC identity; refusing rollback")
+    state = service_properties("FragmentPath", "User", "Group")
+    if state != {"FragmentPath": str(UNIT_PATH), "User": "boinc", "Group": "boinc"}:
+        raise ValueError("Loaded canary service is not this helper's dedicated unit; refusing rollback")
     errors = []
     for args in (("systemctl", "stop", SERVICE),
                  ("systemctl", "disable", SERVICE),

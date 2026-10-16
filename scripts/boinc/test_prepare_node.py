@@ -31,7 +31,9 @@ class PrepareNodeTests(unittest.TestCase):
             stack.enter_context(patch.object(node.os, "geteuid", return_value=0))
             stack.enter_context(patch.object(node.shutil, "which", return_value="/mock/tool"))
             account = SimpleNamespace(pw_name="boinc", pw_uid=1234, pw_gid=1234, pw_dir=str(node.DATA))
-            state = {"created": False, "fail": None}
+            state = {"created": False, "fail": None, "service": {
+                "LoadState": "not-found", "ActiveState": "inactive", "FragmentPath": "",
+                "SourcePath": "", "UnitFileState": "", "DropInPaths": ""}}
 
             def lookup(name):
                 if not state["created"]:
@@ -46,6 +48,10 @@ class PrepareNodeTests(unittest.TestCase):
                     node.DATA.mkdir()
                 if args[:3] == ("systemctl", "show", "usnm-ocr-worker.service"):
                     return "123"
+                if "--property=LoadState" in args:
+                    return "\n".join(f"{key}={value}" for key, value in state["service"].items())
+                if "--property=FragmentPath" in args:
+                    return f"FragmentPath={node.UNIT_PATH}\nUser=boinc\nGroup=boinc"
                 if "--property=ActiveState" in args:
                     return "inactive"
                 if "--property=UnitFileState" in args:
@@ -100,6 +106,20 @@ class PrepareNodeTests(unittest.TestCase):
             self.assertEqual(version.kwargs["extra_groups"], [])
             self.assertEqual(version.kwargs["user"], 1234)
 
+    def test_vendor_runtime_or_loaded_service_collision_prevents_account_creation(self):
+        for edits in ({"LoadState": "loaded", "FragmentPath": "/usr/lib/systemd/system/canary.service"},
+                      {"LoadState": "loaded", "FragmentPath": "/run/systemd/system/canary.service"},
+                      {"LoadState": "loaded", "FragmentPath": "/run/systemd/transient/canary.service"},
+                      {"ActiveState": "active"}, {"LoadState": "masked"},
+                      {"DropInPaths": "/run/systemd/system/canary.service.d/override.conf"}):
+            with self.subTest(edits=edits), self.host() as (root, state, commands, baseline):
+                state["service"].update(edits)
+                with self.assertRaisesRegex(ValueError, "installed or loaded"):
+                    node.prepare(root / "bundle", baseline, True)
+                self.assertFalse(state["created"])
+                self.assertTrue(all(call.args[:2] == ("systemctl", "show")
+                                    for call in commands.call_args_list))
+
     def test_failed_apply_retains_only_inactive_prerequisites(self):
         with self.host() as (root, state, commands, baseline):
             state["fail"] = "usermod"
@@ -126,7 +146,8 @@ class PrepareNodeTests(unittest.TestCase):
             state["fail"] = "loginctl"
             with self.assertRaisesRegex(RuntimeError, "every cleanup"):
                 node.stop()
-            calls = [call.args for call in commands.call_args_list]
+            calls = [call.args for call in commands.call_args_list
+                     if call.args[:2] != ("systemctl", "show")]
             self.assertEqual(calls, [
                 ("systemctl", "stop", node.SERVICE),
                 ("systemctl", "disable", node.SERVICE),
