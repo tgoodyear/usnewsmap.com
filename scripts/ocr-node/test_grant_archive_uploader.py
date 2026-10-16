@@ -28,6 +28,7 @@ elif a[:3] == ["role","definition","list"]:
  "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
  "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write"]}
  if os.environ.get("BAD_ROLE"): p["dataActions"].append("*")
+ if os.environ.get("EXCLUDE_WRITE"): p["notDataActions"]=[p["dataActions"][1]]
  print(json.dumps([{"roleName":"usnm-scans-writer-role-prod (scope)",
  "id":"/subscriptions/test/providers/Microsoft.Authorization/roleDefinitions/role",
  "permissions":[p]}]))
@@ -84,6 +85,10 @@ aget() {
 
     def test_deployment_error_is_not_hidden(self):
         self.assertNotEqual(self.run_it(DEPLOY_FAIL="7").returncode, 0)
+
+    def test_excluded_write_never_deploys(self):
+        self.assertNotEqual(self.run_it(EXCLUDE_WRITE="1").returncode, 0)
+        self.assertNotIn('"deployment"', self.log.read_text())
 
     def test_invalid_identity_never_calls_azure(self):
         self.assertNotEqual(self.run_it(PRINCIPAL="bad").returncode, 0)

@@ -48,7 +48,8 @@ expected = {
     "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
     "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
 }
-if len(p) != 1 or p[0]["actions"] or set(p[0]["dataActions"]) != expected:
+if (len(p) != 1 or p[0]["actions"] or set(p[0]["dataActions"]) != expected
+        or p[0].get("notDataActions") or p[0].get("notActions")):
     sys.exit("archive writer role permissions differ from reviewed read/write role")
 print(r["id"])
 ' "$ENV_NAME") || die "cannot verify existing archive writer role"
