@@ -32,7 +32,7 @@ def summarize(lines, now, window_seconds):
             fields = record.get("fields", {})
             failed = False
             if fields.get("message") == "page done":
-                if fields.get("status") == "ok":
+                if fields.get("status") in {"ok", "short", "empty"}:
                     completed.append((timestamp, fields))
                 else:
                     failed = True

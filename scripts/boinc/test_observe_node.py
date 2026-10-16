@@ -11,6 +11,18 @@ SPEC.loader.exec_module(observe)
 
 
 class ObserveNodeTests(unittest.TestCase):
+    def test_short_and_empty_text_are_successful_uploaded_pages_not_failures(self):
+        now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+        lines = [json.dumps({"timestamp": "2026-10-16T11:59:00Z", "fields": {
+            "message": "page done", "status": status, "secs": 60}})
+                 for status in ["ok"] * 10 + ["short", "empty"]]
+        throughput = observe.summarize(lines, now, 900)
+        self.assertEqual(throughput["successful_pages"], 12)
+        self.assertEqual(throughput["pages_per_hour"], 48)
+        self.assertEqual(throughput["error_events"], 0)
+        self.assertTrue(observe.baseline_ready({
+            "worker": {"ActiveState": "active"}, "throughput": throughput}))
+
     def test_delayed_journal_query_keeps_error_at_start_of_advertised_window(self):
         now = datetime(2026, 10, 16, 12, 0, 0, 500000, tzinfo=timezone.utc)
         failure = json.dumps({"timestamp": "2026-10-16T11:45:01Z", "level": "ERROR",
