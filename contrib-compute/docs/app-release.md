@@ -17,6 +17,15 @@ scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-h
 `usbbak/signing`) name where the private key is on the signing host. `--what-if` runs the
 read-only checks and prints the plan.
 
+For a **PR-first release**, add `--prepare-only` to stage, sign and build the
+immutable app-version image without deploying or starting the publish job.
+It writes only `images.appver` in the environment's settings; the key remains
+on the signing host. Submit that pin as a release PR, obtain review and green
+CI, then run `scripts/provision-boinc.sh --env prod` from the merged checkout
+to publish and verify registration. Preparation is not publication or volunteer
+execution evidence. Omit `--prepare-only` only when immediate publication is
+authorized; the existing one-command behavior is unchanged.
+
 The release script and `scripts/boinc/install.py` support two distribution kinds (`--kind`):
 
 Operator staging uses a unique mode-0700 directory beneath the checkout and a
