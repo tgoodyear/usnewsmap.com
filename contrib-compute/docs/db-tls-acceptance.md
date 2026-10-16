@@ -84,15 +84,104 @@ CI runs this exact disposable matrix in its own bounded job when BOINC changes.
 `python3 -m unittest scripts/boinc/test_db_tls_fixture.py` tests evidence
 fail-closed behavior; it is not a substitute for the Docker integration run.
 
+## Full project on an existing server image
+
+With an already reviewed, pulled immutable server image:
+
+```sh
+scripts/boinc/check-full-db-tls.sh --server-image "$REVIEWED_SERVER_IMAGE_DIGEST"
+```
+
+The argument must include `@sha256:` and the complete digest. CI instead uses
+`--local-server-image usnm-boinc-server:check` immediately after building the
+actual server. This resolves the local image ID and pins a unique temporary tag
+to that ID; it does not pull a mutable tag or publish another release.
+
+The full fixture derives from that image without rebuilding or rewriting its
+BOINC implementation. A separate native-architecture MariaDB fixture shares its
+**network-disabled** namespace with the amd64 application container. This also
+works under an existing ARM Docker runtime with amd64 emulation: emulating
+InnoDB itself exhausted the local memory limit, whereas the native DB succeeds.
+No ports, host directories or Docker sockets are mounted into either container.
+
+It actually executes:
+
+- Stock `tools/make_project`, including database/schema installation (47 tables),
+  then the real runtime config renderer and `bin/xadd` (8 registered apps).
+- Separate runtime credentials with only SELECT/INSERT/UPDATE/DELETE on the
+  project schema; the fixture-only admin observes sessions separately.
+- The image's non-destructive `--ensure-project` branch and `project_tree`
+  refresh, including its real scheduler-refresh helper and project PHP pages.
+- Apache/mod_php `get_project_config.php`, `server_status.php` and `index.php`,
+  and an actual scheduler CGI POST. A healthy scheduler response must not be
+  `project_is_down`; XML error replies do not count as positive acceptance.
+  The synthetic request is unauthenticated and must dispatch no work.
+- Actual feeder, transitioner, trivial validator and batch assimilator as
+  `boincadm`. Each live DB session must have a nonempty server-side
+  `performance_schema.status_by_thread` `Ssl_cipher`, correlated to its
+  daemon-specific queries. All four distinct roles must be present.
+- Both PHP APIs and Python from the **copied project**, not only the source
+  tree, reporting actual session ciphers.
+- Wrong hostname and unrelated client CA: all three copied consumers and four
+  fresh daemon processes must reject with connector-specific TLS errors;
+  actual CGI must report a database failure and no work. A previously trusted
+  feeder stays alive while CGI reconnects: otherwise stock CGI short-circuits
+  with "feeder not running", which is not TLS evidence. An attempted duplicate
+  feeder can disturb shared-memory readiness, so CGI is checked first.
+- A plaintext CLI connection with the same known-good runtime credentials must
+  fail while the observer confirms `require_secure_transport=ON`.
+- CA/hostname restoration followed by all public-page checks, healthy CGI and
+  four encrypted daemon sessions again.
+- A database-container restart with the same database volume, followed by a
+  **fresh application container** with the persisted project. It rehydrates
+  disposable upload keys and the synthetic code-signing public key, repeats the
+  complete matrix, and checks unchanged hashes of the sampled Python/two PHP
+  connector files and feeder binary. Server observation logs are cleared at
+  database start so reused connection IDs cannot mix evidence across boots.
+
+HTTP/CGI connections are short-lived. Their transport evidence is the
+TLS-required server's authenticated `using SSL/TLS` connection log plus the
+actual connector enforcement and rejection cases; the fixture does not claim
+a captured per-request CGI cipher. Direct ciphers are measured for the copied
+Python/PHP APIs and all four live daemons.
+
+Application and DB containers are limited to 1 GiB/512 MiB RAM and 128/64
+processes; application/DB CPU is capped at two/one. The application has a read-only
+root, no privilege escalation, and private writable state/keys on uniquely
+named disposable Docker volumes. Standard container capabilities needed by
+Apache's identity transition remain available; neither container is privileged.
+The wrapper removes only its own containers, volumes and temporary source tag.
+Image/build caches remain. CI bounds the full integration step to 15 minutes.
+`test_full_db_tls.py` checks evidence classification separately from execution.
+
+All keys and credentials are synthetic. The generated code-signing **private**
+key is deleted before services start. Upload keys live outside the project
+volume and are linked from private runtime memory, with access limited to
+root/`boincadm`. This local key-store substitute does not test Key Vault,
+managed identity, `--ensure-secrets`, or the secret-fetching `--init-project`
+entrypoint.
+
 ## Remaining release gates
 
-This demonstrates actual **local MariaDB connector** enforcement, stock database
-schema creation and verified transport. It is not Azure MySQL 8.4/rotating
-Azure-chain acceptance, full project installation, public PHP/scheduler RPC or
-every daemon's runtime session.
-Database restart/reconnection is not a persisted BOINC project migration:
-existing completed projects retain copied Python/PHP/binaries, so replacement,
-hash inventory, full lifecycle and rollback still need separate acceptance.
+These fixtures demonstrate actual local MariaDB connector enforcement, full
+project creation, PHP/CGI operation, four daemon connections and persistent
+restart. They do not demonstrate Azure MySQL 8.4/rotating Azure-chain acceptance,
+a public remote dev service, authenticated client/task dispatch and returned-task
+validation/assimilation, or the bridge's additional application validators.
+Starting validators on an empty queue is not completed-result acceptance.
+
+Persistent restart is not an upgrade/rollback: existing completed projects
+retain copied Python/PHP/binaries. Complete file inventory, safe replacement,
+backward-compatible migration and tested rollback remain necessary before
+changing production enforcement. The four sampled unchanged-file hashes are
+not an all-files migration inventory.
+
+The optional OCR-node pilot additionally needs the actual supported BOINC
+client build/ABI, dedicated account/subordinate IDs, effective rootless
+Podman/SELinux/cgroup/startup isolation, a tiny dev cohort through collection,
+and comparable OCR throughput against an agreed non-disruption rule. Local
+server success does not authorize account installation or node activation, and
+does not make paid Azure resources the only possible dev path.
 
 Production `require_secure_transport` remains OFF. Keep #464 open until these
 remaining gates and a reviewed migration plan are satisfied. #631 remains draft;
