@@ -52,7 +52,10 @@ envelope (enforced by staging). The Windows native CI artifact supplies app-loca
 Microsoft CRT DLLs from the installed Visual Studio redistributable, verifies
 their Microsoft Authenticode signatures and records version/hashes in
 `VC_REDIST_SOURCE.json`/`SHA256SUMS`. Stage these DLLs as signed `--extra-file`
-members too; staging rejects a missing mandatory CUDA/CRT dependency. No
+members too; staging rejects a missing mandatory CUDA/CRT dependency, including
+the portable `ggml-cpu-x64.dll` backend and its `libomp140.x86_64.dll` dependency
+from the pinned llama archive (CPU backend discovery is required even for CUDA
+offload; optimized CPU variants are optional). No
 volunteer should install a CUDA toolkit or manually fetch DLLs. The NVIDIA
 driver's `nvcuda.dll` and Windows system APIs remain platform prerequisites.
 
@@ -70,7 +73,8 @@ volunteers or broaden enrollment to bypass missing hardware/consent.
 
 Native failures write a nonzero `boinc_finish_called` and exit nonzero, so the
 ordinary BOINC UI can show **Computation error**. A fixed-schema, bounded
-`USNM_QWEN_FAILURE` JSON summary goes automatically into BOINC task stderr and
+`USNM_QWEN_FAILURE` JSON summary goes automatically into BOINC task stderr
+(appended directly to the slot's `stderr.txt` on Windows, ordinary stderr on Unix) and
 the normal scheduler result report, even when failure prevents declared output
 uploads. It includes outcome, runtime/model identities, driver/memory facts,
 timings and known failure categories—not raw paths, input text, prompts, account

@@ -229,6 +229,7 @@ def install(
                 if plan_class in ("nvidia_cuda_2b", "nvidia_cuda_8b"):
                     required_extras += (
                         "ggml-cuda.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
+                        "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
                         "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
                     )
             missing_extras = [name for name in required_extras if name not in present_extras]

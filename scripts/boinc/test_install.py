@@ -237,6 +237,7 @@ class InstallTest(unittest.TestCase):
             dll_names = (
                 "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll",
                 "ggml-cuda.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
+                "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
                 "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
             ) if platform == "windows_x86_64" else ()
             extras.extend(f"{name}={llama_srv_win}" for name in dll_names)

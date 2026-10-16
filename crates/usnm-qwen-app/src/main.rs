@@ -73,14 +73,40 @@ fn start_boinc_control(work: &Path) -> BoincControl {
 }
 
 fn main() -> anyhow::Result<()> {
-    if run_slot(Path::new(".")).is_err() {
-        eprintln!("USNM_QWEN_FAILURE {{\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}}");
+    if run_slot_reporting(Path::new(".")).is_err() {
         std::process::exit(1);
     }
     if std::fs::read_to_string(FINISH_FILE).is_ok_and(|code| code.trim() != "0") {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn report_failure(work: &Path, report: &str) -> std::io::Result<()> {
+    // Windows BOINC starts native apps without inherited stderr handles.
+    #[cfg(windows)]
+    {
+        let mut stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(work.join("stderr.txt"))?;
+        writeln!(stderr, "{report}")?;
+        stderr.flush()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = work;
+        writeln!(std::io::stderr().lock(), "{report}")
+    }
+}
+
+fn run_slot_reporting(work: &Path) -> anyhow::Result<()> {
+    run_slot(work).inspect_err(|_| {
+        let _ = report_failure(
+            work,
+            "USNM_QWEN_FAILURE {\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}",
+        );
+    })
 }
 
 fn failure_report(result: &ResultManifest, diag: &[u8]) -> String {
@@ -1197,7 +1223,7 @@ pub fn run_slot_with(
     if result.outcome == Outcome::Ok {
         write_atomic(&finish_out, b"0\n")?;
     } else {
-        eprintln!("{}", failure_report(&result, &diag_bytes));
+        report_failure(work, &failure_report(&result, &diag_bytes))?;
         write_atomic(&finish_out, b"1\n")?;
     }
     Ok(())
@@ -1554,7 +1580,17 @@ mod tests {
     #[test]
     fn failed_slot_marks_computation_error_and_reports_only_bounded_facts() {
         let tmp = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        std::fs::write(tmp.path().join("stderr.txt"), "existing BOINC diagnostic\n").unwrap();
         run_slot_with(tmp.path(), None, None).unwrap();
+        #[cfg(windows)]
+        {
+            let stderr = std::fs::read_to_string(tmp.path().join("stderr.txt")).unwrap();
+            assert!(stderr.starts_with("existing BOINC diagnostic\nUSNM_QWEN_FAILURE "));
+            assert_eq!(stderr.matches("USNM_QWEN_FAILURE ").count(), 1);
+            assert!(stderr.contains("\"outcome\":\"unit_error\""));
+            assert!(stderr.len() < 2048);
+        }
         assert_eq!(
             std::fs::read_to_string(tmp.path().join(FINISH_FILE)).unwrap(),
             "1\n"
@@ -1585,6 +1621,24 @@ mod tests {
             assert_eq!(facts["out_of_memory"], true);
             assert!(facts["llama"].is_null());
         }
+    }
+
+    #[test]
+    fn early_slot_io_error_uses_the_same_boinc_failure_transport() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(RESULT_FILE)).unwrap();
+        #[cfg(windows)]
+        std::fs::write(tmp.path().join("stderr.txt"), "existing BOINC diagnostic\n").unwrap();
+        assert!(run_slot_reporting(tmp.path()).is_err());
+        #[cfg(windows)]
+        {
+            let stderr = std::fs::read_to_string(tmp.path().join("stderr.txt")).unwrap();
+            assert_eq!(
+                stderr,
+                "existing BOINC diagnostic\nUSNM_QWEN_FAILURE {\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}\n"
+            );
+        }
+        assert!(!tmp.path().join(FINISH_FILE).exists());
     }
 
     #[test]
