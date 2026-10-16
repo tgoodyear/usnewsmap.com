@@ -82,6 +82,49 @@ the workbook reads it from console logs. Workunit validation, assimilation and f
 counts are separate, potentially overlapping flags. The bridge job is manual-triggered, so
 the time chart gains a point only when this step is run.
 
+#### Work-volume acceptance after #633
+
+Release #633's successful lifecycle jobs are not exporter acceptance: execution
+`usnm-boinc-bridge-caj-prod-yjzy92x` failed with the sanitized aggregate-query error.
+The follow-up for #510 reproduces a checked-in work-volume option-file defect:
+the generated file had a literal masked line instead of a password option, which
+MySQL rejects before executing SQL. The work-volume branch now quotes and escapes
+the tmpfs option values. TLS and certificate verification remain mandatory.
+This reproduction does not prove that the deployed failure had the same cause.
+
+CI runs the unchanged aggregate query against MySQL 8.4 using synthetic temporary
+tables with the referenced columns/types from BOINC commit `22bbebe0`, including
+empty tables, all state buckets and the recent-credit threshold. It also checks
+option-file permissions, parsing and authentication with a synthetic password.
+To run these tests locally, point `USNM_WORK_VOLUME_MYSQL_PORT` at a disposable,
+loopback-only MySQL 8.4 fixture with an empty-password root account, then run
+`python3 -m unittest -v contrib-compute/images/server/test_work_volume.py` from
+the repository root. Never point this fixture test at a deployed database.
+These tests do not establish the production schema or runtime grants.
+
+Keep #510 acceptance open until an authorized operator can:
+
+1. Build and release the reviewed server/bridge images through the normal PR and
+   provisioning process; record the deployed digest and revision. Do not patch
+   the running container or dispatch volunteer work.
+2. From the bridge's VNet and runtime identity, verify the installed client
+   version, readable CA bundle, certificate-verified TLS connection, effective
+   SELECT access on `workunit`, `result`, `user` and `host`, and the referenced
+   column names/types. Do not print the option file, credentials, raw rows or
+   unrestricted database errors. If the query still fails, retain only an
+   allowlisted numeric MySQL error code/SQLSTATE and failure stage for diagnosis.
+3. Run `scripts/start-boinc-bridge.sh --env prod --step work-volume`, record its
+   execution ID and successful exit, and verify exactly one schema-version-1
+   aggregate event in the BOINC workspace.
+4. Deploy the workbook through the normal main-stack process with its required
+   drift checks, and verify the latest tiles, state table and time chart consume
+   that event.
+
+Live verification requires an authenticated Azure session with access to the
+Container Apps job/execution metadata and BOINC Log Analytics workspace, plus an
+authorized in-VNet runtime check. This sandbox has no authenticated Azure session;
+no deployed sample or workbook success is claimed.
+
 `scripts/build-boinc-images.sh` builds and pins the server/bridge artifacts.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
 designated signing host without exporting its private key. These are release inputs, not

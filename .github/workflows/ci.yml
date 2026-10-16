@@ -87,6 +87,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.contrib == 'true'
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mirror.gcr.io/library/mysql:8.4@sha256:24989179f58856db763f418010c1169fecc944e3ec1ea7e921572d83eb070f70
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+        ports:
+          - 127.0.0.1:3307:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=30
     env:
       BICEP_VERSION: v0.47.16
     defaults:
@@ -120,6 +130,8 @@ jobs:
         run: python3 -m unittest -v boinc/test_config.py
       - name: The work-volume export and workbook queries pass
         run: python3 -m unittest -v images/server/test_work_volume.py
+        env:
+          USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: The app version checks' tests pass
         working-directory: .

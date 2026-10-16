@@ -324,7 +324,21 @@ if [ "$step" = work-volume ]; then
   mycnf="$SECRETS/mysql-runtime.cnf"
   trap 'rm -f "$mycnf" "$SECRETS/db-runtime"' EXIT
   kv_get mysql-runtime-password "$SECRETS/db-runtime"
-  (umask 077; { echo '[client]'; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; echo "****** "$SECRETS/db-runtime")"; } > "$mycnf")
+  (umask 077; python3 - "$mycnf" "$SECRETS/db-runtime" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+def quote(value):
+    for before, after in (("\\", "\\\\"), ('"', '\\"'), ("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t")):
+        value = value.replace(before, after)
+    return '"' + value + '"'
+
+values = {"host": os.environ["DB_HOST"], "user": os.environ["DB_RUNTIME_USER"],
+          "password": Path(sys.argv[2]).read_text().removesuffix("\n")}
+Path(sys.argv[1]).write_text("[client]\n" + "".join(f"{key}={quote(value)}\n" for key, value in values.items()))
+PY
+  )
   python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
   exit 0
 fi
