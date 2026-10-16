@@ -292,14 +292,14 @@ parity, not a claim of byte-identical OCR text. Summed per-crop OCR wall time
 was 518.058 seconds on AMD64 and 236.944 seconds on ARM, not CPU time or a
 controlled machine-performance comparison.
 
-| Source / language | Crops | Reference characters | CER | WER | Exploratory holdout CER |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| BLN600 / English | 30 | 87,576 | 0.096259 | 0.248056 | 0.067381 |
-| NewsEye BnF / French | 24 | 9,973 | 0.089141 | 0.232764 | 0.190691 |
-| NewsEye NLF / Finnish | 18 | 11,895 | 0.079361 | 0.431330 | 0.071369 |
-| NewsEye NLF / Swedish | 10 | 6,267 | 0.108186 | 0.464625 | 0.107829 |
-| NZZ / German | 30 | 1,565 | 0.123323 | 0.383929 | 0.160628 |
-| Overproof CA / English | 30 | 8,346 | 0.024203 | 0.095533 | 0.019124 |
+| Source / language      | Crops | Reference characters |      CER |      WER | Exploratory holdout CER |
+| ---------------------- | ----: | -------------------: | -------: | -------: | ----------------------: |
+| BLN600 / English       |    30 |               87,576 | 0.096259 | 0.248056 |                0.067381 |
+| NewsEye BnF / French   |    24 |                9,973 | 0.089141 | 0.232764 |                0.190691 |
+| NewsEye NLF / Finnish  |    18 |               11,895 | 0.079361 | 0.431330 |                0.071369 |
+| NewsEye NLF / Swedish  |    10 |                6,267 | 0.108186 | 0.464625 |                0.107829 |
+| NZZ / German           |    30 |                1,565 | 0.123323 | 0.383929 |                0.160628 |
+| Overproof CA / English |    30 |                8,346 | 0.024203 | 0.095533 |                0.019124 |
 
 The split was fixed in the issue before reading baseline scores: group by
 `remote|member-or-path` (`bundled|path` for bundled images), then odd SHA-256
