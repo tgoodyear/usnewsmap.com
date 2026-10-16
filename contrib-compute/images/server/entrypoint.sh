@@ -111,6 +111,11 @@ project_tree() {
   # The project's own web pages ship in the image, so a rollout updates them; overwrites the
   # copies on the share, never deletes stock files.
   cp -R "$TEMPLATES/html/." "$PROJ/html/"
+  # Keep stock project settings while replacing its low-resolution badge/footer.
+  sed -i 's/^function project_footer(/function stock_project_footer(/' "$inc"
+  if ! grep -Fq 'require_once(__DIR__ . "/usnm_footer.inc");' "$inc"; then
+    sed -i '/^<?php$/a require_once(__DIR__ . "/usnm_footer.inc");' "$inc"
+  fi
 }
 
 serve() {
