@@ -71,6 +71,8 @@ dropped automatically. `--what-if` creates only the retained preview, not manage
 designated signing host without exporting its private key. These are release inputs, not
 manual steps printed after every deployment. The older `bootstrap.sh` is not the production
 deployment path. See [app-release.md](app-release.md) for signing and acceptance boundaries.
+For a BOINC-only isolated environment, use the scoped
+[dev acceptance plan](dev-acceptance.md), not the application's full dev stack.
 
 ## Submission file permissions
 

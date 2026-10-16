@@ -68,7 +68,8 @@ REGISTRY_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
 # in stages, because each needs the last: 0, the DNS records (CNAME and asuid TXT, written by
 # this stack into the zone's group); 1, the name on the app unbound and its managed
 # certificate; 2, the name bound with the certificate. domain_stage reads where it is.
-DNS_ZONE=$(jq -r '.USNM_DNS_ZONE // empty' "$(dirname "$0")/../infra/env/$ENV_NAME.json")
+DNS_ZONE=${BOINC_DNS_ZONE:-$(jq -r '.USNM_DNS_ZONE // empty' "$(dirname "$0")/../infra/env/$ENV_NAME.json")}
+DNS_RG=${BOINC_DNS_RG:-$REGISTRY_RG}
 [ -z "$DNS_ZONE" ] || [[ $MASTER_HOST == *".$DNS_ZONE" ]] || die "$MASTER_HOST is not in the zone $DNS_ZONE"
 CERT_NAME="cert-${MASTER_HOST//./-}"
 identities=$(baz identity list --resource-group "$BOINC_RG" --query '[].{name:name,principalId:principalId}' -o json) ||
@@ -92,13 +93,13 @@ domain_stage() {
     --managed-certificates-only --query "[?name=='$CERT_NAME'].properties.provisioningState | [0]" -o tsv) ||
     die "could not read the managed certificates of usnm-boinc-cae-$ENV_NAME"
   if [ "$state" = Succeeded ]; then echo 2; return; fi
-  names=$(baz network dns record-set cname list --zone-name "$DNS_ZONE" --resource-group "$REGISTRY_RG" --query '[].name' -o tsv) ||
+  names=$(baz network dns record-set cname list --zone-name "$DNS_ZONE" --resource-group "$DNS_RG" --query '[].name' -o tsv) ||
     die "could not read the CNAME records of $DNS_ZONE"
   if grep -qx "$record" <<< "$names"; then echo 1; else echo 0; fi
 }
 # write_params STAGE: the deployment parameters, with the custom domain stage.
 write_params() {
-jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
+jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --arg zone "$DNS_ZONE" --arg zrg "$DNS_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
   --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   contentVersion: "1.0.0.0",
