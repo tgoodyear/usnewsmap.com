@@ -240,7 +240,12 @@ processing specification.
 Stock `script_validator` checks three files in template order: `text.txt`,
 `layout.xml`, `result.json`. It verifies bounded regular files, checksums,
 Japanese normalization, ALTO geometry, agreement between the ALTO and the text,
-and the pinned job identity. It compares **two** results with the same full job,
+and the pinned job identity. Layout/text agreement compares normalized complete
+lines, including duplicate counts: upstream text follows XML document order,
+whereas the Python-equivalent ALTO converter sorts blocks and lines by `ORDER`.
+The orders can differ on full pages without losing any content. This does not
+permit missing, duplicated, substituted or repartitioned lines.
+It compares **two** results with the same full job,
 scan and engine identity. Exact text passes; otherwise the character-bigram
 multiset Dice must be at least **0.99**. The Dice score uses adjacent Unicode
 characters, not a whitespace word bag, so Japanese lines are not treated as one

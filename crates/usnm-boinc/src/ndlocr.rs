@@ -424,9 +424,20 @@ fn check_bytes(result: &ResultManifest, text: &[u8], alto: &[u8]) -> anyhow::Res
             ..Default::default()
         },
     )?;
-    let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    // Upstream text follows XML document order; ALTO follows block/LINE ORDER.
+    // Compare complete lines with multiplicity, not a bag of characters.
+    let lines = |s: &str| {
+        let normalized = ndlocr::normalize(s);
+        let mut lines: Vec<String> = normalized
+            .lines()
+            .map(|line| line.chars().filter(|c| !c.is_whitespace()).collect())
+            .filter(|line: &String| !line.is_empty())
+            .collect();
+        lines.sort_unstable();
+        lines
+    };
     ensure!(
-        compact(&ndlocr::normalize(&usnm_alto::text(&page))) == compact(text),
+        lines(&usnm_alto::text(&page)) == lines(text),
         "ALTO/text disagree"
     );
     Ok(())
