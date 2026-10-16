@@ -119,7 +119,7 @@ def fetch_campaign_status(
         submitted = int(data.get("submitted", 0))
         errs = len(data.get("skipped_errors", []))
         elapsed = float(data.get("elapsed_s", 0.0))
-        if state == "done":
+        if state in ("done", "completed"):
             done_shards += 1
         total_staged += staged
         total_submitted += submitted
@@ -246,9 +246,15 @@ def cmd_restore(args: argparse.Namespace) -> int:
     container = job_doc["properties"]["template"]["containers"][0]
     container["command"] = ["/usr/local/bin/bridge-job.sh"]
     container.pop("args", None)
+    container.pop("imageType", None)
     container["env"] = [e for e in container.get("env", []) if e.get("name") in base_names]
-    job_doc["properties"]["configuration"]["replicaCompletionCount"] = 1
-    job_doc["properties"]["configuration"]["parallelism"] = 1
+    cfg = job_doc["properties"]["configuration"]
+    cfg.pop("identitySettings", None)
+    cfg.pop("replicaCompletionCount", None)
+    cfg.pop("parallelism", None)
+    if "manualTriggerConfig" in cfg and isinstance(cfg["manualTriggerConfig"], dict):
+        cfg["manualTriggerConfig"]["replicaCompletionCount"] = 1
+        cfg["manualTriggerConfig"]["parallelism"] = 1
 
     tmp_spec = Path("/tmp/boinc_bridge_restore_spec.json")
     tmp_spec.write_text(
