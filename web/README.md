@@ -84,9 +84,55 @@ First-pass decisions for #452:
   or pinned state details regardless of keyboard focus. Small positive rates
   retain significant digits, and legend precision increases when needed to
   distinguish unequal thresholds.
-  The 300 ms post-download first-paint and 2 ms / 5,000-place scrub targets
-  have **not been measured on a mid-range laptop**; passing functional tests
-  must not be read as those performance measurements.
+  Opt-in reproducible performance gates and the measured hardware/backend
+  limitations are described below. Functional test success is not proof
+  of the performance budgets.
+
+### States performance measurements
+
+Run against the synthetic API serving the production web build, not production:
+
+```sh
+# 5,000 places, 120 buckets, 600,000 cells in each cube; 2,000 timed frames.
+USNM_STATES_PERF=1 npm test -- src/engine/states.performance.test.ts
+
+# PW_BASE_URL points at the local synthetic API serving web/dist.
+# USNM_STATES_GPU=metal explicitly selects native Apple GPU rendering on macOS.
+USNM_STATES_PERF=1 USNM_STATES_GPU=metal PW_BASE_URL=http://127.0.0.1:18092 \
+  npm run e2e -- e2e/states.performance.spec.ts --project=desktop --workers=1
+```
+
+The scrub gate asserts **p95 ≤2 ms**, after 200 warm-up frames, including totals,
+quantiles and all fill-colour lookups. Preparation is reported separately; this
+does not measure the rest of React or deck.gl's draw. On **Apple M1 / macOS arm64,
+Node 25.8.2**, the isolated 2026-10-15 run measured preparation **16.679 ms**,
+median **0.014 ms**, p95 **0.023 ms**, maximum **0.100 ms** across 2,000 frames.
+A concurrent test run had p95 **0.080 ms** but a **12.780 ms** maximum outlier.
+This is a percentile gate, **not a guarantee that every frame is ≤2 ms**.
+
+The browser gate asserts a maximum **300 ms** over five fresh page loads. It
+measures asset Resource Timing `responseEnd` to the first deck draw plus two
+animation frames, allowing a browser paint opportunity. The mark
+`usnm-states-first-paint` is a **presentation proxy**, not a GPU-fence or
+compositor timestamp. It uses fixture data and a local plain basemap with the
+map loaded before selecting States; it is not a real-data basemap benchmark.
+
+On the same Apple M1 with **Chromium 153.0.8010.12, ANGLE Metal native GPU**,
+the initial run measured **489.4, 45.6, 49.4, 50.1, 44.9 ms**: the first cold
+draw **failed** the 300 ms target. A repeat process, with driver caches retained,
+measured **64.2, 39.6, 48.1, 47.7, 48.4 ms**, passing the gate.
+Default headless Chromium used **SwiftShader software Vulkan**, not the Apple
+GPU, and measured **2,165.6, 1,677.3, 1,586.5, 1,511.1, 1,485.3 ms**, failing.
+These runs do **not** establish the cold first-paint target on a representative
+mid-range laptop. That acceptance remains outstanding; warm-cache success
+must not conceal the cold/backend failures.
+
+Read-only public metadata on 2026-10-15 (`pages-v20261010-2`) listed **1,617
+places**, none missing state codes; all codes are represented by the boundary
+asset, including PR and VI. The published catalog is below `MAX_PLACES=5,000`,
+so no query over those known places can exceed it today. This is not a survey
+of real queries or orphaned index place IDs. The tested truncation warning
+remains necessary for future growth.
 
 Not yet built: compare mode, the first-appearance layer, the coverage overlay, embed mode, export beyond the available CSV downloads, and the share dialog beyond copying the link.
 

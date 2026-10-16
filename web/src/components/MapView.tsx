@@ -112,6 +112,7 @@ export default function MapView(props: Props) {
     return () => document.removeEventListener("keydown", dismiss);
   }, [stateTip]);
   const stateRows = useRef(new Map<string, StateTotal>());
+  const paintMeasured = useRef(false);
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const overlay = useRef<MapboxOverlay | null>(null);
@@ -351,7 +352,27 @@ export default function MapView(props: Props) {
               ];
     // No attribute transitions: deck.gl runs them on the GPU with transform
     // feedback and reads buffers back, which stalls every playback step.
-    o.setProps({ layers });
+    o.setProps({
+      layers,
+      onAfterRender: () => {
+        if (layer !== "states" || layers.length === 0 || paintMeasured.current) return;
+        const asset = performance.getEntriesByType("resource").find((entry) => entry.name.endsWith(boundariesUrl)) as
+          PerformanceResourceTiming | undefined;
+        if (!asset) return;
+        paintMeasured.current = true;
+        // Two frames after deck's draw gives the browser a paint opportunity.
+        // This is a presentation proxy, not a compositor/GPU fence timestamp.
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            performance.measure("usnm-states-first-paint", {
+              start: asset.responseEnd,
+              end: performance.now(),
+              detail: "First deck draw plus two animation frames; presentation proxy",
+            });
+          }),
+        );
+      },
+    });
   }, [points, layer, norm, maxValue, selected, states, stateBreaks, boundaries.data]);
 
   const tipRow =

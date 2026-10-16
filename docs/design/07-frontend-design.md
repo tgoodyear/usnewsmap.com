@@ -124,7 +124,10 @@ Truncated matching-place lists show a warning, never invent an allocation of the
 missing tail. The minimum denominator is one page with a small-count warning,
 not an arbitrary suppression threshold. See the [web implementation decisions](../../web/README.md#states-layer)
 and [reproducible Census preparation](../../web/src/assets/README.md).
-The 300 ms first-paint and 2 ms scrub targets are not yet measured on target hardware.
+The [opt-in performance gates and measurements](../../web/README.md#states-performance-measurements)
+report a passing synthetic 5,000-place p95 scrub budget on Apple M1, but a
+native-GPU cold first-paint proxy of 489 ms misses the 300 ms target (warm
+repeats pass). These are not representative target-hardware certification.
 
 ## 7.5 URL state (permalinks)
 
