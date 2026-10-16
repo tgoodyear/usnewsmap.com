@@ -332,6 +332,18 @@ if [ "$step" = spool-out ]; then
     ${host_args[@]+"${host_args[@]}"} ${trust_args[@]+"${trust_args[@]}"}
   exit 0
 fi
+# share_readable <stamp> <dir>...: makes files a step created since <stamp> readable by the
+# server's boincadm group. Skipped on SMB/CIFS: the share's mount options fix the owner, group
+# and modes, so chgrp/chmod change nothing there, and walking its download tree takes minutes.
+share_readable() {
+  local stamp=$1 d
+  shift
+  for d in "$@"; do
+    [ -d "$d" ] || continue
+    case "$(stat -f -c %T "$d" 2>/dev/null)" in smb2 | cifs) continue ;; esac
+    find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
+  done
+}
 # A private MySQL defaults file for the runtime database user, removed on exit.
 write_mycnf() {
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
@@ -386,34 +398,28 @@ case "$step" in
     rc=0
     usnm-boinc assess submit --root "$ASSESS" --project "$PROJ" --mode "$ASSESS_MODE" \
       --max-units "${ASSESS_MAX:-500}" || rc=$?
-    find "$PROJ/download" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
+    share_readable "$stamp" "$PROJ/download"
     rm -f "$stamp"
     exit "$rc" ;;
   surya-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates"; do
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp"
     exit "$rc" ;;
   quality-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc quality submit --root "$QUALITY" --project "$PROJ" --max-units "${QUALITY_MAX:-500}" || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates"; do
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp"
     exit "$rc" ;;
   qwen-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc qwen submit --root "$QWEN" --project "$PROJ" --target "${QWEN_TARGET:-container}" --max-units "${QWEN_MAX:-20}" || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates"; do
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp"
     exit "$rc" ;;
   gold-submit)
@@ -429,10 +435,7 @@ case "$step" in
       --engine-base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
       --engine-version "${GOLD_ENGINE_VERSION:-5.5.0}" --units "${GOLD_UNITS:-20}" \
       ${target_args[@]+"${target_args[@]}"} || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates" "$PROJ/gold"; do
-      [ -d "$d" ] || continue
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/gold"
     rm -f "$stamp"
     exit "$rc" ;;
   gold-onboard)
@@ -455,10 +458,7 @@ case "$step" in
     stamp="$(mktemp)"
     rc=0
     usnm-boinc host-trust onboard --config "$controller" --execute || rc=$?
-    for d in "$PROJ/download" "$PROJ/templates" "$PROJ/gold"; do
-      [ -d "$d" ] || continue
-      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
-    done
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/gold"
     rm -f "$stamp"
     exit "$rc" ;;
   register-apps)
