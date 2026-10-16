@@ -23,11 +23,13 @@ RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuit
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 COPY models.lock /models.lock
-# Each line: name, URL, sha256. A download whose hash differs fails the build.
+# Each line: name, URL, sha256. Retry TLS/connect failures as well as HTTP
+# transients, within a bounded budget. A hash mismatch still fails the build.
 RUN set -eu; mkdir -p /models; cd /models; \
     grep -v '^#' /models.lock | while read -r name url sum; do \
       [ -n "$name" ] || continue; \
       mkdir -p "$(dirname "$name")"; \
+      printf 'Fetching pinned model %s\n' "$name"; \
       curl -fsSL --retry 30 --retry-all-errors --retry-delay 5 --retry-max-time 900 \
         --connect-timeout 30 --max-time 600 -o "$name" "$url"; \
       echo "$sum  $name" | sha256sum --check --quiet; \

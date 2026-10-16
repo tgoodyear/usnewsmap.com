@@ -12,6 +12,14 @@ Tesseract and the pinned CPU NDLOCR-Lite adapter have production profiles here.
 not separately checked in the design stays `unknown`, not implicitly Apache.
 No tier-2 or credit-required profiles are added before the credits page (#372).
 
+Tesseract image builds download the unchanged `tesseract/models.lock` URLs
+with certificate verification and verify each SHA-256 before accepting it.
+Downloads allow 30 retries including TLS/connect failures, with a 30-second
+connection timeout, 600-second per-attempt timeout and 900-second retry-start
+budget. An in-progress final attempt can extend beyond that budget (at most
+1500 seconds per model including the final attempt). Exhaustion or a checksum
+mismatch fails the build; no alternate endpoint or unverified model is used.
+
 ## Credits data shape
 
 - `production_licenses`: array of licence identifier strings approved by the
