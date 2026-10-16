@@ -227,8 +227,11 @@ def validate_event(event):
         identity, invariant, data = [p["stage_id"]], "", dict(p)
     elif kind == "artifact":
         require(isinstance(p, dict), "artifact payload must be an object")
-        obj({k: v for k, v in p.items() if k not in ("fetched_at", "bytes")},
+        obj({k: v for k, v in p.items() if k not in ("fetched_at", "bytes", "condition")},
             ("artifact_id", "sha256", "version", "location", "reference", "state"))
+        if "condition" in p:
+            require(p["condition"] in ("absent", "size_mismatch", "non_regular", "size_match"),
+                    "invalid artifact condition")
         if "fetched_at" in p:
             timestamp(p["fetched_at"])
         if "bytes" in p:
@@ -425,11 +428,15 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source):
             try:
                 file_stat = candidate.stat()
                 present = stat.S_ISREG(file_stat.st_mode) and file_stat.st_size == entry["bytes"]
+                condition = ("non_regular" if not stat.S_ISREG(file_stat.st_mode) else
+                             "size_match" if present else "size_mismatch")
             except FileNotFoundError:
                 present = False
+                condition = "absent"
             payload = {"artifact_id": "scan", "sha256": entry["sha256"],
                        "version": entry["sha256"], "location": "cached-scans",
                        "reference": reference, "state": "present" if present else "missing",
+                       "condition": condition,
                        "fetched_at": entry["fetched_at"], "bytes": entry["bytes"]}
             event = {"schema_version": 1, "batch_id": batch_id,
                      "event_id": "cached-" + digest([batch_id, number, entry["doc_id"]]),
@@ -555,6 +562,11 @@ def snapshot(db):
             if value["state"] != "observed":
                 issues.append({"code": "source_" + value["state"],
                                "detail": (stage_id + ": " + value["detail"])[:512]})
+        mismatch_count = count("""SELECT count(*) FROM latest WHERE kind='artifact'
+            AND json_extract(data,'$.condition')='size_mismatch'""")
+        if mismatch_count:
+            issues.append({"code": "artifact_size_mismatch",
+                           "detail": f"{mismatch_count} cached paths exist but their size differs from index evidence; not verified copies."})
         return {"schema_version": 1, "observed_at": observed, "generated_at": now(),
                 "producer": "corpus-catalog", "coverage": coverage, "stages": stages,
                 "runs": {"total": count("""SELECT count(*) FROM
@@ -726,9 +738,11 @@ stat of <scan-root>/keep/<batch>/<paper>/<date>/<edition>/<sequence>.jpg. Index 
 does NOT establish presence. Regular file and matching size => present, never verified;
 absent/size mismatch => missing. Does not fetch or read image bytes. Original nanosecond
 fetched_at and byte length are retained; observed_at is adapter stat observation time.
+The condition field distinguishes absent, size_mismatch, non_regular and size_match;
+snapshot issues report size mismatches explicitly (not ordinary absent copies).
 Original loc_url/download timing are discarded. A fresh immutable --evidence-out is
 required for replay/rebuild. Split large indexes into <=10000-line/16MiB local batches.
-Artifact payload optionally accepts fetched_at and bytes for this source provenance.
+Artifact payload optionally accepts fetched_at, bytes and condition for source provenance.
 """
 
 
@@ -738,9 +752,9 @@ def main(argv=None):
     parser.add_argument("--db", required=True, help="local SQLite read model path")
     subs = parser.add_subparsers(dest="command", required=True)
     p = subs.add_parser("ingest", help="transactionally import one immutable evidence JSONL batch")
-    p.add_argument("batch")
+    p.add_argument("--batch", required=True)
     p = subs.add_parser("ingest-cached-scans", help="bounded cache index + local stat, NOT verification")
-    p.add_argument("index")
+    p.add_argument("--index", required=True)
     p.add_argument("--scan-root", required=True)
     p.add_argument("--evidence-out", required=True)
     p.add_argument("--batch-id", required=True)

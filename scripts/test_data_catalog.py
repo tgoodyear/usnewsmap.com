@@ -133,12 +133,13 @@ class CatalogTests(unittest.TestCase):
                "sha256": HASH, "download_ms": 2050}
         index.write_text(c.canonical(row) + "\n")
         evidence = self.work / "cached-evidence.jsonl"
-        self.cli("ingest-cached-scans", str(index), "--scan-root", str(scan_root),
+        self.cli("ingest-cached-scans", "--index", str(index), "--scan-root", str(scan_root),
                  "--evidence-out", str(evidence), "--batch-id", "cached-1",
                  "--source", "pve-big-stat")
         item = c.query(self.db, "artifact", {})["items"][0]
         self.assertEqual(item["page_id"], "loc:" + doc)
         self.assertEqual(item["data"]["state"], "present")
+        self.assertEqual(item["data"]["condition"], "size_match")
         self.assertEqual(item["data"]["fetched_at"], fetched)
         self.assertEqual(c.snapshot(self.db)["artifacts"]["verified"], 0)
         self.assertNotIn("https://", evidence.read_text())
@@ -148,11 +149,14 @@ class CatalogTests(unittest.TestCase):
         c.ingest_cached_scans(self.db, index, scan_root,
                               self.work / "cached-missing.jsonl", "cached-2", "pve-big-stat")
         self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["state"], "missing")
+        self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["condition"], "absent")
         # Wrong-size files are not considered present either.
         scan.write_bytes(b"x")
         c.ingest_cached_scans(self.db, index, scan_root,
                               self.work / "cached-size.jsonl", "cached-3", "pve-big-stat")
         self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["state"], "missing")
+        self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["condition"], "size_mismatch")
+        self.assertIn("artifact_size_mismatch", {i["code"] for i in c.snapshot(self.db)["issues"]})
         with self.assertRaises(c.CatalogError):
             c.ingest_cached_scans(self.db, index, scan_root, evidence, "cached-4", "pve-big-stat")
         self.assertEqual(c.ingest(self.db, evidence)["inserted"], 0)
@@ -167,7 +171,7 @@ class CatalogTests(unittest.TestCase):
     def test_cli_end_to_end_and_snapshot_freshness(self):
         batch = self.batch([event(), event("r1", "run"), event("a1", "page_state"),
                             event("s1", "stage", T1)])
-        self.assertEqual(self.cli("ingest", str(batch))["inserted"], 4)
+        self.assertEqual(self.cli("ingest", "--batch", str(batch))["inserted"], 4)
         result = self.cli("query", "page", "--page-id", PAGE)
         self.assertEqual(len(result["items"]), 3)
         self.assertTrue(all(i["source"] == "inventory" for i in result["items"]))
