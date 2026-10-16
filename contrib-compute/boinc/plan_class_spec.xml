@@ -6,6 +6,21 @@
      Copy this to <project>/plan_class_spec.xml, or merge it into the sample from the BOINC
      release in use. See docs/verified-facts.md (d). -->
 <plan_classes>
+    <!-- Pilot work is also assigned to host 9 with create_work's target_host option.
+         use_gpu is deliberately false: the wrapper's generic GPU switch is NVIDIA-only.
+         job.toml passes only the Intel render node and the scheduler reserves one Intel GPU. -->
+    <plan_class>
+        <name>docker_intel_opencl_4b</name>
+        <docker/>
+        <gpu_type>intel</gpu_type>
+        <opencl/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_opencl_version>300</min_opencl_version>
+        <avg_ncpus>2</avg_ncpus>
+        <mem_usage_base_mb>9663.676416</mem_usage_base_mb>
+        <min_batch>104</min_batch>
+        <max_batch>104</max_batch>
+    </plan_class>
     <plan_class>
         <name>docker</name>
         <docker/>

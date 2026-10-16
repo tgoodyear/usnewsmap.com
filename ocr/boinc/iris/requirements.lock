@@ -1,0 +1,10 @@
+# The worker's Python packages for CPython 3.13 on linux/x86_64, installed with
+# pip --require-hashes --no-deps --only-binary=:all:. This is the whole dependency closure of
+# openvino-genai 2026.4.1.0 (openvino-tokenizers, openvino, numpy, openvino-telemetry) and Pillow.
+# Hashes from the PyPI JSON API for exactly these wheels.
+openvino==2026.4.1 --hash=sha256:a9b637846c579d7b81b17b6585e0c7b1947574e8d13cf83d7307ce50cd2c352e
+openvino-genai==2026.4.1.0 --hash=sha256:60c6262c5da56601e17e1e37c1f42b41467bfe8493b4c562220f1a34f80b82a9
+openvino-tokenizers==2026.4.1.0 --hash=sha256:f30dc9d6dd9e485b10495bcf72fc257f33bf35938da783fbb8f17c98c5ab517f
+openvino-telemetry==2025.2.0 --hash=sha256:bcb667e83a44f202ecf4cfa49281715c6d7e21499daec04ff853b7f964833599
+numpy==2.5.4 --hash=sha256:6ffa07666f8da0eef81d149934a626d0d95fbd6838432a33e66245423a9062c0
+pillow==12.3.0 --hash=sha256:0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3

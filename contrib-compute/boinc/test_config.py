@@ -10,6 +10,22 @@ import xml.etree.ElementTree as ET
 
 
 class DaemonConfig(unittest.TestCase):
+    def test_intel_pilot_has_distinct_eligibility_and_assigned_dispatch(self):
+        root = Path(__file__).parent
+        config = ET.parse(root / "config.xml.template")
+        self.assertEqual(config.findtext("./config/enable_assigned_jobs"), "1")
+        plans = ET.parse(root / "plan_class_spec.xml")
+        classes = [p for p in plans.findall("plan_class") if p.findtext("name") == "docker_intel_opencl_4b"]
+        self.assertEqual(len(classes), 1)
+        plan = classes[0]
+        self.assertEqual(plan.findtext("gpu_type"), "intel")
+        self.assertIsNotNone(plan.find("docker"))
+        self.assertIsNotNone(plan.find("opencl"))
+        self.assertIsNone(plan.find("cuda"))
+        self.assertEqual(plan.findtext("min_batch"), "104")
+        self.assertEqual(plan.findtext("max_batch"), "104")
+        self.assertEqual(plan.findtext("mem_usage_base_mb"), "9663.676416")
+
     def test_feeder_interleaves_all_apps_with_expanded_shmem(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         commands = [shlex.split(cmd.text) for cmd in root.findall("./daemons/daemon/cmd")]

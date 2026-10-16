@@ -1,0 +1,8 @@
+This image contains OpenVINO/Qwen3-VL-4B-Instruct-int4-ov at revision
+3ffb805d532a250e5010c5aa5ce6579e60b31d71 (https://huggingface.co/OpenVINO/Qwen3-VL-4B-Instruct-int4-ov), an
+INT4 OpenVINO IR conversion by Intel of Qwen3-VL-4B-Instruct by the Qwen team at Alibaba Cloud
+(https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct), unmodified, under the Apache License, Version 2.0,
+in /opt/iris/LICENSE. Files, sizes and checksums: /opt/iris/model.lock. It also contains Intel's
+OpenCL GPU runtime (compute-runtime, gmmlib, intel-graphics-compiler; MIT and their stated licences,
+in /usr/share/doc) and OpenVINO, OpenVINO GenAI and OpenVINO Tokenizers (Apache-2.0). The image runs
+the model only to transcribe one evaluation crop of a public-domain newspaper page per BOINC task.

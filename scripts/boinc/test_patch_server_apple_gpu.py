@@ -97,11 +97,12 @@ int main() {
         {0, true, "docker_mt"}, {0, true, "docker_nvidia_cuda"},
         {12, true, "docker_mt_2b"}, {18, true, "docker_nvidia_cuda_8b"},
         {0, false, "mt"}, {8, false, "apple_gpu_8b"},
-        {8, false, "nvidia_cuda_8b"}, {2, false, "nvidia_cuda_2b"}
+        {8, false, "nvidia_cuda_8b"}, {2, false, "nvidia_cuda_2b"},
+        {104, true, "docker_intel_opencl_4b"}
     };
-    const int expected[] = {1, 1, 12, 18, 2, 8, 8, 2};
-    const int batches[] = {1, 12, 18, 2, 8};
-    for (int i = 0; i < 8; ++i) {
+    const int expected[] = {1, 1, 12, 18, 2, 8, 8, 2, 104};
+    const int batches[] = {1, 12, 18, 2, 8, 104};
+    for (int i = 0; i < 9; ++i) {
         for (int b : batches) { WU wu{b}; assert(infeasible(&classes[i], &wu) == (b != expected[i])); }
         WU legacy{0}; assert(!infeasible(&classes[i], &legacy));
     }
