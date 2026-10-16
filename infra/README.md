@@ -149,7 +149,27 @@ provided; a partial provision outside teardown follows the same rules.
    for optional resources, GUID children and display properties separately.
    `prod.json` is compiler-derived, not an authenticated live inventory.
    Confirm the `archiveEndpoint` deployment state before removing its pin.
-2. Use CI's Bicep 0.47.16 or newer compatible tooling. Pause CI deploys for
+2. Remove the unmanaged `Failure Anomalies - appi-usnm-prod` smart-detector
+   rule **before** provisioning. Azure allows only one
+   `FailureAnomaliesDetector` rule per Application Insights component, so
+   while it exists the stack's `usnm-api-failures-alert-prod` can't be
+   created and every provision attempt fails with "Only a single
+   FailureAnomaliesDetector alert rule can be define for the same
+   resource". The old rule was created by Azure, not the stack, and
+   notifies the default "Application Insights Smart Detection" action
+   group. Save it, then delete it; failure-anomaly alerting is off until
+   the provision below recreates it:
+
+   ```sh
+   az resource show -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
+     -n 'Failure Anomalies - appi-usnm-prod' --api-version 2021-04-01 > failure-anomalies-old.json
+   az resource delete -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
+     -n 'Failure Anomalies - appi-usnm-prod' --api-version 2021-04-01
+   ```
+
+   It was not stack-managed; removing a Bicep declaration cannot delete it.
+
+3. Use CI's Bicep 0.47.16 or newer compatible tooling. Pause CI deploys for
    the provision/bootstrap interval (serving is unaffected).
    Reset `USNM_BUDGET_START` to the first of the current month, commit that
    public setting through a PR, and provision from the approved main:
@@ -167,7 +187,7 @@ provided; a partial provision outside teardown follows the same rules.
    Environment's `USNM_CI_CLIENT_ID`. Resume CI and verify a successful push
    and rollout with the new identity. Do not leave the old client ID in CI.
 
-3. Verify the actual deployed alert inventory and queries, the site web
+4. Verify the actual deployed alert inventory and queries, the site web
    test, the `usnm-core-ag-prod` receivers and short name `usnm-prod`, the
    `usnm-core-budget-prod` start/notifications, and workbook titles
    `usnm pipeline (prod)` and `usnm API (prod)`. Do not use the issue's old
@@ -175,22 +195,14 @@ provided; a partial provision outside teardown follows the same rules.
    names also become conventional. Old fired-alert/availability history
    remains in the same workspace; the recreated rules have new resource
    IDs. Workbook GUIDs and custom role IDs/seeds do not change; only
-   workbook titles and role labels change in place.
-4. Verify `usnm-api-failures-alert-prod` exists, is enabled and targets the
-   current component and action group. Only then inspect and remove the
-   unmanaged `Failure Anomalies - appi-usnm-prod` smart-detector rule:
+   workbook titles and role labels change in place. Check that
+   `usnm-api-failures-alert-prod` exists, is enabled and targets the
+   current component and `usnm-core-ag-prod`:
 
    ```sh
    az resource show -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
      -n usnm-api-failures-alert-prod --api-version 2021-04-01
-   az resource show -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
-     -n 'Failure Anomalies - appi-usnm-prod' --api-version 2021-04-01
-   # after verifying the old rule's identity and the replacement's action group:
-   az resource delete -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
-     -n 'Failure Anomalies - appi-usnm-prod'
    ```
-
-   It was not stack-managed; removing a Bicep declaration cannot delete it.
 
 5. Run `scripts/ocr-node/group.sh --env prod --dry-run`, then without
    `--dry-run` to set the saved group's `displayName` and `mailNickname`
