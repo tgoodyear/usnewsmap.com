@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from copy import deepcopy
 import hashlib
 import hmac
 import json
@@ -42,7 +44,7 @@ class RPC:
             raise RuntimeError("Client did not return an authentication challenge")
         # Stock BOINC GUI-RPC mandates this nonce challenge, not password storage.
         # The protocol is restricted to loopback; substituting a KDF breaks it.
-        digest = hashlib.md5((nonce + password).encode()).hexdigest()  # lgtm[py/weak-sensitive-data-hashing]
+        digest = hashlib.md5((nonce + password).encode()).hexdigest()
         if self.call("auth2", {"nonce_hash": digest}).find(".//authorized") is None:
             self.close()
             raise RuntimeError("Client GUI-RPC authentication failed")
@@ -54,9 +56,12 @@ class RPC:
         request = ET.Element("boinc_gui_rpc_request")
         command = ET.SubElement(request, operation)
         for name, value in (fields or {}).items():
-            ET.SubElement(command, name).text = str(value)
+            if isinstance(value, ET.Element):
+                command.append(deepcopy(value))
+            else:
+                ET.SubElement(command, name).text = str(value) if value is not None else None
         # Stock match_req() does not recognize ElementTree's "<operation />".
-        self.socket.sendall(ET.tostring(request, short_empty_elements=False) + b"\x03")
+        self.socket.sendall(ET.tostring(request).replace(b" />", b"/>") + b"\x03")
         while b"\x03" not in self.buffer:
             block = self.socket.recv(65536)
             if not block:
@@ -129,37 +134,120 @@ def already_using_key(data_dir, key):
     return False
 
 
-def rejoin(rpc, key, expected_id, expected_name, timeout=300):
+def migration_state(path, current, expected_id):
+    if path.exists():
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor) as stream:
+            if os.fstat(stream.fileno()).st_mode & 0o077:
+                raise ValueError("Migration state must be private")
+            state = json.load(stream)
+        if state.get("master_url") != MASTER or state.get("expected_user_id") != expected_id:
+            raise ValueError("Migration state belongs to another explicit target")
+        if type(state.get("original_no_new_tasks")) is not bool:
+            raise ValueError("Malformed original drain preference")
+        return state
+    if current["no_new_tasks"]:
+        raise ValueError("User-held project refused: stock attach cannot atomically retain its hold")
+    state = {"master_url": MASTER, "expected_user_id": expected_id,
+             "original_no_new_tasks": False}
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+        json.dump(state, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return state
+
+
+@contextmanager
+def network_guard(rpc):
+    status = rpc.call("get_cc_status")
+    mode = int(status.findtext(".//network_mode", "0"))
+    permanent = int(status.findtext(".//network_mode_perm", "0"))
+    delay = float(status.findtext(".//network_mode_delay", "-1"))
+    names = {1: "always", 2: "auto", 3: "never"}
+    if mode not in names or permanent not in names or not 0 <= delay <= 31536000:
+        raise ValueError("Cannot safely preserve the client's current network policy")
+    started = time.monotonic()
+    rpc.call("set_network_mode", {"never": None, "duration": 600})
+    try:
+        for _ in range(25):
+            held = rpc.call("get_cc_status")
+            if (held.findtext(".//network_mode") == "3"
+                    and int(held.findtext(".//network_suspend_reason", "0"))):
+                break
+            time.sleep(0.2)
+        else:
+            raise RuntimeError("Client did not establish the temporary network guard")
+        yield
+    finally:
+        remaining = max(0, delay - (time.monotonic() - started))
+        restore = mode if remaining else permanent
+        rpc.call("set_network_mode", {names[restore]: None, "duration": remaining})
+
+
+def protect_preferences(rpc, data_dir, backup_dir):
+    preferences = rpc.call("get_global_prefs_working").find(".//global_preferences")
+    if preferences is None:
+        raise ValueError("Cannot preserve effective resource preferences; no detach performed")
+    preferences = deepcopy(preferences)
+    metadata = {"source_project", "source_scheduler", "mod_time", "override_file_present"}
+    for child in list(preferences):
+        if child.tag in metadata:
+            preferences.remove(child)
+    required = {"max_ncpus_pct", "cpu_usage_limit", "ram_max_used_busy_pct", "ram_max_used_idle_pct",
+                "run_gpu_if_user_active", "run_if_user_active", "work_buf_min_days", "work_buf_additional_days"}
+    if not required.issubset({child.tag for child in preferences}):
+        raise ValueError("Incomplete effective resource preferences; no detach performed")
+    original = data_dir / "global_prefs_override.xml"
+    backup = backup_dir / f"global-prefs-before-rejoin-{time.time_ns()}.json"
+    with os.fdopen(os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+        json.dump({"original_override": original.read_text() if original.exists() else None,
+                   "protected_effective": ET.tostring(preferences, encoding="unicode")}, stream)
+    rpc.call("set_global_prefs_override", {"global_preferences": preferences})
+    rpc.call("read_global_prefs_override")
+    effective = rpc.call("get_global_prefs_working").find(".//global_preferences")
+    def values(root):
+        if root is None:
+            return None
+        return [(element.tag, (element.text or "").strip(),
+                 tuple(ET.tostring(child, encoding="unicode") for child in element))
+                for element in root if element.tag not in metadata]
+    if values(effective) != values(preferences):
+        raise RuntimeError("Effective resource preferences changed; no detach performed")
+
+
+def rejoin(rpc, key, expected_id, expected_name, timeout=300, original_no_work=None,
+           data_dir=None, backup_dir=None):
     current = snapshot(rpc, expected_id, expected_name)
-    restore_no_work = current["no_new_tasks"]
     if current["account_manager"]:
         raise ValueError("Account-manager project must not be detached independently")
+    if original_no_work is None:
+        original_no_work = current["no_new_tasks"]
+    if original_no_work:
+        raise ValueError("User-held project refused: stock attach cannot atomically retain its hold")
     if current["attached"]:
         project_operation(rpc, "nomorework")
-        # The stock client rejects hot project_attach; drain and prove a quiet
-        # scheduler before the supported detach/rejoin, never edit its state XML.
-        for _ in range(3):
-            current = snapshot(rpc, expected_id, expected_name)
-            if current["pending_results"] or current["scheduler_rpc_in_progress"]:
-                return {**current, "status": "draining; no detach performed"}
-            time.sleep(1)
         current = snapshot(rpc, expected_id, expected_name)
         if current["pending_results"] or current["scheduler_rpc_in_progress"]:
             return {**current, "status": "draining; no detach performed"}
-        project_operation(rpc, "detach")
-        if snapshot(rpc, expected_id, expected_name)["attached"]:
-            raise RuntimeError("Project detach did not complete; no duplicate attach attempted")
+    protect_preferences(rpc, data_dir, backup_dir)
+    if current["attached"]:
+        # set_network_mode explicitly clears BOINC's recent-GUI-network grace.
+        # No network-enabling GUI operations are allowed inside this guard.
+        with network_guard(rpc):
+            current = snapshot(rpc, expected_id, expected_name)
+            if current["pending_results"] or current["scheduler_rpc_in_progress"]:
+                return {**current, "status": "draining; no detach performed"}
+            project_operation(rpc, "detach")
+            if snapshot(rpc, expected_id, expected_name)["attached"]:
+                raise RuntimeError("Project detach did not complete; no duplicate attach attempted")
+    # Stock project_attach itself re-enables networking. Only originally
+    # work-enabled clients are supported, never promise atomic hold preservation.
     rpc.call("project_attach", {"project_url": MASTER, "authenticator": key, "project_name": ""})
     deadline = time.monotonic() + timeout
     update_sent = False
     while time.monotonic() < deadline:
         current = snapshot(rpc, expected_id, expected_name)
         if current["attached"]:
-            if restore_no_work and not current["no_new_tasks"]:
-                project_operation(rpc, "nomorework")
-            if not update_sent:
-                project_operation(rpc, "update")
-                update_sent = True
             if current["user_id"] not in (0, expected_id):
                 project_operation(rpc, "nomorework")
                 raise RuntimeError("Unexpected scheduler account; stopped further work fetch")
@@ -167,8 +255,10 @@ def rejoin(rpc, key, expected_id, expected_name, timeout=300):
                 project_operation(rpc, "nomorework")
                 raise RuntimeError("Unexpected scheduler account name; stopped further work fetch")
             if current["host_id"] and current["expected_user_verified"] and current["expected_name_verified"]:
-                current["no_new_tasks"] = restore_no_work
                 return {**current, "status": "scheduler attribution verified", "key_kind": "weak"}
+            if not update_sent:
+                project_operation(rpc, "update")
+                update_sent = True
         time.sleep(2)
     if current["attached"]:
         project_operation(rpc, "nomorework")
@@ -182,6 +272,7 @@ def main():
     parser.add_argument("--expected-user-id", required=True, type=int)
     parser.add_argument("--expected-user-name", required=True)
     parser.add_argument("--key-file", type=Path)
+    parser.add_argument("--state-file", type=Path, help="Private durable drain journal; defaults beside the key file")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     key = None
@@ -198,7 +289,13 @@ def main():
                     and result["host_id"] and already_using_key(args.data_dir, key)):
                 result.update(status="already attached with supplied weak key", key_kind="weak")
             else:
-                result = rejoin(rpc, key, args.expected_user_id, args.expected_user_name)
+                state_file = args.state_file or args.key_file.with_name(f"account-rejoin-{args.port}.json")
+                state = migration_state(state_file, result, args.expected_user_id)
+                result = rejoin(rpc, key, args.expected_user_id, args.expected_user_name,
+                                original_no_work=state["original_no_new_tasks"],
+                                data_dir=args.data_dir, backup_dir=state_file.parent)
+                if result["status"] == "scheduler attribution verified":
+                    state_file.unlink()
         print(json.dumps({"master_url": MASTER, **result}, indent=2))
     finally:
         rpc.close()

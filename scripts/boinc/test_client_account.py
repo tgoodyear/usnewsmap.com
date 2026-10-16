@@ -1,4 +1,6 @@
 """Offline tests: never contact a client or send real account credentials."""
+from contextlib import nullcontext
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,6 +18,16 @@ def state(**changes):
 
 
 class ClientAccountTests(unittest.TestCase):
+    def setUp(self):
+        self.real_guard = account.network_guard
+        self.real_protection = account.protect_preferences
+        protection = patch.object(account, "protect_preferences")
+        guard = patch.object(account, "network_guard", return_value=nullcontext())
+        protection.start()
+        guard.start()
+        self.addCleanup(protection.stop)
+        self.addCleanup(guard.stop)
+
     def test_only_private_weak_key_for_expected_account(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "key"
@@ -45,7 +57,7 @@ class ClientAccountTests(unittest.TestCase):
                 self.assertEqual([call.args[0] for call in rpc.call.call_args_list], ["project_nomorework"])
 
     def test_late_result_before_detach_is_preserved(self):
-        snapshots = [state()] * 4 + [state(pending_results=1)]
+        snapshots = [state(), state(), state(pending_results=1)]
         with patch.object(account, "snapshot", side_effect=snapshots), patch.object(account.time, "sleep"):
             rpc = Mock()
             result = account.rejoin(rpc, "synthetic", 42, "example")
@@ -59,17 +71,83 @@ class ClientAccountTests(unittest.TestCase):
                 account.rejoin(rpc, "synthetic", 42, "example")
             rpc.call.assert_not_called()
 
-    def test_drained_rejoin_uses_key_only_in_protocol_and_restores_hold(self):
-        snapshots = [state(no_new_tasks=True)] * 5 + [state(attached=False)] + [state(no_new_tasks=False)]
+    def test_drained_rejoin_uses_key_only_in_protocol(self):
+        snapshots = [state()] * 3 + [state(attached=False)] + [state()]
         with patch.object(account, "snapshot", side_effect=snapshots), patch.object(account.time, "sleep"):
             rpc = Mock()
             result = account.rejoin(rpc, "synthetic", 42, "example")
             operations = [call.args[0] for call in rpc.call.call_args_list]
-            self.assertEqual(operations, ["project_nomorework", "project_detach", "project_attach",
-                                          "project_nomorework", "project_update"])
+            self.assertEqual(operations, ["project_nomorework", "project_detach", "project_attach"])
             self.assertNotIn("synthetic", str(result))
             self.assertEqual(result["status"], "scheduler attribution verified")
-            self.assertTrue(result["no_new_tasks"])
+            self.assertFalse(result["no_new_tasks"])
+
+    def test_user_held_project_is_refused_before_any_mutation(self):
+        with patch.object(account, "snapshot", return_value=state(no_new_tasks=True)):
+            rpc = Mock()
+            with self.assertRaisesRegex(ValueError, "User-held"):
+                account.rejoin(rpc, "synthetic", 42, "example")
+            rpc.call.assert_not_called()
+
+    def test_drain_journal_preserves_original_preference_across_two_invocations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "state.json"
+            original = account.migration_state(journal, state(), 42)
+            self.assertFalse(original["original_no_new_tasks"])
+            with patch.object(account, "snapshot", return_value=state(pending_results=1)):
+                self.assertIn("draining", account.rejoin(Mock(), "synthetic", 42, "example",
+                              original_no_work=original["original_no_new_tasks"])["status"])
+            reloaded = account.migration_state(journal, state(no_new_tasks=True), 42)
+            self.assertFalse(reloaded["original_no_new_tasks"])
+            snapshots = [state(no_new_tasks=True)] * 3 + [state(attached=False), state()]
+            with patch.object(account, "snapshot", side_effect=snapshots):
+                result = account.rejoin(Mock(), "synthetic", 42, "example",
+                                        original_no_work=reloaded["original_no_new_tasks"])
+            self.assertFalse(result["no_new_tasks"])
+            self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(ValueError):
+                account.migration_state(journal, state(), 43)
+
+    def test_network_guard_restores_prior_mode_after_exception(self):
+        rpc = Mock()
+        rpc.call.side_effect = [
+            ET.fromstring("<reply><network_mode>2</network_mode><network_mode_perm>2</network_mode_perm>"
+                          "<network_mode_delay>0</network_mode_delay></reply>"),
+            ET.fromstring("<reply><success/></reply>"),
+            ET.fromstring("<reply><network_mode>3</network_mode>"
+                          "<network_suspend_reason>16</network_suspend_reason></reply>"),
+            ET.fromstring("<reply><success/></reply>")]
+        with self.assertRaisesRegex(RuntimeError, "injected"):
+            with self.real_guard(rpc):
+                raise RuntimeError("injected")
+        self.assertEqual(rpc.call.call_args_list[1].args,
+                         ("set_network_mode", {"never": None, "duration": 600}))
+        self.assertEqual(rpc.call.call_args_list[-1].args,
+                         ("set_network_mode", {"auto": None, "duration": 0}))
+
+    def test_resource_preferences_are_protected_and_original_override_backed_up(self):
+        working = ET.fromstring("<reply><global_preferences><max_ncpus_pct>25</max_ncpus_pct>"
+                                "<cpu_usage_limit>30</cpu_usage_limit><mod_time>123</mod_time>"
+                                "<ram_max_used_busy_pct>50</ram_max_used_busy_pct>"
+                                "<ram_max_used_idle_pct>50</ram_max_used_idle_pct>"
+                                "<run_gpu_if_user_active>0</run_gpu_if_user_active>"
+                                "<run_if_user_active>0</run_if_user_active>"
+                                "<work_buf_min_days>0</work_buf_min_days>"
+                                "<work_buf_additional_days>0</work_buf_additional_days>"
+                                "</global_preferences></reply>")
+        rpc = Mock()
+        rpc.call.side_effect = [working, ET.fromstring("<reply/>"), ET.fromstring("<reply/>"), working]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = "<global_preferences><cpu_usage_limit>30</cpu_usage_limit></global_preferences>"
+            (root / "global_prefs_override.xml").write_text(original)
+            self.real_protection(rpc, root, root)
+            backup = next(root.glob("global-prefs-before-rejoin-*.json"))
+            self.assertEqual(json.loads(backup.read_text())["original_override"], original)
+            self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+            payload = rpc.call.call_args_list[1].args[1]["global_preferences"]
+            self.assertEqual(payload.findtext("max_ncpus_pct"), "25")
+            self.assertIsNone(payload.find("mod_time"))
 
     def test_same_weak_key_can_be_detected_without_resetting_client(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -86,6 +164,7 @@ class ClientAccountTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Unexpected scheduler account"):
                 account.rejoin(rpc, "synthetic", 42, "example")
             self.assertEqual(rpc.call.call_args.args[0], "project_nomorework")
+            self.assertNotIn("project_update", [call.args[0] for call in rpc.call.call_args_list])
 
     def test_snapshot_handles_presence_booleans_and_counts_all_project_results(self):
         rpc = Mock()

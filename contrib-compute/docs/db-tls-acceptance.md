@@ -307,19 +307,34 @@ instead of silently creating a second project.
 
 Stock BOINC 8.2 GUI-RPC authentication requires `MD5(nonce + GUI password)`.
 This is a transient, loopback-only protocol challenge, not a stored password
-hash; a narrowly documented CodeQL password-storage-query suppression covers
-that mandatory interoperability line only. It does not claim MD5 is suitable
-for password storage or permit remote, plaintext GUI-RPC exposure.
+hash. CodeQL's password-hashing warning requires an explicit audited decision
+on this mandatory interoperability line; inline LGTM comments are not honored
+by GitHub code scanning. This does not claim MD5 is suitable for password storage
+or permit remote, plaintext GUI-RPC exposure.
 
 The supported client rejects attaching an already attached URL. For an explicitly
-authorized managed-client rejoin, the helper first requests no new tasks and
-refuses to detach while any project result or scheduler RPC remains. Reinvoke
-after draining; it does not abort, reset, or discard existing work. A drained
-rejoin requires repeated quiet snapshots, uses the supplied weak key only in the
-private RPC payload, preserves an existing no-new-tasks preference, and waits a
+authorized managed-client rejoin, the helper records the original work-enabled
+preference in a private durable journal before requesting no new tasks. It refuses
+to detach while any project result or scheduler RPC remains; reinvoke after
+draining. A temporary client-wide network guard closes the final detach race and
+restores the previous permanent/temporary network mode even on errors. Other
+projects' transfers may pause briefly during this guard; their work is not reset.
+The supplied key is used only in the private RPC payload. Attribution waits a
 bounded time for the actual scheduler's expected user/name and nonzero host ID.
-Account-manager projects are refused. Other projects, client resource preferences,
-and historical server records are not rewritten. A standard detach can remove
-unused project downloads; inventory caches and obtain the explicit rejoin
-authorization before using it. This does not provision resources, activate the
-optional OCR-node profile, grant GPU consent, or change server pins/TLS policy.
+
+Stock `project_attach` re-enables networking and cannot atomically preserve a
+pre-existing user no-new-tasks hold. Therefore user-held and account-manager
+projects are refused **without changing them**, rather than claiming a safe hold
+that the client cannot provide. A helper-owned drain hold is distinguished by
+its journal and resumes the original work-enabled policy after rejoining.
+
+Before attachment, capture effective global resource preferences and protect
+them using the supported local-override RPC, preventing a new account's scheduler
+reply from silently changing CPU/memory and other limits. The original override
+and protected effective preferences are backed up privately beside the journal;
+the explicit local resource policy remains installed and should be inspected
+before subsequently changing account-wide preferences. Historical server records
+are not rewritten. A standard detach can remove unused project downloads;
+inventory caches and obtain explicit rejoin authorization first. This does not
+provision resources, activate the optional OCR-node profile, grant GPU consent,
+or change server pins/TLS policy.
