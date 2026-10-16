@@ -34,7 +34,7 @@ The maintainer made the rule foundational: **every authentication is by an Entra
 
    Short-lived tokens that Entra issues for a principal count as Entra authentication, because they carry that principal's RBAC. These are OAuth access tokens, and the registry refresh token that `az acr login` exchanges for an Entra token.
 
-   One exception ([ADR-0015](0015-onprem-ocr-workers.md)): onboarding an on-prem OCR node to Azure Arc uses a client secret. It belongs to a service principal that `scripts/ocr-node/onboard.sh` creates for one run, with only Azure Connected Machine Onboarding on the environment's group; it expires after 2 hours, is written nowhere but a root-only file on tmpfs during the connect, and the principal is deleted when the script exits.
+   One exception ([ADR-0015](0015-onprem-ocr-workers.md)): onboarding an on-prem OCR node to Azure Arc uses a client secret. It belongs to a service principal that `scripts/ocr-node/onboard.sh` creates for one run, with only Azure Connected Machine Onboarding on the environment's group. The secret expires after 2 hours and is written nowhere but a root-only file on tmpfs during the connect, and the principal is deleted when the script exits.
 
 3. **Enforced, not just configured.**
    - Azure Policy **denies** each "local auth on" setting above on the project resource groups (`infra/guardrails.bicep`).
@@ -62,7 +62,7 @@ The search experiment's share (`qw-search`, #251) is the same exception for a te
 ## Consequences
 
 - Nothing in the stack can be reached with a leaked key, because no service here accepts one.
-- Portal features that rely on keys stop working. For example, the Log Analytics "agents" key blade, and the legacy Application Insights ingestion by instrumentation key. Telemetry, if the API ever sends it, must use the Azure Monitor OpenTelemetry exporter with a managed identity (Monitoring Metrics Publisher on the component).
+- Portal features that rely on keys stop working, for example the Log Analytics "agents" key blade and the legacy Application Insights ingestion by instrumentation key. Telemetry, if the API ever sends it, must use the Azure Monitor OpenTelemetry exporter with a managed identity (Monitoring Metrics Publisher on the component).
 - The Quickwit fallback in 08 §8.2 changes. If the sidecar can't authenticate with its managed identity, it can't fall back to a user-delegation SAS. The fallback is a localhost proxy in the `api` container that adds the app identity's bearer token.
 
 ## Addendum: BOINC server exemptions (ADR-0019)

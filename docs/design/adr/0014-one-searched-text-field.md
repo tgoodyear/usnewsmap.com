@@ -13,7 +13,7 @@ Two more facts shaped the design. Quickwit 0.9.1's `remove_long` filter in our `
 ## Decision
 
 - **A version can search both texts in one field** (`text_layout: 2` in `current.json`, 05 §5.5.7). `text_all` holds LoC's words, 32 positions no query can match, then American Stories' words; `text_all_cg` holds each text's common-word pairs the same way. `text` and `text_as` are stored for snippets and `matched_in`, not indexed. A query looks each word up once.
-- **The release writes the tokens**, one per word as the version's analyzer folds them, with `_` where a word is dropped and in the gap, and the fields use Quickwit's `whitespace` tokenizer, as the pairs field already does. A gap of dropped filler words would cost at least 255 bytes a position, and a shorter filler word would be indexed and reachable by a prefix query.
+- **The release writes the tokens**, one per word as the version's analyzer folds them, with `_` where a word is dropped and in the gap. The fields use Quickwit's `whitespace` tokenizer, as the pairs field already does. A gap of dropped filler words would cost at least 255 bytes a position, and a shorter filler word would be indexed and reachable by a prefix query.
 - **`total.american_stories_only` is not counted on such a version.** Hits keep `matched_in` and `snippet_source`, which the API works out from the stored texts.
 - **`USNM_AMERICAN_STORIES_SEARCH=false` has no effect on such a version**: the API logs a warning and searches both texts.
 - **The API serves both layouts**, and refuses to load a layout it doesn't know. **Only a full base changes the layout** (`--single-text-field`, `USNM_SINGLE_TEXT_FIELD`, off by default); a delta follows the published version, as for the analyzer (#168, #278) and the decades (#123).
@@ -34,5 +34,5 @@ Two more facts shaped the design. Quickwit 0.9.1's `remove_long` filter in our `
 - **The index should be no larger**: the same words with positions in one dictionary, and OCR runs of 41 to 254 bytes become `_` instead of a term each.
 - **The indexed words are `usnm_core`'s**, the ones the query parser, the memory backend and the snippets use, rather than Quickwit's analysis of the raw text. Quickwit no longer analyzes queries a second time on these fields.
 - **The site loses the page-count note** about pages only American Stories' text matches; each hit keeps its badge.
-- **American Stories' text can't be switched off at query time** on such a version. Rolling `current.json` back to a version with a field per text, or a full rebuild without `--american-stories`, does it. A release without `--american-stories` on such a version builds a full base.
+- **American Stories' text can't be switched off at query time** on such a version. Rolling `current.json` back to a version with a field per text, or a full rebuild without `--american-stories`, switches it off. A release without `--american-stories` on such a version builds a full base.
 - **CI checks both layouts**: the parity tests load the fixture indexes a second time with the new mapping and run every query, filter and bucket against the reference on both.

@@ -8,7 +8,7 @@ Can the Mac run the actual OCR worker natively, rather than emulate the committe
 
 ## Native environment and build
 
-A dedicated Podman machine, `usnm-buda-native-481`, uses 4 CPUs, 8192 MiB RAM and a 60 GiB disk. Its configuration and data live under `~/Library/Application Support/usnm-buda-native-481/`, in a separate Podman namespace. This permits it to run alongside the existing Desktop and BOINC machines without changing their default connection. Cross-architecture execution was disabled in this build VM by writing `0` to `/proc/sys/fs/binfmt_misc/status`; its observed status was `disabled` during the build and executable checks. A VM reboot requires checking that setting again before a native-only rerun.
+A dedicated Podman machine, `usnm-buda-native-481`, uses 4 CPUs, 8192 MiB RAM and a 60 GiB disk. Its configuration and data live under `~/Library/Application Support/usnm-buda-native-481/`, in a separate Podman namespace. This permits it to run alongside the existing Desktop and BOINC machines without changing their default connection. Cross-architecture execution was disabled in this build VM by writing `0` to `/proc/sys/fs/binfmt_misc/status`; its observed status was `disabled` during the build and executable checks. After a VM reboot, check that setting again before a native-only rerun.
 
 The engine used the repository's existing `ocr/engines/tesseract/Containerfile`, with `BASE` overridden to a pinned ARM64 counterpart of the Debian trixie-slim base. The same Debian snapshot, Tesseract 5.5.0 package pins, floating-point shim and model checksums were retained. The worker used `ocr/boinc/Containerfile` with its Rust build-stage `FROM` pinned to an ARM64 Rust image, `BUILD_JOBS=2`, and the native engine supplied through `TESSERACT_FROM` and `TESSERACT_IMAGE`. These were local experiment overrides; production Containerfiles, image settings and release workflows were not changed.
 
@@ -53,10 +53,10 @@ export XDG_DATA_HOME="$HOME/Library/Application Support/usnm-buda-native-481/dat
   sha256:59aacffd3c9ea675dcd6bc6ef1943a8ea7b9a8eb27c3f7b87b16c71e8f760c3c -m
 ```
 
-The namespace directory retains `source/`, `source.tar.gz`, `base-pins.json`, `build-report.json`, `native-elf-report.json`, build logs and the preparation/build/test scripts under `tools/`. Its native build script reuses the saved ARM base pins. The BOINC-managed VM also retains the loaded native worker tag for wrapper follow-up. Temporary standalone `boinc` containers/derived tags were removed after testing.
+The namespace directory retains `source/`, `source.tar.gz`, `base-pins.json`, `build-report.json`, `native-elf-report.json`, build logs and the preparation, build and test scripts under `tools/`. Its native build script reuses the saved ARM base pins. The BOINC-managed VM also retains the loaded native worker tag for wrapper follow-up. Temporary standalone `boinc` containers and derived tags were removed after testing.
 
 ## What is left
 
-Resolve and retest the wrapper/helper pause-restart failure. Complete the [server spike](../experiments/2026-10-14-buda/README.md) with a registered native Mac app version, signed wrapper, native science variant, task distribution, upload, custom validation and recovery. A public native worker release must receive its own immutable registry digest and fresh cohort metadata; this locally built image does not update the existing production worker setting.
+Resolve and retest the pause-restart failure in the wrapper and helper. Complete the [server spike](../experiments/2026-10-14-buda/README.md) with a registered native Mac app version, signed wrapper, native science variant, task distribution, upload, custom validation and recovery. A public native worker release must receive its own immutable registry digest and fresh cohort metadata; this locally built image does not update the existing production worker setting.
 
 The native build establishes that the OCR worker can run on ARM. It does not remove ADR-0020's validation, code-authorization or mutable-variant concerns, and does not establish the minimum Mac client version from testing one development release.
