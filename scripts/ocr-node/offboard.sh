@@ -249,7 +249,8 @@ rm -rf /var/lib/usnm-ocr-reboot /var/lib/usnm-ocr-update /usr/local/libexec/usnm
 systemctl daemon-reload'
 # shellcheck disable=SC2016 # expanded on the node
 REMOTE=''"$UPDATES_REMOVE"'
-if systemctl is-active --quiet usnm-ocr-worker.service; then
+worker_unit_state=$(systemctl show --property=LoadState --value usnm-ocr-worker.service)
+if [ "$worker_unit_state" != not-found ]; then
   systemctl stop usnm-ocr-worker.service || {
     echo "error: worker did not stop cleanly; refusing to remove its engine runtime" >&2
     exit 1

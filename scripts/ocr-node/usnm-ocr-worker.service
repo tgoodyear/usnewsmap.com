@@ -34,7 +34,9 @@ Environment=XDG_RUNTIME_DIR=/run/usnm-ocr-worker
 EnvironmentFile=/etc/usnm/ocr-worker.env
 # Local changes (RUST_LOG, say), read after it and never written by a script.
 EnvironmentFile=-/etc/usnm/ocr-worker.local.env
-ExecStart=/usr/local/bin/usnm-ocr-worker run --drain-on-stop
+# Environment-backed so older binaries used during rollback safely ignore it.
+Environment=USNM_OCR_DRAIN_ON_STOP=true
+ExecStart=/usr/local/bin/usnm-ocr-worker run
 # On stop, SIGTERM goes to the worker alone (mixed). It stops taking pages
 # and gives in-flight pages their configured page timeout (1,200 s on the
 # production nodes), then flushes telemetry for at most 30 s. 1,260 s covers

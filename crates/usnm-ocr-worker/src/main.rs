@@ -287,7 +287,7 @@ enum Command {
         shutdown_grace_secs: u64,
         /// On planned stops, stop taking pages and give in-flight pages
         /// their configured page timeout before abandoning them.
-        #[arg(long)]
+        #[arg(long, env = "USNM_OCR_DRAIN_ON_STOP")]
         drain_on_stop: bool,
         /// Also publish the scan server's fetched list for this prefetch
         /// manifest version to `ocr-out/fetched/` every
@@ -556,6 +556,43 @@ enum Command {
         #[command(subcommand)]
         command: EnginesCommand,
     },
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn drain_on_stop_can_be_enabled_through_environment() {
+        struct RestoreEnv(Option<std::ffi::OsString>);
+
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("USNM_OCR_DRAIN_ON_STOP", value),
+                    None => std::env::remove_var("USNM_OCR_DRAIN_ON_STOP"),
+                }
+            }
+        }
+
+        let _restore = RestoreEnv(std::env::var_os("USNM_OCR_DRAIN_ON_STOP"));
+        std::env::set_var("USNM_OCR_DRAIN_ON_STOP", "true");
+        let cli = Cli::try_parse_from([
+            "usnm-ocr-worker",
+            "run",
+            "--queue-url",
+            "https://example.queue.core.windows.net",
+            "--out-url",
+            "https://example.blob.core.windows.net/ocr-out",
+            "--node-id",
+            "node",
+        ])
+        .expect("parse environment-backed drain setting");
+        match cli.command {
+            Command::Run { drain_on_stop, .. } => assert!(drain_on_stop),
+            _ => panic!("expected run command"),
+        }
+    }
 }
 
 #[derive(Subcommand)]
