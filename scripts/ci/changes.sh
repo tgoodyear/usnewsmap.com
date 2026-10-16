@@ -89,9 +89,9 @@ files=$(grep -Ev '\.md$|^docs/' <<< "$files" || true)
 if grep -Eq '^contrib-compute/boinc/html/' <<< "$files"; then boinc_pages=true; else boinc_pages=false; fi
 files=$(grep -Ev '^contrib-compute/boinc/html/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
-# The v1 lock is embedded in the LoC-only mirror CLI; other gold fixtures are not.
+# Gold fixtures are excluded from application/image rules. The embedded v1 lock
+# is considered separately for Rust below, and for BOINC's contrib checks.
 built=$(grep -Ev '^fixtures/ocr-gold/' <<< "$files" || true)
-built+=$'\n'$(grep -E '^fixtures/ocr-gold/bundle-v1\.lock\.json$' <<< "$files" || true)
 matches_built() { [ -n "$built" ] && grep -Eq "$1" <<< "$built"; }
 # infra/quickwit/ holds the index configs (read by the ingest image) and the
 # searcher config (applied on deploy). Everything else under infra/ needs a
@@ -226,7 +226,9 @@ narrow quickwit usnm-search usnm-ingest
 narrow image usnm-api usnm-ingest
 narrow e2e usnm-api
 for part in rust quickwit web image e2e fixtures; do
-  if matches_built "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
+  if matches_built "${!part}" ||
+    { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
+    [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 for part in ocr_worker page_language contrib ocr_gold; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
