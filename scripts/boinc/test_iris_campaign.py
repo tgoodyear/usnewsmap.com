@@ -155,13 +155,13 @@ class IrisCampaignTest(unittest.TestCase):
             identity = "a" * 64
             result = {"id": identity, "status": "error", "text": ""}
             (jobs / f"{identity}.json").write_text("{}")
-            uploaded = root / "usnm_iris_result_0"
+            uploaded = root / f"usnm_iris_{identity}_0_0"
             uploaded.write_text(json.dumps(result))
             with patch.object(checker, "validate_job"), patch.object(checker, "validate_result") as validate:
                 with self.assertRaisesRegex(ValueError, "inference failed"):
                     checker.check(uploaded, jobs, root / "seen")
                 validate.assert_called_once_with(result, {})
-            self.assertEqual(json.loads((root / "seen/usnm_iris_result_0.json").read_text()), result)
+            self.assertEqual(json.loads((root / "seen" / (uploaded.name + ".json")).read_text()), result)
 
     def test_unregistered_result_and_conflicting_replay_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -169,7 +169,7 @@ class IrisCampaignTest(unittest.TestCase):
             jobs = root / "jobs"
             jobs.mkdir()
             identity = "a" * 64
-            uploaded = root / "usnm_iris_result_0"
+            uploaded = root / f"usnm_iris_{identity}_0_0"
             uploaded.write_text(json.dumps({"id": identity, "status": "ok"}))
             with self.assertRaises(FileNotFoundError):
                 checker.check(uploaded, jobs, root / "seen")
@@ -179,6 +179,22 @@ class IrisCampaignTest(unittest.TestCase):
                 uploaded.write_text(json.dumps({"id": identity, "status": "ok", "text": "different"}))
                 with self.assertRaisesRegex(ValueError, "conflicting"):
                     checker.check(uploaded, jobs, root / "seen")
+
+    def test_registered_result_cannot_validate_another_jobs_upload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jobs = root / "jobs"
+            jobs.mkdir()
+            first, second = "a" * 64, "b" * 64
+            for identity in (first, second):
+                (jobs / f"{identity}.json").write_text("{}")
+            uploaded = root / f"usnm_iris_{second}_0_r12345_0"
+            uploaded.write_text(json.dumps({"id": first, "status": "ok"}))
+            with patch.object(checker, "validate_job") as validate:
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    checker.check(uploaded, jobs, root / "seen")
+                validate.assert_not_called()
+            self.assertFalse((root / "seen").exists())
 
     def test_failed_boinc_job_without_uploaded_output_is_terminal_error(self):
         identity = "a" * 64

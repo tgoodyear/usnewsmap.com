@@ -22,14 +22,15 @@ def check(result_path, jobs, keep):
     identity = result.get("id")
     if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
         raise ValueError("invalid Iris result job identity")
+    uploaded = re.fullmatch(r"usnm_iris_([0-9a-f]{64})_[A-Za-z0-9_.-]+", result_path.name)
+    if not uploaded or len(result_path.name) > 200 or uploaded.group(1) != identity:
+        raise ValueError("Iris result identity does not match BOINC upload filename")
     job_path = jobs / f"{identity}.json"
     if job_path.stat().st_size > 65536:
         raise ValueError("registered Iris job exceeds 64 KiB")
     job = json.loads(job_path.read_text())
     validate_job(job)
     validate_result(result, job)
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", result_path.name):
-        raise ValueError("invalid uploaded result filename")
     keep.mkdir(parents=True, exist_ok=True)
     target = keep / (result_path.name + ".json")
     if target.exists():
