@@ -30,6 +30,12 @@ future canary assignments, not already assigned tasks. Existing stock applicatio
 selection, CPU/job limits, other preferences and venue editing remain available.
 No operator should silently enroll accounts or edit authenticators.
 
+Rebuild the BOINC **base and server** through `build-boinc-images.sh` before
+enabling this release. The scheduler patch checks the untrimmed preference in
+the effective-venue buffer, before stock `parse_str()` strips whitespace.
+An XML-only rollout on an old scheduler is insufficient. The base cache key
+includes the patch, so the normal build pipeline will invalidate it.
+
 These native-only classes admit stable BOINC 8.2.11+; unlike containers they do
 not need the 8.2.13 container extension. They require a CUDA 12.4-capable NVIDIA driver (the pinned
 runtime includes CUDA libraries; no toolkit/WSL/Podman), 3 GB/7 GB detected GPU
