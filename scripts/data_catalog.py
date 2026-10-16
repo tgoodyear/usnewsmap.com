@@ -94,7 +94,7 @@ def sha(value, prefixed=False):
 
 def timestamp(value):
     require(isinstance(value, str) and len(value) <= 40 and
-            re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)", value),
+            re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)", value),
             "expected RFC3339 timestamp with timezone")
     try:
         parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -226,7 +226,14 @@ def validate_event(event):
                 "unknown aggregate must not claim a count")
         identity, invariant, data = [p["stage_id"]], "", dict(p)
     elif kind == "artifact":
-        obj(p, ("artifact_id", "sha256", "version", "location", "reference", "state"))
+        require(isinstance(p, dict), "artifact payload must be an object")
+        obj({k: v for k, v in p.items() if k not in ("fetched_at", "bytes")},
+            ("artifact_id", "sha256", "version", "location", "reference", "state"))
+        if "fetched_at" in p:
+            timestamp(p["fetched_at"])
+        if "bytes" in p:
+            require(type(p["bytes"]) is int and 0 <= p["bytes"] <= 10**12,
+                    "invalid artifact byte length")
         for key in ("artifact_id", "version", "location"):
             token(p[key])
         sha(p["sha256"])
@@ -372,6 +379,74 @@ def ingest(db, batch):
         return {"batch_id": batch_id, "inserted": inserted, "replayed": False}
     finally:
         conn.close()
+
+
+def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source):
+    """Bounded index adapter: local stat is presence evidence, never checksum verification."""
+    token(batch_id)
+    token(source)
+    root = Path(scan_root).resolve(strict=True)
+    require(root.is_dir(), "scan root must be a directory")
+    out = Path(evidence_out)
+    require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
+    rows, total = [], 0
+    observed = now()
+    with Path(index).open("rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "index must be a regular file")
+        for number, raw in enumerate(iter(lambda: stream.readline(MAX_LINE + 1), b""), 1):
+            total += len(raw)
+            require(number <= MAX_EVENTS and total <= MAX_BATCH and len(raw) <= MAX_LINE,
+                    "index exceeds bounded batch; split locally before importing")
+            entry = load_json(raw)
+            obj(entry, ("doc_id", "batch", "batch_version", "loc_url", "resolution",
+                        "fetched_at", "bytes", "sha256", "download_ms"))
+            token(entry["doc_id"])
+            require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", entry["batch"]),
+                    "invalid cached scan batch")
+            require(type(entry["batch_version"]) is int and entry["batch_version"] > 0,
+                    "invalid batch_version")
+            require(entry["resolution"] == "full", "only full-resolution cache indexes supported")
+            sha(entry["sha256"])
+            timestamp(entry["fetched_at"])
+            require(type(entry["bytes"]) is int and 0 <= entry["bytes"] <= 10**12,
+                    "invalid cached scan bytes")
+            require(type(entry["download_ms"]) is int and entry["download_ms"] >= 0,
+                    "invalid download_ms")
+            match = re.fullmatch(r"([A-Za-z0-9-]+)_(\d{4}-\d\d-\d\d)_ed-(\d+)_seq-(\d+)",
+                                 entry["doc_id"])
+            require(match is not None, "unsupported cached scan doc_id")
+            paper, date, edition, sequence = match.groups()
+            reference = f"keep/{entry['batch']}/{paper}/{date}/{int(edition)}/{int(sequence)}.jpg"
+            candidate = root / reference
+            require(candidate.resolve().is_relative_to(root), "cached scan escapes scan root")
+            require(not any(parent.is_symlink() for parent in
+                            (candidate,) + tuple(candidate.parents) if parent != root),
+                    "cached scan path must not contain symlinks")
+            try:
+                file_stat = candidate.stat()
+                present = stat.S_ISREG(file_stat.st_mode) and file_stat.st_size == entry["bytes"]
+            except FileNotFoundError:
+                present = False
+            payload = {"artifact_id": "scan", "sha256": entry["sha256"],
+                       "version": entry["sha256"], "location": "cached-scans",
+                       "reference": reference, "state": "present" if present else "missing",
+                       "fetched_at": entry["fetched_at"], "bytes": entry["bytes"]}
+            event = {"schema_version": 1, "batch_id": batch_id,
+                     "event_id": "cached-" + digest([batch_id, number, entry["doc_id"]]),
+                     "kind": "artifact", "source": source, "observed_at": observed,
+                     "page_id": "loc:" + entry["doc_id"], "payload": payload}
+            validate_event(event)
+            rows.append(canonical(event) + "\n")
+    require(rows, "empty cached scan index")
+    encoded = "".join(rows).encode()
+    require(len(encoded) <= MAX_BATCH, "projected batch exceeds 16 MiB; split index")
+    # Original fetched_at is retained; stat time is the new observation, not byte verification.
+    with out.open("xb") as stream:
+        os.chmod(out, 0o600)
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return ingest(db, out)
 
 
 def bounded_query(db, action):
@@ -646,6 +721,14 @@ HTTP is optional read-only numeric loopback, single-request bounded backlog; no 
 Do not expose it through an unauthenticated proxy. Local files/exports are trusted
 operator inputs; use filesystem access controls, never include text or credentials
 in identifiers or references. Retain evidence on durable storage; SQLite is disposable.
+ingest-cached-scans explicitly adapts bounded index-full.jsonl slices plus actual local
+stat of <scan-root>/keep/<batch>/<paper>/<date>/<edition>/<sequence>.jpg. Index alone
+does NOT establish presence. Regular file and matching size => present, never verified;
+absent/size mismatch => missing. Does not fetch or read image bytes. Original nanosecond
+fetched_at and byte length are retained; observed_at is adapter stat observation time.
+Original loc_url/download timing are discarded. A fresh immutable --evidence-out is
+required for replay/rebuild. Split large indexes into <=10000-line/16MiB local batches.
+Artifact payload optionally accepts fetched_at and bytes for this source provenance.
 """
 
 
@@ -656,6 +739,12 @@ def main(argv=None):
     subs = parser.add_subparsers(dest="command", required=True)
     p = subs.add_parser("ingest", help="transactionally import one immutable evidence JSONL batch")
     p.add_argument("batch")
+    p = subs.add_parser("ingest-cached-scans", help="bounded cache index + local stat, NOT verification")
+    p.add_argument("index")
+    p.add_argument("--scan-root", required=True)
+    p.add_argument("--evidence-out", required=True)
+    p.add_argument("--batch-id", required=True)
+    p.add_argument("--source", required=True)
     subs.add_parser("init", help="create an empty local catalog; snapshot coverage remains unknown")
     p = subs.add_parser("query", help="bounded page detail or filtered metadata (keyset pagination)")
     p.add_argument("kind", choices=("page", "run", "artifact", "page_state", "stage", "missing"))
@@ -676,6 +765,9 @@ def main(argv=None):
             result = {"schema_version": 1, "initialized": True}
         elif args.command == "ingest":
             result = ingest(args.db, args.batch)
+        elif args.command == "ingest-cached-scans":
+            result = ingest_cached_scans(args.db, args.index, args.scan_root,
+                                         args.evidence_out, args.batch_id, args.source)
         elif args.command == "query":
             filters = {key: getattr(args, key) for key in
                        ("page_id", "source", "engine", "status", "run_id") if getattr(args, key)}

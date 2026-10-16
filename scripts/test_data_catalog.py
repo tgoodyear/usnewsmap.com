@@ -119,6 +119,51 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(c.CatalogError):
             c.adapt_run(malformed, PAGE)
 
+    def test_real_cached_scan_index_adapter_presence_not_verification(self):
+        doc = "2017270200_1885-08-20_ed-1_seq-4"
+        fetched = "2026-10-11T22:32:31.635966037Z"
+        scan_root = self.work / "scans"
+        scan = scan_root / "keep/nbu_irisvirginica/2017270200/1885-08-20/1/4.jpg"
+        scan.parent.mkdir(parents=True)
+        scan.write_bytes(b"test-image")
+        index = self.work / "index-full.jsonl"
+        row = {"doc_id": doc, "batch": "nbu_irisvirginica", "batch_version": 1,
+               "loc_url": "https://tile.loc.gov/example.jpg", "resolution": "full",
+               "fetched_at": fetched, "bytes": scan.stat().st_size,
+               "sha256": HASH, "download_ms": 2050}
+        index.write_text(c.canonical(row) + "\n")
+        evidence = self.work / "cached-evidence.jsonl"
+        self.cli("ingest-cached-scans", str(index), "--scan-root", str(scan_root),
+                 "--evidence-out", str(evidence), "--batch-id", "cached-1",
+                 "--source", "pve-big-stat")
+        item = c.query(self.db, "artifact", {})["items"][0]
+        self.assertEqual(item["page_id"], "loc:" + doc)
+        self.assertEqual(item["data"]["state"], "present")
+        self.assertEqual(item["data"]["fetched_at"], fetched)
+        self.assertEqual(c.snapshot(self.db)["artifacts"]["verified"], 0)
+        self.assertNotIn("https://", evidence.read_text())
+        self.assertNotIn("loc_url", evidence.read_text())
+        self.assertEqual(c.timestamp(fetched), "2026-10-11T22:32:31.635966Z")
+        scan.unlink()
+        c.ingest_cached_scans(self.db, index, scan_root,
+                              self.work / "cached-missing.jsonl", "cached-2", "pve-big-stat")
+        self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["state"], "missing")
+        # Wrong-size files are not considered present either.
+        scan.write_bytes(b"x")
+        c.ingest_cached_scans(self.db, index, scan_root,
+                              self.work / "cached-size.jsonl", "cached-3", "pve-big-stat")
+        self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["data"]["state"], "missing")
+        with self.assertRaises(c.CatalogError):
+            c.ingest_cached_scans(self.db, index, scan_root, evidence, "cached-4", "pve-big-stat")
+        self.assertEqual(c.ingest(self.db, evidence)["inserted"], 0)
+        # Untrusted cache coordinates cannot traverse outside the provided root.
+        row["batch"] = "../escape"
+        index.write_text(c.canonical(row) + "\n")
+        with self.assertRaises(c.CatalogError):
+            c.ingest_cached_scans(self.db, index, scan_root,
+                                  self.work / "bad.jsonl", "bad", "pve-big-stat")
+        self.assertFalse((self.work / "bad.jsonl").exists())
+
     def test_cli_end_to_end_and_snapshot_freshness(self):
         batch = self.batch([event(), event("r1", "run"), event("a1", "page_state"),
                             event("s1", "stage", T1)])
