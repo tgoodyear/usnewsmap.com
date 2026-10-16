@@ -20,6 +20,16 @@ function randomCube(places: number, buckets: number, seed: number) {
 }
 
 describe("prefix sums", () => {
+  it("remaps place indices while accumulating without changing the input cube", () => {
+    const cube = { p: [0, 1, 2, 3], b: [0, 0, 1, 1], h: [4, 6, 8, 10] };
+    const original = structuredClone(cube);
+    const groups = [1, 0, 1];
+    const sums = prefixSums(cube, 3, 2, (place) => groups[place] ?? 2);
+    expect(Array.from(windowValues(sums, 1, null))).toEqual([6, 12, 10]);
+    expect(Array.from(windowValues(sums, 1, 1))).toEqual([0, 8, 10]);
+    expect(cube).toEqual(original);
+  });
+
   it("match brute force for every bucket and window", () => {
     const P = 7;
     const B = 25;

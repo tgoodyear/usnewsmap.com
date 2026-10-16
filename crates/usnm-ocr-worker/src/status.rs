@@ -46,6 +46,8 @@ pub struct About {
     pub version: String,
     pub concurrency: u32,
     pub engine: String,
+    pub models: Vec<String>,
+    pub routes: BTreeMap<String, String>,
     pub scan_cache_url: Option<String>,
 }
 
@@ -110,13 +112,12 @@ fn journal_id(_: &std::fs::Metadata) -> String {
     String::new()
 }
 
-/// The short form of an engine tag for the routes: its `profile=`, else
-/// the tag.
+/// The engine/version and profile, without image/model digests.
 fn profile(tag: &str) -> String {
-    tag.split_whitespace()
-        .find_map(|w| w.strip_prefix("profile="))
-        .unwrap_or(tag)
-        .to_owned()
+    match tag.split_whitespace().find(|w| w.starts_with("profile=")) {
+        Some(profile) => format!("{} {profile}", tag.split_whitespace().next().unwrap_or(tag)),
+        None => tag.to_owned(),
+    }
 }
 
 impl Tracker {
@@ -273,6 +274,8 @@ impl Tracker {
             .and_then(|(p, _)| std::fs::metadata(p).ok());
         let mut in_flight: Vec<InFlight> = i.in_flight.values().cloned().collect();
         in_flight.sort_by_key(|p| p.started_at);
+        let mut routes = self.about.routes.clone();
+        routes.extend(i.routes.clone());
         WorkerStatus {
             schema: usnm_ocr_contract::status::SCHEMA,
             node_id: self.about.node_id.clone(),
@@ -282,8 +285,8 @@ impl Tracker {
             concurrency: self.about.concurrency,
             engine: self.about.engine.clone(),
             engine_version: String::new(),
-            models: Vec::new(),
-            routes: i.routes.clone(),
+            models: self.about.models.clone(),
+            routes,
             scan_cache_url: self.about.scan_cache_url.clone(),
             loc_hold_secs: self.scans.as_ref().and_then(|s| {
                 s.held_until().map(|t| {
@@ -539,6 +542,14 @@ async fn serve_once(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dashboard_routes_keep_the_engine_and_profile() {
+        assert_eq!(
+            super::profile("ndlocr-lite/1.0 profile=default image=local"),
+            "ndlocr-lite/1.0 profile=default"
+        );
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;
@@ -584,9 +595,14 @@ mod tests {
             node_id: "usnm-ocr-node1".into(),
             concurrency: 4,
             engine: "usnm-tesseract".into(),
+            models: vec!["deu".into(), "frak2021".into()],
+            routes: [("deu".into(), "frak2021".into())].into(),
             ..About::default()
         };
         let t = Arc::new(Tracker::new(about.clone(), Some(journal.clone()), None).unwrap());
+        let initial = t.status();
+        assert_eq!(initial.models, ["deu", "frak2021"]);
+        assert_eq!(initial.routes["deu"], "frak2021");
         t.begin("m1", "sn1_1890-01-01_ed-1_seq-1", "deu", "ocr-bulk");
         t.begin("m2", "sn1_1890-01-01_ed-1_seq-2", "deu", "ocr-bulk");
         // The same page again, under another message: tracked apart.
@@ -598,7 +614,7 @@ mod tests {
         assert!(s.in_flight.iter().any(|p| p.stage == "ocr"));
         assert_eq!(s.last_hour.done, 1);
         assert_eq!(s.last_hour.from_cache, 1);
-        assert_eq!(s.routes["deu"], "frak2021");
+        assert_eq!(s.routes["deu"], "tesseract/5.5.0 profile=frak2021");
         assert_eq!(s.recent.len(), 1);
         assert!(s.journal_bytes > 0);
         assert!(!s.journal_id.is_empty());

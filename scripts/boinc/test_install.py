@@ -53,6 +53,18 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(target.parts[-3], "usnm_gold")
         self.assertTrue((self.project / "templates" / "usnm_gold_out").is_file())
 
+    def test_japanese_app_has_separate_inputs_and_four_gib_cpu_budget(self):
+        target = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_ndlocr")
+        self.assertEqual(target.parts[-3], "usnm_ndlocr")
+        job = next(target.glob("job_*.toml")).read_text()
+        self.assertIn("--memory=4g --memory-swap=4g", job)
+        self.assertIn("--network=none", job)
+        for name in ("usnm_ndlocr_in", "usnm_ndlocr_out"):
+            self.assertTrue((self.project / "templates" / name).is_file())
+        self.assertIn("ndlocr.json", (self.project / "templates/usnm_ndlocr_in").read_text())
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_ndlocr", "docker_nvidia_cuda")
+
     def test_surya_versions_per_plan_class(self):
         cpu = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_surya", "docker_mt")
         gpu = module.install(self.project, self.wrapper, IMAGE, "1.1", "usnm_surya", "docker_nvidia_cuda")

@@ -48,6 +48,8 @@ import { useSkewModel } from "./engine/useSkew";
 import { skewInfo } from "./lib/skewText";
 import { Brand } from "./components/Brand";
 import { congressFeature } from "./lib/congress";
+import { prepareStates, stateTotals, stateBreaks } from "./engine/states";
+import { StatesLegend, StatesTable } from "./components/StatesPanel";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
@@ -171,6 +173,20 @@ export function App() {
     if (congressPlace) byId.set(congressPlace.id, congressFeature(congressPlace));
     return byId;
   }, [places.data, congressPlace]);
+  const supportsStates =
+    view.norm === "raw" && view.source === "news" && view.lccn.length === 0 && baselineRef !== null;
+  const statesActive = supportsStates && view.layer === "states";
+  const statesSums = useMemo(
+    () => (statesActive && data && coverage.data && places.data ? prepareStates(data, coverage.data, features) : null),
+    [statesActive, data, coverage.data, places.data, features],
+  );
+  const states = useMemo(() => (statesSums ? stateTotals(statesSums, t, view.win) : []), [statesSums, t, view.win]);
+  const breaks = useMemo(() => stateBreaks(states), [states]);
+  const filterState = useCallback(
+    (code: string) =>
+      setView({ state: [...new Set([...view.state, code])].sort(), t: "", place: "", sort: "oldest" }, true),
+    [setView, view.state],
+  );
 
   // Relative rate (doc 11): fitted once per search, off the main thread;
   // each frame is then scored from prefix sums.
@@ -529,7 +545,11 @@ export function App() {
   // lists keep no state of their own, so a rotation across the breakpoint loses nothing. How many
   // places each list shows is kept in App (`listShown`, above) for that reason.
   const narrow = useMediaQuery(PHONE);
-  const legend = !data ? null : norm === "skew" && skewModel ? (
+  const legend = !data ? null : statesActive ? (
+    statesSums ? (
+      <StatesLegend breaks={breaks} />
+    ) : null
+  ) : norm === "skew" && skewModel ? (
     <SkewLegend
       places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
       states={frame ? frame.statePages.filter((p) => p > 0).length : 0}
@@ -545,10 +565,13 @@ export function App() {
   );
   const sidePanel = !data ? null : (
     <>
+      {statesActive && statesSums && (
+        <StatesTable rows={states} onFilter={filterState} baseline={baselineNote(data.baseline)} />
+      )}
       {norm === "skew" && !view.place && (
         <SkewLists rows={skewListed} onSelect={select} shown={listShown} onShown={setListShown} />
       )}
-      {norm === "raw" && !view.place && (
+      {norm === "raw" && !view.place && !statesActive && (
         <PagesLists
           rows={visible}
           onSelect={select}
@@ -694,11 +717,12 @@ export function App() {
                     <label>
                       <span className="visually-hidden">Map layer</span>
                       <select
-                        value={view.layer}
+                        value={view.layer === "states" && !supportsStates ? "points" : view.layer}
                         onChange={(e) => setView({ layer: e.target.value as ViewState["layer"] })}
                       >
                         <option value="points">Points</option>
                         <option value="heat">Heat</option>
+                        {supportsStates && <option value="states">States</option>}
                       </select>
                     </label>
                   )}
@@ -738,6 +762,22 @@ export function App() {
               </div>
 
               {mix && <p className="mix">{mix}</p>}
+              {statesActive && data.total.places > data.places.id.length && (
+                <p className="notice" role="note">
+                  State matching-page totals are incomplete: only {data.places.id.length.toLocaleString()} of{" "}
+                  {data.total.places.toLocaleString()} matching places were returned. Missing places cannot be assigned
+                  to states; rates may undercount. Published-page totals include all coverage places.
+                </p>
+              )}
+              {statesActive && !statesSums && (
+                <p className="notice" role={coverage.isError ? "alert" : "status"}>
+                  {coverage.isError
+                    ? "Pages-published counts could not be loaded. Reload to try again."
+                    : coverage.data
+                      ? "State rates are unavailable: coverage does not align with this search."
+                      : "Loading pages-published counts for states…"}
+                </p>
+              )}
               {filteredPapers && (
                 <p className="notice" role="status">
                   Only pages from{" "}
@@ -778,7 +818,7 @@ export function App() {
                   {skewNotice.text}
                 </p>
               )}
-              {data.total.hits === 0 ? (
+              {data.total.hits === 0 && (
                 <div className="notice" role="status">
                   <strong>No pages match.</strong>{" "}
                   {/* A Congress search has no state or language filters to remove (#229). */}
@@ -792,7 +832,8 @@ export function App() {
                             : "state filters"
                       }.`}
                 </div>
-              ) : (
+              )}
+              {(data.total.hits > 0 || statesActive) && (
                 // Busy is scoped to the stale map or table, not <main>: the status
                 // messages above stay live while a search runs.
                 <div className="stage" aria-busy={agg.isFetching}>
@@ -827,7 +868,12 @@ export function App() {
                     <Suspense fallback={<div className="map map--loading">Loading map…</div>}>
                       <MapView
                         points={shown}
-                        layer={view.norm === "raw" ? view.layer : "points"}
+                        layer={
+                          view.norm === "raw" && (view.layer !== "states" || supportsStates) ? view.layer : "points"
+                        }
+                        states={states}
+                        stateBreaks={breaks}
+                        onStateFilter={filterState}
                         norm={norm}
                         maxValue={norm === "skew" ? maxExpected : maxValue}
                         selected={view.place}
@@ -843,7 +889,7 @@ export function App() {
                 </div>
               )}
 
-              {count > 0 && data.total.hits > 0 && (
+              {count > 0 && (data.total.hits > 0 || statesActive) && (
                 <Announcer
                   message={
                     clear
@@ -861,7 +907,7 @@ export function App() {
                   }
                 />
               )}
-              {count > 0 && data.total.hits > 0 && (
+              {count > 0 && (data.total.hits > 0 || statesActive) && (
                 <footer className="timebar">
                   <TimeDock
                     unit={data.bucket.unit}

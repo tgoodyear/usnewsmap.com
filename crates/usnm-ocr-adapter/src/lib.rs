@@ -10,6 +10,8 @@
 //! ALTO and text from it. Adapters never tile, merge tiles or strip
 //! markup: the worker does.
 
+pub mod ndlocr;
+
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -24,6 +26,12 @@ use usnm_ocr_contract::engine::{
 /// What an engine read on a page.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reading {
+    /// Engine ALTO, with its own plain text and resolution.
+    Alto {
+        alto: Vec<u8>,
+        text: String,
+        dpi: u32,
+    },
     /// Plain text only, with its markup.
     Text { text: String, markup: Markup },
     /// Blocks, lines or words with boxes.
@@ -238,22 +246,39 @@ pub fn answer<R: Reader>(
             )
         }
     };
-    let (boxes, text, markup) = match reading {
+    let (layout, text, markup, name, kind, alto_dpi) = match reading {
+        Reading::Alto { alto, text, dpi } => (
+            alto,
+            text,
+            Markup::None,
+            "layout.xml",
+            Layout::Alto,
+            Some(f64::from(dpi)),
+        ),
         Reading::Text { text, markup } => (
-            page_boxes(&text, req.image.width, req.image.height),
+            serde_json::to_vec(&page_boxes(&text, req.image.width, req.image.height))
+                .expect("serializable boxes"),
             text,
             markup,
+            "boxes.json",
+            Layout::Boxes,
+            None,
         ),
         Reading::Boxes { boxes, markup } => {
             let text = boxes_text(&boxes);
-            (boxes, text, markup)
+            (
+                serde_json::to_vec(&boxes).expect("serializable boxes"),
+                text,
+                markup,
+                "boxes.json",
+                Layout::Boxes,
+                None,
+            )
         }
     };
     let out = root.map(&req.out);
     let out_str = req.out.trim_end_matches('/');
-    let written = serde_json::to_vec(&boxes)
-        .map_err(std::io::Error::other)
-        .and_then(|b| write_file(&out, "boxes.json", &b))
+    let written = write_file(&out, name, &layout)
         .and_then(|()| write_file(&out, "page.txt", text.as_bytes()));
     if let Err(e) = written {
         return failure(
@@ -268,9 +293,9 @@ pub fn answer<R: Reader>(
         engine_stats: Default::default(),
         error: None,
         layout: Some(LayoutFile {
-            alto_dpi: None,
-            kind: Layout::Boxes,
-            path: format!("{out_str}/boxes.json"),
+            alto_dpi,
+            kind,
+            path: format!("{out_str}/{name}"),
         }),
         markup,
         partial: false,

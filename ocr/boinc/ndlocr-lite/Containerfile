@@ -1,0 +1,15 @@
+# The signed BOINC wrapper pins this worker; jobs pin its immutable engine base.
+ARG NDLOCR_IMAGE
+ARG NDLOCR_FROM=${NDLOCR_IMAGE}
+FROM rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked --jobs 2 -p usnm-boinc --bin usnm-boinc --example ndlocr_fixture
+FROM ${NDLOCR_FROM}
+ARG NDLOCR_IMAGE
+ENV USNM_NDLOCR_IMAGE=${NDLOCR_IMAGE}
+USER 0
+COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
+COPY --from=build /src/target/release/examples/ndlocr_fixture /usr/local/bin/usnm-ndlocr-fixture
+ENTRYPOINT []
+CMD ["/usr/local/bin/usnm-boinc", "work", "--dir", "/work"]

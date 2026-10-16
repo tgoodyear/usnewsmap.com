@@ -81,6 +81,10 @@ pub struct Config {
     /// After SIGTERM, how long in-flight pages may take before they are
     /// abandoned (they reappear when their visibility runs out).
     pub shutdown_grace: Duration,
+    /// Let in-flight pages run to their configured page timeout on stop.
+    pub drain_on_stop: bool,
+    /// The engine's page timeout, used as the planned-stop drain window.
+    pub page_timeout: Duration,
 }
 
 impl Default for Config {
@@ -94,6 +98,8 @@ impl Default for Config {
             idle_max: Duration::from_secs(60),
             once: false,
             shutdown_grace: Duration::from_secs(60),
+            drain_on_stop: false,
+            page_timeout: Duration::from_secs(600),
         }
     }
 }
@@ -287,6 +293,35 @@ pub fn output_paths(key: &PageKey, run_id: &str) -> OutputPaths {
     }
 }
 
+fn fetch_dimensions(
+    result: &Result<Scan, FetchError>,
+    fallback: bool,
+) -> (&'static str, &'static str, bool) {
+    let outcome = if result.is_ok() { "ok" } else { "error" };
+    let source = match result {
+        Ok(scan) if scan.from_cache => "cache",
+        _ => "loc",
+    };
+    (outcome, source, fallback)
+}
+
+fn record_image_fetch(
+    metrics: &Metrics,
+    started: Instant,
+    result: &Result<Scan, FetchError>,
+    fallback: bool,
+) {
+    let (outcome, source, fallback) = fetch_dimensions(result, fallback);
+    metrics.image_fetch_seconds.record(
+        started.elapsed().as_secs_f64(),
+        &[
+            KeyValue::new("outcome", outcome),
+            KeyValue::new("source", source),
+            KeyValue::new("jpeg_fallback", fallback),
+        ],
+    );
+}
+
 #[derive(Debug)]
 pub struct Worker {
     pub queue: Arc<dyn Queue>,
@@ -358,8 +393,9 @@ impl Worker {
     }
 
     /// Run until `stop` turns true (or, with `once`, the queues are empty).
-    /// In-flight pages get `shutdown_grace` to finish; then they're
-    /// abandoned, and reappear when their visibility runs out.
+    /// In-flight pages get `shutdown_grace` to finish, or their page timeout
+    /// when `drain_on_stop` is set; then they're abandoned and reappear when
+    /// their visibility runs out.
     pub async fn run(self: Arc<Self>, mut stop: watch::Receiver<bool>) -> anyhow::Result<()> {
         let slots = Arc::new(Semaphore::new(self.cfg.concurrency.max(1)));
         let mut tasks = JoinSet::new();
@@ -402,12 +438,17 @@ impl Worker {
                 }
             }
             let next = tokio::select! {
-                r = self.next_message() => r,
+                biased;
                 // A message received as this is dropped reappears when its visibility runs out.
                 _ = stop.changed() => break,
+                r = self.next_message() => r,
             };
             match next {
                 Ok(Some(msg)) => {
+                    if *stop.borrow() {
+                        drop(permit);
+                        break;
+                    }
                     idle = Duration::from_secs(1);
                     let me = self.clone();
                     let received = Instant::now();
@@ -440,12 +481,17 @@ impl Worker {
             idle = (idle * 2).min(self.cfg.idle_max);
         }
         if !tasks.is_empty() {
+            let shutdown_grace = if self.cfg.drain_on_stop {
+                self.cfg.page_timeout
+            } else {
+                self.cfg.shutdown_grace
+            };
             tracing::info!(
                 in_flight = tasks.len(),
-                grace_secs = self.cfg.shutdown_grace.as_secs(),
+                grace_secs = shutdown_grace.as_secs(),
                 "stopping; finishing in-flight pages"
             );
-            let drained = tokio::time::timeout(self.cfg.shutdown_grace, async {
+            let drained = tokio::time::timeout(shutdown_grace, async {
                 while tasks.join_next().await.is_some() {}
             })
             .await;
@@ -787,30 +833,21 @@ impl Worker {
         let read = async {
             let t = Instant::now();
             let scan = self.scans.scan(key, &m.batch).await;
-            self.metrics.image_fetch_seconds.record(
-                t.elapsed().as_secs_f64(),
-                &[
-                    KeyValue::new("outcome", if scan.is_ok() { "ok" } else { "error" }),
-                    KeyValue::new(
-                        "source",
-                        match &scan {
-                            Ok(s) if s.from_cache => "cache",
-                            _ => "loc",
-                        },
-                    ),
-                ],
-            );
+            record_image_fetch(&self.metrics, t, &scan, false);
             let scan = scan?;
             self.tracker.scanned(token, scan.from_cache);
             self.tracker.stage(token, "ocr");
             if scan.from_cache {
                 tracing::debug!(doc_id = %key.doc_id(), format = scan.format.name(), "scan read from the cache");
             }
-            let t = Instant::now();
-            let mut read_secs = t;
+            let mut read_secs = Instant::now();
+            let first_read = Instant::now();
+            let mut ocr_read_time = Duration::ZERO;
             let mut jpeg_fallback = false;
             let mut evict_jp2 = None;
-            let (scan, out) = match self.read_scan(&scan, m, work.path(), &run_id, trace).await {
+            let first = self.read_scan(&scan, m, work.path(), &run_id, trace).await;
+            ocr_read_time += first_read.elapsed();
+            let (scan, out) = match first {
                 Ok(out) => (scan, out),
                 // Some intact JP2s crash the engine with status 136 (#454);
                 // their IIIF JPEG reads. One more run on it; no second
@@ -820,7 +857,10 @@ impl Worker {
                         doc_id = %key.doc_id(), error = format!("{e:#}"),
                         "the engine crashed on the JP2 (status 136); reading the IIIF JPEG instead"
                     );
-                    let jpeg = self.scans.jpeg(key, &m.batch, &scan.iiif_base).await?;
+                    let fetch_started = Instant::now();
+                    let fetched = self.scans.jpeg(key, &m.batch, &scan.iiif_base).await;
+                    record_image_fetch(&self.metrics, fetch_started, &fetched, true);
+                    let jpeg = fetched?;
                     // The scan read is the JPEG now, wherever it came from.
                     self.tracker.scanned(token, jpeg.from_cache);
                     // A directory of its own, so nothing the crashed run
@@ -830,10 +870,10 @@ impl Worker {
                         .await
                         .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
                     read_secs = Instant::now();
-                    let out = self
-                        .read_scan(&jpeg, m, &again, &run_id, trace)
-                        .await
-                        .map_err(|e| engine_failure(e, &self.cfg.node_id))?;
+                    let retry_started = Instant::now();
+                    let retry = self.read_scan(&jpeg, m, &again, &run_id, trace).await;
+                    ocr_read_time += retry_started.elapsed();
+                    let out = retry.map_err(|e| engine_failure(e, &self.cfg.node_id))?;
                     // The JP2's buffer copy goes with the JPEG's, after the upload.
                     evict_jp2 = scan.evict.clone();
                     jpeg_fallback = true;
@@ -844,7 +884,7 @@ impl Worker {
             let seconds_wall = read_secs.elapsed().as_secs_f64();
             let scan_sha256 = crate::prefetch::sha256(&scan.bytes);
             self.metrics.ocr_seconds.record(
-                t.elapsed().as_secs_f64(),
+                ocr_read_time.as_secs_f64(),
                 &[
                     KeyValue::new("engine", self.engine.source().to_owned()),
                     // The short key (`tesseract/5.5.0 frak2021`), so the
@@ -855,6 +895,7 @@ impl Worker {
                             .map_or_else(|_| out.engine.clone(), |t| t.short_key()),
                     ),
                     KeyValue::new("language", m.language.clone()),
+                    KeyValue::new("jpeg_fallback", jpeg_fallback),
                 ],
             );
             Ok((
@@ -1035,6 +1076,29 @@ mod tests {
     use super::*;
     use crate::message::Reason;
     use crate::queue::LocalQueue;
+
+    #[test]
+    fn fallback_fetch_dimensions_keep_source_and_fallback_separate() {
+        let cached = Scan {
+            url: "https://example.org/page.jpg".into(),
+            iiif_base: "https://example.org".into(),
+            format: ScanFormat::Jpeg,
+            bytes: bytes::Bytes::new(),
+            md5: None,
+            download: Duration::ZERO,
+            from_cache: true,
+            evict: None,
+        };
+        assert_eq!(fetch_dimensions(&Ok(cached), true), ("ok", "cache", true));
+        assert_eq!(
+            fetch_dimensions(&Err(FetchError::Transient("offline".into())), true),
+            ("error", "loc", true)
+        );
+        assert_eq!(
+            fetch_dimensions(&Err(FetchError::Transient("offline".into())), false),
+            ("error", "loc", false)
+        );
+    }
 
     /// Counts scan requests; a hold, when set, is reported as loc.gov's.
     /// Pages 95 to 97 come as JP2s (see [`FakeEngine`]).
@@ -2149,5 +2213,86 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(m.dequeue_count, 2);
+    }
+
+    #[derive(Debug)]
+    struct DelayedEngine;
+
+    #[async_trait]
+    impl Engine for DelayedEngine {
+        fn source(&self) -> &str {
+            "usnm-tesseract"
+        }
+
+        fn can_read(&self, language: &str) -> bool {
+            language != "haw"
+        }
+
+        async fn ocr(
+            &self,
+            image: &Path,
+            language: &str,
+            work: &Path,
+        ) -> Result<EngineOutput, EngineError> {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            FakeEngine.ocr(image, language, work).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_planned_stop_drains_in_flight_pages_and_stops_intake() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base, queue, out) = worker(dir.path());
+        let w = Arc::new(Worker {
+            engine: Arc::new(DelayedEngine),
+            cfg: Config {
+                concurrency: 1,
+                shutdown_grace: Duration::from_millis(50),
+                drain_on_stop: true,
+                page_timeout: Duration::from_secs(1),
+                ..base.cfg.clone()
+            },
+            queue: base.queue.clone(),
+            out: base.out.clone(),
+            scans: base.scans.clone(),
+            metrics: base.metrics.clone(),
+            tracker: base.tracker.clone(),
+        });
+        for seq in [7, 8] {
+            queue
+                .send(
+                    BULK,
+                    &msg(&format!("sn83045462/1890-05-03/ed-1/seq-{seq}"), "deu"),
+                )
+                .await
+                .unwrap();
+        }
+
+        let (tx, rx) = watch::channel(false);
+        let run = tokio::spawn(w.clone().run(rx));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while w.tracker.status().in_flight.is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let started = Instant::now();
+        tx.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(2), run)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert_eq!(w.tracker.status().since_start.done, 1);
+        assert_eq!(out.list("pages").await.unwrap().len(), 1);
+        let pending = queue
+            .receive(BULK, Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.dequeue_count, 1);
     }
 }

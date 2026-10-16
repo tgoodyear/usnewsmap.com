@@ -79,8 +79,9 @@ class ModelDownloadTests(unittest.TestCase):
 
     def test_retry_policy_is_bounded_and_verifies_tls(self):
         args = self.command
-        for flag, value in [("--connect-timeout", "60"), ("--max-time", "180"),
-                            ("--retry", "3"), ("--retry-max-time", "360")]:
+        for flag, value in [("--connect-timeout", "30"), ("--max-time", "600"),
+                            ("--retry", "30"), ("--retry-delay", "5"),
+                            ("--retry-max-time", "900")]:
             self.assertEqual(args[args.index(flag) + 1], value)
         self.assertIn("--retry-all-errors", args)
         self.assertNotIn("-k", args)
@@ -94,7 +95,7 @@ class ModelDownloadTests(unittest.TestCase):
         self.assertIn("curl: (35)", result.stderr)
         self.assertEqual((self.directory / "models/model").read_bytes(), BODY)
 
-    def test_real_tls_failure_stops_after_three_retries(self):
+    def test_real_tls_failure_stops_after_configured_retries(self):
         url, attempts = self.serve(failures=100)
         result = self.download(url, hashlib.sha256(BODY).hexdigest())
         self.assertEqual(result.returncode, 35, result.stderr)
@@ -114,6 +115,8 @@ class ModelDownloadTests(unittest.TestCase):
             "/models.lock", "LOCK_FIXTURE"
         ).replace("/models", shlex.quote(str(self.directory / "models")))
         stage = stage.replace("LOCK_FIXTURE", shlex.quote(str(lock)))
+        # Exercise exhaustion promptly; exact production budgets are asserted above.
+        stage = stage.replace("--retry 30", "--retry 3").replace("--retry-delay 5", "--retry-delay 0")
         if platform.system() == "Darwin":
             # macOS's sha256sum lacks GNU long options; Linux executes unchanged.
             stage = stage.replace("sha256sum", "shasum -a 256")

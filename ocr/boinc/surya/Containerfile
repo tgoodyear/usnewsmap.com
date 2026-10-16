@@ -22,7 +22,7 @@ COPY ocr/boinc/surya/weights.lock /weights.lock
 RUN set -eu; mkdir -p /models; cd /models; \
     grep -v '^#' /weights.lock | while read -r path url sum; do \
       mkdir -p "$(dirname "$path")"; \
-      curl -fsSL --retry 3 -o "$path" "$url"; \
+      curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$path" "$url"; \
       echo "$sum  $path" | sha256sum -c --quiet -; \
     done; \
     echo "sha256:$(grep -v '^#' /weights.lock | sha256sum | cut -d' ' -f1)" > /weights.digest

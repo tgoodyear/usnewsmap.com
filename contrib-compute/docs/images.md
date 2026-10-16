@@ -1,14 +1,18 @@
 # Images and deployment steps
 
-Status: written, not built or run. The CI job `contrib-compute (server and bridge images)` builds the server image and smoke-tests it on every change to this directory; nothing here has started a project, reached a database, or served a volunteer. Everything not checked by that job is UNVERIFIED.
+The production stack was deployed and checked as recorded in #470. CI builds and smoke-tests
+the server image; this page does not claim a fresh live check. Remaining unverified behavior is
+listed below.
 
 ## What is built
 
-| Image  | Source                              | Contents                                                                                                                                                                                                  |
-| ------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| server | `images/server/Containerfile`       | Debian 12 slim, pinned by digest. Stock BOINC server built from a pinned commit with no patches. Apache with PHP (mod_php), the scheduler and upload CGIs, all daemons under `supervisord`, one container |
-| bridge | `images/bridge/Containerfile`       | The server image plus the `usnm-boinc` binary from PR #441's crate. Entry point `/usr/local/bin/bridge-job`                                                                                               |
-| worker | `ocr/boinc/Containerfile` (PR #441) | Tesseract and `usnm-boinc work`; volunteers' Docker pulls it. Built and pushed by `.github/workflows/boinc-worker.yml` (ADR-0019, addendum)                                                               |
+| Image      | Source                            | Contents                                                                                                                                                           |
+| ---------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| base       | `images/base/Containerfile`       | Pinned BOINC source and runtime dependencies; cached in the shared ACR as `usnm-boinc-base:<input-key>`.                                                           |
+| bridge-bin | `images/bridge-bin/Containerfile` | Release-built `usnm-boinc` binary; cached in the shared ACR as `usnm-boinc-bridge-bin:<input-key>`.                                                                |
+| server     | `images/server/Containerfile`     | The base plus project configuration, Apache/PHP, scheduler and upload CGIs, and all daemons under `supervisord`; one container.                                    |
+| bridge     | `images/bridge/Containerfile`     | The server image plus the bridge binary; used by the in-VNet bridge and optional gold-bundle jobs.                                                                 |
+| worker     | `ocr/boinc/Containerfile` (#441)  | Tesseract and `usnm-boinc work`; volunteers pull it from the public GHCR package. Built and published by `.github/workflows/boinc-worker.yml` (ADR-0019 addendum). |
 
 One container holds Apache and the daemons because the feeder and the scheduler share a System V shared-memory segment (design.md, section 2.1).
 
@@ -25,52 +29,107 @@ entrypoint renders the project's configuration at container startup.
 
 ### Facts about the stock tools that shaped the entry point
 
-- `make_project` creates the schema, the project tree, and a code-signing key pair and an upload key pair in its key directory (`py/Boinc/setup_project.py`). The `--init-project` mode points the key directory at tmpfs and deletes it afterwards, so no code-signing private key exists on the server. The upload keys that run the project come from Key Vault.
+- `make_project` creates the schema, the project tree, and key pairs in its key directory (`py/Boinc/setup_project.py`). The init mode uses tmpfs and removes the generated signing private key. The in-VNet secrets job puts the upload keys in Key Vault; the in-VNet init job uses the mounted project share and the server entrypoint's safe ensure-project mode.
 - `make_project` refuses an existing project root, so the project lives in a subdirectory of the share: `/project/usnmocr`. `/project/handoff` is its sibling.
-- BOINC's key generator is `crypt_prog -genkey 1024`, built with the server. `entrypoint.sh --make-upload-keys --dir DIR` wraps it, and `bootstrap.sh --apply` runs the image locally to make the upload keys, so the private key is generated on the operator's machine and written only to Key Vault.
+- BOINC's key generator is `crypt_prog -genkey 1024`, built with the server. The secrets job runs the image's key-generation path inside the VNet and writes the upload keys directly to Key Vault. The code-signing private key remains offline and is never made by this deployment.
 - The `docker_wrapper` that `install.py` copies into the app version is built from the same source (`samples/docker_wrapper`) and left at `/usr/local/lib/usnm-boinc/docker_wrapper`. UNVERIFIED that it builds in this configuration, and that a binary linked on Debian 12 runs on volunteers' older glibc.
 
 ## Build
 
-The server image's context is `contrib-compute/`:
+The supported image builder is `scripts/build-boinc-images.sh --env <prod|dev>`. It builds
+inside Azure Container Registry Tasks in the app's shared registry, tags the server and bridge
+with the committed Git revision, and writes their registry digests into
+`contrib-compute/infra/boinc/env/<env>.json`. The script refuses a dirty tree for production.
+Submit the updated settings through a pull request before deploying them.
 
-```sh
-docker build -f contrib-compute/images/server/Containerfile -t usnm-boinc-server:local contrib-compute
-scripts/ci/check-boinc-server-image.sh --image usnm-boinc-server:local
-```
+The slow layers are reused when their inputs have not changed:
 
-The bridge image needs PR #441's `crates/usnm-boinc`, so it builds from the repository root after #441 is merged:
+- `usnm-boinc-base` is keyed on the base Containerfile, BOINC source patches, and MySQL TLS
+  options.
+- `usnm-boinc-bridge-bin` is keyed on the Rust sources, embedded BOINC templates, lockfiles,
+  `.dockerignore`, toolchain (when present), and its Containerfile.
 
-```sh
-docker build -f contrib-compute/images/bridge/Containerfile \
-  --build-arg SERVER_IMAGE=REGISTRY/NAME@sha256:SERVER_DIGEST .
-```
-
-To pin by digest, push each image to the project's registry and use the digest the registry reports, not the local image id. `bootstrap.sh` accepts only `name@sha256:<64 hex>`. The Containerfiles pin their base images by digest, and CI fails on a base without one.
-
-Nothing pushes. CI builds without a registry. Pushing to the project's Azure Container Registry is the operator's step:
-
-```sh
-az acr login --name REGISTRY
-docker tag usnm-boinc-server:local REGISTRY.azurecr.io/usnm-boinc-server:TAG
-docker push REGISTRY.azurecr.io/usnm-boinc-server:TAG
-az acr repository show --name REGISTRY --image usnm-boinc-server:TAG --query digest -o tsv
-```
+When either key changes, only that layer is rebuilt. The server image is then built on the base
+digest, and the bridge on the server and bridge-bin digests. Each image is pinned in settings by
+the registry-reported digest, not the local image ID. The shared registry is the app's existing
+ACR; the BOINC stack grants its runtime and secrets-job identities `AcrPull` there. It has no
+anonymous pull or registry admin access.
 
 ## Deploy, in order
 
-The supported deployment entry point is `scripts/provision-boinc.sh --env <prod|dev>`,
-using committed settings. It creates a retained, stack-aware What-If preview, deploys the
-stack, waits for DNS/certificate readiness, ensures secrets and project initialization,
-registers applications, replays the configured signed app version and checks public health.
-Completed initialization is skipped; partial project data and existing databases are never
-dropped automatically. `--what-if` creates only the retained preview, not managed resources.
+The production BOINC regional resources use `westus2`; Static Web Apps retains its limited-region
+`eastus2` setting. `scripts/provision-boinc.sh --env <prod|dev>`
+uses committed settings, creates a retained stack-aware What-If preview, and deploys the Bicep.
+The custom-domain CNAME and `asuid` TXT records are declared in Bicep; provisioning advances
+the Container App binding and managed certificate in stages.
+
+With images configured, provisioning starts the in-VNet secrets and project-init jobs, registers
+applications, replays the configured signed app version using the publish job, and checks public
+health. Project initialization is safe to rerun: completed init is skipped, and partial project
+data or an existing database is not dropped automatically. The secrets job creates runtime and
+upload secrets only when absent, without routing their values through the maintainer's machine.
+`--what-if` creates only the retained preview, not managed resources.
+
+The VNet includes the private Key Vault DNS zone `privatelink.vaultcore.azure.net` and its link.
+The Azure Files share mounts over SMB with `mfsymlinks` plus explicit uid/gid, mode and cache
+options. The MySQL server's `require_secure_transport` is OFF: BOINC's clients do not request TLS,
+and #464 tracks the gated migration to required TLS. The database is private to the VNet.
+
+To record a work-volume sample, run
+`scripts/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record
+containing aggregate workunit and result counts plus BOINC's recent-credit user/host counts;
+the workbook reads it from console logs. Workunit validation, assimilation and file-deletion
+counts are separate, potentially overlapping flags. The bridge job is manual-triggered, so
+the time chart gains a point only when this step is run.
+
+#### Work-volume acceptance after #633
+
+Release #633's successful lifecycle jobs are not exporter acceptance: execution
+`usnm-boinc-bridge-caj-prod-yjzy92x` failed with the sanitized aggregate-query error.
+The follow-up for #510 reproduces a checked-in work-volume option-file defect:
+the generated file had a literal masked line instead of a password option, which
+MySQL rejects before executing SQL. The work-volume branch now quotes and escapes
+the tmpfs option values. TLS and certificate verification remain mandatory.
+This reproduction does not prove that the deployed failure had the same cause.
+
+CI runs the unchanged aggregate query against MySQL 8.4 using synthetic temporary
+tables with the referenced columns/types from BOINC commit `22bbebe0`, including
+empty tables, all state buckets and the recent-credit threshold. It also checks
+option-file permissions, parsing and authentication with a synthetic password.
+To run these tests locally, point `USNM_WORK_VOLUME_MYSQL_PORT` at a disposable,
+loopback-only MySQL 8.4 fixture with an empty-password root account, then run
+`python3 -m unittest -v contrib-compute/images/server/test_work_volume.py` from
+the repository root. Never point this fixture test at a deployed database.
+These tests do not establish the production schema or runtime grants.
+
+Keep #510 acceptance open until an authorized operator can:
+
+1. Build and release the reviewed server/bridge images through the normal PR and
+   provisioning process; record the deployed digest and revision. Do not patch
+   the running container or dispatch volunteer work.
+2. From the bridge's VNet and runtime identity, verify the installed client
+   version, readable CA bundle, certificate-verified TLS connection, effective
+   SELECT access on `workunit`, `result`, `user` and `host`, and the referenced
+   column names/types. Do not print the option file, credentials, raw rows or
+   unrestricted database errors. If the query still fails, retain only an
+   allowlisted numeric MySQL error code/SQLSTATE and failure stage for diagnosis.
+3. Run `scripts/start-boinc-bridge.sh --env prod --step work-volume`, record its
+   execution ID and successful exit, and verify exactly one schema-version-1
+   aggregate event in the BOINC workspace.
+4. Deploy the workbook through the normal main-stack process with its required
+   drift checks, and verify the latest tiles, state table and time chart consume
+   that event.
+
+Live verification requires an authenticated Azure session with access to the
+Container Apps job/execution metadata and BOINC Log Analytics workspace, plus an
+authorized in-VNet runtime check. This sandbox has no authenticated Azure session;
+no deployed sample or workbook success is claimed.
 
 `scripts/build-boinc-images.sh` builds and pins the server/bridge artifacts.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
 designated signing host without exporting its private key. These are release inputs, not
-manual steps printed after every deployment. The older `bootstrap.sh` is not the production
-deployment path. See [app-release.md](app-release.md) for signing and acceptance boundaries.
+steps printed after every deployment. See [app-release.md](app-release.md) for signing and
+acceptance boundaries. The code-signing private key stays offline.
 
 ## Submission file permissions
 
@@ -85,6 +144,6 @@ POSIX-mode regressions do not verify Azure Files ACLs or mount behavior.
 
 ## Known blockers and risks
 
-- **Guardrails.** The stack needs a storage account with shared-key access and a Log Analytics workspace with local auth (ADR-0019, decision 5). Until `infra/guardrails.bicep` has an exception, the deployment is denied in a guarded group. The what-if in step 3 shows the denial before anything is created.
-- **Network path.** Key Vault and the Files share are private-endpoint only. Step 3's secret writes, and the copy of the signed app version to the share in step 6, need a machine with a path into the VNet (design.md, open question 11). If the vault is unreachable, the script stops after the deployment with that message.
-- **Untested against a real server:** `make_project` against the flexible server; the grants for the run-time user; MySQL TLS with BOINC; Azure Files permissions under `boincadm` and `www-data` (the daemons run as `boincadm`, the share may be root-owned); the managed identity endpoint inside a Container Apps Job; per-run `JOB_ID` override for the job; shared-memory limits in Container Apps; image size (the whole build tree is kept, as upstream's images do).
+- **Guardrails.** ADR-0019 documents the dedicated BOINC resource group and the two required policy waivers for Azure Files shared-key mounting and the Log Analytics shared key.
+- **Network path.** Key Vault and the Files share are private-endpoint only. The secrets and init jobs run inside the VNet; the maintainer still needs a VNet path for the manual share hand-off.
+- **Remaining checks:** full Azure Files POSIX permission and lock semantics; the MySQL runtime grants and MyISAM/8.4 compatibility; required-TLS migration (#464); job managed-identity behavior beyond the successful deployment checks; shared-memory and image-size bounds.

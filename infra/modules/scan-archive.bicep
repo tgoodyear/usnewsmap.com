@@ -25,6 +25,8 @@ param boincSubnetId string = ''
 param readerIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>). It gets the writer role; empty grants none.')
 param nodeGroupId string = ''
+@description('Optional scan-host Arc identity; archive-only access, not OCR queue permissions.')
+param uploaderId string = ''
 @description('The scan writer role\'s name, before its scope (infra/naming.bicep).')
 param writerRoleLabel string
 
@@ -133,6 +135,16 @@ resource nodeWrite 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!e
   properties: {
     principalId: nodeGroupId
     principalType: 'Group'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
+  }
+}
+
+resource uploaderWrite 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(uploaderId)) {
+  scope: scans
+  name: guid(scans.id, uploaderId, 'usnm-scans-writer')
+  properties: {
+    principalId: uploaderId
+    principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
   }
 }

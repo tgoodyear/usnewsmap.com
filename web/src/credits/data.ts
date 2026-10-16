@@ -66,11 +66,13 @@ export function creditFor(key: string, pages = 1, japanese = false): UsedCredit 
     (e) =>
       e.family === family &&
       (family === "ndlocr-lite"
-        ? !!legacyNdl
+        ? legacyNdl
+          ? e.id === "ndlocr-lite-survey"
+          : e.id === "ndlocr-lite" && e.source === `https://github.com/ndl-lab/ndlocr-lite/tree/${version}`
         : e.id === `${family}-${version}` || e.id === `${family}-${version.split(".").slice(0, 2).join(".")}`),
   );
   const profile = engine?.profile?.find((p) => p.id === profileId);
-  if (!engine || (family !== "ndlocr-lite" && !profile)) throw new Error(`Missing OCR credit: ${key}`);
+  if (!engine || (!legacyNdl && !profile)) throw new Error(`Missing OCR credit: ${key}`);
   const models = profile
     ? profile.models.map((name) => {
         const model = engine.model?.find((m) => m.name === name);

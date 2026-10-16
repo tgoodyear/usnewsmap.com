@@ -61,8 +61,11 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     .await?;
     ensure!(
         tesseract.version() == job.engine.version
-            && engine::route(&job.language, tesseract.installed()).as_deref()
-                == Some(&job.engine.profile),
+            && engine::route(&job.language, tesseract.installed())
+                == Some(engine::EngineRoute {
+                    kind: job.engine.kind,
+                    profile: job.engine.profile.clone()
+                }),
         "engine version or route differs from the job"
     );
     let mut runs = Vec::new();
@@ -248,6 +251,7 @@ pub(crate) mod tests {
             },
             inputs,
             engine: usnm_ocr_contract::boinc::Engine {
+                kind: engine::EngineKind::Tesseract,
                 image: format!("sha256:{}", "a".repeat(64)),
                 version: "5.5.0".into(),
                 profile: "eng".into(),
