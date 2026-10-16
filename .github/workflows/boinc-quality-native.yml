@@ -74,8 +74,9 @@ jobs:
         shell: bash
         run: |
           cargo build --release --locked --target "${{ matrix.target }}" -p usnm-quality-app -p usnm-qwen-app
-          out_dir="$GITHUB_WORKSPACE/boinc-native-${{ matrix.boinc_platform }}"
-          mkdir -m 0700 "$out_dir"
+          out_dir="boinc-native-${{ matrix.boinc_platform }}"
+          umask 077
+          mkdir "$out_dir"
           cp "target/${{ matrix.target }}/release/usnm_quality${{ matrix.ext }}" \
             "$out_dir/usnm_quality_${{ matrix.boinc_platform }}${{ matrix.ext }}"
           cp "target/${{ matrix.target }}/release/usnm_qwen${{ matrix.ext }}" \
