@@ -68,7 +68,7 @@ export function creditFor(key: string, pages = 1, japanese = false): UsedCredit 
       (family === "ndlocr-lite"
         ? legacyNdl
           ? e.id === "ndlocr-lite-survey"
-          : e.id === "ndlocr-lite"
+          : e.id === "ndlocr-lite" && e.source === `https://github.com/ndl-lab/ndlocr-lite/tree/${version}`
         : e.id === `${family}-${version}` || e.id === `${family}-${version.split(".").slice(0, 2).join(".")}`),
   );
   const profile = engine?.profile?.find((p) => p.id === profileId);

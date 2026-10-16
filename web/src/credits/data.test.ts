@@ -55,7 +55,11 @@ describe("serving engine credits from engines.toml", () => {
   it("covers every production profile, not every inventoried model", () => {
     for (const engine of catalog.engine.filter((e) => e.production)) {
       for (const profile of engine.profile ?? []) {
-        const credit = creditFor(`${engine.family}/${engine.id.slice(engine.family.length + 1)}.1 ${profile.id}`);
+        const version =
+          engine.family === "ndlocr-lite"
+            ? engine.source.split("/").at(-1)
+            : `${engine.id.slice(engine.family.length + 1)}.1`;
+        const credit = creditFor(`${engine.family}/${version} ${profile.id}`);
         expect(credit.models.map((m) => m.name)).toEqual(profile.models);
         expect(credit.languages).toEqual(profile.languages);
       }
@@ -72,7 +76,12 @@ describe("serving engine credits from engines.toml", () => {
     expect(credit.models).toHaveLength(4);
     expect(credit.models[0]!.license).toBe("LicenseRef-DINOv3");
     expect(credit.languages).toEqual(["jpn"]);
-    expect(() => creditFor("ndlocr-lite/636d1cf unknown")).toThrow("Missing OCR credit");
+    expect(() => creditFor("ndlocr-lite/636d1cfeb1331f89f4048f416e49e23a09a714b5 unknown")).toThrow(
+      "Missing OCR credit",
+    );
+    for (const revision of ["deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "not-a-revision", "636d1cf"]) {
+      expect(() => creditFor(`ndlocr-lite/${revision} default`)).toThrow("Missing OCR credit");
+    }
   });
   it("supports the legacy keys still published on hits", () => {
     expect(creditFor("tesseract-5.5.1/deu_latf+deu").models).toHaveLength(2);
