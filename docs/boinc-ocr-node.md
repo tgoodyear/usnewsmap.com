@@ -95,3 +95,33 @@ Still blocked: dev client build/install/service/account provisioning acceptance,
 real aggregate-cgroup/SELinux verification, dev server/cohort/assessment results,
 and measured before/after throughput. Automated node account provisioning and
 production enablement are deliberately deferred until this plan is validated.
+
+## Retire an OCR node to BOINC only
+
+Sharing a node measurably slowed the queue worker: on node 4 one capped gold
+task dropped it from 44 to 28 pages/hour. When a node should instead give all
+its time to BOINC, retire its worker and switch the dedicated UID to the
+dedicated-node profile:
+
+```sh
+# 1. Drain and retire the queue worker (in-flight pages get their grace period;
+#    anything abandoned reappears on the queue). The nightly update skips a
+#    disabled worker and the reboot window only restarts what it stopped.
+sudo systemctl disable --now usnm-ocr-worker.service
+# 2. Let queued BOINC work finish and report (No new tasks), then:
+python3 scripts/boinc/setup_volunteer.py --service usnm-boinc-canary.service --dedicated-node
+sudo python3 scripts/boinc/setup_volunteer.py --service usnm-boinc-canary.service --dedicated-node --apply
+```
+
+`--dedicated-node` refuses to run while `usnm-ocr-worker.service` is enabled
+or running, keeps the same identity/group checks as `--ocr-node`, and replaces
+the 25%-of-one-CPU slice file with `zz-usnm-dedicated-node.conf`: no CPU quota,
+85% of memory, no swap, 1024 tasks, lowest CPU/IO weight, nice 19 / idle IO.
+BOINC gets every CPU (`--ncpus N` to leave some free), runs while someone is
+logged in, may use 80% of memory, and is enabled at boot. Every start's
+preflight refuses an enabled or running OCR worker and a slice without its
+memory, swap or task limits. Accounts and attachments are kept.
+
+To return the node to OCR, stop and disable BOINC, rerun `--ocr-node --apply`
+(which restores the capped slice), and re-enable the worker with
+`scripts/ocr-node/install-worker.sh --enable`.

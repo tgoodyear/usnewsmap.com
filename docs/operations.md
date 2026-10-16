@@ -1321,6 +1321,8 @@ The unit stays disabled until `--enable`, which first reads a rendered line thro
 | Node 4, `usnm-ocr-node4-arcs-prod` | Sundays, 04:00 US Eastern    |
 | Node 3, `usnm-ocr-node3-arcs-prod` | Wednesdays, 04:00 US Eastern |
 
+Node 4 has run only BOINC since 16 October 2026: its worker is disabled, so the nightly worker update does nothing there and its reboot window has no worker to stop. systemd stops the BOINC client (SIGINT, 120 s) at shutdown and starts it at boot ([BOINC on an OCR node](boinc-ocr-node.md#retire-an-ocr-node-to-boinc-only)).
+
 On SIGTERM the worker stops taking pages. The unit's `USNM_OCR_DRAIN_ON_STOP=true` setting gives in-flight pages their configured page timeout (1,200 s on the production nodes) before abandoning anything left; `TimeoutStopSec=1260` covers that interval and telemetry flush. A planned reboot allows 1,320 s for the worker and the Serial Set fetch to stop. Offboarding stops the worker and waits for this drain before removing its engine runtime, including when systemd reports the service as deactivating.
 
 The window's lines are in the journal under `usnm-ocr-reboot`; the reboot itself and any problem are logged at Warning, so they reach the nodes' workspace too. On the node:
