@@ -36,6 +36,9 @@ runs:
           --label "org.opencontainers.image.description=usnewsmap BOINC Qwen3-VL worker (llama.cpp, usnm-boinc)" \
           -t "$IMAGE:$SHA" .
         docker image ls "$IMAGE"
+        # Podman refuses images with a healthcheck where no systemd user session exists.
+        hc=$(docker image inspect --format '{{json .Config.Healthcheck}}' "$IMAGE:$SHA")
+        [[ $hc == null || $hc == '{"Test":["NONE"]}' ]] || { echo "::error::image declares a healthcheck: $hc"; exit 1; }
     - name: Cold and warm extraction in an isolated empty image store
       env:
         IMAGE: ${{ inputs.image }}
