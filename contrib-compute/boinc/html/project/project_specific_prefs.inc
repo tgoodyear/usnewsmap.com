@@ -17,7 +17,8 @@ function project_specific_prefs_parse($xml) {
 function project_specific_prefs_edit($prefs, $error=false) {
     usnm_stock_prefs_edit($prefs, $error);
     $checked = !empty($prefs->qwen_native_cuda_canary) ? " checked" : "";
-    row2(QWEN_CANARY_LABEL, '<input type="checkbox" name="qwen_native_cuda_canary" value="1"'.$checked.'>'
+    row2('<label for="qwen_native_cuda_canary">'.QWEN_CANARY_LABEL.'</label>',
+        '<input type="checkbox" id="qwen_native_cuda_canary" name="qwen_native_cuda_canary" value="1"'.$checked.'>'
         .' Native CUDA 12.4; BOINC 8.2.11+; 12/18 GiB free disk; 3/7 GB GPU memory.'
         .' May fail. No WSL, Podman or CUDA toolkit required. Opt out here at any time.');
 }

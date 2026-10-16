@@ -77,7 +77,7 @@ function usnm_stock_prefs_parse($xml) { return (object)["max_jobs"=>1]; }
 function usnm_stock_prefs_parse_form(&$error) { return "<max_jobs>1</max_jobs>"; }
 function usnm_stock_prefs_edit($prefs, $error) { echo "stock_edit"; }
 function usnm_stock_prefs_show($prefs, $columns) { echo "stock_show"; }
-function row2($label, $value) { echo $value; }
+function row2($label, $value) { $GLOBALS["row2_label"] = $label; echo $value; }
 function row_defs($label, $key, $a, $b, $prefs) { echo $key; }
 """)
             result = subprocess.run(
@@ -99,6 +99,12 @@ $_GET = ['qwen_native_cuda_canary'=>'1'];
 assert(str_contains(project_specific_prefs_parse_form($error), '<qwen_native_cuda_canary>1</qwen_native_cuda_canary>'));
 ob_start(); project_specific_prefs_edit($prefs); $edit = ob_get_clean();
 assert(str_contains($edit, 'stock_edit') && str_contains($edit, ' checked'));
+assert($GLOBALS["row2_label"] === '<label for="qwen_native_cuda_canary">'.QWEN_CANARY_LABEL.'</label>');
+assert(str_contains($edit, 'id="qwen_native_cuda_canary"'));
+$prefs->qwen_native_cuda_canary = 0;
+ob_start(); project_specific_prefs_edit($prefs); $edit = ob_get_clean();
+assert(!str_contains($edit, ' checked'));
+$prefs->qwen_native_cuda_canary = 1;
 ob_start(); project_specific_prefs_show($prefs); $show = ob_get_clean();
 assert($show === 'stock_showyes');
 ob_start(); project_specific_prefs_show($prefs, true); $show = ob_get_clean();
