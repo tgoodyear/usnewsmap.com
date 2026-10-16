@@ -9,7 +9,8 @@ A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
 (#456); see [boinc-assessment.md](boinc-assessment.md). A third, `usnm_gold`,
 scores a host's engine on public ground truth ([Gold check](#gold-check)).
 A fourth, `usnm_surya`, runs Surya 2 on volunteer CPUs and NVIDIA GPUs (#516);
-see [boinc-surya.md](boinc-surya.md). A fifth and sixth, `usnm_quality` and
+see [boinc-surya.md](boinc-surya.md). The pinned CPU NDLOCR-Lite engine for Japanese
+pages is described in [boinc-ndlocr-lite.md](boinc-ndlocr-lite.md). A fifth and sixth, `usnm_quality` and
 `usnm_qwen`, score per-page OCR quality without ground truth and transcribe
 deterministic word crops with Qwen3-VL (#522); see
 [boinc-quality.md](boinc-quality.md).

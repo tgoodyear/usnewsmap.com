@@ -745,7 +745,7 @@ impl ContractEngine {
                     dpi: Some(layout.alto_dpi.unwrap_or(f64::from(self.opts.dpi))),
                     ..usnm_alto::ParseOptions::default()
                 };
-                let page = usnm_alto::parse(&raw, &opts).map_err(|e| {
+                let mut page = usnm_alto::parse(&raw, &opts).map_err(|e| {
                     use usnm_alto::{AltoError, ParseError};
                     // A broken limit is the protocol's; the instance goes.
                     let limit = matches!(
@@ -773,6 +773,8 @@ impl ContractEngine {
                     )
                     .into());
                 }
+                // A boxed String can hold an entire line, not a word.
+                page.granularity = inst.hello.granularity;
                 page
             }
             Layout::Boxes => {
