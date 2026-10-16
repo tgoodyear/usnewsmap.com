@@ -17,6 +17,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class QwenDiskTest(unittest.TestCase):
+    def test_standard_ocr_accepts_recommended_stable_mac_client_with_runtime(self):
+        classes = {node.findtext("name"): node for node in ET.parse(ROOT / "contrib-compute/boinc/plan_class_spec.xml").findall("plan_class")}
+        node = classes["docker"]
+        self.assertEqual(node.findtext("min_core_client_version"), "80211")
+        self.assertIsNotNone(node.find("docker"))
+        self.assertEqual(classes["docker_mt"].findtext("min_core_client_version"), "80213")
+
     def test_native_cuda_campaign_is_operator_bounded_without_account_flags(self):
         classes = {node.findtext("name"): node for node in ET.parse(ROOT / "contrib-compute/boinc/plan_class_spec.xml").findall("plan_class")}
         for name in ("nvidia_cuda_8b", "nvidia_cuda_2b"):

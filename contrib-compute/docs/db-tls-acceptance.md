@@ -293,3 +293,86 @@ Production `require_secure_transport` remains OFF. Keep #464 open until these
 remaining gates and a reviewed migration plan are satisfied. #631 remains draft;
 preserve current production pins. The paid dev/DNS proposal in #634 remains
 unapproved; this fixture does not authorize it, trust calibration or node rollout.
+
+## Private managed-client account attachment
+
+`scripts/boinc/client_account.py` uses the stock BOINC GUI-RPC protocol on loopback.
+Preview with `--data-dir`, `--port`, `--expected-user-id`, and
+`--expected-user-name`; it prints only whitelisted attribution/status fields, not
+the account name, authenticators, or raw RPC replies. Explicit `--apply --key-file`
+accepts only a regular, nonsymlink, private weak-key file matching the expected
+user ID. Never pass the key itself as an argument. The canonical production URL is
+`https://boinc.usnewsmap.com/`; legacy/duplicate attachments require reconciliation
+instead of silently creating a second project.
+
+Credential-bearing debug flags are checked against the latest retained
+**effective runtime** core log-flag dump as well as the on-disk configuration;
+missing or potentially truncated runtime evidence refuses attachment. Stock
+startup and supported config reread emit this dump. Project messages cannot
+substitute for core runtime evidence. The versioned private drain journal is
+bound to this machine, real data path, RPC port, and GUI-auth-file identity;
+legacy/cross-client journals are refused. A successful late-attribution retry
+releases only the validated helper-owned hold and removes its journal without
+detaching again. Network policy is restored after the **last** attach/update RPC,
+including initially unattached clients.
+Every apply holds a nonblocking exclusive lock in the real client data directory
+from before RPC authentication through final network restoration and journal
+cleanup. The lock is independent of key/journal paths; its inode is never removed.
+Concurrent operators must retry instead of racing detach against a new attachment.
+
+Stock BOINC 8.2 GUI-RPC authentication requires `MD5(nonce + GUI password)`.
+This is a transient, loopback-only protocol challenge, not a stored password
+hash. CodeQL's password-hashing warning requires an explicit audited decision
+on this mandatory interoperability line; inline LGTM comments are not honored
+by GitHub code scanning. This does not claim MD5 is suitable for password storage
+or permit remote, plaintext GUI-RPC exposure.
+
+The supported client rejects attaching an already attached URL. For an explicitly
+authorized managed-client rejoin, the helper records the original work-enabled
+preference in a private durable journal before requesting no new tasks. It refuses
+to detach while any project result or scheduler RPC remains; reinvoke after
+draining. A temporary client-wide network guard closes the final detach race and
+restores the previous permanent/temporary network mode even on errors. Other
+projects' transfers may pause briefly during this guard; their work is not reset.
+The supplied key is used only in the private RPC payload. Attribution waits a
+bounded time for the actual scheduler's expected user/name and nonzero host ID.
+
+Stock `project_attach` re-enables networking and cannot atomically preserve a
+pre-existing user no-new-tasks hold. Therefore user-held and account-manager
+projects are refused **without changing them**, rather than claiming a safe hold
+that the client cannot provide. A helper-owned drain hold is distinguished by
+its journal and resumes the original work-enabled policy after rejoining.
+An independent GUI project suspension is also refused, including on reinvocation;
+`disallow_attach` is checked before journaling or any project mutation so a valid
+attachment is never detached from a client that prohibits reattachment.
+
+Before attachment, capture effective global resource preferences and protect
+them using the supported local-override RPC, preventing a new account's scheduler
+reply from silently changing CPU/memory and other limits. The original override
+and protected effective preferences are backed up privately beside the journal;
+the explicit local resource policy remains installed and should be inspected
+before subsequently changing account-wide preferences.
+Weekly CPU and network schedules are materialized for all seven days so a later
+scheduler reply cannot introduce an inherited day outside the protected limits.
+Unrestricted equal endpoints become explicit 00:00–24:00 intervals; 24:00–00:00
+remains never. Stored and working schedules are compared semantically and must
+retain every explicit day. Schedules that cannot round-trip the pinned client's
+two-decimal weekly serialization are refused rather than silently rounded.
+Historical server records
+are not rewritten. A standard detach can remove unused project downloads;
+inventory caches and obtain explicit rejoin authorization first. This does not
+provision resources, activate the optional OCR-node profile, grant GPU consent,
+or change server pins/TLS policy.
+
+For a dedicated, otherwise empty OCR-node client whose throughput comparison
+remains uncertain, preserve its original `boinccmd --get_cc_status` first.
+Use the installed supported `boinccmd --set_run_mode never` and
+`--set_gpu_mode never` **before** attachment, using its data directory and
+loopback RPC port (no credential arguments). After verified attachment,
+immediately request project `nomorework` and `suspend`. The client stays
+responsive and credit attribution can be checked without executing any new
+BOINC tasks. Stock attach cannot atomically prevent an initial assignment;
+report and preserve any queued results rather than claiming none were assigned.
+Resume only this owned project and restore the recorded computation modes when
+the bounded workload/CPU/memory comparison permits real work. Do not apply this
+empty-client operational hold blindly to a client running other projects.

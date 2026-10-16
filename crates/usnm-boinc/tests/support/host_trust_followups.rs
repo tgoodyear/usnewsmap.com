@@ -75,13 +75,24 @@ exit "${CREATE_STATUS:-0}"
         );
         let prepared = base.join("prepared");
         write(&prepared.join("bundle.tar"), b"fixture bundle");
+        let original = b"fixture original bytes";
+        let original_sha = boinc::sha256(original);
+        let original_name = format!("{original_sha}.jpg");
+        write(&prepared.join("cache").join(&original_name), original);
+        use md5::Digest as _;
+        let original_md5: String = md5::Md5::digest(original)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         write(
             &prepared.join("prepared.json"),
             serde_json::to_vec(&serde_json::json!({
                 "bundle": {"bytes": 14, "md5": "0".repeat(32), "name": "bundle.tar",
                     "sha256": boinc::sha256(b"fixture bundle"), "url": null},
                 "bundle_version": 1, "manifest_sha256": "b".repeat(64),
-                "crops": {"one": ["fixture", {"ref_chars":10,"ref_words":2}]}, "remotes": []
+                "crops": {"one": ["fixture", {"ref_chars":10,"ref_words":2}]},
+                "remotes": [{"bytes":original.len(), "md5":original_md5,
+                    "name":original_name, "sha256":original_sha, "url":"https://tile.loc.gov/fixture.jpg"}]
             }))
             .unwrap(),
         );
@@ -223,11 +234,49 @@ async fn planning_is_read_only_and_onboarding_is_capped_retry_stable_and_does_no
     for host in ["3", "4"] {
         let linked = std::fs::metadata(campaign.join(host).join("bundle.tar")).unwrap();
         assert_eq!((shared.dev(), shared.ino()), (linked.dev(), linked.ino()));
+        let name = format!("{}.jpg", boinc::sha256(b"fixture original bytes"));
+        let linked = std::fs::metadata(campaign.join(host).join("cache").join(&name)).unwrap();
+        let source = std::fs::metadata(campaign.join("shared/cache").join(&name)).unwrap();
+        assert_eq!((source.dev(), source.ino()), (linked.dev(), linked.ino()));
+        assert_eq!(
+            std::fs::read(
+                c.project
+                    .join("download")
+                    .join(format!("usnm_gold_input_{name}"))
+            )
+            .unwrap(),
+            b"fixture original bytes"
+        );
     }
     success(&c.command("onboard").arg("--execute").output().unwrap());
     assert_eq!(c.calls().lines().count(), 2);
     assert!(!c.calls().contains("--target_host 1"));
     assert!(!c.calls().contains("--target_host 2"));
+}
+
+#[tokio::test]
+async fn onboarding_missing_or_changed_prepared_original_never_dispatches() {
+    let c = Controller::new().await;
+    let name = format!("{}.jpg", boinc::sha256(b"fixture original bytes"));
+    let original = c.fx.tmp.path().join("prepared/cache").join(name);
+    std::fs::remove_file(&original).unwrap();
+    assert!(!c
+        .command("onboard")
+        .arg("--execute")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(c.calls().is_empty());
+    write(&original, b"changed original bytes");
+    assert!(!c
+        .command("onboard")
+        .arg("--execute")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(c.calls().is_empty());
 }
 
 #[tokio::test]

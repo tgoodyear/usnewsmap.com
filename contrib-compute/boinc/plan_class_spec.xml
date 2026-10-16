@@ -9,7 +9,9 @@
     <plan_class>
         <name>docker</name>
         <docker/>
-        <min_core_client_version>80213</min_core_client_version>
+        <!-- 8.2.11 is the recommended Mac client and already supports Run_Podman.
+             8.2.12/13 are Linux hotfixes, not Mac container prerequisites. -->
+        <min_core_client_version>80211</min_core_client_version>
     </plan_class>
     <!-- usnm_surya (#516, docs/boinc-surya.md). CPU: 4 to 8 threads; the scheduler reserves them
          and the stock docker_wrapper passes them to the container as cpus. Hosts with fewer than
@@ -108,7 +110,7 @@
         <max_wu_id>1</max_wu_id>
         <gpu_type>nvidia</gpu_type>
         <cuda/>
-        <!-- Native apps do not use the container extension introduced in 8.2.13. -->
+        <!-- Native apps do not require a container runtime. -->
         <min_core_client_version>80211</min_core_client_version>
         <min_cuda_version>12040</min_cuda_version>
         <min_nvidia_compcap>600</min_nvidia_compcap>

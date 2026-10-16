@@ -60,6 +60,17 @@ pub async fn get(store: &dyn ObjectStore, prefix: &str, to: &Path) -> anyhow::Re
     Ok(n)
 }
 
+/// Copy exactly one named object, without listing or downloading its neighbors.
+pub async fn get_file(store: &dyn ObjectStore, path: &str, to: &Path) -> anyhow::Result<()> {
+    usnm_store::validate_path(path)?;
+    let bytes = store
+        .get(path)
+        .await?
+        .with_context(|| format!("{path} is not in the hand-off container"))?;
+    ensure!(bytes.len() <= MAX_OBJECT, "{path} is over the size limit");
+    crate::atomic(to, &bytes)
+}
+
 /// Every regular file under `dir`, as `/`-separated paths below it, without the lock and
 /// unfinished temporary files.
 fn files(dir: &Path) -> anyhow::Result<Vec<String>> {

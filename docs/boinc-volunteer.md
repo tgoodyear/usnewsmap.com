@@ -172,7 +172,13 @@ guarantees apply to Podman only.
 
 ### 1.2 macOS (`arm64-apple-darwin` Apple Silicon and `x86_64-apple-darwin` Intel)
 
-Install the official universal macOS BOINC client version **8.2.13 or later** (tested locally with `8.2.15`) from [BOINC's Mac downloads](https://boinc.berkeley.edu/download_all.php?platform=mac). Apple Silicon Macs report `arm64-apple-darwin` as their primary platform; Intel Macs report `x86_64-apple-darwin`.
+Install the official **recommended stable** universal macOS BOINC client
+(currently **8.2.11**) from [BOINC's Mac downloads](https://boinc.berkeley.edu/download_all.php?platform=mac).
+Do not install a development client just to volunteer. Upstream 8.2.12 and
+8.2.13 are Linux hotfix releases, not Mac container prerequisites; stable
+8.2.11 already includes `Run_Podman`. Apple Silicon Macs report
+`arm64-apple-darwin` as their primary platform; Intel Macs report
+`x86_64-apple-darwin`.
 
 #### Native CPU app (`usnm_quality`)
 
@@ -186,7 +192,13 @@ Install the official universal macOS BOINC client version **8.2.13 or later** (t
 
 #### Container apps (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`)
 
-Container apps on macOS require Podman (Docker Desktop is not supported by BOINC's macOS wrapper integration) and BOINC 8.2.13+, which installs the setuid `/Library/Application Support/BOINC Data/Run_Podman` helper.
+The standard `usnm_ocr` container app on macOS requires Podman (Docker Desktop
+is not supported by BOINC's macOS wrapper integration) and stable BOINC
+**8.2.11+**, which includes the setuid
+`/Library/Application Support/BOINC Data/Run_Podman` helper. Older deployed
+scheduler rules may reject 8.2.11 until the server release containing this
+version-gate correction is deployed. This does not change the separately
+documented Linux multi-CPU/GPU pilot requirements or task resource limits.
 
 1. **Install Podman** (via Podman Desktop or Homebrew/installer so `podman` is available in `/opt/podman/bin/podman` or standard `PATH`).
 2. **Size the Podman Machine VM**: for multi-CPU or 6 GiB workloads (`usnm_surya`, or running tasks comfortably alongside `usnm_ocr`), initialize or resize the Podman machine with at least 4 CPUs, 8 GiB RAM, and 30 GiB disk:
