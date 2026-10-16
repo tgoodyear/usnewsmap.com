@@ -217,7 +217,7 @@ class PreflightTest(unittest.TestCase):
         service = "boinc-client.service"
         expected = {
             "HOME": str(self.data),
-            "XDG_RUNTIME_DIR": "/run/usnm-boinc-1000-boinc-client",
+            "XDG_RUNTIME_DIR": "/run/user/1000/usnm-boinc-boinc-client",
             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
             "CONTAINERS_CONF": f"/etc/usnm-boinc-volunteer/{service}/containers.conf",
             "CONTAINERS_STORAGE_CONF": f"/etc/usnm-boinc-volunteer/{service}/storage.conf",
@@ -443,11 +443,14 @@ class SetupTest(unittest.TestCase):
             self.assertEqual(result.findtext("suspend_cpu_usage"), "0")
 
     def test_managed_dropin_preflights_inside_service_and_preserves_runtime(self):
-        _, dropin, config, _ = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
+        _, dropin, config, storage = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
         self.assertIn("Requires=user@999.service", dropin)
         self.assertIn("After=user@999.service", dropin)
         self.assertIn("ExecStartPre=/usr/bin/python3 /usr/local/lib/usnm-boinc-volunteer/preflight.py --data-dir=/var/lib/boinc --image=" + IMAGE + " --service=boinc-client.service", dropin)
         self.assertIn("RuntimeDirectoryPreserve=yes", dropin)
+        self.assertIn("RuntimeDirectory=user/999/usnm-boinc-boinc-client\n", dropin)
+        self.assertIn("Environment=XDG_RUNTIME_DIR=/run/user/999/usnm-boinc-boinc-client\n", dropin)
+        self.assertIn('runroot="/run/user/999/usnm-boinc-boinc-client/containers"', storage)
         self.assertIn("ProtectControlGroups=false", dropin)
         self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/999/bus", dropin)
         self.assertIn('conmon_cgroup="pod"', config)
@@ -460,6 +463,16 @@ class SetupTest(unittest.TestCase):
             job_tomls=[Path("/etc/usnm-boinc-volunteer/job-cpu.toml")],
         )
         self.assertIn("--job-toml=/etc/usnm-boinc-volunteer/job-cpu.toml", dropin_jobs)
+
+    def test_profiles_keep_runtime_paths_under_each_users_apparmor_allowed_tree(self):
+        for uid in (999, 1000):
+            for service in ("boinc-client.service", "boinc-pilot.service"):
+                _, dropin, _, storage = setup.profile(service, Path("/var/lib/boinc"), IMAGE, uid)
+                runtime = f"user/{uid}/usnm-boinc-{service.removesuffix('.service')}"
+                self.assertIn(f"Environment=XDG_RUNTIME_DIR=/run/{runtime}\n", dropin)
+                self.assertIn(f"RuntimeDirectory={runtime}\n", dropin)
+                self.assertIn('RuntimeDirectoryMode=0700\n', dropin)
+                self.assertIn(f'runroot="/run/{runtime}/containers"', storage)
 
     def test_optional_ocr_profile_caps_the_entire_dedicated_identity(self):
         setup.check_ocr_identity("boinc", 999, [1000, 1001])
@@ -535,7 +548,7 @@ class SetupTest(unittest.TestCase):
         data = Path("/var/lib/boinc")
         config, _, _, _ = setup.profile(service, data, IMAGE, 999)
         environment = {
-            "HOME": str(data), "XDG_RUNTIME_DIR": "/run/usnm-boinc-999-boinc-client",
+            "HOME": str(data), "XDG_RUNTIME_DIR": "/run/user/999/usnm-boinc-boinc-client",
             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/999/bus",
             "CONTAINERS_CONF": str(config / "containers.conf"),
             "CONTAINERS_STORAGE_CONF": str(config / "storage.conf"),

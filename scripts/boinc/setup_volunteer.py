@@ -141,7 +141,7 @@ def check_ocr_service_groups(uid, service):
 
 def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None, ocr_node=False):
     config_dir = Path("/etc/usnm-boinc-volunteer") / service
-    runtime = f"usnm-boinc-{uid}-{service.removesuffix('.service')}"
+    runtime = f"user/{uid}/usnm-boinc-{service.removesuffix('.service')}"
     preflight = "/usr/local/lib/usnm-boinc-volunteer/preflight.py"
     normalized_tomls = normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)
     job_args = "".join(f" --job-toml={path}" for path in normalized_tomls)
@@ -293,7 +293,7 @@ def check_effective(service, data_dir, config_dir, uid, image=None, job_toml=Non
         if candidate.resolve() != resolved_data:
             raise SetupError("The service overrides BOINC's data directory via --dir or BOINC_DIR; match --data-dir and WorkingDirectory before starting BOINC.")
     environment = dict(item.split("=", 1) for item in shlex.split(run(["systemctl", "show", service, "--property=Environment", "--value"])) if "=" in item)
-    runtime = f"usnm-boinc-{uid}-{service.removesuffix('.service')}"
+    runtime = f"user/{uid}/usnm-boinc-{service.removesuffix('.service')}"
     expected = {
         "HOME": str(data_dir), "XDG_RUNTIME_DIR": f"/run/{runtime}",
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",

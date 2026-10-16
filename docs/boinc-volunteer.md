@@ -118,6 +118,14 @@ The helper preserves account data and unrelated settings, backs up the changed p
 
 Installation enables the BOINC user's systemd session at boot and configures Podman to use that session for cgroups. It makes the service's cgroups writable (`ProtectControlGroups=false`); the unprivileged UID still limits which cgroups it can modify. It allows read-only home-directory traversal while keeping the data directory writable and retaining the service's other restrictions. Podman's container monitors run with the container, and runtime files survive service restarts. Only the slots directory receives a persistent `container_file_t` label when SELinux is enabled; SELinux remains enabled and the account/config files outside slots retain their labels. The helper does not grant Docker access or change other users' Podman settings. If this dedicated account already belongs to `docker`, an administrator can remove that unused access.
 
+Each service's private runtime directory is
+`/run/user/<uid>/usnm-boinc-<service-without-.service>`, mode `0700`.
+Keeping it under `/run/user/<uid>/` lets Debian's packaged `pasta` AppArmor
+profile open Podman's network namespace during stock BOINC's hello-world
+capability probe. No AppArmor policy change or rootful runtime is required.
+Older profiles used `/run/usnm-boinc-*`; drain and report all work before
+rerunning setup to change paths. Never switch a running task's runtime path.
+
 The preflight (`scripts/boinc/volunteer_preflight.py`) runs in `ExecStartPre` as the service user, with the same service restrictions the client will have. It uses a disposable slot, the pinned worker image, and the task's `job.toml` runtime options (`ocr/boinc/job.toml` by default, or any app's job file via `--job-toml`) to check:
 
 - a mode-0600 input can be read through the same mount the wrapper uses, and a mode-0644 output is readable by the host;
@@ -145,7 +153,19 @@ sudo journalctl -u boinc-client.service --no-pager -n 30
 
 This is host readiness, not server acceptance. After attaching, still verify one task's output upload, validation, and collection. A scheduler completion report or exit code 0 alone is insufficient.
 
-The measured profile is RHEL 10.2 x86-64, SELinux enforcing, BOINC 8.2.13, and Podman 5.8.2. Debian/Ubuntu installation, `aarch64-unknown-linux-gnu` hosts, and other distributions remain UNVERIFIED until the same live checks are recorded. Docker remains an existing pilot option; this helper and its rootless guarantees apply to Podman only.
+Measured profiles are RHEL 10.2 x86-64, SELinux enforcing, BOINC 8.2.13,
+Podman 5.8.2; and a clean Debian 13 x86-64 full VM, AppArmor enabled,
+official BOINC 8.2.13, Podman 5.4.2 (16 October 2026, #469).
+The Debian setup and subsequent service restart passed the real slot,
+network/root-filesystem isolation, pause/resume and kernel-limit probes:
+`cpu.max=100000 100000`, `memory.max=1610612736`,
+`memory.swap.max=0`, `pids.max=64`. The host was not attached to a project;
+this establishes setup readiness, not a new task-validation or Gold cache
+reuse result. An unprivileged nested LXC failed `newuidmap` and was not counted
+as full-host acceptance. Ubuntu, `aarch64-unknown-linux-gnu` hosts, and other
+distributions remain UNVERIFIED until the same live checks are recorded.
+Docker remains an existing pilot option; this helper and its rootless
+guarantees apply to Podman only.
 
 ### 1.2 macOS (`arm64-apple-darwin` Apple Silicon and `x86_64-apple-darwin` Intel)
 
