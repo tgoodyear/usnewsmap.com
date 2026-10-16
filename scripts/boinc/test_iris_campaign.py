@@ -60,7 +60,7 @@ class IrisCampaignTest(unittest.TestCase):
             project = Path(directory) / "project"
             (project / "download").mkdir(parents=True)
             (project / "config.xml").write_text(
-                "<boinc><config><enable_assigned_jobs>1</enable_assigned_jobs></config></boinc>"
+                "<boinc><config><enable_assignment>1</enable_assignment></config></boinc>"
             )
             work = []
 
@@ -86,7 +86,7 @@ class IrisCampaignTest(unittest.TestCase):
             project = Path(directory) / "project"
             (project / "download").mkdir(parents=True)
             (project / "config.xml").write_text(
-                "<boinc><config><enable_assigned_jobs>1</enable_assigned_jobs></config></boinc>"
+                "<boinc><config><enable_assignment>1</enable_assignment></config></boinc>"
             )
 
             def run(args, **kwargs):
@@ -132,11 +132,25 @@ class IrisCampaignTest(unittest.TestCase):
             project = Path(directory) / "project"
             project.mkdir()
             (project / "config.xml").write_text(
-                "<boinc><config><enable_assigned_jobs>1</enable_assigned_jobs></config></boinc>"
+                "<boinc><config><enable_assignment>1</enable_assignment></config></boinc>"
             )
             with patch.object(campaign, "verify_registered_image", side_effect=ValueError("image mismatch")):
                 with self.assertRaisesRegex(ValueError, "image mismatch"):
                     campaign.submit(root, project)
+
+    def test_unrecognized_assignment_option_cannot_authorize_dispatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "campaign"
+            self.stage(root)
+            project = Path(directory) / "project"
+            project.mkdir()
+            (project / "config.xml").write_text(
+                "<boinc><config><enable_assigned_jobs>1</enable_assigned_jobs></config></boinc>"
+            )
+            with patch.object(campaign, "verify_registered_image") as verify:
+                with self.assertRaisesRegex(ValueError, "enable_assignment=1"):
+                    campaign.submit(root, project)
+                verify.assert_not_called()
 
     def test_registered_signed_dockerfile_must_match_campaign(self):
         with tempfile.TemporaryDirectory() as directory:

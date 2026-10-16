@@ -7,8 +7,12 @@ llama.cpp `usnm_qwen` versions. Existing GPU jobs cannot run unchanged on Intel.
 The pilot is fixed to **100 distinct public-domain newspaper crops, Computer 9,
 Qwen3-VL-4B-Instruct INT4**, and batch 104. No account-wide preference opens it to
 other volunteers. Stock `create_work --target_host 9` creates host assignments;
-`enable_assigned_jobs` must be enabled. Inspect existing assignments before enabling
+`enable_assignment` must be enabled. Inspect existing assignments before enabling
 that server option. No retry replicas are created for this bounded evaluation.
+
+The pinned BOINC source parses `enable_assignment` in `sched/sched_config.cpp`.
+The similarly named `enable_assigned_jobs` is not recognized and must not be
+used as evidence that the scheduler will deliver targeted jobs.
 
 ## Execution and release
 

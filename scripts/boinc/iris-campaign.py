@@ -219,8 +219,8 @@ def submit(root, project, apply=False):
     campaign = load_campaign(root)
     project = project.resolve(strict=True)
     config = ET.parse(project / "config.xml")
-    if config.findtext("./config/enable_assigned_jobs") != "1":
-        raise ValueError("host-target dispatch requires enable_assigned_jobs=1")
+    if config.findtext("./config/enable_assignment") != "1":
+        raise ValueError("host-target dispatch requires enable_assignment=1")
     verify_registered_image(project, campaign["worker_image"])
     if not apply:
         return {"dry_run": True, "jobs": COUNT, "host_id": HOST_ID,
