@@ -74,8 +74,10 @@ deployment copies the closed shipped template: re-audit before reopening, rather
 than assuming an old campaign stayed enabled. Stop immediately after the bounded
 cohort; widening to general unvalidated dispatch is not this helper's scope.
 
-These native-only classes admit stable BOINC 8.2.11+; unlike containers they do
-not need the 8.2.13 container extension. They require a CUDA 12.4-capable NVIDIA driver (the pinned
+These native-only classes admit stable BOINC 8.2.11+ and do not require a
+container runtime. The ordinary OCR `docker` class also admits stable 8.2.11
+when its platform runtime is available; do not require a development Mac
+client for it. Native CUDA classes require a CUDA 12.4-capable NVIDIA driver (the pinned
 runtime includes CUDA libraries; no toolkit/WSL/Podman), 3 GB/7 GB detected GPU
 memory respectively, and cold disk bounds of 12 GiB/18 GiB. This is admission
 policy, **not measured Windows acceptance**. Signed publication is not evidence
