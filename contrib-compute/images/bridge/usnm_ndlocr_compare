@@ -1,0 +1,4 @@
+#!/bin/sh
+# Japanese character-bigram similarity; same page, scan and pinned engine required.
+[ "$#" -eq 6 ] || exit 2
+exec /usr/local/bin/usnm-boinc ndlocr compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6"

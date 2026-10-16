@@ -85,6 +85,8 @@ render_config() {
         <daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd><output>batch_collect_assimilator_usnm_assess.log</output><pid_file>batch_collect_assimilator_usnm_assess.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_gold --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold.log</output><pid_file>script_validator_usnm_gold.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd><output>batch_collect_assimilator_usnm_gold.log</output><pid_file>batch_collect_assimilator_usnm_gold.pid</pid_file></daemon>
+        <daemon><cmd>script_validator --app usnm_ndlocr --init_script usnm_ndlocr_check --compare_script usnm_ndlocr_compare</cmd><output>script_validator_usnm_ndlocr.log</output><pid_file>script_validator_usnm_ndlocr.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_ndlocr</cmd><output>batch_collect_assimilator_usnm_ndlocr.log</output><pid_file>batch_collect_assimilator_usnm_ndlocr.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_surya --init_script usnm_surya_check --compare_script usnm_surya_compare</cmd><output>script_validator_usnm_surya.log</output><pid_file>script_validator_usnm_surya.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_surya</cmd><output>batch_collect_assimilator_usnm_surya.log</output><pid_file>batch_collect_assimilator_usnm_surya.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_quality --init_script usnm_quality_check --compare_script usnm_quality_compare</cmd><output>script_validator_usnm_quality.log</output><pid_file>script_validator_usnm_quality.pid</pid_file></daemon>
@@ -97,6 +99,8 @@ render_config() {
       ln -sfn "$TEMPLATES/usnm_assess_check" "$PROJ/bin/usnm_assess_check"
       ln -sfn "$TEMPLATES/usnm_assess_compare" "$PROJ/bin/usnm_assess_compare"
       ln -sfn "$TEMPLATES/usnm_gold_check" "$PROJ/bin/usnm_gold_check"
+      ln -sfn "$TEMPLATES/usnm_ndlocr_check" "$PROJ/bin/usnm_ndlocr_check"
+      ln -sfn "$TEMPLATES/usnm_ndlocr_compare" "$PROJ/bin/usnm_ndlocr_compare"
       ln -sfn "$TEMPLATES/usnm_surya_check" "$PROJ/bin/usnm_surya_check"
       ln -sfn "$TEMPLATES/usnm_surya_compare" "$PROJ/bin/usnm_surya_compare"
       ln -sfn "$TEMPLATES/usnm_quality_check" "$PROJ/bin/usnm_quality_check"

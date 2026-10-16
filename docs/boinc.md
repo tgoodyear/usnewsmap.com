@@ -9,8 +9,10 @@ A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
 (#456); see [boinc-assessment.md](boinc-assessment.md). A third, `usnm_gold`,
 scores a host's engine on public ground truth ([Gold check](#gold-check)).
 A fourth, `usnm_surya`, runs Surya 2 on volunteer CPUs and NVIDIA GPUs (#516);
-see [boinc-surya.md](boinc-surya.md). The pinned CPU NDLOCR-Lite engine for Japanese
-pages is described in [boinc-ndlocr-lite.md](boinc-ndlocr-lite.md). A fifth and sixth, `usnm_quality` and
+see [boinc-surya.md](boinc-surya.md). The dedicated `usnm_ndlocr` CPU app stages
+Japanese pages through the NDLOCR-Lite/default route, validates two readings by
+character similarity and collects into curated `ocr-ja`; see
+[boinc-ndlocr-lite.md](boinc-ndlocr-lite.md). A fifth and sixth, `usnm_quality` and
 `usnm_qwen`, score per-page OCR quality without ground truth and transcribe
 deterministic word crops with Qwen3-VL (#522); see
 [boinc-quality.md](boinc-quality.md).
@@ -952,10 +954,11 @@ Tesseract weights. There is no Japanese fallback to Tesseract.
 result matching and the `ocr_engine` family. It defaults to Tesseract and is
 omitted when serializing Tesseract jobs, preserving existing JSON, identity
 hashes and ledger tags. Tesseract-only BOINC workers reject other kinds before
-checking models or starting Tesseract. An NDLOCR-Lite worker can dispatch on
-`job.engine.kind`, using the existing pinned image, version, profile and model
-digest fields; its engine image and staging support are separate work (#626).
+checking models or starting Tesseract. The dedicated NDLOCR-Lite worker validates
+`job.engine.kind`, its pinned image, version, profile and model digest; use
+`usnm-boinc ndlocr stage/submit/collect`, not the native Tesseract exporter.
 For on-prem contract adapters, the hello's family must match the selected
 engine and its models must pass the catalog's existing production gate. The
-current survey-only NDLOCR-Lite catalog entry does not enable execution.
+historical survey-only NDLOCR-Lite entry remains separate from the pinned
+production entry.
 Dashboard routes retain the engine/version as well as the profile.

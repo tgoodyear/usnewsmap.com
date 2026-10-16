@@ -142,6 +142,9 @@ enum Commands {
     /// The vision-language readings on volunteer GPUs and CPUs (#522), app `usnm_qwen`.
     #[command(subcommand)]
     Qwen(Qwen),
+    /// Japanese NDLOCR-Lite staging, redundant validation and ocr-ja publication.
+    #[command(subcommand)]
+    Ndlocr(Ndlocr),
     /// The remote hand-off between the OCR node and the BOINC server (#469, docs/boinc.md).
     #[command(subcommand)]
     Handoff(Handoff),
@@ -151,6 +154,100 @@ enum Commands {
         root: PathBuf,
     },
 }
+#[derive(Subcommand)]
+enum Ndlocr {
+    /// Stage reason:jpn:doc_id:batch_verNN pages from the archive or polite IIIF fetch.
+    Stage {
+        #[arg(long = "page", required = true)]
+        pages: Vec<usnm_boinc::surya::Page>,
+        #[arg(long)]
+        root: PathBuf,
+        /// Immutable engine BASE image digest; signed wrapper separately pins the worker.
+        #[arg(long)]
+        engine_image: String,
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u32,
+        #[arg(long)]
+        scan_archive: Option<String>,
+        #[arg(long)]
+        batch_cache: Option<PathBuf>,
+    },
+    Submit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        doc: String,
+    },
+    Check {
+        #[arg(long, num_args = 3)]
+        files: Vec<PathBuf>,
+    },
+    Compare {
+        #[arg(long, num_args = 3)]
+        files: Vec<PathBuf>,
+        #[arg(long, num_args = 3)]
+        files2: Vec<PathBuf>,
+    },
+    Collect {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        doc: String,
+        #[arg(long)]
+        curated_url: String,
+    },
+}
+
+async fn ndlocr(command: Ndlocr) -> anyhow::Result<()> {
+    use usnm_boinc::ndlocr as x;
+    match command {
+        Ndlocr::Stage {
+            pages,
+            root,
+            engine_image,
+            timeout_secs,
+            scan_archive,
+            batch_cache,
+        } => {
+            println!(
+                "staged {}",
+                x::stage(
+                    &root,
+                    &pages,
+                    x::engine(engine_image, timeout_secs),
+                    scan_archive.as_deref(),
+                    batch_cache
+                )
+                .await?
+            );
+        }
+        Ndlocr::Submit { root, project, doc } => x::submit(&root, &project, &doc).await?,
+        Ndlocr::Check { files } => {
+            x::load(&files)?;
+        }
+        Ndlocr::Compare { files, files2 } => x::compare(&files, &files2)?,
+        Ndlocr::Collect {
+            root,
+            spool,
+            doc,
+            curated_url,
+        } => {
+            x::collect(
+                &root,
+                &spool,
+                &doc,
+                usnm_store::open(&curated_url)?.as_ref(),
+            )
+            .await?
+        }
+    }
+    Ok(())
+}
+
 #[derive(Subcommand)]
 enum Handoff {
     /// Copy every object under a prefix of the hand-off container into a directory.
@@ -957,6 +1054,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Assess(a) => assess(a).await?,
         Commands::Gold(g) => gold(g).await?,
         Commands::Surya(x) => surya(x).await?,
+        Commands::Ndlocr(x) => ndlocr(x).await?,
         Commands::Quality(q) => quality(q).await?,
         Commands::Qwen(q) => qwen(q).await?,
         Commands::Handoff(h) => handoff(h).await?,
