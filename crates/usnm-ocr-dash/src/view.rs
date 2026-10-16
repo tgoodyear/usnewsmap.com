@@ -26,6 +26,7 @@ pub struct Settings {
 
 #[derive(Debug, Serialize)]
 pub struct View {
+    pub pipeline: crate::pipeline::PipelineView,
     pub generated_at: DateTime<Utc>,
     pub refresh_secs: u64,
     pub hosts: Vec<HostView>,
@@ -524,6 +525,7 @@ pub fn build(
         .collect();
     let queues = merge_queues(nodes, now);
     View {
+        pipeline: crate::pipeline::PipelineView::default(),
         generated_at: now,
         refresh_secs: s.refresh_secs,
         hosts: host_views(hosts, s, now),

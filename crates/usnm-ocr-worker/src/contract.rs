@@ -1284,6 +1284,23 @@ impl Engine for ContractEngine {
         self.opts.dpi
     }
 
+    fn execution_config(&self) -> serde_json::Value {
+        let (runtime, limits) = match &self.opts.launch {
+            Launch::Local { .. } => ("local", None),
+            Launch::Podman { remote, .. } => ("podman", Some(remote.limits)),
+        };
+        serde_json::json!({
+            "runtime": runtime,
+            "limits": limits,
+            "dpi": self.opts.dpi,
+            "threads": self.opts.threads.max(1),
+            "instances": self.opts.instances,
+            "start_timeout_seconds": self.opts.start_timeout.as_secs_f64(),
+            "page_timeout_seconds": self.opts.page_timeout.as_secs_f64(),
+            "max_jobs": self.opts.max_jobs,
+        })
+    }
+
     fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
         let profile = self.profile(language)?;
         let tag = self.tag(profile).ok()?;
@@ -1484,6 +1501,33 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_metadata_execution_config_excludes_adapter_command_and_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = silent_engine(dir.path()).await;
+        if let Launch::Local { args, .. } = &mut engine.opts.launch {
+            args.push("--token=private-credential".into());
+        }
+        engine.opts.threads = 0;
+        let config = engine.execution_config();
+        assert_eq!(
+            config,
+            serde_json::json!({
+                "runtime": "local",
+                "limits": null,
+                "dpi": 300,
+                "threads": 1,
+                "instances": 1,
+                "start_timeout_seconds": 10.0,
+                "page_timeout_seconds": 10.0,
+                "max_jobs": 100,
+            })
+        );
+        assert!(!config.to_string().contains("private-credential"));
+        assert!(!config.to_string().contains(dir.path().to_str().unwrap()));
+        engine.shutdown().await;
     }
 
     #[tokio::test]

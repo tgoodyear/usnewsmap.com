@@ -414,6 +414,92 @@ fn sset_eta(x: &crate::view::SsetView) -> String {
         .map_or_else(|| "-".to_owned(), |h| span((h * 3600.0) as u64))
 }
 
+fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
+    let mut o = String::from("<section id=\"corpus-data-flow\"><h2>Corpus data flow</h2>");
+    o.push_str(&badge(
+        if v.stale { "warning" } else { "good" },
+        if v.stale {
+            "STALE / unavailable"
+        } else {
+            "observed"
+        },
+    ));
+    o.push_str(
+        "<p>Catalog evidence only; stage counts are separate from local worker totals. \
+         Cataloged counts are not whole-corpus totals; zero may mean no catalog loaded. \
+        <a href=\"/api/pipeline.json\">JSON</a></p>",
+    );
+    if let Some(e) = &v.last_error {
+        let _ = write!(o, "<p class=\"stale\">{}</p>", esc(e));
+    }
+    if let Some(s) = &v.snapshot {
+        let _ = write!(
+            o,
+            "<p>Producer: {} (schema {}). Source evidence: {}. Generated: {}. \
+             Retrieved: {}. Evidence age: {}.</p><p>Coverage: {}</p>\
+             <table><tr><th>Stage</th><th>Count</th><th>State / detail</th></tr>",
+            esc(&s.producer),
+            s.schema_version,
+            s.observed_at.map_or_else(|| "unknown".into(), time),
+            time(s.generated_at),
+            v.retrieved_at.map_or_else(|| "never".into(), time),
+            v.age_secs
+                .map_or_else(|| "unknown".into(), |n| span(n.max(0) as u64)),
+            esc(&s.coverage.join(", "))
+        );
+        for stage in &s.stages {
+            let state = match stage.state {
+                crate::pipeline::StageState::Observed => "observed",
+                crate::pipeline::StageState::Unknown => "unknown",
+                crate::pipeline::StageState::Blocked => "blocked",
+            };
+            let _ = write!(
+                o,
+                "<tr><td>{} ({})</td><td>{}</td><td>{}: {}</td></tr>",
+                esc(&stage.label),
+                esc(&stage.id),
+                stage.count.map_or_else(|| "unknown".into(), int),
+                state,
+                esc(&stage.detail)
+            );
+            let freshness = v.stage_freshness.iter().find(|f| f.id == stage.id);
+            let _ = write!(
+                o,
+                "<tr><td colspan=\"3\">Source evidence: {}; age: {}; {}</td></tr>",
+                stage
+                    .observed_at
+                    .unwrap_or(s.observed_at)
+                    .map_or_else(|| "unknown".into(), time),
+                freshness
+                    .and_then(|f| f.age_secs)
+                    .map_or_else(|| "unknown".into(), |age| span(age.max(0) as u64)),
+                if freshness.is_none_or(|f| f.stale) {
+                    "STALE / unavailable"
+                } else {
+                    "observed"
+                }
+            );
+        }
+        let _ = write!(
+            o,
+            "</table><p>Cataloged runs: {}; cataloged run pages: {}. Cataloged artifact locations: {}; \
+             verified: {}; missing: {}.</p>",
+            int(s.runs.total),
+            int(s.runs.pages),
+            int(s.artifacts.locations),
+            int(s.artifacts.verified),
+            int(s.artifacts.missing)
+        );
+        for issue in &s.issues {
+            let _ = write!(o, "<p>{}: {}</p>", esc(&issue.code), esc(&issue.detail));
+        }
+    } else {
+        o.push_str("<p>No valid catalog snapshot available.</p>");
+    }
+    o.push_str("</section>");
+    o
+}
+
 pub fn render(v: &View) -> String {
     let now = v.generated_at;
     let mut o = String::with_capacity(64 * 1024);
@@ -431,6 +517,8 @@ pub fn render(v: &View) -> String {
         time(now),
         v.refresh_secs
     );
+
+    o.push_str(&pipeline_panel(&v.pipeline));
 
     // 0. At a glance.
     o.push_str("<section class=\"wide\"><h2>At a glance</h2><table><tr><th>What</th><th>State</th><th>Progress</th><th class=\"r\">Per hour</th><th class=\"r\">Done in</th></tr>");
@@ -1074,6 +1162,44 @@ pub fn render(v: &View) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corpus_panel_escapes_metadata_and_keeps_catalog_counts_separate() {
+        let now = Utc::now();
+        let mut source = crate::pipeline::tests::fixture(now);
+        source["coverage"] = serde_json::json!(["<coverage>"]);
+        source["stages"][0]["label"] = serde_json::json!("<stage>");
+        source["stages"][0]["detail"] = serde_json::json!("\"details\" & <text>");
+        source["issues"][0]["detail"] = serde_json::json!("<script>alert(1)</script>");
+        let snapshot = crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), now).unwrap();
+        let v = crate::pipeline::PipelineView {
+            retrieved_at: Some(now),
+            last_error: Some("<error>".into()),
+            age_secs: Some(901),
+            stale: true,
+            stage_freshness: Vec::new(),
+            snapshot: Some(snapshot),
+        };
+        let html = pipeline_panel(&v);
+        assert!(html.contains("Corpus data flow"));
+        assert!(html.contains("STALE / unavailable"));
+        assert!(html.contains("separate from local worker totals"));
+        for s in [
+            "&lt;coverage&gt;",
+            "&lt;stage&gt;",
+            "&lt;error&gt;",
+            "&lt;script&gt;",
+        ] {
+            assert!(html.contains(s));
+        }
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("1,234"));
+        assert!(html.contains("unknown"));
+        assert!(html.contains("Source evidence: <time"));
+        assert!(html.contains("Cataloged runs: 2; cataloged run pages: 100"));
+        assert!(pipeline_panel(&crate::pipeline::PipelineView::default())
+            .contains("No valid catalog snapshot"));
+    }
 
     #[test]
     fn formats() {

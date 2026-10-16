@@ -628,6 +628,8 @@ jobs:
         run: python3 -m unittest -v scripts/ci/test_changes.py
       - name: The bounded local corpus catalog's tests pass
         run: python3 -m unittest -v scripts/test_data_catalog.py
+      - name: Read-only corpus flow observations preserve scope and freshness
+        run: python3 -m unittest -v scripts/test_data_flow_observer.py
       - name: Pinned model downloads retry TLS failures without bypassing verification
         run: python3 -m unittest -v scripts/ci/test_model_download.py
       - name: The OCR gold set's tests pass (#296)

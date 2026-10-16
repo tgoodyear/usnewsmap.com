@@ -28,6 +28,103 @@ usnm-ocr-worker check-engine --tesseract-image sha256:<image id>
 usnm-ocr-worker --version
 ```
 
+## Local page-run metadata (opt-in)
+
+`run --run-metadata-dir ./run-metadata` (or `USNM_OCR_RUN_METADATA_DIR`)
+also captures actual page execution locally. Unset, it does nothing; the existing
+ALTO, runs Parquet, overlay, queue and failure-telemetry paths are unchanged.
+This does **not** enable capture in `ocr-file`, BOINC clients/validators, or
+other runtimes that do not call `Worker::process`. Those need separate adapters.
+
+Each decoded page attempt that reaches processing writes one UTF-8 JSON object
+plus a newline to
+`<dir>/<sha256(run_id UTF-8), 64 lowercase hex digits>.json`.
+Redeliveries mint fresh run IDs and files, even for the same page. Invalid messages
+and dequeue-limit dead letters do not reach processing and are not captured.
+The object is an execution envelope, **not** a second `RunRecord` schema:
+
+| Field(s)                                                   | JSON value                                                                               |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `metadata_schema`                                          | `1`, the envelope version                                                                |
+| `run_id`, `doc_id`, `node`, `worker_version`, `ocr_source` | Strings naming this attempt, canonical page, worker and engine source                    |
+| `language`, `batch`, `reason`                              | Checked queue-message strings                                                            |
+| `damage_before`, `queued_at`                               | Queue score or null; parsed UTC RFC3339 timestamp or null                                |
+| `dpi`, `dpi_source`                                        | Configured integer resolution; `"assumed"` (not a measured scan resolution)              |
+| `execution_config`                                         | Known engine runtime configuration, or null for engines that do not expose it            |
+| `worker_config`                                            | Object: `concurrency`, `visibility_seconds`, `abandon_at`, `page_timeout_seconds`        |
+| `started_at`, `finished_at`, `seconds_wall`                | UTC RFC3339 page-processing timestamps and measured monotonic elapsed seconds            |
+| `status`, `error_kind`                                     | Page execution: `ok`, `failed` or `abandoned`; classified error token or null            |
+| `observations`                                             | Ordered array, at most two reads: original scan then optional JPEG retry                 |
+| `run_record`                                               | Existing `usnm_ocr_contract::runs::to_json_line` object, including `"schema":1`, or null |
+
+`run_record` is populated once output conversion succeeds, before uploads. It is
+the **same** `RunRecord` written to the existing runs Parquet, including full
+available engine/image/model identifiers and digests, options, input hash,
+layout/text counts and hashes, confidence/damage and measured wall time.
+CPU/memory metrics remain null when unmeasured. Existing `"local"` artifact
+markers retain their existing meaning; they are not measured digests.
+No placeholder record is invented for pre-engine, engine or conversion failures.
+An upload failure can leave a valid `run_record` with envelope `status:"failed"`.
+
+Each observation has `image_sha256` (the exact fetched bytes), `image_format`,
+`engine_started_at`, `engine_finished_at`, `seconds_wall`, `status`, `error_kind`,
+`ocr_engine`, `info_source` and `info`. Engine timestamps bound the worker's read
+API call, including instance acquisition/startup, not measured process CPU time.
+Status is `not_started` if scratch-file writing prevented the call, `ok` for an
+engine result, the adapter's classified failure status, or `abandoned` for a
+dropped read. An abandoned read has no observed engine finish timestamp.
+Null means unknown. Fetch/no-model failures have an empty observation array.
+
+`info_source` is `planned`, `instance`, `result`, or null: planned metadata can
+describe the instance anticipated before assignment, not the instance actually
+used. `info` is null when unavailable; otherwise it has the existing `ReadInfo`
+fields: `engine_id`, `adapter`, `image_ref`, `image_digest`, `models_digest`,
+`models_json`, `options_json`, `models_loaded`, `cold_start`,
+`model_load_seconds`, `markup`, `engine_stats_json`. The three `*_json` values
+are JSON-encoded **strings**, as in `RunRecord`. Runtime configuration includes
+known threads, DPI, timeouts, instance recycling and container limits (or null
+limits), plus Tesseract PSM. It excludes service URLs, command arguments,
+environment variables and credentials. OCR text, ALTO, input URLs, free-form
+errors and stderr are never copied into this metadata.
+
+Page `ok` means its output uploads completed; it does not promise queue deletion.
+Observation/record `ok` means the engine answered successfully.
+`RunRecord.selected` means **route selection**, not project acceptance.
+Acceptance, catalog import and search indexing are deliberately not inferred.
+
+Publication uses a private `.pending-*` file in the destination, file fsync,
+atomic create-only publication, then directory fsync. Concurrent writers cannot
+overwrite a run, including on replay; a collision is an explicit error.
+Only `*.json` files are importable. A process/machine crash can leave ignored
+`.pending-*` files, and a hard kill before publication cannot produce a completed
+observation. No startup recovery guesses outcomes from these staging files.
+Capture retains at most two observations
+and one record per in-flight page. Publication moves an owned snapshot
+to a dedicated blocking-I/O thread with a process-wide capacity of 16 pending
+snapshots plus one active write. Enqueuing never blocks: a full/unavailable writer
+queue is an explicit ERROR and that observation is not published. Serialized files
+are capped at 4 MiB, and individual records at 2 MiB before JSON-line allocation.
+This is local per-attempt publication, not an extra Blob transaction.
+Use a persistent local filesystem supporting atomic publication and fsync.
+
+The destination is checked before taking queue work; an invalid/unwritable
+destination fails startup. A later serialization/publication/fsync failure is
+explicitly logged at ERROR as unconfirmed metadata durability, but never replaces
+the page's original result/error or changes queue retry/dead-letter behavior.
+Normal page completion waits for publication for at most 250 ms, never past the
+page's original budget. Cancellation submits without waiting. A dropped/timed-out
+wait explicitly logs unconfirmed durability; the writer may still publish later.
+The dedicated thread does not block Tokio's executor or runtime shutdown. Shutdown
+does not wait indefinitely for slow storage; pending writes may be lost at process
+exit, with unconfirmed-durability logs rather than a claim they were persisted.
+Disk retention/import and alerts for these errors are the operator's responsibility.
+
+A separate importer can use only Python's standard library: `json.load()` each
+`*.json`, check `metadata_schema == 1`, and read `run_record` when non-null.
+That nested object is already the existing runs JSON-line format; serialize it
+with `json.dumps()` to feed a `RunRecord` JSONL consumer. Preserve the outer
+status and observations separately, especially failures with no complete record.
+
 ## Prefetching scans
 
 `prefetch` fetches the scans a manifest lists (`usnm-ingest ocr-prefetch-manifest`, #368) onto local disk with the same LoC client and pacing as `run`, so a node's engines can read them later without asking LoC again. It runs in the scan-fetch container on pve-big (`scripts/ocr-node/scanfetch-ct.sh`, 12 §12.2.4).
