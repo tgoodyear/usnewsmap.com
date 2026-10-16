@@ -23,8 +23,8 @@ mysqlnd, and C++ MariaDB Connector/C. The fixture fetches and verifies BOINC
 - PHP invokes both `_mysql_connect` and `DbConn::init_conn` in the actual includes.
 - C++ compiles the actual `db/db_base.cpp` translation unit and invokes
   `DB_CONN::open` and `do_query`. Minimal feature declarations plus libbsd supply
-  string compatibility; unused database methods are linker-discarded. This is
-  not a full configured scheduler/daemon build.
+  string compatibility; unused database methods are linker-discarded. This is not
+  a full configured scheduler or daemon build.
 - CLI uses the production scripts' `--ssl --ssl-verify-server-cert --ssl-ca`
   flags. The Python connector's `ssl-enforce` option file is **not** passed to
   the CLI, which does not support that option.
@@ -32,11 +32,12 @@ mysqlnd, and C++ MariaDB Connector/C. The fixture fetches and verifies BOINC
 The database listens only on container loopback; Docker networking is disabled.
 The root filesystem is read-only, capabilities are dropped, privilege escalation
 is disabled, and runtime limits are 2 CPUs, 1 GiB RAM and 128 processes. Its data,
-one-day synthetic private CA/key and option files live in bounded disposable
-memory filesystems. No host files or sockets are mounted. Public Debian/GitHub
-downloads occur only during the local image build (up to 1.5 GiB build memory).
-The fixture has subprocess/readiness timeouts, and the wrapper removes only its
-uniquely named container on exit. The local image/cache remains reusable.
+one-day synthetic private CA and key, and option files live in bounded disposable
+memory filesystems. No host files or sockets are mounted. Public downloads from
+Debian and GitHub occur only during the local image build (up to 1.5 GiB build
+memory). The fixture has subprocess and readiness timeouts, and the wrapper
+removes only its uniquely named container on exit. The local image and cache
+remain reusable.
 
 ## Matrix and evidence
 
@@ -61,24 +62,25 @@ are not rewritten.
    patched consumers must reject this reachable plaintext peer.
 6. Restart that database with TLS required again: all five reconnect encrypted.
 
-Output is categorical JSON lines including consumer/case and successful session
-cipher. Negative cases require a nonzero exit **and** connector-specific TLS
-error codes/messages. Python and PHP probes emit structured errors without
-tracebacks; C++/CLI diagnostics must match anchored TLS-error lines, so TLS
-function names or hostnames in an authentication traceback cannot pass.
-mysqlnd reports no-SSL handshakes as error 2006, "MySQL server has gone away";
-this exact failure is accepted only for the independently verified
-reachable/authenticated SSL-disabled peer, never for certificate tests.
-unreachable DNS/TCP, missing modules or authentication-only errors are not passes.
-Raw client errors, keys and passwords are not printed.
+Output is categorical JSON lines that include the consumer, the case and the
+successful session cipher. Negative cases require a nonzero exit **and**
+connector-specific TLS error codes or messages. Python and PHP probes emit
+structured errors without tracebacks; C++ and CLI diagnostics must match anchored
+TLS-error lines, so TLS function names or hostnames in an authentication traceback
+cannot pass. mysqlnd reports no-SSL handshakes as error 2006, "MySQL server has
+gone away"; this exact failure is accepted only for the independently verified
+reachable, authenticated SSL-disabled peer, never for certificate tests.
+Unreachable DNS or TCP, missing modules or authentication-only errors are not
+passes. Raw client errors, keys and passwords are not printed.
 
 The initial real run exposed a defect hidden by connector mocks:
 `mysqli_options(MYSQLI_OPT_SSL_VERIFY_SERVER_CERT, true)` returns false under
 Bookworm mysqlnd, causing the old helper to refuse valid connections before the
 handshake. The patch now uses
-`MYSQLI_CLIENT_SSL | MYSQLI_CLIENT_SSL_VERIFY_SERVER_CERT`, with actual positive,
-wrong-host/CA and plaintext rejection coverage. The lightweight PHP mock rejects
-the unsupported option rather than pretending it succeeds.
+`MYSQLI_CLIENT_SSL | MYSQLI_CLIENT_SSL_VERIFY_SERVER_CERT`, with actual coverage
+of the positive case, wrong-host and wrong-CA rejection, and plaintext rejection.
+The lightweight PHP mock rejects the unsupported option rather than pretending it
+succeeds.
 
 CI runs this exact disposable matrix in its own bounded job when BOINC changes.
 `python3 -m unittest scripts/boinc/test_db_tls_fixture.py` tests evidence
@@ -106,8 +108,9 @@ No ports, host directories or Docker sockets are mounted into either container.
 
 It actually executes:
 
-- Stock `tools/make_project`, including database/schema installation (47 tables),
-  then the real runtime config renderer and `bin/xadd` (8 registered apps).
+- Stock `tools/make_project`, including database and schema installation (47
+  tables), then the real runtime config renderer and `bin/xadd` (8 registered
+  apps).
 - Separate runtime credentials with only SELECT/INSERT/UPDATE/DELETE on the
   project schema; the fixture-only admin observes sessions separately.
 - The image's non-destructive `--ensure-project` branch and `project_tree`
@@ -130,58 +133,61 @@ It actually executes:
   feeder can disturb shared-memory readiness, so CGI is checked first.
 - A plaintext CLI connection with the same known-good runtime credentials must
   fail while the observer confirms `require_secure_transport=ON`.
-- CA/hostname restoration followed by all public-page checks, healthy CGI and
-  four encrypted daemon sessions again.
+- CA and hostname restoration followed by all public-page checks, healthy CGI
+  and four encrypted daemon sessions again.
 - A database-container restart with the same database volume, followed by a
   **fresh application container** with the persisted project. It rehydrates
   disposable upload keys and the synthetic code-signing public key, repeats the
-  complete matrix, and checks unchanged hashes of the sampled Python/two PHP
-  connector files and feeder binary. Server observation logs are cleared at
-  database start so reused connection IDs cannot mix evidence across boots.
+  complete matrix, and checks unchanged hashes of the sampled Python connector
+  file, the two PHP connector files and the feeder binary. Server observation
+  logs are cleared at database start so reused connection IDs cannot mix
+  evidence across boots.
 
-HTTP/CGI connections are short-lived. Their transport evidence is the
+HTTP and CGI connections are short-lived. Their transport evidence is the
 TLS-required server's authenticated `using SSL/TLS` connection log plus the
 actual connector enforcement and rejection cases; the fixture does not claim
 a captured per-request CGI cipher. Direct ciphers are measured for the copied
-Python/PHP APIs and all four live daemons.
+Python and PHP APIs and all four live daemons.
 
-Application and DB containers are limited to 1 GiB/512 MiB RAM and 128/64
-processes; application/DB CPU is capped at two/one. The application has a read-only
-root, no privilege escalation, and private writable state/keys on uniquely
-named disposable Docker volumes. Standard container capabilities needed by
-Apache's identity transition remain available; neither container is privileged.
-The wrapper removes only its own containers, volumes and temporary source tag.
-Image/build caches remain. CI bounds the full integration step to 15 minutes.
+The application container is limited to 1 GiB of RAM, 128 processes and two CPUs;
+the DB container to 512 MiB, 64 processes and one CPU. The application has a
+read-only root, no privilege escalation, and private writable state and keys on
+uniquely named disposable Docker volumes. Standard container capabilities needed by
+Apache's identity transition remain available; neither container is privileged. The
+wrapper removes only its own containers, volumes and temporary source tag. Image
+and build caches remain. CI bounds the full integration step to 15 minutes.
 `test_full_db_tls.py` checks evidence classification separately from execution.
 
 All keys and credentials are synthetic. The generated code-signing **private**
 key is deleted before services start. Upload keys live outside the project
-volume and are linked from private runtime memory, with access limited to
-root/`boincadm`. This local key-store substitute does not test Key Vault,
+volume and are linked from private runtime memory, with access limited to root
+and `boincadm`. This local key-store substitute does not test Key Vault,
 managed identity, `--ensure-secrets`, or the secret-fetching `--init-project`
 entrypoint.
 
 ## Remaining release gates
 
 These fixtures demonstrate actual local MariaDB connector enforcement, full
-project creation, PHP/CGI operation, four daemon connections and persistent
-restart. They do not demonstrate Azure MySQL 8.4/rotating Azure-chain acceptance,
-a public remote dev service, authenticated client/task dispatch and returned-task
-validation/assimilation, or the bridge's additional application validators.
-Starting validators on an empty queue is not completed-result acceptance.
+project creation, PHP and CGI operation, four daemon connections and persistent
+restart. They do not demonstrate acceptance against Azure MySQL 8.4 or the
+rotating Azure certificate chain, a public remote dev service, dispatch of tasks
+to an authenticated client with validation and assimilation of the returned
+tasks, or the bridge's additional application validators. Starting validators on
+an empty queue is not completed-result acceptance.
 
-Persistent restart is not an upgrade/rollback: existing completed projects
-retain copied Python/PHP/binaries. Complete file inventory, safe replacement,
-backward-compatible migration and tested rollback remain necessary before
-changing production enforcement. The four sampled unchanged-file hashes are
-not an all-files migration inventory.
+Persistent restart is not an upgrade or rollback: existing completed projects
+retain copied Python, PHP and binaries. Complete file inventory, safe
+replacement, backward-compatible migration and tested rollback remain
+necessary before changing production enforcement. The four sampled
+unchanged-file hashes are not an all-files migration inventory.
 
 The optional OCR-node pilot additionally needs the actual supported BOINC
-client build/ABI, dedicated account/subordinate IDs, effective rootless
-Podman/SELinux/cgroup/startup isolation, a tiny dev cohort through collection,
-and comparable OCR throughput against an agreed non-disruption rule. Local
-server success does not authorize account installation or node activation, and
-does not make paid Azure resources the only possible dev path.
+client build and ABI, a dedicated account and subordinate IDs, effective
+rootless Podman, SELinux, cgroup and startup isolation, a tiny dev cohort
+through collection, and comparable OCR throughput against an agreed
+non-disruption rule. Local server success does not authorize account
+installation or node activation, and does not make paid Azure resources the
+only possible dev path.
 
 ### Existing-resource node readiness
 
@@ -192,24 +198,24 @@ scripts/boinc/build-node-client-container.sh --out "$PWD/target/boinc-node-clien
 ```
 
 The pinned AlmaLinux 9 builder uses the existing `build-node-client.sh`
-(`ae68f3290ac82d08b4d9767acfe0daaccaeeb883`, stable 8.2.13), one make job, and
-an amd64 compilation container capped at one CPU, 1.5 GiB memory with no extra
-swap, and 256 tasks. The dependency-image build is separate; a Docker BuildKit
+(`ae68f3290ac82d08b4d9767acfe0daaccaeeb883`, stable 8.2.13), one make job, and an
+amd64 compilation container capped at one CPU, 1.5 GiB memory with no extra swap,
+and 256 tasks. The dependency-image build is separate; a Docker BuildKit
 `build --memory` flag is not relied upon. The compiler container checks actual
 cgroup limits and exports those readings alongside binaries, source commit,
-dependency image ID and relative SHA256SUMS; it never installs on a node.
-Actual configure requires `zlib-devel` as well as curl/OpenSSL development
-packages. CI builds the real client and retains a tar archive for seven days,
-preserving executable modes. It re-extracts that archive, verifies executable
-bits/checksums/actual cgroup limits, and runs both loaders plus `boinc --version`
+dependency image ID and relative SHA256SUMS; it never installs on a node. Actual
+configure requires `zlib-devel` as well as curl and OpenSSL development packages.
+CI builds the real client and retains a tar archive for seven days, preserving
+executable modes. It re-extracts that archive, verifies executable bits,
+checksums and actual cgroup limits, and runs both loaders plus `boinc --version`
 inside pinned EL10 with no network. This native CI check passed for stable
 8.2.13; local ARM emulation instead fails at EL10 glibc's x86-64-v3 requirement
-before BOINC starts. An exported bundle still requires actual RHEL-host
-ABI/version verification before installation; successful CI is not host/client
-acceptance.
+before BOINC starts. An exported bundle still requires actual verification of the
+RHEL host's ABI and version before installation; successful CI is not host or
+client acceptance.
 
 Take a genuine read-only worker snapshot **before** installing or starting a
-canary, and again during/after any separately approved bounded cohort:
+canary, and again during and after any separately approved bounded cohort:
 
 ```sh
 python3 scripts/boinc/observe_node.py \
@@ -218,44 +224,46 @@ python3 scripts/boinc/observe_node.py \
 ```
 
 The identical checked-in observer runs through SSH stdin under read-only sudo
-commands, installs no host files and never starts/stops a service. It counts
+commands, installs no host files and never starts or stops a service. It counts
 actual successful `page done` events in the complete window, not an extrapolated
 gap between selected page samples. It reports pages/hour, median page duration,
-last completion age, errors, engine/language/queue composition, unchanged worker
-PID/start time, CPU/memory cgroup counters, host memory/load and available pressure
-metrics. No page text, credentials or account keys are returned. Output refuses
-to overwrite an existing evidence file.
+last completion age, errors, engine, language and queue composition, unchanged
+worker PID and start time, CPU and memory cgroup counters, host memory and load,
+and available pressure metrics. No page text, credentials or account keys are
+returned. Output refuses to overwrite an existing evidence file.
 
 `baseline_ready` requires an active worker, at least ten successful pages in the
 window, no errors and a completion within five minutes. These are conservative
-**pre-pilot readiness** checks, not calibrated regression/throughput thresholds.
-They must not be used to claim that two windows have equivalent workloads or
-that an after-window passed a non-disruption contract. Choose the bounded
-cohort, observation windows and rollback rule before starting; preserve worker
-PID, queue/engine mix and actual resource deltas in the evidence.
+**pre-pilot readiness** checks, not calibrated regression or throughput
+thresholds. They must not be used to claim that two windows have equivalent
+workloads or that an after-window passed a non-disruption contract. Choose the
+bounded cohort, observation windows and rollback rule before starting; preserve
+worker PID, queue and engine mix and actual resource deltas in the evidence.
 
 An actual Node 4 pre-pilot snapshot at 2026-10-16 11:22 UTC had one successful
 page in 900 seconds (4/hour), last completion 891 seconds earlier, while three
-existing Tesseract containers each consumed about 96% CPU for 14–15 minutes.
-The production worker was still active, unchanged since October 14, with no
-OOM events. No BOINC account, subordinate IDs, client or service was installed;
+existing Tesseract containers each consumed about 96% CPU for 14–15 minutes. The
+production worker was still active, unchanged since October 14, with no OOM
+events. No BOINC account, subordinate IDs, client or service was installed;
 adding pilot load was withheld. An active process alone is not a comparable
 healthy throughput baseline. Let the owner resolve the existing workload or
-obtain a naturally valid fresh baseline rather than restarting/replacing the
+obtain a naturally valid fresh baseline rather than restarting or replacing the
 worker, attributing the existing slowdown to BOINC, or purchasing dev resources.
 At 11:44:50 UTC it naturally recovered: 23 successful pages in 900 seconds
-(92/hour), median 115.50 seconds, zero failure events and last completion
-45.8 seconds earlier, with the same worker PID/start. This meets readiness,
-not the still-unexecuted during/after pilot's no-regression acceptance.
+(92/hour), median 115.50 seconds, zero failure events and last completion 45.8
+seconds earlier, with the same worker PID and start time. This meets readiness,
+not the no-regression acceptance of the still-unexecuted during-pilot and
+after-pilot windows.
 
 ### Disabled existing-node client prerequisites
 
 `scripts/boinc/prepare_node.py` is a separate explicit opt-in for the user-approved
 existing-node pilot. It does not install packages, adopt existing accounts, start
-or enable a service, create a project attachment, or modify worker/timer units.
-It refuses an existing `boinc` account/home/install/unit, verifies both exported
-binary hashes and the stable source commit, requires a ready baseline no more
-than 120 seconds old with the same live worker PID, then previews the exact plan:
+or enable a service, create a project attachment, or modify worker or timer units.
+It refuses an existing `boinc` account, home, install or unit, verifies both
+exported binary hashes and the stable source commit, requires a ready baseline no
+more than 120 seconds old with the same live worker PID, then previews the exact
+plan:
 
 ```sh
 sudo python3 scripts/boinc/prepare_node.py \
@@ -270,10 +278,10 @@ unprivileged host UID, then verifies the worker PID stayed unchanged. The base
 unit cannot start until the reviewed volunteer-profile drop-in exists. Apply
 `setup_volunteer.py --ocr-node --service usnm-boinc-canary.service` separately
 to configure and verify whole-UID limits, SELinux and rootless runtime; that
-helper also leaves the client stopped/disabled. Neither step authorizes an
-attachment by itself. Production attachment requires explicit account/master
-authorization, a fresh healthy baseline and the verified capped profile; do
-not infer consent or enable unreviewed apps/GPU work.
+helper also leaves the client stopped and disabled. Neither step authorizes an
+attachment by itself. Production attachment requires explicit account and master
+authorization, a fresh healthy baseline and the verified capped profile; do not
+infer consent or enable unreviewed apps or GPU work.
 
 Rollback an explicitly started pilot with:
 
@@ -281,44 +289,44 @@ Rollback an explicitly started pilot with:
 sudo python3 scripts/boinc/prepare_node.py --stop
 ```
 
-This stops/disables only the managed canary client and its dedicated user
-manager, disables lingering, and retains account/files/task evidence for
-inspection. It does not delete subordinate-ID allocations or kill/restart OCR.
-If preparation fails before the unit is written, no service was started;
-inspect retained identity/files instead of retrying over an existing account.
-The source/tests alone are not evidence that this host setup or a returned
-cohort has executed.
+This stops and disables only the managed canary client and its dedicated user
+manager, disables lingering, and retains the account, files and task evidence
+for inspection. It does not delete subordinate-ID allocations or kill or
+restart OCR. If preparation fails before the unit is written, no service was
+started; inspect the retained identity and files instead of retrying over an
+existing account. The source and tests alone are not evidence that this host
+setup or a returned cohort has executed.
 
 Production `require_secure_transport` remains OFF. Keep #464 open until these
 remaining gates and a reviewed migration plan are satisfied. #631 remains draft;
-preserve current production pins. The paid dev/DNS proposal in #634 remains
+preserve current production pins. The paid dev and DNS proposal in #634 remains
 unapproved; this fixture does not authorize it, trust calibration or node rollout.
 
 ## Private managed-client account attachment
 
 `scripts/boinc/client_account.py` uses the stock BOINC GUI-RPC protocol on loopback.
 Preview with `--data-dir`, `--port`, `--expected-user-id`, and
-`--expected-user-name`; it prints only whitelisted attribution/status fields, not
-the account name, authenticators, or raw RPC replies. Explicit `--apply --key-file`
-accepts only a regular, nonsymlink, private weak-key file matching the expected
-user ID. Never pass the key itself as an argument. The canonical production URL is
-`https://boinc.usnewsmap.com/`; legacy/duplicate attachments require reconciliation
-instead of silently creating a second project.
+`--expected-user-name`; it prints only whitelisted attribution and status fields,
+not the account name, authenticators, or raw RPC replies. Explicit
+`--apply --key-file` accepts only a regular, nonsymlink, private weak-key file
+matching the expected user ID. Never pass the key itself as an argument. The
+canonical production URL is `https://boinc.usnewsmap.com/`; legacy or duplicate
+attachments require reconciliation instead of silently creating a second project.
 
-Credential-bearing debug flags are checked against the latest retained
-**effective runtime** core log-flag dump as well as the on-disk configuration;
-missing or potentially truncated runtime evidence refuses attachment. Stock
-startup and supported config reread emit this dump. Project messages cannot
-substitute for core runtime evidence. The versioned private drain journal is
-bound to this machine, real data path, RPC port, and GUI-auth-file identity;
-legacy/cross-client journals are refused. A successful late-attribution retry
-releases only the validated helper-owned hold and removes its journal without
-detaching again. Network policy is restored after the **last** attach/update RPC,
-including initially unattached clients.
-Every apply holds a nonblocking exclusive lock in the real client data directory
-from before RPC authentication through final network restoration and journal
-cleanup. The lock is independent of key/journal paths; its inode is never removed.
-Concurrent operators must retry instead of racing detach against a new attachment.
+Credential-bearing debug flags are checked against the latest retained **effective
+runtime** core log-flag dump as well as the on-disk configuration; missing or
+potentially truncated runtime evidence refuses attachment. Stock startup and
+supported config reread emit this dump. Project messages cannot substitute for
+core runtime evidence. The versioned private drain journal is bound to this
+machine, real data path, RPC port, and GUI-auth-file identity; legacy or
+cross-client journals are refused. A successful late-attribution retry releases
+only the validated helper-owned hold and removes its journal without detaching
+again. Network policy is restored after the **last** attach or update RPC,
+including initially unattached clients. Every apply holds a nonblocking exclusive
+lock in the real client data directory from before RPC authentication through
+final network restoration and journal cleanup. The lock is independent of key and
+journal paths; its inode is never removed. Concurrent operators must retry instead
+of racing detach against a new attachment.
 
 Stock BOINC 8.2 GUI-RPC authentication requires `MD5(nonce + GUI password)`.
 This is a transient, loopback-only protocol challenge, not a stored password
@@ -332,10 +340,11 @@ authorized managed-client rejoin, the helper records the original work-enabled
 preference in a private durable journal before requesting no new tasks. It refuses
 to detach while any project result or scheduler RPC remains; reinvoke after
 draining. A temporary client-wide network guard closes the final detach race and
-restores the previous permanent/temporary network mode even on errors. Other
+restores the previous permanent or temporary network mode even on errors. Other
 projects' transfers may pause briefly during this guard; their work is not reset.
 The supplied key is used only in the private RPC payload. Attribution waits a
-bounded time for the actual scheduler's expected user/name and nonzero host ID.
+bounded time for the actual scheduler's expected user ID and name and nonzero host
+ID.
 
 Stock `project_attach` re-enables networking and cannot atomically preserve a
 pre-existing user no-new-tasks hold. Therefore user-held and account-manager
@@ -346,32 +355,31 @@ An independent GUI project suspension is also refused, including on reinvocation
 `disallow_attach` is checked before journaling or any project mutation so a valid
 attachment is never detached from a client that prohibits reattachment.
 
-Before attachment, capture effective global resource preferences and protect
-them using the supported local-override RPC, preventing a new account's scheduler
-reply from silently changing CPU/memory and other limits. The original override
+Before attachment, capture effective global resource preferences and protect them
+using the supported local-override RPC, preventing a new account's scheduler
+reply from silently changing CPU, memory and other limits. The original override
 and protected effective preferences are backed up privately beside the journal;
 the explicit local resource policy remains installed and should be inspected
-before subsequently changing account-wide preferences.
-Weekly CPU and network schedules are materialized for all seven days so a later
-scheduler reply cannot introduce an inherited day outside the protected limits.
-Unrestricted equal endpoints become explicit 00:00–24:00 intervals; 24:00–00:00
-remains never. Stored and working schedules are compared semantically and must
-retain every explicit day. Schedules that cannot round-trip the pinned client's
-two-decimal weekly serialization are refused rather than silently rounded.
-For the stock client's idle CPU-count percentage only, working value zero and
-parsed override value 100 are equivalent (both leave the CPU count unlimited).
-Readback accepts that documented representation change, not arbitrary limit
-changes. Weak-key shape checks reject both 31- and 33-hex suffixes; valid shape
-alone cannot detect a transcribed but different credential.
-Historical server records are not rewritten.
-A standard detach can remove unused project downloads;
-inventory caches and obtain explicit rejoin authorization first. This does not
-provision resources, activate the optional OCR-node profile, grant GPU consent,
-or change server pins/TLS policy.
+before subsequently changing account-wide preferences. Weekly CPU and network
+schedules are materialized for all seven days so a later scheduler reply cannot
+introduce an inherited day outside the protected limits. Unrestricted equal
+endpoints become explicit 00:00–24:00 intervals; 24:00–00:00 remains never.
+Stored and working schedules are compared semantically and must retain every
+explicit day. Schedules that cannot round-trip the pinned client's two-decimal
+weekly serialization are refused rather than silently rounded. For the stock
+client's idle CPU-count percentage only, working value zero and parsed override
+value 100 are equivalent (both leave the CPU count unlimited). Readback accepts
+that documented representation change, not arbitrary limit changes. Weak-key
+shape checks reject both 31- and 33-hex suffixes; valid shape alone cannot detect
+a transcribed but different credential. Historical server records are not
+rewritten. A standard detach can remove unused project downloads; inventory
+caches and obtain explicit rejoin authorization first. This does not provision
+resources, activate the optional OCR-node profile, grant GPU consent, or change
+server pins or TLS policy.
 
 For a dedicated, otherwise empty OCR-node client whose throughput comparison
-remains uncertain, preserve its original `boinccmd --get_cc_status` first.
-Use the installed supported `boinccmd --set_run_mode never` and
+remains uncertain, preserve its original `boinccmd --get_cc_status` first. Use
+the installed supported `boinccmd --set_run_mode never` and
 `--set_gpu_mode never` **before** attachment, using its data directory and
 loopback RPC port (no credential arguments). After verified attachment,
 immediately request project `nomorework` and `suspend`. The client stays
@@ -379,5 +387,5 @@ responsive and credit attribution can be checked without executing any new
 BOINC tasks. Stock attach cannot atomically prevent an initial assignment;
 report and preserve any queued results rather than claiming none were assigned.
 Resume only this owned project and restore the recorded computation modes when
-the bounded workload/CPU/memory comparison permits real work. Do not apply this
-empty-client operational hold blindly to a client running other projects.
+the bounded workload, CPU and memory comparison permits real work. Do not apply
+this empty-client operational hold blindly to a client running other projects.

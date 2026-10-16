@@ -1,6 +1,6 @@
 # BOINC and Azure facts, checked against sources
 
-The facts the hosting design for the stock BOINC server depends on. The client side, the bridge and the contracts are in PR #441 (`docs/boinc.md`) and are not repeated here.
+These are the facts the hosting design for the stock BOINC server depends on. The client side, the bridge and the contracts are in PR #441 (`docs/boinc.md`) and are not repeated here.
 
 Every fact here has a source and a fetch date. All sources were read on 2026-10-13 (US Eastern).
 A fact marked UNVERIFIED was not confirmed from a source and must be tested before design
@@ -161,14 +161,14 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   Azure hosting: the Container App never runs a container itself.
 - Element names are CONFIRMED in `src:sched/plan_class_spec.xml.sample` (the `docker` class is
   `<plan_class><name>docker</name><docker/></plan_class>`) and in the parser
-  (`src:sched/plan_class_spec.cpp`, lines 1258 to 1266: `min_core_client_version`,
-  `docker`). `boinc/plan_class_spec.xml` here is that class plus
-  `<min_core_client_version>80211</min_core_client_version>` for ordinary OCR;
-  separate multi-CPU/GPU container pilot classes retain their 80213 floors.
-  The server's own Docker check applies the 8.2.6 minimum to macOS clients only
-  (line 625). The wiki asks for 9.0, but no 9.x client had been released as of 2026-10-14
-  (newest Linux packages: 8.2.13 stable, 8.2.15 alpha), so a 9.0 minimum blocked every host.
-  8.2.13 on Debian 13 detects Docker (`Docker: version ...` in its event log).
+  (`src:sched/plan_class_spec.cpp`, lines 1258 to 1266: `min_core_client_version`, `docker`).
+  `boinc/plan_class_spec.xml` here is that class plus
+  `<min_core_client_version>80211</min_core_client_version>` for ordinary OCR; separate
+  multi-CPU and GPU container pilot classes retain their 80213 floors. The server's own Docker
+  check applies the 8.2.6 minimum to macOS clients only (line 625). The wiki asks for 9.0, but
+  no 9.x client had been released as of 2026-10-14 (newest Linux packages: 8.2.13 stable,
+  8.2.15 alpha), so a 9.0 minimum blocked every host. 8.2.13 on Debian 13 detects Docker
+  (`Docker: version ...` in its event log).
 - **Platform correction, 2026-10-16:** the recommended stable Mac client is
   **8.2.11**, which already contains Podman path detection, the installed
   `Run_Podman` helper, and BOINC-owned VM initialization in upstream stable

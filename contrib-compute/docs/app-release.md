@@ -1,9 +1,10 @@
 # Releasing a BOINC app version
 
-Runtime rebuilds retain the deployed feeder's `--allapps` interleaving and
-1,000 shared-memory work slots so older queued applications cannot starve newer
-canaries. Re-rendering an existing project also leaves already-correct config/key
-symlinks intact; a runtime upgrade must not transiently remove its signing paths.
+Runtime rebuilds retain the deployed feeder's `--allapps` interleaving and 1,000
+shared-memory work slots so older queued applications cannot starve newer
+canaries. Re-rendering an existing project also leaves already-correct config and
+key symlinks intact; a runtime upgrade must not transiently remove its signing
+paths.
 
 `scripts/boinc-app-release.sh` builds, stages, signs and publishes one app version on the
 live server in one command:
@@ -18,15 +19,16 @@ scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-h
 read-only checks and prints the plan.
 
 For a **PR-first release**, add `--prepare-only` to stage, sign and build the
-immutable app-version image without deploying or starting the publish job.
-It writes only `images.appver` in the environment's settings; the key remains
-on the signing host. Submit that pin as a release PR, obtain review and green
-CI, then run `scripts/provision-boinc.sh --env prod` from the merged checkout
-to publish and verify registration. Preparation is not publication or volunteer
-execution evidence. Omit `--prepare-only` only when immediate publication is
-authorized; the existing one-command behavior is unchanged.
+immutable app-version image without deploying or starting the publish job. It
+writes only `images.appver` in the environment's settings; the key remains on
+the signing host. Submit that pin as a release PR, obtain review and green CI,
+then run `scripts/provision-boinc.sh --env prod` from the merged checkout to
+publish and verify registration. Preparation is not evidence of publication or
+of volunteer execution. Omit `--prepare-only` only when immediate publication
+is authorized; the existing one-command behavior is unchanged.
 
-The release script and `scripts/boinc/install.py` support two distribution kinds (`--kind`):
+The release script and `scripts/boinc/install.py` support two distribution kinds (`--kind`).
+Both are described in the numbered list after the next sections.
 
 Operator staging uses a unique mode-0700 directory beneath the checkout and a
 private directory beneath the signing host's root home, removed on exit. Build
@@ -39,17 +41,19 @@ or signature checks to include them.
 
 ### Native NVIDIA experimental canary
 
-Normal project participation includes production and experimental tasks,
-including native `nvidia_cuda_2b` and `nvidia_cuda_8b`. There is no Qwen-specific
-account flag, enrollment step, or repeat profile update. Old stored
-`qwen_native_cuda_canary` values are ignored; do not rewrite account rows.
-Normal effective-venue CPU/GPU choices, resource limits, pause and No new tasks
-controls remain authoritative. Do not enable GPUs or change volunteers' preferences.
+Normal project participation includes production and experimental tasks, including
+native `nvidia_cuda_2b` and `nvidia_cuda_8b`. There is no Qwen-specific account
+flag, enrollment step, or repeat profile update. Old stored
+`qwen_native_cuda_canary` values are ignored; do not rewrite account rows. The
+volunteer's normal effective-venue CPU and GPU choices, resource limits, pause
+control and No new tasks control remain authoritative. Do not enable GPUs or change
+volunteers' preferences.
 
 Rebuild the BOINC **base and server** through `build-boinc-images.sh` before
 enabling this policy. Removing only the web control or XML tag is insufficient:
 the older CGI contains an additional account-flag check. The base cache key
-includes its removal. Verify actual served CGI/image hashes after rollout.
+includes its removal. After rollout, verify the hashes of the CGI and image
+actually served.
 
 Native NVIDIA campaigns remain operator-bounded, independently of user profiles.
 Shipped plan classes have an impossible WU interval (`min_wu_id=2`, `max_wu_id=1`),
@@ -65,84 +69,86 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --stop --apply
 ```
 
-The helper validates Qwen identity, native model batch/disk bound, independent
-quorum/target 2 and two unsent results, journals the old plan, then atomically
-opens exactly one WU in one class and closes the other. It does not create work,
-modify scientific/account rows, or change resource choices. The unchanged stock
-scheduler range/batch checks enforce the window. Runtime reinitialization or
-deployment copies the closed shipped template: re-audit before reopening, rather
-than assuming an old campaign stayed enabled. Stop immediately after the bounded
-cohort; widening to general unvalidated dispatch is not this helper's scope.
+The helper validates the Qwen identity, the native model's batch and disk
+bounds, an independent quorum and target of 2, and two unsent results; it
+journals the old plan, then atomically opens exactly one WU in one class and
+closes the other. It does not create work, modify scientific or account rows, or
+change resource choices. The unchanged stock scheduler range and batch checks
+enforce the window. Runtime reinitialization or deployment copies the closed
+shipped template: re-audit before reopening, rather than assuming an old
+campaign stayed enabled. Stop immediately after the bounded cohort; widening to
+general unvalidated dispatch is not this helper's scope.
 
 These native-only classes admit stable BOINC 8.2.11+ and do not require a
-container runtime. The ordinary OCR `docker` class also admits stable 8.2.11
-when its platform runtime is available; do not require a development Mac
-client for it. Native CUDA classes require a CUDA 12.4-capable NVIDIA driver (the pinned
-runtime includes CUDA libraries; no toolkit/WSL/Podman), 3 GB/7 GB detected GPU
-memory respectively, and cold disk bounds of 12 GiB/18 GiB. This is admission
-policy, **not measured Windows acceptance**. Signed publication is not evidence
-of successful inference.
+container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
+its platform runtime is available; do not require a development Mac client for it.
+Native CUDA classes require a CUDA 12.4-capable NVIDIA driver (the pinned runtime
+includes CUDA libraries; no toolkit, WSL or Podman), 3 GB and 7 GB of detected GPU
+memory respectively, and cold disk bounds of 12 GiB and 18 GiB. This is admission
+policy, **not measured Windows acceptance**. Signed publication is not evidence of
+successful inference.
 
-Windows publication must include both pinned CUDA archives in `llama.lock`:
-the llama archive does **not** include `cudart64_12.dll` or the cuBLAS DLLs.
-The companion runtime archive contributes 574,138,880 bytes; the selected
-llama-server/DLL payload contributes 545,153,592 bytes before the small driver,
-locks and Microsoft runtime. Together they fit the reviewed 2 GiB native bundle
-envelope (enforced by staging). The Windows native CI artifact supplies app-local
-Microsoft CRT DLLs from the installed Visual Studio redistributable, verifies
-their Microsoft Authenticode signatures and records version/hashes in
-`VC_REDIST_SOURCE.json`/`SHA256SUMS`. Stage these DLLs as signed `--extra-file`
-members too; staging rejects a missing mandatory CUDA/CRT dependency, including
-the portable `ggml-cpu-x64.dll` backend and its `libomp140.x86_64.dll` dependency
-from the pinned llama archive (CPU backend discovery is required even for CUDA
-offload; optimized CPU variants are optional). No
-volunteer should install a CUDA toolkit or manually fetch DLLs. The NVIDIA
+Windows publication must include both pinned CUDA archives in `llama.lock`: the
+llama archive does **not** include `cudart64_12.dll` or the cuBLAS DLLs. The
+companion runtime archive contributes 574,138,880 bytes; the selected llama-server
+and DLL payload contributes 545,153,592 bytes before the small driver, locks and
+Microsoft runtime. Together they fit the reviewed 2 GiB native bundle envelope
+(enforced by staging). The Windows native CI artifact supplies app-local Microsoft
+CRT DLLs from the installed Visual Studio redistributable, verifies their
+Microsoft Authenticode signatures and records versions and hashes in
+`VC_REDIST_SOURCE.json` and `SHA256SUMS`. Stage these DLLs as signed
+`--extra-file` members too; staging rejects a missing mandatory CUDA or CRT
+dependency, including the portable `ggml-cpu-x64.dll` backend and its
+`libomp140.x86_64.dll` dependency from the pinned llama archive (CPU backend
+discovery is required even for CUDA offload; optimized CPU variants are optional).
+No volunteer should install a CUDA toolkit or manually fetch DLLs. The NVIDIA
 driver's `nvcuda.dll` and Windows system APIs remain platform prerequisites.
 
-Before publication, coordinate deployments in #529 and preserve all existing
-OCR/training pins and queues. Publish only the intended Windows platform version;
+Before publication, coordinate deployments in #529 and preserve all existing OCR
+and training pins and queues. Publish only the intended Windows platform version;
 the scheduler must also be upgraded, not just its plan-class XML. The persistent
 project CGI is a copy, not necessarily a link to the new image's executable.
 Server startup atomically refreshes it from the reviewed image before serving,
 preserving already-running CGI requests. Verify the project CGI SHA256 matches
 `/usr/local/boinc/sched/cgi` after the single-active-revision rollout; otherwise
-old batch/account-gate code can silently prevent or misroute dispatch.
-Inventory ordinarily eligible participating hosts without publishing identities. Initially stage
-at most **one** audited workunit with two independent results, digest-qualified
-sticky models, the correct native target and existing idempotency journal.
-Record exact workunit/result IDs, then stop submitting until the results have been
-examined. Do not reduce independent quorum to make a single volunteer pass.
-Collect BOINC exit status, bounded stderr, backend/model/runtime identities and
-available resource diagnostics; report missing measurements rather than inferring
-successful CUDA execution from registration. Do not run arbitrary commands on
-volunteers or override CPU/GPU/resource choices to bypass missing hardware.
+old batch and account-gate code can silently prevent or misroute dispatch.
+Inventory ordinarily eligible participating hosts without publishing identities.
+Initially stage at most **one** audited workunit with two independent results,
+digest-qualified sticky models, the correct native target and existing idempotency
+journal. Record exact workunit and result IDs, then stop submitting until the
+results have been examined. Do not reduce independent quorum to make a single
+volunteer pass. Collect BOINC exit status, bounded stderr, backend, model and
+runtime identities and available resource diagnostics; report missing measurements
+rather than inferring successful CUDA execution from registration. Do not run
+arbitrary commands on volunteers or override CPU, GPU or resource choices to
+bypass missing hardware.
 
 Native failures write a nonzero `boinc_finish_called` and exit nonzero, so the
 ordinary BOINC UI can show **Computation error**. A fixed-schema, bounded
 `USNM_QWEN_FAILURE` JSON summary goes automatically into BOINC task stderr
-(appended directly to the slot's `stderr.txt` on Windows, ordinary stderr on Unix) and
-the normal scheduler result report, even when failure prevents declared output
-uploads. It includes outcome, runtime/model identities, driver/memory facts,
-timings and known failure categories—not raw paths, input text, prompts, account
-data or full runtime logs. Successful tasks retain the usual three checksummed-output
-upload paths. Client-side download/signature/loader failures can occur before the
-app runs; inspect their standard BOINC exit status/stderr/event reports rather
-than promising an application summary exists. Server receipt of those reports
-must still be verified with real canary results; no manual volunteer log upload
-is part of the onboarding flow.
+(appended directly to the slot's `stderr.txt` on Windows, ordinary stderr on Unix)
+and the normal scheduler result report, even when failure prevents declared output
+uploads. It includes the outcome, runtime and model identities, driver and memory
+facts, timings and known failure categories, and not raw paths, input text,
+prompts, account data or full runtime logs. Successful tasks retain the usual
+three checksummed-output upload paths. Client-side download, signature or loader
+failures can occur before the app runs; inspect their standard BOINC exit status,
+stderr and event reports rather than promising an application summary exists.
+Server receipt of those reports must still be verified with real canary results;
+no manual volunteer log upload is part of the onboarding flow.
 
 #### Production delivery snapshot (2026-10-16)
 
-The coherent runtime from `00fbdd96` was deployed after paired-pin PR #648:
-the served CGI matched the image and the public About/footer changes were present.
-That earlier rollout used an experiment flag; the new project-participation policy
-removes it and requires a fresh coordinated runtime rollout. Signed Windows native version
-1.3 is registered as app versions 18 (`nvidia_cuda_2b`) and 19
-(`nvidia_cuda_8b`). Each complete 38-file application payload is
-1,122,771,473 bytes, excluding the separately staged model weights. All 76
-server-side file hashes and anonymous download headers were verified; both
-drivers' signatures and anonymous full driver/lock downloads were also checked.
-Large DLLs were not downloaded again merely to repeat those checks.
+The coherent runtime from `00fbdd96` was deployed after paired-pin PR #648: the
+served CGI matched the image and the public About page and footer changes were
+present. That earlier rollout used an experiment flag; the new
+project-participation policy removes it and requires a fresh coordinated runtime
+rollout. Signed Windows native version 1.3 is registered as app versions 18
+(`nvidia_cuda_2b`) and 19 (`nvidia_cuda_8b`). Each complete 38-file application
+payload is 1,122,771,473 bytes, excluding the separately staged model weights. All
+76 server-side file hashes and anonymous download headers were verified; both
+drivers' signatures and anonymous full driver and lock downloads were also
+checked. Large DLLs were not downloaded again merely to repeat those checks.
 
 This is **publication**, not Windows GPU or failure-report acceptance. The
 native versions had no assigned results at that snapshot. No extra experiment
@@ -167,15 +173,16 @@ Preview is the default. Apply journals the original state before deprecating tha
 exact app version and notifying the feeder. Replaying it is safe. It never
 cancels results, rewrites workunits, changes quorum, or touches OCR, training,
 native, or split-payload versions. In-flight results remain reportable. Preserve
-the journal and before/after queue inventory. Do not re-enable the legacy version
-until its cold bounds and payload are safe.
+the journal and the queue inventory from before and after. Do not re-enable the
+legacy version until its cold bounds and payload are safe.
 
 Partially completed workunits cannot simply be reissued against a new engine
 digest: that would mix campaign identities and lose independent-quorum semantics.
-Leave those originals held with their inputs/results intact pending an explicit
-scientific disposition. Only fully unsent, audited work can be considered for a
-separate idempotently staged campaign with the new engine identity and bounds;
-never edit campaign submission markers or database rows to fake migration.
+Leave those originals held with their inputs and results intact pending an
+explicit scientific disposition. Only fully unsent, audited work can be
+considered for a separate idempotently staged campaign with the new engine
+identity and bounds; never edit campaign submission markers or database rows to
+fake migration.
 
 1. **`--kind container` (default)**: stages a signed `docker_wrapper`, `Dockerfile`, `job.toml`
    and `version.xml` under `apps/<app>/<version>/<platform>__<plan_class>` across the five
@@ -185,12 +192,12 @@ never edit campaign submission markers or database rows to fake migration.
    - `usnm_ocr`, `usnm_assess`, `usnm_gold` and container `usnm_quality` use `--plan-class docker`
      (the default) and `images.worker` from `infra/boinc/env/<env>.json`.
    - `usnm_surya` (#516) and container `usnm_qwen` (#522) have their own worker images
-     (`.github/workflows/boinc-surya.yml` and `.github/workflows/boinc-qwen.yml`).
-     Surya retains `docker_mt` / `docker_nvidia_cuda`; Qwen uses **separate immutable
-     2B/8B images** with `docker_mt_2b` / `docker_nvidia_cuda_8b`, passed with `--plan-class`
-     and the corresponding digest-pinned `--worker-image`. Qwen release checks reject
-     legacy dual-model or wrong-model images using anonymous config metadata; signing
-     is unchanged. See [disk policy and rollout](../../docs/boinc-quality.md#qwen-disk-admission-and-cold-cache-acceptance-559).
+     (`.github/workflows/boinc-surya.yml` and `.github/workflows/boinc-qwen.yml`). Surya retains
+     `docker_mt` and `docker_nvidia_cuda`; Qwen uses **separate immutable 2B/8B images** with
+     `docker_mt_2b` and `docker_nvidia_cuda_8b`, passed with `--plan-class` and the
+     corresponding digest-pinned `--worker-image`. Qwen release checks reject legacy dual-model
+     or wrong-model images using anonymous config metadata; signing is unchanged. See
+     [disk policy and rollout](../../docs/boinc-quality.md#qwen-disk-admission-and-cold-cache-acceptance-559).
 
    ```sh
    scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
@@ -278,28 +285,27 @@ flowchart LR
    files come back. The work directory on the signing host is removed on exit.
 4. **Publish.** ACR Tasks builds `usnm-boinc-appver:<app>-<version>` from
    `contrib-compute/images/appver/`: the server image with the version directory staged again
-   from the same inputs, the `.sig` files added, and the result checked by
-   `check_appver.py`. The build fails on a `.sig` with no staged file, a staged file without a
-   `.sig`, anything in the signatures that isn't a `.sig`, a `version.xml` that names a file
-   that wasn't staged, or a signature that `crypt_prog -verify` rejects against
-   `codeSignPublicKey`. `provision-boinc.sh --publish-image <digest>` deploys and runs the job
+   from the same inputs, the `.sig` files added, and the result checked by `check_appver.py`.
+   The build fails on a `.sig` with no staged file, a staged file without a `.sig`, anything in
+   the signatures that isn't a `.sig`, a `version.xml` that names a file that wasn't staged, or
+   a signature that `crypt_prog -verify` rejects against `codeSignPublicKey`.
+   `provision-boinc.sh --publish-image <digest>` deploys and runs the job
    `usnm-boinc-publish-caj-<env>` with that image (it has the share, the database and the vault,
-   as the init job does). The job copies the version to the share,
-   installs the app's templates, copies the committed project metadata, runs `bin/xadd`
-   to register platforms, and runs the unmodified `bin/update_versions --noconfirm` in a
-   temporary layout containing only the requested app/version/platform. The configuration
-   still names the real download and key directories. It explicitly verifies the exact
-   database app-version row before notifying the feeder: PHP `die(string)` can otherwise
-   exit zero even though registration failed. A platform already on
-   the share must be identical, byte for byte (`diff -r`): a rerun with changed bytes is refused,
-   because versions are immutable and a change is a new version. The
-   script then writes the image's digest to `images.appver` in the settings; commit it. Every
-   `provision-boinc.sh` deploys and runs the publish job on `images.appver`, so the job stays and always
-   holds the last published version (rerunning it is safe: it changes nothing when the version
-   is already there). `--publish-image` overrides it for one deployment. Provisioning also
-   ensures secrets, skips a completed project initialization, registers apps and checks the
-   public project configuration. It refuses to overwrite partial project data or an existing
-   database, and never prints a manual bootstrap checklist.
+   as the init job does). The job copies the version to the share, installs the app's templates,
+   copies the committed project metadata, runs `bin/xadd` to register platforms, and runs the
+   unmodified `bin/update_versions --noconfirm` in a temporary layout containing only the
+   requested app, version and platform. The configuration still names the real download and key
+   directories. It explicitly verifies the exact database app-version row before notifying the
+   feeder: PHP `die(string)` can otherwise exit zero even though registration failed. A platform
+   already on the share must be identical, byte for byte (`diff -r`): a rerun with changed bytes
+   is refused, because versions are immutable and a change is a new version. The script then
+   writes the image's digest to `images.appver` in the settings; commit it. Every
+   `provision-boinc.sh` deploys and runs the publish job on `images.appver`, so the job stays
+   and always holds the last published version (rerunning it is safe: it changes nothing when
+   the version is already there). `--publish-image` overrides it for one deployment.
+   Provisioning also ensures secrets, skips a completed project initialization, registers apps
+   and checks the public project configuration. It refuses to overwrite partial project data or
+   an existing database, and never prints a manual bootstrap checklist.
 
 Deployment previews use GA `az stack-whatif group create`, with the same unmanage and deny
 settings as deployment, three-hour retention and Azure's baseline-based noise reduction.
@@ -376,14 +382,13 @@ maintainer publishes and signs from the merged commit.
    bash scripts/boinc/build-mac-wrapper.sh --out /tmp/mac-wrappers
    ```
 
-   The script checks out exactly the BOINC commit pinned by the server
-   Containerfile, applies `scripts/boinc/patch-mac-wrapper.py` to fix the
-   `Run_Podman` `--format` pipe quoting bug in `samples/docker_wrapper/docker_wrapper.cpp`
-   (`get_container_state`), builds both Mach-O executables and records checksums. The
-   artifact is a BOINC code-signing candidate, not an Apple-notarized installer.
-   A checksum and source-pin file check integrity and consistency; use artifacts
-   from a trusted, reviewed build. Record the workflow run, commit and SDK in the
-   release evidence.
+   The script checks out exactly the BOINC commit pinned by the server Containerfile,
+   applies `scripts/boinc/patch-mac-wrapper.py` to fix the `Run_Podman` `--format` pipe
+   quoting bug in `samples/docker_wrapper/docker_wrapper.cpp` (`get_container_state`),
+   builds both Mach-O executables and records checksums. The artifact is a BOINC
+   code-signing candidate, not an Apple-notarized installer. The checksum file and the
+   source-pin file check integrity and consistency; use artifacts from a trusted, reviewed
+   build. Record the workflow run, commit and SDK in the release evidence.
 
 3. On the maintainer's checkout, verify the artifact checksums and use the
    existing offline-signing release path with the selected platform:
@@ -400,25 +405,28 @@ maintainer publishes and signs from the merged commit.
 
    Remove `--what-if` to stage, sign and publish. For Intel Mac use
    `x86_64-apple-darwin` and `docker_wrapper_x86_64`. The script requires a worker
-   index containing the corresponding native Linux child, validates wrapper
-   architecture/checksum/source pin, and signs the frozen bytes on the signing
-   host. Mac binaries are never executed on that Linux host. A new platform can
-   share a version number only when its shared templates agree; existing
-   platform files remain immutable. Changed image, wrapper or job configuration
-   requires a new version. Commit the resulting `images.appver` setting.
+   index containing the corresponding native Linux child, validates the wrapper's
+   architecture, checksum and source pin, and signs the frozen bytes on the
+   signing host. Mac binaries are never executed on that Linux host. A new
+   platform can share a version number only when its shared templates agree;
+   existing platform files remain immutable. Changed image, wrapper or job
+   configuration requires a new version. Commit the resulting `images.appver`
+   setting.
 
-4. Reserve a synthetic/cached-page `usnm_ocr` job for an ARM Mac client, then
-   verify scheduler selection, signed download, native execution, upload,
+4. Reserve a synthetic or cached-page `usnm_ocr` job for an ARM Mac client,
+   then verify scheduler selection, signed download, native execution, upload,
    validation, assimilation and bridge collection. Repeat on an Intel Mac when
-   available. Check pause/resume, client restart and reboot, then run a matched
-   gold campaign before calling Mac support complete.
+   available. Check pause and resume, client restart and reboot, then run a
+   matched gold campaign before calling Mac support complete.
 
 The standalone Mac spike found an upstream `Run_Podman` command-quoting failure
 when restarting a paused container, which `scripts/boinc/patch-mac-wrapper.py`
-fixes during `scripts/boinc/build-mac-wrapper.sh` ([evaluation note](../../docs/notes/boinc-buda-arm-evaluation.md)).
-Native image execution succeeds; BOINC lifecycle behavior still needs full
-client/server validation on a reserved Mac workunit.
-See [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476),
+fixes during `scripts/boinc/build-mac-wrapper.sh` ([evaluation
+note](../../docs/notes/boinc-buda-arm-evaluation.md)). Native image execution
+succeeds; BOINC lifecycle behavior still needs full client and server validation
+on a reserved Mac workunit. See
+[#476](https://github.com/tgoodyear/usnewsmap.com/issues/476),
 [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533) and the separate
 [BUDA evaluation PR #503](https://github.com/tgoodyear/usnewsmap.com/pull/503).
-These release tools contribute to #476 without closing it or the BUDA spike #481.
+These release tools contribute to #476 without closing it or the BUDA spike
+#481.
