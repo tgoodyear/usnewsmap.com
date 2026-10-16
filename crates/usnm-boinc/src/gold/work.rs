@@ -83,6 +83,7 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         cache: work.to_path_buf(),
         work: scratch.path().to_path_buf(),
         tesseract: "tesseract".into(),
+        command: None,
         psm: job.engine.psm,
         dpi: job.engine.dpi.into(),
         timeout_secs: job.engine.timeout_secs,

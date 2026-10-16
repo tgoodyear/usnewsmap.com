@@ -13,6 +13,17 @@ BOINC_STACK="usnm-boinc-$ENV_NAME"
 # Never touched by these scripts (other production resources).
 FORBIDDEN_SUBSCRIPTION_PREFIX=8d356797
 
+# Keep operator build/staging files private and on the checkout's filesystem.
+boinc_workdir() {
+  python3 - <<'PY'
+from pathlib import Path
+import uuid
+work = Path.cwd() / (".boinc-work-" + uuid.uuid4().hex)
+work.mkdir(mode=0o700)
+print(work)
+PY
+}
+
 case "$ENV_NAME" in prod | dev) ;; *) die "--env must be prod or dev (the BOINC server has no experiment environments)" ;; esac
 [ -f "$BOINC_SETTINGS" ] || die "no settings file $BOINC_SETTINGS"
 
