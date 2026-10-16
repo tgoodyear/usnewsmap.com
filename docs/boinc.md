@@ -638,6 +638,10 @@ Upstream references:
 
 ## Gold check
 
+For an optional, aggregate-capped client beside an OCR node's existing queue
+worker, see [the dev-first OCR-node plan](boinc-ocr-node.md) (#472). It does not
+enable or attach production clients.
+
 A volunteer host can score its engine on the public gold bundle
 ([ocr-gold-set.md](ocr-gold-set.md#volunteer-bundle), #457) and report CER and
 WER together with the bundle version. Two steps, because the task container
