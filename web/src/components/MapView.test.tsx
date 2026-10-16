@@ -32,10 +32,14 @@ class FakeMap {
   on(event: string, handler: () => void) {
     (this.handlers[event] ??= []).push(handler);
   }
+  off(event: string, handler: () => void) {
+    this.handlers[event] = this.handlers[event]?.filter((entry) => entry !== handler) ?? [];
+  }
   emit(event: string) {
     this.handlers[event]?.forEach((handler) => handler());
   }
   areTilesLoaded = vi.fn(() => true);
+  isStyleLoaded = () => true;
   addControl() {}
   remove() {}
 }
@@ -43,6 +47,20 @@ vi.mock("maplibre-gl", () => ({ Map: FakeMap, NavigationControl: class {}, setWo
 vi.mock("maplibre-gl/dist/maplibre-gl.css", () => ({}));
 vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({ default: "" }));
 const layers: { id: string; data: unknown }[][] = [];
+const nativeLayers: { data: unknown; update: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }[] = [];
+vi.mock("./StatesMapLayer", () => ({
+  StatesMapLayer: class {
+    update = vi.fn();
+    destroy = vi.fn();
+    hasDrawn = () => false;
+    constructor(
+      _map: unknown,
+      public data: unknown,
+    ) {
+      nativeLayers.push(this);
+    }
+  },
+}));
 vi.mock("@deck.gl/mapbox", () => ({
   MapboxOverlay: class {
     setProps(props: { layers: { id: string; data: unknown }[] }) {
@@ -51,8 +69,7 @@ vi.mock("@deck.gl/mapbox", () => ({
   },
 }));
 vi.mock("@deck.gl/layers", () => ({
-  ScatterplotLayer: class {},
-  GeoJsonLayer: class {
+  ScatterplotLayer: class {
     constructor(props: object) {
       Object.assign(this, props);
     }
@@ -83,6 +100,7 @@ describe("MapView", () => {
     cleanup();
     maps.length = 0;
     layers.length = 0;
+    nativeLayers.length = 0;
     vi.unstubAllGlobals();
     vi.useRealTimers();
     config.style = "https://tiles.openfreemap.org/styles/positron";
@@ -150,7 +168,7 @@ describe("MapView", () => {
     expect(m.jumpTo).toHaveBeenCalledWith({ center: [-87.6, 41.9], zoom: 6 });
   });
 
-  it("loads geometry only for States and draws only a GeoJsonLayer, reusing its geometry", async () => {
+  it("loads geometry only for States and reuses the native source when window colours change", async () => {
     const geometry = { type: "FeatureCollection", features: [] };
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => geometry });
     vi.stubGlobal("fetch", fetcher);
@@ -162,12 +180,36 @@ describe("MapView", () => {
     expect(layers.at(-1)).toEqual([]);
     const states = [{ code: "NY", name: "New York", hits: 0, pages: 100, rate: 0 }];
     rerender(<MapView {...props} layer="states" zoom={4} center={null} states={states} />);
-    await waitFor(() => expect(layers.at(-1)?.map((l) => l.id)).toEqual(["states"]));
-    const data = layers.at(-1)![0]!.data;
-    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={[...states]} />);
-    expect(layers.at(-1)![0]!.data).toBe(data);
+    await waitFor(() => expect(nativeLayers).toHaveLength(1));
+    expect(layers.at(-1)).toEqual([]);
+    expect(nativeLayers[0]!.data).toBe(geometry);
+    const later = [{ ...states[0]!, hits: 10, rate: 100 }];
+    const breaks = [20, 40, 60, 80, 100];
+    rerender(<MapView {...props} layer="states" zoom={4} center={null} states={later} stateBreaks={breaks} />);
+    expect(nativeLayers).toHaveLength(1);
+    expect(nativeLayers[0]!.update).toHaveBeenLastCalledWith(later, breaks);
     rerender(<MapView {...props} layer="states" zoom={4} center={null} states={[]} />);
     expect(layers.at(-1)).toEqual([]);
+    expect(nativeLayers[0]!.destroy).toHaveBeenCalled();
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not initialize the deck overlay on direct States entry, but creates it when switching to Points", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ type: "FeatureCollection", features: [] }),
+      }),
+    );
+    const states = [{ code: "NY", name: "New York", hits: 1, pages: 100, rate: 10 }];
+    const { rerender } = render(<MapView {...props} layer="states" zoom={4} center={null} states={states} />, {
+      wrapper,
+    });
+    await waitFor(() => expect(nativeLayers).toHaveLength(1));
+    expect(layers).toHaveLength(0);
+    rerender(<MapView {...props} layer="points" zoom={4} center={null} states={states} />);
+    expect(nativeLayers[0]!.destroy).toHaveBeenCalled();
+    expect(layers.at(-1)?.map((layer) => layer.id)).toEqual(["points"]);
   });
 });

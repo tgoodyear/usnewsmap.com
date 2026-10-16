@@ -14,10 +14,10 @@ test.beforeEach(async ({ page }) => {
 });
 const query = "/?q=%22cross+of+gold%22&bucket=month&from=1896-06-01&to=1896-12-31&c=-89,40&z=5";
 
-test("States paint timing does not count a deck draw behind an invisible overlay", async ({ page }) => {
+test("States paint timing does not count a draw on an invisible map canvas", async ({ page }) => {
   await page.goto(query);
   await expect(page.locator("#search-overlay")).toHaveCSS("opacity", "1");
-  const gate = await page.addStyleTag({ content: "#search-overlay { opacity: 0 !important; }" });
+  const gate = await page.addStyleTag({ content: ".maplibregl-canvas { opacity: 0 !important; }" });
   await page.getByRole("combobox", { name: "Map layer" }).selectOption("states");
   await page.waitForFunction(() => performance.getEntriesByName("usnm-states-first-draw").length > 0);
   expect(await page.evaluate(() => performance.getEntriesByName("usnm-states-first-paint").length)).toBe(0);
@@ -98,8 +98,9 @@ test("state polygon hover/click and mobile pinned tap provide state details and 
   await expect(page.getByRole("region", { name: "States legend" })).toBeVisible();
   const map = page.getByTestId("map");
   await expect(map).toBeVisible();
-  // Illinois is at the URL viewport centre; wait for the overlay's first draw.
-  await page.waitForTimeout(1000);
+  // Illinois is at the URL viewport centre; wait for native state rendering.
+  await page.waitForFunction(() => performance.getEntriesByName("usnm-states-first-paint").length > 0);
+  await map.evaluate((element) => element.scrollIntoView({ block: "center", behavior: "instant" }));
   const box = (await map.boundingBox())!;
   const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   if (isMobile) {
@@ -109,9 +110,9 @@ test("state polygon hover/click and mobile pinned tap provide state details and 
     await expect(page).not.toHaveURL(/state=IL/);
     await page.locator("body").press("Escape");
     await expect(details).toHaveCount(0);
-    // A rapid repeat at the same map position is MapLibre's double-tap zoom.
-    await page.waitForTimeout(350);
-    await map.scrollIntoViewIfNeeded();
+    // MapLibre's tap recognizer reserves repeats within 500 ms for double-tap zoom.
+    await page.waitForTimeout(550);
+    await map.evaluate((element) => element.scrollIntoView({ block: "center", behavior: "instant" }));
     const again = (await map.boundingBox())!;
     await page.touchscreen.tap(again.x + again.width / 2, again.y + again.height / 2);
     await details.getByRole("button", { name: "Add state filter: Illinois" }).click();
@@ -127,6 +128,29 @@ test("state polygon hover/click and mobile pinned tap provide state details and 
     await page.mouse.click(point.x, point.y);
   }
   await expect(page).toHaveURL(/state=IL/);
+  expect(errors).toEqual([]);
+});
+
+test("direct States entry supports zoom and later Points/Heat without refetching geometry", async ({ page }) => {
+  const errors: string[] = [];
+  const assets: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("request", (request) => {
+    if (request.url().includes(".geojson")) assets.push(request.url());
+  });
+  await page.goto(`${query}&layer=states`);
+  await page.waitForFunction(() => performance.getEntriesByName("usnm-states-first-paint").length > 0);
+  await expect(page.locator("#search-overlay")).toHaveCount(0);
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await expect.poll(() => Number(new URL(page.url()).searchParams.get("z"))).toBe(6);
+  const layer = page.getByRole("combobox", { name: "Map layer" });
+  await layer.selectOption("points");
+  await expect(page.locator("#search-overlay")).toHaveCSS("opacity", "1");
+  await layer.selectOption("heat");
+  await expect(page).toHaveURL(/layer=heat/);
+  await layer.selectOption("states");
+  await expect(page.getByRole("region", { name: "States legend" })).toBeVisible();
+  expect(assets).toHaveLength(1);
   expect(errors).toEqual([]);
 });
 

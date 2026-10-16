@@ -80,7 +80,14 @@ First-pass decisions for #452:
   Congress, or unavailable coverage baselines. Unsupported shared links draw
   points instead. The layer selector stays hidden in Table/no-WebGL contexts;
   an already-selected States layer retains its accessible table there.
-- Geometry is reused across frames; only fill attributes change.
+- Geometry is reused across frames; only fill colours change. States uses a
+  MapLibre GeoJSON source with promoted state-code IDs and feature-state fill
+  colours, inserted below the first symbol layer so labels stay readable.
+  Direct States entry also defers constructing the unused deck overlay until
+  a different layer actually needs it. This deliberately replaces #452's recommended deck `GeoJsonLayer`: cold
+  luma pipeline creation serialized expensive link-status queries. Points,
+  Heat and other measures retain the existing deck overlay; States does not
+  prefetch geometry or change that overlay's basemap-readiness gate.
   Unavailable coverage never draws no-pages fills. Escape dismisses hover
   or pinned state details regardless of keyboard focus. Small positive rates
   retain significant digits, and legend precision increases when needed to
@@ -107,9 +114,9 @@ USNM_STATES_PERF=1 USNM_STATES_GPU=metal USNM_STATES_SHADER_COLD=1 \
   PW_BASE_URL=http://127.0.0.1:18092 npm run e2e -- \
   e2e/states.performance.spec.ts --project=desktop --workers=1
 
-# Isolate the captured production shaders from React, deck, map and geometry:
+# Isolate the current built app's shaders from React, deck, map and geometry:
 node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal
-# Control: enqueue both programs before inspecting either, poll KHR completion.
+# Control: enqueue all programs before inspection, poll KHR completion.
 node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal --parallel
 ```
 
@@ -123,19 +130,57 @@ The original gate checked only p95; the follow-up now also fails on any measured
 sample above 2 ms. Even a passing run is **not a guarantee about future frames**.
 
 The browser gate asserts a maximum **300 ms** over five fresh browser processes
-with Chrome's shader disk and program caches disabled. It
-measures asset Resource Timing `responseEnd` to the first deck draw plus two
-animation frames, allowing a browser paint opportunity. The mark
+**per entry path**: selecting States on a ready basemap, and a direct
+`layer=states` URL without prewarming the basemap. Chrome's shader disk and
+program caches are disabled. It measures asset Resource Timing `responseEnd`
+to the first rendered native state features plus two animation frames. The mark
 `usnm-states-first-paint` is a **presentation proxy**, not a GPU-fence or
-compositor timestamp. It uses fixture data and a local plain basemap with the
-map loaded before selecting States; it is not a real-data basemap benchmark.
-The test checks that no geometry resource was requested before States selection.
+compositor timestamp. Independently, Chromium CDP screencast frame-swap
+timestamps bound the arrival-to-composited-frame interval. The captured frame
+must contain an Illinois-centre pixel matching one of the actual legend's five
+colours, alpha-blended over the known fixture background (within rounding
+tolerance), not just a non-background pixel. This excludes a blank initial
+page, unrelated UI and CPU callbacks. Frame capture/delivery overhead is not
+subtracted. This is composited browser-frame evidence, not physical display
+scanout timing.
+
+The benchmark uses fixture data and a local plain basemap, not real tiles or
+network conditions. Selection checks that no geometry was requested before
+States; the direct URL is already an explicit States selection.
 `usnm-states-parsed` and `usnm-states-first-draw` additionally separate JSON
-decoding and CPU draw submission from the subsequent paint opportunity. Neither
-draw submission nor two animation frames proves GPU completion.
-The paint proxy waits until the basemap-gated overlay has nonzero opacity;
-an invisible deck draw is not counted as visible paint. The benchmark waits
-for the initial basemap/overlay fade to finish before selecting States.
+decoding and CPU render completion. The proxy waits for a visible map canvas;
+native fills do not live in the separately gated deck canvas.
+
+#### Native MapLibre follow-up (2026-10-16)
+
+On **Apple M1 / macOS arm64 / Chromium 153.0.8010.12 / ANGLE Metal**, unique
+executable vertex-shader variants measured these asset-arrival intervals:
+
+| Entry path        | Native draw + two-frame proxy (ms) | Composited state-colour frame (ms) |
+| ----------------- | ---------------------------------- | ---------------------------------- |
+| Select States     | 143.6, 143.0, 151.2, 133.9, 152.6  | 133.4, 129.3, 144.3, 123.8, 145.0  |
+| Direct States URL | 236.8, 251.5, 248.7, 255.8, 241.6  | 244.4, 240.6, 237.9, 263.4, 248.4  |
+
+All ten composited proof pixels were `[189,212,222,255]`, within rounding
+tolerance of the legend ramp over the fixture background. Three new vertex
+program variants were recorded after selection; direct entry recorded five,
+including map startup. No geometry was fetched in Points mode.
+These measured runs meet 300 ms **on this hardware/backend and fixture**.
+They do not certify another laptop, real basemap latency, software rendering,
+or a globally cold driver. No shared OS/driver caches were cleared.
+
+After reducing sparse-remap and per-frame allocations (details below), five
+fresh, otherwise isolated Node processes measured 2,000-frame strict maxima
+**0.0602, 0.0558, 0.0574, 0.0998, 0.0519 ms**; preparation **10.0–10.3 ms**
+and p95 **0.0162–0.0170 ms**. A five-process batch run concurrently with the
+browser suite had three strict failures: maxima **6.1104, 3.7456, 5.9017 ms**.
+Only the 3.7456 ms frame overlapped recorded GC (**3.7077 ms**); the others
+have no proven GC attribution. No failed sample is excluded or converted
+to a pass. The isolated measurements demonstrate the arithmetic budget on
+this host, **not a hard wall-time guarantee under contention/GC**. The strict
+assertion remains in place. Neither budget is a production measurement.
+
+#### Historical deck-renderer measurements and discarded alternatives
 
 On the same Apple M1 with **Chromium 153.0.8010.12, ANGLE Metal native GPU**,
 the initial run measured **489.4, 45.6, 49.4, 50.1, 44.9 ms**: the first cold
@@ -143,9 +188,8 @@ draw **failed** the 300 ms target. A repeat process, with driver caches retained
 measured **64.2, 39.6, 48.1, 47.7, 48.4 ms**, passing the gate.
 Default headless Chromium used **SwiftShader software Vulkan**, not the Apple
 GPU, and measured **2,165.6, 1,677.3, 1,586.5, 1,511.1, 1,485.3 ms**, failing.
-These runs do **not** establish the cold first-paint target on a representative
-mid-range laptop. That acceptance remains outstanding; warm-cache success
-must not conceal the cold/backend failures.
+These historical runs did **not** establish the cold first-paint target;
+warm-cache success did not waive the cold/backend failures.
 
 On 2026-10-16, the process-isolated native-Metal gate measured **60.8, 45.5,
 52.3, 58.4, 51.3 ms**. The corresponding CPU first-draw intervals were **43.4,
@@ -157,20 +201,21 @@ These are browser-cold, potentially driver-warm results, **not a cold-driver
 pass or an optimization claim**. Clearing shared machine/OS caches or rebooting
 was deliberately not attempted. A driver-cold capture on representative
 hardware, including GPU/compositor completion if strict actual presentation is
-required, remains a release blocker. The first failed run did not capture the
+required, remained a release blocker for that renderer. The first failed run did not capture the
 new intermediate marks, so attributing its excess time to shader compilation
 or to the two animation frames would be speculation.
 After integrating the initial basemap readiness gate, the visibility-aware
 five-process native-Metal run measured **52.9, 52.8, 54.7, 81.4, 67.7 ms**.
 The same uncontrolled-driver-cache limitation applies; no cold pass is claimed.
 
-The optional shader diagnostic wraps the polygon and border vertex shader
+The optional shader diagnostic wraps all vertex shader
 entry points with a random, executable **1–2 × 10⁻⁸ clip-space offset**. This
 subpixel perturbation discourages reusing exactly the same compiled program,
-unlike changing a comment. It asserts that both shaders were instrumented.
+unlike changing a comment. It checks that at least three new native programs
+were instrumented (the earlier deck diagnostic required its two programs).
 It is **test-only**, not a production shader or a simulated mid-range laptop.
 It cannot reset driver/compiler infrastructure, prove a cache miss at every
-driver layer, or measure actual compositor presentation.
+driver layer. The separate frame-colour proof now measures compositor output.
 
 On the same M1, the first five-variant run of the original renderer measured
 **547.1, 280.1, 270.8, 266.5, 273.8 ms** (CPU first draw **530.3 ms** in
@@ -201,7 +246,7 @@ deck Models' construction. This locates the measured delay before CPU draw,
 independently of basemap visibility. A later run's five proxies passed
 **271.4–284.5 ms**, without resolving the prior cold failures.
 
-`probe-states-shaders.mjs` captures the two app-generated shader programs once,
+`probe-states-shaders.mjs` captures the app-generated States shader programs once,
 then links unique executable variants in five fresh browser processes on a
 blank page, with no React, deck, basemap, state geometry or drawing. It reports
 host CPU/backend/version, verifies link success and writes no files. Serial
@@ -228,8 +273,12 @@ shader-layout introspection until asynchronous program completion, while
 preserving layer readiness, picking and error handling. Simply overriding GL
 queries, enabling an experimental flag, or prefetching/delaying the asset
 would not constitute that fix. The raw parallel control is a minimal
-reproducer for pursuing that change; the 300 ms app requirement remains
-unmet, not waived.
+reproducer for pursuing that dependency change. At that stage the 300 ms app
+requirement remained unmet, not waived. The retained native renderer above
+avoids those deck Models rather than overriding private luma behavior.
+With the native build, the raw three-program serial control measured
+**133.0–139.2 ms** and the enqueue-all/poll control **76.7–80.6 ms**. These
+blank-page controls are not app paint measurements.
 
 The latest 5,000-place arithmetic gate (2,000 frames) measured preparation
 **19.009 ms**, p95 **0.023875 ms**, maximum **0.493375 ms**. This validates
@@ -254,7 +303,7 @@ one small array per state, and colour lookup no longer allocates a closure
 per row. Unit tests preserve input cubes and prior-window snapshots.
 After these changes, one run measured preparation **12.598 ms**, p95
 **0.017500 ms**, maximum **3.064042 ms**, overlapping a recorded
-**3.038375 ms** GC pause. The strict maximum gate still **fails**; the GC
+**3.038375 ms** GC pause. That run's strict maximum gate **failed**; the GC
 pause is real observed wall time, not a reason to waive it. Prior instrumented
 outliers **5.693417 ms** and **4.423750 ms** likewise overlapped recorded
 GC pauses of **5.605417 ms** and **4.363625 ms**. These are observed runs,

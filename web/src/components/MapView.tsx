@@ -1,4 +1,4 @@
-// Map (07 §7.4): MapLibre basemap with a deck.gl overlay. Loaded lazily so
+// Map (07 §7.4): MapLibre basemap/States with a deck.gl points/heat overlay. Loaded lazily so
 // the map stack stays off the critical path.
 
 import { useEffect, useRef, useState } from "react";
@@ -10,7 +10,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 // bundler can't follow; bundle the worker explicitly and hand it the URL.
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { GeoJsonLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { ScatterplotLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import type { Layer, Norm } from "../state/url";
 import { colorFor, timeColor } from "../lib/scale";
@@ -19,8 +19,9 @@ import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
 import { DEFAULT_ZOOM, STYLE_URL, US_CENTER } from "../lib/basemap";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
-import { stateColor, stateDescription, type StateTotal } from "../engine/states";
+import { stateDescription, type StateTotal } from "../engine/states";
 import boundariesUrl from "../assets/states.geojson?url";
+import { StatesMapLayer } from "./StatesMapLayer";
 
 type StateFeature = Feature<Geometry, { STUSPS: string; NAME: string }>;
 
@@ -112,8 +113,9 @@ export default function MapView(props: Props) {
     document.addEventListener("keydown", dismiss);
     return () => document.removeEventListener("keydown", dismiss);
   }, [stateTip]);
-  const stateRows = useRef(new Map<string, StateTotal>());
   const paintMeasured = useRef(false);
+  const [styleReady, setStyleReady] = useState(false);
+  const nativeStates = useRef<StatesMapLayer | null>(null);
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const overlay = useRef<MapboxOverlay | null>(null);
@@ -149,10 +151,8 @@ export default function MapView(props: Props) {
     });
     m.touchZoomRotate.disableRotation();
     m.addControl(new NavigationControl({ showCompass: false }), "top-left");
-    // Overlaid, not interleaved: deck.gl 9.4's interleaved mode reads
-    // MapLibre internals that changed in MapLibre 6.
-    const o = new MapboxOverlay({ id: "search-overlay", interleaved: false, layers: [] });
-    m.addControl(o);
+    m.on("style.load", () => setStyleReady(true));
+    if (m.isStyleLoaded()) setStyleReady(true);
 
     let ready = false;
     let loaded = false;
@@ -233,8 +233,9 @@ export default function MapView(props: Props) {
       latest.current.onViewport(m.getZoom(), [c.lng, c.lat]);
     });
     map.current = m;
-    overlay.current = o;
     return () => {
+      nativeStates.current?.destroy();
+      nativeStates.current = null;
       clearTimeout(fallback);
       element.classList.remove("map--basemap-ready");
       cancelAnimationFrame(frame);
@@ -263,50 +264,88 @@ export default function MapView(props: Props) {
   }, [zoom, lng, lat]);
 
   const { points, layer, norm, maxValue, selected, states, stateBreaks } = props;
+  const hasStates = !!states?.length;
   useEffect(() => {
-    const o = overlay.current;
-    if (!o) return;
+    const m = map.current;
+    if (!m || !styleReady || layer !== "states" || norm !== "raw" || !boundaries.data || !hasStates) return;
+    const native = new StatesMapLayer(
+      m,
+      boundaries.data,
+      (code, x, y) => {
+        if (window.matchMedia("(pointer: coarse)").matches) return;
+        const left = Math.min(x + 12, Math.max(0, (container.current?.clientWidth ?? 320) - 280));
+        setStateTip((old) => (old?.pinned ? old : code ? { code, x: left, y, pinned: false } : null));
+      },
+      (code, x, y) => {
+        if (window.matchMedia("(pointer: coarse)").matches) setStateTip({ code, x, y, pinned: true });
+        else latest.current.onStateFilter?.(code);
+      },
+    );
+    nativeStates.current = native;
+    let frame = 0;
+    let measuring = false;
+    const draw = () => {
+      if (paintMeasured.current || measuring || !native.hasDrawn()) return;
+      const asset = performance.getEntriesByType("resource").find((entry) => entry.name.endsWith(boundariesUrl)) as
+        PerformanceResourceTiming | undefined;
+      if (!asset) return;
+      measuring = true;
+      performance.measure("usnm-states-first-draw", { start: asset.responseEnd, end: performance.now() });
+      const measurePaint = () => {
+        const canvas = m.getCanvas();
+        const style = getComputedStyle(canvas);
+        if (
+          Number(style.opacity) === 0 ||
+          style.visibility === "hidden" ||
+          canvas.getBoundingClientRect().width === 0
+        ) {
+          frame = requestAnimationFrame(measurePaint);
+          return;
+        }
+        paintMeasured.current = true;
+        performance.measure("usnm-states-first-paint", {
+          start: asset.responseEnd,
+          end: performance.now(),
+          detail: "First rendered native state features plus two animation frames; presentation proxy",
+        });
+      };
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(measurePaint);
+      });
+    };
+    m.on("render", draw);
+    return () => {
+      cancelAnimationFrame(frame);
+      m.off("render", draw);
+      nativeStates.current = null;
+      native.destroy();
+    };
+  }, [styleReady, layer, norm, boundaries.data, hasStates]);
+  useEffect(() => {
+    nativeStates.current?.update(states ?? [], stateBreaks ?? []);
+  }, [styleReady, layer, norm, boundaries.data, hasStates, states, stateBreaks]);
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    drawn.current = { points, maxValue, layer, norm };
+    if (tooltip.current) tooltip.current.hidden = true;
+    let o = overlay.current;
+    if (!o) {
+      // Direct States entry needs only MapLibre. Don't initialize a second
+      // WebGL device and compile unused deck pipelines until another layer needs it.
+      if (layer === "states" && norm === "raw") return;
+      // Overlaid, not interleaved: deck.gl 9.4's interleaved mode reads
+      // MapLibre internals that changed in MapLibre 6.
+      o = new MapboxOverlay({ id: "search-overlay", interleaved: false, layers: [] });
+      m.addControl(o);
+      overlay.current = o;
+    }
     // Every place in the search is always drawn; places with no pages yet
     // have zero radius. A fixed-size dataset lets deck.gl update attribute
     // values in place on each playback step instead of rebuilding buffers.
-    drawn.current = { points, maxValue, layer, norm };
-    stateRows.current = new Map((states ?? []).map((r) => [r.code, r]));
-    if (tooltip.current) tooltip.current.hidden = true;
     const layers =
       layer === "states" && norm === "raw"
-        ? boundaries.data && states && states.length > 0
-          ? [
-              new GeoJsonLayer({
-                id: "states",
-                data: boundaries.data,
-                pickable: true,
-                stroked: true,
-                filled: true,
-                getFillColor: (f) =>
-                  stateColor(stateRows.current.get(f.properties?.STUSPS as string), stateBreaks ?? []),
-                getLineColor: [55, 55, 55, 220],
-                lineWidthUnits: "pixels",
-                getLineWidth: 0.8,
-                updateTriggers: { getFillColor: [states, stateBreaks] },
-                onHover: (info) => {
-                  if (!container.current?.classList.contains("map--basemap-ready")) return;
-                  const code = (info.object as StateFeature | undefined)?.properties.STUSPS;
-                  const x = Math.min(info.x + 12, Math.max(0, (container.current?.clientWidth ?? 320) - 280));
-                  setStateTip((old) => (old?.pinned ? old : code ? { code, x, y: info.y, pinned: false } : null));
-                },
-                onClick: (info) => {
-                  if (!container.current?.classList.contains("map--basemap-ready")) return;
-                  const code = (info.object as StateFeature | undefined)?.properties.STUSPS;
-                  if (!code) return;
-                  if (window.matchMedia("(pointer: coarse)").matches) {
-                    setStateTip({ code, x: info.x, y: info.y, pinned: true });
-                  } else {
-                    latest.current.onStateFilter?.(code);
-                  }
-                },
-              }),
-            ]
-          : []
+        ? []
         : norm === "skew"
           ? [
               new ScatterplotLayer<MapPoint>({
@@ -376,41 +415,8 @@ export default function MapView(props: Props) {
               ];
     // No attribute transitions: deck.gl runs them on the GPU with transform
     // feedback and reads buffers back, which stalls every playback step.
-    let paintFrame = 0;
-    let measuring = false;
-    o.setProps({
-      layers,
-      onAfterRender: () => {
-        if (layer !== "states" || layers.length === 0 || paintMeasured.current || measuring) return;
-        const asset = performance.getEntriesByType("resource").find((entry) => entry.name.endsWith(boundariesUrl)) as
-          PerformanceResourceTiming | undefined;
-        if (!asset) return;
-        measuring = true;
-        if (performance.getEntriesByName("usnm-states-first-draw").length === 0) {
-          performance.measure("usnm-states-first-draw", { start: asset.responseEnd, end: performance.now() });
-        }
-        // Never count a draw behind the basemap opacity gate as a visible paint.
-        // This is a presentation proxy, not a compositor/GPU fence timestamp.
-        const measurePaint = () => {
-          const canvas = container.current?.querySelector("#search-overlay");
-          if (!canvas || Number(getComputedStyle(canvas).opacity) <= 0) {
-            paintFrame = requestAnimationFrame(measurePaint);
-            return;
-          }
-          paintMeasured.current = true;
-          performance.measure("usnm-states-first-paint", {
-            start: asset.responseEnd,
-            end: performance.now(),
-            detail: "First deck draw plus two animation frames, waiting for visible overlay; presentation proxy",
-          });
-        };
-        paintFrame = requestAnimationFrame(() => {
-          paintFrame = requestAnimationFrame(measurePaint);
-        });
-      },
-    });
-    return () => cancelAnimationFrame(paintFrame);
-  }, [points, layer, norm, maxValue, selected, states, stateBreaks, boundaries.data]);
+    o.setProps({ layers });
+  }, [points, layer, norm, maxValue, selected]);
 
   const tipRow =
     layer === "states" && norm === "raw" && stateTip ? states?.find((r) => r.code === stateTip.code) : undefined;

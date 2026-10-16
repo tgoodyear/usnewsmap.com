@@ -4,7 +4,9 @@ import { cpus, platform, arch } from "node:os";
 const args = process.argv.slice(2);
 const baseIndex = args.indexOf("--base-url");
 if (baseIndex < 0 || !args[baseIndex + 1]) {
-  throw new Error("Usage: node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 [--metal]");
+  throw new Error(
+    "Usage: node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 [--metal] [--parallel]",
+  );
 }
 const launchOptions = {
   args: [
@@ -41,7 +43,7 @@ try {
           type: this.getShaderParameter(shader, this.SHADER_TYPE),
           source: sourceByShader.get(shader),
         }));
-        if (sources.some((shader) => /SHADER_NAME (solid-polygon|path)-layer-vertex-shader/.test(shader.source))) {
+        if (globalThis.captureStateShaders) {
           globalThis.stateShaderPrograms.push(sources);
         }
       }
@@ -52,8 +54,13 @@ try {
     route.fulfill({ json: { version: 8, sources: {}, layers: [] } }),
   );
   await page.goto(new URL("/?q=%22cross+of+gold%22&bucket=month", args[baseIndex + 1]).href);
+  await page.getByRole("combobox", { name: "Map layer" }).waitFor();
+  await page.waitForTimeout(500);
+  await page.evaluate(() => {
+    globalThis.captureStateShaders = true;
+  });
   await page.getByRole("combobox", { name: "Map layer" }).selectOption("states");
-  await page.waitForFunction(() => globalThis.stateShaderPrograms.length === 2);
+  await page.waitForFunction(() => performance.getEntriesByName("usnm-states-first-paint").length > 0);
   programs = await page.evaluate(() => globalThis.stateShaderPrograms);
 } finally {
   await capture.close();
@@ -114,7 +121,7 @@ for (let sample = 0; sample < 5; sample++) {
         return {
           renderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : "unknown",
           parallelCompile: !!extension,
-          mode: parallel ? "enqueue both, poll completion, then inspect" : "serial immediate LINK_STATUS",
+          mode: parallel ? "enqueue all, poll completion, then inspect" : "serial immediate LINK_STATUS",
           timings,
           totalMs: performance.now() - startAll,
         };
