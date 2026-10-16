@@ -660,7 +660,10 @@ For another engine, replace `--tesseract` with `--engine-cmd /path/to/adapter
 two arguments: the crop image path and its bundle language. It must write only
 UTF-8 OCR text to stdout and exit zero. Use an adapter executable for extra
 flags; no shell expansion is performed. Each crop has the same timeout; output
-is capped at 16 MiB. Failed command output (including stderr) is never copied
+is capped at 16 MiB. External commands require Unix; their process group is
+killed on completion, failure, timeout and cancellation, including ordinary
+adapter subprocesses. Detached sessions are outside this containment (use a
+container for untrusted engines). Failed command output (including stderr) is never copied
 into the report. The profile is the bundle language; psm/dpi describe Tesseract
 only and do not configure an external engine. Name/version are explicit operator
 metadata, not independently verified image identity.

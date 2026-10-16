@@ -70,6 +70,7 @@ pub struct CommandEngine {
 }
 
 /// Never include command output in errors: either stream may contain page text.
+#[cfg(unix)]
 async fn command_text(
     executable: &Path,
     image: &Path,
@@ -79,6 +80,7 @@ async fn command_text(
     use std::process::Stdio;
     use tokio::io::AsyncReadExt;
     let mut child = tokio::process::Command::new(executable)
+        .process_group(0)
         .arg(image)
         .arg(language)
         .stdin(Stdio::null())
@@ -87,6 +89,21 @@ async fn command_text(
         .kill_on_drop(true)
         .spawn()
         .context("could not start engine command")?;
+    struct ProcessGroup(rustix::process::Pid);
+    impl Drop for ProcessGroup {
+        fn drop(&mut self) {
+            let _ = rustix::process::kill_process_group(self.0, rustix::process::Signal::KILL);
+        }
+    }
+    // The guard also covers cancellation and adapters that exit leaving a worker
+    // behind. A separate session or container created by an adapter is not a sandbox.
+    let _group = ProcessGroup(
+        child
+            .id()
+            .and_then(|id| i32::try_from(id).ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .context("engine process group missing")?,
+    );
     let mut stdout = child.stdout.take().context("engine stdout missing")?;
     let output = tokio::time::timeout(timeout, async {
         let mut bytes = Vec::new();
@@ -101,8 +118,12 @@ async fn command_text(
     })
     .await
     .map_err(|_| anyhow::anyhow!("engine command timed out"))?;
-    // Drop kills an oversized or failed command even when it has not exited.
     output
+}
+
+#[cfg(not(unix))]
+async fn command_text(_: &Path, _: &Path, _: &str, _: Duration) -> anyhow::Result<String> {
+    anyhow::bail!("external gold engine commands require Unix process-group support")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,5 +335,39 @@ mod command_tests {
                 .to_string(),
             "engine command timed out"
         );
+    }
+
+    #[tokio::test]
+    async fn timeout_stops_a_non_exec_adapters_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("adapter");
+        let pid_file = dir.path().join("pid");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nsleep 60 &\necho $! > \"$1\"\nwait\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            command_text(&executable, &pid_file, "eng", Duration::from_millis(200))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("timed out")
+        );
+        let pid = std::fs::read_to_string(pid_file).unwrap();
+        for _ in 0..100 {
+            let output = std::process::Command::new("ps")
+                .args(["-p", pid.trim(), "-o", "stat="])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&output.stdout);
+            if !output.status.success() || state.trim().is_empty() || state.trim().starts_with('Z')
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("adapter's worker is still running");
     }
 }
