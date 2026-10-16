@@ -339,12 +339,18 @@ mod tests {
         let (status, body) =
             call(a.clone(), "198.51.100.50", "GET", "/api/pipeline.json", "").await;
         assert_eq!(status, StatusCode::OK);
-        let p: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let mut p: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(p["stale"], false);
         assert_eq!(p["snapshot"]["stages"][0]["count"], 1234);
         assert!(p["retrieved_at"].is_string());
         let (_, view) = call(a.clone(), "198.51.100.50", "GET", "/api/view.json", "").await;
-        let view: serde_json::Value = serde_json::from_str(&view).unwrap();
+        let mut view: serde_json::Value = serde_json::from_str(&view).unwrap();
+        for pipeline in [&mut p, &mut view["pipeline"]] {
+            pipeline.as_object_mut().unwrap().remove("age_secs");
+            for stage in pipeline["stage_freshness"].as_array_mut().unwrap() {
+                stage.as_object_mut().unwrap().remove("age_secs");
+            }
+        }
         assert_eq!(view["pipeline"], p);
         assert_eq!(
             call(
