@@ -133,6 +133,7 @@ pub fn draw(
 pub struct Summary {
     pub manifest_pages: usize,
     pub no_language: usize,
+    /// Selected engine/profile unavailable on this Tesseract-only sampler.
     pub no_model: usize,
     pub strata: usize,
     pub ocr: usize,
@@ -146,6 +147,7 @@ pub struct Strata {
     pub strata: BTreeMap<Key, Vec<(ManifestRow, String)>>,
     pub manifest_pages: usize,
     pub no_language: usize,
+    /// Selected engine/profile unavailable on this Tesseract-only sampler.
     pub no_model: usize,
 }
 

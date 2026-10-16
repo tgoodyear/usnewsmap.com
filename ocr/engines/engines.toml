@@ -106,6 +106,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/nor.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -133,6 +134,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/yid.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -142,6 +144,7 @@ fetched = 2026-10-11
 
 [[engine.model]]
 name = "tessdata/heb.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
 source = "https://github.com/tesseract-ocr/tessdata_best"
@@ -212,6 +215,106 @@ source = "https://ub-backup.bib.uni-mannheim.de/~stweil/tesstrain/tesseract/aust
 credit = "tessdata/austriannewspapers.traineddata — Stefan Weil, UB Mannheim (published without an explicit licence)"
 note = "No explicit licence: \"no licence or README in the directories or their parents, and no Zenodo record\" (design 13 §13.7.2). nzz training data is CC BY-NC 4.0; nothing says whether that reaches the model."
 fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/spa.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/spa.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/fra.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/fra.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/ita.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/ita.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/dan.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/dan.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/fin.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/fin.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/swe.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/swe.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/lit.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/lit.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/slv.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/slv.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/hun.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/hun.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
+
+[[engine.model]]
+name = "tessdata/slk.traineddata"
+version = "e12c65a915945e4c28e237a9b52bc4a8f39a0cec"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/slk.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+fetched = 2026-10-16
 
 [[engine.profile]]
 id = "frak2021"
@@ -302,6 +405,56 @@ languages = ["ces"]
 id = "pol"
 models = ["tessdata/pol.traineddata"]
 languages = ["pol"]
+
+[[engine.profile]]
+id = "spa"
+models = ["tessdata/spa.traineddata"]
+languages = ["spa"]
+
+[[engine.profile]]
+id = "fra"
+models = ["tessdata/fra.traineddata"]
+languages = ["fra"]
+
+[[engine.profile]]
+id = "ita"
+models = ["tessdata/ita.traineddata"]
+languages = ["ita"]
+
+[[engine.profile]]
+id = "dan"
+models = ["tessdata/dan.traineddata"]
+languages = ["dan"]
+
+[[engine.profile]]
+id = "fin"
+models = ["tessdata/fin.traineddata"]
+languages = ["fin"]
+
+[[engine.profile]]
+id = "swe"
+models = ["tessdata/swe.traineddata"]
+languages = ["swe"]
+
+[[engine.profile]]
+id = "lit"
+models = ["tessdata/lit.traineddata"]
+languages = ["lit"]
+
+[[engine.profile]]
+id = "slv"
+models = ["tessdata/slv.traineddata"]
+languages = ["slv"]
+
+[[engine.profile]]
+id = "hun"
+models = ["tessdata/hun.traineddata"]
+languages = ["hun"]
+
+[[engine.profile]]
+id = "slk"
+models = ["tessdata/slk.traineddata"]
+languages = ["slk"]
 
 [[engine]]
 id = "kraken-7.1"

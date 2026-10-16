@@ -223,6 +223,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_SCAN_ARCHIVE_UPLOADER_ID": {
+      "x-usnm-visibility": "private",
+      "description": "Private: scan-host Arc principal granted only archive writer access.",
+      "not": {}
+    },
     "USNM_OCR_NODE_GROUP": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The OCR nodes' Entra group's object id.",

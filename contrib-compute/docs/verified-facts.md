@@ -94,19 +94,16 @@ CORRECTIONS and gaps, in order of how much they affect the design:
    because of full-text indexes. Source: `src:db/schema.sql` lines 33 to 35. Azure Database
    for MySQL "uses the InnoDB storage engine"
    (`https://learn.microsoft.com/en-us/azure/mysql/concepts-version-policy`, ms.date 2026-05-13).
-   UNVERIFIED: whether `ENGINE=MyISAM` is rejected or silently converted on the flexible
-   server. Plan: disable forums and profiles (they are not needed), and test `schema.sql`
-   against a throwaway server before any real deployment.
-4. UNVERIFIED, TLS to the DB. The C++ daemons connect with `mysql_real_connect`
-   (`CLIENT_FOUND_ROWS`) and set only `MYSQL_OPT_RECONNECT`; PHP uses `new mysqli(...)`. No
-   SSL option is configured anywhere (`src:db/db_base.cpp`, `src:html/inc/db_conn.inc`).
-   Whether they negotiate TLS depends on the client library's default (Oracle libmysqlclient
-   defaults to "preferred"; `bsd:images/apache/Dockerfile` installs Debian's
-   `default-mysql-client` and PHP `mysqli`, and MariaDB Connector defaults differ). The
-   flexible server's default is `require_secure_transport = ON` with TLS 1.2
+   The production project initialization recorded in #470 succeeded with forums and profiles
+   disabled. This confirms initialization against the deployed server; it does not establish
+   how MyISAM tables are represented internally.
+4. CORRECTED, TLS to the DB. The unmodified BOINC clients do not request TLS, and project
+   initialization failed with error 3159 when enforcement was tested (2026-10-13). The deployed
+   MySQL configuration sets `require_secure_transport` to OFF; the endpoint is private to the
+   VNet. #464 tracks the development migration gate before transport enforcement can be enabled.
+   The flexible server's default is
+   `require_secure_transport = ON` with TLS 1.2
    (`https://learn.microsoft.com/en-us/azure/mysql/flexible-server/how-to-connect-tls-ssl`).
-   If the BOINC clients do not negotiate TLS, set the server parameter to `OFF` inside a
-   private-access VNet. This must be tested.
 
 Other notes for (b):
 

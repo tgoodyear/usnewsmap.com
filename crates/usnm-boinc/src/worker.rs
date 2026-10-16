@@ -49,8 +49,11 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     .await?;
     ensure!(
         engine.version() == job.engine.version
-            && engine::route(&job.message.language, engine.installed()).as_deref()
-                == Some(&job.engine.profile),
+            && engine::route(&job.message.language, engine.installed())
+                == Some(engine::EngineRoute {
+                    kind: job.engine.kind,
+                    profile: job.engine.profile.clone()
+                }),
         "engine version/route differs from job"
     );
     let started = Instant::now();
@@ -93,6 +96,10 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
 /// Checks the installed models of `engine.profile` against the lock and
 /// the job's profile digest.
 pub fn check_models(spec: &usnm_ocr_contract::boinc::Engine) -> anyhow::Result<()> {
+    ensure!(
+        spec.kind == engine::EngineKind::Tesseract,
+        "this worker only supports Tesseract jobs"
+    );
     let models = std::env::var_os("TESSDATA_PREFIX")
         .context("TESSDATA_PREFIX must point to the locked image's models")?;
     for name in spec.profile.split('+') {

@@ -1395,11 +1395,13 @@ Check it with `pct exec 211 -- cat /tank/ocr/scans/status-full.json` and `pct ex
 The keep-set scans are intended to be copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. A read-only check on 15 October 2026 confirmed the production account exists with Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The uploader binary, service user and archive units were not installed on pve-big; an upload and off-site-copy completeness are **not verified**.
 
 1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
-2. **The identity.** pve-big is an Arc machine but not a node, so it isn't in the nodes' group yet. Add it, which also gives it the node queue roles (ADR-0018, open question 4):
+2. **The identity.** Keep pve-big out of the OCR nodes' group: that group grants queue permissions and is counted for node pacing. Save its Arc principal as the archive-only uploader, then provision to grant the existing create/read, no-delete archive role on `scans`:
 
    ```sh
-   az resource show -g rg-usnm-prod -n <pve-big's Arc machine name> --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
-   az ad group member add --group usnm-ocr-nodes-prod --member-id <that object id>
+   az resource show -g <Arc resource group> -n <Arc machine name> --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
+   scripts/settings.sh --env prod --key USNM_SCAN_ARCHIVE_UPLOADER_ID --value <that object id>
+   scripts/provision.sh --env prod --what-if
+   scripts/provision.sh --env prod
    ```
 
 3. **The unit.** Install the worker binary of a release on pve-big (the scan-fetch container has it; the host needs its own copy at `/usr/local/bin/usnm-ocr-worker`), the user `usnm` in the `himds` group (as for the Serial Set unit), and the units:

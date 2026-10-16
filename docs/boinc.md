@@ -54,7 +54,22 @@ explicit page selection + cached scans
 
 First build the existing engine image. Keep its pinned base, package snapshot,
 and `models.lock`, including `frak2021`; the BOINC worker verifies the selected
-models' bytes at execution. Then build the BOINC image using that engine image's
+models' bytes at execution. The lock includes Spanish (`spa`), French (`fra`),
+Italian (`ita`), Yiddish (`yid`, then `heb` fallback), Hebrew (`heb`), Danish
+(`dan`), Norwegian (`nor`, for `nor`/`nob`/`nno`), Finnish (`fin`), Swedish (`swe`),
+Lithuanian (`lit`), Slovenian (`slv`), Hungarian (`hun`) and Slovak (`slk`).
+These thirteen tessdata_best additions are pinned to the same revision as the
+existing Apache-2.0 models and add 126,180,270 bytes (120.33 MiB) of model data
+to both images before compression. The BOINC Containerfile inherits them from
+the Tesseract image; it has no separate model list.
+
+After changing the lock, republish **both** images. Run and score a pilot per
+new language with the existing quality checks (including #522) before replacing
+LoC text. Yiddish also needs the reader work in #328; Danish and Norwegian
+1880s–1910s may need Fraktur routing (#325). Adding models alone does not
+perform these operational steps.
+
+Then build the BOINC image using that engine image's
 immutable digest (these examples run from the repository root):
 
 ```sh
@@ -272,14 +287,18 @@ On Linux, submission gives only the staged download inputs (`page` and
 `request.json`) mode `0644`, before their atomic rename and before `create_work`.
 These files are meant to be downloaded by volunteers; the separate Apache
 identity must be able to read them. The dispatch journal and original input
-snapshots retain owner-only access. The project administrator must also give
-Apache traversal access to the download fan-out directories; submission does
-not change existing directory ownership or ACLs. Check both file access and
-traversal with the actual web-server identity on the deployed filesystem.
+snapshots retain owner-only access. New download fan-out directories are
+created with mode `0755` regardless of umask. Pre-existing download parents
+are repaired by adding only missing `0755` bits, preserving other mode bits
+such as setgid and group-write; submission does not change directory ownership
+or ACLs. Check both file access and traversal with the actual web-server
+identity on the deployed filesystem.
 
 The server bridge wrapper submits directly and preserves the CLI's exit status.
 It does not scan the download or hand-off trees to broaden permissions after
-submission. Operator hand-offs need access to the private journal's owner.
+submission. The hand-off directory (`$HANDOFF_DIR`) stays private: `submit` and
+`reconcile` run as the same user, and nothing reads that directory under another
+identity. Operator hand-offs therefore need access to the journal owner's files.
 Deploy the updated bridge image containing both this CLI and wrapper together.
 
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
@@ -412,7 +431,9 @@ only for a host that passed the gold check.
   `REFERENCE_URL` and `OUT_URL`. Its image is the setting `USNM_BOINC_HANDOFF_IMAGE`
   (`infra/env/<env>.json`): `images.bridge` from `contrib-compute/infra/boinc/env/<env>.json`,
   so a new bridge image means updating both. `scripts/start-boinc-bridge.sh --target handoff`
-  starts it with a run's settings.
+  starts it with a run's settings. It reads the job name and resource group from the main
+  stack's outputs saved by `scripts/provision.sh`, so it doesn't need an
+  `infra/names/<env>.json` entry.
 
 The role assignments:
 
@@ -706,14 +727,17 @@ its checks are `usnm_boinc::gold::job`; the code is `crates/usnm-boinc/src/gold/
 The originals are `create_work --remote_file URL BYTES MD5` inputs: the BOINC
 client downloads each from the publisher's URL and checks its size and md5, so
 the project server never stores or serves them. That keeps BLN600 (CC BY-NC-ND)
-and the LoC images where the licence and #457 put them. The tar and the
-originals are `<sticky/>` and `<no_delete/>`, so each host downloads them once and reuses
-them across its gold units; all are `<copy_file/>`, because the container sees only the
-slot. The open names are the cache names `gold-run` reads, so the slot is the
-cache and the run step needs no network: the container keeps `--network=none`
-from `job.toml`. The worker checks every input's size and sha256 against the
-job, the manifest's digest and version, the Tesseract version and base image,
-and the model bytes of each profile it used, then writes `gold-result.json`.
+and the LoC images where the licence and #457 put them. The tar and originals
+are marked `<sticky/>` and `<no_delete/>` in the input template, intended for
+reuse across a host's gold units; live client evidence has not confirmed that
+the generated work retains these flags or avoids repeat downloads (see the
+acceptance record below). All are `<copy_file/>`, because the container sees
+only the slot. The open names are the cache names `gold-run` reads, so the slot
+is the cache and the run step needs no network: the container keeps
+`--network=none` from `job.toml`. The worker checks every input's size and
+sha256 against the job, the manifest's digest and version, the Tesseract
+version and base image, and the model bytes of each profile it used, then
+writes `gold-result.json`.
 
 **Result.** `gold-result.json` is the report above, run on the whole bundle
 (no `--limit`), with a `boinc` block: job id, worker image and base digests,
@@ -882,16 +906,56 @@ hours.
 
 Then run `gold-prepare` as above.
 
-**Not verified** (check in the live acceptance exercise):
+### Live acceptance record and remaining checks
 
-- that stock `create_work --remote_file` keeps `<sticky/>` and `<no_delete/>`
-  from the input template, and that the client follows figshare's redirect;
-- that `script_validator` passes the upload under its `<workunit>_<replica>_0`
-  name, which the validator reads the unit from;
-- that the Docker wrapper's slot mount includes `init_data.xml` (the host id is
-  empty otherwise);
-- that `PROJECT_DIR` and `PROJECT` reach `script_validator`'s environment
-  (`USNM_GOLD_EXPECTED` overrides the directory);
-- run time and memory on a real host; `rsc_fpops_est` 5e12 is a guess.
+The production `v1-tess550` campaign completed on 14 October 2026. `gold-collect`
+read the batch-0 assimilator spool and wrote six report rows and 540 crop rows.
+Hosts 2 and 3 returned four and two valid results respectively; each scored 90
+crops and skipped 52 for unavailable language models. Both hosts reported CER
+0.0905 and WER 0.2366. The successful reports establish an end-to-end path through
+the stock client, worker and server validator, but do not prove every transport
+or runtime detail below.
+
+| Acceptance check                                                                             | Evidence and status                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Figshare redirect, BLN600 MD5 and bridge access to figshare / tile.loc.gov                   | **Passed end to end:** the campaign prepared the publisher inputs and valid tasks scored the BLN600 and LoC-backed samples. The worker's input hash checks and server validation passed.                                                                                     |
+| Wrapper slot contains `init_data.xml`                                                        | **Passed end to end:** accepted reports carried host IDs 2 and 3.                                                                                                                                                                                                            |
+| Validator finds the expected bundle data                                                     | **Passed in production; mechanism unverified:** `script_validator` accepted all six reports. The run did not establish whether `PROJECT_DIR` and `PROJECT` were present or the fallback/`USNM_GOLD_EXPECTED` path was used.                                                  |
+| `<sticky/>` / `<no_delete/>` survive `create_work --remote_file`; a second unit reuses files | **Partly verified:** each host returned multiple valid units, but no transfer log or before/after cache record established that later units avoided downloads.                                                                                                               |
+| Real-host duration and resource use                                                          | **Partly measured:** two Gold results in the related live acceptance recorded 163.618 s elapsed each; the host's cgroup limits were 1 CPU, 1.5 GiB memory, no swap and 64 PIDs. Peak memory and disk consumption were not measured, so `rsc_fpops_est=5e12` remains a guess. |
+| Volunteer guide on a clean Debian/Ubuntu host                                                | **Unverified:** the documented clean-host procedure and expected output still need to be exercised on that platform.                                                                                                                                                         |
+
+For a repeatable acceptance record, retain per-host and per-workunit evidence for
+these same checks: result upload and validation; the result's non-null host ID
+matched to the server's canonical host; client transfer/cache evidence across
+two units on one host; publisher-input hash checks; validator success and how it
+resolved its expected-data directory; `gold-prepare` completion; task elapsed
+time, peak memory and disk; and the clean-host guide's command output. Do not
+infer cache reuse from multiple successful tasks or infer peak resource use from
+cgroup limits. Keep the production issuance/campaign separate from this
+documentation checklist.
 
 Volunteers' steps are in [boinc-volunteer.md](boinc-volunteer.md).
+
+### Engine routing
+
+Production selection is shared through `usnm_ocr_contract::routing::EngineKind`
+and `EngineRoute { kind, profile }`. `EngineKind::for_language` chooses
+`NdlocrLite` (`ndlocr-lite`) for `jpn` and `Tesseract` for every other language.
+`usnm_ocr_worker::engine::candidates` exposes engine/profile preferences
+(Japanese: `default`); `route(language, installed)` resolves only capabilities
+of a Tesseract node, returning an `EngineRoute` or `None`. Sampling's existing
+`no_model` counter includes an unavailable selected engine, not just missing
+Tesseract weights. There is no Japanese fallback to Tesseract.
+
+`boinc::Engine.kind` carries that selection through job identity, validation,
+result matching and the `ocr_engine` family. It defaults to Tesseract and is
+omitted when serializing Tesseract jobs, preserving existing JSON, identity
+hashes and ledger tags. Tesseract-only BOINC workers reject other kinds before
+checking models or starting Tesseract. An NDLOCR-Lite worker can dispatch on
+`job.engine.kind`, using the existing pinned image, version, profile and model
+digest fields; its engine image and staging support are separate work (#626).
+For on-prem contract adapters, the hello's family must match the selected
+engine and its models must pass the catalog's existing production gate. The
+current survey-only NDLOCR-Lite catalog entry does not enable execution.
+Dashboard routes retain the engine/version as well as the profile.
