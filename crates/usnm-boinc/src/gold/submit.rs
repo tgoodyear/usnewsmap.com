@@ -74,7 +74,7 @@ pub fn template_name(p: &prepare::Prepared) -> String {
     )
 }
 
-fn remote_physical(s: &prepare::Staged) -> anyhow::Result<String> {
+pub(super) fn remote_physical(s: &prepare::Staged) -> anyhow::Result<String> {
     ensure!(
         super::job::remote_name_ok(&s.name),
         "invalid original cache name {:?}",
@@ -83,7 +83,7 @@ fn remote_physical(s: &prepare::Staged) -> anyhow::Result<String> {
     Ok(format!("{INPUT_PREFIX}{}", s.name))
 }
 
-fn verify_file(path: &Path, expected: &prepare::Staged) -> anyhow::Result<()> {
+pub(super) fn verify_file(path: &Path, expected: &prepare::Staged) -> anyhow::Result<()> {
     let (bytes, md5, sha256) = prepare::md5_sha256(path)
         .with_context(|| format!("checking original file {}", path.display()))?;
     ensure!(
@@ -97,7 +97,7 @@ fn verify_file(path: &Path, expected: &prepare::Staged) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn publish_original(
+pub(super) fn publish_original(
     destination: &Path,
     source: &Path,
     expected: &prepare::Staged,
@@ -107,7 +107,20 @@ fn publish_original(
         verify_file(destination, expected)?;
         return Ok(());
     }
-    publish(destination, source)?;
+    let parent = destination.parent().context("no parent")?;
+    crate::public_dirs(parent)?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    std::io::copy(&mut std::fs::File::open(source)?, staged.as_file_mut())?;
+    verify_file(staged.path(), expected)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o664))?;
+    }
+    staged.as_file().sync_all()?;
+    staged.persist_noclobber(destination).map_err(|e| e.error)?;
     verify_file(destination, expected)
 }
 
@@ -185,7 +198,7 @@ pub fn create_work_args(p: &prepare::Prepared, job: &Job) -> anyhow::Result<Vec<
     Ok(args)
 }
 
-async fn hier_path(project: &Path, physical: &str) -> anyhow::Result<PathBuf> {
+pub(super) async fn hier_path(project: &Path, physical: &str) -> anyhow::Result<PathBuf> {
     let output = Command::new(project.join("bin/dir_hier_path"))
         .arg(physical)
         .current_dir(project)

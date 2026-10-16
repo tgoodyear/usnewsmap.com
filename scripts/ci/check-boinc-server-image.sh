@@ -40,6 +40,26 @@ openssl verify -CAfile /usr/local/share/usnm/mysql-ca.pem \
   /usr/share/ca-certificates/mozilla/Microsoft_RSA_Root_Certificate_Authority_2017.crt
 # The signing tool must be here; the code-signing PRIVATE key must not be.
 if find / -xdev -name code_sign_private 2>/dev/null | grep -q .; then echo "code_sign_private is in the image" >&2; exit 1; fi
+# A fresh bridge container sees a dangling shared config link. Render only
+# local hierarchy settings, then exercise the real pinned native helper.
+mkdir gold-mirror-fixture
+cd gold-mirror-fixture
+mkdir -p project/cgi-bin project/download local
+ln -s "$PWD/local/config.xml" project/config.xml
+python3 /usr/local/lib/usnm-boinc/gold-mirror-config.py --project "$PWD/project" \
+  --config "$PWD/local/config.xml" --template /usr/local/lib/usnm-boinc/config.xml.template
+test "$(readlink project/config.xml)" = "$PWD/local/config.xml"
+! grep -q "db_" local/config.xml
+physical=usnm_gold_input_1bbcf8196839a292d2635a7ab7400430c0e00f90e0dae792c11c8495d1dde98e.jpg
+actual=$(BOINC_PROJECT_DIR="$PWD/project" /usr/local/boinc/tools/dir_hier_path "$physical")
+case "$actual" in "$PWD/project/download/"*"/$physical") ;; *) echo "unexpected native hierarchy path: $actual"; exit 1 ;; esac
+test -d "$(dirname "$actual")"
+before=$(sha256sum local/config.xml)
+if python3 /usr/local/lib/usnm-boinc/gold-mirror-config.py --project "$PWD/project" \
+  --config "$PWD/local/config.xml" --template /usr/local/lib/usnm-boinc/config.xml.template 2>/dev/null; then
+  echo "mirror config must refuse an existing local target"; exit 1
+fi
+test "$before" = "$(sha256sum local/config.xml)"
 echo "tools ok"'
 out=$(mktemp -d)
 chmod 777 "$out"

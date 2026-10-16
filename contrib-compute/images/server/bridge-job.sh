@@ -28,6 +28,7 @@
 #                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_MAX_HOSTS=10]; one host-trust
 #                               onboard pass: a gold unit for each untrusted host without one
 #                               outstanding, and a fresh one after a failed unit
+#   BRIDGE_STEP=gold-mirror-loc stages only the 18 locked v1 LoC JPEGs; no BLN or work creation
 #   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>; writes <campaign>/out
 #   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold>; writes $SHARE_DIR/gold/trust.json from this
 #                               campaign's out/reports.jsonl, for `usnm-boinc collect --trust`
@@ -277,6 +278,11 @@ case "$step" in
   gold-prepare)
     # No database or secrets: this step only talks to the publishers and writes the share.
     exec usnm-boinc gold prepare --bundle "$GOLD/bundle.tar" --root "$GOLD" ;;
+  gold-mirror-loc)
+    # No database, secrets, publisher fetches, bundle or BLN600 reads.
+    python3 "$TEMPLATES/gold-mirror-config.py" --project "$PROJ" \
+      --config "$SECRETS/config.xml" --template "$TEMPLATES/config.xml.template"
+    exec usnm-boinc gold mirror-loc --root "$GOLD" --project "$PROJ" ;;
   gold-bundle)
     # No database or secrets: this step only talks to the datasets' publishers and writes the share.
     [ -f /usr/local/lib/usnm-boinc/gold-bundle.sh ] || fail "gold-bundle needs the bridge image"
