@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 def main():
     image = sys.argv[1]
     work = pathlib.Path(sys.argv[2]).resolve()
-    source = pathlib.Path("ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg")
+    source = pathlib.Path(sys.argv[3] if len(sys.argv) > 3 else "ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg")
     (work / "in").mkdir(parents=True)
     (work / "out" / "smoke").mkdir(parents=True)
     (work / "in" / "page.jpg").write_bytes(source.read_bytes())
@@ -60,7 +60,7 @@ subprocess.run(['python3', '/opt/ndlocr-lite/src/ocr.py', '--sourceimg', '/in/pa
                 '--output', '/out/reference'], check=True)
 r = resource.getrusage(resource.RUSAGE_CHILDREN)
 print(json.dumps(dict(wall_seconds=time.monotonic()-start, cpu_seconds=r.ru_utime+r.ru_stime,
-                     peak_rss_kib=r.ru_maxrss)))
+                     peak_rss_kib=r.ru_maxrss, onnxruntime=__import__("onnxruntime").__version__)))
 """
     reference = subprocess.check_output([
         "docker", "run", "--rm", "--network=none", "--read-only", "--cap-drop=ALL",
