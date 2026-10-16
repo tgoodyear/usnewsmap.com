@@ -14,6 +14,10 @@ read-only checks and prints the plan.
 
 The release script and `scripts/boinc/install.py` support two distribution kinds (`--kind`):
 
+Operator staging uses a unique mode-0700 directory beneath the checkout and a
+private directory beneath the signing host's root home, removed on exit. Build
+inputs stay on those filesystems rather than relying on system temporary storage.
+
 1. **`--kind container` (default)**: stages a signed `docker_wrapper`, `Dockerfile`, `job.toml`
    and `version.xml` under `apps/<app>/<version>/<platform>__<plan_class>` across the five
    registered platforms (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`,
