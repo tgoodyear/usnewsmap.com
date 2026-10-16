@@ -1,7 +1,9 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
@@ -19,6 +21,90 @@ checker = load("iris_checker", "iris-check.py")
 
 
 class IrisCampaignTest(unittest.TestCase):
+    def stage(self, root):
+        image = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "a" * 64
+        records = []
+        for number in range(100):
+            data = f"fixture-image-{number}".encode()
+            job = {
+                "v": 1, "crop_id": f"pub-overproof-ca-{number:03}",
+                "doc_id": f"fixture/page-{number}", "host_id": 9,
+                "worker_image": image, "model_id": campaign.MODEL_ID,
+                "model_revision": campaign.MODEL_REVISION,
+                "prompt_version": campaign.PROMPT_VERSION, "max_new_tokens": 512,
+                "page_sha256": campaign.sha(data), "page_bytes": len(data),
+                "box": [0, 0, 16, 16],
+            }
+            job["id"] = campaign.canonical_job_id(job)
+            raw = campaign.encoded(job)
+            unit = root / "units" / job["id"]
+            unit.mkdir(parents=True)
+            (unit / "iris.json").write_bytes(raw)
+            (unit / "page.jpg").write_bytes(data)
+            records.append({
+                "id": job["id"], "crop_id": job["crop_id"], "reference": "fixture",
+                "job_sha256": campaign.sha(raw), "page_sha256": job["page_sha256"],
+            })
+        manifest = {
+            "v": 1, "app": "usnm_iris", "host_id": 9, "batch": 104,
+            "worker_image": image, "evaluation_only": True, "jobs": records,
+        }
+        (root / "campaign.json").write_bytes(campaign.encoded(manifest))
+        return manifest
+
+    def test_dispatch_is_exactly_100_and_repeated_apply_does_not_duplicate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "campaign"
+            self.stage(root)
+            project = Path(directory) / "project"
+            (project / "download").mkdir(parents=True)
+            (project / "config.xml").write_text(
+                "<boinc><config><enable_assigned_jobs>1</enable_assigned_jobs></config></boinc>"
+            )
+            work = []
+
+            def run(args, **kwargs):
+                if Path(args[0]).name == "dir_hier_path":
+                    return SimpleNamespace(stdout=str(project / "download" / args[1]))
+                work.append(args)
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(campaign.subprocess, "run", side_effect=run):
+                self.assertEqual(campaign.submit(root, project)["jobs"], 100)
+                self.assertEqual(work, [])
+                self.assertEqual(campaign.submit(root, project, True)["submitted"], 100)
+                self.assertEqual(campaign.submit(root, project, True)["previously_submitted"], 100)
+            self.assertEqual(len(work), 100)
+            self.assertEqual(len(list((project / "iris/jobs").glob("*.json"))), 100)
+            self.assertEqual(len(list((project / "download").iterdir())), 200)
+
+    def test_uncertain_dispatch_is_not_retried_and_changed_input_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "campaign"
+            manifest = self.stage(root)
+            project = Path(directory) / "project"
+            (project / "download").mkdir(parents=True)
+            (project / "config.xml").write_text(
+                "<boinc><config><enable_assigned_jobs>1</enable_assigned_jobs></config></boinc>"
+            )
+
+            def run(args, **kwargs):
+                if Path(args[0]).name == "dir_hier_path":
+                    return SimpleNamespace(stdout=str(project / "download" / args[1]))
+                raise subprocess.CalledProcessError(1, args)
+
+            with patch.object(campaign.subprocess, "run", side_effect=run):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    campaign.submit(root, project, True)
+            with patch.object(campaign.subprocess, "run") as retry:
+                with self.assertRaisesRegex(ValueError, "uncertain"):
+                    campaign.submit(root, project, True)
+                retry.assert_not_called()
+            first = root / "units" / manifest["jobs"][0]["id"]
+            (first / "page.jpg").write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "changed"):
+                campaign.load_campaign(root)
+
     def test_work_is_assigned_only_to_authorized_host_with_no_retry_replicas(self):
         args = campaign.create_work_args("a" * 64)
         for key, expected in (
