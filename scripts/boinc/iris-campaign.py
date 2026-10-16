@@ -74,12 +74,14 @@ def prepare(dataset: Path, out: Path, image: str):
             seen_images.add(row["image_sha256"])
             provenance = row["provenance"]
             if (provenance.get("for_scoring") is not True
+                    or not isinstance(provenance.get("source_license"), str)
                     or "public domain" not in provenance["source_license"].lower()):
                 raise ValueError("expected public-domain newspaper evaluation image")
             line_ids = provenance.get("line_ids")
             if crop_id.startswith("pub-reichsanzeiger-lines-") and (
                 provenance.get("source_dataset") != "reichsanzeiger"
-                or not provenance.get("source_attribution")
+                or not isinstance(provenance.get("source_attribution"), str)
+                or not provenance["source_attribution"].strip()
                 or provenance.get("ground_truth_status") != "GT"
                 or not isinstance(line_ids, list) or len(line_ids) != 2
                 or any(not isinstance(value, str) or not value.strip() for value in line_ids)
