@@ -119,8 +119,9 @@ class ClientAccountTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 account.check_private_logging(rpc)
         rpc.call.return_value = ET.fromstring("<reply/>")
-        with self.assertRaises(ValueError):
-            account.check_private_logging(rpc)
+        account.check_private_logging(rpc)
+        rpc.call.return_value = ET.fromstring("<reply><cc_config><options/></cc_config></reply>")
+        account.check_private_logging(rpc)
 
     def test_rpc_fixed_loopback_framing_and_private_error(self):
         connection = Mock()

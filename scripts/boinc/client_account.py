@@ -112,8 +112,8 @@ def project_operation(rpc, operation):
 
 def check_private_logging(rpc):
     configuration = rpc.call("get_cc_config")
-    if configuration.find(".//log_flags") is None:
-        raise ValueError("Cannot verify client logging privacy; no account change performed")
+    # Stock get_cc_config returns an empty reply when no file exists, and a
+    # normal options-only file omits log_flags: both use default debug=false.
     for name in ("gui_rpc_debug", "http_debug", "http_xfer_debug"):
         if flag(configuration, ".//" + name):
             raise ValueError("Disable credential-bearing client debug logging before account attachment")
