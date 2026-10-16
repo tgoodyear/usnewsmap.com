@@ -1,0 +1,23 @@
+# BOINC OCR quality (`usnm_quality`) and vision-language crop (`usnm_qwen`) pilot and calibration
+
+**Status:** multi-platform BOINC pilot collected (5 `usnm_quality` campaigns, 61 canonical workunits, 0 failures); `usnm_qwen` multi-host quorum and `crops.parquet` join verified; gold-set calibration complete (`overproof-ca`, `bln600`, `reichsanzeiger`, `Qwen3-VL-2B-Q8_0`, `Qwen3VL-8B-Q4_K_M`) · **Date:** 2026-10-16 · **Measured on:** `boinc.usnewsmap.com` (CT 100/101 Linux x86_64 native & rootless Podman, macOS `arm64-apple-darwin` native), `usnm-ocr-node3-arcs-prod` (`overproof-ca`, `bln600`, `reichsanzeiger`), Apple Silicon Metal GPU (`llama-server`) · **Full report & preserved data:** [docs/reports/2026-10-boinc-quality-pilot/report.md](../reports/2026-10-boinc-quality-pilot/report.md) · **Issues:** [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#531](https://github.com/tgoodyear/usnewsmap.com/issues/531), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559)
+
+## The question
+
+Before submitting corpus-scale quality scoring (`usnm_quality`) and vision-language transcription (`usnm_qwen`) jobs to volunteer machines, we needed to verify cross-platform determinism, resolve scheduler/feeder starvation and LXC container provisioning bottlenecks, calibrate the Three-Cornered Hat estimator against human ground truth (`overproof-ca`, `bln600`, `reichsanzeiger`), and establish a volunteer-compute justification framework where every CPU/GPU cycle either verifies platform health or directly improves corpus OCR quality.
+
+## What we measured
+
+1. **Live BOINC Pilot (`usnm_quality` & `usnm_qwen`):**
+   - `usnm_quality` completed **125 validated tasks** across **61 canonical workunits** with **0 client errors** and **100.0% bit-for-bit agreement** across macOS `arm64-apple-darwin` native, Linux `x86_64-pc-linux-gnu` native, and Linux Docker (`x86_64-pc-linux-gnu__docker`), in **0.70s median internal runtime** (`11.4s` p50 BOINC turnaround, `1.1s` p50 CPU time, `<256 MB` RSS).
+   - `usnm_qwen` (`qwen3-vl-2b-q8` on 4-core CPU containers) completed **28 validated results** with **100% cross-host quorum agreement** (word-bag Dice `0.865–0.909` vs `0.500` probe floor; `665.2s` p50 elapsed for 12 crops, `2,539 MB` p90 RSS). Passing `QWEN_SPOOL=/project/usnmocr/results/12` to `quality-collect` joined the validated `v1-wave2` readings into `crops.parquet`, unlocking a determined 3-cornered hat (`hat_est_cer`: `vlm = 0.1596`, `loc = 0.1802`, `ours-tesseract = 0.4411`) on a 2-reader 1866 page (`sn82014761_1866-08-04_ed-1_seq-4`) whose page-level hat was previously undetermined.
+2. **Gold-Set Ground Truth & Three-Cornered Hat Calibration (`overproof-ca` clean 345 crops & stratified sample-35):**
+   - Excluding the 9 stretched-box conversions ([#531](https://github.com/tgoodyear/usnewsmap.com/issues/531)) on `overproof-ca` (`345` clean crops, `94,627` reference chars): `Qwen3VL-8B-Q4_K_M` achieved **2.17% True CER**, `Qwen3-VL-2B-Q8_0` **2.71% True CER**, `Tesseract 5.5 (eng-psm6)` **3.68% True CER**, `docTR 1.1.0` **5.25% True CER**, `loc-alto` **9.22% True CER**, and `american-stories` **130.08% True CER** on ALTO crop boxes.
+   - In the 3-reader box-aligned crop hat (`loc + tesseract-psm6 + Qwen3-VL-2B`, excluding `as`), CER estimation MAE is **`0.0140` for `loc` (`r = 0.787`), `0.0133` for `tesseract-psm6` (`r = 0.948`, Spearman `ρ = 0.967`), and `0.0091` for `vlm` (`r = 0.924`)**. On 1-reader (`loc`-only) pages, direct `cer_vs_vlm` against `Qwen3-VL-2B` estimates `loc` true CER with **`MAE = 0.0189`** (`Bias = +0.0136`).
+3. **Crop Subsampling (`k_crops`) & Multi-Page Workunit Batching:**
+   - Reducing `k_crops` from `12` (2 per stratum) to **`6` (1 per stratum across `wc-{low,mid,high} × {top,bottom}`)** preserves full-page CER accuracy within **`0.0067–0.0087` MAE (`<0.9%` CER)** while cutting volunteer `usnm_qwen` compute time per page by **50%**.
+   - Because `usnm_quality` takes `0.70s` median internal compute vs `10.7s` of BOINC RPC/spawn/upload overhead (`94%` overhead at 1 page/WU), corpus-scale `usnm_quality` should bundle **32–50 pages per workunit** (cutting BOINC DB rows and file fanout by **32×–50×** to `~394k–615k` WUs). For `usnm_qwen` (`k=6`), bundling **3–4 pages (18–24 crops/WU)** on CPU (`~16–22 min`) and **15–20 pages (90–120 pre-cropped PNGs/WU)** on GPU (`~5–20 min`) amortizes `llama-server` model load (`<2%` overhead) and cuts volunteer image download bandwidth by **>95%**.
+
+## What is left
+
+See the full interim report and tiered corpus rollout plan in [docs/reports/2026-10-boinc-quality-pilot/report.md](../reports/2026-10-boinc-quality-pilot/report.md).

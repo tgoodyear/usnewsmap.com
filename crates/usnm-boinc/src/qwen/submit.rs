@@ -9,7 +9,7 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use usnm_ocr_contract::{
-    quality::MAX_SCAN,
+    quality::{MAX_BUNDLE_SCAN, MAX_SCAN},
     qwen::{Job, MAX_JOB_JSON},
 };
 
@@ -428,7 +428,12 @@ pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::R
         }
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)?;
         job.validate()?;
-        let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
+        let max_scan = if job.pages.is_empty() {
+            MAX_SCAN
+        } else {
+            MAX_BUNDLE_SCAN
+        };
+        let page = read(&unit.join(PAGE_FILE), max_scan)?;
         ensure!(
             job.input.matches(&page),
             "staged page changed for {}",
@@ -477,7 +482,7 @@ pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::R
             } else if file == super::benchmark::NOTICE_FILE {
                 super::benchmark::MAX_NOTICE
             } else {
-                MAX_SCAN
+                max_scan
             };
             crate::assess::submit::stage_file(&project, &physical, &read(&unit.join(file), limit)?)
                 .await?;

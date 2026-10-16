@@ -9,22 +9,26 @@
 //! Every way a run ends is an outcome, including a unit the host could not
 //! run at all (`unit_error`): the result and its diagnostics still upload.
 use crate::boinc::{is_sha256, sha256};
-use crate::quality::{check_doc_id, check_name, Input, MAX_SCAN};
+use crate::quality::{check_doc_id, check_name, BundleSlice, Input, MAX_BUNDLE_SCAN, MAX_SCAN};
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const VERSION: u32 = 1;
-/// `qwen.json`: the job holds the crops with LoC's text for each.
-pub const MAX_JOB_JSON: usize = 256 * 1024;
+/// `qwen.json`: the job holds the crops with LoC's text for each (single-page or multi-page bundle).
+pub const MAX_JOB_JSON: usize = 512 * 1024;
 /// `readings.json`.
-pub const MAX_READINGS: usize = 512 * 1024;
+pub const MAX_READINGS: usize = 2 * 1024 * 1024;
 /// `result.json`.
 pub const MAX_RESULT_JSON: usize = 64 * 1024;
 /// `diag.txt`.
 pub const MAX_DIAG: usize = 64 * 1024;
 pub const MAX_ERROR: usize = 1024;
 pub const MAX_CROPS: usize = crate::quality::MAX_CROPS as usize;
+/// Maximum pages in a multi-page `usnm_qwen` bundle workunit (e.g. 3–4 pages on CPU, 15–20 on GPU).
+pub const MAX_BUNDLE_PAGES: usize = 32;
+/// Maximum total crops across a multi-page `usnm_qwen` bundle workunit.
+pub const MAX_BUNDLE_CROPS: usize = 256;
 pub const MAX_MODELS: usize = 4;
 /// One crop's text, LoC's or the model's.
 pub const MAX_CROP_TEXT: usize = 8 * 1024;
@@ -89,6 +93,18 @@ pub struct Engine {
     pub weights: String,
 }
 
+/// One page inside a multi-page `usnm_qwen` bundle workunit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundlePage {
+    pub crops: Vec<Crop>,
+    pub doc_id: String,
+    pub group: String,
+    /// Byte slice of this page's JPEG inside the bundled `page.jpg`.
+    pub input: BundleSlice,
+    pub language: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
@@ -100,29 +116,50 @@ pub struct Job {
     pub engine: Engine,
     pub gpu_timeout_secs: u32,
     pub group: String,
-    /// The full-size IIIF JPEG (`page.jpg` in the slot).
+    /// The full-size IIIF JPEG (`page.jpg` in the slot, or bundled JPEGs when `pages` is non-empty).
     pub input: Input,
     /// ISO 639-3.
     pub language: String,
     /// Output tokens allowed per 1,000 square pixels of crop.
     pub max_tokens_per_1000px2: u32,
+    /// Optional multi-page bundle entries (`3–4 pages/WU` CPU, `15–20 pages/WU` GPU).
+    /// Empty for single-page workunits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<BundlePage>,
     pub prompt_version: u32,
 }
 impl Job {
     pub fn identity(&self) -> anyhow::Result<String> {
-        Ok(sha256(&serde_json::to_vec(&(
-            self.v,
-            &self.doc_id,
-            &self.group,
-            &self.language,
-            &self.input,
-            &self.crops,
-            &self.engine,
-            self.prompt_version,
-            self.gpu_timeout_secs,
-            self.cpu_timeout_secs,
-            self.max_tokens_per_1000px2,
-        ))?))
+        if self.pages.is_empty() {
+            Ok(sha256(&serde_json::to_vec(&(
+                self.v,
+                &self.doc_id,
+                &self.group,
+                &self.language,
+                &self.input,
+                &self.crops,
+                &self.engine,
+                self.prompt_version,
+                self.gpu_timeout_secs,
+                self.cpu_timeout_secs,
+                self.max_tokens_per_1000px2,
+            ))?))
+        } else {
+            Ok(sha256(&serde_json::to_vec(&(
+                self.v,
+                &self.doc_id,
+                &self.group,
+                &self.language,
+                &self.input,
+                &self.crops,
+                &self.engine,
+                self.prompt_version,
+                self.gpu_timeout_secs,
+                self.cpu_timeout_secs,
+                self.max_tokens_per_1000px2,
+                &self.pages,
+            ))?))
+        }
     }
     pub fn workunit(&self) -> String {
         format!("usnm_qwen_{}", self.id)
@@ -138,7 +175,12 @@ impl Job {
             is_sha256(&self.id) && self.id == self.identity()?,
             "job identity mismatch"
         );
-        self.input.validate(MAX_SCAN, "page")?;
+        let max_scan = if self.pages.is_empty() {
+            MAX_SCAN
+        } else {
+            MAX_BUNDLE_SCAN
+        };
+        self.input.validate(max_scan, "page")?;
         for d in [&self.engine.image, &self.engine.llama, &self.engine.weights] {
             ensure!(
                 d.strip_prefix("sha256:").is_some_and(is_sha256),
@@ -170,16 +212,73 @@ impl Job {
                 .all(|w| w[0].min_gpu_mb >= w[1].min_gpu_mb),
             "models must be listed largest first"
         );
-        ensure!(
-            !self.crops.is_empty() && self.crops.len() <= MAX_CROPS,
-            "a job has 1 to {MAX_CROPS} crops"
-        );
+        if self.pages.is_empty() {
+            ensure!(
+                !self.crops.is_empty() && self.crops.len() <= MAX_CROPS,
+                "a job has 1 to {MAX_CROPS} crops"
+            );
+        } else {
+            ensure!(
+                self.pages.len() <= MAX_BUNDLE_PAGES,
+                "a bundle has at most {MAX_BUNDLE_PAGES} pages"
+            );
+            ensure!(
+                !self.crops.is_empty() && self.crops.len() <= MAX_BUNDLE_CROPS,
+                "a bundle job has 1 to {MAX_BUNDLE_CROPS} crops"
+            );
+            let mut seen_docs = std::collections::BTreeSet::new();
+            let mut expected_crops = Vec::new();
+            for p in &self.pages {
+                check_doc_id(&p.doc_id)?;
+                ensure!(
+                    seen_docs.insert(p.doc_id.as_str()),
+                    "duplicate doc_id {} in bundle",
+                    p.doc_id
+                );
+                check_name(&p.group, "group")?;
+                check_name(&p.language, "language")?;
+                p.input.validate(MAX_SCAN, "page")?;
+                ensure!(
+                    p.input
+                        .offset
+                        .checked_add(p.input.bytes)
+                        .is_some_and(|end| end <= self.input.bytes),
+                    "bundle page slice exceeds page.jpg bytes"
+                );
+                ensure!(
+                    !p.crops.is_empty() && p.crops.len() <= MAX_CROPS,
+                    "a bundle page has 1 to {MAX_CROPS} crops"
+                );
+                for c in &p.crops {
+                    check_name(&c.id, "crop id")?;
+                    expected_crops.push(Crop {
+                        rect: c.rect,
+                        id: format!("{}:{}", p.doc_id, c.id),
+                        loc_text: c.loc_text.clone(),
+                        stratum: c.stratum.clone(),
+                    });
+                }
+            }
+            ensure!(
+                self.crops == expected_crops,
+                "bundle top-level crops must match flattened <doc_id>:<crop_id> list"
+            );
+        }
         let mut ids: Vec<&str> = self.crops.iter().map(|c| c.id.as_str()).collect();
         ids.sort_unstable();
         ids.dedup();
         ensure!(ids.len() == self.crops.len(), "a crop id is listed twice");
         for c in &self.crops {
-            check_name(&c.id, "crop id")?;
+            if self.pages.is_empty() {
+                check_name(&c.id, "crop id")?;
+            } else {
+                let (doc, cid) = c
+                    .id
+                    .split_once(':')
+                    .ok_or_else(|| anyhow::anyhow!("bundle crop id missing doc_id prefix"))?;
+                check_doc_id(doc)?;
+                check_name(cid, "crop id")?;
+            }
             check_name(&c.stratum.replace('/', "-"), "stratum")?;
             ensure!(
                 c.rect[0] < c.rect[2]
@@ -334,7 +433,7 @@ impl ResultManifest {
             "read count does not match the readings"
         );
         ensure!(
-            self.crops as usize <= MAX_CROPS && r.readings.len() <= MAX_CROPS,
+            self.crops as usize <= MAX_BUNDLE_CROPS && r.readings.len() <= MAX_BUNDLE_CROPS,
             "too many crops"
         );
         let mut ids: Vec<&str> = r.readings.iter().map(|x| x.id.as_str()).collect();
@@ -491,6 +590,7 @@ pub(crate) mod tests {
             input: Input::of(b"jpeg", "https://tile.loc.gov/x/full/full/0/default.jpg"),
             language: "srp".into(),
             max_tokens_per_1000px2: 4,
+            pages: vec![],
             prompt_version: PROMPT_VERSION,
         };
         j.id = j.identity().unwrap();

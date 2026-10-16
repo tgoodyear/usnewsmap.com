@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                           | Topic                | Measured on                                            |
 | ---------- | -------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------ |
+| 2026-10-16 | [BOINC OCR quality and vision-language crop pilot and calibration](2026-10-16-boinc-quality-qwen-pilot.md)     | ocr, operations      | 5 BOINC quality waves, Overproof-CA/BLN600/Fraktur cal |
 | 2026-10-15 | [Historical-newspaper transcription pilot](2026-10-15-transcription-pilot.md)                                  | ocr, operations      | Synthetic fixtures and public Overproof-CA preparation |
 | 2026-10-14 | [Native ARM64 BOINC worker on the Mac](2026-10-14-buda-native-arm64.md)                                        | ocr, operations      | Native ARM engine/worker; wrapper 22                   |
 | 2026-10-14 | [BUDA Mac tests without a project server](2026-10-14-buda-mac-offline-tests.md)                                | ocr, operations      | BOINC 8.2.15, Podman 5.5.2, wrapper 22                 |

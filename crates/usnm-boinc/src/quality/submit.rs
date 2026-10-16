@@ -9,7 +9,10 @@ use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use std::path::PathBuf;
 use tokio::process::Command;
-use usnm_ocr_contract::quality::{Job, MAX_ALTO, MAX_JOB_JSON, MAX_PLACES, MAX_SCAN, MAX_TEXTS};
+use usnm_ocr_contract::quality::{
+    Job, MAX_ALTO, MAX_BUNDLE_ALTO, MAX_BUNDLE_SCAN, MAX_BUNDLE_TEXTS, MAX_JOB_JSON, MAX_PLACES,
+    MAX_SCAN, MAX_TEXTS,
+};
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -88,9 +91,9 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
 
 fn limit(file: &str) -> usize {
     match file {
-        super::PAGE_FILE => MAX_SCAN,
-        super::ALTO_FILE => MAX_ALTO,
-        super::TEXTS_FILE => MAX_TEXTS,
+        super::PAGE_FILE => MAX_BUNDLE_SCAN.max(MAX_SCAN),
+        super::ALTO_FILE => MAX_BUNDLE_ALTO.max(MAX_ALTO),
+        super::TEXTS_FILE => MAX_BUNDLE_TEXTS.max(MAX_TEXTS),
         PLACES_FILE => MAX_PLACES,
         _ => MAX_JOB_JSON,
     }

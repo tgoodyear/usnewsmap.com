@@ -179,6 +179,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
             input: Input::of(&bytes, &format!("benchmark:{}", sha256(&notice))),
             language: row["lang"].as_str().context("missing lang")?.into(),
             max_tokens_per_1000px2: 4,
+            pages: vec![],
             prompt_version: PROMPT_VERSION,
         };
         job.id = job.identity()?;

@@ -4,6 +4,24 @@ Volunteers run OCR and OCR-quality checks on historical newspaper pages from Chr
 
 Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md) and [boinc-quality.md](boinc-quality.md).
 
+## Single-Script Onboarding (One Script per Platform)
+
+Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/usnewsmap/`):
+
+| Platform | Onboarding Script | Preview (Read-Only) | Apply & Attach |
+|---|---|---|---|
+| **Linux** (`x86_64` / `aarch64`) | `scripts/boinc/setup_volunteer.py` | `python3 scripts/boinc/setup_volunteer.py` | `sudo python3 scripts/boinc/setup_volunteer.py --apply` |
+| **Proxmox VE LXC** (Debian 12 CT) | `contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh` | `DRY_RUN=1 ./contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>` | `./contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>` |
+| **macOS** (Apple Silicon & Intel) | `scripts/boinc/setup_mac_volunteer.py` | `python3 scripts/boinc/setup_mac_volunteer.py` | `python3 scripts/boinc/setup_mac_volunteer.py --apply --account-key <ACCOUNT_KEY>` |
+| **Windows** (`windows_x86_64`) | `scripts/boinc/setup_windows_volunteer.ps1` | `.\scripts\boinc\setup_windows_volunteer.ps1` | `.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc` |
+
+### Workunit Sizing & Per-Page / Per-Crop Checkpointing
+
+To amortize BOINC scheduler/upload overhead and keep `llama-server` model weights warm in RAM/VRAM, workunits support multi-page bundles with atomic slot-level checkpointing:
+
+- **`usnm_quality` (native CPU)**: bundles **32–50 pages per workunit** (~1–2 minutes of CPU work, ~45–70 MiB download). Each completed page is atomically checkpointed to `quality_checkpoint.json` in the slot directory with `fraction_done` updated after every page; if BOINC suspends or restarts the client, execution resumes at the next uncompleted page.
+- **`usnm_qwen` (native Metal / CUDA GPU or CPU)**: bundles **3–4 pages per workunit** on CPU (`2B Q8_0`, `k_crops = 6`, 18–24 crops/WU) and **15–20 pages per workunit** on GPU (`8B Q4_K_M` or `2B Q8_0`, 90–120 crops/WU), amortizing the 2–5 s GGUF model load across the bundle. Each completed crop is atomically checkpointed to `qwen_checkpoint.json` with `fraction_done` updated after every crop.
+
 ## 1. Set up and check the host
 
 The project ships two kinds of BOINC app versions:
@@ -101,7 +119,19 @@ The measured profile is RHEL 10.2 x86-64, SELinux enforcing, BOINC 8.2.13, and P
 
 ### 1.2 macOS (`arm64-apple-darwin` Apple Silicon and `x86_64-apple-darwin` Intel)
 
-Install the official universal macOS BOINC client version **8.2.13 or later** (tested locally with `8.2.15`) from [BOINC's Mac downloads](https://boinc.berkeley.edu/download_all.php?platform=mac). Apple Silicon Macs report `arm64-apple-darwin` as their primary platform; Intel Macs report `x86_64-apple-darwin`.
+Install the official universal macOS BOINC client version **8.2.13 or later** (tested locally with `8.2.15`) from [BOINC's Mac downloads](https://boinc.berkeley.edu/download_all.php?platform=mac) or via Homebrew (`brew install --cask boinc`). Apple Silicon Macs report `arm64-apple-darwin` as their primary platform; Intel Macs report `x86_64-apple-darwin`.
+
+#### Single-script macOS onboarding (`scripts/boinc/setup_mac_volunteer.py`)
+
+After installing BOINC Manager and launching it once so `/Library/Application Support/BOINC Data` exists, run the macOS onboarding script to check hardware eligibility (Apple Silicon Metal GPU vs CPU), configure `global_prefs_override.xml` (`leave_apps_in_memory=1` and 75%/85% RAM limits so 6 GiB `usnm_qwen` tasks can run), reload preferences, and attach or update the project:
+
+```sh
+# 1. Preview detected hardware, eligible native apps, and preference changes:
+python3 scripts/boinc/setup_mac_volunteer.py
+
+# 2. Apply preferences and attach (or update if already attached):
+python3 scripts/boinc/setup_mac_volunteer.py --apply --account-key <YOUR_ACCOUNT_KEY>
+```
 
 #### Native CPU app (`usnm_quality`)
 
