@@ -83,7 +83,7 @@ scripts/ocr-survey/gold.py public-convert --dataset newseye-bnf --src DATA/newse
 
 Other `public-convert` flags: `--seed` (default 296) changes which regions are picked; `--min-chars` and `--max-chars` override the length window (200 to 2,500 normalized characters for most sets, 200 to 8,000 for BLN600, 20 to 300 for NZZ lines). The pick takes one region from each page before a second from any page, up to `--per-page` per page. With the same download, seed and flags, the pick is the same, so two people can score on the same crops.
 
-Not yet run on the real files: the `reichsanzeiger` and `austrian` conversions (see [What was tested](ocr-gold-set.md#fetch-and-convert)). If one of them fails or writes no crops, open an issue with the error.
+The `reichsanzeiger` and `austrian` conversions have not yet run on the real files (see [What was tested](ocr-gold-set.md#fetch-and-convert)). If one of them fails or writes no crops, open an issue with the error.
 
 ## Running your engine
 
@@ -108,14 +108,14 @@ Run your engine on each `image` and write one JSON object per line:
 
 Both keys are required. A crop with no row in your file is left out of your engine's score, and the `crops` column then shows fewer crops than the set has (see [Comparing engines](#comparing-engines)). Rows whose `crop_id` isn't in `crops.jsonl` are ignored.
 
-What to normalize, and what to leave alone. `score` applies the same normalization to your text and to the transcription: Unicode NFC, a hyphen at the end of a line joined to the next line, and every run of whitespace and line breaks turned into one space. So:
+`score` applies the same normalization to your text and to the transcription: Unicode NFC, a hyphen at the end of a line joined to the next line, and every run of whitespace and line breaks turned into one space. So:
 
 - **Send the raw reading order and line breaks.** Don't join hyphenated words yourself and don't reflow lines; the scorer does both.
 - **Don't fold anything else.** Case, punctuation, diacritics, long s (ſ) and ligatures all count. Don't lowercase, strip punctuation, transliterate or spell-correct, or you'll be charged for each change.
 - **Don't add anything.** No confidence scores, markup, page headers or `[?]`-style markers in `text`; they count as characters. The `[?]` and `[?x]` markers are read only in transcriptions.
 - **Use UTF-8.** Write the file in UTF-8; `ensure_ascii=False` in Python keeps it readable, and escaped `\u` sequences decode to the same text.
 
-A minimal example with Tesseract. It reads `crops.jsonl`, runs `tesseract` on each image with the language you name, and writes the hypothesis file. Save it anywhere outside the repository, for example as `run_tesseract.py`:
+A minimal example with Tesseract reads `crops.jsonl`, runs `tesseract` on each image with the language you name, and writes the hypothesis file. Save it anywhere outside the repository, for example as `run_tesseract.py`:
 
 ```python
 #!/usr/bin/env python3

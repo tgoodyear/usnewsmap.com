@@ -51,12 +51,12 @@ Pages without a detected language use the title's first language if `--title-lan
 Staging never asks www.loc.gov's item API. Requests to LoC follow the #435 report's `fetch.py`:
 
 - one request at a time, at least 5 s apart (`--gap-secs`, which cannot go lower), on the storage service and the image server, which share one pacer;
-- no retries; a 403, 429 or 5xx, a network failure, or an HTML page where a file was expected (a bot challenge such as Cloudflare's "Just a moment...") stops the run and writes `HOLD` under the staging root, saying which; no later run starts until a person has looked and removed it;
+- no retries. A 403, 429 or 5xx, a network failure, or an HTML page where a file was expected (a bot challenge such as Cloudflare's "Just a moment...") stops the run and writes `HOLD` under the staging root, saying which. No later run starts until a person has looked and removed it;
 - a 404 marks the page `missing` and moves on.
 
 The archive is ours and is not paced. The bridge reads it through the BOINC subnet's storage endpoint, with Storage Blob Data Reader on `scans` (`infra/modules/scan-archive.bicep`, deployed by `scripts/provision.sh` once the hand-off job is set).
 
-It places the JP2 through the batch's bag manifest and checks its md5, then (OCR units) gets the full-size IIIF JPEG and LoC's ALTO next to the JP2. The ALTO is only on the storage service. The ALTO stays on the server for scoring and is never sent to hosts. Each run stages at most `--max-pages` (default 100) and resumes where the last stopped. At about four requests per OCR page, that is about 20 s per page: 3000 OCR pages take about 17 hours of fetching, and 20000 crash pages (one or two requests each, plus batch manifests and METS once per issue) about 1 to 2 days.
+Staging finds the JP2 through the batch's bag manifest and checks its md5, then, for OCR units, gets the full-size IIIF JPEG and LoC's ALTO next to the JP2. The ALTO is only on the storage service. The ALTO stays on the server for scoring and is never sent to hosts. Each run stages at most `--max-pages` (default 100) and resumes where the last stopped. At about four requests per OCR page, that is about 20 s per page: 3000 OCR pages take about 17 hours of fetching, and 20000 crash pages (one or two requests each, plus batch manifests and METS once per issue) about 1 to 2 days.
 
 ## Redundancy and validation
 
@@ -73,7 +73,7 @@ The validator needs `usnm-boinc` in the server container. The server image does 
 
 Campaigns are kept apart by `ASSESS_CAMPAIGN`: the bridge job stages, submits and collects under `<share>/assess/<campaign>/`, so a campaign per engine build never shares units or output with another.
 
-`usnm-boinc assess collect` reads the canonical results and writes, under `--out`, the files the #435 report's scripts read: `sample.jsonl`, `results.jsonl`, `crash.jsonl`, and `<n>/loc.xml` with `<n>/out-jp2/page.txt` and `<n>/out-jpg/page.txt`. `score.py` and `aggregate.py` then run unchanged against LoC's ALTO. A JP2 run that ended in `other` (neither a crash nor a read, such as an out-of-memory kill) is left out of `crash.jsonl`, because `aggregate.py` would count it as read. It also writes `nonresponse.jsonl`, the sampled pages with no result (LoC had no file, BOINC gave up, or still pending), and `units.jsonl`: every unit with its stratum, weights (as drawn, and `realized_weight` / `realized_crash_weight` over the units that came back), engine and per-format outcome, time and memory, for weighted corpus estimates and confidence intervals in the follow-up report.
+`usnm-boinc assess collect` reads the canonical results and writes, under `--out`, the files the #435 report's scripts read: `sample.jsonl`, `results.jsonl`, `crash.jsonl`, and `<n>/loc.xml` with `<n>/out-jp2/page.txt` and `<n>/out-jpg/page.txt`. `score.py` and `aggregate.py` then run unchanged against LoC's ALTO. A JP2 run that ended in `other` (neither a crash nor a read, such as an out-of-memory kill) is left out of `crash.jsonl`, because `aggregate.py` would count it as read. It also writes `nonresponse.jsonl`, the sampled pages with no result (LoC had no file, BOINC gave up, or still pending). And it writes `units.jsonl`: every unit with its stratum, its weights (as drawn, and `realized_weight` / `realized_crash_weight` over the units that came back), its engine, and its per-format outcome, time and memory. The follow-up report uses `units.jsonl` for weighted corpus estimates and confidence intervals.
 
 ## Running a campaign
 
