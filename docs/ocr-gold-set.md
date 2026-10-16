@@ -271,6 +271,58 @@ The deployed BOINC server can run the same build inside its VNet and check it ag
 
 **Client.** `usnm-boinc gold-stage` (network) and `usnm-boinc gold-run` (offline), in [boinc.md](boinc.md#gold-check). For `usnm_gold` (#462), the server-side prepare step fetches each original once into its cache; submission verifies the MD5 and SHA-256 from `prepared.json` and stages ordinary sticky project downloads. Volunteers receive the unchanged archive and image files from the project server, then cut crops locally; the run step stays offline ([boinc.md](boinc.md#as-boinc-work-usnm_gold)). A run with Tesseract 5.5.1 and only `eng` installed scored the 60 English crops (CER 0.0932 on BLN600, 0.0276 on Overproof CA) and reported the other 82 as skipped for lack of a model.
 
+### Current-worker observations, 16 October 2026
+
+For [#527](https://github.com/tgoodyear/usnewsmap.com/issues/527), the published
+worker `80bf2d6586fb3a9f6ef644937ddd40ca2304b1b433d3b9e657e193ba6f573ae0`
+was measured offline on pve-big CT 100 (AMD64) and the local Mac's ARM Linux
+Docker runtime. Both used the locked v1 tar (`42520de4...`) and manifest
+(`150e20d7...`); all 19 original cached inputs were verified by SHA-256 before
+copying to isolated directories. No source download or live-client cache write
+was needed. Runs used one CPU, 1.5 GiB, no network, PSM 3, DPI 300 and a
+300-second per-crop timeout. The architecture-specific Tesseract bases were
+`d0b841b521a4a68aab2d585a019d9ad1d011e25a65f2f9286d6851fcc64ded57`
+(AMD64) and `86418d991a798c885a7a505bc94ce27cbfe0c5361fa3dde319b7d6b400d9ebad`
+(ARM).
+
+Both scored **142 crops with zero skips**, 125,622 reference characters:
+CER **0.090239**, WER **0.259798**. All 142 paired crops had identical
+character/word edit and reference counts across architectures; this is score
+parity, not a claim of byte-identical OCR text. Summed per-crop OCR wall time
+was 518.058 seconds on AMD64 and 236.944 seconds on ARM, not CPU time or a
+controlled machine-performance comparison.
+
+| Source / language | Crops | Reference characters | CER | WER | Exploratory holdout CER |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BLN600 / English | 30 | 87,576 | 0.096259 | 0.248056 | 0.067381 |
+| NewsEye BnF / French | 24 | 9,973 | 0.089141 | 0.232764 | 0.190691 |
+| NewsEye NLF / Finnish | 18 | 11,895 | 0.079361 | 0.431330 | 0.071369 |
+| NewsEye NLF / Swedish | 10 | 6,267 | 0.108186 | 0.464625 | 0.107829 |
+| NZZ / German | 30 | 1,565 | 0.123323 | 0.383929 | 0.160628 |
+| Overproof CA / English | 30 | 8,346 | 0.024203 | 0.095533 | 0.019124 |
+
+The split was fixed in the issue before reading baseline scores: group by
+`remote|member-or-path` (`bundled|path` for bundled images), then odd SHA-256
+parity of `usnm-current-20261016|<group>` selects holdout. Page-region crops
+sharing one remote stay together. Bundled crops lack original-page identifiers,
+so their split is **exploratory, not proven page-independent**; the existing
+public bundle is not a new unseen corpus. In particular the French holdout
+differs substantially from its analysis cohort (CER 0.047928).
+
+Two actual AMD64 controls scored all 142 crops: empty output gave CER/WER 1.0;
+the same worker with deliberately unsuitable PSM 10 gave CER 0.986977 and
+WER 0.992874 overall. PSM 10 nevertheless **improved NZZ's line crops** to
+CER 0.073482. A control need not degrade
+every source; an overall threshold obscures this distinction and BLN600's
+69.7% character weight. French/Finnish/Swedish coverage is now measured rather
+than the historical worker's 52 missing-model skips.
+
+These are offline diagnostics, **not canonical BOINC host calibration**.
+No production trust threshold was derived, no legacy `0.1` trust promoted,
+and no assignment/backpressure bypass or client-preference change made.
+Current-image canonical campaign acceptance, independently held-out material
+and the fresh Mac OCR lifecycle remain separate gates.
+
 ## Licensing
 
 The library believes the newspapers in Chronicling America are in the public domain or have no known copyright restrictions, and that those published more than 95 years ago are in the public domain in their entirety; newer ones may hold copyrighted third-party material ([Rights and Access](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/)). Pages in the sample run to 1963, so in 2026 crops from pages published in 1931 or later carry that caveat. Transcriptions are original work and go in under the repository's licence.
