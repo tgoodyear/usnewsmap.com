@@ -129,6 +129,7 @@ choose it now. Notes:
   while enforcement is OFF. Do not restart/deploy production as part of this PR.
   Local connector mocks and patch/syntax checks are prerequisites, **not** live
   Azure/TLS acceptance or proof of uninterrupted production operation.
+
 - CPU credits. B1ms has 20% baseline CPU. The transitioner and feeder poll constantly. If the
   credit balance drains, MySQL throttles to 20%. We alarm on the CPU-credit metric and move to
   `Standard_B2s` (4 GiB RAM variants cost more; section 6) when it does.
