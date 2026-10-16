@@ -131,9 +131,36 @@ No network or model download occurs on a volunteer host.
 
 ### Stage, submit and collect
 
-Run the bridge binary with the existing managed identities, or locally with
-file stores for a test. The bridge image can be invoked with its entrypoint
-overridden to `/usr/local/bin/usnm-boinc`. The `stage` command uses the same
+**Authorization prerequisite:** existing BOINC identities cannot publish this
+overlay. The server bridge deliberately has **no curated credentials**, and the
+handoff job's curated grants cover only `ocr-local/`, not `ocr-ja/`. Rebuilding
+images does not change those permissions. Run collection on a **trusted
+maintainer/ingest-side host** using an Entra identity already authorized to list,
+read and create objects under curated `ocr-ja/` (for example the maintainer's
+Azure CLI login), or provision a separate narrowly scoped publisher identity
+before the pilot. Do not broaden the server bridge's access or give volunteers
+curated credentials. Local file stores need no Azure grant for tests.
+
+The bridge image can be invoked with its entrypoint overridden to
+`/usr/local/bin/usnm-boinc`. Stage on the trusted ingest-side host with scan-cache
+read access, then transfer the complete staging root, including each page and
+`ndlocr.json`, to persistent server-side storage. Run **submit on the BOINC
+server/bridge** with its project mount and database access. After assimilation,
+transfer the updated staging root (including `submitted`) and canonical spool
+from the trusted project share back to the authorized publisher. Preserve all
+state, including any `accepted/` snapshot, `accepted-at.txt` and `published`
+marker, between publisher runs; do not reconstruct it from volunteer output.
+Use the deployment's authenticated administrative/share transfer, never a public
+volunteer upload. Collector matching against the retained staged job remains
+mandatory.
+
+The example below assumes the same `./ndlocr-stage` contents have been copied
+between these hosts and the publisher has a trusted mount/copy of the project at
+`/project/usnmocr`. Without that mount, copy **`results/0/`** and set `--spool`
+to the local copy. The stock batch assimilator writes `results/<batch>/`;
+these workunits use default batch **0**, not `batch_output/`.
+
+The `stage` command uses the same
 archive-first scan source and paced batch/METS/IIIF access as Surya: no item API,
 no retries against LoC, a persistent hold on network refusal/failure. Specify
 one known published batch version per page. For each selected page, carry the
@@ -142,14 +169,17 @@ one known published batch version per page. For each selected page, carry the
 The explicit page list is operator-selected, not an automatic corpus sweep.
 
 ```sh
+# Trusted ingest-side host, with scan-cache read authorization:
 usnm-boinc ndlocr stage --root ./ndlocr-stage \
   --engine-image sha256:ENGINE_CONFIGURATION_ID \
   --scan-archive https://ACCOUNT.blob.core.windows.net/scan-archive \
   --batch-cache ./batch-cache \
   --page mixed:jpn:sn83025517_1945-01-01_ed-1_seq-4:dlc_ballston_ver01
+# BOINC server/bridge after copying the complete staging root:
 usnm-boinc ndlocr submit --root ./ndlocr-stage --project /project/usnmocr \
   --doc sn83025517_1945-01-01_ed-1_seq-4
-usnm-boinc ndlocr collect --root ./ndlocr-stage --spool /project/usnmocr/batch_output \
+# Authorized publisher after copying back updated state and canonical spool:
+usnm-boinc ndlocr collect --root ./ndlocr-stage --spool /project/usnmocr/results/0 \
   --doc sn83025517_1945-01-01_ed-1_seq-4 \
   --curated-url https://ACCOUNT.blob.core.windows.net/curated
 ```
