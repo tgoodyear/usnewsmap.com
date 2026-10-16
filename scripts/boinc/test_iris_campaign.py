@@ -277,6 +277,14 @@ class IrisCampaignTest(unittest.TestCase):
                         campaign.prepare(root, root / "out", worker)
                     self.assertFalse((root / "out").exists())
                     rows[0]["provenance"][key] = original
+                for malformed in ("line1", {"l1": True}, [1, 2], ["l1"], ["l1", "l2", "l3"],
+                                  ["", "l2"], [" ", "l2"], ["l1", "l1"], ["l1", " l1 "]):
+                    rows[0]["provenance"]["line_ids"] = malformed
+                    (root / "dataset.json").write_text(json.dumps({"evaluation_only": True, "crops": rows}))
+                    with self.subTest(line_ids=malformed), self.assertRaisesRegex(ValueError, "PAGE ground truth"):
+                        campaign.prepare(root, root / "out", worker)
+                    self.assertFalse((root / "out").exists())
+                rows[0]["provenance"]["line_ids"] = ["l1", "l2"]
                 (root / "dataset.json").write_text(json.dumps({"evaluation_only": True, "crops": rows}))
                 self.assertEqual(campaign.prepare(root, root / "out", worker)["jobs"], 100)
                 self.assertEqual(len(campaign.load_campaign(root / "out")["jobs"]), 100)
