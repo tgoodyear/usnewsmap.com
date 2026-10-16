@@ -1408,6 +1408,8 @@ The keep-set scans are intended to be copied to a Cold-tier container, `scans` i
 
 3. **The unit.** Install the worker binary of a release on pve-big (the scan-fetch container has it; the host needs its own copy at `/usr/local/bin/usnm-ocr-worker`), the user `usnm` in the `himds` group (as for the Serial Set unit), and the units:
 
+   For repeatable host installation, first download `usnm-ocr-worker` and `SHA256SUMS` from the selected release and verify both with `gh attestation verify --repo tgoodyear/usnewsmap.com --signer-workflow tgoodyear/usnewsmap.com/.github/workflows/ci.yml --source-ref refs/heads/main`. Verify the binary digest against the attested checksum file. Stage that binary and the four archive units, `usnm-scan-archive.conf` and `check-scan-archive.sh` from reviewed main in a root-controlled directory on the host. Run `bash scripts/ocr-node/install-archive-host.sh --dir <staged-directory> --release <release> --binary-sha256 <verified-sha256> --archive-url <archive-container-url> --dry-run`, then without `--dry-run`. It checks the digest again, installs the service identity (Arc and scan-read groups), missing `jq`, binary, environment, tmpfiles and units, and validates systemd configuration. It refuses a conflicting environment or active archive/OCR service and never starts uploads or timers. The equivalent unit installation is:
+
    ```sh
    sudo install -m 0644 scripts/ocr-node/usnm-scan-archive.service scripts/ocr-node/usnm-scan-archive.timer \
      scripts/ocr-node/usnm-scan-archive-verify.service scripts/ocr-node/usnm-scan-archive-verify.timer /etc/systemd/system/
