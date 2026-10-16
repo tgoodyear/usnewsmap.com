@@ -3,15 +3,26 @@
 chdir("/opt/boinc/html/user");
 require_once("../inc/db_conn.inc");
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-if ($argv[1] === "legacy") {
-    $conn = _mysql_connect($argv[2], "fixture", "fixture-only", "fixture");
-} else {
-    $db = new DbConn;
-    if (!$db->init_conn("fixture", "fixture-only", $argv[2], "fixture")) {
-        fwrite(STDERR, mysqli_connect_error() ?? "");
-        exit(10);
+ini_set("display_errors", "0");
+ini_set("log_errors", "0");
+$options = getopt("", ["api:", "host:"]);
+if (!isset($options["host"], $options["api"]) ||
+    !in_array($options["api"], ["legacy", "class"], true)) exit(2);
+try {
+    if ($options["api"] === "legacy") {
+        $conn = _mysql_connect($options["host"], "fixture", "fixture-only", "fixture");
+    } else {
+        $db = new DbConn;
+        if (!$db->init_conn("fixture", "fixture-only", $options["host"], "fixture")) {
+            fwrite(STDERR, json_encode(["mysql_errno" => mysqli_connect_errno(),
+                "message" => mysqli_connect_error()]));
+            exit(10);
+        }
+        $conn = $db->db_conn;
     }
-    $conn = $db->db_conn;
+} catch (mysqli_sql_exception $error) {
+    fwrite(STDERR, json_encode(["mysql_errno" => $error->getCode(), "message" => $error->getMessage()]));
+    exit(10);
 }
 if (!$conn) exit(11);
 $row = $conn->query("SHOW SESSION STATUS LIKE 'Ssl_cipher'")->fetch_row();

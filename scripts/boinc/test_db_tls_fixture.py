@@ -33,13 +33,37 @@ class FixtureEvidence(unittest.TestCase):
                 self.matrix(result, True)
 
     def test_negative_requires_failure_and_tls_diagnostic_not_an_unrelated_crash(self):
-        rows = self.matrix(subprocess.CompletedProcess([], 1, "", "TLS/SSL: certificate verify failed"), False)
-        self.assertTrue(all(row["outcome"] == "rejected" and row["cipher"] is None for row in rows))
+        errors = {
+            "python": '{"mysql_errno":2026}',
+            "php-legacy": '{"mysql_errno":2002,"message":"Cannot connect to MySQL using SSL"}',
+            "php-DbConn": '{"mysql_errno":2002,"message":"Cannot connect to MySQL using SSL"}',
+            "cpp-DB_CONN": "mysql_real_connect(): 2026: TLS/SSL error: certificate verify failed\n",
+            "cli": "ERROR 2026 (HY000): TLS/SSL error: certificate verify failed\n",
+        }
+        for consumer, error in errors.items():
+            with self.subTest(consumer=consumer):
+                self.assertTrue(fixture.tls_rejection("wrong-ca", consumer,
+                                                     subprocess.CompletedProcess([], 10, "", error)))
         for result in (subprocess.CompletedProcess([], 0, "", ""),
                        subprocess.CompletedProcess([], 1, "", "missing PHP module"),
                        subprocess.CompletedProcess([], 1, "", "Access denied")):
             with self.assertRaises(RuntimeError):
                 self.matrix(result, False)
+
+    def test_php_authentication_traceback_cannot_be_mistaken_for_tls_evidence(self):
+        traceback = """PHP Fatal error: Uncaught mysqli_sql_exception: Access denied for user 'fixture'@'tls-db.test'
+Stack trace:
+#0 /opt/boinc/html/inc/db.inc(30): mysqli_real_connect()
+#1 /opt/boinc/html/inc/db.inc(55): usnm_mysql_tls_connect()
+#2 /checks/consumer.php(7): _mysql_connect()
+#3 {main}
+  thrown in /opt/boinc/html/inc/db.inc on line 30
+"""
+        for consumer in ("php-legacy", "php-DbConn"):
+            for diagnostic in (traceback, json.dumps({"mysql_errno": 1045, "message": traceback})):
+                for case in ("wrong-ca", "wrong-hostname", "plaintext-peer"):
+                    self.assertFalse(fixture.tls_rejection(
+                        case, consumer, subprocess.CompletedProcess([], 10, "", diagnostic)))
 
     def test_missing_tcp_reachability_is_not_a_tls_negative_pass(self):
         with patch.object(fixture.socket, "create_connection", side_effect=ConnectionRefusedError), \
@@ -49,18 +73,13 @@ class FixtureEvidence(unittest.TestCase):
             run.assert_not_called()
 
     def test_swallowed_dbconn_error_is_accepted_only_for_confirmed_plaintext_case(self):
-        tls_error = subprocess.CompletedProcess([], 1, "", "TLS/SSL error")
-        swallowed = subprocess.CompletedProcess([], 10, "", "MySQL server has gone away")
-        for case in ("plaintext-peer", "wrong-hostname", "wrong-ca"):
-            with self.subTest(case=case), patch.object(fixture.socket, "create_connection"), \
-                    patch.object(fixture.subprocess, "run",
-                                 side_effect=[tls_error, tls_error, swallowed, tls_error, tls_error]), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                if case == "plaintext-peer":
-                    fixture.matrix(case, False)
-                else:
-                    with self.assertRaises(RuntimeError):
-                        fixture.matrix(case, False)
+        diagnostic = '{"mysql_errno":2006,"message":"MySQL server has gone away"}'
+        for consumer in ("php-legacy", "php-DbConn"):
+            for case in ("plaintext-peer", "wrong-hostname", "wrong-ca"):
+                with self.subTest(case=case, consumer=consumer):
+                    self.assertEqual(fixture.tls_rejection(
+                        case, consumer, subprocess.CompletedProcess([], 10, "", diagnostic)),
+                        case == "plaintext-peer")
 
 
 if __name__ == "__main__":

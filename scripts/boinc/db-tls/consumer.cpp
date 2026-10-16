@@ -1,12 +1,13 @@
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include "db_base.h"
 
 int main(int argc, char** argv) {
-    if (argc != 2) return 2;
+    if (argc != 3 || std::strcmp(argv[1], "--host")) return 2;
     DB_CONN db;
     char name[] = "fixture", user[] = "fixture", password[] = "fixture-only";
-    if (db.open(name, argv[1], user, password)) return 10;
+    if (db.open(name, argv[2], user, password)) return 10;
     if (db.do_query("SHOW SESSION STATUS LIKE 'Ssl_cipher'")) return 11;
     MYSQL_RES* result = mysql_store_result(db.mysql);
     MYSQL_ROW row = result ? mysql_fetch_row(result) : nullptr;

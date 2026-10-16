@@ -56,11 +56,13 @@ must report a real nonempty `SHOW SESSION STATUS LIKE 'Ssl_cipher'` result.
 6. Restart that database with TLS required again: all five reconnect encrypted.
 
 Output is categorical JSON lines including consumer/case and successful session
-cipher. Negative cases require a nonzero exit **and** TLS-related diagnostics;
-the sole exception is `DbConn` swallowing mysqlnd's no-SSL handshake exception
-as "MySQL server has gone away". That exact `init_conn` failure is accepted only
-for the independently verified reachable/authenticated SSL-disabled peer, never
-for certificate tests.
+cipher. Negative cases require a nonzero exit **and** connector-specific TLS
+error codes/messages. Python and PHP probes emit structured errors without
+tracebacks; C++/CLI diagnostics must match anchored TLS-error lines, so TLS
+function names or hostnames in an authentication traceback cannot pass.
+mysqlnd reports no-SSL handshakes as error 2006, "MySQL server has gone away";
+this exact failure is accepted only for the independently verified
+reachable/authenticated SSL-disabled peer, never for certificate tests.
 unreachable DNS/TCP, missing modules or authentication-only errors are not passes.
 Raw client errors, keys and passwords are not printed.
 

@@ -64,15 +64,38 @@ def stop(process):
 
 def command(consumer, host):
     return {
-        "python": ["python3", "/checks/consumer.py", host],
-        "php-legacy": ["php", "/checks/consumer.php", "legacy", host],
-        "php-DbConn": ["php", "/checks/consumer.php", "class", host],
-        "cpp-DB_CONN": ["/checks/consumer", host],
+        "python": ["python3", "/checks/consumer.py", "--host", host],
+        "php-legacy": ["php", "/checks/consumer.php", "--api", "legacy", "--host", host],
+        "php-DbConn": ["php", "/checks/consumer.php", "--api", "class", "--host", host],
+        "cpp-DB_CONN": ["/checks/consumer", "--host", host],
         "cli": ["mariadb", "--no-defaults", "--ssl", "--ssl-verify-server-cert",
                 f"--ssl-ca={CA}", "--protocol=tcp", f"--host={host}",
                 "-ufixture", "-pfixture-only", "fixture", "--batch", "--skip-column-names",
                 "-e", "SHOW SESSION STATUS LIKE 'Ssl_cipher'"],
     }[consumer]
+
+
+def tls_rejection(case, consumer, result):
+    if not result.returncode:
+        return False
+    if consumer in ("python", "php-legacy", "php-DbConn"):
+        try:
+            error = json.loads(result.stderr)
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(error, dict):
+            return False
+        if consumer == "python":
+            return error.get("mysql_errno") == 2026
+        if (error.get("mysql_errno") == 2002
+                and error.get("message") == "Cannot connect to MySQL using SSL"):
+            return True
+        # mysqlnd reports an absent SSL handshake as server-gone; accept this
+        # only for the independently authenticated, SSL-disabled peer.
+        return (case == "plaintext-peer" and error.get("mysql_errno") == 2006
+                and error.get("message") == "MySQL server has gone away")
+    prefix = r"mysql_real_connect\(\): 2026: " if consumer == "cpp-DB_CONN" else r"ERROR 2026 \(HY000\): "
+    return re.fullmatch(prefix + r"TLS/SSL error: [^\n]+\n?", result.stderr) is not None
 
 
 def matrix(case, succeeds, host="tls-db.test"):
@@ -85,15 +108,7 @@ def matrix(case, succeeds, host="tls-db.test"):
             if result.returncode or not cipher.startswith(("TLS_", "ECDHE-", "DHE-")):
                 raise RuntimeError(f"{case}/{consumer}: expected encrypted connection, exit={result.returncode}")
         else:
-            if result.returncode == 0:
-                raise RuntimeError(f"{case}/{consumer}: unexpected successful connection")
-            # DbConn swallows mysqlnd's no-SSL handshake exception. This exact
-            # init-failure code is meaningful only for the independently proven
-            # reachable, authenticated plaintext peer, not certificate cases.
-            swallowed_plaintext = (case == "plaintext-peer" and consumer == "php-DbConn"
-                                   and result.returncode == 10
-                                   and result.stderr.strip() == "MySQL server has gone away")
-            if not swallowed_plaintext and not re.search(r"certificate|ssl|tls|2026", result.stderr, re.I):
+            if not tls_rejection(case, consumer, result):
                 raise RuntimeError(f"{case}/{consumer}: failure is not demonstrably TLS-related")
         print(json.dumps({"case": case, "consumer": consumer,
                           "outcome": "encrypted" if succeeds else "rejected",
