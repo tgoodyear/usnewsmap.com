@@ -26,7 +26,7 @@ The current names were checked against the templates and, read-only, against the
 The maintainer asked for one order: the `usnm` prefix, a short function, the type abbreviation, and the environment last, as in `usnm-ocr-appi-prod`. Several facts shape how far and how fast that can go:
 
 - **Azure has no rename.** "The resource name in Azure is immutable… you must delete the resource in Azure and then recreate it" ([Arc][arc]); a resource group can't be renamed either ([ARM FAQ][faq]). Only display properties can change in place: a custom role's `roleName` ("Even if a role is renamed, the role ID does not change", [custom roles][roles]), a workbook's `displayName` ([workbooks][wb]), a policy definition's `displayName`, and an Entra group's `displayName` ([Graph group][grp]).
-- **The stack deletes what it no longer declares.** `usnm-prod` deploys with `--action-on-unmanage deleteResources` and `denyDelete` (ADR-0011). Changing a name in Bicep creates the new resource and deletes the old one in the same run. For the data lake (about 7.24 TB), Cosmos DB, the registry and the Log Analytics workspace that loses data unless a migration or a detach comes first. The repo already avoids renames for this reason in three places: the policy definition still named `audit` although it denies (`guardrails.bicep:133-136`), the federated credential `github-main` (`registry.bicep:43-45`) and the deployer role seed `usnm-swa-deployer` (`deployer.bicep:22-24`).
+- **The stack deletes what it no longer declares.** `usnm-prod` deploys with `--action-on-unmanage deleteResources` and `denyDelete` (ADR-0011). Changing a name in Bicep creates the new resource and deletes the old one in the same run. For the data lake (about 7.24 TB), Cosmos DB, the registry and the Log Analytics workspace, such a run loses data unless a migration or a detach comes first. The repo already avoids renames for this reason in three places: the policy definition still named `audit` although it denies (`guardrails.bicep:133-136`), the federated credential `github-main` (`registry.bicep:43-45`) and the deployer role seed `usnm-swa-deployer` (`deployer.bicep:22-24`).
 - **Some types can't take hyphens or long names.** Storage accounts are 3-24 lowercase letters and digits and globally unique; container registries are 5-50 alphanumerics and globally unique ([naming rules][r]). Container app and job names "must be less than 32 characters" ([CLI][cli]). Cosmos DB accounts are 3-44 ([naming rules][r]; the template reference says 50, so the stricter 44 applies). Key Vault names are 3-24 ([naming rules][r]). An action group's `groupShortName` is at most 12 ([template reference][ag]). In #304 an Arc machine's name is also the worker's node id, capped at 32.
 - **Global names need a suffix.** Storage, registry, Cosmos DB, the Document Intelligence custom subdomain, Key Vault and App Configuration names are global. `bootstrap.sh` supports any subscription, so the suffix stays.
 - **The environment name is too loose.** `scripts/lib/env.sh:13` allows 1-16 characters and `main.bicep` has `@maxLength(16)`. That already overflows a 24-character storage name, and an environment called `archive` would collide with the stack `usnm-archive` and the group `rg-usnm-archive`.
@@ -162,7 +162,7 @@ Deployment stacks keep `usnm-{env}` and `usnm-{purpose}`; policy definitions and
 - **Domains**: `usnewsmap.com` and the `privatelink.*` zones.
 - **Module deployment names** (`Microsoft.Resources/deployments` in the deployment history), such as `ocr-exchange`, `policy-assignments-spot` and `diagnostics-${dataStorageName}`. They are history entries, not resources, and the CI string check skips a module's `name:`.
 - **Names outside Azure** that share the prefix: crates and binaries, telemetry roles `usnm-api`, `usnm-web` and `usnm-ocr-worker`, the Quickwit cluster `usnm-searcher`, the `usnm-ocr-worker.service` unit, the Linux user `usnm`, the `usnewsmap-*` image repositories, and GitHub variable names.
-- **Other projects** in subscription 25bf257c (hyperfix, atlasrelay and their groups). Other projects in the subscription don't use the `usnm` prefix, and nothing here renames, moves or matches them. Teardown's policy-definition lookup retains the governance prefix (`/policyDefinitions/usnm-`); environment stack discovery uses the closed environment list. The archive is separately recognized as a non-environment user of the guardrail definitions, so an archive assignment cannot lose them.
+- **Other projects** in subscription 25bf257c (hyperfix, atlasrelay and their groups). They don't use the `usnm` prefix, and nothing here renames, moves or matches them. Teardown's policy-definition lookup retains the governance prefix (`/policyDefinitions/usnm-`); environment stack discovery uses the closed environment list. The archive is separately recognized as a non-environment user of the guardrail definitions, so an archive assignment cannot lose them.
 
 ### Exceptions
 
@@ -227,20 +227,21 @@ New Container Apps environments set `infrastructureResourceGroup` and new privat
 
 ## Transition
 
-Slow and in phases, each at a point where the rename is cheap or a change happens anyway. One tracking issue carries the phase checklists.
+The transition is slow and in phases, each at a point where the rename is cheap or a change happens anyway. One tracking issue carries the phase checklists.
 
-**Implementation versus deployment (#309):** the centralized naming,
-consumer/env/CI checks, rename guard, script-name validation, stateless OCR
-alert/role changes and Phase 2 monitoring/CI/title changes are implemented.
-The unused tiles and Spot declarations and bootstrap's legacy SWA deletion
-are removed. None of this proves a live migration occurred. Follow the
+**Implementation versus deployment (#309):** the centralized naming, the
+consumer, environment and CI checks, the rename guard, script-name
+validation, the stateless OCR alert and role changes and the Phase 2
+monitoring, CI and title changes are implemented. The unused tiles and Spot
+declarations and bootstrap's legacy SWA deletion are removed. None of this
+proves a live migration occurred. Follow the
 [operator rollout and blockers](../../../infra/README.md#naming-guard-and-phase-12-rollout)
-for inventory reconciliation, budget/CI handoff, old smart-detector cleanup,
-in-place group renaming and node migration. OCR exchange and Phase 3 pins
-remain deliberately gated on their live migration/rebuild preconditions;
-the original empty-exchange window must not be assumed now that OCR and
-BOINC use it. The mapping below records legacy-to-target names, not a
-verified current Azure inventory.
+for inventory reconciliation, the budget and CI handoff, old smart-detector
+cleanup, in-place group renaming and node migration. OCR exchange and
+Phase 3 pins remain deliberately gated on their live migration or rebuild
+preconditions; the original empty-exchange window must not be assumed now
+that OCR and BOINC use it. The mapping below records legacy-to-target
+names, not a verified current Azure inventory.
 
 ### Phase 0: write it down, make names come from one place
 
@@ -258,11 +259,11 @@ No renames and no resource changes.
 5. Environment names: `env.sh`, `bootstrap.sh` and `main.bicep` accept `^(prod|dev|x[a-z0-9]{1,4})$` only. `bootstrap.sh:36` has its own copy of the old regex and the `guardrails` check; it sources `valid_env_name` from `env.sh` instead, so there is one validator. The CI lint environment becomes `dev`.
 6. The checks under Enforcement.
 
-Cost: none. Prod impact: none, because names are unchanged by construction and `prod.json` proves it.
+This phase costs nothing and has no prod impact, because names are unchanged by construction and `prod.json` proves it.
 
 ### Phase 1: the OCR window, now
 
-Before the node worker is installed. Once the worker runs, the node name goes into output blob names (`alto/<doc_id>.<node>.<stamp>.xml`) and telemetry, and nodes depend on the exchange account.
+Phase 1 runs before the node worker is installed. Once the worker runs, the node name goes into output blob names (`alto/<doc_id>.<node>.<stamp>.xml`) and telemetry, and nodes depend on the exchange account.
 
 1. PR #304, before it merges: `usnm-ocr-dcr-{env}` and `usnm-ocr-node-volume-alert-{env}`. One DCR name settles the #304 and design doc 12 disagreement.
 2. Design doc 12: `usnm-ocr-log-{env}`, `usnm-ocr-appi-{env}`, `usnm-ocr-dcr-{env}`, `usnm-ocrs-caj-{env}`. When the node component is built, Bicep declares `usnm-ocr-failures-alert-{env}`.
@@ -275,11 +276,11 @@ Before the node worker is installed. Once the worker runs, the node name goes in
    - `rg-usnm-prod-spot`. The ACI Spot launcher is not planned, decided by the maintainer, 10 October 2026. `spotRg` and the `spotPolicies` module (`policy-assignments-spot`) are removed from `main.bicep`, with the name removed from `naming.bicep`, `prod.json` and `exceptions.json`. **Operator work remains:** provision merged main so the stack removes the group's 7 policy assignments and detaches the group, verify it is empty and unmanaged, then delete the empty group. Repeat for any old dev or experiment group. See [infra/README.md, Retired Spot resource group](../../../infra/README.md#retired-spot-resource-group) for checks and commands. Dev status and budget discovery retain the old group until cleanup. The ACI Spot alternative in 08 §8.4 stays as text.
    - The `swa-usnm-prod` cleanup at `bootstrap.sh:205` and the stale `SWA_NAME` and `USNM_OCR_NODE_NAMES` settings lines.
 
-Prod impact: no API revision. Running cost unchanged or slightly lower.
+There is no API revision in prod, and running cost is unchanged or slightly lower.
 
 ### Phase 2: stateless monitoring and the CI identity
 
-Now, decided by the maintainer, 10 October 2026, rather than at a rebuild. It runs as soon as Phase 0 has landed, alongside Phase 1, because it needs `names()` and the status sanitizer's new forms. These resources hold no state, so each rename costs one provision.
+Phase 2 runs now rather than at a rebuild, decided by the maintainer on 10 October 2026. It runs as soon as Phase 0 has landed, alongside Phase 1, because it needs `names()` and the status sanitizer's new forms. These resources hold no state, so each rename costs one provision.
 
 - Recreate the alert inventory actually declared by the current modules (the original count predates added capacity rules and consolidated job failures), the web test, the action group (`groupShortName` `usnm-prod`) and the budget under the new names. Change the workbook titles in place to `usnm pipeline (prod)` and `usnm API (prod)`. Reset `USNM_BUDGET_START` to the first of the current month, since a renamed budget is a new budget.
 - `id-usnm-ci-prod` becomes `usnm-ci-id-prod`; run `bootstrap.sh` straight after the provision so `USNM_CI_CLIENT_ID` is rewritten.
@@ -294,11 +295,11 @@ Now, decided by the maintainer, 10 October 2026, rather than at a rebuild. It ru
 - Scratch becomes `usnmscratchstprodffapzy` with `usnm-scratch-file-pep-prod` and NIC `usnm-scratch-file-nic-prod`.
 - Document Intelligence becomes `usnm-jaocr-di-prod-ffapzy` in two provisions: `USNM_OCR` off, purge the soft-deleted account (a deleted account holds its name for 48 hours unless purged, [recover and purge][purge]), `USNM_OCR` on. F0 allows one account per subscription.
 
-Preconditions: the current release is published, no execution is running, the Cosmos `quickwit-writer` lease is free, and `provision.sh` runs with `--allow-rename=stusnmsffapzy`. Afterwards, check one small ingest run against the alerts and the pipeline workbook before the 36-hour rebuild starts.
+The preconditions are that the current release is published, no execution is running, the Cosmos `quickwit-writer` lease is free, and `provision.sh` runs with `--allow-rename=stusnmsffapzy`. Afterwards, check one small ingest run against the alerts and the pipeline workbook before the 36-hour rebuild starts.
 
 ### Phase 4: only at a prod environment rebuild
 
-Triggers: a region move, a subscription move, or Azure forcing a new Container Apps environment. No such rebuild is planned; until one happens these names are documented exceptions, not an open task. Scope: the skeleton in the exception table, plus the lake and Cosmos only if the move copies them anyway.
+The triggers are a region move, a subscription move, or Azure forcing a new Container Apps environment. No such rebuild is planned; until one happens these names are documented exceptions, not an open task. The scope is the skeleton in the exception table, plus the lake and Cosmos only if the move copies them anyway.
 
 Side by side works only into another subscription. The stack name (`usnm-{env}`, `env.sh:83`) and the settings file (`.azure/{env}/.env`) depend on the environment name alone, so a second `prod` in the same subscription would replace the live stack, whose `deleteResources` then removes the old resources, or overwrite the live settings. A region move or a forced new Container Apps environment therefore also goes to a new subscription, or first gets a PR that gives the second copy its own stack and settings names.
 
@@ -314,7 +315,7 @@ Runbook:
 8. Export `CDBControlPlaneRequests` and `ContainerRegistryRepositoryEvents` (the 365-day audit tables, #231) to the lake before deleting the old workspace. A deleted workspace holds its name for 14 days ([delete workspace][law]).
 9. Tear down the old subscription's environment with `teardown.sh --env prod --subscription OLD`. Then one PR deletes the remaining ternaries and `legacyProdSuffix` and updates `prod.json`. From that commit on, the old subscription is never provisioned again.
 
-Cost depends on the data path. Object replication: about $4-5 a day of duplicate storage while the copies overlap (7,244 GB at about $0.018 per GB-month is about $130 a month), plus the rehearsal. The AzCopy fallback adds up to about $145. In total about $100-300 one-time, which pushes that month over the $80 budget.
+Cost depends on the data path. With object replication, it is about $4-5 a day of duplicate storage while the copies overlap (7,244 GB at about $0.018 per GB-month is about $130 a month), plus the rehearsal. The AzCopy fallback adds up to about $145. In total about $100-300 one-time, which pushes that month over the $80 budget.
 
 ### Ongoing
 
@@ -369,7 +370,7 @@ Every new resource, in every environment, takes its name from `naming.bicep`, an
 
 ## Enforcement
 
-Three layers. The first needs no Azure access.
+There are three layers. The first needs no Azure access.
 
 1. **CI name check** in the `infra` job: `scripts/ci/check-names.py --envs=prod,dev,xabcd`.
    - It runs `bicep build-params` on `infra/names/check.bicepparam`, which imports `names()`. Prod is evaluated twice: with suffix `ffapzy` (pinned) and with a fixed sample suffix (conventional, as after a rebuild). The other environments use the sample.
@@ -377,8 +378,8 @@ Three layers. The first needs no Azure access.
    - `exceptions.json` can only shrink against `origin/main`: no new key, and no `scope` widened from `prod` to `all`. That stops the list growing; it does not protect prod, because shrinking is exactly the move that renames.
    - The protection is this: the evaluated prod map must equal `infra/names/prod.json`. A prod rename shows up as a reviewed diff to that file and never as a side effect of a refactor.
    - It also fails when `infra/main.bicep` or a module under `infra/modules` builds a resource name from a string containing `usnm` instead of taking a parameter. It looks only at the `name:` of resource declarations (not `guid(...)` arguments and not a module's deployment `name:`) and at `roleName`, `displayName` and `groupShortName`. Descriptions and child scope paths (`${cosmos.id}/dbs/usnm`, `/scratch/usnm`) are out of scope. An allowlist covers the KQL role filters `'usnm-api'` and `'usnm-web'`, the Cosmos database `'usnm'`, and the `guid()` seeds, with a comment that they are frozen: `usnm-swa-deployer`, `usnm-search-log-writer`, `usnm-ocr-node-writer`, `usnm-scans-writer`, `usnm-archive-writer`, `usnm-workbook-pipeline` and `usnm-workbook-api`. Changing a seed would rotate role IDs and workbook GUIDs. A name that refers to a `var`, a parameter default or a `func` of the same file is followed to its definition, through interpolation and further definitions, and checked the same way.
-   - And it fails when the abbreviation list in `sanitize.rs` differs from `naming.bicep`: `TYPE_ABBREVIATIONS` must equal the type abbreviations other than the `display: true` ones (`role`, `scopeEnv`, `shortName`, `title`), and `COMPACT_ABBREVIATIONS` the `form: 'compact'` ones.
-2. **Rename guard in `provision.sh`.** Every environment `az stack sub create` (bootstrap and partial teardown provisions included) runs a full-payload `az deployment sub what-if` with the same template/settings and reads the stack's managed resources. Outside complete mode, what-if reports an undeclared resource as Ignore rather than Delete ([what-if][wi]), while the stack's `deleteResources` deletes it. `scripts/lib/rename_guard.py` therefore blocks a managed storage account, Cosmos account, registry, workspace, vault, Container Apps environment, VNet or public/private DNS zone reported as Ignore or Delete unless `--allow-rename=<exact-old-name>` is repeated for each intentional removal. Missing protected IDs (including short-circuited nested deployments), unsupported results, malformed JSON and failed reads/what-if also block, and cannot be overridden. A removal without a replacement counts too. `--what-if` runs the same gate without writes, guard failures are not retried, and only `DeploymentStackNotFound` means a new stack. Because the gate reads what-if rather than `names()`, it covers switched-off conditions and branches CI never saw. It is authorization for a reviewed deletion, not a migration of data.
+   - It also fails when the abbreviation list in `sanitize.rs` differs from `naming.bicep`: `TYPE_ABBREVIATIONS` must equal the type abbreviations other than the `display: true` ones (`role`, `scopeEnv`, `shortName`, `title`), and `COMPACT_ABBREVIATIONS` the `form: 'compact'` ones.
+2. **Rename guard in `provision.sh`.** Every environment `az stack sub create` (bootstrap and partial teardown provisions included) runs a full-payload `az deployment sub what-if` with the same template and settings and reads the stack's managed resources. Outside complete mode, what-if reports an undeclared resource as Ignore rather than Delete ([what-if][wi]), while the stack's `deleteResources` deletes it. `scripts/lib/rename_guard.py` therefore blocks a managed storage account, Cosmos account, registry, workspace, vault, Container Apps environment, VNet or public or private DNS zone reported as Ignore or Delete unless `--allow-rename=<exact-old-name>` is repeated for each intentional removal. Missing protected IDs (including short-circuited nested deployments), unsupported results, malformed JSON and failed reads or what-if runs also block, and cannot be overridden. A removal without a replacement counts too. `--what-if` runs the same gate without writes. Guard failures are not retried, and only `DeploymentStackNotFound` means a new stack. Because the gate reads what-if rather than `names()`, it covers switched-off conditions and branches CI never saw. It is authorization for a reviewed deletion, not a migration of data.
 3. **Names made outside Bicep.** `scripts/lib/names.sh` builds the names scripts create (the Entra group, and the node, VM and Arc name). `group.sh`, `onboard.sh` and `proxmox-create-vm.sh` reject a `--name` that doesn't match `^usnm-ocr-node[0-9]+-arcs-(prod|dev|x[a-z0-9]{1,4})$`. An optional monthly `scripts/names-report.sh --env=prod` lists tagged resources, including those outside the stack (certificates, Arc machines, smart detectors), and flags any name that is neither conventional nor an exception.
 
 ## Alternatives
@@ -402,7 +403,7 @@ Three layers. The first needs no Azure access.
 
 The maintainer decided four earlier questions on 10 October 2026: the suffix stays after `env` (Form), Phase 2 runs now (Phase 2), the Spot resource group goes in Phase 1 (Phase 1), and workbook titles stay readable (Display names). One remains:
 
-1. **Key Vault in dev**. A soft-deleted vault holds its name for 7-90 days ([Key Vault soft delete][kvsd]), which blocks a dev rebuild under the same name. Turn off purge protection in dev and purge on teardown, or vary the dev suffix? The OCR nodes' vault (`usnmocrkv{env}{sfx}`, #296), the first one built, takes the first option for now: purge protection and 90 days' retention in prod only; elsewhere 7 days, the minimum, with no purge protection, and `teardown.sh` purges every soft-deleted vault the stack held that purge protection doesn't hold. The settings store (#295) is App Configuration, not a Key Vault, and outlives every environment.
+1. **Key Vault in dev**. A soft-deleted vault holds its name for 7-90 days ([Key Vault soft delete][kvsd]), which blocks a dev rebuild under the same name. Turn off purge protection in dev and purge on teardown, or vary the dev suffix? The OCR nodes' vault (`usnmocrkv{env}{sfx}`, #296), the first one built, takes the first option for now. Prod has purge protection and 90 days' retention; elsewhere retention is 7 days, the minimum, with no purge protection, and `teardown.sh` purges every soft-deleted vault the stack held that purge protection doesn't hold. The settings store (#295) is App Configuration, not a Key Vault, and outlives every environment.
 
 ## References
 
