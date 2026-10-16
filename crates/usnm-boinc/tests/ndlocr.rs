@@ -196,3 +196,70 @@ async fn worker_rejects_wrong_scan_before_running_engine() {
     assert!(error.to_string().contains("scan differs"), "{error:#}");
     assert!(!dir.path().join("result.json").exists());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn submission_stages_public_inputs_and_never_blindly_retries() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    let project = dir.path().join("project");
+    let doc = "sn83025517_1945-01-01_ed-1_seq-4";
+    let unit = root.join("units").join(doc);
+    let j = job("missing");
+    atomic(
+        &unit.join(ndlocr::JOB_FILE),
+        &serde_json::to_vec(&j).unwrap(),
+    )
+    .unwrap();
+    atomic(&unit.join("page"), b"scan").unwrap();
+    atomic(
+        &project.join("bin/dir_hier_path"),
+        b"#!/bin/sh\nprintf 'download/fanout/%s\\n' \"$1\"\n",
+    )
+    .unwrap();
+    atomic(
+        &project.join("bin/create_work"),
+        b"#!/bin/sh\nprintf '%s\\n' \"$@\" > args\nexit 1\n",
+    )
+    .unwrap();
+    for name in ["dir_hier_path", "create_work"] {
+        std::fs::set_permissions(
+            project.join("bin").join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    assert!(ndlocr::submit(&root, &project, doc).await.is_err());
+    assert!(unit.join("submitting").exists());
+    assert!(!unit.join("submitted").exists());
+    assert!(ndlocr::submit(&root, &project, doc)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("uncertain"));
+    let download = project.join("download/fanout");
+    assert_eq!(
+        std::fs::metadata(&download).unwrap().permissions().mode() & 0o755,
+        0o755
+    );
+    for suffix in ["page", "ndlocr_json"] {
+        let file = download.join(format!("{}_{suffix}", j.id));
+        assert_eq!(
+            std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+    }
+    let args = std::fs::read_to_string(project.join("args")).unwrap();
+    assert!(args.contains("--min_quorum\n2\n"));
+    // An operator has verified absence on the server before removing the marker.
+    std::fs::remove_file(unit.join("submitting")).unwrap();
+    atomic(&project.join("bin/create_work"), b"#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        project.join("bin/create_work"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    ndlocr::submit(&root, &project, doc).await.unwrap();
+    assert!(unit.join("submitted").exists());
+}
