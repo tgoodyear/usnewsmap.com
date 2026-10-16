@@ -1,4 +1,7 @@
 <?php
+namespace Usnm\Boinc\Hold;
+use BoincApp;
+use BoincAppVersion;
 // Stop new legacy dispatch without cancelling results or rewriting workunits.
 $args = getopt("", ["project:", "app-version:", "apply"]);
 if (!isset($args["project"], $args["app-version"]) || !preg_match('/^[1-9][0-9]*$/D', $args["app-version"])) {
@@ -33,9 +36,34 @@ if (!is_dir($journal) && !mkdir($journal, 0700)) {
     fwrite(STDERR, "Cannot create operator journal\n"); exit(1);
 }
 $record = "$journal/hold-app-version-$id.json";
-if (!file_exists($record)
-    && file_put_contents($record, json_encode($before, JSON_PRETTY_PRINT)."\n", LOCK_EX) === false) {
-    fwrite(STDERR, "Cannot write pre-mutation journal\n"); exit(1);
+if (is_link($record)) {
+    fwrite(STDERR, "Refusing linked journal\n"); exit(1);
+}
+if (!file_exists($record)) {
+    $bytes = json_encode($before, JSON_PRETTY_PRINT)."\n";
+    $handle = fopen($record, "x");
+    if (!$handle) {
+        fwrite(STDERR, "Cannot exclusively create pre-mutation journal\n"); exit(1);
+    }
+    $complete = flock($handle, LOCK_EX)
+        && fwrite($handle, $bytes) === strlen($bytes)
+        && fflush($handle) && fsync($handle);
+    fclose($handle);
+    if (!$complete) {
+        fwrite(STDERR, "Incomplete journal write; mutation refused\n"); exit(1);
+    }
+}
+$saved = json_decode(file_get_contents($record, false, null, 0, 16384), true);
+$valid = is_array($saved) && count($saved) === count($before);
+foreach ($before as $key => $value) {
+    if ($key === "deprecated_before") {
+        $valid = $valid && in_array($saved[$key] ?? null, [0, 1], true);
+    } else {
+        $valid = $valid && ($saved[$key] ?? null) === $value;
+    }
+}
+if (!$valid) {
+    fwrite(STDERR, "Invalid or mismatched pre-mutation journal; mutation refused\n"); exit(1);
 }
 if (!intval($version->deprecated) && !$version->update("deprecated=1")) {
     fwrite(STDERR, "Failed to deprecate app version\n"); exit(1);

@@ -39,9 +39,10 @@ class BoincAppVersion {
     }
 }
 """)
-            def run(version, apply=False):
+            def run(version, apply=False, prepend=None):
                 return subprocess.run(
-                    ["php", str(SCRIPT), "--project", str(project), "--app-version", str(version)]
+                    ["php"] + (["-d", f"auto_prepend_file={prepend}"] if prepend else [])
+                    + [str(SCRIPT), "--project", str(project), "--app-version", str(version)]
                     + (["--apply"] if apply else []), capture_output=True, text=True,
                 )
             for version in (9, 10, 11):
@@ -49,9 +50,36 @@ class BoincAppVersion {
             self.assertFalse(state.exists())
             self.assertEqual(run(7).returncode, 0)
             self.assertFalse(state.exists())
+            journal = project / "ops-issue-559/hold-app-version-7.json"
+            journal.parent.mkdir()
+            for invalid in ("", "{", "{}", '{"app_version_id":9}'):
+                journal.write_text(invalid)
+                self.assertNotEqual(run(7, True).returncode, 0)
+                self.assertFalse(state.exists())
+            valid = json.loads(run(7).stdout)
+            valid["action"] = "hold"
+            for key, wrong in (("app_version_id", 9), ("plan_class", "docker_mt_2b"), ("deprecated_before", 2)):
+                journal.write_text(json.dumps({**valid, key: wrong}))
+                self.assertNotEqual(run(7, True).returncode, 0)
+                self.assertFalse(state.exists())
+            journal.unlink()
+            short = project / "short.php"
+            short.write_text("""<?php
+namespace Usnm\\Boinc\\Hold;
+function fwrite($handle, $data) {
+    if ($handle === STDERR) return \\fwrite($handle, $data);
+    return \\fwrite($handle, substr($data, 0, 5));
+}
+""")
+            failed = run(7, True, short)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("Incomplete journal write", failed.stderr)
+            self.assertFalse(state.exists())
+            self.assertNotEqual(run(7, True).returncode, 0)
+            self.assertFalse(state.exists())
+            journal.unlink()
             self.assertEqual(run(7, True).returncode, 0)
             self.assertEqual(json.loads(state.read_text()), {"deprecated": 1})
-            journal = project / "ops-issue-559/hold-app-version-7.json"
             first = journal.read_bytes()
             self.assertTrue((project / "reread_db").exists())
             self.assertEqual(run(7, True).returncode, 0)
