@@ -1171,13 +1171,20 @@ impl LocClient {
     }
 
     async fn load_bag(&self, dir: &str) -> Result<Option<Arc<Bag>>, FetchError> {
+        let sgp = self
+            .cfg
+            .storage_root
+            .strip_suffix("ndnp/")
+            .map(|root| format!("{root}sgp/sgpbatches/batch_{dir}/"));
+        let allowed =
+            |url: &str| url.starts_with(&self.cfg.storage_root) || sgp.as_deref() == Some(url);
         let cache = self.cache_dir(dir);
         if let Some(c) = &cache {
             let text = tokio::fs::read_to_string(c.join("manifest-md5.txt")).await;
             let url = tokio::fs::read_to_string(c.join("url")).await;
             if let (Ok(text), Ok(url)) = (text, url) {
                 let url = url.trim().to_owned();
-                if url.starts_with(&self.cfg.storage_root) && url.ends_with('/') {
+                if allowed(&url) && url.ends_with('/') {
                     return Ok(Some(Arc::new(Bag {
                         dir: dir.to_owned(),
                         url,
@@ -1197,15 +1204,24 @@ impl LocClient {
             )
             .await?
             .map(|g| (guess.clone(), g));
+        if let Some(url) = sgp.as_ref().filter(|_| found.is_none()) {
+            found = self
+                .fetch(
+                    &format!("{url}manifest-md5.txt"),
+                    Server::Storage,
+                    MAX_BAG_BYTES,
+                    None,
+                    true,
+                )
+                .await?
+                .map(|g| (url.clone(), g));
+        }
         if found.is_none() {
             // Chronicling America knows where the batch is: follow it, but
             // only onto the storage service.
             let via = format!("{}{dir}/manifest-md5.txt", self.cfg.batches_root);
             if let Some(to) = self.locate(&via).await? {
-                match to
-                    .strip_suffix("manifest-md5.txt")
-                    .filter(|u| u.starts_with(&self.cfg.storage_root))
-                {
+                match to.strip_suffix("manifest-md5.txt").filter(|u| allowed(u)) {
                     Some(u) => {
                         found = self
                             .fetch(&to, Server::Storage, MAX_BAG_BYTES, None, true)
@@ -2521,6 +2537,10 @@ mod tests {
             (s.hits("manifest-md5.txt"), s.hits("1890050301.xml")),
             (1, 1)
         );
+        assert_eq!(
+            s.hits("/storage-services/service/sgp/sgpbatches/batch_xx_test_ver01/manifest-md5.txt"),
+            0
+        );
         // Nothing LoC doesn't list: no seq 3, no such issue, no such batch.
         assert_eq!(loc.resolve(&key(3), "xx_test", 1).await.unwrap(), None);
         let other: PageKey = "sn1/1890-05-04/ed-1/seq-1".parse().unwrap();
@@ -2639,6 +2659,80 @@ mod tests {
         );
         assert_eq!(loc.resolve(&key(1), "xx_off", 1).await.unwrap(), None);
         assert_eq!(s.hits("/other/manifest-md5.txt"), 0);
+    }
+
+    #[tokio::test]
+    async fn resolves_sgp_batches_and_reuses_the_verified_cache() {
+        let s = StandIn::start().await;
+        let sgp = "/storage-services/service/sgp/sgpbatches/batch_xx_test_ver01/";
+        s.add_issue(
+            sgp,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: b"sgp page",
+            }],
+        );
+        let cache = tempfile::tempdir().unwrap();
+        let client = || {
+            batch_client(
+                &s,
+                Duration::from_millis(10),
+                Some(cache.path().into()),
+                false,
+            )
+        };
+        let loc = client();
+        let page = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+        assert!(page.url.contains("/sgp/sgpbatches/batch_xx_test_ver01/"));
+        assert!(page
+            .iiif_base
+            .contains("service:sgp:sgpbatches:batch_xx_test_ver01:"));
+        let scan = loc
+            .scan_resolved(&key(1), &page, ImageSize::Full)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&scan.bytes[..], b"sgp page");
+        assert_eq!(
+            scan.md5.as_deref(),
+            Some(batch::md5_hex(b"sgp page").as_str())
+        );
+        assert_eq!(
+            client().resolve(&key(1), "xx_test", 1).await.unwrap(),
+            Some(page)
+        );
+        assert_eq!(s.hits(&format!("{BATCH}manifest-md5.txt")), 1);
+        assert_eq!(s.hits(&format!("{sgp}manifest-md5.txt")), 1);
+        assert_eq!(s.hits("1890050301.xml"), 1);
+        assert_eq!(s.hits("/data/batches/xx_test_ver01/manifest-md5.txt"), 0);
+    }
+
+    #[tokio::test]
+    async fn sgp_batch_fallback_does_not_bypass_a_block() {
+        let s = StandIn::start().await;
+        let manifest = format!("{BATCH}manifest-md5.txt");
+        let sgp = "/storage-services/service/sgp/sgpbatches/batch_xx_test_ver01/manifest-md5.txt";
+        let staging = || {
+            LocClient::new(LocConfig {
+                html_is_block: true,
+                attempts: 1,
+                ..batch_client(&s, Duration::from_millis(10), None, false)
+                    .cfg
+                    .clone()
+            })
+            .unwrap()
+        };
+        s.script(&manifest, Scripted::Status(503));
+        assert!(staging().bag("xx_test", 1).await.is_err());
+        assert_eq!(s.hits(sgp), 0);
+        s.script(sgp, Scripted::Challenge(200));
+        assert!(staging().bag("xx_test", 1).await.is_err());
+        assert_eq!(s.hits(sgp), 1);
+        assert_eq!(s.hits("/data/batches/xx_test_ver01/manifest-md5.txt"), 0);
     }
 
     #[tokio::test]

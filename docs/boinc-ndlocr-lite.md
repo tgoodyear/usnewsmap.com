@@ -202,7 +202,12 @@ these workunits use default batch **0**, not `batch_output/`.
 The `stage` command uses the same
 archive-first scan source and paced batch/METS/IIIF access as Surya: no item API,
 no retries against LoC, a persistent hold on network refusal/failure. Specify
-one known published batch version per page. For each selected page, carry the
+one known published batch version per page. If the NDNP batch path is absent,
+the same paced client checks `service/sgp/sgpbatches/batch_<batch>_verNN/`,
+where the Japanese SGP newspapers live, before trying the batch redirect.
+A refusal, challenge or server failure stops staging rather than trying another
+route; verified SGP manifests and METS use the existing batch cache.
+For each selected page, carry the
 **actual** `jaocr.py`/curation classification (`missing`, `empty`, `short`,
 `garbled` or `mixed`), not `bulk` or an inferred Japanese-only language label.
 The explicit page list is operator-selected, not an automatic corpus sweep.
@@ -211,9 +216,9 @@ The explicit page list is operator-selected, not an automatic corpus sweep.
 # Trusted ingest-side host, with scan-cache read authorization:
 usnm-boinc ndlocr stage --root ./ndlocr-stage \
   --engine-image sha256:ENGINE_CONFIGURATION_ID \
-  --scan-archive https://ACCOUNT.blob.core.windows.net/scan-archive \
+  --scan-archive https://ACCOUNT.blob.core.windows.net/scans \
   --batch-cache ./batch-cache \
-  --page mixed:jpn:sn83025517_1945-01-01_ed-1_seq-4:dlc_ballston_ver01
+  --page missing:jpn:sn83025517_1945-01-01_ed-1_seq-4:dlc_ballston_ver01
 # BOINC server/bridge after copying the complete staging root:
 usnm-boinc ndlocr submit --root ./ndlocr-stage --project /project/usnmocr \
   --doc sn83025517_1945-01-01_ed-1_seq-4
