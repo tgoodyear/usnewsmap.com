@@ -542,6 +542,9 @@ enum Quality {
         gap_secs: u64,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
+        /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 20).
+        #[arg(long, default_value_t = 1)]
+        bundle_size: usize,
         /// The scan archive's container URL (https://<account>.blob.core.windows.net/scans); read first with the job's identity.
         #[arg(long)]
         scan_archive: Option<String>,
@@ -1266,6 +1269,7 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
             k_crops,
             gap_secs,
             max_pages,
+            bundle_size,
             scan_archive,
             batch_cache,
         } => {
@@ -1286,6 +1290,7 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
                 k_crops,
                 gap: std::time::Duration::from_secs(gap_secs),
                 max_pages,
+                bundle_size,
                 scan_archive,
                 batch_cache,
             })

@@ -1,8 +1,42 @@
 # Interim Report: BOINC OCR Quality Scoring (`usnm_quality`) & Vision-Language Crop Transcription (`usnm_qwen`) Pilot
 
 **Date:** 2026-10-16  
-**Status:** Multi-platform BOINC pilot complete (5 `usnm_quality` campaigns collected, `usnm_qwen` multi-host quorum and `crops.parquet` join verified, 3-dataset gold calibration and Qwen3-VL 2B/8B calibration complete).  
+**Status:** Multi-platform BOINC pilot and Wave 4 complete (6 `usnm_quality` campaigns collected across 111 canonical workunits / 225 replica tasks with 0 failures; `usnm_qwen` multi-host quorum and `crops.parquet` join verified; 3-dataset gold calibration, Qwen3-VL 2B/8B calibration, and 6-language / 7-reader Wave 4 analysis complete).  
 **Related Issues & PRs:** [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#531](https://github.com/tgoodyear/usnewsmap.com/issues/531), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559); PRs [#503](https://github.com/tgoodyear/usnewsmap.com/pull/503), [#505](https://github.com/tgoodyear/usnewsmap.com/pull/505), [#506](https://github.com/tgoodyear/usnewsmap.com/pull/506), [#534](https://github.com/tgoodyear/usnewsmap.com/pull/534), [#544](https://github.com/tgoodyear/usnewsmap.com/pull/544), [#580](https://github.com/tgoodyear/usnewsmap.com/pull/580), [#646](https://github.com/tgoodyear/usnewsmap.com/pull/646).
+
+---
+
+## Executive Synthesis: How These Findings Guide Large-Scale OCR Scoring & Transcription Jobs
+
+**Does this pilot and Wave 4 tell us how to build a meaningful large-scale OCR scoring or transcription job? Yes—directly.** Across **111 validated BOINC workunits (`225` replica tasks, `91` unique pages across 6 languages and up to 7 OCR readers/page)** plus **1,005 gold-standard calibration crops**:
+
+1. **Platform & Validator Reliability (`100%` Agreement, `<2s` Native Compute):**
+   - `225 / 225` `usnm_quality` replica tasks succeeded across macOS ARM64 (`arm64-apple-darwin`) and Linux x86_64 (`native` and `docker`) with **100.0% bit-exact 2-replica quorum agreement** (`0.000000` CER discrepancy) and **`1.06 s` median native compute time** even with 5–7 readers per page (`15–21` full-page alignments).
+   - At 1 page/WU, 94% of wall time is BOINC RPC/spawn overhead; bundling **32–50 pages/WU** (with per-page slot checkpointing) raises compute efficiency above 80% and cuts BOINC database/file volume by 32×–50×.
+   - Because `usnm_quality` is deterministic pure Rust over SHA-256-verified inputs, large-scale campaigns can safely use **`min_quorum = 1` with 5%–10% random spot-check replication (`min_quorum = 2`)** once a host passes its initial validation window.
+2. **Why Multi-Reader + Image Scoring Is Essential (ALTO Confidence Fails):**
+   - Historical ALTO `mean_word_conf` has **zero correlation ($\rho = -0.054$)** with actual Tesseract error across languages and weak correlation ($\rho = -0.391$) with LoC error.
+   - By contrast, `usnm_quality`'s unsupervised **`legibility_ceiling` correlates strongly with actual error ($\rho = -0.761$ on `loc`, $\rho = -0.895$ on `ours-tesseract`)**, and the 3-cornered hat estimator achieves **`MAE ≤ 0.0140` ($\rho = 0.967$)** against human ground truth when pairing architecturally independent readers (`loc` + `Tesseract 5.5` + `Qwen3-VL-2B` or `ndnp`/`doctr`).
+3. **Concrete Engine & Resolution Routing Rules for Large-Scale Transcription:**
+   - **Clean English (`legibility_ceiling >= 0.78`, `loc est_cer < 0.22`):** Keep existing `loc` (or `ndnp`); **skip re-OCR** (`90.2%–96.2%` findable content already present).
+   - **Degraded / Small-Print English (`legibility_ceiling < 0.75` or `line_height_px < 36 px`):** Historical `loc` collapses (`0.5240` CER, `46.3%` findable content, severe noise hallucination). Route to **`ndnp-open-ocr` (`0.3692` CER, `95.9%` findable content, `97.9%` places)** or **full-scale Tesseract `eng@1` (`0.4083` CER, `82.3%` findable content)**; **never downscale to `@0.5`** when `line_height_px < 36 px` (`+12.5 pp` CER penalty).
+   - **German Fraktur (`deu`):** Route to **`deu_latf@1` (`0.1480` CER, `88.0%` findable content, `92.1%` places)** or **`frak2021@1` (`0.1527` CER)**, cutting historical `loc` CER (`0.3455`, `34.2%` findable content) by **>55%** and outperforming Antiqua `deu@1` (`58.7%` findable content) by **+29.3 pp**.
+   - **Serbian (`srp`), Czech (`ces`), and Polish (`pol`):** Immediate high-ROI corpus re-OCR targets:
+     - **Serbian Cyrillic (`srp@1`):** Fixes historical LoC's Latin-on-Cyrillic failure, boosting `findable_places` from **`2.8% → 98.6%`** and `findable_content` from **`54.1% → 89.3%`** (`0.2708` CER).
+     - **Czech (`ces@1` / `ces@0.5`):** More than doubles `findable_content` (**`42.8% → 94.9%–95.7%`**).
+     - **Polish (`pol@1`):** Reaches **`0.2120` CER**, **`96.4%` completeness**, and **`99.3%` findable content**.
+   - **Resolution & `>45 MP` Fallback Rule (`@1` vs. `@0.5`):** Use fast `@0.5` (~4× faster) when `line_height_px >= 40 px` (`control` English, Czech) or when `width * height > 45,000,000` (where `@1` Tesseract can return `0` words on 5700×8200 scans while `@0.5` recovers `92.8%–97.4%` findable content).
+   - **VLM Crop Calibration & Recovery (`usnm_qwen` at `k_crops = 6`):** Use **`Qwen3-VL-2B-Q8_0`** (`2.71%` true CER, 3.25× faster than `8B`, `0.0067` subsample MAE at `k=6` crops/page) as the 3rd reader on 1-to-2-reader pages in the uncertain triage band, and reserve **`Qwen3-VL-8B-Q4_K_M`** (`2.17%` true CER on GPU) for targeted damaged-region text recovery.
+
+| Corpus Segment / `usnm_quality` Gate | Historical `loc` Baseline | Recommended Large-Scale Action & Engine | Expected Outcome (Wave 1–4 & Gold Calibration) |
+|---|---|---|---|
+| **English Clean** (`legibility_ceiling >= 0.78`, `loc est_cer < 0.22`) | `0.2683` CER, `90.2%` findable | **Skip re-OCR** (retain `loc` / `ndnp`) | Avoids wasting volunteer compute on already-good pages (`90.2%–96.2%` findable content) |
+| **English Degraded / Small Print** (`legibility_ceiling < 0.75` or `line_height_px < 36 px`) | `0.5240` CER, `46.3%` findable | **Re-OCR at Full Res (`@1.0`)** with `ndnp-open-ocr` or `Tesseract eng@1` (never `@0.5`) | Cuts CER to `0.3692–0.4083` and doubles findable content (`46.3% → 82.3%–95.9%`) |
+| **Oversized Scans** (`width * height > 45,000,000`) | Variable | **Run `@0.5` scale fallback** if `@1.0` returns `<50` words | Prevents empty-page failure on `5700×8200` scans (`0% → 92.8%–97.4%` findable content) |
+| **German Fraktur (`deu`)** | `0.3455` CER, `34.2%` findable | **Re-OCR with `deu_latf@1` or `frak2021@1`** (never Antiqua `deu`) | Cuts CER by **57%** (`0.1480` CER) and lifts findable content to **`88.0%`** (`92.1%` places) |
+| **Serbian Cyrillic (`srp`)** | `0.4272` CER, `2.8%` places | **Re-OCR with `srp@1` (Cyrillic)** | Lifts `findable_places` from **`2.8% → 98.6%`** and `findable_content` from **`54.1% → 89.3%`** |
+| **Czech (`ces`) & Polish (`pol`)** | `0.3266` CER, `42.8%` findable | **Re-OCR with `ces@0.5` / `ces@1` and `pol@1`** | Lifts Czech findable content to **`94.9%–95.7%`** and Polish to **`99.3%`** (`0.2120` CER) |
+| **Uncertain Triage Band / Severe Damage** (`0.50 <= legibility_ceiling < 0.78`) | 1–2 readers only | **Dispatch `usnm_qwen` (`k_crops = 6` on `2B` CPU; `8B` GPU on salvage crops)** | Determines 3-reader hat (`MAE ≤ 0.0140`) or recovers `2.17%–2.71%` CER transcription |
 
 ---
 
@@ -313,3 +347,65 @@ To honor our commitment that **every volunteer CPU/GPU cycle must be justified e
 | **Tier 1: Fast Deterministic Triage & Image Tuning** | `usnm_quality` (Native CPU across Windows, macOS, Linux) | Stratified title-issue sample first (`10,000 → 100,000` pages), then full pages slated for OCR review (`min_quorum = 1` + 5% spot-check) | **`0.70s` median (`0.94s` mean)** | **`~2.6 CPU-hours` per 10,000 pages** (`~260 CPU-hours` per 1M pages) | Computes exact per-page `legibility_ceiling`, `skew_deg`, `line_height_px`, `bleed_through`, `completeness`, and 3-reader `est_cer`. Immediately identifies: (a) pages that are already clean (`est_cer < 0.04`, `completeness > 0.95` → **skip re-OCR**), (b) pages that are physically unreadable (`legibility_ceiling < 0.65` → **do not waste Tesseract/Surya cycles**), and (c) pages where `loc` or `as` dropped columns/articles (`completeness < 0.85` while `legibility_ceiling > 0.80` → **high-ROI re-OCR targets**). |
 | **Tier 2: Stratified VLM Calibration & Ambiguity Resolution** | `usnm_qwen` (`k_crops = 6`, `Qwen3-VL-2B-Q8_0` on CPU/GPU) | **1%–2% stratified audit sample** of Tier 1 pages + **2-reader / 1-reader pages in the uncertain triage band** (`0.75 ≤ legibility_ceiling ≤ 0.90` where existing readers disagree or lack a 3rd reader) | **`~333s` on 4-core CPU** or **`~21s` on GPU** (`k = 6` crops × `3.5s`) | **`~58 GPU-hours`** (or `~925 CPU-hours`) per 10,000 audited pages | Unlocks determined 3-cornered hat CER (`MAE ≤ 0.014`) on 2-reader pages and direct `cer_vs_vlm` (`MAE = 0.019`) on 1-reader (`loc`-only) pages, preventing false-positive re-OCR runs across entire newspaper titles. |
 | **Tier 3: Targeted OCR Recovery** | `usnm_ocr` (Tesseract 5.5 tuned by Tier 1 image stats) & `usnm_qwen` (`Qwen3-VL-8B` on GPU) | Pages & regions flagged by Tier 1 + Tier 2 as **high-legibility, high-recoverable-error** ($\text{Expected Gain} = \text{legibility\_ceiling} - (1 - \widehat{\text{CER}}) \ge 0.10$) | `~90s` (`usnm_ocr` whole page) / `~11.4s` per damaged crop (`Qwen3-VL-8B` GPU) | Scaled strictly to pages with verified $\ge 10\%$ recoverable CER | Directly replaces degraded `loc` (`9.22%` CER) and misaligned `as` transcriptions with `3.68%` CER (Tesseract 5.5) or `2.17%` CER (`Qwen3-VL-8B`), measurably improving search recall and precision on `usnewsmap.com`. |
+
+---
+
+## 8. Wave 5 (`v1-wave5`, 5,000 Workunits / 10,000 Replica Tasks) Execution & Repeatable Publishing Runbook
+
+To validate production-scale throughput (~100× the Wave 4 batch), we executed **`v1-wave5` (`5,000` workunits / `10,000` replica tasks)** across **`5,000` distinct newspaper pages** spanning **17 LCCNs and 26 NDNP batches**:
+- **`727` 3-reader pages** (`loc` + `ours-tesseract` + `as` American Stories) with determined Three-Cornered Hat CER estimates.
+- **`4,273` 2-reader pages** (`loc` + `ours-tesseract`) comparing historical Library of Congress ALTO against our Tesseract 5.5 overlay.
+- **Zero errors (`0` staging errors, `0` submission errors)** across all 5,000 workunits (`10,000` replica tasks).
+
+### 8.1 Multi-Node Volunteer Execution Telemetry (`v1-wave5`)
+
+All 4 active volunteer nodes attached to `boinc.usnewsmap.com` picked up and executed `v1-wave5` tasks in parallel:
+
+| Host / Node | Platform / Plan Class | CPU / RAM Allocation | Observed `v1-wave5` Throughput |
+|---|---|---|---|
+| **`pve-big.tjg.fyi` `CT 100` (`boinc-test`)** | `x86_64-pc-linux-gnu (docker)` | 12 vCPUs / 8 GiB RAM (`10` `usnm_quality` + `1` `usnm_qwen` via `app_config.xml`) | `~2.0 tasks/sec` (`~120 tasks/min`) |
+| **`pve-big.tjg.fyi` `CT 101` (`boinc-volunteer-2`)** | `x86_64-pc-linux-gnu (docker)` | 12 vCPUs / 8 GiB RAM (`10` `usnm_quality` + `1` `usnm_qwen` via `app_config.xml`) | `~2.0 tasks/sec` (`~120 tasks/min`) |
+| **`pve-laptop.tjg.fyi` `CT 110` (`boinc-laptop`)** | `x86_64-pc-linux-gnu (docker)` | 6 vCPUs / 10 GiB RAM | Continuous 4–6 concurrent `usnm_quality` tasks |
+| **`macOS` (`Apple-Computer.tjg.fyi`)** | `arm64-apple-darwin (native)` | Apple M1 8-core / 8 GiB RAM | **`~0.9–1.1s/page`** native execution |
+
+Within the first 30 minutes of `v1-wave5` dispatch (as of `16:45:01 UTC` on `server_status.php`), **`1,748` replica tasks (`~874` workunits)** had already completed and validated, with **`103` tasks in progress** and **`8,149` tasks ready to send**.
+
+### 8.2 Root Causes Resolved & Repeatable Large-Scale Campaign Publishing Runbook
+
+Executing a 5,000-workunit campaign surfaced five friction points that have now been permanently fixed and codified in the repository:
+
+1. **VNet Subnet Rules on Curated Storage (`stusnmdffapzy`):**
+   - *Finding:* `stusnmdffapzy` (`curated`) had `defaultAction: Deny` with empty `virtualNetworkRules`, blocking Container Apps jobs from reading `american-stories` and `ocr-local` Parquet tables.
+   - *Fix:* Added VNet service endpoints and subnet rules for both `vnet-usnm-prod/subnets/snet-cae` (main environment) and `usnm-boinc-vnet-prod/subnets/aca` (BOINC environment).
+2. **Schema Normalization in `usnm-boinc` & `usnm-ocr-contract`:**
+   - *Finding:* Raw exports from `curated` contained whitespace in `ocr_engine` (`source`), `"rect"` vs `"box"` keys in region JSON, inverted bounding boxes on a handful of American Stories rows, and alphanumeric `--group` names (`wave5` / `v1-wave5`).
+   - *Fix:* `usnm_ocr_contract::quality::Region` now accepts `#[serde(rename = "box", alias = "rect")]`; `normalize_source` replaces whitespace/control characters and caps reader sources at `<= 128` bytes; `join_texts` filters degenerate region boxes; and `quality stage` validates `--group` with `quality::check_name` (`[a-z0-9-]`).
+3. **Multi-Page Bundling (`--bundle-size` / `QUALITY_BUNDLE_SIZE`) in `usnm-boinc quality stage` & `bridge-job.sh`:**
+   - *Finding:* Staging and submitting 5,000 single-page workunits over Azure Files SMB required 25,000 file creations + 5,000 `create_work` invocations (~25 minutes across 10 shards).
+   - *Fix:* `usnm-boinc quality stage` now accepts `--bundle-size <1..20>` (exposed as `QUALITY_BUNDLE_SIZE` in `bridge-job.sh`), staging individual pages into `<root>/pages/<doc_id>` and packing them into multi-page bundle workunits in `<root>/units/bundle-<idx>-<first_doc_id>`. Setting `QUALITY_BUNDLE_SIZE=10` (or `20`) packs 5,000 pages into **500 (or 250) workunits**, allowing a 5,000-page campaign to stage and submit in a single `start-boinc-bridge.sh` run.
+4. **BOINC `server_status.php` 1-Hour Cache TTL (`STATUS_PAGE_TTL = 3600`):**
+   - *Finding:* Stock BOINC caches `html/cache/f2/server_status.php_job_status` for `3600` seconds (`STATUS_PAGE_TTL`), causing `server_status.php` (and `?xml=1`) to display `0` unsent / `0` in progress for up to an hour after a batch is submitted.
+   - *Fix:* `entrypoint.sh` now sets `STATUS_PAGE_TTL` to `60` seconds in `html/project/cache_parameters.inc`, `bridge-job.sh` purges `html/cache/f2/server_status.php_job_status` immediately after `quality-submit` and `qwen-submit`, and operators can query `https://boinc.usnewsmap.com/server_status.php?counts=1` at any time for uncached real-time DB counts.
+5. **Repeatable 4-Command Publishing Procedure:**
+   ```sh
+   # 1. Upload campaign sample (<campaign>.jsonl) to boinc-handoff/quality-samples/
+   az storage blob upload --auth-mode login --account-name stusnmoffapzy \
+     --container-name boinc-handoff --name quality-samples/<campaign>.jsonl --file <campaign>.jsonl --overwrite
+
+   # 2. Export American Stories & ocr-local texts from curated store to boinc-handoff/texts/
+   scripts/start-boinc-bridge.sh --env prod --target handoff --step texts-export \
+     --var HANDOFF_SAMPLE=<campaign>.jsonl --wait-mins 30
+
+   # 3. Stage pages and pack into 10-page bundle workunits on the BOINC share
+   scripts/start-boinc-bridge.sh --env prod --step quality-stage \
+     --var QUALITY_CAMPAIGN=<campaign> \
+     --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff \
+     --var QUALITY_SAMPLE=<campaign>.jsonl --var QUALITY_GROUP=<campaign> \
+     --var QUALITY_LANGS=eng --var QUALITY_BUNDLE_SIZE=10 --var QUALITY_MAX=5000 \
+     --var QUALITY_ENGINE_IMAGE=sha256:<worker-digest> --wait-mins 45
+
+   # 4. Submit bundled workunits to BOINC and invalidate status cache
+   scripts/start-boinc-bridge.sh --env prod --step quality-submit \
+     --var QUALITY_CAMPAIGN=<campaign> --var QUALITY_MAX=500 --wait-mins 15
+   ```
+

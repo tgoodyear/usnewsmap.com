@@ -581,6 +581,26 @@ pub fn check_doc_id(doc_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Normalizes a reader source string to 1..=128 non-whitespace, non-control bytes.
+pub fn normalize_source(s: &str) -> String {
+    let joined: String = s
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(";");
+    let mut out = if joined.is_empty() {
+        "unknown".to_owned()
+    } else {
+        joined
+    };
+    while out.len() > 128 {
+        out.pop();
+    }
+    out
+}
+
 /// Lower-case ASCII letters, digits and hyphens, 1 to 32 bytes.
 pub fn check_name(s: &str, what: &str) -> anyhow::Result<()> {
     ensure!(
@@ -599,7 +619,7 @@ pub fn check_name(s: &str, what: &str) -> anyhow::Result<()> {
 #[serde(deny_unknown_fields)]
 pub struct Region {
     /// `[x0, y0, x1, y1]`.
-    #[serde(rename = "box")]
+    #[serde(rename = "box", alias = "rect")]
     pub rect: [u32; 4],
     pub kind: Option<String>,
     /// `legible`, `borderline` or `illegible`.

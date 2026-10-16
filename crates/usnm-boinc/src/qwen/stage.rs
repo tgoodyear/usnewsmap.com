@@ -53,7 +53,12 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     check_no_hold(&opts.root)?;
     let dir = units(&opts.root);
     std::fs::create_dir_all(&dir)?;
-    let src = crate::quality::units(&opts.quality_root);
+    let pages_dir = opts.quality_root.join("pages");
+    let src = if pages_dir.exists() {
+        pages_dir
+    } else {
+        crate::quality::units(&opts.quality_root)
+    };
     let mut pages: Vec<PathBuf> = std::fs::read_dir(&src)
         .with_context(|| format!("reading {}", src.display()))?
         .filter_map(|e| e.ok())
