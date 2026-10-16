@@ -193,3 +193,44 @@ fn decoder_errors_are_bad_input_not_engine_outages() {
         .unwrap_err();
     assert!(matches!(error, usnm_ocr_adapter::ReadError::BadInput(_)));
 }
+
+#[cfg(unix)]
+#[test]
+fn contract_scratch_is_inside_the_writable_page_not_the_search_only_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    use usnm_ocr_adapter::{Reader, Reading, Root};
+    let (dir, engine, image) = standin(&format!(
+        r#"
+cat > "$5/page.xml" <<'XML'
+{}
+XML
+printf '新聞' > "$5/page.txt"
+"#,
+        std::str::from_utf8(XML).unwrap()
+    ));
+    let parent = dir.path().join("out");
+    let out = parent.join("page");
+    std::fs::create_dir_all(&out).unwrap();
+    let req = serde_json::from_value(serde_json::json!({
+        "deadline_ms": 5000,
+        "image": {"dpi":300,"dpi_source":"assumed","height":4000,"width":2400,
+                  "path":"/in/page.jpg","sha256":"unused"},
+        "language":"jpn","options":{},"out":"/out/page","profile":"default","run_id":"page"
+    }))
+    .unwrap();
+    let mut reader = ndlocr::ContractReader {
+        engine_root: engine.root,
+        python: engine.python,
+        root: Root(dir.path().to_owned()),
+    };
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o111)).unwrap();
+    let result = reader.read(
+        &req,
+        &image,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+    );
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(matches!(result.unwrap(), Reading::Alto { text, .. } if text == "新聞"));
+    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+}

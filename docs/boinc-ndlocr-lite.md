@@ -40,7 +40,8 @@ Japanese credit snapshots are not silently relabelled.
 `usnm-ocr-engine/1` (ADR-0016), with family/id `ndlocr-lite`, profile `default`,
 language `jpn`, and line granularity. Its root filesystem can be read-only, with
 no network or capabilities. Mount inputs at `/in` (read-only) and output/scratch
-at `/out` (writable). The adapter invokes the unmodified upstream CPU CLI for one
+at `/out/<run_id>/` (writable; the `/out` parent only needs search permission).
+The adapter puts private scratch inside that page directory and invokes the unmodified upstream CPU CLI for one
 image and kills/reaps its process group if the deadline expires. It requires
 both XML and text even when upstream exits successfully; upstream can exit 0
 without processing an image. Extensionless BOINC scans get a detected JPEG,

@@ -32,11 +32,17 @@ def main():
         "path": "/in/page.jpg", "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
     }, "language": "jpn", "options": {}, "out": "/out/smoke", "profile": "default", "run_id": "smoke"}
     start = time.monotonic()
-    result = subprocess.run([
-        "docker", "run", "--rm", "--network=none", "--read-only", "--cap-drop=ALL",
-        "--security-opt=no-new-privileges", "--cpus=2", "--memory=4g", "--memory-swap=4g",
-        "-v", f"{work / 'in'}:/in:ro", "-v", f"{work / 'out'}:/out:rw", "-i", image,
-    ], input=json.dumps(request) + "\n", text=True, capture_output=True, timeout=240, check=True)
+    # Match the contract host: the adapter may search /out, but can only
+    # write inside the one page directory. Scratch must stay inside it.
+    (work / "out").chmod(0o111)
+    try:
+        result = subprocess.run([
+            "docker", "run", "--rm", "--network=none", "--read-only", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", "--cpus=2", "--memory=4g", "--memory-swap=4g",
+            "-v", f"{work / 'in'}:/in:ro", "-v", f"{work / 'out'}:/out:rw", "-i", image,
+        ], input=json.dumps(request) + "\n", text=True, capture_output=True, timeout=240, check=True)
+    finally:
+        (work / "out").chmod(0o777)
     messages = [json.loads(line) for line in result.stdout.splitlines()]
     assert len(messages) == 2, result.stdout
     hello, answer = messages

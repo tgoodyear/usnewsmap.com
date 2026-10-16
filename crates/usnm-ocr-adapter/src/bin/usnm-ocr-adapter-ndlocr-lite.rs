@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::ensure;
 use clap::Parser;
 use usnm_ocr_adapter::{
-    ndlocr::{self, Ndlocr},
+    ndlocr::{self, ContractReader},
     serve, Root,
 };
 use usnm_ocr_contract::engine::CONTRACT;
@@ -20,8 +20,6 @@ struct Args {
     ndlocr_root: PathBuf,
     #[arg(long, default_value = "python3")]
     python: PathBuf,
-    #[arg(long, default_value = "/out")]
-    scratch: PathBuf,
     /// Prefix for /in and /out during a local conformance test.
     #[arg(long, default_value = "/")]
     root: PathBuf,
@@ -33,15 +31,16 @@ fn main() -> anyhow::Result<()> {
     ensure!(args.threads > 0, "zero threads");
     let hello = ndlocr::hello(&args.ndlocr_root)?;
     hello.check()?;
-    let mut reader = Ndlocr {
-        root: args.ndlocr_root,
+    let root = Root(args.root);
+    let mut reader = ContractReader {
+        engine_root: args.ndlocr_root,
         python: args.python,
-        scratch: args.scratch,
+        root: root.clone(),
     };
     serve(
         &hello,
         &mut reader,
-        &Root(args.root),
+        &root,
         std::io::stdin().lock(),
         std::io::stdout().lock(),
     )

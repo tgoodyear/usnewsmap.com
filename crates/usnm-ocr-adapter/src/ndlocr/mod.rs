@@ -276,14 +276,27 @@ impl Ndlocr {
     }
 }
 
-impl Reader for Ndlocr {
+/// Contract scratch belongs inside the request's writable output directory.
+/// The on-prem host deliberately grants search-only access to its /out parent.
+pub struct ContractReader {
+    pub engine_root: PathBuf,
+    pub python: PathBuf,
+    pub root: crate::Root,
+}
+
+impl Reader for ContractReader {
     fn read(
         &mut self,
         req: &PageRequest,
         image: &Path,
         deadline: Instant,
     ) -> Result<Reading, ReadError> {
-        let result = self.ocr(image, deadline)?;
+        let engine = Ndlocr {
+            root: self.engine_root.clone(),
+            python: self.python.clone(),
+            scratch: self.root.map(&req.out),
+        };
+        let result = engine.ocr(image, deadline)?;
         let alto = ndlocr_to_alto(
             &result.xml,
             Geometry {
@@ -293,7 +306,7 @@ impl Reader for Ndlocr {
             &req.image.path,
             COMMIT,
             1,
-            &chrono::Utc::now().to_rfc3339(),
+            &processing_time(chrono::Utc::now()),
         )
         .map_err(|e| ReadError::Failed {
             kind: "layout".into(),
@@ -305,5 +318,27 @@ impl Reader for Ndlocr {
             text: result.text,
             dpi: req.image.dpi,
         })
+    }
+}
+
+fn processing_time(at: chrono::DateTime<chrono::Utc>) -> String {
+    // Python datetime cannot round-trip Linux's nanosecond precision, and
+    // spells UTC as +00:00 rather than Z in the reference ALTO converter.
+    at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn processing_time_round_trips_through_python_datetime_spelling() {
+        for stamp in [
+            "2026-10-16T00:00:00.123456789+00:00",
+            "2026-10-16T00:00:00+00:00",
+        ] {
+            let at = chrono::DateTime::parse_from_rfc3339(stamp)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            assert_eq!(super::processing_time(at), "2026-10-16T00:00:00+00:00");
+        }
     }
 }
