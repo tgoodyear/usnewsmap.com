@@ -1,8 +1,9 @@
 # Isolated BOINC dev acceptance
 
 This is a proposed, executable acceptance path, **not deployment approval**.
-Do not merge or provision during the API stable-head release hold. No resources,
-roles or DNS records were changed while preparing this plan.
+No paid dev scope or DNS changes have been approved. Do not provision until
+explicit approval and release coordination. No resources, roles or DNS records
+were changed while preparing this plan.
 
 ## Decision required
 
@@ -127,8 +128,10 @@ reminder, **not automatic deletion**.
 
 ## After approval and API slot release only
 
-Run from a clean, reviewed checkout including this plan and #610, using current
-operator scripts (including #619). These commands are **not authorized now**.
+Run from a clean, reviewed checkout including this plan, using current operator
+scripts (including #619). #610 is not a runtime correctness prerequisite: its
+build-staging relocation was motivated only by an operator-session assumption.
+These commands are **not authorized now**.
 
 1. Review bootstrap What-If. Set the explicit teardown timestamp supplied by the
    operator, and verify the subscription again. An unexpected existing dev group
@@ -221,16 +224,10 @@ operator scripts (including #619). These commands are **not authorized now**.
    print ready if the hostname/certificate/DB initialization is unsuccessful.
    Keep preview IDs, job execution IDs and redacted logs.
 
-   There is also a runtime-path preflight before this app phase: existing
-   `supervisord.conf` writes an absolute system-temp PID and several bridge
-   campaign steps use default-temp stamps. The current operator session forbids
-   those paths. #610 fixes **image-build staging only**, not every runtime path.
-   Prepare/review a dev-only runtime PID/stamp configuration, rebuild and
-   revalidate the resulting dev manifest before starting those consumers under
-   that constraint. Do not silently run the forbidden paths or claim #610 fixed
-   runtime staging. The base-only preview/provisioning phase has no such
-   container execution. Its cost/scope decision can therefore be made separately
-   from the subsequent runtime-harness approval.
+   Existing supervisor PID and bridge temporary-stamp paths are not demonstrated
+   runtime defects. Do not require their relocation, an image rebuild or #610
+   based only on an operator-session restriction. The actual acceptance gates
+   below and explicit dev resource/DNS authorization remain required.
 
 ## Acceptance order and evidence
 
@@ -283,8 +280,8 @@ does not change the image or establish a live encrypted session.
 
 This provides executable, independently previewable bootstrap/import/lifecycle
 commands for a real dev environment, rather than requiring the full application
-dev stack. It does not claim that the runtime-path preflight or every acceptance
-harness, measurement or scientific calibration already exists. Each missing
+dev stack. It does not claim that every acceptance harness, measurement or
+scientific calibration already exists. Each missing
 negative-peer/migration/RHEL fixture is an explicit next implementation step,
 not a reason to reuse production or invent a pass.
 
