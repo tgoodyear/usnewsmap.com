@@ -81,12 +81,10 @@ pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     atomic_with_permissions(path, bytes, permissions)
 }
 
-/// Creates missing directories as 0755 whatever the umask, so the web-server
-/// identity can traverse new download fan-out directories. Every directory that
-/// was missing (made here or by a concurrent caller), the first existing ancestor
-/// when it has the same owner, and the direct parent, which
-/// stock `dir_hier_path` may already have made under the same umask, gains any
-/// missing 0755 bits; other bits (setgid, group write) stay.
+/// Creates missing directories as exactly 0755 whatever the umask, so the
+/// web-server identity can traverse new download fan-out directories. Existing
+/// directories, including ones made by a concurrent caller, gain any missing
+/// 0755 bits; other bits (setgid, group write) stay.
 pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -107,12 +105,15 @@ pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
         let ancestor = cur.filter(|_| !missing.is_empty());
         for d in missing.into_iter().rev() {
             match std::fs::create_dir(d) {
-                Ok(()) => {}
+                Ok(()) => {
+                    std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755))?;
+                }
                 // Another submitter made it, perhaps under its own umask.
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {
+                    traversable(d)?;
+                }
                 Err(e) => return Err(e).with_context(|| format!("creating {}", d.display())),
             }
-            traversable(d)?;
         }
         // A peer submitter may have just made the first existing ancestor under its
         // umask. Repair it only if it has our new directory's owner, so a directory

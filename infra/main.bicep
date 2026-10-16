@@ -1147,6 +1147,8 @@ output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName 
 output BACKFILL_JOB string = ingestJobs && useAcr ? ingest!.outputs.backfillJobName : ''
 output JA_OCR_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaOcrJobName : ''
 output JA_AUDIT_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaAuditJobName : ''
+// The BOINC hand-off job runs in the main environment.
+output BOINC_HANDOFF_JOB string = boincHandoff ? boincHandoffJob!.outputs.name : ''
 // The OCR pickup job (12 §12.5 Step 8); scripts/start-job.sh --job OCR_SYNC_JOB
 // runs ocr-enqueue and ocr-requeue as executions of it.
 output OCR_SYNC_JOB string = ingestJobs && useAcr ? ingest!.outputs.ocrSyncJobName : ''
