@@ -877,17 +877,33 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
         repaired = (x, y, ww, h)
         return repaired if plausible(repaired, containing, text) else None
 
+    def origin_in_line(box, line_box):
+        x, y = box[:2]
+        lx, ly, lw, lh = line_box
+        x_margin, y_margin = max(3.0, lw * 0.02), max(3.0, lh * 0.25)
+        return lx - x_margin <= x <= lx + lw + x_margin and ly - y_margin <= y <= ly + lh + y_margin
+
     out = []
     for line_no, (block_rect, line_rect, strings) in enumerate(line_meta, 1):
         if not strings:
             continue
         text = " ".join(c for c, _, _ in strings if c)
+        line_is_plausible = plausible(line_rect, block_rect, text)
         valid = []
+        line_conflict = False
         for c, box, has_origin in strings:
             if has_origin:
                 repaired = string_rect(box, block_rect, c)
                 if repaired:
                     valid.append(repaired)
+                    if line_is_plausible and not origin_in_line(repaired, line_rect):
+                        line_conflict = True
+                elif c and line_is_plausible:
+                    line_conflict = True
+            elif c and line_is_plausible:
+                line_conflict = True
+        if line_conflict:
+            valid = []
         if valid:
             x0 = min(x for x, _, _, _ in valid)
             y0 = min(y for _, y, _, _ in valid)
@@ -895,7 +911,7 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
             y1 = max(y + h for _, y, _, h in valid)
             if not plausible((x0, y0, x1 - x0, y1 - y0), block_rect, text):
                 valid = []
-        if not valid and plausible(line_rect, block_rect, text):
+        if not valid and line_is_plausible:
             valid = [line_rect]
         if not valid and text.strip():
             raise ValueError(f"ALTO TextLine {line_no} has no plausible geometry; refusing to emit an invalid crop")
