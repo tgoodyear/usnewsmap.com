@@ -270,8 +270,10 @@ unprivileged host UID, then verifies the worker PID stayed unchanged. The base
 unit cannot start until the reviewed volunteer-profile drop-in exists. Apply
 `setup_volunteer.py --ocr-node --service usnm-boinc-canary.service` separately
 to configure and verify whole-UID limits, SELinux and rootless runtime; that
-helper also leaves the client stopped/disabled. Neither step authorizes a
-production project attachment. Only the isolated local-dev URL may be used.
+helper also leaves the client stopped/disabled. Neither step authorizes an
+attachment by itself. Production attachment requires explicit account/master
+authorization, a fresh healthy baseline and the verified capped profile; do
+not infer consent or enable unreviewed apps/GPU work.
 
 Rollback an explicitly started pilot with:
 

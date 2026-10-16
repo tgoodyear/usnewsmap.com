@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create ONLY the disabled, dedicated client prerequisites for an isolated OCR-node pilot."""
+"""Create ONLY disabled, dedicated prerequisites for a separately authorized bounded OCR-node pilot."""
 from __future__ import annotations
 
 import argparse
@@ -20,10 +20,10 @@ UNIT_PATH = Path("/etc/systemd/system") / SERVICE
 DROPIN_PATH = Path(str(UNIT_PATH) + ".d")
 SUBID_PATHS = (Path("/etc/subuid"), Path("/etc/subgid"))
 CGROUP_CONTROLLERS = Path("/sys/fs/cgroup/cgroup.controllers")
-MARKER = "# Managed by scripts/boinc/prepare_node.py; isolated dev only."
+MARKER = "# Managed by scripts/boinc/prepare_node.py; bounded canary, disabled by default."
 UNIT = f"""{MARKER}
 [Unit]
-Description=Optional isolated local-dev BOINC canary (disabled by default)
+Description=Optional resource-capped BOINC canary (disabled by default)
 ConditionPathExists=/etc/systemd/system/{SERVICE}.d/zz-usnm-volunteer.conf
 
 [Service]
