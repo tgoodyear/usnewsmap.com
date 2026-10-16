@@ -53,6 +53,21 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(target.parts[-3], "usnm_gold")
         self.assertTrue((self.project / "templates" / "usnm_gold_out").is_file())
 
+    def test_iris_is_a_separate_intel_application(self):
+        target = module.install(
+            self.project, self.wrapper, IMAGE, "1.0", "usnm_iris", "docker_intel_opencl_4b",
+        )
+        self.assertEqual(target.parts[-3], "usnm_iris")
+        job = next(target.glob("job_*.toml")).read_text()
+        self.assertIn("--device=/dev/dri/renderD128", job)
+        self.assertIn("--network=none", job)
+        self.assertIn("--memory=9g --memory-swap=9g", job)
+        self.assertNotIn("use_gpu = true", job)
+        for name in ("usnm_iris_in", "usnm_iris_out"):
+            self.assertTrue((self.project / "templates" / name).is_file())
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_iris", "docker_nvidia_cuda")
+
     def test_japanese_app_has_separate_inputs_and_four_gib_cpu_budget(self):
         target = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_ndlocr")
         self.assertEqual(target.parts[-3], "usnm_ndlocr")

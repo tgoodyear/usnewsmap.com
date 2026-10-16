@@ -1,0 +1,5 @@
+#!/bin/sh
+[ "$#" -eq 1 ] || { echo "usnm_iris_check: expected one result" >&2; exit 2; }
+project=$(cd .. && pwd)
+exec python3 /usr/local/lib/usnm-boinc/iris/check.py --result "$1" \
+  --jobs "$project/iris/jobs" --keep "$project/iris/seen"

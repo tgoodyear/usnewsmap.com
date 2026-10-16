@@ -94,7 +94,9 @@ render_config() {
         <daemon><cmd>script_validator --app usnm_qwen --init_script usnm_qwen_check --compare_script usnm_qwen_compare</cmd><output>script_validator_usnm_qwen.log</output><pid_file>script_validator_usnm_qwen.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_qwen</cmd><output>batch_collect_assimilator_usnm_qwen.log</output><pid_file>batch_collect_assimilator_usnm_qwen.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_qwen_train --init_script usnm_qwen_train_check</cmd><output>script_validator_usnm_qwen_train.log</output><pid_file>script_validator_usnm_qwen_train.pid</pid_file></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_qwen_train</cmd><output>batch_collect_assimilator_usnm_qwen_train.log</output><pid_file>batch_collect_assimilator_usnm_qwen_train.pid</pid_file></daemon>"
+        <daemon><cmd>batch_collect_assimilator --app usnm_qwen_train</cmd><output>batch_collect_assimilator_usnm_qwen_train.log</output><pid_file>batch_collect_assimilator_usnm_qwen_train.pid</pid_file></daemon>
+        <daemon><cmd>script_validator --app usnm_iris --init_script usnm_iris_check</cmd><output>script_validator_usnm_iris.log</output><pid_file>script_validator_usnm_iris.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_iris</cmd><output>batch_collect_assimilator_usnm_iris.log</output><pid_file>batch_collect_assimilator_usnm_iris.pid</pid_file></daemon>"
     if [ -d "$PROJ/bin" ]; then
       ln -sfn "$TEMPLATES/usnm_assess_check" "$PROJ/bin/usnm_assess_check"
       ln -sfn "$TEMPLATES/usnm_assess_compare" "$PROJ/bin/usnm_assess_compare"
@@ -108,6 +110,7 @@ render_config() {
       ln -sfn "$TEMPLATES/usnm_qwen_check" "$PROJ/bin/usnm_qwen_check"
       ln -sfn "$TEMPLATES/usnm_qwen_compare" "$PROJ/bin/usnm_qwen_compare"
       ln -sfn "$TEMPLATES/usnm_qwen_train_check" "$PROJ/bin/usnm_qwen_train_check"
+      ln -sfn "$TEMPLATES/usnm_iris_check" "$PROJ/bin/usnm_iris_check"
     fi
   fi
   DB_PASSWD="$(cat "$SECRETS/db-runtime")" python3 - "$TEMPLATES/config.xml.template" "$SECRETS/config.xml" "$daemons" <<'PY'

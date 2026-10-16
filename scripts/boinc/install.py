@@ -30,6 +30,7 @@ TEMPLATES = {
     "usnm_quality": ["usnm_quality_in", "usnm_quality_out"],
     "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"],
     "usnm_qwen_train": ["usnm_qwen_train_in", "usnm_qwen_train_out"],
+    "usnm_iris": ["usnm_iris_in", "usnm_iris_out"],
 }
 QWEN_NATIVE_MODEL_TEMPLATES = {
     "apple_gpu_8b": "usnm_qwen_8b_in",
@@ -52,6 +53,7 @@ JOB_TOML = {
     ("usnm_qwen", "docker_mt_2b"): "ocr/boinc/qwen/job-cpu.toml",
     ("usnm_qwen", "docker_nvidia_cuda_8b"): "ocr/boinc/qwen/job-gpu.toml",
     ("usnm_qwen_train", "docker_nvidia_train"): "ocr/boinc/train/job.toml",
+    ("usnm_iris", "docker_intel_opencl_4b"): "ocr/boinc/iris/job.toml",
 }
 
 PLATFORMS = (
