@@ -351,11 +351,86 @@ class Overproof(unittest.TestCase):
             self.assertEqual(regs[0]["text"], "The cat\nsat-\ndown.")
             self.assertEqual(regs[0]["box"], [10, 10, 210, 90])
 
-    def test_line_without_plausible_string_or_textline_geometry_fails_loudly(self):
+    def test_spatially_discontinuous_matched_lines_become_separate_crops(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d)
+            (src / "hipe").mkdir()
+            (src / "loc").mkdir()
+            key = "sn1-00001-1872040501-0002"
+            doc = hipe_doc("sn1-11-00001-1872040501-0002",
+                           ["The cat", "sat down."], ["Tho cat", "sat down."])
+            (src / "hipe" / "a.jsonl").write_text(json.dumps(doc) + "\n")
+            xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="1000"><PrintSpace>
+            <TextBlock HPOS="0" VPOS="0" WIDTH="400" HEIGHT="1000">
+            <TextLine HPOS="10" VPOS="10" WIDTH="200" HEIGHT="20">
+            <String HPOS="10" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="Tho"/>
+            <String HPOS="120" VPOS="10" WIDTH="90" HEIGHT="20" CONTENT="cat"/>
+            </TextLine>
+            <TextLine HPOS="10" VPOS="800" WIDTH="200" HEIGHT="20">
+            <String HPOS="10" VPOS="800" WIDTH="100" HEIGHT="20" CONTENT="sat"/>
+            <String HPOS="120" VPOS="800" WIDTH="90" HEIGHT="20" CONTENT="down."/>
+            </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
+            (src / "loc" / f"{key}.xml").write_bytes(xml)
+            (src / "loc" / f"{key}.jpg").write_bytes(b"synthetic image placeholder")
+            (src / "loc" / "pages.json").write_text(json.dumps({key: {"image": f"{key}.jpg", "alto": f"{key}.xml"}}))
+
+            class FakeImage:
+                width = 400
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+            pil = types.ModuleType("PIL")
+            image = types.ModuleType("PIL.Image")
+            image.open = lambda _: FakeImage()
+            pil.Image = image
+            with patch.dict(sys.modules, {"PIL": pil, "PIL.Image": image}):
+                regs, _ = gold.overproof_ca_regions(src)
+            self.assertEqual([(r["text"], r["box"]) for r in regs],
+                             [("The cat", [10, 10, 210, 30]), ("sat down.", [10, 800, 210, 820])])
+
+    def test_unmatched_line_without_plausible_geometry_keeps_text_without_a_box(self):
         malformed = (ALTO.replace('HEIGHT="20"', 'HEIGHT="300"')
                      .replace("<TextLine><String", '<TextLine HPOS="0" VPOS="0" WIDTH="400" HEIGHT="300"><String'))
-        with self.assertRaisesRegex(ValueError, "no plausible geometry"):
-            gold.alto_lines(malformed.encode(), 400)
+        lines = gold.alto_lines(malformed.encode(), 400)
+        self.assertEqual(lines[0], {"text": "Tho cat", "box": None})
+
+    def test_matched_line_without_plausible_geometry_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d)
+            (src / "hipe").mkdir()
+            (src / "loc").mkdir()
+            key = "sn1-00001-1872040501-0002"
+            doc = hipe_doc("sn1-11-00001-1872040501-0002", ["Tho cat"], ["Tho cat"])
+            (src / "hipe" / "a.jsonl").write_text(json.dumps(doc) + "\n")
+            malformed = (ALTO.replace("<TextLine><String HPOS=\"10\" VPOS=\"10\" WIDTH=\"100\" HEIGHT=\"20\" CONTENT=\"Tho\"",
+                                      '<TextLine HPOS="0" VPOS="0" WIDTH="400" HEIGHT="300"><String HPOS="invalid" '
+                                      'VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="Tho"')
+                         .replace('HPOS="120" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="cat"',
+                                  'HPOS="invalid" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="cat"'))
+            (src / "loc" / f"{key}.xml").write_text(malformed)
+            (src / "loc" / f"{key}.jpg").write_bytes(b"synthetic image placeholder")
+            (src / "loc" / "pages.json").write_text(json.dumps({key: {"image": f"{key}.jpg", "alto": f"{key}.xml"}}))
+
+            class FakeImage:
+                width = 400
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+            pil = types.ModuleType("PIL")
+            image = types.ModuleType("PIL.Image")
+            image.open = lambda _: FakeImage()
+            pil.Image = image
+            with patch.dict(sys.modules, {"PIL": pil, "PIL.Image": image}):
+                with self.assertRaisesRegex(ValueError, "matched Overproof line.*without plausible geometry"):
+                    gold.overproof_ca_regions(src)
 
     def test_usable_textline_box_is_a_fallback(self):
         xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="300"><PrintSpace>
@@ -365,15 +440,55 @@ class Overproof(unittest.TestCase):
         </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
         self.assertEqual(gold.alto_lines(xml, 400), [{"text": "Text", "box": [10, 10, 210, 30]}])
 
-    def test_combined_string_bounds_without_valid_textline_fail(self):
+    def test_image_width_bounds_strings_when_xml_width_is_single_quoted(self):
+        xml = b"""<alto><Layout><Page WIDTH='400' HEIGHT='300'><PrintSpace>
+        <TextBlock HPOS="0" VPOS="0" WIDTH="400" HEIGHT="300">
+        <TextLine HPOS="10" VPOS="10" WIDTH="200" HEIGHT="20">
+        <String HPOS="500" VPOS="10" WIDTH="80" HEIGHT="20" CONTENT="Text"/>
+        </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
+        self.assertEqual(gold.alto_lines(xml, 400), [{"text": "Text", "box": [10, 10, 210, 30]}])
+
+    def test_plausible_textline_preserves_large_font_string_width(self):
+        xml = b"""<alto><Layout><Page WIDTH="1000" HEIGHT="1000"><PrintSpace>
+        <TextBlock HPOS="10" VPOS="10" WIDTH="500" HEIGHT="100">
+        <TextLine HPOS="10" VPOS="10" WIDTH="500" HEIGHT="100">
+        <String HPOS="10" VPOS="10" WIDTH="500" HEIGHT="100" CONTENT="HEADLINE!!"/>
+        </TextLine></TextBlock>
+        <TextBlock HPOS="10" VPOS="200" WIDTH="100" HEIGHT="20">
+        <TextLine HPOS="10" VPOS="200" WIDTH="100" HEIGHT="20">
+        <String HPOS="10" VPOS="200" WIDTH="80" HEIGHT="20" CONTENT="ordinary"/>
+        </TextLine></TextBlock>
+        <TextBlock HPOS="10" VPOS="250" WIDTH="100" HEIGHT="20">
+        <TextLine HPOS="10" VPOS="250" WIDTH="100" HEIGHT="20">
+        <String HPOS="10" VPOS="250" WIDTH="80" HEIGHT="20" CONTENT="ordinary"/>
+        </TextLine></TextBlock>
+        <TextBlock HPOS="10" VPOS="300" WIDTH="100" HEIGHT="20">
+        <TextLine HPOS="10" VPOS="300" WIDTH="100" HEIGHT="20">
+        <String HPOS="10" VPOS="300" WIDTH="80" HEIGHT="20" CONTENT="ordinary"/>
+        </TextLine></TextBlock>
+        </PrintSpace></Page></Layout></alto>"""
+        self.assertEqual(gold.alto_lines(xml, 1000)[0],
+                         {"text": "HEADLINE!!", "box": [10, 10, 510, 110]})
+
+    def test_string_extents_outside_textline_use_textline_fallback(self):
+        xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="1000"><PrintSpace>
+        <TextBlock HPOS="0" VPOS="0" WIDTH="400" HEIGHT="1000">
+        <TextLine HPOS="10" VPOS="500" WIDTH="200" HEIGHT="20">
+        <String HPOS="10" VPOS="500" WIDTH="400" HEIGHT="1000" CONTENT="Text"/>
+        </TextLine>
+        <TextLine HPOS="10" VPOS="900" WIDTH="200" HEIGHT="20">
+        <String HPOS="10" VPOS="900" WIDTH="100" HEIGHT="20" CONTENT="Other"/>
+        </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
+        self.assertEqual(gold.alto_lines(xml, 400)[0], {"text": "Text", "box": [10, 500, 210, 520]})
+
+    def test_combined_string_bounds_without_valid_textline_do_not_form_a_box(self):
         xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="1000"><PrintSpace>
         <TextBlock HPOS="10" VPOS="0" WIDTH="300" HEIGHT="1000">
         <TextLine>
         <String HPOS="10" VPOS="500" WIDTH="80" HEIGHT="20" CONTENT="near"/>
         <String HPOS="110" VPOS="10" WIDTH="80" HEIGHT="20" CONTENT="far"/>
         </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
-        with self.assertRaisesRegex(ValueError, "no plausible geometry"):
-            gold.alto_lines(xml, 400)
+        self.assertEqual(gold.alto_lines(xml, 400), [{"text": "near far", "box": None}])
 
     def test_string_origin_outside_textline_uses_textline_fallback(self):
         xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="1000"><PrintSpace>

@@ -745,7 +745,7 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
 
     String text is kept even when its coordinates are bad. Its box is left out of the union, so a single
     page-spanning coordinate cannot stretch the crop. A line with no plausible String box falls back to
-    its TextLine box; if neither is usable, conversion fails rather than emitting a crop with false bounds.
+    its TextLine box; if neither is usable, conversion leaves the line unboxed for matched-only validation.
     """
     import math
     import statistics
@@ -766,7 +766,7 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
             pass
     if page_height is not None and (not math.isfinite(page_height) or page_height <= 0):
         page_height = None
-    page_width = float(w) * scale if w else None
+    page_width = float(image_width)
 
     def rect(el):
         try:
@@ -822,8 +822,6 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
             return False
         if page_height and h > 0.12 * page_height:
             return False
-        if typical_char_width and text and ww > 4 * typical_char_width * len(text):
-            return False
         if page_width:
             margin = max(3.0, page_width * 0.02)
             if x < -margin or x + ww > page_width + margin:
@@ -842,7 +840,7 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
                 return False
         return True
 
-    def string_rect(box, containing, text):
+    def string_rect(box, containing, text, allow_wide):
         """Repair oversized dimensions at a sane origin; discard coordinates whose origin is unusable."""
         if box is None or not text:
             return None
@@ -860,7 +858,7 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
                 return None
 
         if typical_char_width and (not math.isfinite(ww) or ww <= 0 or
-                                   ww > 4 * typical_char_width * len(text)):
+                                   (not allow_wide and ww > 4 * typical_char_width * len(text))):
             ww = typical_char_width * len(text)
         if typical_height and (not math.isfinite(h) or h <= 0 or h > 6 * typical_height):
             h = typical_height
@@ -877,14 +875,15 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
         repaired = (x, y, ww, h)
         return repaired if plausible(repaired, containing, text) else None
 
-    def origin_in_line(box, line_box):
-        x, y = box[:2]
+    def box_in_line(box, line_box):
+        x, y, ww, h = box
         lx, ly, lw, lh = line_box
         x_margin, y_margin = max(3.0, lw * 0.02), max(3.0, lh * 0.25)
-        return lx - x_margin <= x <= lx + lw + x_margin and ly - y_margin <= y <= ly + lh + y_margin
+        return (lx - x_margin <= x and x + ww <= lx + lw + x_margin and
+                ly - y_margin <= y and y + h <= ly + lh + y_margin)
 
     out = []
-    for line_no, (block_rect, line_rect, strings) in enumerate(line_meta, 1):
+    for block_rect, line_rect, strings in line_meta:
         if not strings:
             continue
         text = " ".join(c for c, _, _ in strings if c)
@@ -893,10 +892,10 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
         line_conflict = False
         for c, box, has_origin in strings:
             if has_origin:
-                repaired = string_rect(box, block_rect, c)
+                repaired = string_rect(box, block_rect, c, line_is_plausible)
                 if repaired:
                     valid.append(repaired)
-                    if line_is_plausible and not origin_in_line(repaired, line_rect):
+                    if line_is_plausible and not box_in_line(repaired, line_rect):
                         line_conflict = True
                 elif c and line_is_plausible:
                     line_conflict = True
@@ -913,8 +912,6 @@ def alto_lines(xml: bytes, image_width: int) -> list[dict]:
                 valid = []
         if not valid and line_is_plausible:
             valid = [line_rect]
-        if not valid and text.strip():
-            raise ValueError(f"ALTO TextLine {line_no} has no plausible geometry; refusing to emit an invalid crop")
         box = (box_of([(x, y) for x, y, *_ in valid] +
                       [(x + ww, y + h) for x, y, ww, h in valid]) if valid else None)
         out.append({"text": text, "box": box})
@@ -963,6 +960,19 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
 
     pages = json.loads((src / "loc" / "pages.json").read_text(encoding="utf-8")) if (src / "loc" / "pages.json").exists() else {}
     out, stats = [], {"articles": 0, "articles_with_page": 0, "lines": 0, "lines_matched": 0}
+
+    def spatially_discontinuous(a, b):
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+        ah, bh = ay1 - ay0, by1 - by0
+        tolerance = 4 * max(ah, bh)
+        vertical_gap = max(0, max(ay0, by0) - min(ay1, by1))
+        if vertical_gap > tolerance:
+            return True
+        vertical_overlap = max(0, min(ay1, by1) - max(ay0, by0))
+        horizontal_gap = max(0, max(ax0, bx0) - min(ax1, bx1))
+        return horizontal_gap > tolerance and vertical_overlap >= 0.5 * min(ah, bh)
+
     for d in hipe_docs(src, "ca"):
         stats["articles"] += 1
         pg = ca_page(d["document_metadata"]["document_id"])
@@ -980,6 +990,10 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
         alto = alto_lines(alto_path.read_bytes(), width)
         hits = match_lines(ocr, alto)
         stats["lines_matched"] += sum(h is not None for h in hits)
+        for i, h in enumerate(hits):
+            if h is not None and truth[i].strip() and alto[h]["box"] is None:
+                raise ValueError(f"matched Overproof line {d['document_metadata']['document_id']}/{i} maps to "
+                                 f"ALTO TextLine {h + 1} on {pg['key']} without plausible geometry")
         run: list[int] = []
 
         def flush():
@@ -995,7 +1009,10 @@ def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dic
             run.clear()
 
         for i, h in enumerate(hits):
-            if h is None or not truth[i].strip() or (run and (hits[run[-1]] + 1 != h or len(run) >= max_lines)):
+            split_for_geometry = (run and h is not None and
+                                  spatially_discontinuous(alto[hits[run[-1]]]["box"], alto[h]["box"]))
+            if h is None or not truth[i].strip() or (run and (hits[run[-1]] + 1 != h or len(run) >= max_lines or
+                                                               split_for_geometry)):
                 flush()
             if h is not None and truth[i].strip():
                 run.append(i)
