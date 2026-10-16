@@ -16,6 +16,8 @@
 # The example searches keep each example's view on one line, past 120
 # characters for a few. The API compiles the file in and its tests check it.
 /web/src/examples.json
+# Generated Census geometry retains mapshaper's reproducible compact layout.
+/web/src/assets/states.geojson
 **/node_modules/
 
 # Reports: pandoc builds each one's PDF from its Markdown, and sizes a pipe
