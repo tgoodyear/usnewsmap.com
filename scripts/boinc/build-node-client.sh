@@ -4,8 +4,14 @@
 # Usage: scripts/boinc/build-node-client.sh --out ABSOLUTE_NEW_DIRECTORY
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-[ "$#" = 2 ] && [ "$1" = --out ] || die "usage: $0 --out ABSOLUTE_NEW_DIRECTORY"
-out=$2
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) [ $# -ge 2 ] || die "--out needs a directory"; out=$2; shift 2 ;;
+    *) die "usage: $0 --out ABSOLUTE_NEW_DIRECTORY" ;;
+  esac
+done
+[ -n "$out" ] || die "usage: $0 --out ABSOLUTE_NEW_DIRECTORY"
 [[ "$out" =~ ^/[A-Za-z0-9_./-]+$ ]] && [[ "$out" != *..* ]] || die "--out must be a plain absolute new directory"
 [ ! -e "$out" ] || die "--out already exists; refusing to overwrite"
 for cmd in git autoconf automake libtoolize make pkg-config c++; do
