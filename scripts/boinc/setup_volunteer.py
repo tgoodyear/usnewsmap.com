@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import grp
 import json
 import os
 from pathlib import Path
@@ -112,12 +113,29 @@ def normalize_job_tomls(job_toml=None, job_tomls=None) -> list[Path]:
     return paths
 
 
-def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None):
+OCR_NODE_SLICE = """[Slice]
+CPUQuota=25%
+CPUWeight=1
+IOWeight=1
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=256
+"""
+
+
+def check_ocr_identity(user, uid, other_uids):
+    if user != "boinc" or uid == 0 or uid in other_uids:
+        raise SetupError("OCR-node mode requires a dedicated boinc UID distinct from usnm and usnmeng.")
+
+
+def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None, ocr_node=False):
     config_dir = Path("/etc/usnm-boinc-volunteer") / service
     runtime = f"usnm-boinc-{uid}-{service.removesuffix('.service')}"
     preflight = "/usr/local/lib/usnm-boinc-volunteer/preflight.py"
     normalized_tomls = normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)
     job_args = "".join(f" --job-toml={path}" for path in normalized_tomls)
+    if ocr_node:
+        job_args += f" --ocr-node-uid={uid}"
     dropin = f"""# Managed by scripts/boinc/setup_volunteer.py. See docs/boinc-volunteer.md.
 [Unit]
 Requires=user@{uid}.service
@@ -140,6 +158,8 @@ ReadWritePaths={data_dir} /tmp /var/tmp
 TimeoutStartSec=40min
 ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} --service={service}{job_args}
 """
+    if ocr_node:
+        dropin += f"Slice=user-{uid}.slice\nNice=19\nIOSchedulingClass=idle\n"
     # Separate, service-selected config; do not replace a user's global Podman configuration.
     containers = f'[engine]\ncgroup_manager="systemd"\nconmon_cgroup="pod"\nimage_copy_tmp_dir="{data_dir}/usnm-podman-tmp"\n'
     storage = f'[storage]\ndriver="overlay"\nrunroot="/run/{runtime}/containers"\ngraphroot="{data_dir}/usnm-podman-storage"\n'
@@ -240,8 +260,13 @@ def resolve_launch(service):
     return binary, working, dir_overrides
 
 
-def check_effective(service, data_dir, config_dir, uid, image=None, job_toml=None, job_tomls=None):
+def check_effective(service, data_dir, config_dir, uid, image=None, job_toml=None, job_tomls=None, ocr_node=False):
     expected_job_tomls = [f"--job-toml={path}" for path in normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)]
+    if ocr_node:
+        expected_job_tomls.append(f"--ocr-node-uid={uid}")
+        for unit in [service, f"user@{uid}.service"]:
+            if run(["systemctl", "show", unit, "--property=Slice", "--value"]) != f"user-{uid}.slice":
+                raise SetupError("Both BOINC and its rootless user session must use the capped BOINC user slice.")
     user_unit = f"user@{uid}.service"
     requires = run(["systemctl", "show", service, "--property=Requires", "--value"]).split()
     after = run(["systemctl", "show", service, "--property=After", "--value"]).split()
@@ -357,7 +382,7 @@ def prepare_slots(data_dir, uid, gid, trust=None):
         os.close(parent_fd)
 
 
-def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None):
+def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, ocr_node=False):
     normalized_tomls = normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)
     if not SERVICE.fullmatch(service) or (data_dir is not None and not SAFE_PATH.fullmatch(str(data_dir))) or not IMAGE.fullmatch(image):
         raise SetupError("Use a plain systemd service name, an absolute path without spaces/special characters, and a registry image pinned by full sha256 digest.")
@@ -375,6 +400,28 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None):
     account = pwd.getpwnam(user)
     if account.pw_uid == 0:
         raise SetupError("BOINC must already run as an unprivileged service user.")
+    if ocr_node:
+        other_uids = []
+        for name in ["usnm", "usnmeng"]:
+            try:
+                other_uids.append(pwd.getpwnam(name).pw_uid)
+            except KeyError:
+                pass
+        check_ocr_identity(user, account.pw_uid, other_uids)
+        if any(entry.pw_uid == account.pw_uid and entry.pw_name != user for entry in pwd.getpwall()):
+            raise SetupError("The BOINC UID has an account alias; use a truly separate identity.")
+        groups = set(os.getgrouplist(user, account.pw_gid))
+        for name in ["root", "docker", "usnm", "usnmeng", "usnmocr"]:
+            try:
+                if grp.getgrnam(name).gr_gid in groups:
+                    raise SetupError(f"The dedicated BOINC account must not belong to {name}.")
+            except KeyError:
+                pass
+        for unit in [service, f"user@{account.pw_uid}.service"]:
+            if run(["systemctl", "show", unit, "--property=ActiveState", "--value"]) not in ["inactive", "failed"]:
+                raise SetupError("OCR-node setup requires an inactive, drained BOINC client and user session.")
+        if run(["systemctl", "show", service, "--property=UnitFileState", "--value"]) != "disabled":
+            raise SetupError("Disable the optional BOINC service before OCR-node setup.")
     version = re.match(r"(\d+)\.(\d+)\.(\d+)", run([binary, "--version"]))
     if version is None or tuple(map(int, version.groups())) < (8, 2, 13):
         raise SetupError("Install stock BOINC 8.2.13 or later before configuring this profile.")
@@ -406,7 +453,7 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None):
     selinux = bool(shutil.which("getenforce") and run(["getenforce"]) != "Disabled")
     if selinux and (not shutil.which("semanage") or not shutil.which("restorecon")):
         raise SetupError("Install SELinux policy-management tools (RHEL: policycoreutils-python-utils) first.")
-    config_dir, dropin, containers, storage = profile(service, data_dir, image, account.pw_uid, job_tomls=normalized_tomls)
+    config_dir, dropin, containers, storage = profile(service, data_dir, image, account.pw_uid, job_tomls=normalized_tomls, ocr_node=ocr_node)
     cc = merge_xml(data_dir / "cc_config.xml", "cc_config", {"ncpus": "1", "no_gpus": "1"}, "options")
     prefs = merge_xml(data_dir / "global_prefs_override.xml", "global_preferences", PREFS)
     print(f"Service: {service}; unprivileged user: {user}; data stays at {data_dir}")
@@ -416,8 +463,12 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None):
     print("Preserve accounts and unrelated preferences; back up changed XML before writing.")
     print("Enable the user's systemd session at boot; allow writable cgroups for rootless resource controls.")
     print(f"SELinux: {'label only ' + str(data_dir / 'slots') + ' as container_file_t' if selinux else 'disabled/not installed; no policy changes'}")
+    if ocr_node:
+        print("OCR-node opt-in: whole dedicated UID slice capped at 25% of ONE CPU, 2 GiB, no swap, 256 tasks; nice 19 / idle IO.")
+        print("BOINC remains stopped and disabled. No worker unit/account/runtime is modified.")
     if not apply:
-        print("Preview only. Re-run with --apply to install, verify, and start this profile.")
+        print("Preview only. Re-run with --apply to install and verify" +
+              (" without starting BOINC." if ocr_node else " and start this profile."))
         return
     if os.geteuid() != 0:
         raise SetupError("Installation needs root; preview does not change the system.")
@@ -465,10 +516,19 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None):
         run(["semanage", "fcontext", operation, "--type", "container_file_t", pattern])
         run(["restorecon", "-RF", str(slots)], user=account.pw_uid, group=account.pw_gid)
     run(["loginctl", "enable-linger", user])
+    if ocr_node:
+        slice_config = Path(f"/etc/systemd/system/user-{account.pw_uid}.slice.d/zz-usnm-ocr-node.conf")
+        slice_config.parent.mkdir(parents=True, exist_ok=True)
+        backup(slice_config, backups)
+        write_file(slice_config, OCR_NODE_SLICE, mode=0o644)
+        run(["systemctl", "daemon-reload"])
     run(["systemctl", "start", f"user@{account.pw_uid}.service"])
     write_file(target, dropin, mode=0o644)
     run(["systemctl", "daemon-reload"])
-    check_effective(service, data_dir, config_dir, account.pw_uid, image, job_tomls=normalized_tomls)
+    check_effective(service, data_dir, config_dir, account.pw_uid, image, job_tomls=normalized_tomls, ocr_node=ocr_node)
+    if ocr_node:
+        print("Capped OCR-node profile installed; BOINC is still stopped and disabled. Validate dev/baseline before starting explicitly.")
+        return
     run(["systemctl", "start", service], timeout=START_TIMEOUT)
     print("Profile installed; BOINC started only after its preflight passed. Attach through BOINC Manager, then check one task's upload and validation.")
 
@@ -480,13 +540,14 @@ def main():
     parser.add_argument("--image", help="Defaults to the worker digest released in this checkout's prod.json")
     parser.add_argument("--job-toml", type=Path, action="append", default=None, help="Task job.toml whose limits the preflight must verify")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--ocr-node", action="store_true", help="Opt-in capped dedicated BOINC UID; install without starting/enabling BOINC")
     args = parser.parse_args()
     try:
         image = args.image
         if image is None:
             settings = Path(__file__).resolve().parents[2] / "contrib-compute/infra/boinc/env/prod.json"
             image = json.loads(settings.read_text())["images"]["worker"]
-        setup(args.service, args.data_dir, image, args.apply, job_tomls=args.job_toml)
+        setup(args.service, args.data_dir, image, args.apply, job_tomls=args.job_toml, ocr_node=args.ocr_node)
     except (SetupError, OSError, KeyError, TypeError, ValueError, ET.ParseError, subprocess.TimeoutExpired) as error:
         print(f"Volunteer setup failed: {error}", file=sys.stderr)
         print("After an installation failure, BOINC may remain stopped. Inspect journalctl -u " + args.service + " and the setup backups before retrying.", file=sys.stderr)

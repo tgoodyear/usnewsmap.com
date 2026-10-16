@@ -530,20 +530,42 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
             "disk_cold_required_bytes": required, "disk_free_bytes": disk_free}
 
 
+def check_ocr_node_slice(uid, cgroup_root=Path("/sys/fs/cgroup"), membership=None):
+    if uid <= 0 or os.geteuid() != uid:
+        raise PreflightError("OCR-node preflight must run as the dedicated BOINC UID.")
+    membership = Path("/proc/self/cgroup").read_text() if membership is None else membership
+    relative = f"user.slice/user-{uid}.slice"
+    line = next((line.removeprefix("0::") for line in membership.splitlines() if line.startswith("0::")), "")
+    if not line.startswith(f"/{relative}/"):
+        raise PreflightError("BOINC is outside its capped dedicated user slice.")
+    parent = cgroup_root / relative
+    quota, period = (parent / "cpu.max").read_text().split()
+    memory = (parent / "memory.max").read_text().strip()
+    swap = (parent / "memory.swap.max").read_text().strip()
+    tasks = (parent / "pids.max").read_text().strip()
+    if (quota == "max" or int(period) <= 0 or int(quota) <= 0 or int(quota) * 4 > int(period)
+            or memory == "max" or not 0 < int(memory) <= 2 * 1024**3
+            or swap != "0" or tasks == "max" or not 0 < int(tasks) <= 256):
+        raise PreflightError("OCR-node aggregate CPU/memory/swap/task limits are missing or weakened.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--service")
     parser.add_argument("--job-toml", type=Path, action="append", default=None)
+    parser.add_argument("--ocr-node-uid", type=int)
     args = parser.parse_args()
     def interrupted(signum, frame):
         raise PreflightError("Startup preflight interrupted; no work may be accepted.")
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     try:
+        if args.ocr_node_uid is not None:
+            check_ocr_node_slice(args.ocr_node_uid)
         result = preflight(args.data_dir, args.image, service=args.service, job_tomls=args.job_toml)
-    except (PreflightError, OSError, json.JSONDecodeError) as error:
+    except (PreflightError, OSError, ValueError, json.JSONDecodeError) as error:
         print(f"BOINC host preflight FAILED: {error}", file=sys.stderr)
         return 1
     print("BOINC host preflight passed: " + json.dumps(result, sort_keys=True))

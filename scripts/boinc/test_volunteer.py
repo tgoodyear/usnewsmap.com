@@ -461,6 +461,45 @@ class SetupTest(unittest.TestCase):
         )
         self.assertIn("--job-toml=/etc/usnm-boinc-volunteer/job-cpu.toml", dropin_jobs)
 
+    def test_optional_ocr_profile_caps_the_entire_dedicated_identity(self):
+        setup.check_ocr_identity("boinc", 999, [1000, 1001])
+        for user, uid in [("usnm", 999), ("boinc", 1000), ("boinc", 0)]:
+            with self.assertRaises(setup.SetupError):
+                setup.check_ocr_identity(user, uid, [1000, 1001])
+        _, dropin, _, _ = setup.profile(
+            "boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999, ocr_node=True)
+        self.assertIn("Slice=user-999.slice", dropin)
+        self.assertIn("--ocr-node-uid=999", dropin)
+        self.assertIn("Nice=19", dropin)
+        self.assertIn("IOSchedulingClass=idle", dropin)
+        self.assertIn("CPUQuota=25%", setup.OCR_NODE_SLICE)
+        self.assertIn("MemoryMax=2G", setup.OCR_NODE_SLICE)
+        self.assertIn("MemorySwapMax=0", setup.OCR_NODE_SLICE)
+        _, normal, _, _ = setup.profile("boinc-client.service", Path("/var/lib/boinc"), IMAGE, 999)
+        self.assertNotIn("Slice=", normal)
+
+    def test_ocr_preflight_reads_aggregate_kernel_limits_not_container_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "user.slice/user-999.slice"
+            parent.mkdir(parents=True)
+            values = {"cpu.max": "25000 100000", "memory.max": str(2 * 1024**3),
+                      "memory.swap.max": "0", "pids.max": "256"}
+            membership = "0::/user.slice/user-999.slice/boinc-client.service"
+            for name, value in values.items():
+                (parent / name).write_text(value)
+            with patch.object(pre.os, "geteuid", return_value=999):
+                pre.check_ocr_node_slice(999, root, membership)
+                for name, bad in [("cpu.max", "max 100000"), ("cpu.max", "50000 100000"),
+                                  ("memory.max", "max"), ("memory.swap.max", "1024"),
+                                  ("pids.max", "max")]:
+                    (parent / name).write_text(bad)
+                    with self.assertRaises(pre.PreflightError):
+                        pre.check_ocr_node_slice(999, root, membership)
+                    (parent / name).write_text(values[name])
+                with self.assertRaises(pre.PreflightError):
+                    pre.check_ocr_node_slice(999, root, "0::/system.slice/boinc-client.service")
+
     def test_conflicting_later_dropin_cannot_silently_bypass_profile(self):
         service = "boinc-client.service"
         data = Path("/var/lib/boinc")
