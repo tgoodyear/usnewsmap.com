@@ -98,7 +98,10 @@ def timestamp(value):
             "expected RFC3339 timestamp with timezone")
     try:
         parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed.astimezone(dt.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        fraction = re.search(r"\.(\d+)", value)
+        nanos_tail = (fraction[1].ljust(9, "0")[6:] if fraction else "000")
+        utc = parsed.astimezone(dt.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        return utc[:-1] + nanos_tail + "Z"
     except ValueError as exc:
         raise CatalogError("invalid timestamp") from exc
 
@@ -126,8 +129,14 @@ def load_json(raw):
             result[key] = value
         return result
 
+    def finite_float(value):
+        result = float(value)
+        require(math.isfinite(result), "nonfinite JSON number")
+        return result
+
     try:
         return json.loads(raw, object_pairs_hook=pairs,
+                          parse_float=finite_float,
                           parse_constant=lambda _: (_ for _ in ()).throw(CatalogError("nonfinite JSON")))
     except (ValueError, RecursionError) as exc:
         raise CatalogError("invalid JSON") from exc
@@ -194,6 +203,100 @@ def adapt_run(record, page_id):
     return result
 
 
+WORKER_FIELDS = set("""metadata_schema run_id doc_id node worker_version ocr_source language
+batch reason damage_before queued_at dpi dpi_source execution_config worker_config
+started_at finished_at seconds_wall status error_kind observations run_record""".split())
+OBS_FIELDS = set("""image_sha256 image_format engine_started_at engine_finished_at
+seconds_wall status error_kind ocr_engine info_source info""".split())
+INFO_FIELDS = set("""engine_id adapter image_ref image_digest models_digest models_json
+options_json models_loaded cold_start model_load_seconds markup engine_stats_json""".split())
+
+
+def measurement(value):
+    require(value is None or (type(value) in (int, float) and math.isfinite(value) and value >= 0),
+            "invalid execution measurement")
+    return value
+
+
+def adapt_worker(metadata, page_id):
+    """Worker metadata_schema=1, including failed attempts without a RunRecord."""
+    obj(metadata, WORKER_FIELDS)
+    require(type(metadata["metadata_schema"]) is int and metadata["metadata_schema"] == 1,
+            "unsupported worker metadata_schema")
+    for key in ("run_id", "doc_id", "ocr_source", "language", "batch", "reason", "dpi_source"):
+        token(metadata[key])
+    for key in ("node", "worker_version"):
+        short_text(metadata[key], 256)
+    require(page_id == "loc:" + metadata["doc_id"], "worker page_id must be loc:<doc_id>")
+    require(metadata["status"] in ("ok", "failed", "abandoned"), "worker attempt must be terminal")
+    if metadata["error_kind"] is not None:
+        token(metadata["error_kind"])
+    require(type(metadata["dpi"]) is int and 0 <= metadata["dpi"] <= 4294967295, "invalid worker dpi")
+    measurement(metadata["damage_before"])
+    require(metadata["damage_before"] is None or metadata["damage_before"] <= 1,
+            "worker damage outside [0,1]")
+    started, finished = timestamp(metadata["started_at"]), timestamp(metadata["finished_at"])
+    require(started <= finished, "worker finish precedes start")
+    if metadata["queued_at"] is not None:
+        timestamp(metadata["queued_at"])
+    measurement(metadata["seconds_wall"])
+    require(metadata["execution_config"] is None or isinstance(metadata["execution_config"], dict),
+            "invalid execution config")
+    require(isinstance(metadata["worker_config"], dict), "invalid worker config")
+    require(isinstance(metadata["observations"], list) and len(metadata["observations"]) <= 2,
+            "worker observations must contain at most two reads")
+    observations = []
+    for entry in metadata["observations"]:
+        obj(entry, OBS_FIELDS)
+        sha(entry["image_sha256"])
+        token(entry["image_format"])
+        token(entry["status"])
+        if entry["error_kind"] is not None:
+            token(entry["error_kind"])
+        for key in ("engine_started_at", "engine_finished_at"):
+            if entry[key] is not None:
+                timestamp(entry[key])
+        measurement(entry["seconds_wall"])
+        require(entry["info_source"] in (None, "planned", "instance", "result"),
+                "invalid engine info provenance")
+        if entry["ocr_engine"] is not None:
+            require(isinstance(entry["ocr_engine"], str) and len(entry["ocr_engine"]) <= 8192,
+                    "invalid discarded engine tag")
+        projection = {key: entry[key] for key in OBS_FIELDS - {"info", "ocr_engine"}}
+        projection["engine_id"] = None
+        if entry["info"] is not None:
+            info = entry["info"]
+            obj(info, INFO_FIELDS)
+            token(info["engine_id"])
+            projection["engine_id"] = info["engine_id"]
+            for key in INFO_FIELDS - {"cold_start", "model_load_seconds"}:
+                require(isinstance(info[key], str) and len(info[key]) <= 8192 and
+                        not any(ord(ch) < 32 for ch in info[key]), "invalid engine info string")
+            require(type(info["cold_start"]) is bool, "invalid engine cold_start")
+            measurement(info["model_load_seconds"])
+            for key in ("models_json", "options_json", "engine_stats_json"):
+                require(isinstance(load_json(info[key]), dict), "invalid engine info JSON")
+            for key in ("image_digest", "models_digest"):
+                if info[key] != "local":
+                    require(isinstance(info[key], str) and info[key].startswith("sha256:"),
+                            "invalid engine digest")
+                    sha(info[key], prefixed=True)
+                projection[key] = info[key]
+            projection["config_sha256"] = digest(info)
+        observations.append(projection)
+    if metadata["run_record"] is not None:
+        run = adapt_run(metadata["run_record"], page_id)
+        require(run["run_id"] == metadata["run_id"], "worker/RunRecord run_id mismatch")
+    return {"run_id": metadata["run_id"], "status": metadata["status"],
+            "error_kind": metadata["error_kind"], "language": metadata["language"],
+            "started_at": started, "finished_at": finished,
+            "seconds_wall": metadata["seconds_wall"], "observations": observations,
+            "engine_id": next((entry["engine_id"] for entry in reversed(observations)
+                               if entry["engine_id"] is not None), None),
+            "config_sha256": digest([metadata["execution_config"], metadata["worker_config"]]),
+            "has_run_record": metadata["run_record"] is not None}
+
+
 def validate_event(event):
     obj(event, ("schema_version", "batch_id", "event_id", "kind", "source",
                 "observed_at", "page_id", "payload"))
@@ -227,8 +330,12 @@ def validate_event(event):
         identity, invariant, data = [p["stage_id"]], "", dict(p)
     elif kind == "artifact":
         require(isinstance(p, dict), "artifact payload must be an object")
-        obj({k: v for k, v in p.items() if k not in ("fetched_at", "bytes", "condition")},
+        obj({k: v for k, v in p.items() if k not in ("fetched_at", "bytes", "condition", "observed_sha256")},
             ("artifact_id", "sha256", "version", "location", "reference", "state"))
+        if "observed_sha256" in p:
+            sha(p["observed_sha256"])
+            require(p["observed_sha256"] == p["sha256"] and p["state"] == "verified",
+                    "observed checksum must match expected checksum for verified evidence")
         if "condition" in p:
             require(p["condition"] in ("absent", "size_mismatch", "non_regular", "size_match"),
                     "invalid artifact condition")
@@ -245,6 +352,12 @@ def validate_event(event):
         identity = [event["page_id"], p["artifact_id"], p["version"], p["location"]]
         invariant = digest([p["sha256"], p["reference"]])
         data = dict(p)
+    elif kind == "execution":
+        obj(p, ("worker_metadata",))
+        data = adapt_worker(p["worker_metadata"], event["page_id"])
+        identity = [event["page_id"], data["run_id"]]
+        invariant = digest([data["config_sha256"],
+                            [entry["image_sha256"] for entry in data["observations"]]])
     elif kind == "run":
         obj(p, ("run_record",))
         r = p["run_record"]
@@ -393,7 +506,7 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source):
     out = Path(evidence_out)
     require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
     rows, total = [], 0
-    observed = now()
+    observed = timestamp(now())
     with Path(index).open("rb") as stream:
         require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "index must be a regular file")
         for number, raw in enumerate(iter(lambda: stream.readline(MAX_LINE + 1), b""), 1):
@@ -456,6 +569,42 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source):
     return ingest(db, out)
 
 
+def ingest_worker(db, input_path, evidence_out, batch_id, source):
+    """One real atomic worker metadata JSON file -> immutable catalog evidence batch."""
+    token(batch_id)
+    token(source)
+    with Path(input_path).open("rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "worker input must be a regular file")
+        raw = stream.read(MAX_LINE + 1)
+    require(0 < len(raw) <= MAX_LINE, "worker envelope exceeds adapter limit 64 KiB")
+    metadata = load_json(raw)
+    require(isinstance(metadata, dict) and isinstance(metadata.get("doc_id"), str),
+            "invalid worker metadata")
+    page_id = "loc:" + metadata["doc_id"]
+    adapt_worker(metadata, page_id)
+    events = []
+    for kind, payload in (("execution", {"worker_metadata": metadata}),
+                          ("run", {"run_record": metadata["run_record"]})):
+        if kind == "run" and metadata["run_record"] is None:
+            continue
+        event = {"schema_version": 1, "batch_id": batch_id,
+                 "event_id": "worker-" + digest([metadata["run_id"], kind]),
+                 "kind": kind, "source": source, "observed_at": metadata["finished_at"],
+                 "page_id": page_id, "payload": payload}
+        validate_event(event)
+        require(len(canonical(event).encode()) <= MAX_LINE, "projected worker event exceeds 64 KiB")
+        events.append(canonical(event) + "\n")
+    out = Path(evidence_out)
+    require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
+    require(out.resolve() != Path(db).resolve(), "evidence must not overwrite catalog")
+    with out.open("xb") as stream:
+        os.chmod(out, 0o600)
+        stream.write("".join(events).encode())
+        stream.flush()
+        os.fsync(stream.fileno())
+    return ingest(db, out)
+
+
 def bounded_query(db, action):
     conn = connect(db)
     deadline = time.monotonic() + QUERY_SECONDS
@@ -490,7 +639,7 @@ def rows(conn, kind, filters, limit=50, after=""):
 
 
 def query(db, kind, filters, limit=50, after=""):
-    require(kind in ("run", "artifact", "page_state", "stage"), "unsupported query kind")
+    require(kind in ("run", "execution", "artifact", "page_state", "stage"), "unsupported query kind")
     return bounded_query(db, lambda conn: rows(conn, kind, filters, limit, after))
 
 
@@ -523,10 +672,11 @@ def snapshot(db):
         for stage in ("runs", "artifacts") + STAGES:
             if stage in ("runs", "artifacts"):
                 kind = {"runs": "run", "artifacts": "artifact"}[stage]
-                total = count("SELECT count(*) FROM latest WHERE kind=?", (kind,))
-                n = count("SELECT count(DISTINCT page_id) FROM latest WHERE kind=?", (kind,))
+                kinds = (kind, "execution" if kind == "run" else kind)
+                total = count("SELECT count(*) FROM latest WHERE kind IN (?,?)", kinds)
+                n = count("SELECT count(DISTINCT page_id) FROM latest WHERE kind IN (?,?)", kinds)
                 as_of = count("""SELECT min(t) FROM
-                    (SELECT max(observed_at) t FROM latest WHERE kind=? GROUP BY source)""", (kind,))
+                    (SELECT max(observed_at) t FROM latest WHERE kind IN (?,?) GROUP BY source)""", kinds)
                 blocked = 0
             else:
                 total = count("SELECT count(*) FROM latest WHERE kind='page_state' AND stage=?", (stage,))
@@ -570,8 +720,8 @@ def snapshot(db):
         return {"schema_version": 1, "observed_at": observed, "generated_at": now(),
                 "producer": "corpus-catalog", "coverage": coverage, "stages": stages,
                 "runs": {"total": count("""SELECT count(*) FROM
-                    (SELECT DISTINCT source,run_id FROM latest WHERE kind='run')"""),
-                         "pages": count("SELECT count(DISTINCT page_id) FROM latest WHERE kind='run'")},
+                    (SELECT DISTINCT source,run_id FROM latest WHERE kind IN ('run','execution'))"""),
+                         "pages": count("SELECT count(DISTINCT page_id) FROM latest WHERE kind IN ('run','execution')")},
                 "artifacts": {
                     "locations": count("SELECT count(*) FROM latest WHERE kind='artifact'"),
                     "verified": count("SELECT count(*) FROM latest WHERE kind='artifact' AND state='verified'"),
@@ -631,8 +781,15 @@ def make_server(db, host="127.0.0.1", port=0):
                 params = urllib.parse.parse_qs(uri.query, keep_blank_values=True, max_num_fields=10)
                 require(all(len(v) == 1 for v in params.values()), "duplicate query parameter")
                 params = {k: v[0] for k, v in params.items()}
+                if uri.path == "/health":
+                    require(not params, "health does not accept query parameters")
+                    result = bounded_query(db, lambda conn: {
+                        "schema_version": 1, "catalog": "readable",
+                        "observed_at": conn.execute("SELECT max(observed_at) FROM latest").fetchone()[0]})
+                    self.send_json(200, result)
+                    return
                 allowed = {"limit", "after"}
-                if uri.path == "/runs":
+                if uri.path in ("/runs", "/executions"):
                     allowed |= {"page_id", "source", "engine", "status", "run_id"}
                 elif uri.path == "/page":
                     allowed |= {"page_id"}
@@ -642,8 +799,8 @@ def make_server(db, host="127.0.0.1", port=0):
                 require(set(params) <= allowed, "unsupported query parameter")
                 limit = int(params.pop("limit", "50"))
                 after = params.pop("after", "")
-                if uri.path == "/runs":
-                    result = query(db, "run", params, limit, after)
+                if uri.path in ("/runs", "/executions"):
+                    result = query(db, "run" if uri.path == "/runs" else "execution", params, limit, after)
                 else:
                     require("page_id" in params, "page_id required")
                     result = page(db, params["page_id"], limit, after)
@@ -693,6 +850,15 @@ Every JSONL line has exactly:
   "location":"archive","reference":"container/path/scan.jp2","state":"verified"}}
 Artifact state: present|verified|missing. Verification is source evidence, not a fetch.
 kind=run payload={"run_record":<actual RunRecord JSON with schema:1 from runs.rs>}.
+kind=execution payload={"worker_metadata":<actual worker metadata_schema:1 JSON object>}.
+ingest-worker --input FILE --evidence-out NEW.jsonl --batch-id ID --source ID adapts one
+atomic worker capture file. Terminal success, failure and abandonment are stored as
+execution observations; optional nonnull run_record is imported separately as an engine
+read. Upload failure may coexist with engine status ok; neither implies acceptance.
+Known runtime configs are fingerprinted, not served; engine attempts retain status,
+timestamps, input hashes and provenance (planned/instance/result), no text/free-form tags.
+Worker adapter limit: 64 KiB including projected event; larger captures fail explicitly.
+GET /executions (same filters/pagination as /runs) lists worker attempts separately.
 RunRecord must have exact v1 fields. image_sha256/text_sha256 are full bare hashes;
 image_digest/models_digest allow the existing 'local' sentinel (digest unavailable),
 otherwise digest fields require sha256:<64 lowercase hex>. No hash is fabricated.
@@ -715,7 +881,8 @@ implies accepted/imported/indexed. Event time, then lexicographic event_id break
 Artifact hash/reference and run config/input are immutable within their identities.
 Use new artifact version or run identity for changes. Sources remain independent.
 
-Adapters provided: RunRecord JSON projection and explicit artifact/page-state evidence.
+Adapters provided: actual worker metadata capture JSON, RunRecord JSON projection,
+bounded local cached-scan index/stat and explicit artifact/page-state/stage evidence.
 NOT provided: Parquet/Blob inventory or queue/outcomes Parquet, ocr-local/pages import
 ledger, BOINC allocation journal, acceptance or search index exporters. Export those
 authoritative sources independently; do not label a local catalog ingest as page import.
@@ -743,6 +910,9 @@ snapshot issues report size mismatches explicitly (not ordinary absent copies).
 Original loc_url/download timing are discarded. A fresh immutable --evidence-out is
 required for replay/rebuild. Split large indexes into <=10000-line/16MiB local batches.
 Artifact payload optionally accepts fetched_at, bytes and condition for source provenance.
+Verified imports may supply observed_sha256: it must equal expected sha256 and state must
+be verified. Both checksums are retained; the catalog NEVER computes or invents them.
+GET /health tests catalog readability only, not pipeline readiness or source freshness.
 """
 
 
@@ -759,9 +929,14 @@ def main(argv=None):
     p.add_argument("--evidence-out", required=True)
     p.add_argument("--batch-id", required=True)
     p.add_argument("--source", required=True)
+    p = subs.add_parser("ingest-worker", help="import actual worker metadata_schema:1 capture JSON")
+    p.add_argument("--input", required=True)
+    p.add_argument("--evidence-out", required=True)
+    p.add_argument("--batch-id", required=True)
+    p.add_argument("--source", required=True)
     subs.add_parser("init", help="create an empty local catalog; snapshot coverage remains unknown")
     p = subs.add_parser("query", help="bounded page detail or filtered metadata (keyset pagination)")
-    p.add_argument("kind", choices=("page", "run", "artifact", "page_state", "stage", "missing"))
+    p.add_argument("kind", choices=("page", "run", "execution", "artifact", "page_state", "stage", "missing"))
     for name in ("page-id", "source", "engine", "status", "run-id"):
         p.add_argument("--" + name)
     p.add_argument("--limit", type=int, default=50)
@@ -782,6 +957,8 @@ def main(argv=None):
         elif args.command == "ingest-cached-scans":
             result = ingest_cached_scans(args.db, args.index, args.scan_root,
                                          args.evidence_out, args.batch_id, args.source)
+        elif args.command == "ingest-worker":
+            result = ingest_worker(args.db, args.input, args.evidence_out, args.batch_id, args.source)
         elif args.command == "query":
             filters = {key: getattr(args, key) for key in
                        ("page_id", "source", "engine", "status", "run_id") if getattr(args, key)}

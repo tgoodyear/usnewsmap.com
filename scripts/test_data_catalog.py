@@ -144,7 +144,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(c.snapshot(self.db)["artifacts"]["verified"], 0)
         self.assertNotIn("https://", evidence.read_text())
         self.assertNotIn("loc_url", evidence.read_text())
-        self.assertEqual(c.timestamp(fetched), "2026-10-11T22:32:31.635966Z")
+        self.assertEqual(c.timestamp(fetched), fetched)
         scan.unlink()
         c.ingest_cached_scans(self.db, index, scan_root,
                               self.work / "cached-missing.jsonl", "cached-2", "pve-big-stat")
@@ -167,6 +167,79 @@ class CatalogTests(unittest.TestCase):
             c.ingest_cached_scans(self.db, index, scan_root,
                                   self.work / "bad.jsonl", "bad", "pve-big-stat")
         self.assertFalse((self.work / "bad.jsonl").exists())
+
+    def test_actual_worker_capture_success_failures_roundtrip(self):
+        # Unmodified JSON emitted by Worker::process tests at worker commit 0e5b097.
+        # Controlled FakeEngine/ColdInstanceEngine + fake scan transport, real ALTO parse,
+        # measured capture times/hashes/publication. These are NOT live OCR measurements.
+        fixtures = ROOT / "scripts/fixtures/data_catalog"
+        for name in ("success", "upload-failure", "timeout", "fetch-failure"):
+            source = fixtures / ("worker-" + name + ".json")
+            result = self.cli("ingest-worker", "--input", str(source),
+                              "--evidence-out", str(self.work / (name + ".jsonl")),
+                              "--batch-id", "worker-" + name, "--source", "worker-test-capture")
+            self.assertEqual(result["inserted"], 2 if name in ("success", "upload-failure") else 1)
+        executions = c.query(self.db, "execution", {})["items"]
+        self.assertEqual(len(executions), 4)
+        self.assertEqual(len(c.query(self.db, "run", {})["items"]), 2)
+        self.assertEqual(c.snapshot(self.db)["runs"], {"total": 4, "pages": 2})
+        upload = next(i["data"] for i in executions if i["data"]["error_kind"] == "output")
+        self.assertEqual(upload["status"], "failed")
+        self.assertEqual(upload["observations"][0]["status"], "ok")
+        self.assertTrue(upload["has_run_record"])
+        engine = c.query(self.db, "run", {"run_id": upload["run_id"]})["items"][0]
+        self.assertEqual(engine["data"]["status"], "ok")
+        timeout = next(i["data"] for i in executions
+                       if i["data"]["observations"] and i["data"]["observations"][0]["status"] == "timeout")
+        self.assertEqual(timeout["observations"][0]["info_source"], "instance")
+        self.assertFalse(timeout["has_run_record"])
+        fetch = next(i["data"] for i in executions if i["data"]["error_kind"] == "fetch")
+        self.assertEqual(fetch["observations"], [])
+        self.assertFalse(fetch["has_run_record"])
+        snapshot = c.snapshot(self.db)
+        for stage in snapshot["stages"]:
+            if stage["id"] in ("accepted", "imported", "indexed"):
+                self.assertEqual(stage["state"], "unknown")
+                self.assertIsNone(stage["count"])
+        response = json.dumps(c.query(self.db, "execution", {}))
+        self.assertNotIn("ocr_engine", response)
+        self.assertNotIn("image_ref", response)
+        evidence = self.work / "success.jsonl"
+        self.assertTrue(c.ingest(self.db, evidence)["replayed"])
+        self.assertEqual(c.ingest_worker(
+            self.db, fixtures / "worker-success.json", self.work / "overlap.jsonl",
+            "worker-overlap", "worker-test-capture")["inserted"], 0)
+        with c.make_server(self.db) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                url = ("http://127.0.0.1:" + str(server.server_address[1]) +
+                       "/executions?status=failed&engine=tesseract-5.5&limit=1")
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    actual = json.load(response)["items"][0]["data"]
+                self.assertEqual(actual["run_id"], timeout["run_id"])
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
+    def test_worker_adapter_rejects_malformed_unknown_and_oversized(self):
+        fixture = json.loads((ROOT / "scripts/fixtures/data_catalog/worker-timeout.json").read_text())
+        page_id = "loc:" + fixture["doc_id"]
+        for key, value in (("metadata_schema", 2), ("status", "running"),
+                           ("finished_at", None), ("observations", [fixture["observations"][0]] * 3),
+                           ("seconds_wall", -1), ("dpi", True)):
+            malformed = copy.deepcopy(fixture)
+            malformed[key] = value
+            with self.subTest(key=key), self.assertRaises(c.CatalogError):
+                c.adapt_worker(malformed, page_id)
+        fixture["ocr_text"] = "not metadata"
+        with self.assertRaises(c.CatalogError):
+            c.adapt_worker(fixture, page_id)
+        oversized = self.work / "oversized-worker.json"
+        oversized.write_text("x" * (c.MAX_LINE + 1))
+        with self.assertRaises(c.CatalogError):
+            c.ingest_worker(self.db, oversized, self.work / "out.jsonl", "b", "worker")
+        self.assertFalse((self.work / "out.jsonl").exists())
 
     def test_cli_end_to_end_and_snapshot_freshness(self):
         batch = self.batch([event(), event("r1", "run"), event("a1", "page_state"),
@@ -277,6 +350,26 @@ class CatalogTests(unittest.TestCase):
         self.ingest(newest)
         self.assertEqual(c.query(self.db, "artifact", {})["items"][0]["event_id"], "zz")
 
+    def test_nanosecond_event_order_and_explicit_verification(self):
+        earlier = event("z", when="2026-01-01T00:00:00.000000001Z")
+        earlier["payload"]["state"] = "missing"
+        later = event("a", when="2026-01-01T00:00:00.000000002Z")
+        later["payload"]["observed_sha256"] = HASH
+        self.ingest(later)
+        self.ingest(earlier)
+        item = c.query(self.db, "artifact", {})["items"][0]
+        self.assertEqual(item["event_id"], "a")
+        self.assertEqual(item["observed_at"], later["observed_at"])
+        self.assertEqual(item["data"]["observed_sha256"], item["data"]["sha256"])
+        mismatch = event("mismatch")
+        mismatch["payload"]["observed_sha256"] = "cd" * 32
+        with self.assertRaises(c.CatalogError):
+            self.ingest(mismatch)
+        mismatch["payload"]["observed_sha256"] = HASH
+        mismatch["payload"]["state"] = "present"
+        with self.assertRaises(c.CatalogError):
+            self.ingest(mismatch)
+
     def test_independent_sources_and_stages_never_inferred(self):
         self.ingest(event("r", "run"))
         snapshot = c.snapshot(self.db)
@@ -361,7 +454,7 @@ class CatalogTests(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(c.CatalogError):
                 self.ingest(case)
         self.assertFalse(self.db.exists())
-        for raw in ('{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}'):
+        for raw in ('{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}', '{"a":1e999}'):
             with self.assertRaises(c.CatalogError):
                 c.load_json(raw)
 
@@ -493,6 +586,9 @@ class CatalogTests(unittest.TestCase):
                     self.assertEqual(response.headers["Cache-Control"], "no-store")
                     return json.load(response)
             try:
+                health = get("/health")
+                self.assertEqual(health["catalog"], "readable")
+                self.assertEqual(health["observed_at"], c.timestamp(T0))
                 first = get("/runs?engine=tesseract-5.5&status=ok&limit=1")
                 self.assertEqual(len(first["items"]), 1)
                 second = get("/runs?engine=tesseract-5.5&status=ok&limit=1&after=" + first["next_cursor"])
