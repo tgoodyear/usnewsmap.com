@@ -11,6 +11,9 @@
 #                         HANDOFF_PLAN=<plan id> HANDOFF_MANIFEST=<path under manifests/, as
 #                         push-boinc-scan.sh names it: <version>/manifest.parquet>
 #                         ENGINE_IMAGE=sha256:<the worker image's digest>
+#                         [HANDOFF_SCANS=<relative scan>[,...] HANDOFF_JOBS=<id>[,...]]
+#                         bounds transfers to these scans/sidecars, the exact manifest and
+#                         previously journaled ids (the batch controller always supplies this)
 #                         copies scans/ and the manifest down, runs usnm-boinc export (the
 #                         ocr-sync lease in Cosmos, the native ledger reservation) and writes
 #                         back the journal entries it touched; prints the job ids
@@ -62,9 +65,33 @@ case "${HANDOFF_STEP:-}" in
       [[ $HANDOFF_MANIFEST != *..* ]] || fail "HANDOFF_MANIFEST is a path under manifests/"
     [[ ${HANDOFF_PAGES:-} =~ ^[A-Za-z0-9/_,-]+$ ]] || fail "HANDOFF_PAGES is a comma-separated list of page keys"
     : "${HANDOFF_BATCH:?set HANDOFF_BATCH}" "${HANDOFF_PLAN:?set HANDOFF_PLAN}" "${ENGINE_IMAGE:?set ENGINE_IMAGE}"
-    usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix dispatch --to "$root"
-    usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix scans --to "$work/scans"
-    usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix manifests --to "$work/manifests"
+    if [ -n "${HANDOFF_SCANS:-}" ]; then
+      IFS=, read -r -a scans <<< "$HANDOFF_SCANS"
+      [ "${#scans[@]}" -le 100 ] || fail "HANDOFF_SCANS is at most 100 cached scans"
+      for scan in "${scans[@]}"; do
+        [[ "$scan" =~ ^keep/[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && [[ "$scan" != *..* ]] ||
+          fail "HANDOFF_SCANS must name cached scans under keep/"
+        for suffix in "" .json; do
+          usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "scans/$scan$suffix" \
+            --to "$work/scans/$scan$suffix"
+        done
+      done
+      if [ -n "${HANDOFF_JOBS:-}" ]; then
+        IFS=, read -r -a jobs <<< "$HANDOFF_JOBS"
+        [ "${#jobs[@]}" -le 100 ] || fail "HANDOFF_JOBS is at most 100 existing jobs"
+        for id in "${jobs[@]}"; do
+          [[ "$id" =~ ^[0-9a-f]{64}$ ]] || fail "HANDOFF_JOBS must be 64 hex job ids"
+          usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$id/record.json" \
+            --to "$root/jobs/$id/record.json"
+        done
+      fi
+      usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "manifests/$HANDOFF_MANIFEST" \
+        --to "$work/manifests/$HANDOFF_MANIFEST"
+    else
+      usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix dispatch --to "$root"
+      usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix scans --to "$work/scans"
+      usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix manifests --to "$work/manifests"
+    fi
     [ -f "$work/manifests/$HANDOFF_MANIFEST" ] || fail "no manifests/$HANDOFF_MANIFEST in the hand-off container"
     tr ',' '\n' <<< "$HANDOFF_PAGES" > "$work/pages.txt"
     stamp="$work/stamp"
@@ -85,7 +112,8 @@ case "${HANDOFF_STEP:-}" in
     exit "$rc" ;;
   collect)
     [[ ${JOB_ID:-} =~ ^[0-9a-f]{64}$ ]] || fail "JOB_ID is a job id (64 hex)"
-    usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix dispatch --to "$root"
+    usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$JOB_ID/record.json" \
+      --to "$root/jobs/$JOB_ID/record.json"
     host=$(usnm-boinc handoff get-spool --from-url "$HANDOFF_URL" --job "$JOB_ID" \
       --spool "$work/spool" --trust-out "$work/trust.json")
     rc=0

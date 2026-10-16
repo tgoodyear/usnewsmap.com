@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import io
 import json
+import subprocess
 import unittest
 import uuid
 from pathlib import Path
@@ -42,22 +43,24 @@ class Fake:
         self.actions = []
         self.hosts = 2
         self.other = 0
+        self.assimilated = set()
         self.crash_export = False
         self.crash_submit = False
         self.hold = False
         self.terminal = False
 
     def inventory(self):
+        pending = [job_id for job_id, job in self.jobs.items()
+                   if job["stage"] == "submitted" and not job["spool"] and job_id not in self.assimilated]
         return {"schema_version": 1, "nonce": "a" * 32, "created_at": NOW,
                 "active_hosts": self.hosts,
-                "pending_workunits": self.other + sum(job["stage"] == "submitted" and not job["spool"]
-                                                       for job in self.jobs.values()),
+                "pending_workunits": self.other + len(pending), "pending_jobs": pending,
                 "jobs": copy.deepcopy(self.jobs)}
 
     def records(self):
         return copy.deepcopy(self.rows)
 
-    def export(self, pages):
+    def export(self, pages, job_ids=()):
         self.actions.append(("export", [page["page"] for page in pages]))
         for page in pages:
             if not any(row["job"]["message"]["page"] == page["page"] for row in self.rows):
@@ -140,6 +143,18 @@ class SchedulerTests(unittest.TestCase):
         self.tick()
         self.assertIn(("submit", "0" * 63 + "1"), self.fake.actions)
 
+    def test_recovered_reservations_cannot_bypass_new_global_backlog(self):
+        self.fake.crash_export = True
+        with self.assertRaises(RuntimeError):
+            self.tick()
+        self.fake.other = 4
+        self.tick()
+        self.assertEqual(self.fake.jobs, {})
+        self.fake.other = 3
+        self.tick()
+        self.assertEqual(len(self.fake.jobs), 1)
+        self.assertEqual(len(self.state["selected"]), 2)
+
     def test_other_apps_backpressure_and_no_hosts(self):
         self.fake.other = 4
         self.assertTrue(self.tick()["backpressure"])
@@ -156,6 +171,17 @@ class SchedulerTests(unittest.TestCase):
         self.config["max_pending"] = 1
         self.tick()
         self.assertEqual(self.fake.actions, [])
+
+    def test_assimilated_but_incomplete_output_still_consumes_capacity(self):
+        self.tick()
+        self.tick()
+        self.fake.assimilated = set(self.fake.jobs)
+        actions = len(self.fake.actions)
+        event = self.tick()
+        self.assertEqual(event["observed_pending"], 4)
+        self.assertTrue(event["backpressure"])
+        self.assertEqual(len(self.fake.actions), actions)
+        self.assertEqual(len(self.state["selected"]), 4)
 
     def test_collection_continues_without_hosts(self):
         self.tick()
@@ -222,6 +248,8 @@ class SchedulerTests(unittest.TestCase):
             self.assertIn("--scan", run.call_args_list[0].args[0])
             self.assertIn("--wait-mins", run.call_args_list[1].args[0])
             self.assertIn("HANDOFF_PLAN=batch-test", run.call_args_list[1].args[0])
+            self.assertTrue(any(arg.startswith("HANDOFF_SCANS=keep/") for arg in
+                                run.call_args_list[1].args[0]))
             transport.submit("a" * 64)
             self.assertIn("submit-remote", run.call_args.args[0])
             transport.collect("a" * 64, "/project/usnmocr/results/1")
@@ -236,6 +264,67 @@ class SchedulerTests(unittest.TestCase):
                     raise RuntimeError("tick failure")
             self.assertEqual(az.call_args_list[1].args[:2], ("lease", "acquire"))
             self.assertEqual(az.call_args_list[-1].args[:2], ("lease", "release"))
+
+    def test_handoff_bounds_export_and_collect_to_exact_objects(self):
+        directory = Path(__file__).parent.resolve() / (".handoff-test-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            executable = directory / "usnm-boinc"
+            executable.write_text("""#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with Path(os.environ["CALL_LOG"]).open("a") as out:
+    out.write(json.dumps(args) + "\\n")
+def value(flag):
+    return args[args.index(flag) + 1]
+if args[:2] == ["handoff", "get-file"]:
+    path = Path(value("--to"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}")
+elif args[:2] == ["handoff", "get-spool"]:
+    Path(value("--trust-out")).write_text("{}")
+    print("42")
+elif args[0] == "export":
+    path = Path(value("--root")) / "jobs" / ("a" * 64) / "record.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}")
+""")
+            executable.chmod(0o700)
+            import os
+            env = {**os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
+                   "TMPDIR": str(directory), "CALL_LOG": str(directory / "calls.jsonl"),
+                   "HANDOFF_URL": "https://exchange123.blob.core.windows.net/boinc-handoff",
+                   "COSMOS_ENDPOINT": "synthetic", "CURATED_URL": "synthetic",
+                   "REFERENCE_URL": "synthetic", "OUT_URL": "synthetic"}
+            script = batch.REPO / "contrib-compute/images/bridge/handoff-job.sh"
+            subprocess.run(["bash", str(script)], env={
+                **env, "HANDOFF_STEP": "export", "HANDOFF_PAGES": self.config["pages"][0]["page"],
+                "HANDOFF_PLAN": "batch-test", "HANDOFF_BATCH": "test_batch",
+                "ENGINE_IMAGE": self.config["image"], "HANDOFF_MANIFEST": self.config["manifest"],
+                "HANDOFF_SCANS": "keep/test_batch/selected.jp2", "HANDOFF_JOBS": "a" * 64,
+            }, text=True, capture_output=True, check=True)
+            calls = [json.loads(line) for line in (directory / "calls.jsonl").read_text().splitlines()]
+            objects = [call[call.index("--path") + 1] for call in calls
+                       if call[:2] == ["handoff", "get-file"]]
+            self.assertEqual(objects, ["scans/keep/test_batch/selected.jp2",
+                                       "scans/keep/test_batch/selected.jp2.json",
+                                       "dispatch/jobs/" + "a" * 64 + "/record.json",
+                                       "manifests/v1/manifest.parquet"])
+            self.assertFalse(any(call[:2] == ["handoff", "get"] for call in calls))
+            (directory / "calls.jsonl").write_text("")
+            subprocess.run(["bash", str(script)], env={
+                **env, "HANDOFF_STEP": "collect", "JOB_ID": "a" * 64,
+            }, text=True, capture_output=True, check=True)
+            calls = [json.loads(line) for line in (directory / "calls.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(call[:2] == ["handoff", "get-file"] for call in calls), 1)
+            self.assertFalse(any(call[:2] == ["handoff", "get"] for call in calls))
+            collect = next(call for call in calls if call[0] == "collect")
+            self.assertIn("--trust", collect)
+            self.assertEqual(collect[collect.index("--host-id") + 1], "42")
+        finally:
+            import shutil
+            shutil.rmtree(directory)
 
 
 if __name__ == "__main__":

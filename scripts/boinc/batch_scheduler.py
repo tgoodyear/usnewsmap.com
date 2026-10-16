@@ -146,7 +146,7 @@ class Transport:
         require(len(names) <= MAX_JOBS, "dispatch inventory limit reached; archive drained journals")
         return [self.blob(name) for name in names]
 
-    def export(self, pages):
+    def export(self, pages, job_ids=()):
         argv = self.config["push_command"] + [
             "--account", self.config["account"], "--scans-root", self.config["scans_root"],
             "--manifests-root", self.config["manifests_root"],
@@ -157,7 +157,10 @@ class Transport:
         self.run(argv, "cached scan push")
         self.step("handoff", "export", HANDOFF_PAGES=",".join(page["page"] for page in pages),
                   HANDOFF_BATCH=self.config["batch"], HANDOFF_PLAN=self.config["plan"],
-                  HANDOFF_MANIFEST=self.config["manifest"], ENGINE_IMAGE=self.config["image"])
+                  HANDOFF_MANIFEST=self.config["manifest"], ENGINE_IMAGE=self.config["image"],
+                  HANDOFF_SCANS=",".join(page["scan"][len(self.config["scans_root"].rstrip("/")) + 1:]
+                                         for page in pages),
+                  HANDOFF_JOBS=",".join(job_ids))
 
     def submit(self, job_id):
         self.step("bridge", "submit-remote", JOB_ID=job_id,
@@ -194,6 +197,11 @@ def tick(config, state, transport, persist, now=None):
             "inventory is not fresh")
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
+    pending_jobs = snapshot["pending_jobs"]
+    require(isinstance(pending_jobs, list) and len(pending_jobs) <= MAX_JOBS and
+            all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
+            len(set(pending_jobs)) == len(pending_jobs), "invalid pending job inventory")
+    pending_jobs = set(pending_jobs)
     server = snapshot["jobs"]
     require(isinstance(server, dict) and len(server) <= MAX_JOBS, "invalid server job inventory")
     for job_id, job in server.items():
@@ -225,13 +233,12 @@ def tick(config, state, transport, persist, now=None):
     require(not any(record["stage"] == "failed" for record in owned.values()),
             "terminal BOINC failure; no replacement workload will be manufactured")
     target = min(config["max_pending"], snapshot["active_hosts"] * config["pages_per_host"])
-    unsubmitted = sum(
-        record["stage"] not in ("published", "failed") and
-        server.get(record["job"]["id"], {}).get("stage") not in ("submitting", "submitted")
+    uncollected_not_pending = sum(
+        record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
         for record in records
     )
     missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned]
-    pending = snapshot["pending_workunits"] + unsubmitted + len(missing)
+    pending = snapshot["pending_workunits"] + uncollected_not_pending + len(missing)
     uncertain = any(job["stage"] == "submitting" for job in server.values())
     require(not uncertain, "uncertain server submission blocks fresh allocation")
     held = sum(record["stage"] != "published" and
@@ -246,15 +253,18 @@ def tick(config, state, transport, persist, now=None):
         export = [page for page in config["pages"] if page["page"] in selected and
                   (page["page"] not in owned or owned[page["page"]]["stage"] == "prepared")]
         if export:
-            transport.export(export[:config["batch_size"]])
+            export = export[:config["batch_size"]]
+            transport.export(export, [owned[page["page"]]["job"]["id"]
+                                      for page in export if page["page"] in owned])
             records = transport.records()
             owned = owned_records(config, records)
         submitted = 0
+        submit_limit = min(config["batch_size"], max(0, target - snapshot["pending_workunits"]))
         for record in owned.values():
             job_id = record["job"]["id"]
             if record["stage"] == "reserved" and \
                     server.get(job_id, {}).get("stage") in (None, "reserved") and \
-                    submitted < config["batch_size"]:
+                    submitted < submit_limit:
                 transport.submit(job_id)
                 submitted += 1
     published = sum(record["stage"] == "published" for record in owned.values())

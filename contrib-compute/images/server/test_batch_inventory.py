@@ -90,14 +90,15 @@ class InventorySQLTests(unittest.TestCase):
              f"--port={os.environ['USNM_WORK_VOLUME_MYSQL_PORT']}", "--user=root",
              "--database=mysql", "--batch", "--raw", "--skip-column-names"],
             input="""
-CREATE TEMPORARY TABLE workunit (assimilate_state INTEGER NOT NULL);
+CREATE TEMPORARY TABLE workunit (assimilate_state INTEGER NOT NULL, name VARCHAR(254));
 CREATE TEMPORARY TABLE host (rpc_time DOUBLE NOT NULL);
-INSERT INTO workunit VALUES (0),(1),(2),(2),(9);
+INSERT INTO workunit VALUES (0,'other-app'),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+ (2,'done'),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),(9,'unknown');
 INSERT INTO host VALUES (0),(UNIX_TIMESTAMP()-90000),(UNIX_TIMESTAMP()),(UNIX_TIMESTAMP()-1);
 """ + inventory.QUERY + ";",
             text=True, capture_output=True, check=True,
         )
-        self.assertEqual(result.stdout.strip(), "3\t2")
+        self.assertEqual(result.stdout.strip(), "3\t2\nusnm_" + "a" * 64)
 
 
 if __name__ == "__main__":

@@ -250,6 +250,15 @@ async fn ndlocr(command: Ndlocr) -> anyhow::Result<()> {
 
 #[derive(Subcommand)]
 enum Handoff {
+    /// Copy exactly one object, without downloading adjacent jobs or scans.
+    GetFile {
+        #[arg(long)]
+        from_url: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        to: PathBuf,
+    },
     /// Copy every object under a prefix of the hand-off container into a directory.
     Get {
         #[arg(long)]
@@ -1073,6 +1082,9 @@ async fn main() -> anyhow::Result<()> {
 async fn handoff(h: Handoff) -> anyhow::Result<()> {
     use usnm_boinc::handoff as x;
     match h {
+        Handoff::GetFile { from_url, path, to } => {
+            x::get_file(usnm_store::open(&from_url)?.as_ref(), &path, &to).await?;
+        }
         Handoff::Get {
             from_url,
             prefix,

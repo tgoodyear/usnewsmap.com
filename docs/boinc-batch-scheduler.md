@@ -87,8 +87,10 @@ before migrating the configuration or allocating another cohort.
 3. Collect up to `batch_size` previously allocated results, even with no active
    hosts or a full queue. Never supply a host ID override or bypass `--trust`.
    Partial output sets wait; duplicate spool directories fail closed.
-4. Count **all apps' unassimilated workunits**, plus exported reservations not
-   yet submitted and durable allocations not yet exported. Target
+4. Count **all apps' unassimilated workunits**, plus unfinished dispatch entries
+   not already in that SQL set and durable allocations not yet exported. This
+   includes assimilated jobs with missing/partial outputs, not just reservations;
+   a stalled collector cannot create unbounded result backlog. Target
    `min(max_pending, active_hosts * pages_per_host)` page workunits. Here
    `active_hosts` means hosts that made a scheduler RPC in the last 24 hours,
    not a promise that they can run this app. The existing scheduler/plan classes
@@ -97,6 +99,11 @@ before migrating the configuration or allocating another cohort.
    and an uncertain submission blocks allocation until explicit reconciliation.
 5. Persist selected pages **before** push/export. Push/export at most
    `batch_size` cached pages, then submit at most `batch_size` reservations.
+   Submissions, including recovered reservations, also respect the remaining
+   observed all-app queue capacity. Export transfers only the selected scans and
+   sidecars, their existing journal entries and the single manifest snapshot;
+   collection transfers only one journal and its result/trust files. Retained
+   scan history is never downloaded per result.
    On rerun, authoritative hand-off and bridge records recover partial export
    and interrupted pulls. Never replay `create_work` for a `submitting` record.
    A submitted reservation is not submitted twice.

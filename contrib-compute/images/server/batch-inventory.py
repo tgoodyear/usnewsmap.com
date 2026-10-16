@@ -16,15 +16,21 @@ MAX_FILES = 100000
 QUERY = """
 SELECT
  (SELECT COUNT(*) FROM workunit WHERE assimilate_state != 2),
- (SELECT COUNT(*) FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400)
+ (SELECT COUNT(*) FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400);
+SELECT name FROM workunit
+ WHERE assimilate_state != 2 AND name REGEXP '^usnm_[0-9a-f]{64}$'
+ LIMIT 10001
 """
 
 
-def inventory(root, results, counts, nonce):
+def inventory(root, results, counts, nonce, pending_ids=()):
     if not re.fullmatch(r"[0-9a-f]{32}", nonce):
         raise ValueError("invalid inventory nonce")
     if len(counts) != 2 or any(type(n) is not int or n < 0 for n in counts):
         raise ValueError("invalid inventory counts")
+    if len(pending_ids) > MAX_JOBS or len(set(pending_ids)) != len(pending_ids) or \
+            any(not ID.fullmatch(job_id) for job_id in pending_ids):
+        raise ValueError("invalid/oversized pending job inventory")
     if not root.is_dir() or not results.is_dir() or (root / "jobs").is_symlink():
         raise ValueError("missing/unsafe inventory directories")
     jobs = {}
@@ -65,6 +71,7 @@ def inventory(root, results, counts, nonce):
         "nonce": nonce,
         "created_at": int(time.time()),
         "pending_workunits": counts[0],
+        "pending_jobs": list(pending_ids),
         "active_hosts": counts[1],
         "jobs": jobs,
     }
@@ -87,10 +94,13 @@ def main():
          "--batch", "--raw", "--skip-column-names", f"--database={args.database}",
          "--execute", QUERY],
         check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
-    ).stdout.strip().split("\t")
-    if len(output) != 2 or any(not value.isdecimal() for value in output):
+    ).stdout.strip().splitlines()
+    counts = output[0].split("\t") if output else []
+    if len(counts) != 2 or any(not value.isdecimal() for value in counts) or \
+            any(not re.fullmatch(r"usnm_[0-9a-f]{64}", value) for value in output[1:]):
         raise ValueError("invalid database inventory")
-    payload = inventory(args.root, args.results, [int(value) for value in output], args.nonce)
+    payload = inventory(args.root, args.results, [int(value) for value in counts], args.nonce,
+                        [value.removeprefix("usnm_") for value in output[1:]])
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True) + "\n")
 

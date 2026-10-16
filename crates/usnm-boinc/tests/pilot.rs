@@ -1245,6 +1245,36 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
     );
 }
 
+#[tokio::test]
+async fn handoff_get_file_copies_only_the_named_object_and_rejects_missing_or_unsafe_paths() {
+    let fx = Fixture::new("eng").await;
+    let container = store(fx.tmp.path(), "exact-handoff");
+    container
+        .put("selected/record.json", b"selected".to_vec(), "x")
+        .await
+        .unwrap();
+    container
+        .put("selected/page", b"unrelated".to_vec(), "x")
+        .await
+        .unwrap();
+    let output = fx.tmp.path().join("exact/record.json");
+    usnm_boinc::handoff::get_file(container.as_ref(), "selected/record.json", &output)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), b"selected");
+    assert!(!output.with_file_name("page").exists());
+    assert!(
+        usnm_boinc::handoff::get_file(container.as_ref(), "missing/file", &output)
+            .await
+            .is_err()
+    );
+    assert!(
+        usnm_boinc::handoff::get_file(container.as_ref(), "../escape", &output)
+            .await
+            .is_err()
+    );
+}
+
 /// The #469 route on synthetic data, with a local directory standing in for the hand-off
 /// container: the fetcher's scans and manifest in, export and the dispatch root put, the
 /// bridge's pull and submit, the spool and trust list back, and the trusted collect.
@@ -1354,6 +1384,7 @@ async fn remote_handoff_round_trip_through_the_container() {
         )
         .unwrap();
     }
+
     std::fs::write(spool.join("usnm_unrelated__file_text.txt"), "other job").unwrap();
     let trust = Trust {
         hosts: [(record.job.engine.image.clone(), [42].into())].into(),
@@ -1369,11 +1400,16 @@ async fn remote_handoff_round_trip_through_the_container() {
         3
     );
 
-    // The hand-off job's collect: dispatch root, spool and trust down, collect, root up.
+    // Collection needs only this journal, never retained scans or unrelated jobs.
     let collect = fx.tmp.path().join("collect");
-    handoff::get(container.as_ref(), DISPATCH, &collect.join("dispatch"))
-        .await
-        .unwrap();
+    handoff::get_file(
+        container.as_ref(),
+        &format!("{DISPATCH}/jobs/{id}/record.json"),
+        &collect.join(format!("dispatch/jobs/{id}/record.json")),
+    )
+    .await
+    .unwrap();
+    assert!(!collect.join(format!("dispatch/jobs/{id}/page")).exists());
     let host = handoff::get_spool(container.as_ref(), &id, &collect.join("spool"))
         .await
         .unwrap();
