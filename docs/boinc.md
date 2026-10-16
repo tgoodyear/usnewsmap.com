@@ -338,6 +338,16 @@ template's own settings, `BRIDGE_STEP` and each `--var`; whatever a previous run
 dropped), then starts it with no override. The next `scripts/provision-boinc.sh` restores
 the template's settings. Run one step at a time.
 
+When a waited-for execution (`--wait-mins`) or a `scripts/provision-boinc.sh` lifecycle job
+fails, the script prints the execution's last 50 console lines from the stack's Log Analytics
+workspace (`ContainerAppConsoleLogs_CL`; operators have Log Analytics Reader on it), polling up
+to five minutes for ingestion. To read any execution's log by hand:
+
+```sh
+az monitor log-analytics query --workspace <workspace customerId> --analytics-query \
+  "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '<execution>-' | project TimeGenerated, Log_s"
+```
+
 ### Register the apps
 
 Provisioning runs the idempotent `--ensure-project` lifecycle job and then `bin/xadd`.
