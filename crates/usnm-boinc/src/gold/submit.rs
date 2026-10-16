@@ -206,6 +206,10 @@ fn assignment_enabled(config: &str) -> anyhow::Result<bool> {
         let empty = matches!(&event, Event::Empty(_));
         match event {
             Event::Start(e) | Event::Empty(e) => {
+                ensure!(
+                    path != ["boinc", "config", "enable_assignment"],
+                    "nested assignment setting"
+                );
                 let name = e.name().as_ref().to_owned();
                 if path.is_empty() {
                     roots += 1;
@@ -230,6 +234,9 @@ fn assignment_enabled(config: &str) -> anyhow::Result<bool> {
             }
             Event::CData(e) if path == ["boinc", "config", "enable_assignment"] => {
                 value.push_str(&e);
+            }
+            Event::GeneralRef(_) if path == ["boinc", "config", "enable_assignment"] => {
+                anyhow::bail!("assignment setting must be a literal integer");
             }
             Event::Eof => break,
             _ => {}
@@ -441,6 +448,10 @@ pub(crate) mod tests {
         assert!(assignment_enabled("<boinc><config><enable_assignment>1</enable_assignment><enable_assignment>0</enable_assignment></config></boinc>").is_err());
         assert!(assignment_enabled("<boinc><config/><config/></boinc>").is_err());
         assert!(assignment_enabled("<boinc><config>").is_err());
+        assert!(assignment_enabled(
+            "<boinc><config><enable_assignment>1&#48;</enable_assignment></config></boinc>"
+        )
+        .is_err());
     }
 
     #[test]
