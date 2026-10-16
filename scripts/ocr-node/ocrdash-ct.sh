@@ -13,7 +13,11 @@
 #     [--worker <name>=http://<host>:<port>]... [--host-push <host>=<its name>]...
 #     [--sset-push <name>=<name of the node running the Serial Set fetch>]...
 #     [--workbook-url URL] [--port 80]
+#     [--pipeline-snapshot /existing/read-only/path/in/container.json]
 #     [--https-name ocr.tjg.fyi [--certs /var/lib/usnm-certs]] [--ctid 212]
+#   ocrdash-ct.sh --pipeline-snapshot /existing/path/in/container.json [--ctid 212]
+#     Without --configure, changes ONLY this environment key and restarts
+#     the service; preserves workers, TLS, mounts, firewall and other settings.
 #
 # --create makes the container (onboot, one NIC on --bridge with DHCP,
 # nesting for systemd's sandboxing) with three read-only bind mounts:
@@ -48,6 +52,7 @@ TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 HOSTSTATS=/var/lib/usnm-hoststats
 CREATE=false INSTALL=false CONFIGURE=false RELEASE=""
 ALLOW=lan PORT=80 WORKBOOK_URL="" HTTPS_NAME="" CERTS=/var/lib/usnm-certs
+PIPELINE_SNAPSHOT=""
 WORKERS=() PUSHERS=() SSET_PUSHERS=()
 REPO=tgoodyear/usnewsmap.com
 DASH_UID=2001
@@ -73,18 +78,28 @@ while [ $# -gt 0 ]; do
     --host-push) PUSHERS+=("${2:-}"); shift 2 ;;
     --sset-push) SSET_PUSHERS+=("${2:-}"); shift 2 ;;
     --workbook-url) WORKBOOK_URL=${2:-}; shift 2 ;;
+    --pipeline-snapshot) PIPELINE_SNAPSHOT=${2:-}; shift 2 ;;
     --https-name) HTTPS_NAME=${2:-}; shift 2 ;;
     --certs) CERTS=${2:-}; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
   esac
 done
-$CREATE || $INSTALL || $CONFIGURE || usage
+$CREATE || $INSTALL || $CONFIGURE || [ -n "$PIPELINE_SNAPSHOT" ] || usage
 [[ $CTID =~ ^[0-9]+$ ]] || die "--ctid: a number"
 [[ $MEMORY =~ ^[0-9]+$ && $SWAP =~ ^[0-9]+$ ]] || die "--memory and --swap: MB"
 [ "$(id -u)" = 0 ] || die "run as root on the Proxmox host"
 command -v pct > /dev/null || die "no pct here: run on the Proxmox host"
 in_ct() { pct exec "$CTID" -- "$@"; }
+
+if [ -n "$PIPELINE_SNAPSHOT" ]; then
+  [[ $PIPELINE_SNAPSHOT =~ ^/[A-Za-z0-9/_.-]+$ ]] ||
+    die "--pipeline-snapshot: an absolute existing path inside the container"
+  in_ct runuser -u ocrdash -- test -r "$PIPELINE_SNAPSHOT" ||
+    die "ocrdash can't read --pipeline-snapshot inside the container"
+  in_ct test -f "$PIPELINE_SNAPSHOT" ||
+    die "--pipeline-snapshot must be a regular file"
+fi
 
 if $CREATE; then
   [ -d "$DATA/scans" ] && [ -d "$DATA/manifests" ] ||
@@ -142,6 +157,7 @@ if $CONFIGURE; then
   else
     NFT_ALLOW=$ALLOW
   fi
+
   [[ $NFT_ALLOW =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || die "--allow: lan, or an IPv4 range (<address>/<bits>)"
   [[ $PORT =~ ^[0-9]+$ ]] || die "--port: a number"
   for w in "${WORKERS[@]}"; do
@@ -206,6 +222,8 @@ USNM_OCRDASH_HOST_PUSH=$(join "${PUSHERS[@]}")"
 USNM_OCRDASH_SSET_PUSH=$(join "${SSET_PUSHERS[@]}")"
   [ -z "$WORKBOOK_URL" ] || env+="
 USNM_OCRDASH_WORKBOOK_URL=$WORKBOOK_URL"
+  [ -z "$PIPELINE_SNAPSHOT" ] || env+="
+USNM_OCRDASH_PIPELINE_SNAPSHOT=$PIPELINE_SNAPSHOT"
   [ -z "$HTTPS_NAME" ] || env+="
 USNM_OCRDASH_TLS_CERT=/etc/usnm/tls/fullchain.pem
 USNM_OCRDASH_TLS_KEY=/etc/usnm/tls/privkey.pem
@@ -223,4 +241,18 @@ USNM_OCRDASH_HTTPS_NAME=$HTTPS_NAME"
   else
     echo "dashboard: http://$(in_ct hostname -I | cut -d' ' -f1)$([ "$PORT" = 80 ] || echo ":$PORT")/"
   fi
+fi
+
+if [ -n "$PIPELINE_SNAPSHOT" ] && ! $CONFIGURE; then
+  in_ct sh -eu -c '
+    file=/etc/usnm/ocrdash.env
+    test -f "$file"
+    new=$file.pipeline-new
+    trap '\''rm -f "$new"'\'' EXIT
+    cp -p "$file" "$new"
+    sed "/^USNM_OCRDASH_PIPELINE_SNAPSHOT=/d" "$file" > "$new"
+    printf "USNM_OCRDASH_PIPELINE_SNAPSHOT=%s\n" "$1" >> "$new"
+    mv -f "$new" "$file"
+    systemctl restart usnm-ocrdash.service
+  ' sh "$PIPELINE_SNAPSHOT"
 fi
