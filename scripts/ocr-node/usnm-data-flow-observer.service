@@ -8,7 +8,7 @@ Type=oneshot
 User=ocrdash
 Group=ocrdash
 EnvironmentFile=/etc/usnm/data-flow-observer.env
-ExecStart=/usr/bin/python3 /usr/local/lib/usnm-data-flow/data_flow_observer.py --ocr-url ${USNM_DATA_FLOW_OCR_URL} --snapshot /var/lib/usnm-data-flow/pipeline.json
+ExecStart=/usr/bin/python3 /usr/local/lib/usnm-data-flow/data_flow_observer.py --ocr-url ${USNM_DATA_FLOW_OCR_URL} --snapshot /var/lib/usnm-data-flow/pipeline.json --catalog-snapshot /var/lib/usnm-data-flow/catalog.json
 StateDirectory=usnm-data-flow
 StateDirectoryMode=0750
 UMask=0027
@@ -25,4 +25,3 @@ CapabilityBoundingSet=
 TimeoutStartSec=45
 MemoryMax=128M
 CPUQuota=10%
-

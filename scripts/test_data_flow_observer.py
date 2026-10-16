@@ -86,6 +86,34 @@ class Observer(unittest.TestCase):
             with self.assertRaises(ValueError):
                 observer.fetch(url)
 
+    def test_catalog_counts_are_scoped_and_keep_their_own_age(self):
+        catalog = observer.snapshot([], [], NOW)
+        catalog.update(observed_at="2026-10-15T12:00:00Z",
+                       runs={"total": 4, "pages": 2},
+                       artifacts={"locations": 10, "verified": 1, "missing": 2})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps(catalog))
+            value = observer.add_catalog(observer.snapshot([], [], NOW), path, NOW)
+        self.assertEqual(value["runs"]["total"], 4)
+        item = next(s for s in value["stages"] if s["id"] == "run_history")
+        self.assertEqual(item["observed_at"], "2026-10-15T12:00:00Z")
+        self.assertIsNone(next(s for s in value["stages"] if s["id"] == "accepted")["count"])
+        self.assertIn("partial", value["coverage"][0])
+
+    def test_catalog_cannot_smuggle_inconsistent_or_untimestamped_counts(self):
+        catalog = observer.snapshot([], [], NOW)
+        for change in [
+            {"runs": {"total": 1, "pages": 2}},
+            {"artifacts": {"locations": 1, "verified": 2, "missing": 0}},
+            {"runs": {"total": 1, "pages": 1}},
+        ]:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "catalog.json"
+                path.write_text(json.dumps({**catalog, **change}))
+                with self.assertRaises(ValueError):
+                    observer.add_catalog(observer.snapshot([], [], NOW), path, NOW)
+
 
 if __name__ == "__main__":
     unittest.main()

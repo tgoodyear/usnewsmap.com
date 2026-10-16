@@ -224,14 +224,63 @@ def snapshot(events, failures, now=None):
     }
 
 
+def add_catalog(value, path, now=None):
+    """Join cataloged evidence counts without claiming a complete corpus inventory."""
+    now = now or datetime.now(timezone.utc)
+    with Path(path).open("rb") as stream:
+        body = stream.read(MAX_BYTES + 1)
+    if len(body) > MAX_BYTES:
+        raise ValueError("Catalog snapshot exceeds 1 MiB")
+    catalog = json.loads(body)
+    if catalog["schema_version"] != 1 or catalog["producer"] != "corpus-catalog":
+        raise ValueError("Unsupported catalog snapshot")
+    observed(catalog["generated_at"], now)
+    at = observed(catalog["observed_at"], now) if catalog["observed_at"] is not None else None
+    runs = {key: count(catalog["runs"][key]) for key in ("total", "pages")}
+    artifacts = {key: count(catalog["artifacts"][key])
+                 for key in ("locations", "verified", "missing")}
+    if artifacts["verified"] + artifacts["missing"] > artifacts["locations"]:
+        raise ValueError("Inconsistent catalog location counts")
+    if runs["pages"] > runs["total"]:
+        raise ValueError("Inconsistent catalog run counts")
+    if at is None and (any(runs.values()) or any(artifacts.values())):
+        raise ValueError("Nonempty catalog has no source timestamp")
+    value["runs"], value["artifacts"] = runs, artifacts
+    value["coverage"][0] = "Aggregate observer joined to a partial page-evidence catalog; not a full corpus inventory."
+    value["issues"] = [issue for issue in value["issues"] if issue["code"] != "partial-coverage"]
+    value["issues"].append({"code": "partial-catalog",
+                            "detail": "Catalog totals cover imported evidence only. Unconnected validation/import/index stages remain unknown."})
+    replacements = {
+        "artifact_verified": ("Cataloged verified locations", artifacts["verified"]),
+        "run_history": ("Cataloged engine runs", runs["total"]),
+    }
+    for item in value["stages"]:
+        if item["id"] in replacements:
+            label, amount = replacements[item["id"]]
+            item.update(label=label, count=amount if at else None,
+                        state="observed" if at else "unknown", observed_at=at,
+                        detail="Imported page evidence only; source age is independent of live aggregate refresh.")
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ocr-url", required=True)
     parser.add_argument("--boinc-url", default="https://boinc.usnewsmap.com/server_status.php?xml=1")
     parser.add_argument("--snapshot", required=True, type=Path)
+    parser.add_argument("--catalog-snapshot", type=Path,
+                        help="Optional bounded snapshot of the separate page-evidence catalog")
     args = parser.parse_args()
     events, failures = collect(args.ocr_url, args.boinc_url)
-    atomic_json(args.snapshot, snapshot(events, failures))
+    value = snapshot(events, failures)
+    if args.catalog_snapshot:
+        try:
+            add_catalog(value, args.catalog_snapshot)
+        except (OSError, ValueError, KeyError, TypeError):
+            failures.append({"code": "catalog-unavailable",
+                             "detail": "Page-evidence catalog snapshot could not be read or validated."})
+            value["issues"].append(failures[-1])
+    atomic_json(args.snapshot, value)
     print(json.dumps({"event": "data_flow_observation", "stages": len(events),
                       "failed_sources": len(failures)}))
     return 1 if failures else 0
