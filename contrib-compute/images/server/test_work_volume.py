@@ -201,10 +201,26 @@ kv_get() { printf '%s\\n' "$SYNTHETIC_PASSWORD" > "$2"; }
             ):
                 self.assertIn(f'column_ifexists("{column}"', query)
             self.assertIn(
+                'Kind = coalesce(column_ifexists("Type_s", ""), column_ifexists("Type", ""))',
+                query,
+            )
+            self.assertIn(
                 "| distinct TimeGenerated, App, Revision, Replica, Reason, Kind, Msg",
                 query,
             )
 
+        legacy_event = {"Type": "ContainerAppSystemLogs_CL", "Type_s": "Warning"}
+        preferred_order = ("Type_s", "Type")
+        legacy_type_first = ("Type", "Type_s")
+        self.assertEqual(
+            next(legacy_event[column] for column in preferred_order if legacy_event.get(column)),
+            "Warning",
+        )
+        self.assertNotEqual(
+            next(legacy_event[column] for column in legacy_type_first
+                 if legacy_event.get(column)),
+            "Warning",
+        )
         self.assertIn('App contains "-caj-"', items["executions"]["query"])
         self.assertIn('App contains "-ca-"', items["revisions"]["query"])
         self.assertNotIn("ExecutionName", items["executions"]["query"])
