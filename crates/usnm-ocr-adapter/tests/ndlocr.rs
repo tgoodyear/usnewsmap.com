@@ -234,3 +234,116 @@ printf '新聞' > "$5/page.txt"
     assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 1);
     assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn worker_preserves_line_granularity_in_storage_and_provenance() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    use usnm_ocr_worker::contract::{ContractEngine, ContractOptions, Launch};
+    use usnm_ocr_worker::engine::Engine;
+    use usnm_ocr_worker::{provenance, stored};
+
+    let dir = tempfile::tempdir().unwrap();
+    let models: Vec<_> = ndlocr::MODELS_LOCK
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| {
+            let parts: Vec<_> = line.split_whitespace().collect();
+            serde_json::json!({"name":parts[0], "sha256":parts[2]})
+        })
+        .collect();
+    let hello = serde_json::json!({
+        "type":"hello", "contract":1, "cancel":"adapter", "deterministic":false,
+        "adapter":{"lang":"sh","name":"ndlocr-fixture","version":"1"},
+        "engine":{"family":"ndlocr-lite","id":"ndlocr-lite","version":COMMIT},
+        "granularity":"line", "layout":"alto", "models_loaded":"per_page",
+        "models":models,
+        "profiles":[{"id":"default","languages":["jpn"],"tunable":[],
+                     "models":models.iter().map(|m|m["name"].clone()).collect::<Vec<_>>()}]
+    });
+    let script = dir.path().join("adapter");
+    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\n' '{hello}'\n{}", r#"
+while IFS= read -r line; do
+  out=$(printf '%s' "$line" | sed -n 's/.*"out":"\([^"]*\)".*/\1/p')
+  run=$(printf '%s' "$line" | sed -n 's/.*"run_id":"\([^"]*\)".*/\1/p')
+  cp "$1" "$out/layout.xml" || exit 1
+  printf '{"type":"result","status":"ok","run_id":"%s","layout":{"kind":"alto","path":"%slayout.xml","alto_dpi":300}}\n' "$run" "$out"
+done
+"#)).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/ndlocr/page.alto.xml");
+    let inferred = usnm_alto::parse(
+        &std::fs::read(&fixture).unwrap(),
+        &usnm_alto::ParseOptions {
+            dpi: Some(300.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(inferred.granularity, usnm_alto::Granularity::Word);
+    let engine = ContractEngine::start(ContractOptions {
+        launch: Launch::Local {
+            program: script,
+            args: vec![fixture.display().to_string()],
+            scratch: dir.path().to_owned(),
+        },
+        instances: 1,
+        threads: 1,
+        start_timeout: Duration::from_secs(10),
+        page_timeout: Duration::from_secs(10),
+        max_jobs: 100,
+        dpi: 300,
+        node: "test1".into(),
+    })
+    .await
+    .unwrap();
+    let image = dir.path().join("page.pgm");
+    std::fs::write(&image, usnm_ocr_worker::testimg::text_image("HELLO")).unwrap();
+    let mut out = engine.ocr(&image, "jpn", dir.path()).await.unwrap();
+    assert_eq!(
+        out.page.as_ref().unwrap().granularity,
+        usnm_alto::Granularity::Line
+    );
+    let now = chrono::Utc::now();
+    let stored = stored::from_output(
+        &mut out,
+        "jpn",
+        300,
+        &stored::Source {
+            url: "page.pgm",
+            sha256: "ab",
+            md5: None,
+            run_id: None,
+            damage_before: None,
+        },
+        "0.1.0",
+        now,
+    )
+    .unwrap();
+    assert!(stored.alto.contains("granularity=line"));
+    let message = serde_json::from_value(serde_json::json!({
+        "v":1,"page":"sn83025517/1945-01-01/ed-1/seq-4","batch":"ballston",
+        "language":"jpn","reason":"bulk","queued_at":now.to_rfc3339()
+    }))
+    .unwrap();
+    let record = provenance::record(&provenance::Read {
+        run_id: "test1.run",
+        doc_id: "fixture",
+        node: "test1",
+        worker_version: "0.1.0",
+        message: &message,
+        ocr_source: engine.source(),
+        ocr_engine: &out.engine,
+        info: &out.read,
+        page: &stored.page,
+        text: &stored.text,
+        image_sha256: "ab",
+        dpi: 300,
+        seconds_wall: 0.1,
+        finished_at: now,
+    });
+    assert_eq!(record.granularity, "line");
+    engine.shutdown().await;
+}
