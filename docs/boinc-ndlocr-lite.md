@@ -175,6 +175,8 @@ use BOINC's normal additional-result/error limits, never unconditional acceptanc
 
 Collection accepts only the canonical stock assimilator spool with an exact
 match to the staged job. It snapshots accepted bytes for interrupted retries,
+uses a persisted **bridge acceptance timestamp** for overlay ordering (the
+volunteer clock is retained only in the accepted result provenance), and
 writes `ocr-ja/alto/<doc>.boinc-<id>.xml` **before**
 `ocr-ja/pages/<doc>.boinc-<id>.parquet` in the **curated** store, and marks the unit
 published only after both immutable writes succeed. Different retry bytes cannot
@@ -185,7 +187,9 @@ or dehyphenation. `ocr_ja.rs` remains unchanged: newest rows, published-batch an
 catalog filtering, the `mixed` page Japanese-character floor and English-column
 checks still apply. The regression suite reads the produced part with that real
 release reader and verifies that an English column with a stray Japanese glyph
-is **not** indexable.
+is **not** indexable. The cloud job recognizes both these immutable ALTO names
+and its legacy filenames, so collected pages count as complete and are not
+queued again.
 
 ### Scheduling and operations
 

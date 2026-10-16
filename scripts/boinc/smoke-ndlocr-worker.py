@@ -4,6 +4,7 @@ import argparse
 import json
 import pathlib
 import subprocess
+import xml.etree.ElementTree as ET
 
 
 def main():
@@ -28,6 +29,10 @@ def main():
     result = json.loads((work / "result.json").read_text())
     assert result["job"]["route"] == {"kind": "ndlocr-lite", "profile": "default"}
     assert len((work / "text.txt").read_text()) > 100
+    alto = ET.parse(work / "layout.xml")
+    page = alto.find(".//{http://www.loc.gov/standards/alto/ns-v3#}Page")
+    assert page.attrib["PHYSICAL_IMG_NR"] == "4", page.attrib
+    assert (work / "fraction_done").stat().st_mode & 0o444 == 0o444
     print(json.dumps({"elapsed_ms": result["elapsed_ms"], "route": result["job"]["route"],
                       "engine": result["job"]["engine"], "worker_validation": "passed"}))
 

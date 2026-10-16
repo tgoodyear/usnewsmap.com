@@ -364,7 +364,7 @@ pub async fn work(dir: &Path) -> anyhow::Result<()> {
         },
         &job.scan.url,
         COMMIT,
-        1,
+        job.page.parse::<PageKey>()?.seq,
         &now.to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
     )?;
     ensure!(Instant::now() < deadline, "conversion exceeded deadline");
@@ -426,7 +426,7 @@ fn check_bytes(result: &ResultManifest, text: &[u8], alto: &[u8]) -> anyhow::Res
     )?;
     let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
     ensure!(
-        compact(&usnm_alto::text(&page)) == compact(text),
+        compact(&ndlocr::normalize(&usnm_alto::text(&page))) == compact(text),
         "ALTO/text disagree"
     );
     Ok(())
@@ -528,6 +528,15 @@ pub async fn collect(
             &serde_json::to_vec_pretty(&loaded.result)?,
         )?;
     }
+    // Release ordering uses the bridge clock, never the untrusted host clock.
+    // Persist once before either external write, so retry bytes stay identical.
+    let acceptance = accepted.join("accepted-at.txt");
+    if !acceptance.exists() {
+        atomic(&acceptance, chrono::Utc::now().to_rfc3339().as_bytes())?;
+    }
+    let accepted_at =
+        chrono::DateTime::parse_from_rfc3339(std::str::from_utf8(&read(&acceptance, 128)?)?)?
+            .with_timezone(&chrono::Utc);
     let row = usnm_overlay::OverlayRow {
         key: job.page.parse()?,
         batch: job.batch,
@@ -536,8 +545,7 @@ pub async fn collect(
         loc_text: job.loc_text,
         text: String::from_utf8(loaded.text)?,
         image_url: job.scan.iiif_base,
-        ocred_at: chrono::DateTime::parse_from_rfc3339(&loaded.result.completed_at)?
-            .with_timezone(&chrono::Utc),
+        ocred_at: accepted_at,
     };
     let stem = format!("{doc}.boinc-{}", job.id);
     crate::put_same(

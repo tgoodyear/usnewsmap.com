@@ -40,15 +40,16 @@ fn files(dir: &Path, job: &Job, text: &str) -> Vec<PathBuf> {
         "2026-10-16T00:00:00+00:00",
     )
     .unwrap();
+    let normalized = usnm_ocr_adapter::ndlocr::normalize(text);
     let r = ResultManifest {
         job: job.clone(),
-        text_sha256: sha256(text.as_bytes()),
+        text_sha256: sha256(normalized.as_bytes()),
         alto_sha256: sha256(&alto),
         elapsed_ms: 500,
         completed_at: "2026-10-16T00:00:00+00:00".into(),
     };
     let files: Vec<_> = OUTPUTS.iter().map(|n| dir.join(n)).collect();
-    atomic(&files[0], text.as_bytes()).unwrap();
+    atomic(&files[0], normalized.as_bytes()).unwrap();
     atomic(&files[1], &alto).unwrap();
     atomic(&files[2], &serde_json::to_vec(&r).unwrap()).unwrap();
     files
@@ -136,6 +137,10 @@ async fn canonical_collection_uses_release_overlay_and_replays_accepted_bytes() 
         vec!["English advertisements and community news."; 30].join("\n")
     );
     let f = files(&spool, &j, &text);
+    let mut host_result: ResultManifest =
+        serde_json::from_slice(&std::fs::read(&f[2]).unwrap()).unwrap();
+    host_result.completed_at = "2099-01-01T00:00:00+00:00".into();
+    atomic(&f[2], &serde_json::to_vec(&host_result).unwrap()).unwrap();
     for (path, name) in f.iter().zip(OUTPUTS) {
         std::fs::rename(path, spool.join(format!("{}__file_{name}", j.workunit()))).unwrap();
     }
@@ -151,6 +156,15 @@ async fn canonical_collection_uses_release_overlay_and_replays_accepted_bytes() 
     assert_eq!(pages[0].ocr_source, "usnm-ndlocr-lite");
     assert_eq!(pages[0].loc_text, "mixed");
     assert!(!pages[0].indexable());
+    let raw = store.get(&parts[0]).await.unwrap().unwrap();
+    let row = usnm_overlay::read_part(raw.into()).unwrap().remove(0);
+    let accepted_at = chrono::DateTime::parse_from_rfc3339(
+        &std::fs::read_to_string(unit.join("accepted/accepted-at.txt")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(row.ocred_at, accepted_at.timestamp_micros());
+    assert!(accepted_at <= chrono::Utc::now());
+    assert!(accepted_at.timestamp() < 4_070_908_800); // Never the host's 2099 date.
     let alto = store.list("ocr-ja/alto").await.unwrap();
     assert_eq!(alto.len(), 1);
     std::fs::remove_file(unit.join("published")).unwrap();
@@ -308,4 +322,16 @@ async fn invalid_stage_metadata_is_rejected_before_fetching_scans() {
         );
         assert!(!dir.path().join("hold").exists());
     }
+}
+
+#[test]
+fn validator_normalizes_decomposed_kana_from_alto() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = job("mixed");
+    let files = files(dir.path(), &j, "か\u{3099}くせいの新聞");
+    let loaded = ndlocr::load(&files).unwrap();
+    assert_eq!(std::str::from_utf8(&loaded.text).unwrap(), "がくせいの新聞");
+    assert!(std::str::from_utf8(&loaded.alto)
+        .unwrap()
+        .contains("か\u{3099}"));
 }
