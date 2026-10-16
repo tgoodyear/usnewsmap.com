@@ -37,18 +37,42 @@ fn corpus_languages_route_to_pinned_models() {
         ("slo", "slk"),
     ] {
         let iso3 = usnm_core::lang::marc_to_iso3(marc).unwrap();
-        assert_eq!(candidates(iso3).first().map(String::as_str), Some(profile));
-        assert_eq!(route(iso3, &installed).as_deref(), Some(profile));
+        assert_eq!(
+            candidates(iso3).first().map(|r| r.profile.as_str()),
+            Some(profile)
+        );
+        assert_eq!(
+            route(iso3, &installed).as_ref().map(|r| r.profile.as_str()),
+            Some(profile)
+        );
         assert!(models_digest(MODELS_LOCK, profile).is_some());
         assert_eq!(route(iso3, &BTreeSet::new()), None);
     }
     for iso3 in ["nor", "nob", "nno"] {
-        assert_eq!(candidates(iso3), ["nor"]);
-        assert_eq!(route(iso3, &installed).as_deref(), Some("nor"));
+        assert_eq!(
+            candidates(iso3)
+                .iter()
+                .map(|r| r.profile.as_str())
+                .collect::<Vec<_>>(),
+            ["nor"]
+        );
+        assert_eq!(
+            route(iso3, &installed).as_ref().map(|r| r.profile.as_str()),
+            Some("nor")
+        );
     }
-    assert_eq!(candidates("yid"), ["yid", "heb"]);
+    assert_eq!(
+        candidates("yid")
+            .iter()
+            .map(|r| r.profile.as_str())
+            .collect::<Vec<_>>(),
+        ["yid", "heb"]
+    );
     let heb_only = BTreeSet::from(["heb".to_owned()]);
-    assert_eq!(route("yid", &heb_only).as_deref(), Some("heb"));
+    assert_eq!(
+        route("yid", &heb_only).as_ref().map(|r| r.profile.as_str()),
+        Some("heb")
+    );
 }
 
 #[test]
