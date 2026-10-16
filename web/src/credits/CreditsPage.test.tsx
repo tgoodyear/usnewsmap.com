@@ -68,6 +68,21 @@ describe("OCR credits page", () => {
     expect(screen.queryByText(/Language:.*\b(?:Bos|Nob|Nno|Grc)\b/)).toBeNull();
   });
 
+  it("spells out the new French and Slovak ISO language codes", async () => {
+    renderPage({
+      ocr_local: {
+        by_engine: [
+          { engine: "tesseract/5.5.1 fra", pages: 1 },
+          { engine: "tesseract/5.5.1 slk", pages: 1 },
+        ],
+      },
+    });
+    await screen.findByRole("heading", { name: "tesseract/5.5.1 fra" });
+    expect(screen.getByText(/Language: French/)).toBeTruthy();
+    expect(screen.getByText(/Language: Slovak/)).toBeTruthy();
+    expect(screen.queryByText(/Language: (Fra|Slk)\./)).toBeNull();
+  });
+
   it("reports an unknown serving engine instead of dropping it", async () => {
     renderPage({ ocr_local: { by_engine: [{ engine: "uncredited/1 eng", pages: 1 }] } });
     expect((await screen.findByRole("alert")).textContent).toContain("Missing OCR credit: uncredited/1 eng");

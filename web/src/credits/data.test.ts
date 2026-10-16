@@ -37,6 +37,20 @@ describe("serving engine credits from engines.toml", () => {
     }
   });
 
+  it("credits every newly shipped corpus-language profile", () => {
+    for (const profile of ["spa", "fra", "ita", "yid", "heb", "dan", "nor", "fin", "swe", "lit", "slv", "hun", "slk"]) {
+      const credit = creditFor(`tesseract/5.5.1 ${profile}`);
+      expect(credit.models).toHaveLength(1);
+      expect(credit.models[0]).toMatchObject({
+        name: `tessdata/${profile}.traineddata`,
+        license: "Apache-2.0",
+        author: "Tesseract OCR project",
+      });
+    }
+    expect(creditFor("tesseract/5.5.1 nor").languages).toEqual(["nob", "nno", "nor"]);
+    expect(creditFor("tesseract/5.5.1 heb").languages).toEqual(["yid", "heb"]);
+  });
+
   it("detects changed frak2021 revisions and rejects unknown pin formats", () => {
     expect(lockedRevision("https://zenodo.org/records/10125246/files/frak2021-0.906.traineddata")).toBe("0.906");
     expect(() => lockedRevision("https://example.com/frak2021.traineddata")).toThrow("Unrecognized locked model URL");

@@ -110,7 +110,14 @@ export default function CreditsPage() {
               Language:{" "}
               {c.languages
                 .map((l) =>
-                  languageName(({ deu: "ger", ces: "cze", ell: "gre", zho: "chi" } as Record<string, string>)[l] ?? l),
+                  languageName(
+                    (
+                      { deu: "ger", ces: "cze", fra: "fre", slk: "slo", ell: "gre", zho: "chi" } as Record<
+                        string,
+                        string
+                      >
+                    )[l] ?? l,
+                  ),
                 )
                 .join(", ")}
               .
