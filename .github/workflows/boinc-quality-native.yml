@@ -9,6 +9,7 @@ on:
       - crates/usnm-ocr-quality/**
       - crates/usnm-ocr-contract/**
       - crates/usnm-alto/**
+      - "!**/*.md"
 
 permissions:
   contents: read
