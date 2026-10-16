@@ -119,7 +119,9 @@ baz acr build --registry "$registry" --image "usnm-boinc-bridge:$sha" --platform
 bridge_image="$bridge@$(digest usnm-boinc-bridge "$sha")"
 echo "bridge image $bridge_image"
 
-tmp=$(mktemp)
+work=$(boinc_workdir)
+trap 'rm -rf "$work"' EXIT
+tmp="$work/settings.json"
 jq --indent 2 --arg s "$server_image" --arg b "$bridge_image" '.images.server = $s | .images.bridge = $b' \
   "$BOINC_SETTINGS" > "$tmp" && mv "$tmp" "$BOINC_SETTINGS"
 echo "wrote both digests to $BOINC_SETTINGS; commit it, then run scripts/provision-boinc.sh --env $ENV_NAME"
