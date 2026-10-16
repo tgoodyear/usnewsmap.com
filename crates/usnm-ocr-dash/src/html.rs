@@ -249,7 +249,7 @@ const selecting = (el) => {
   return !!sel && !sel.isCollapsed && sel.containsNode(el, true);
 };
 const rowKeys = (panel) => {
-  const texts = [...panel.querySelectorAll('details')].map((d) => (d.querySelector('summary') || {}).textContent || '');
+  const texts = [...panel.querySelectorAll('details')].map((d) => d.dataset.refreshKey || (d.querySelector('summary') || {}).textContent || '');
   return texts.map((t, i) => texts.indexOf(t) === texts.lastIndexOf(t) ? t : i + ':' + t);
 };
 const swap = (old, fresh) => {
@@ -458,8 +458,9 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
             let freshness = v.stage_freshness.iter().find(|f| f.id == stage.id);
             let _ = write!(
                 o,
-                "<tr><td><details><summary>{}</summary><p>{}</p><p><code>{}</code></p>\
+                "<tr><td><details data-refresh-key=\"stage-{}\"><summary>{}</summary><p>{}</p><p><code>{}</code></p>\
                  <p>Source evidence: {}</p></details></td><td class=\"r\">{}</td><td>{}{}</td><td>{}</td></tr>",
+                esc(&stage.id),
                 esc(&stage.label),
                 esc(&stage.detail),
                 esc(&stage.id),
@@ -469,7 +470,7 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
                     .map_or_else(|| "unknown".into(), time),
                 stage.count.map_or_else(|| "unknown".into(), int),
                 state,
-                if stage.state == crate::pipeline::StageState::Observed
+                if stage.state != crate::pipeline::StageState::Unknown
                     && freshness.is_none_or(|f| f.stale)
                 {
                     " / stale"
@@ -483,7 +484,7 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
         }
         let _ = write!(
             o,
-            "</tbody></table></div><details class=\"pipeline-meta\"><summary>Coverage, provenance and issues ({})</summary>\
+            "</tbody></table></div><details class=\"pipeline-meta\" data-refresh-key=\"corpus-metadata\"><summary>Coverage, provenance and issues ({})</summary>\
              <p>Cataloged runs: {}; cataloged run pages: {}. Cataloged artifact locations: {}; \
              verified: {}; missing: {}.</p>",
             s.issues.len(),
@@ -1206,9 +1207,9 @@ mod tests {
         assert!(html.contains("<section class=\"wide\" id=\"corpus-data-flow\">"));
         assert!(html.contains("aria-label=\"Corpus stages\""));
         assert!(html.contains("<table class=\"pipeline-table\">"));
-        assert_eq!(html.matches("<details><summary>").count(), 2);
+        assert_eq!(html.matches("data-refresh-key=\"stage-").count(), 2);
         assert!(!html.contains("colspan=\"3\""));
-        assert!(html.contains("<details class=\"pipeline-meta\"><summary>"));
+        assert!(html.contains("data-refresh-key=\"corpus-metadata\"><summary>"));
         assert!(html.contains("STALE / unavailable"));
         assert!(html.contains("separate from local worker totals"));
         for s in [
@@ -1226,6 +1227,23 @@ mod tests {
         assert!(html.contains("Cataloged runs: 2; cataloged run pages: 100"));
         assert!(pipeline_panel(&crate::pipeline::PipelineView::default())
             .contains("No valid catalog snapshot"));
+    }
+
+    #[test]
+    fn blocked_stages_keep_their_stale_warning_and_stable_disclosure_key() {
+        let now = Utc::now();
+        let mut source = crate::pipeline::tests::fixture(now);
+        source["stages"][0]["state"] = serde_json::json!("blocked");
+        let snapshot = crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), now).unwrap();
+        let v = crate::pipeline::PipelineView {
+            snapshot: Some(snapshot),
+            ..Default::default()
+        };
+        let html = pipeline_panel(&v);
+        assert!(html.contains("blocked / stale"));
+        assert!(html.contains("data-refresh-key=\"stage-scan\""));
+        assert!(html.contains("data-refresh-key=\"corpus-metadata\""));
+        assert!(SCRIPT.contains("d.dataset.refreshKey ||"));
     }
 
     #[test]
