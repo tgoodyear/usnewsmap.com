@@ -224,6 +224,64 @@ volunteer execution, canonical assimilation, authorized `ocr-ja` collection,
 or normal release/search acceptance. The page already has native output and
 must not be counted as the genuinely fresh-page Mac pilot.
 
+### Production canonical collection, 16 October 2026
+
+The signed Linux `usnm_ndlocr` **1.1** publisher selected by
+[#716](https://github.com/tgoodyear/usnewsmap.com/pull/716) completed in
+`usnm-boinc-publish-caj-prod-cgicdf7`. Its database verification registered
+**app_version 26**. Only the existing publisher's image changed; its remaining
+template, configuration, environment and identity were compared with the saved
+before-state and preserved. The already-deployed #714 runtime contained #700
+and #702; no additional broad provision or bridge configuration reset was used.
+The subsequent concurrent #718 runtime was preserved too.
+
+The genuine CLI-staged job `77a3a145...` above was transferred through the private
+authenticated hand-off container, without any offline result files. The normal
+`ndlocr submit` command created workunit **15711**, retaining its real
+`submitted` marker, quorum 2 and target 2. Actual server database readback showed:
+
+| Result | Host | App version | Outcome | Validation | Exit status |
+| ------ | ---- | ----------- | ------- | ---------- | ----------- |
+| 31035  | 6    | 26          | Success | Valid      | 0           |
+| 31036  | 6    | 26          | Success | Valid      | 0           |
+
+**Both results ran on the same host.** This proves the real redundant BOINC
+lifecycle, not independent-host volunteer consensus. The separate CT 100/110
+published-worker measurements remain the cross-host evidence. The workunit's
+canonical result is **31035**, assimilation state **2**, error mask **0**.
+The stock assimilator wrote its three canonical files under `results/0/`.
+The canonical text has the same 7,607 characters and SHA-256 recorded above;
+worker-reported elapsed time was 133.340 seconds.
+
+Only that real canonical spool and its retained submitted state were copied
+back to the authorized maintainer. The ordinary `ndlocr collect` then wrote
+the immutable ALTO followed by the 16,719-byte Parquet part under
+`curated/ocr-ja/`, with stem
+`sn83025517_1945-01-01_ed-1_seq-4.boinc-77a3a1457511db4ee342978a4307ee87715e12909487d9f20c60073172c4392c`.
+Collection replay succeeded without replacing the accepted bytes or timestamp.
+The actual downloaded part passes the unchanged production
+`usnm_ingest::ocr_ja::read_part` reader with source `usnm-ndlocr-lite`, reason
+`missing`, and `indexable() == true`.
+
+Exact accepted bytes, the acceptance timestamp and the `published` marker are
+retained locally, in the private hand-off backup, and on the trusted project
+share under
+`/project/ndlocr-fullpage-77a3a145/published-state/state`.
+The returned state archive SHA-256 is
+`9552c6695eb5df22cb4fa916dc4630b1a039dc365c56f1316b9eececa8f1376c`.
+Do not reconstruct this state from volunteer files or rerun collection from
+the older pre-publication snapshot.
+
+**Normal release/search acceptance remains pending.** An existing full rebuild,
+`caj-usnm-ingest-prod-pg4wqlz` for `pages-v20261016-1`, was still running at
+33.4% at 22:09 UTC; public search still named `pages-v20261010-2`.
+Do not start a competing release, change its full-rebuild settings, or treat
+reader acceptance or the page's older native search result as publication of
+this canonical part. The next serialized normal release must record this
+part in its Japanese overlay manifest before live Japanese/Latin searches
+and credits can establish final acceptance. This already-native page remains
+separate from the genuinely fresh-page Mac pilot and current-image Gold trust.
+
 ## BOINC lifecycle (phase 2, #626)
 
 The dedicated `usnm_ndlocr` CPU app is separate from `usnm_ocr`: Japanese
