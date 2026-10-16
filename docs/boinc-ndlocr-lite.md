@@ -188,6 +188,42 @@ results**. The worker and server validator must both contain the reviewed fix
 before repeating the actual BOINC pilot. No work was submitted, assimilated,
 collected into `ocr-ja`, or verified through release/search in this run.
 
+### Corrected published full-page worker, 16 October 2026
+
+After [#700](https://github.com/tgoodyear/usnewsmap.com/pull/700) merged as
+`137306bb1574708b71c1dbf0eb70a806093f7ba7`, publication workflow
+`38959718544` passed and published worker manifest
+`sha256:60280a6b080f9c670b7218e9ba2d92bec5486ad41c8dd118e74e68f28c8dd611`.
+Its embedded engine configuration is
+`sha256:0a1c3fc63c183127a24a9bd49e35b917d94a6e1e5cea5e4b3349ddcd6304934a`.
+The staging CLI generated a new job,
+`77a3a1457511db4ee342978a4307ee87715e12909487d9f20c60073172c4392c`,
+for the same actual `missing` page and unchanged scan hash above.
+
+Both CT 100 and CT 110 independently ran this **published worker**, with one
+CPU, 4 GiB memory and no additional swap, no network, and a read-only root.
+Both completed and passed the shipped checker. Their genuine worker outputs
+passed the native peer comparison with character-bigram Dice **1.000000**.
+Both returned the same 7,607-character text hash recorded above and 630 ALTO
+Strings. A separate upstream invocation on each host matched the worker's
+normalized text, and the existing Python converter matched every String's
+content and geometry. These are actual worker results, not the earlier
+synthetic checker envelopes.
+
+| Measurement                       | pve-big CT 100 | pve-laptop CT 110 |
+| --------------------------------- | -------------- | ----------------- |
+| Worker-reported elapsed time      | 84.014 s       | 60.233 s          |
+| Independent Python wall time      | 76.749 s       | 59.071 s          |
+| Independent Python CPU time       | 76.345 CPU-s   | 59.074 CPU-s      |
+| Independent Python peak child RSS | 1,110,676 KiB  | 1,112,048 KiB     |
+
+An ONNX Runtime affinity warning on CT 110 was nonfatal; no confinement or
+affinity setting was relaxed. The full-page runtime blocker is resolved in the
+published worker. These isolated runs still do **not** prove BOINC redundant
+volunteer execution, canonical assimilation, authorized `ocr-ja` collection,
+or normal release/search acceptance. The page already has native output and
+must not be counted as the genuinely fresh-page Mac pilot.
+
 ## BOINC lifecycle (phase 2, #626)
 
 The dedicated `usnm_ndlocr` CPU app is separate from `usnm_ocr`: Japanese
