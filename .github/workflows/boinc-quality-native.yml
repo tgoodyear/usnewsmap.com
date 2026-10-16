@@ -110,7 +110,9 @@ jobs:
             Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
           if (!$redist) { throw 'MSVC redistributable not found' }
           $rows = @()
-          $files = @(Get-ChildItem (Join-Path $redist.FullName 'x64\Microsoft.VC*.CRT') -Filter '*.dll' -File | Sort-Object Name)
+          $crt = @(Get-ChildItem (Join-Path $redist.FullName 'x64') -Directory -Filter 'Microsoft.VC*.CRT')
+          if ($crt.Count -ne 1) { throw 'Missing/ambiguous MSVC x64 CRT directory' }
+          $files = @(Get-ChildItem -LiteralPath $crt[0].FullName -Filter '*.dll' -File | Sort-Object Name)
           foreach ($required in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
             if (@($files | Where-Object Name -eq $required).Count -ne 1) { throw "Missing/duplicate app-local $required" }
           }

@@ -14,6 +14,29 @@ SPEC.loader.exec_module(MODULE)
 
 
 class CanaryPreferences(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell required")
+    def test_windows_crt_workflow_enumerates_directory_contents_not_wildcard_entry(self):
+        workflow = (ROOT / ".github/workflows/boinc-quality-native.yml").read_text()
+        enumeration = "$crt = " + workflow.split("          $crt = ", 1)[1].split(
+            "          foreach ($required", 1
+        )[0]
+        with tempfile.TemporaryDirectory(prefix=".qwen-crt-test-", dir=ROOT) as folder:
+            root = Path(folder)
+            crt = root / "x64/Microsoft.VC143.CRT"
+            crt.mkdir(parents=True)
+            for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
+                (crt / name).write_bytes(b"fixture-not-a-runtime")
+            literal = str(root).replace("'", "''")
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                f"$redist=[pscustomobject]@{{FullName='{literal}'}};\n"
+                + enumeration
+                + "\nif ($files.Count -ne 3) { throw 'CRT enumeration failed' }\n"
+            )
+            result = subprocess.run(["pwsh", "-NoProfile", "-Command", script],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_stock_extension_is_exact_and_fails_closed_on_upstream_change(self):
         names = ("default", "parse", "edit", "parse_form", "show")
         source = "\n".join(f"function project_specific_prefs_{name}() {{}}" for name in names)
