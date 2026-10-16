@@ -453,6 +453,7 @@ class SetupTest(unittest.TestCase):
         self.assertIn("Environment=XDG_RUNTIME_DIR=/run/user/999/usnm-boinc-boinc-client\n", dropin)
         self.assertIn('runroot="/run/user/999/usnm-boinc-boinc-client/containers"', storage)
         self.assertIn("ProtectControlGroups=false", dropin)
+        self.assertIn("UnsetEnvironment=INVOCATION_ID\n", dropin)
         self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/999/bus", dropin)
         self.assertIn('conmon_cgroup="pod"', config)
         self.assertNotIn("docker", dropin)
@@ -642,7 +643,7 @@ class SetupTest(unittest.TestCase):
                 "WorkingDirectory": str(data),
                 "ExecStart": valid_start,
                 "Environment": base_env_str,
-                "UnsetEnvironment": "UNRELATED_VAR",
+                "UnsetEnvironment": "UNRELATED_VAR INVOCATION_ID",
                 "EnvironmentFiles": f"{harmless_env} (ignore_errors=no) {missing_env} (ignore_errors=yes)",
                 "ProtectControlGroups": "no",
                 "RuntimeDirectoryPreserve": "yes",
@@ -671,7 +672,8 @@ class SetupTest(unittest.TestCase):
                     ("EnvironmentFiles", f"{override_boinc_dir} (ignore_errors=no)"),
                     ("EnvironmentFiles", f"{harmless_env}"),
                     ("Environment", "HOME=/old"),
-                    ("UnsetEnvironment", "XDG_RUNTIME_DIR"),
+                    ("UnsetEnvironment", "XDG_RUNTIME_DIR INVOCATION_ID"),
+                    ("UnsetEnvironment", "UNRELATED_VAR"),
                     ("UnsetEnvironment", f"CONTAINERS_STORAGE_CONF={config / 'storage.conf'}"),
                     ("EnvironmentFiles", f"{override_runtime} (ignore_errors=yes)"),
                     ("EnvironmentFiles", f"{override_storage} (ignore_errors=no)"),

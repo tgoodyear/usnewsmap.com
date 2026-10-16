@@ -194,6 +194,9 @@ ProtectControlGroups=false
 ProtectHome=read-only
 ReadWritePaths={data_dir} /tmp /var/tmp
 TimeoutStartSec=40min
+# Podman keeps conmon in the calling service's cgroup when $INVOCATION_ID is set, so restarting
+# BOINC would SIGKILL every task's conmon and strand its container (exit code lost, task errors).
+UnsetEnvironment=INVOCATION_ID
 ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} --service={service}{job_args}
 """
     if ocr_node or dedicated_node:
@@ -332,6 +335,8 @@ def check_effective(service, data_dir, config_dir, uid, image=None, job_toml=Non
     unset = shlex.split(run(["systemctl", "show", service, "--property=UnsetEnvironment", "--value"]))
     if any(token.split("=", 1)[0] in expected for token in unset):
         raise SetupError("Another service drop-in unsets the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
+    if "INVOCATION_ID" not in unset:
+        raise SetupError("The service must unset INVOCATION_ID so Podman gives each container's conmon its own scope and a BOINC restart cannot kill it.")
     for key, sep, value in read_environment_files(service):
         if key in expected and (not sep or value != expected[key]):
             raise SetupError("An EnvironmentFile overrides the managed Podman environment. Inspect systemctl cat and resolve the conflict before starting BOINC.")
