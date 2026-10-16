@@ -27,9 +27,9 @@ Environment=IMDS_ENDPOINT=http://localhost:40342
 EnvironmentFile=/etc/usnm/scan-archive.env
 # The state file lists the scans already archived (name, size, mtime); a
 # listed, unchanged scan is not read or looked up again. The lock file in
-# the same directory serializes this unit with usnm-scan-archive-verify.
+# the root-controlled runtime directory serializes archive operations.
 StateDirectory=usnm-scan-archive
-ExecStart=/usr/bin/flock --exclusive /var/lib/usnm-scan-archive/lock /usr/local/bin/usnm-ocr-worker archive-scans --concurrency 4 --state /var/lib/usnm-scan-archive/archived.tsv
+ExecStart=/usr/bin/flock --exclusive /run/lock/usnm-scan-archive/lock /usr/local/bin/usnm-ocr-worker archive-scans --concurrency 4 --state /var/lib/usnm-scan-archive/archived.tsv
 # The first upload of the keep set is days of transfer.
 TimeoutStartSec=infinity
 KillSignal=SIGTERM
@@ -40,6 +40,7 @@ SyslogIdentifier=usnm-scan-archive
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 ProtectSystem=strict
+ReadWritePaths=/run/lock/usnm-scan-archive
 ProtectHome=yes
 # Reads only: the upload never writes to the scans.
 ReadOnlyPaths=/tank/ocr/scans

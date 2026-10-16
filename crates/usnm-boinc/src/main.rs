@@ -98,7 +98,7 @@ enum Commands {
         #[arg(long)]
         work: PathBuf,
     },
-    /// Score this host's Tesseract on the gold bundle, offline; writes counts only, no text.
+    /// Score an engine on the gold bundle, offline; writes counts only, no text.
     GoldRun {
         #[arg(long)]
         bundle: PathBuf,
@@ -111,6 +111,13 @@ enum Commands {
         out: PathBuf,
         #[arg(long, default_value = "tesseract")]
         tesseract: PathBuf,
+        /// Executable called directly with IMAGE LANGUAGE arguments; UTF-8 text on stdout.
+        #[arg(long, requires_all = ["engine_name", "engine_version"], conflicts_with = "tesseract")]
+        engine_cmd: Option<PathBuf>,
+        #[arg(long, requires = "engine_cmd")]
+        engine_name: Option<String>,
+        #[arg(long, requires = "engine_cmd")]
+        engine_version: Option<String>,
         #[arg(long, default_value_t = 3)]
         psm: u8,
         #[arg(long, default_value_t = 300)]
@@ -917,6 +924,9 @@ async fn main() -> anyhow::Result<()> {
             work,
             out,
             tesseract,
+            engine_cmd,
+            engine_name,
+            engine_version,
             psm,
             dpi,
             timeout_secs,
@@ -927,6 +937,11 @@ async fn main() -> anyhow::Result<()> {
                 cache,
                 work,
                 tesseract,
+                command: engine_cmd.map(|executable| usnm_boinc::gold::CommandEngine {
+                    executable,
+                    name: engine_name.expect("required by clap"),
+                    version: engine_version.expect("required by clap"),
+                }),
                 psm,
                 dpi,
                 timeout_secs,
