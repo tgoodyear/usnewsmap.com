@@ -113,13 +113,14 @@ node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal
 node scripts/probe-states-shaders.mjs --base-url http://127.0.0.1:18092 --metal --parallel
 ```
 
-The scrub gate asserts **p95 ≤2 ms**, after 200 warm-up frames, including totals,
+The scrub gate asserts **measured maximum ≤2 ms** (and reports p95), after 200 warm-up frames, including totals,
 quantiles and all fill-colour lookups. Preparation is reported separately; this
 does not measure the rest of React or deck.gl's draw. On **Apple M1 / macOS arm64,
 Node 25.8.2**, the isolated 2026-10-15 run measured preparation **16.679 ms**,
 median **0.014 ms**, p95 **0.023 ms**, maximum **0.100 ms** across 2,000 frames.
 A concurrent test run had p95 **0.080 ms** but a **12.780 ms** maximum outlier.
-This is a percentile gate, **not a guarantee that every frame is ≤2 ms**.
+The original gate checked only p95; the follow-up now also fails on any measured
+sample above 2 ms. Even a passing run is **not a guarantee about future frames**.
 
 The browser gate asserts a maximum **300 ms** over five fresh browser processes
 with Chrome's shader disk and program caches disabled. It
@@ -234,6 +235,30 @@ The latest 5,000-place arithmetic gate (2,000 frames) measured preparation
 **19.009 ms**, p95 **0.023875 ms**, maximum **0.493375 ms**. This validates
 the scoped arithmetic budget on this host, not the shader/draw budget or an
 every-frame timing guarantee on other hardware.
+A subsequent run alongside the MapView unit suite measured p95 **0.028125 ms**
+but maximum **4.663916 ms**. That run passed the old percentile-only gate but
+does **not** meet a strict every-measured-frame 2 ms requirement. The new
+maximum assertion retains such outliers as failures rather than hiding them.
+The first isolated run with the strict maximum assertion correctly **failed**:
+preparation **16.134 ms**, p95 **0.024541 ms**, maximum **5.113209 ms**.
+No CPU/GC/scheduler attribution was recorded for that outlier; it cannot
+honestly be attributed to garbage collection or dismissed as unrelated.
+
+The continued scrub investigation now reports GC entries overlapping any
+over-budget frame, without subtracting them from the measured wall time.
+It also reduces real allocation pressure: state preparation remaps sparse
+place indices during prefix accumulation instead of allocating two temporary
+600,000-entry arrays; per-window prefix scratch buffers are reused privately
+(returned rows remain independent); quantile collection no longer creates
+one small array per state, and colour lookup no longer allocates a closure
+per row. Unit tests preserve input cubes and prior-window snapshots.
+After these changes, one run measured preparation **12.598 ms**, p95
+**0.017500 ms**, maximum **3.064042 ms**, overlapping a recorded
+**3.038375 ms** GC pause. The strict maximum gate still **fails**; the GC
+pause is real observed wall time, not a reason to waive it. Prior instrumented
+outliers **5.693417 ms** and **4.423750 ms** likewise overlapped recorded
+GC pauses of **5.605417 ms** and **4.363625 ms**. These are observed runs,
+not a controlled causal benchmark proving any maximum-latency improvement.
 
 Read-only public metadata on 2026-10-15 (`pages-v20261010-2`) listed **1,617
 places**, none missing state codes; all codes are represented by the boundary
