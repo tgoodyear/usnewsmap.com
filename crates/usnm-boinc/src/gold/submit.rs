@@ -25,6 +25,7 @@ pub struct Options {
     pub root: PathBuf,
     pub project: PathBuf,
     pub units: u32,
+    pub target_host: Option<u64>,
     pub engine: Engine,
 }
 
@@ -202,6 +203,14 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         "--engine-image must be the worker image's full sha256 digest"
     );
     let project = opts.project.canonicalize()?;
+    if let Some(host) = opts.target_host {
+        ensure!(host > 0, "--target-host must be positive");
+        let config = std::fs::read_to_string(project.join("config.xml"))?;
+        ensure!(
+            config.contains("<enable_assignment>1</enable_assignment>"),
+            "targeted work requires an explicitly enabled <enable_assignment>1</enable_assignment>"
+        );
+    }
     let p = prepare::read(&opts.root)?;
     let (bytes, _, sha) = prepare::md5_sha256(&opts.root.join(prepare::BUNDLE_COPY))?;
     ensure!(
@@ -229,6 +238,20 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     for j in jobs {
         let dir = units_dir(&opts.root).join(format!("{:04}", j.unit));
         let path = dir.join(JOB_FILE);
+        let target = dir.join("target-host.json");
+        if target.exists() {
+            let old: Option<u64> = serde_json::from_slice(&read(&target, 128)?)?;
+            ensure!(
+                old == opts.target_host,
+                "campaign target changed; use a fresh campaign root"
+            );
+        } else {
+            ensure!(
+                opts.target_host.is_none() || !path.exists(),
+                "cannot target a pre-existing campaign; use a fresh campaign root"
+            );
+            atomic(&target, &serde_json::to_vec(&opts.target_host)?)?;
+        }
         if path.exists() {
             let old: Job = serde_json::from_slice(&read(&path, MAX_JSON)?)?;
             ensure!(
@@ -252,9 +275,13 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             &hier_path(&project, &format!("{}_gold_json", j.id)).await?,
             &path,
         )?;
+        let mut args = create_work_args(&p, &j)?;
+        if let Some(host) = opts.target_host {
+            args.extend(["--target_host".to_string(), host.to_string()]);
+        }
         let status = Command::new(project.join("bin/create_work"))
             .current_dir(&project)
-            .args(create_work_args(&p, &j)?)
+            .args(args)
             .status()
             .await?;
         ensure!(
@@ -326,6 +353,31 @@ pub(crate) mod tests {
             timeout_secs: 300,
             version: "5.5.0".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn targeting_requires_positive_host_and_explicit_assignment_opt_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("config.xml"), "<boinc><config/></boinc>").unwrap();
+        let mut options = Options {
+            root: tmp.path().join("campaign"),
+            project: tmp.path().to_path_buf(),
+            units: 1,
+            engine: engine(),
+            target_host: Some(0),
+        };
+        assert!(run(&options)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("must be positive"));
+        options.target_host = Some(42);
+        assert!(run(&options)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("enable_assignment"));
+        assert!(!options.root.exists());
     }
 
     #[test]

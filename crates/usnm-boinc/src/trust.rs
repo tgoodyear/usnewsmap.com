@@ -18,8 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use usnm_store::ObjectStore;
 
-pub const TRUST_VERSION: u32 = 1;
-pub const DEFAULT_MAX_CER: f64 = 0.10;
+pub const TRUST_VERSION: u32 = 2;
 const MAX_REPORTS: u64 = 64 << 20;
 
 /// `trust.json`.
@@ -34,6 +33,7 @@ pub struct Trust {
 
 #[derive(Deserialize)]
 struct Row {
+    completed_at: chrono::DateTime<chrono::Utc>,
     engine_image: String,
     host_id: Option<u64>,
     summary: Vec<SummaryRow>,
@@ -53,7 +53,7 @@ impl Trust {
             (0.0..=1.0).contains(&max_cer),
             "max CER must be between 0 and 1"
         );
-        let mut hosts: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+        let mut latest = BTreeMap::new();
         for path in reports {
             let bytes = crate::read(path, MAX_REPORTS as usize)
                 .with_context(|| format!("reading {}", path.display()))?;
@@ -63,12 +63,30 @@ impl Trust {
                 }
                 let row: Row = serde_json::from_str(line)
                     .with_context(|| format!("{}:{}", path.display(), n + 1))?;
+                anyhow::ensure!(
+                    immutable_image(&row.engine_image),
+                    "gold engine image must be an immutable sha256 digest"
+                );
                 let overall = row.summary.iter().find(|s| s.source == "all");
-                if let (Some(host), Some(cer)) = (row.host_id, overall.and_then(|s| s.cer)) {
-                    if cer <= max_cer {
-                        hosts.entry(row.engine_image).or_default().insert(host);
+                if let Some(host) = row.host_id.filter(|h| *h > 0) {
+                    let passed = overall
+                        .and_then(|s| s.cer)
+                        .is_some_and(|cer| cer.is_finite() && cer >= 0.0 && cer <= max_cer);
+                    let value = latest
+                        .entry((row.engine_image, host))
+                        .or_insert((row.completed_at, passed));
+                    if row.completed_at > value.0 {
+                        *value = (row.completed_at, passed);
+                    } else if row.completed_at == value.0 {
+                        value.1 &= passed;
                     }
                 }
+            }
+        }
+        let mut hosts: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+        for ((image, host), (_, passed)) in latest {
+            if passed {
+                hosts.entry(image).or_default().insert(host);
             }
         }
         Ok(Self {
@@ -82,11 +100,21 @@ impl Trust {
         let t: Self = serde_json::from_slice(&crate::read(path, MAX_REPORTS as usize)?)
             .with_context(|| format!("reading {}", path.display()))?;
         anyhow::ensure!(t.v == TRUST_VERSION, "unsupported trust list version");
+        anyhow::ensure!((0.0..=1.0).contains(&t.max_cer), "invalid trust threshold");
+        anyhow::ensure!(
+            t.hosts
+                .iter()
+                .all(|(image, hosts)| immutable_image(image) && !hosts.contains(&0)),
+            "invalid trust image or host"
+        );
         Ok(t)
     }
 
     /// `None` when the host is trusted for this image; otherwise why not.
     pub fn refuse(&self, engine_image: &str, host_id: Option<u64>) -> Option<String> {
+        if !immutable_image(engine_image) || host_id == Some(0) {
+            return Some("invalid immutable engine image or host id".into());
+        }
         let Some(host) = host_id else {
             return Some("no host id for this result".into());
         };
@@ -103,6 +131,12 @@ impl Trust {
             ))
         }
     }
+}
+
+fn immutable_image(image: &str) -> bool {
+    image
+        .strip_prefix("sha256:")
+        .is_some_and(usnm_ocr_contract::boinc::is_sha256)
 }
 
 pub fn quarantine_dir(root: &Path, id: &str) -> PathBuf {
@@ -157,6 +191,7 @@ mod tests {
 
     fn row(image: &str, host: Option<u64>, cer: Option<f64>) -> String {
         serde_json::json!({
+            "completed_at": "2026-10-15T00:00:00Z",
             "bundle_version": 1,
             "engine_image": image,
             "host_id": host,
@@ -176,26 +211,52 @@ mod tests {
         std::fs::write(
             &a,
             [
-                row("sha256:aa", Some(1), Some(0.05)),
-                row("sha256:aa", Some(2), Some(0.30)),
-                row("sha256:aa", None, Some(0.01)),
-                row("sha256:aa", Some(3), None),
+                row(&format!("sha256:{}", "a".repeat(64)), Some(1), Some(0.05)),
+                row(&format!("sha256:{}", "a".repeat(64)), Some(2), Some(0.30)),
+                row(&format!("sha256:{}", "a".repeat(64)), None, Some(0.01)),
+                row(&format!("sha256:{}", "a".repeat(64)), Some(3), None),
             ]
             .join("\n"),
         )
         .unwrap();
-        std::fs::write(&b, row("sha256:bb", Some(2), Some(0.10))).unwrap();
-        let t = Trust::build(&[a, b], DEFAULT_MAX_CER).unwrap();
-        assert_eq!(t.hosts["sha256:aa"], BTreeSet::from([1]));
-        assert_eq!(t.hosts["sha256:bb"], BTreeSet::from([2]));
-        assert!(t.refuse("sha256:aa", Some(1)).is_none());
-        assert!(t.refuse("sha256:aa", Some(2)).is_some());
-        assert!(t.refuse("sha256:bb", Some(1)).is_some());
+        let image_a = format!("sha256:{}", "a".repeat(64));
+        let image_b = format!("sha256:{}", "b".repeat(64));
+        std::fs::write(&b, row(&image_b, Some(2), Some(0.10))).unwrap();
+        let t = Trust::build(&[a, b], 0.10).unwrap();
+        assert_eq!(t.hosts[&image_a], BTreeSet::from([1]));
+        assert_eq!(t.hosts[&image_b], BTreeSet::from([2]));
+        assert!(t.refuse(&image_a, Some(1)).is_none());
+        assert!(t.refuse(&image_a, Some(2)).is_some());
+        assert!(t.refuse(&image_b, Some(1)).is_some());
         assert!(t.refuse("sha256:cc", Some(1)).is_some());
         assert!(t.refuse("sha256:aa", None).is_some());
         let p = tmp.path().join("trust.json");
         std::fs::write(&p, serde_json::to_vec(&t).unwrap()).unwrap();
         assert_eq!(Trust::load(&p).unwrap(), t);
         assert!(Trust::build(&[], 2.0).is_err());
+    }
+
+    #[test]
+    fn newest_failure_revokes_in_any_file_order_and_ties_fail_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("pass");
+        let b = tmp.path().join("fail");
+        let image = format!("sha256:{}", "a".repeat(64));
+        std::fs::write(&a, row(&image, Some(42), Some(0.01))).unwrap();
+        std::fs::write(
+            &b,
+            row(&image, Some(42), Some(0.8)).replace("2026-10-15", "2026-10-16"),
+        )
+        .unwrap();
+        for paths in [vec![a.clone(), b.clone()], vec![b.clone(), a.clone()]] {
+            assert!(Trust::build(&paths, 0.1)
+                .unwrap()
+                .refuse(&image, Some(42))
+                .is_some());
+        }
+        std::fs::write(&b, row(&image, Some(42), None)).unwrap();
+        assert!(Trust::build(&[a, b.clone()], 0.1).unwrap().hosts.is_empty());
+        std::fs::write(&b, row("mutable:latest", Some(42), Some(0.0))).unwrap();
+        assert!(Trust::build(&[b], 0.1).is_err());
     }
 }

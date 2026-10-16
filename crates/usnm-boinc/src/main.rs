@@ -308,6 +308,9 @@ enum Gold {
         /// How many units the campaign has; units already submitted are skipped.
         #[arg(long, default_value_t = 20)]
         units: u32,
+        /// Optional targeted gold campaign; requires the server's enable_assignment.
+        #[arg(long)]
+        target_host: Option<u64>,
         /// The worker image's full digest (sha256:...).
         #[arg(long)]
         engine_image: String,
@@ -344,7 +347,7 @@ enum Gold {
         #[arg(long, required = true)]
         reports: Vec<PathBuf>,
         /// The highest overall CER that passes.
-        #[arg(long, default_value_t = usnm_boinc::trust::DEFAULT_MAX_CER)]
+        #[arg(long)]
         max_cer: f64,
         #[arg(long)]
         out: PathBuf,
@@ -1037,6 +1040,7 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
             root,
             project,
             units,
+            target_host,
             engine_image,
             engine_base,
             engine_version,
@@ -1046,6 +1050,7 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
                 root,
                 project,
                 units,
+                target_host,
                 engine: usnm_boinc::gold::job::Engine {
                     base: engine_base,
                     dpi: 300,
