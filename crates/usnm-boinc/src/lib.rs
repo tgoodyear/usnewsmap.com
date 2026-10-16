@@ -30,6 +30,7 @@ use usnm_store::ObjectStore;
 pub mod assess;
 pub mod gold;
 pub mod handoff;
+pub mod ndlocr;
 pub mod quality;
 pub mod qwen;
 pub mod scans;
