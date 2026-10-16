@@ -166,21 +166,31 @@ class IrisCampaignTest(unittest.TestCase):
                 "<file_ref><file_name>Dockerfile_fixture</file_name>"
                 "<open_name>Dockerfile</open_name></file_ref>"
             )
-            with patch.object(campaign.subprocess, "run", return_value=SimpleNamespace(stdout=str(dockerfile))) as run:
+            with patch.object(campaign.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
                 campaign.verify_version_files(project, image, xml.encode())
+                self.assertEqual(run.call_count, 1)
                 self.assertEqual(run.call_args.args[0][1], "-verify")
+                self.assertEqual(run.call_args.args[0][2], str(dockerfile.resolve()))
                 with self.assertRaisesRegex(ValueError, "differs"):
                     campaign.verify_version_files(project, image.replace("a" * 64, "b" * 64), xml)
                 dockerfile.write_text("changed")
                 with self.assertRaisesRegex(ValueError, "differs"):
                     campaign.verify_version_files(project, image, xml)
                 dockerfile.write_bytes(raw)
-                run.side_effect = [
-                    SimpleNamespace(stdout=str(dockerfile)),
-                    subprocess.CalledProcessError(1, ["crypt_prog", "-verify"]),
-                ]
+                run.side_effect = subprocess.CalledProcessError(1, ["crypt_prog", "-verify"])
                 with self.assertRaises(subprocess.CalledProcessError):
                     campaign.verify_version_files(project, image, xml)
+                run.reset_mock(side_effect=True)
+                dockerfile.unlink()
+                with self.assertRaises(FileNotFoundError):
+                    campaign.verify_version_files(project, image, xml)
+                run.assert_not_called()
+                outside = project / "outside"
+                outside.write_bytes(raw)
+                dockerfile.symlink_to(outside)
+                with self.assertRaisesRegex(ValueError, "outside download"):
+                    campaign.verify_version_files(project, image, xml)
+                run.assert_not_called()
             with self.assertRaisesRegex(ValueError, "signature"):
                 campaign.verify_version_files(project, image, xml.replace("published-signature", ""))
 

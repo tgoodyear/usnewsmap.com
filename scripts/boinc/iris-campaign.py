@@ -194,12 +194,8 @@ def verify_version_files(project, image, xml_doc):
     infos = [info for info in version.findall(".//file_info") if info.findtext("name") == name]
     if len(infos) != 1 or not infos[0].findtext("file_signature"):
         raise ValueError("registered Dockerfile lacks code signature")
-    output = subprocess.run(
-        [str(project / "bin/dir_hier_path"), name], cwd=project,
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    path = Path(output)
-    path = (path if path.is_absolute() else project / path).resolve(strict=True)
+    # Stock update_versions stages app files flat, unlike workunit input files.
+    path = (project / "download" / name).resolve(strict=True)
     if not path.is_relative_to((project / "download").resolve()):
         raise ValueError("registered Dockerfile outside download directory")
     data = path.read_bytes()
