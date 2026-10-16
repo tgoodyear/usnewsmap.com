@@ -53,7 +53,22 @@ explicit page selection + cached scans
 
 First build the existing engine image. Keep its pinned base, package snapshot,
 and `models.lock`, including `frak2021`; the BOINC worker verifies the selected
-models' bytes at execution. Then build the BOINC image using that engine image's
+models' bytes at execution. The lock includes Spanish (`spa`), French (`fra`),
+Italian (`ita`), Yiddish (`yid`, then `heb` fallback), Hebrew (`heb`), Danish
+(`dan`), Norwegian (`nor`, for `nor`/`nob`/`nno`), Finnish (`fin`), Swedish (`swe`),
+Lithuanian (`lit`), Slovenian (`slv`), Hungarian (`hun`) and Slovak (`slk`).
+These thirteen tessdata_best additions are pinned to the same revision as the
+existing Apache-2.0 models and add 126,180,270 bytes (120.33 MiB) of model data
+to both images before compression. The BOINC Containerfile inherits them from
+the Tesseract image; it has no separate model list.
+
+After changing the lock, republish **both** images. Run and score a pilot per
+new language with the existing quality checks (including #522) before replacing
+LoC text. Yiddish also needs the reader work in #328; Danish and Norwegian
+1880s–1910s may need Fraktur routing (#325). Adding models alone does not
+perform these operational steps.
+
+Then build the BOINC image using that engine image's
 immutable digest (these examples run from the repository root):
 
 ```sh
@@ -280,7 +295,9 @@ identity on the deployed filesystem.
 
 The server bridge wrapper submits directly and preserves the CLI's exit status.
 It does not scan the download or hand-off trees to broaden permissions after
-submission. Operator hand-offs need access to the private journal's owner.
+submission. The hand-off directory (`$HANDOFF_DIR`) stays private: `submit` and
+`reconcile` run as the same user, and nothing reads that directory under another
+identity. Operator hand-offs therefore need access to the journal owner's files.
 Deploy the updated bridge image containing both this CLI and wrapper together.
 
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
