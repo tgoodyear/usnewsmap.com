@@ -107,7 +107,8 @@ INSERT INTO host VALUES (0),(UNIX_TIMESTAMP()-90000),(UNIX_TIMESTAMP()),(UNIX_TI
 """ + inventory.QUERY + ";",
             text=True, capture_output=True, check=True,
         )
-        self.assertEqual(result.stdout.strip(), "3\t2\nusnm_" + "a" * 64)
+        self.assertEqual(result.stdout.strip(),
+                         "3\t2\nusnm_" + "a" * 64 + "\t1\nusnm_" + "b" * 64 + "\t2")
 
 
 if __name__ == "__main__":

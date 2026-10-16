@@ -114,6 +114,8 @@ case "${HANDOFF_STEP:-}" in
     [[ ${JOB_ID:-} =~ ^[0-9a-f]{64}$ ]] || fail "JOB_ID is a job id (64 hex)"
     usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$JOB_ID/record.json" \
       --to "$root/jobs/$JOB_ID/record.json"
+    usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix "dispatch/jobs/$JOB_ID/accepted" \
+      --to "$root/jobs/$JOB_ID/accepted"
     host=$(usnm-boinc handoff get-spool --from-url "$HANDOFF_URL" --job "$JOB_ID" \
       --spool "$work/spool" --trust-out "$work/trust.json")
     rc=0

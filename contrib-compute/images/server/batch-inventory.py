@@ -17,13 +17,14 @@ QUERY = """
 SELECT
  (SELECT COUNT(*) FROM workunit WHERE assimilate_state != 2),
  (SELECT COUNT(*) FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400);
-SELECT name FROM workunit
- WHERE assimilate_state != 2 AND name REGEXP '^usnm_[0-9a-f]{64}$'
+SELECT name, assimilate_state FROM workunit
+ WHERE name REGEXP '^usnm_[0-9a-f]{64}$'
+ ORDER BY name
  LIMIT 10001
 """
 
 
-def inventory(root, results, counts, nonce, pending_ids=()):
+def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None):
     if not re.fullmatch(r"[0-9a-f]{32}", nonce):
         raise ValueError("invalid inventory nonce")
     if len(counts) != 2 or any(type(n) is not int or n < 0 for n in counts):
@@ -31,6 +32,11 @@ def inventory(root, results, counts, nonce, pending_ids=()):
     if len(pending_ids) > MAX_JOBS or len(set(pending_ids)) != len(pending_ids) or \
             any(not ID.fullmatch(job_id) for job_id in pending_ids):
         raise ValueError("invalid/oversized pending job inventory")
+    existing_ids = pending_ids if existing_ids is None else existing_ids
+    if len(existing_ids) > MAX_JOBS or len(set(existing_ids)) != len(existing_ids) or \
+            any(not ID.fullmatch(job_id) for job_id in existing_ids) or \
+            not set(pending_ids) <= set(existing_ids):
+        raise ValueError("invalid/oversized existing workunit inventory")
     if not root.is_dir() or not results.is_dir() or (root / "jobs").is_symlink():
         raise ValueError("missing/unsafe inventory directories")
     jobs = {}
@@ -76,6 +82,7 @@ def inventory(root, results, counts, nonce, pending_ids=()):
         "created_at": int(time.time()),
         "pending_workunits": counts[0],
         "pending_jobs": list(pending_ids),
+        "existing_jobs": list(existing_ids),
         "active_hosts": counts[1],
         "jobs": jobs,
     }
@@ -101,10 +108,12 @@ def main():
     ).stdout.strip().splitlines()
     counts = output[0].split("\t") if output else []
     if len(counts) != 2 or any(not value.isdecimal() for value in counts) or \
-            any(not re.fullmatch(r"usnm_[0-9a-f]{64}", value) for value in output[1:]):
+            any(not re.fullmatch(r"usnm_[0-9a-f]{64}\t-?[0-9]+", value) for value in output[1:]):
         raise ValueError("invalid database inventory")
+    rows = [value.split("\t") for value in output[1:]]
     payload = inventory(args.root, args.results, [int(value) for value in counts], args.nonce,
-                        [value.removeprefix("usnm_") for value in output[1:]])
+                        [name.removeprefix("usnm_") for name, state in rows if int(state) != 2],
+                        [name.removeprefix("usnm_") for name, _ in rows])
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True) + "\n")
 

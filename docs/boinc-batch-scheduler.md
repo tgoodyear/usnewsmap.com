@@ -88,6 +88,9 @@ pages rather than overwriting them, including for historical cohorts.
    assimilator outputs (or terminal markers), and two aggregate SQL counts with
    verified database TLS. It writes only `scheduler/inventory.json` in the
    hand-off container. A per-tick nonce rejects stale/concurrent snapshots.
+   Hand-off journals are downloaded as metadata only, using one Azure CLI batch
+   process rather than one CLI invocation per historical job. Each refresh
+   clears the disposable metadata cache and checks the exact listed file set.
 3. Collect up to `batch_size` previously allocated results, even with no active
    hosts or a full queue. Never supply a host ID override or bypass `--trust`.
    Partial output sets wait; duplicate spool directories fail closed.
@@ -106,13 +109,17 @@ pages rather than overwriting them, including for historical cohorts.
    Submissions, including recovered reservations, also respect the remaining
    observed all-app queue capacity. Export transfers only the selected scans and
    sidecars, their existing journal entries and the single manifest snapshot;
-   collection transfers only one journal and its result/trust files. Retained
-   scan history is never downloaded per result.
+   collection transfers only one journal, its optional `accepted/` publication
+   recovery snapshot and result/trust files. Accepted bytes survive partial
+   publication failures and are reused even if spool bytes change. Retained scan
+   history is never downloaded per result.
    On rerun, authoritative hand-off and bridge records recover partial export
    and interrupted pulls. Never replay `create_work` for a `submitting` record.
    A submitted reservation is not submitted twice.
-   An existing SQL workunit with a missing/stale bridge journal also requires
-   explicit reconciliation, even if capacity is available.
+   Any existing SQL workunit, including completed work, with a missing/stale
+   bridge journal also requires explicit reconciliation, even if capacity is
+   available. Submission headroom includes other plans' assimilated, uncollected
+   backlog; converting this cohort's reservations does not ignore that backlog.
 6. Emit a structured `boinc_batch_tick` JSON event: selected/published counts,
    new publications, cumulative pages/hour, host/queue counts, oldest pending
    age, collection backlog and backpressure. Errors emit
@@ -157,7 +164,8 @@ existing explicit reconcile procedure. Only the serialized operator may break
 the stale `scheduler/controller.lock` blob lease once the former owner is
 confirmed stopped. Do not delete journals, reset state, or break a live lease.
 A missing reply is not evidence that `create_work` failed. The inventory fails
-closed above 10,000 jobs or 100,000 spool entries; archive only drained,
+closed above 10,000 journals/existing native workunit IDs or 100,000 spool entries;
+archive only drained,
 operator-verified history before resuming.
 
 ### Production acceptance remains separate

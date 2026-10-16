@@ -1246,6 +1246,70 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
 }
 
 #[tokio::test]
+async fn remote_handoff_retry_restores_accepted_bytes_after_partial_publication() {
+    use usnm_boinc::handoff;
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let files = fx.result(&id);
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    let (alto_path, part_path) = record.paths().unwrap();
+    let blocked = fx.tmp.path().join("out").join(&part_path);
+    std::fs::create_dir_all(&blocked).unwrap();
+    assert!(fx.import(&id, &files).await.is_err());
+    assert!(fx.stores.out.get(&alto_path).await.unwrap().is_some());
+    assert!(fx
+        .options
+        .root
+        .join(format!("jobs/{id}/accepted/result.json"))
+        .exists());
+    std::fs::remove_dir(&blocked).unwrap();
+    let container = store(fx.tmp.path(), "retry-handoff");
+    handoff::put(
+        container.as_ref(),
+        &fx.options.root.join(format!("jobs/{id}")),
+        &format!("dispatch/jobs/{id}"),
+    )
+    .await
+    .unwrap();
+    let retry = fx.tmp.path().join("retry-dispatch");
+    handoff::get_file(
+        container.as_ref(),
+        &format!("dispatch/jobs/{id}/record.json"),
+        &retry.join(format!("jobs/{id}/record.json")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        handoff::get(
+            container.as_ref(),
+            &format!("dispatch/jobs/{id}/accepted"),
+            &retry.join(format!("jobs/{id}/accepted")),
+        )
+        .await
+        .unwrap(),
+        3
+    );
+    assert!(!retry.join(format!("jobs/{id}/page")).exists());
+    std::fs::write(&files.1, b"CHANGED SPOOL").unwrap();
+    usnm_boinc::import(
+        &retry,
+        &id,
+        &files.0,
+        &files.1,
+        &files.2,
+        fx.stores.curated.as_ref(),
+        fx.stores.out.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::load(&retry, &id).unwrap().stage,
+        Stage::Published
+    );
+    assert!(fx.stores.out.get(&part_path).await.unwrap().is_some());
+}
+
+#[tokio::test]
 async fn handoff_get_file_copies_only_the_named_object_and_rejects_missing_or_unsafe_paths() {
     let fx = Fixture::new("eng").await;
     let container = store(fx.tmp.path(), "exact-handoff");

@@ -45,6 +45,7 @@ class Fake:
         self.other = 0
         self.assimilated = set()
         self.extra_pending = set()
+        self.extra_existing = set()
         self.crash_export = False
         self.crash_submit = False
         self.hold = False
@@ -57,6 +58,9 @@ class Fake:
         return {"schema_version": 1, "nonce": "a" * 32, "created_at": NOW,
                 "active_hosts": self.hosts,
                 "pending_workunits": self.other + len(pending), "pending_jobs": pending,
+                "existing_jobs": sorted(set(pending) | self.extra_existing |
+                                        {job_id for job_id, job in self.jobs.items()
+                                         if job["stage"] == "submitted"}),
                 "jobs": copy.deepcopy(self.jobs)}
 
     def records(self):
@@ -244,6 +248,65 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(self.fake.jobs, {})
         self.assertFalse(any(action[0] == "submit" for action in self.fake.actions))
 
+    def test_completed_sql_work_with_missing_or_stale_journal_is_not_replayed(self):
+        job_id = "0" * 63 + "1"
+        self.fake.rows = [record(self.config["pages"][0]["page"], 1)]
+        self.fake.extra_existing = {job_id}
+        for remote in (None, {"stage": "reserved", "spool": None}):
+            with self.subTest(remote=remote):
+                self.fake.jobs = {} if remote is None else {job_id: remote}
+                with self.assertRaisesRegex(ValueError, "SQL/journal mismatch"):
+                    self.tick()
+                self.assertEqual(self.fake.actions, [])
+                self.assertNotIn("selected", self.state)
+
+    def test_foreign_assimilated_backlog_blocks_recovered_submissions(self):
+        own = [record(self.config["pages"][0]["page"], 1), record(self.config["pages"][1]["page"], 2)]
+        foreign = [record("foreign/page-1", 10), record("foreign/page-2", 11)]
+        for row in foreign:
+            row["plan"] = "foreign-owner"
+            self.fake.jobs[row["job"]["id"]] = {"stage": "submitted", "spool": None}
+            self.fake.assimilated.add(row["job"]["id"])
+        self.fake.rows = own + foreign
+        self.fake.other = 2
+        event = self.tick()
+        self.assertTrue(event["backpressure"])
+        self.assertEqual(self.fake.actions, [])
+        self.assertFalse(any(job_id in self.fake.jobs for job_id in ("0" * 63 + "1", "0" * 63 + "2")))
+
+    def test_journal_inventory_batches_metadata_and_discards_stale_cache(self):
+        directory = Path(__file__).parent.resolve() / (".journal-test-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            transport = batch.Transport(self.config, directory)
+            rows = [record("page-" + str(number), number) for number in range(1, 129)]
+            names = [f'dispatch/jobs/{row["job"]["id"]}/record.json' for row in rows]
+            stale = directory / "journal-cache" / "stale.json"
+            stale.parent.mkdir()
+            stale.write_text("{}")
+
+            def download(argv, label):
+                self.assertIn("download-batch", argv)
+                for name, row in zip(names, rows):
+                    path = directory / "journal-cache" / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(row))
+                return ""
+
+            with patch.object(transport, "az", return_value=json.dumps(names)), \
+                    patch.object(transport, "run", side_effect=download) as run, \
+                    patch.object(transport, "blob", side_effect=AssertionError("per-record CLI")):
+                self.assertEqual(transport.records(), rows)
+                self.assertEqual(run.call_count, 1)
+                self.assertFalse(stale.exists())
+            with patch.object(transport, "az", return_value=json.dumps(names)), \
+                    patch.object(transport, "run", return_value=""), \
+                    self.assertRaisesRegex(ValueError, "changed during download"):
+                transport.records()
+        finally:
+            import shutil
+            shutil.rmtree(directory)
+
     def test_stale_inventory(self):
         with self.assertRaisesRegex(ValueError, "fresh"):
             batch.tick(self.config, self.state, self.fake, lambda: None, NOW + 4000)
@@ -349,7 +412,9 @@ elif args[0] == "export":
             }, text=True, capture_output=True, check=True)
             calls = [json.loads(line) for line in (directory / "calls.jsonl").read_text().splitlines()]
             self.assertEqual(sum(call[:2] == ["handoff", "get-file"] for call in calls), 1)
-            self.assertFalse(any(call[:2] == ["handoff", "get"] for call in calls))
+            prefixes = [call[call.index("--prefix") + 1] for call in calls
+                        if call[:2] == ["handoff", "get"]]
+            self.assertEqual(prefixes, ["dispatch/jobs/" + "a" * 64 + "/accepted"])
             collect = next(call for call in calls if call[0] == "collect")
             self.assertIn("--trust", collect)
             self.assertEqual(collect[collect.index("--host-id") + 1], "42")

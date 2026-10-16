@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -143,8 +144,31 @@ class Transport:
         listing = json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*",
                                      "--query", "[].name", "-o", "json"))
         names = [name for name in listing if re.fullmatch(r"dispatch/jobs/[0-9a-f]{64}/record.json", name)]
-        require(len(names) <= MAX_JOBS, "dispatch inventory limit reached; archive drained journals")
-        return [self.blob(name) for name in names]
+        require(len(names) <= MAX_JOBS and len(set(names)) == len(names),
+                "dispatch inventory limit/consistency failure; reconcile drained journals")
+        cache = self.directory / "journal-cache"
+        if cache.exists():
+            shutil.rmtree(cache)
+        cache.mkdir(mode=0o700)
+        if names:
+            pattern = "dispatch/jobs/" + "[0-9a-f]" * 64 + "/record.json"
+            self.run([
+                "az", "storage", "blob", "download-batch", "--source", "boinc-handoff",
+                "--destination", str(cache), "--pattern", pattern, "--overwrite", "true",
+                "--account-name", self.config["account"], "--auth-mode", "login",
+                "--only-show-errors", "-o", "none",
+            ], "batch journal inventory")
+        actual = {str(path.relative_to(cache)) for path in cache.rglob("*") if path.is_file()}
+        require(actual == set(names), "journal inventory changed during download; retry under the owner lock")
+        records = []
+        for name in sorted(names):
+            path = cache / name
+            require(not path.is_symlink() and path.stat().st_size <= 131072,
+                    "invalid/oversized journal metadata")
+            record = json.loads(path.read_text())
+            require(record["job"]["id"] == name.split("/")[2], "journal filename/identity mismatch")
+            records.append(record)
+        return records
 
     def export(self, pages, job_ids=()):
         argv = self.config["push_command"] + [
@@ -204,6 +228,12 @@ def tick(config, state, transport, persist, now=None):
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
             len(set(pending_jobs)) == len(pending_jobs), "invalid pending job inventory")
     pending_jobs = set(pending_jobs)
+    existing_jobs = snapshot["existing_jobs"]
+    require(isinstance(existing_jobs, list) and len(existing_jobs) <= MAX_JOBS and
+            all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in existing_jobs) and
+            len(set(existing_jobs)) == len(existing_jobs) and pending_jobs <= set(existing_jobs),
+            "invalid existing workunit inventory")
+    existing_jobs = set(existing_jobs)
     server = snapshot["jobs"]
     require(isinstance(server, dict) and len(server) <= MAX_JOBS, "invalid server job inventory")
     for job_id, job in server.items():
@@ -214,7 +244,10 @@ def tick(config, state, transport, persist, now=None):
     owned = owned_records(config, records)
     for record in owned.values():
         job_id = record["job"]["id"]
-        require(job_id not in pending_jobs or server.get(job_id, {}).get("stage") == "submitted",
+        require(server.get(job_id, {}).get("stage") != "submitting",
+                "uncertain BOINC submission; reconcile explicitly, never automatically resubmit")
+        require(record["stage"] in ("published", "failed") or job_id not in existing_jobs or
+                server.get(job_id, {}).get("stage") == "submitted",
                 "SQL/journal mismatch; reconcile existing work before any automatic submission")
     selected = state.setdefault("selected", {})
     for page in owned:
@@ -268,13 +301,20 @@ def tick(config, state, transport, persist, now=None):
             records = transport.records()
             owned = owned_records(config, records)
         submitted = 0
-        submit_limit = min(config["batch_size"], max(0, target - snapshot["pending_workunits"]))
+        candidates = {record["job"]["id"] for record in owned.values()
+                      if record["stage"] == "reserved" and record["job"]["id"] not in existing_jobs
+                      and server.get(record["job"]["id"], {}).get("stage") in (None, "reserved")}
+        backlog = sum(record["stage"] not in ("published", "failed") and
+                      record["job"]["id"] not in pending_jobs | candidates for record in records)
+        backlog += sum(page not in owned for page in selected)
+        submit_limit = min(config["batch_size"],
+                           max(0, target - snapshot["pending_workunits"] - backlog))
         for record in owned.values():
             job_id = record["job"]["id"]
             if record["stage"] == "reserved" and \
                     server.get(job_id, {}).get("stage") in (None, "reserved") and \
                     submitted < submit_limit:
-                require(job_id not in pending_jobs,
+                require(job_id not in existing_jobs,
                         "SQL/journal mismatch; reconcile existing work before any automatic submission")
                 transport.submit(job_id)
                 submitted += 1
