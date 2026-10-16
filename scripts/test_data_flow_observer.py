@@ -60,6 +60,17 @@ class Observer(unittest.TestCase):
         self.assertEqual(failures[0]["code"], "local-ocr-unavailable")
         self.assertNotIn("private diagnostics", json.dumps(failures))
 
+    def test_wrong_local_json_shapes_cannot_suppress_boinc_observation(self):
+        for malformed in [{"fetch": None}, {"fetch": []},
+                          {"fetch": {"status": []}}, {"fetch": {"status": {"updated_at": "2026-10-16T19:55:00Z"},
+                                                                 "sets": [None]}}]:
+            with self.subTest(payload=malformed), patch.object(
+                observer, "fetch", side_effect=[json.dumps(malformed).encode(), XML]
+            ):
+                events, failures = observer.collect("http://local/", "https://project/", NOW)
+            self.assertEqual(len(events), 4)
+            self.assertEqual(failures[0]["code"], "local-ocr-unavailable")
+
     def test_empty_sources_never_become_fresh_or_accepted(self):
         value = observer.snapshot([], [], NOW)
         self.assertIsNone(value["observed_at"])

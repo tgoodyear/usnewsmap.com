@@ -34,6 +34,12 @@ def count(value):
     return value
 
 
+def object_value(value):
+    if not isinstance(value, dict):
+        raise ValueError("Expected a source object")
+    return value
+
+
 def observed(value, now):
     result = timestamp(value)
     if result > now + timedelta(seconds=60):
@@ -50,12 +56,14 @@ def stage(identifier, label, amount, at, detail):
 
 def local_stages(payload, now):
     """Consume only existing aggregate counters; never infer artifact presence."""
-    fetch = payload["fetch"]
+    fetch = object_value(object_value(payload)["fetch"])
     if fetch.get("status_error") or fetch.get("plan_error"):
         raise ValueError("Local fetch evidence reports an error")
-    at = observed(fetch["status"]["updated_at"], now)
+    at = observed(object_value(fetch["status"])["updated_at"], now)
     sets = fetch["sets"]
-    keep = [item for item in sets if item["name"] == "keep"]
+    if not isinstance(sets, list) or len(sets) > 100:
+        raise ValueError("Invalid scan-set inventory")
+    keep = [object_value(item) for item in sets if object_value(item)["name"] == "keep"]
     if len(keep) != 1:
         raise ValueError("Expected one keep-set aggregate")
     fetched, total = count(keep[0]["fetched"]), count(keep[0]["total"])
@@ -74,6 +82,7 @@ def local_stages(payload, now):
         raise ValueError("Invalid worker inventory")
     seen = set()
     for node in nodes:
+        node = object_value(node)
         name = node["name"]
         if not isinstance(name, str) or not name.replace("-", "").isalnum() or len(name) > 80:
             raise ValueError("Invalid worker identifier")
@@ -232,7 +241,7 @@ def add_catalog(value, path, now=None):
     if len(body) > MAX_BYTES:
         raise ValueError("Catalog snapshot exceeds 1 MiB")
     catalog = json.loads(body)
-    if catalog["schema_version"] != 1 or catalog["producer"] != "corpus-catalog":
+    if type(catalog["schema_version"]) is not int or catalog["schema_version"] != 1 or catalog["producer"] != "corpus-catalog":
         raise ValueError("Unsupported catalog snapshot")
     observed(catalog["generated_at"], now)
     at = observed(catalog["observed_at"], now) if catalog["observed_at"] is not None else None
