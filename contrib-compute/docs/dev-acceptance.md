@@ -226,6 +226,11 @@ operator scripts (including #619). These commands are **not authorized now**.
 
 ## Acceptance order and evidence
 
+The existing container CI smoke now reads every installed Python/PHP/C++ TLS
+replacement from the built image and compares it with the reviewed patch, in
+addition to connector imports, PHP syntax and both CA roots. This read-only audit
+does not change the image or establish a live encrypted session.
+
 1. **Actual TLS first, still OFF.** Record the dev DB host, image digests, live
    `require_secure_transport=OFF`, and the exact rendered project paths. In the
    dev runtime, exercise actual pinned Python `Boinc.db_base`, both PHP database
