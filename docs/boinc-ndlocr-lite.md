@@ -16,7 +16,7 @@ Build from the repository root:
 
 ```sh
 docker build -f ocr/engines/ndlocr-lite/Containerfile -t usnm-ndlocr-lite .
-python3 scripts/boinc/smoke-ndlocr.py usnm-ndlocr-lite "$PWD/ndlocr-smoke"
+python3 scripts/boinc/smoke-ndlocr.py --image usnm-ndlocr-lite --work "$PWD/ndlocr-smoke"
 ```
 
 The Python and Rust bases are pinned by digest. `NDLOCR_COMMIT` is
@@ -105,7 +105,7 @@ that is a smoke cost, not a newspaper-page estimate. With a running container
 runtime, repeat the image parity/cost check on a full-size local image:
 
 ```sh
-python3 scripts/boinc/smoke-ndlocr.py IMAGE "$PWD/ndlocr-page-probe" "$PWD/page.jpg"
+python3 scripts/boinc/smoke-ndlocr.py --image IMAGE --work "$PWD/ndlocr-page-probe" --source "$PWD/page.jpg"
 ```
 
 Record architecture, CPU quota, page dimensions and model/runtime identity before

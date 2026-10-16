@@ -47,7 +47,7 @@ jobs:
           cache-from: type=gha,scope=ndlocr-lite
           cache-to: type=gha,mode=max,scope=ndlocr-lite
       - name: Read Japanese headline with no network and read-only root
-        run: python3 scripts/boinc/smoke-ndlocr.py "$IMAGE:ndlocr-lite-$GITHUB_SHA" "$GITHUB_WORKSPACE/ndlocr-smoke"
+        run: python3 scripts/boinc/smoke-ndlocr.py --image "$IMAGE:ndlocr-lite-$GITHUB_SHA" --work "$GITHUB_WORKSPACE/ndlocr-smoke"
       - name: Publish reviewed engine
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         env:

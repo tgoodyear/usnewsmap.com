@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the actual image contract, and compare conversion with ja-ocr/alto.py."""
+import argparse
 from datetime import datetime
 import hashlib
 import json
@@ -11,9 +12,15 @@ import xml.etree.ElementTree as ET
 
 
 def main():
-    image = sys.argv[1]
-    work = pathlib.Path(sys.argv[2]).resolve()
-    source = pathlib.Path(sys.argv[3] if len(sys.argv) > 3 else "ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--work", required=True, type=pathlib.Path)
+    parser.add_argument("--source", type=pathlib.Path,
+                        default=pathlib.Path("ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg"))
+    args = parser.parse_args()
+    image = args.image
+    work = args.work.resolve()
+    source = args.source
     (work / "in").mkdir(parents=True)
     (work / "out" / "smoke").mkdir(parents=True)
     (work / "in" / "page.jpg").write_bytes(source.read_bytes())
