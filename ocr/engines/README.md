@@ -14,7 +14,7 @@ No tier-2 or credit-required profiles are added before the credits page (#372).
 
 Tesseract image builds download the unchanged `tesseract/models.lock` URLs
 with certificate verification and verify each SHA-256 before accepting it.
-Downloads allow three retries including TLS/connect failures, with a 20-second
+Downloads allow three retries including TLS/connect failures, with a 60-second
 connection timeout, 180-second per-attempt timeout and 360-second retry-start
 budget. An in-progress final attempt can extend beyond that budget (at most
 540 seconds per model including the final attempt). Exhaustion or a checksum

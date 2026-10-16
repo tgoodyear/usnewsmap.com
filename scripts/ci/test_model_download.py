@@ -79,7 +79,7 @@ class ModelDownloadTests(unittest.TestCase):
 
     def test_retry_policy_is_bounded_and_verifies_tls(self):
         args = self.command
-        for flag, value in [("--connect-timeout", "20"), ("--max-time", "180"),
+        for flag, value in [("--connect-timeout", "60"), ("--max-time", "180"),
                             ("--retry", "3"), ("--retry-max-time", "360")]:
             self.assertEqual(args[args.index(flag) + 1], value)
         self.assertIn("--retry-all-errors", args)
