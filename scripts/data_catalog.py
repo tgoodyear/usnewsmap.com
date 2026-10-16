@@ -502,6 +502,12 @@ def ingest(db, batch):
         conn.close()
 
 
+def protect_catalog_output(path, db):
+    require(Path(path).resolve() not in {
+        Path(str(db) + suffix).resolve() for suffix in ("", "-journal", "-wal", "-shm")},
+        "output must not overwrite catalog or SQLite sidecars")
+
+
 def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source, cache_set):
     """Bounded index adapter: local stat is presence evidence, never checksum verification."""
     token(batch_id)
@@ -510,6 +516,7 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source, ca
     root = Path(scan_root).resolve(strict=True)
     require(root.is_dir(), "scan root must be a directory")
     out = Path(evidence_out)
+    protect_catalog_output(out, db)
     require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
     rows, total = [], 0
     observed = timestamp(now())
@@ -612,8 +619,8 @@ def ingest_worker(db, input_path, evidence_out, batch_id, source):
         require(len(canonical(event).encode()) <= MAX_LINE, "projected worker event exceeds 64 KiB")
         events.append(canonical(event) + "\n")
     out = Path(evidence_out)
+    protect_catalog_output(out, db)
     require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
-    require(out.resolve() != Path(db).resolve(), "evidence must not overwrite catalog")
     with out.open("xb") as stream:
         os.chmod(out, 0o600)
         stream.write("".join(events).encode())
@@ -760,10 +767,7 @@ def plan_missing(db, page_id, limit=50, after=""):
 
 def atomic_snapshot(path, value, db):
     path = Path(path)
-    require(path.resolve() != Path(db).resolve() and
-            path.resolve() not in tuple(Path(str(db) + suffix).resolve()
-                                        for suffix in ("-wal", "-shm", "-journal")),
-            "snapshot must not overwrite catalog")
+    protect_catalog_output(path, db)
     require(not path.is_symlink() and (not path.exists() or path.is_file()), "unsafe snapshot path")
     raw = (canonical(value) + "\n").encode()
     require(len(raw) <= MAX_RESULT, "snapshot exceeds 1 MiB")

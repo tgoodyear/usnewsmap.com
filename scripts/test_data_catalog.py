@@ -357,6 +357,30 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(Path(str(self.db) + "-wal").exists())
         self.assertFalse(Path(str(self.db) + "-shm").exists())
 
+    def test_both_evidence_exporters_reject_catalog_sidecar_outputs(self):
+        self.ingest(event())
+        before = self.db.read_bytes()
+        worker = ROOT / "scripts/fixtures/data_catalog/worker-success.json"
+        root = self.work / "scans"
+        root.mkdir()
+        index = self.work / "index.jsonl"
+        index.write_text(c.canonical({
+            "doc_id": "2017270200_1885-08-20_ed-1_seq-4", "batch": "nbu_irisvirginica",
+            "batch_version": 1, "loc_url": "https://tile.loc.gov/scan", "resolution": "full",
+            "fetched_at": T0, "bytes": 4, "sha256": HASH, "download_ms": 1}) + "\n")
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            output = Path(str(self.db) + suffix)
+            for exporter in ("worker", "cached"):
+                with self.subTest(suffix=suffix, exporter=exporter), self.assertRaises(c.CatalogError):
+                    if exporter == "worker":
+                        c.ingest_worker(self.db, worker, output, "worker-batch", "worker")
+                    else:
+                        c.ingest_cached_scans(self.db, index, root, output,
+                                              "cached-batch", "cache-stat", "keep")
+                self.assertEqual(self.db.read_bytes(), before)
+                if suffix:
+                    self.assertFalse(output.exists())
+
     def test_cli_end_to_end_and_snapshot_freshness(self):
         batch = self.batch([event(), event("r1", "run"), event("a1", "page_state"),
                             event("s1", "stage", T1)])
