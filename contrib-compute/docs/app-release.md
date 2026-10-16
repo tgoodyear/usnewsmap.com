@@ -49,6 +49,19 @@ available resource diagnostics; report missing measurements rather than inferrin
 successful CUDA execution from registration. Do not run arbitrary commands on
 volunteers or broaden enrollment to bypass missing hardware/consent.
 
+Native failures write a nonzero `boinc_finish_called` and exit nonzero, so the
+ordinary BOINC UI can show **Computation error**. A fixed-schema, bounded
+`USNM_QWEN_FAILURE` JSON summary goes automatically into BOINC task stderr and
+the normal scheduler result report, even when failure prevents declared output
+uploads. It includes outcome, runtime/model identities, driver/memory facts,
+timings and known failure categories—not raw paths, input text, prompts, account
+data or full runtime logs. Successful tasks retain the usual three checksummed-output
+upload paths. Client-side download/signature/loader failures can occur before the
+app runs; inspect their standard BOINC exit status/stderr/event reports rather
+than promising an application summary exists. Server receipt of those reports
+must still be verified with real canary results; no manual volunteer log upload
+is part of the onboarding flow.
+
 ### Holding legacy Qwen dispatch
 
 Before enabling split-payload inference, inventory app versions, workunits and
