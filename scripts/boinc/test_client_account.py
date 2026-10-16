@@ -1,8 +1,11 @@
 """Offline tests: never contact a client or send real account credentials."""
 from contextlib import nullcontext, redirect_stdout
+from copy import deepcopy
 import io
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -38,6 +41,24 @@ class ClientAccountTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "GUI-suspended"):
             self.real_preflight(rpc, state(suspended_via_gui=True))
         rpc.call.assert_not_called()
+
+    def test_concurrent_apply_is_locked_per_client_not_per_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with account.client_lock(root, True):
+                inode = (root / ".usnm-account-rejoin.lock").stat().st_ino
+                result = subprocess.run(
+                    [sys.executable, account.__file__, "--data-dir", str(root),
+                     "--expected-user-id", "42", "--expected-user-name", "example",
+                     "--state-file", str(root / "different-state.json"),
+                     "--key-file", str(root / "absent-key"), "--apply"],
+                    capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Another account operation owns this client", result.stderr)
+                self.assertFalse((root / "different-state.json").exists())
+            with account.client_lock(root, True):
+                self.assertEqual((root / ".usnm-account-rejoin.lock").stat().st_ino, inode)
+            self.assertEqual((root / ".usnm-account-rejoin.lock").stat().st_mode & 0o777, 0o600)
 
     def test_attach_disabled_client_is_refused_before_any_project_mutation(self):
         rpc = Mock()
@@ -180,10 +201,18 @@ class ClientAccountTests(unittest.TestCase):
                                 "<run_if_user_active>0</run_if_user_active>"
                                 "<work_buf_min_days>0</work_buf_min_days>"
                                 "<work_buf_additional_days>0</work_buf_additional_days>"
+                                "<start_hour>9</start_hour><end_hour>17</end_hour>"
+                                "<net_start_hour>20</net_start_hour><net_end_hour>22</net_end_hour>"
                                 "</global_preferences></reply>")
+        protected = deepcopy(working)
+        account.materialize_schedules(protected.find("global_preferences"))
+        for day in protected.findall(".//day_prefs"):
+            for element in day:
+                if element.tag != "day_of_week":
+                    element.text = format(float(element.text), ".2f")
         rpc = Mock()
         rpc.call.side_effect = [working, ET.fromstring("<reply/>"), ET.fromstring("<reply/>"),
-                                working, working]
+                                protected, protected]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             original = "<global_preferences><cpu_usage_limit>30</cpu_usage_limit></global_preferences>"
@@ -195,6 +224,47 @@ class ClientAccountTests(unittest.TestCase):
             payload = rpc.call.call_args_list[1].args[1]["global_preferences"]
             self.assertEqual(payload.findtext("max_ncpus_pct"), "25")
             self.assertIsNone(payload.find("mod_time"))
+            self.assertEqual(len(payload.findall("day_prefs")), 7)
+
+    def test_inherited_weekly_schedules_override_new_scheduler_days(self):
+        preferences = ET.fromstring(
+            "<global_preferences><start_hour>9</start_hour><end_hour>17</end_hour>"
+            "<net_start_hour>20</net_start_hour><net_end_hour>22</net_end_hour>"
+            "<day_prefs><day_of_week>4</day_of_week><start_hour>23</start_hour>"
+            "<end_hour>5</end_hour></day_prefs></global_preferences>")
+        account.materialize_schedules(preferences)
+        defaults, days = account.schedule_intervals(preferences, require_explicit=True)
+        self.assertEqual(defaults, ((9, 17), (20, 22)))
+        self.assertEqual(days[4], ((23, 5), (20, 22)))
+        # Pinned parse_override applies only supplied nonempty weekly spans,
+        # otherwise the server's new day survives. Every day must be explicit.
+        server_days = {0: ((0, 24), (0, 24))}
+        for element in preferences.findall("day_prefs"):
+            cpu = tuple(float(element.findtext(name)) for name in ("start_hour", "end_hour"))
+            network = tuple(float(element.findtext(name)) for name in ("net_start_hour", "net_end_hour"))
+            self.assertNotEqual(cpu[0], cpu[1])
+            self.assertNotEqual(network[0], network[1])
+            server_days[int(element.findtext("day_of_week"))] = (cpu, network)
+        self.assertEqual(server_days[0], ((9, 17), (20, 22)))
+        self.assertEqual(set(server_days), set(range(7)))
+
+    def test_unrestricted_and_never_schedules_keep_stock_semantics(self):
+        preferences = ET.fromstring(
+            "<global_preferences><start_hour>9.123456</start_hour><end_hour>9.123456</end_hour>"
+            "<net_start_hour>24</net_start_hour><net_end_hour>0</net_end_hour></global_preferences>")
+        account.materialize_schedules(preferences)
+        _, days = account.schedule_intervals(preferences, require_explicit=True)
+        self.assertEqual(days, (((0, 24), (24, 0)),) * 7)
+        preferences.remove(preferences.find("day_prefs"))
+        with self.assertRaisesRegex(ValueError, "every day"):
+            account.schedule_intervals(preferences, require_explicit=True)
+
+    def test_unrepresentable_weekly_precision_fails_closed(self):
+        preferences = ET.fromstring(
+            "<global_preferences><start_hour>9.016667</start_hour><end_hour>17</end_hour>"
+            "<net_start_hour>0</net_start_hour><net_end_hour>24</net_end_hour></global_preferences>")
+        with self.assertRaisesRegex(ValueError, "two-decimal"):
+            account.materialize_schedules(preferences)
 
     def test_same_weak_key_can_be_detected_without_resetting_client(self):
         with tempfile.TemporaryDirectory() as directory:

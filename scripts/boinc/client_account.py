@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from copy import deepcopy
+import fcntl
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -17,6 +19,27 @@ import time
 import xml.etree.ElementTree as ET
 
 MASTER = "https://boinc.usnewsmap.com/"
+
+
+@contextmanager
+def client_lock(data_dir, apply):
+    if not apply:
+        yield
+        return
+    descriptor = os.open(data_dir / ".usnm-account-rejoin.lock",
+                         os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            raise ValueError("Client mutation lock must be a private regular file")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Another account operation owns this client; no mutation performed") from None
+        yield
+    finally:
+        # Keep the inode stable: unlinking a lock permits two independent owners.
+        os.close(descriptor)
 
 
 def weak_key(path, user_id):
@@ -226,6 +249,64 @@ def network_guard(rpc):
         yield
 
 
+def schedule_intervals(preferences, require_explicit=False):
+    names = (("start_hour", "end_hour"), ("net_start_hour", "net_end_hour"))
+
+    def interval(element, pair):
+        values = []
+        for name in pair:
+            matches = element.findall(name)
+            if len(matches) != 1:
+                raise ValueError("Cannot preserve incomplete or duplicate schedule intervals")
+            try:
+                hour = float(matches[0].text)
+            except (TypeError, ValueError):
+                raise ValueError("Invalid schedule hour; no attachment performed") from None
+            if not math.isfinite(hour) or not 0 <= hour <= 24:
+                raise ValueError("Invalid schedule hour; no attachment performed")
+            values.append(hour)
+        # Equal global endpoints mean unrestricted; weekly set() ignores equal
+        # endpoints, so use the equivalent explicit, nonempty 00:00–24:00 span.
+        if values[0] == values[1]:
+            return (0.0, 24.0)
+        if any(round(hour, 2) != hour for hour in values):
+            raise ValueError("Schedule cannot round-trip pinned BOINC's two-decimal weekly format")
+        return tuple(values)
+
+    defaults = tuple(interval(preferences, pair) for pair in names)
+    days = {}
+    for element in preferences.findall("day_prefs"):
+        day = int(element.findtext("day_of_week", "-1"))
+        if day not in range(7) or day in days:
+            raise ValueError("Cannot preserve duplicate or invalid weekly schedules")
+        spans = []
+        for index, pair in enumerate(names):
+            present = any(element.find(name) is not None for name in pair)
+            if require_explicit and not present:
+                raise ValueError("Stored weekly schedule is not explicit for CPU and network")
+            spans.append(interval(element, pair) if present else defaults[index])
+        days[day] = tuple(spans)
+    if require_explicit and set(days) != set(range(7)):
+        raise ValueError("Stored weekly schedule does not protect every day")
+    return defaults, tuple(days.get(day, defaults) for day in range(7))
+
+
+def materialize_schedules(preferences):
+    defaults, days = schedule_intervals(preferences)
+    names = (("start_hour", "end_hour"), ("net_start_hour", "net_end_hour"))
+    for pair, values in zip(names, defaults):
+        for name, value in zip(pair, values):
+            preferences.find(name).text = format(value, ".12g")
+    for element in list(preferences.findall("day_prefs")):
+        preferences.remove(element)
+    for day, spans in enumerate(days):
+        element = ET.SubElement(preferences, "day_prefs")
+        ET.SubElement(element, "day_of_week").text = str(day)
+        for pair, values in zip(names, spans):
+            for name, value in zip(pair, values):
+                ET.SubElement(element, name).text = format(value, ".12g")
+
+
 def protect_preferences(rpc, data_dir, backup_dir):
     preferences = rpc.call("get_global_prefs_working").find(".//global_preferences")
     if preferences is None:
@@ -239,6 +320,7 @@ def protect_preferences(rpc, data_dir, backup_dir):
                 "run_gpu_if_user_active", "run_if_user_active", "work_buf_min_days", "work_buf_additional_days"}
     if not required.issubset({child.tag for child in preferences}):
         raise ValueError("Incomplete effective resource preferences; no detach performed")
+    materialize_schedules(preferences)
     original = data_dir / "global_prefs_override.xml"
     if original.is_symlink():
         raise ValueError("Owner-managed preference symlink requires explicit handling; no detach performed")
@@ -253,9 +335,11 @@ def protect_preferences(rpc, data_dir, backup_dir):
     def values(root):
         if root is None:
             return None
-        return [(element.tag, (element.text or "").strip(),
-                 tuple(ET.tostring(child, encoding="unicode") for child in element))
-                for element in root if element.tag not in metadata]
+        schedules = schedule_intervals(root, require_explicit=True)
+        schedule_tags = {"day_prefs", "start_hour", "end_hour", "net_start_hour", "net_end_hour"}
+        return ([(element.tag, (element.text or "").strip(),
+                  tuple(ET.tostring(child, encoding="unicode") for child in element))
+                 for element in root if element.tag not in metadata | schedule_tags], schedules)
     if values(stored) != values(preferences) or values(effective) != values(preferences):
         raise RuntimeError("Effective resource preferences changed; no detach performed")
 
@@ -322,6 +406,11 @@ def main():
     parser.add_argument("--state-file", type=Path, help="Private durable drain journal; defaults beside the key file")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
+    with client_lock(args.data_dir, args.apply):
+        run(args)
+
+
+def run(args):
     key = None
     if args.apply:
         if not args.key_file:

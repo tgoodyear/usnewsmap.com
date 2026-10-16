@@ -315,6 +315,10 @@ legacy/cross-client journals are refused. A successful late-attribution retry
 releases only the validated helper-owned hold and removes its journal without
 detaching again. Network policy is restored after the **last** attach/update RPC,
 including initially unattached clients.
+Every apply holds a nonblocking exclusive lock in the real client data directory
+from before RPC authentication through final network restoration and journal
+cleanup. The lock is independent of key/journal paths; its inode is never removed.
+Concurrent operators must retry instead of racing detach against a new attachment.
 
 Stock BOINC 8.2 GUI-RPC authentication requires `MD5(nonce + GUI password)`.
 This is a transient, loopback-only protocol challenge, not a stored password
@@ -347,7 +351,14 @@ them using the supported local-override RPC, preventing a new account's schedule
 reply from silently changing CPU/memory and other limits. The original override
 and protected effective preferences are backed up privately beside the journal;
 the explicit local resource policy remains installed and should be inspected
-before subsequently changing account-wide preferences. Historical server records
+before subsequently changing account-wide preferences.
+Weekly CPU and network schedules are materialized for all seven days so a later
+scheduler reply cannot introduce an inherited day outside the protected limits.
+Unrestricted equal endpoints become explicit 00:00–24:00 intervals; 24:00–00:00
+remains never. Stored and working schedules are compared semantically and must
+retain every explicit day. Schedules that cannot round-trip the pinned client's
+two-decimal weekly serialization are refused rather than silently rounded.
+Historical server records
 are not rewritten. A standard detach can remove unused project downloads;
 inventory caches and obtain explicit rejoin authorization first. This does not
 provision resources, activate the optional OCR-node profile, grant GPU consent,
