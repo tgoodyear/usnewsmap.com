@@ -296,7 +296,7 @@ PLAN
   exit 0
 fi
 
-work=$(mktemp -d)
+work=$(boinc_workdir)
 remote=""
 cleanup() {
   [ -z "$remote" ] || ssh_host "rm -rf $remote" || echo "warning: could not remove $remote on the signing host" >&2
@@ -335,8 +335,8 @@ fi
 
 # --- 2. Stage --------------------------------------------------------------------------------
 
-remote=$(ssh_host "mktemp -d /var/tmp/usnm-appver.XXXXXX") || die "can't make a work directory on the signing host"
-[[ $remote =~ ^/var/tmp/usnm-appver\.[A-Za-z0-9]+$ ]] || die "unexpected work directory $remote"
+remote=$(ssh_host "python3 -c 'from pathlib import Path; import uuid; p=Path.cwd() / (\".usnm-appver-\"+uuid.uuid4().hex); p.mkdir(mode=0o700); print(p)'") || die "can't make a work directory on the signing host"
+[[ $remote =~ ^/root/\.usnm-appver-[a-f0-9]{32}$ ]] || die "unexpected work directory $remote"
 echo "2. staging on the signing host ($remote)"
 baz acr login --name "$registry" --expose-token --query accessToken -o tsv |
   ssh_host "podman login --authfile $remote/auth.json -u 00000000-0000-0000-0000-000000000000 --password-stdin $registry.azurecr.io > /dev/null" ||
@@ -404,7 +404,7 @@ appver_wrapper_pin=""
 appver_binary=""
 if [ "$KIND" = native ]; then
   cp "$work/$binary_name" "$ctx/wrapper-candidate/$binary_name"
-  appver_binary="/tmp/wrapper-candidate/$binary_name"
+  appver_binary="/opt/usnm-appver-build/wrapper-candidate/$binary_name"
   if [ -d "$work/extra" ]; then
     cp -r "$work/extra" "$ctx/wrapper-candidate/extra"
     cp "$work/extra"/* "$ctx/extra/"
@@ -412,8 +412,8 @@ if [ "$KIND" = native ]; then
 elif [ -f "$work/wrapper" ]; then
   cp "$work/wrapper" "$ctx/wrapper-candidate/docker_wrapper"
   cp "$work/wrapper.pin" "$ctx/wrapper-candidate/wrapper.pin"
-  appver_wrapper=/tmp/wrapper-candidate/docker_wrapper
-  appver_wrapper_pin=/tmp/wrapper-candidate/wrapper.pin
+  appver_wrapper=/opt/usnm-appver-build/wrapper-candidate/docker_wrapper
+  appver_wrapper_pin=/opt/usnm-appver-build/wrapper-candidate/wrapper.pin
 fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
@@ -431,7 +431,7 @@ scripts/provision-boinc.sh --env "$ENV_NAME" --publish-image "$appver_image"
 echo "published and verified $APP $VERSION ($PLATFORM, $PLAN_CLASS)"
 # Recorded like build-boinc-images.sh records the server and bridge: the stack keeps the publish
 # job on the last published version once this is committed.
-tmp=$(mktemp)
+tmp="$work/settings.json"
 jq --indent 2 --arg a "$appver_image" '.images.appver = $a' "$BOINC_SETTINGS" > "$tmp" && mv "$tmp" "$BOINC_SETTINGS"
 echo "wrote images.appver to $BOINC_SETTINGS: commit it through a pull request, so the next provision-boinc.sh keeps the publish job on this version"
 echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"
