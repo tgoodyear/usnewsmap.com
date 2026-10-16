@@ -129,12 +129,12 @@ No BOINC workunit was submitted, and no curated data or trust state was changed.
   the Python ALTO converter matched all 16 String contents and geometry.
   Complete ALTO/result files differ, including processing timestamps.
 
-| Measurement | pve-big CT 100 | pve-laptop CT 110 |
-| --- | --- | --- |
-| Worker-reported elapsed time | 25.637 s | 10.670 s |
-| Independent Python wall time | 25.123 s | 10.807 s |
-| Independent Python CPU time | 21.781 CPU-s | 10.806 CPU-s |
-| Independent Python peak child RSS | 679,100 KiB | 683,960 KiB |
+| Measurement                       | pve-big CT 100 | pve-laptop CT 110 |
+| --------------------------------- | -------------- | ----------------- |
+| Worker-reported elapsed time      | 25.637 s       | 10.670 s          |
+| Independent Python wall time      | 25.123 s       | 10.807 s          |
+| Independent Python CPU time       | 21.781 CPU-s   | 10.806 CPU-s      |
+| Independent Python peak child RSS | 679,100 KiB    | 683,960 KiB       |
 
 These are headline smoke measurements on two x86-64 CPUs, not full-page
 resource bounds, ARM/x86 equivalence, scheduler acceptance, canonical
