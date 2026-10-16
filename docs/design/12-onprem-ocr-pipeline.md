@@ -72,9 +72,9 @@ The state on `main` on 11 October 2026, checked against the code, and in product
 
 Since 12 October the nodes run RHEL 10.2 from Red Hat's KVM Guest Image, with UEFI Secure Boot, a vTPM and SELinux enforcing, registered with Red Hat through the activation key in the nodes' Key Vault, and reporting to Red Hat Lightspeed (Insights) through insights-client, which `node-setup.sh` registers and `offboard.sh` unregisters (#296):
 
-| Node                               | Host                                   | VM  | vCPUs, memory | Pages at once                    |
-| ---------------------------------- | -------------------------------------- | --- | ------------- | -------------------------------- |
-| Node 3, `usnm-ocr-node3-arcs-prod` | pve-big, i7-7700K (4 cores, 8 threads) | 203 | 8, 40 GiB     | 7; it publishes the fetched list |
+| Node                               | Host                                   | VM  | vCPUs, memory | Pages at once                          |
+| ---------------------------------- | -------------------------------------- | --- | ------------- | -------------------------------------- |
+| Node 3, `usnm-ocr-node3-arcs-prod` | pve-big, i7-7700K (4 cores, 8 threads) | 203 | 8, 40 GiB     | 7; it publishes the fetched list       |
 | Node 4, `usnm-ocr-node4-arcs-prod` | The NUC, i5-4250U (2 cores, 4 threads) | 124 | 4, 8 GiB      | None; BOINC only since 16 October 2026 |
 
 On 16 October 2026 node 4's OCR worker was drained and disabled, and the node became a dedicated BOINC client attached to the project owner's account ([BOINC on an OCR node](../boinc-ocr-node.md#retire-an-ocr-node-to-boinc-only)). Node 3 is the only on-prem queue worker; node 4 keeps its updates and reboot window.
