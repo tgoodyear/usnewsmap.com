@@ -61,6 +61,8 @@ param location string
 param tags object
 param environmentId string
 param image string
+@description('Override only the primary ingest job; other ingest-image jobs keep image.')
+param ingestImage string = image
 @description('Private registry the image comes from (pulled with the ingest identity).')
 param registryServer string
 param ingestIdentityId string
@@ -276,7 +278,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
       containers: [
         {
           name: 'ingest'
-          image: image
+          image: ingestImage
           args: concat(
             [
               'run'

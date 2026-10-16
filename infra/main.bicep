@@ -65,6 +65,12 @@ param useAcr bool = false
 @description('Image tag CI pushed to the registry (main or a commit sha).')
 param imageTag string = 'main'
 
+@description('API image tag; defaults to the shared imageTag. Pin separately to preserve a reviewed API release during unrelated stack changes.')
+param apiImageTag string = imageTag
+
+@description('Primary scheduled/manual ingest job image tag; defaults to imageTag. Does not change backfill, OCR sync, or other ingest-image jobs.')
+param scheduledIngestImageTag string = imageTag
+
 @description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment of the same name may use the CI identity.')
 param githubRepo string = 'tgoodyear/usnewsmap.com'
 
@@ -736,7 +742,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     tags: tags
     name: appName
     environmentId: containerEnv.outputs.id
-    image: useAcr ? '${registry.outputs.loginServer}/usnewsmap-api:${imageTag}' : apiImage
+    image: useAcr ? '${registry.outputs.loginServer}/usnewsmap-api:${apiImageTag}' : apiImage
     // Without the registry, the public upstream image: ours is only in the registry.
     quickwitImage: useAcr ? '${registry.outputs.loginServer}/${quickwitPin.image}@${quickwitPin.digest}' : quickwitUpstream
     registryServer: useAcr ? registry.outputs.loginServer : ''
@@ -862,6 +868,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     tags: tags
     environmentId: containerEnv.outputs.id
     image: '${registry.outputs.loginServer}/usnewsmap-ingest:${imageTag}'
+    ingestImage: '${registry.outputs.loginServer}/usnewsmap-ingest:${scheduledIngestImageTag}'
     registryServer: registry.outputs.loginServer
     ingestIdentityId: identities.outputs.ingestId
     ingestClientId: identities.outputs.ingestClientId
