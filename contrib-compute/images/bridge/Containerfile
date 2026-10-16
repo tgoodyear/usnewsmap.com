@@ -35,10 +35,10 @@ ARG PILLOW_SHA256=106064daa23a745510dabce1d84f29137a37224831d88eb4ce94bb187b1d7e
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libarchive-tools \
  && rm -rf /var/lib/apt/lists/* \
- && curl -fsSL -o /tmp/pillow.whl "$PILLOW_URL" \
- && echo "$PILLOW_SHA256  /tmp/pillow.whl" | sha256sum -c - \
- && python3 -m zipfile -e /tmp/pillow.whl /usr/local/lib/usnm-boinc/gold/py \
- && rm /tmp/pillow.whl
+ && curl -fsSL -o /usr/local/lib/usnm-boinc/pillow.whl "$PILLOW_URL" \
+ && echo "$PILLOW_SHA256  /usr/local/lib/usnm-boinc/pillow.whl" | sha256sum -c - \
+ && python3 -m zipfile -e /usr/local/lib/usnm-boinc/pillow.whl /usr/local/lib/usnm-boinc/gold/py \
+ && rm /usr/local/lib/usnm-boinc/pillow.whl
 ENV PYTHONPATH=/usr/local/lib/usnm-boinc/gold/py
 COPY --from=bin /usnm-ocr-survey /usr/local/bin/usnm-ocr-survey
 # gold.py and the modules it imports, in the repository's layout: locfetch.py finds jaocr.py

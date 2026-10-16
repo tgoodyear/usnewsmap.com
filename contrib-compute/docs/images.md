@@ -67,6 +67,8 @@ Completed initialization is skipped; partial project data and existing databases
 dropped automatically. `--what-if` creates only the retained preview, not managed resources.
 
 `scripts/build-boinc-images.sh` builds and pins the server/bridge artifacts.
+Operator staging stays in a private checkout-local workspace; explicit image-build
+patch and wheel staging uses `/usr/local/lib`, not system temporary directories.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
 designated signing host without exporting its private key. These are release inputs, not
 manual steps printed after every deployment. The older `bootstrap.sh` is not the production

@@ -61,6 +61,14 @@ def template(extra=None, drop=None):
 
 
 class OperatorWorkspace(unittest.TestCase):
+    def test_runtime_image_build_staging_avoids_system_temporary_paths(self):
+        for image in ("base", "server", "bridge", "bridge-bin"):
+            with self.subTest(image=image):
+                text = Path(ROOT, "contrib-compute/images", image, "Containerfile").read_text()
+                self.assertNotIn("/tmp/", text)
+                self.assertNotIn("/var/tmp", text)
+                self.assertNotIn("mktemp", text)
+
     def test_workspaces_are_unique_private_and_beneath_checkout(self):
         command = 'ENV_NAME=prod; die() { exit 1; }; . scripts/lib/boinc.sh; boinc_workdir; boinc_workdir'
         output = subprocess.check_output(["bash", "-c", command], cwd=ROOT, text=True)
