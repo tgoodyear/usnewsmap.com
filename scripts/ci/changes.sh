@@ -45,13 +45,14 @@
 # ocr_worker, ocr_dash: the OCR worker's and the LAN dashboard's EL9 build.
 # ocr_worker also runs the RHEL 10 and Tesseract image check. On main, either
 # one runs the release job, whose release holds both binaries.
-# boinc_worker, boinc_qwen, boinc_surya, boinc_ndlocr, ocr_dashboard: the BOINC
-# worker image workflows and the dashboard's static build, which read these
+# boinc_worker, boinc_qwen, boinc_surya, boinc_ndlocr, boinc_native,
+# ocr_dashboard: the BOINC worker image workflows, the native BOINC apps'
+# builds on five targets and the dashboard's static build, which read these
 # outputs from their own `inputs` job. They run for what each builds, not for
 # anything under crates/: a crate counts when it is in the closure of what the
 # image or binary builds (normal and build dependencies from cargo metadata,
-# plus the roots' own dev-dependencies for the two images that build
-# examples), the files those crates embed with include_str!/include_bytes!
+# plus the roots' own dev-dependencies for what builds examples or runs
+# tests), the files those crates embed with include_str!/include_bytes!
 # count, and the workspace manifest and lock file count only when the packages
 # Cargo resolves for the roots change or the manifest's other settings do.
 # Files the image's own recipe reads are listed below. test_changes.py checks
@@ -63,7 +64,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -75,7 +76,7 @@ if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
         echo "ocr-worker publication scope requires refs/heads/main" >&2
         exit 1
       }
-      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr infra page_language contrib ocr_gold boinc_pages; do
+      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native infra page_language contrib ocr_gold boinc_pages; do
         case "$part" in rust|ocr_worker) value=true ;; *) value=false ;; esac
         printf '%s=%s\n' "$part" "$value" >> "$out"
       done
@@ -156,6 +157,7 @@ workflow_input boinc_worker boinc-worker boinc-worker-build
 workflow_input boinc_qwen boinc-qwen boinc-qwen-build
 workflow_input boinc_surya boinc-surya boinc-surya-build
 workflow_input boinc_ndlocr boinc-ndlocr-lite
+workflow_input boinc_native boinc-quality-native
 workflow_input ocr_dashboard ocr-dashboard
 # Workflow files are settled above; they are not code for the file rules below.
 files=$(grep -Ev '^\.github/' <<< "$files" || true)
@@ -203,6 +205,10 @@ boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/boinc/Cont
 boinc_qwen='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_surya='^(ocr/boinc/surya/|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ja-ocr/(testdata/|alto\.py$|jaocr\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
+# The native apps (boinc-quality-native.yml) build usnm-quality-app and
+# usnm-qwen-app and test those and the two crates they share with the engines;
+# usnm-ocr-contract's tests read the v1 contract files.
+boinc_native='^(ocr/contract/|rust-toolchain\.toml$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
@@ -365,7 +371,8 @@ narrow_examples boinc_worker usnm-boinc
 narrow_release boinc_qwen usnm-boinc
 narrow_release boinc_surya usnm-boinc
 narrow_examples boinc_ndlocr usnm-boinc usnm-ocr-adapter
-for part in rust quickwit web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr; do
+narrow_examples boinc_native usnm-quality-app usnm-qwen-app usnm-ocr-quality usnm-ocr-contract
+for part in rust quickwit web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native; do
   if matches_built "${!part}" ||
     { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
     [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi

@@ -49,7 +49,7 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({key for key, value in flags.items() if value == "true"},
                          {"rust", "ocr_worker"})
-        self.assertEqual(len(flags), 22)
+        self.assertEqual(len(flags), 23)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
         self.assertEqual(flags["provision"], "false")
@@ -298,12 +298,14 @@ class OcrCatalog(unittest.TestCase):
 
 BOINC_IMAGES = {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr"}
 DASHBOARD = {"ocr_dash", "ocr_dashboard"}
+NATIVE = {"boinc_native"}
 # Workflow file -> the changes.sh output that gates its pull request job.
 GATED_WORKFLOWS = {
     "boinc-worker.yml": "boinc_worker",
     "boinc-qwen.yml": "boinc_qwen",
     "boinc-surya.yml": "boinc_surya",
     "boinc-ndlocr-lite.yml": "boinc_ndlocr",
+    "boinc-quality-native.yml": "boinc_native",
     "ocr-dashboard.yml": "ocr_dashboard",
 }
 # What the workflows leave to the crate closure and the lock-file check.
@@ -356,6 +358,8 @@ EMBED_ROOTS = {
     "boinc-qwen.yml": ("false", "usnm-boinc"),
     "boinc-surya.yml": ("false", "usnm-boinc"),
     "boinc-ndlocr-lite.yml": ("true", "usnm-boinc", "usnm-ocr-adapter"),
+    "boinc-quality-native.yml": ("true", "usnm-quality-app", "usnm-qwen-app", "usnm-ocr-quality",
+                                 "usnm-ocr-contract"),
     "ocr-dashboard.yml": ("false", "usnm-ocr-dash"),
 }
 
@@ -416,7 +420,7 @@ class BuildInputs(unittest.TestCase):
     def test_shared_dependency_runs_every_affected_job(self):
         on = self.select("crates/usnm-core/src/lib.rs")
         self.assertGreaterEqual(on, {"rust", "quickwit", "image", "e2e", "ocr_worker", "infra",
-                                     "code"} | BOINC_IMAGES | DASHBOARD)
+                                     "code"} | BOINC_IMAGES | DASHBOARD | NATIVE)
 
     def test_worker_crate_runs_the_release_the_dashboard_and_the_images(self):
         on = self.select("crates/usnm-ocr-worker/src/lib.rs")
@@ -465,7 +469,7 @@ class BuildInputs(unittest.TestCase):
 
     def test_a_toolchain_change_runs_every_build(self):
         on = self.select("rust-toolchain.toml")
-        self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD)
+        self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD | NATIVE)
 
     def test_the_docker_ignore_file_runs_every_image_but_not_the_dashboard(self):
         on = self.select(".dockerignore")
@@ -481,11 +485,32 @@ class BuildInputs(unittest.TestCase):
             (".github/workflows/boinc-surya.yml", "boinc_surya"),
             (".github/actions/boinc-surya-build/action.yml", "boinc_surya"),
             (".github/workflows/boinc-ndlocr-lite.yml", "boinc_ndlocr"),
+            (".github/workflows/boinc-quality-native.yml", "boinc_native"),
             (".github/workflows/ocr-dashboard.yml", "ocr_dashboard"),
         ]:
             with self.subTest(path=path):
                 on = self.select(path)
-                self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}), {job}, on)
+                self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | NATIVE | {"ocr_worker"}), {job}, on)
+
+    def test_the_native_apps_run_for_the_crates_they_build_and_no_others(self):
+        # #744: usnm-core and usnm-overlay are built by both apps and were on no path list.
+        for path in ["crates/usnm-core/src/lib.rs", "crates/usnm-overlay/src/lib.rs",
+                     "crates/usnm-alto/src/lib.rs", "crates/usnm-ocr-contract/src/lib.rs",
+                     "crates/usnm-ocr-quality/src/lib.rs", "crates/usnm-quality-app/src/main.rs",
+                     "crates/usnm-qwen-app/src/main.rs"]:
+            with self.subTest(path=path):
+                self.assertIn("boinc_native", self.select(path))
+        for path in ["crates/usnm-ocr-dash/src/html.rs", "crates/usnm-boinc/src/lib.rs",
+                     "crates/usnm-ocr-worker/src/lib.rs", "crates/usnm-ingest/src/lib.rs"]:
+            with self.subTest(path=path):
+                self.assertNotIn("boinc_native", self.select(path))
+
+    def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
+        for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json"]:
+            with self.subTest(path=path):
+                self.assertIn("boinc_native", self.select(path))
+        # What only the images embed is not theirs.
+        self.assertNotIn("boinc_native", self.select("catalog/overrides/places.json"))
 
     def test_dashboard_changes_never_skip_the_policy_scans(self):
         # code runs the infra job, whose shared-key and named-argument scans read the crate.
