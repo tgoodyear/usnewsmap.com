@@ -4,11 +4,14 @@ on:
   pull_request:
     paths:
       - .github/workflows/boinc-quality-native.yml
-      - crates/usnm-quality-app/**
-      - crates/usnm-qwen-app/**
-      - crates/usnm-ocr-quality/**
-      - crates/usnm-ocr-contract/**
-      - crates/usnm-alto/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      # What its tests read and its crates embed (scripts/ci/changes.sh finds the embedded files).
+      - ocr/contract/**
+      - ocr/boinc/qwen/llama.lock
+      - ocr/boinc/qwen/weights.lock
       - "!**/*.md"
 
 permissions:
@@ -19,7 +22,25 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Whether this change touches what the native apps are built from (scripts/ci/changes.sh):
+  # a crate counts when the apps build or test it, not for being under crates/. This job
+  # also runs on manual dispatch, where the selector says everything.
+  # Not named `changes`: ci.yml's required check has that name.
+  inputs:
+    name: native apps inputs
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.f.outputs.boinc_native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: f
+        run: scripts/ci/changes.sh
   build:
+    needs: inputs
+    if: needs.inputs.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
