@@ -1,7 +1,11 @@
 <?php
 // Operator-only dispatch window; never changes account preferences or scientific rows.
+// The native classes the helper may open, one at a time; intel_vulkan_8b reads the same 8B
+// workunits on Intel GPUs through llama.cpp Vulkan (#786).
+const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b"];
+
 function native_qwen_cohort_xml($xml, $plan_class, $workunit_id) {
-    $classes = ["nvidia_cuda_2b", "nvidia_cuda_8b"];
+    $classes = NATIVE_QWEN_CLASSES;
     if (!in_array($plan_class, $classes, true) || $workunit_id < 0 || $workunit_id === 1) {
         throw new RuntimeException("Unsupported native cohort");
     }
@@ -26,7 +30,7 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id) {
 }
 
 function native_qwen_cohort_validate($workunit, $results, $plan_class) {
-    if (!in_array($plan_class, ["nvidia_cuda_2b", "nvidia_cuda_8b"], true)) {
+    if (!in_array($plan_class, NATIVE_QWEN_CLASSES, true)) {
         throw new RuntimeException("Unsupported native class");
     }
     $model = $plan_class === "nvidia_cuda_2b" ? "2b" : "8b";
@@ -107,10 +111,10 @@ function native_qwen_cohort_main() {
     $plan_class = $options["plan-class"] ?? "nvidia_cuda_2b";
     $stop = array_key_exists("stop", $options);
     if (!$project || !is_file("$project/config.xml")
-        || !in_array($plan_class, ["nvidia_cuda_2b", "nvidia_cuda_8b"], true)
+        || !in_array($plan_class, NATIVE_QWEN_CLASSES, true)
         || (!$stop && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
         || ($stop && isset($options["workunit"]))) {
-        throw new RuntimeException("usage: --project PATH [--stop | --plan-class nvidia_cuda_2b|nvidia_cuda_8b --workunit ID] [--apply]");
+        throw new RuntimeException("usage: --project PATH [--stop | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)." --workunit ID] [--apply]");
     }
     $id = $stop ? 0 : intval($options["workunit"]);
     if (!$stop) {
