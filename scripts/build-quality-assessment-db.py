@@ -24,6 +24,8 @@ import duckdb
 
 
 CAMPAIGN_PRIORITY = {
+    "v1-wave8": 100,
+    "v1-engine-bench": 95,
     "v1-wave7": 90,
     "v1-wave6": 80,
     "v1-wave5": 70,
@@ -72,7 +74,8 @@ def build_database(
         prio = CAMPAIGN_PRIORITY.get(name, 50)
         escaped_pages = str(pages_pq).replace("'", "''")
         union_parts.append(
-            f"SELECT '{name}' AS campaign, {prio} AS campaign_priority, * "
+            f"SELECT '{name}' AS campaign, {prio} AS campaign_priority, "
+            f"* REPLACE (plan_class::VARCHAR AS plan_class) "
             f"FROM read_parquet('{escaped_pages}', union_by_name=true)"
         )
         if crops_pq is not None:
@@ -82,9 +85,9 @@ def build_database(
                 f"FROM read_parquet('{escaped_crops}', union_by_name=true)"
             )
 
-    con.execute(f"CREATE VIEW raw_boinc_pages AS {' UNION ALL '.join(union_parts)}")
+    con.execute(f"CREATE TABLE raw_boinc_pages AS {' UNION ALL BY NAME '.join(union_parts)}")
     if crop_parts:
-        con.execute(f"CREATE VIEW raw_boinc_crops AS {' UNION ALL '.join(crop_parts)}")
+        con.execute(f"CREATE TABLE raw_boinc_crops AS {' UNION ALL BY NAME '.join(crop_parts)}")
     else:
         con.execute(
             "CREATE VIEW raw_boinc_crops AS "
@@ -108,32 +111,38 @@ def build_database(
         ),
         ranked AS (
             SELECT
-                r.*,
+                r.* EXCLUDE (cer_vs_loc, wer_vs_loc, dice_vs_loc, word_ratio_vs_loc),
                 plw.loc_words,
                 CASE
-                    WHEN r.reader IN ('loc', 'loc-hist') THEN 0.0
-                    ELSE COALESCE(
+                    WHEN r.reader IN ('loc', 'loc-hist') THEN CASE WHEN r.words > 1 THEN 0.0 ELSE NULL END
+                    WHEN plw.loc_words > 1 THEN COALESCE(
+                        r.cer_vs_loc,
                         json_extract(r.pairs_json, '$."loc".cer_a')::DOUBLE,
                         json_extract(r.pairs_json, '$."loc-hist".cer_a')::DOUBLE
                     )
+                    ELSE NULL
                 END AS cer_vs_loc,
                 CASE
-                    WHEN r.reader IN ('loc', 'loc-hist') THEN 0.0
-                    ELSE COALESCE(
+                    WHEN r.reader IN ('loc', 'loc-hist') THEN CASE WHEN r.words > 1 THEN 0.0 ELSE NULL END
+                    WHEN plw.loc_words > 1 THEN COALESCE(
+                        r.wer_vs_loc,
                         json_extract(r.pairs_json, '$."loc".wer_a')::DOUBLE,
                         json_extract(r.pairs_json, '$."loc-hist".wer_a')::DOUBLE
                     )
+                    ELSE NULL
                 END AS wer_vs_loc,
                 CASE
-                    WHEN r.reader IN ('loc', 'loc-hist') THEN 1.0
-                    ELSE COALESCE(
+                    WHEN r.reader IN ('loc', 'loc-hist') THEN CASE WHEN r.words > 1 THEN 1.0 ELSE NULL END
+                    WHEN plw.loc_words > 1 THEN COALESCE(
+                        r.dice_vs_loc,
                         json_extract(r.pairs_json, '$."loc".dice')::DOUBLE,
                         json_extract(r.pairs_json, '$."loc-hist".dice')::DOUBLE
                     )
+                    ELSE NULL
                 END AS dice_vs_loc,
                 CASE
                     WHEN r.reader IN ('loc', 'loc-hist') THEN CASE WHEN r.words > 0 THEN 1.0 ELSE NULL END
-                    WHEN plw.loc_words > 1 THEN ROUND(r.words::DOUBLE / plw.loc_words::DOUBLE, 6)
+                    WHEN plw.loc_words > 1 THEN COALESCE(r.word_ratio_vs_loc, ROUND(r.words::DOUBLE / plw.loc_words::DOUBLE, 6))
                     ELSE NULL
                 END AS word_ratio_vs_loc,
                 ROW_NUMBER() OVER (
@@ -213,6 +222,10 @@ def build_database(
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN completeness END) AS loc_completeness,
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN findable_content END) AS loc_findable_content,
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN findable_places END) AS loc_findable_places,
+                MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN damage_rate END) AS loc_damage_rate,
+                MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN function_share END) AS loc_function_share,
+                MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN garbage_share END) AS loc_garbage_share,
+                MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN known_words END) AS loc_known_words,
                 MAX(CASE WHEN reader = 'ours-tesseract' THEN words END) AS ours_words,
                 MAX(CASE WHEN reader = 'ours-tesseract' AND COALESCE(loc_valid, TRUE) THEN est_cer END) AS ours_est_cer,
                 MAX(CASE WHEN reader = 'ours-tesseract' AND COALESCE(loc_valid, TRUE) THEN completeness END) AS ours_completeness,
@@ -221,9 +234,15 @@ def build_database(
                 MAX(CASE WHEN reader = 'ours-tesseract' AND COALESCE(loc_valid, TRUE) THEN cer_vs_loc END) AS ours_cer_vs_loc,
                 MAX(CASE WHEN reader = 'ours-tesseract' AND COALESCE(loc_valid, TRUE) THEN dice_vs_loc END) AS ours_dice_vs_loc,
                 MAX(CASE WHEN reader = 'ours-tesseract' AND COALESCE(loc_valid, TRUE) THEN word_ratio_vs_loc END) AS ours_word_ratio_vs_loc,
+                MAX(CASE WHEN reader = 'ours-tesseract' THEN damage_rate END) AS ours_damage_rate,
+                MAX(CASE WHEN reader = 'ours-tesseract' THEN function_share END) AS ours_function_share,
+                MAX(CASE WHEN reader = 'ours-tesseract' THEN garbage_share END) AS ours_garbage_share,
+                MAX(CASE WHEN reader = 'ours-tesseract' THEN known_words END) AS ours_known_words,
                 MAX(CASE WHEN reader = 'as' THEN words END) AS as_words,
                 MAX(CASE WHEN reader = 'as' AND COALESCE(loc_valid, TRUE) THEN est_cer END) AS as_est_cer,
                 MAX(CASE WHEN reader = 'as' AND COALESCE(loc_valid, TRUE) THEN completeness END) AS as_completeness,
+                MAX(CASE WHEN reader = 'as' THEN damage_rate END) AS as_damage_rate,
+                MAX(CASE WHEN reader = 'as' THEN garbage_share END) AS as_garbage_share,
                 MAX(CASE WHEN reader = 'ndnp' THEN est_cer END) AS ndnp_est_cer,
                 MAX(CASE WHEN reader = 'ndnp' THEN findable_content END) AS ndnp_findable_content
             FROM (
@@ -251,7 +270,72 @@ def build_database(
                 WHEN p.ours_est_cer IS NOT NULL AND p.loc_est_cer IS NOT NULL
                     THEN ROUND(p.loc_est_cer - p.ours_est_cer, 6)
                 ELSE NULL
-            END AS cer_gain_ours_vs_loc
+            END AS cer_gain_ours_vs_loc,
+            CASE
+                WHEN COALESCE(p.mean_word_conf, 0.75) < 0.55
+                    OR COALESCE(p.ours_damage_rate, m.manifest_damage_rate, 0.15) >= 0.30
+                    OR (COALESCE(p.ink_density, 0.20) < 0.12 AND COALESCE(p.contrast, 180.0) < 95.0)
+                    OR COALESCE(p.contrast, 180.0) < 65.0
+                    OR COALESCE(p.blur, 5000.0) < 900.0
+                    OR COALESCE(p.legibility_ceiling, 0.80) < 0.55
+                THEN 'severely_degraded'
+                WHEN COALESCE(m.manifest_lang, p.boinc_lang, 'eng') IN ('deu', 'ger', 'srp', 'ces', 'cze', 'yid', 'zho', 'haw')
+                THEN 'multi_script_fraktur'
+                WHEN COALESCE(p.columns, 1) >= 6 OR COALESCE(p.line_height_px, 34.0) < 26.0
+                THEN 'dense_broadsheet'
+                WHEN COALESCE(p.width, 2400) >= 2800
+                    AND COALESCE(p.line_height_px, 34.0) >= 28.0
+                    AND ((COALESCE(p.bleed_through, 0.08) >= 0.18 AND COALESCE(p.ink_density, 0.20) >= 0.25)
+                         OR COALESCE(p.noise, 2.0) >= 14.5)
+                THEN 'high_bleed_speckle'
+                ELSE 'clean_standard'
+            END AS router_regime,
+            CASE
+                WHEN COALESCE(p.legibility_ceiling, 0.80) < 0.40
+                    OR COALESCE(p.ours_damage_rate, m.manifest_damage_rate, 0.15) >= 0.50
+                    OR (COALESCE(p.mean_word_conf, 0.75) < 0.55 AND COALESCE(p.contrast, 180.0) < 65.0)
+                THEN 'qwen-vlm'
+                WHEN COALESCE(p.mean_word_conf, 0.75) < 0.55
+                    OR COALESCE(p.ours_damage_rate, m.manifest_damage_rate, 0.15) >= 0.30
+                    OR (COALESCE(p.ink_density, 0.20) < 0.12 AND COALESCE(p.contrast, 180.0) < 95.0)
+                    OR COALESCE(p.contrast, 180.0) < 65.0
+                    OR COALESCE(p.blur, 5000.0) < 900.0
+                    OR COALESCE(p.legibility_ceiling, 0.80) < 0.55
+                THEN 'surya'
+                ELSE 'tesseract'
+            END AS router_engine,
+            CASE
+                WHEN COALESCE(p.columns, 1) >= 6 OR COALESCE(p.line_height_px, 34.0) < 26.0 THEN 6
+                ELSE 4
+            END AS router_psm,
+            CASE
+                WHEN NOT (
+                    COALESCE(p.mean_word_conf, 0.75) < 0.55
+                    OR COALESCE(p.ours_damage_rate, m.manifest_damage_rate, 0.15) >= 0.30
+                    OR (COALESCE(p.ink_density, 0.20) < 0.12 AND COALESCE(p.contrast, 180.0) < 95.0)
+                    OR COALESCE(p.contrast, 180.0) < 65.0
+                    OR COALESCE(p.blur, 5000.0) < 900.0
+                    OR COALESCE(p.legibility_ceiling, 0.80) < 0.55
+                )
+                AND COALESCE(p.width, 2400) >= 2800
+                AND COALESCE(p.line_height_px, 34.0) >= 28.0
+                AND ((COALESCE(p.bleed_through, 0.08) >= 0.18 AND COALESCE(p.ink_density, 0.20) >= 0.25)
+                     OR COALESCE(p.noise, 2.0) >= 14.5)
+                THEN 0.5
+                ELSE 1.0
+            END AS router_scale,
+            CASE
+                WHEN COALESCE(p.columns, 1) >= 6 OR COALESCE(p.line_height_px, 34.0) < 26.0 THEN TRUE
+                WHEN (
+                    COALESCE(p.mean_word_conf, 0.75) < 0.55
+                    OR COALESCE(p.ours_damage_rate, m.manifest_damage_rate, 0.15) >= 0.30
+                    OR (COALESCE(p.ink_density, 0.20) < 0.12 AND COALESCE(p.contrast, 180.0) < 95.0)
+                    OR COALESCE(p.contrast, 180.0) < 65.0
+                    OR COALESCE(p.blur, 5000.0) < 900.0
+                    OR COALESCE(p.legibility_ceiling, 0.80) < 0.55
+                ) AND COALESCE(p.columns, 1) >= 2 THEN TRUE
+                ELSE FALSE
+            END AS router_slice_columns
         FROM page_agg p
         LEFT JOIN manifest_pages m USING (doc_id)
         """
@@ -380,10 +464,60 @@ def build_database(
             SUM(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN 1 ELSE 0 END) AS valid_loc_text_pages,
             ROUND(AVG(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN est_cer END), 4) AS mean_loc_est_cer,
             ROUND(AVG(CASE WHEN reader = 'ours-tesseract' THEN est_cer END), 4) AS mean_ours_est_cer,
-            ROUND(AVG(CASE WHEN reader = 'as' THEN est_cer END), 4) AS mean_as_est_cer
+            ROUND(AVG(CASE WHEN reader = 'as' THEN est_cer END), 4) AS mean_as_est_cer,
+            ROUND(AVG(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN damage_rate END), 4) AS mean_loc_damage_rate,
+            ROUND(AVG(CASE WHEN reader = 'ours-tesseract' THEN damage_rate END), 4) AS mean_ours_damage_rate,
+            ROUND(AVG(CASE WHEN reader = 'as' THEN damage_rate END), 4) AS mean_as_damage_rate
         FROM raw_boinc_pages
         GROUP BY campaign
         ORDER BY campaign
+        """
+    )
+
+    con.execute(
+        """
+        CREATE TABLE reader_engine_summary AS
+        SELECT
+            reader,
+            COUNT(DISTINCT doc_id) AS pages,
+            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN est_cer END), 4) AS mean_est_cer,
+            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN completeness END), 4) AS mean_completeness,
+            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN precision END), 4) AS mean_precision,
+            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN findable_content END), 4) AS mean_findable_content,
+            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN findable_places END), 4) AS mean_findable_places,
+            ROUND(AVG(cer_vs_loc), 4) AS mean_cer_vs_loc,
+            ROUND(AVG(dice_vs_loc), 4) AS mean_dice_vs_loc,
+            ROUND(AVG(CASE WHEN words > 1 THEN damage_rate END), 4) AS mean_damage_rate,
+            ROUND(AVG(CASE WHEN words > 1 THEN function_share END), 4) AS mean_function_share,
+            ROUND(AVG(CASE WHEN words > 1 THEN garbage_share END), 4) AS mean_garbage_share,
+            ROUND(AVG(CASE WHEN words > 1 THEN known_words END), 1) AS mean_known_words
+        FROM boinc_reader_rows
+        GROUP BY reader
+        ORDER BY pages DESC, reader
+        """
+    )
+
+    con.execute(
+        """
+        CREATE TABLE router_regime_summary AS
+        SELECT
+            router_regime,
+            router_engine,
+            router_psm,
+            router_scale,
+            router_slice_columns,
+            COUNT(*) AS pages,
+            ROUND(AVG(loc_damage_rate), 4) AS mean_loc_damage_rate,
+            ROUND(AVG(ours_damage_rate), 4) AS mean_ours_damage_rate,
+            ROUND(AVG(loc_est_cer), 4) AS mean_loc_est_cer,
+            ROUND(AVG(ours_est_cer), 4) AS mean_ours_est_cer,
+            ROUND(AVG(mean_word_conf), 4) AS mean_word_conf,
+            ROUND(AVG(bleed_through), 4) AS mean_bleed_through,
+            ROUND(AVG(ink_density), 4) AS mean_ink_density,
+            ROUND(AVG(columns), 2) AS mean_columns
+        FROM page_quality_joined
+        GROUP BY 1, 2, 3, 4, 5
+        ORDER BY pages DESC
         """
     )
 
@@ -447,6 +581,8 @@ def build_database(
         "title_quality_summary",
         "language_quality_summary",
         "campaign_summary",
+        "reader_engine_summary",
+        "router_regime_summary",
         "next_wave_candidates",
     ]:
         pq_out = out_dir / f"{tbl}.parquet"
@@ -468,6 +604,8 @@ def build_database(
             "title_quality_summary",
             "language_quality_summary",
             "campaign_summary",
+            "reader_engine_summary",
+            "router_regime_summary",
         ]:
             desc = con.execute(f"DESCRIBE {tbl}").fetchall()
             cols = [d[0] for d in desc]
@@ -520,13 +658,46 @@ def build_database(
         "",
         "## Campaign Breakdown",
         "",
-        "| Campaign | Unique Pages | Reader Rows | 3-Reader Hat Pages | Valid LoC Text Pages | Mean LoC Est. CER | Mean Ours-Tesseract Est. CER | Mean AS Est. CER |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Campaign | Unique Pages | Reader Rows | 3-Reader Hat Pages | Valid LoC Text Pages | Mean LoC Est. CER | Mean Ours-Tesseract Est. CER | Mean AS Est. CER | Mean LoC Damage | Mean Ours Damage | Mean AS Damage |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in con.execute("SELECT * FROM campaign_summary").fetchall():
         md_lines.append(
             f"| `{r[0]}` | {r[1]:,} | {r[2]:,} | {r[3]:,} | {r[4]:,} | "
-            f"{r[5] if r[5] is not None else '-'} | {r[6] if r[6] is not None else '-'} | {r[7] if r[7] is not None else '-'} |"
+            f"{r[5] if r[5] is not None else '-'} | {r[6] if r[6] is not None else '-'} | {r[7] if r[7] is not None else '-'} | "
+            f"{r[8] if r[8] is not None else '-'} | {r[9] if r[9] is not None else '-'} | {r[10] if r[10] is not None else '-'} |"
+        )
+
+    md_lines.extend(
+        [
+            "",
+            "## OCR Reader & Engine Summary (Deduplicated Across Campaigns)",
+            "",
+            "| Reader | Pages | Mean Est. CER | Completeness | Precision | Findable Content | Findable Places | CER vs LoC | Dice vs LoC | Damage Rate | Function Share | Garbage Share | Known Words |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for r in con.execute("SELECT * FROM reader_engine_summary").fetchall():
+        md_lines.append(
+            f"| `{r[0]}` | {r[1]:,} | "
+            + " | ".join(str(x) if x is not None else "-" for x in r[2:])
+            + " |"
+        )
+
+    md_lines.extend(
+        [
+            "",
+            "## Damage-v1 OCR Router Regime Breakdown (`router_regime_summary`)",
+            "",
+            "| Regime | Engine | PSM | Scale | Slice Columns | Pages | Mean LoC Damage | Mean Ours Damage | Mean LoC CER | Mean Ours CER | Mean Word Conf | Mean Bleed | Mean Ink | Mean Cols |",
+            "|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for r in con.execute("SELECT * FROM router_regime_summary").fetchall():
+        md_lines.append(
+            f"| `{r[0]}` | `{r[1]}` | {r[2]} | {r[3]} | `{r[4]}` | {r[5]:,} | "
+            + " | ".join(str(x) if x is not None else "-" for x in r[6:])
+            + " |"
         )
 
     md_lines.extend(

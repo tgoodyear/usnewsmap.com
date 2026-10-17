@@ -99,6 +99,14 @@ if $CREATE; then
   [ -d "$DATA/scans" ] && [ -d "$DATA/manifests" ] ||
     die "$DATA/scans and $DATA/manifests must exist: run pve-ocr-storage.sh first"
   if ! pct status "$CTID" > /dev/null 2>&1; then
+    if command -v pveam > /dev/null 2>&1 && [[ $TEMPLATE == *:vztmpl/* ]]; then
+      tmpl_storage=${TEMPLATE%%:vztmpl/*}
+      tmpl_file=${TEMPLATE#*:vztmpl/}
+      if ! pveam list "$tmpl_storage" 2> /dev/null | awk '{print $1}' | grep -Fxq "$TEMPLATE"; then
+        pveam update
+        pveam download "$tmpl_storage" "$tmpl_file"
+      fi
+    fi
     pct create "$CTID" "$TEMPLATE" \
       --hostname "$NAME" --unprivileged 1 --features nesting=1 \
       --cores "$CORES" --memory "$MEMORY" --swap "$SWAP" \
