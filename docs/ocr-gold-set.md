@@ -421,6 +421,55 @@ Linux Gold 1.3 payloads must remain unchanged when publishing this platform
 sibling. No additional workunit or queue-admission exception is authorized by
 this artifact pin.
 
+### Canonical Mac Gold measurement, 17 October 2026
+
+After the reviewed release in #741, publisher execution
+`usnm-boinc-publish-caj-prod-twa4osl` succeeded and registered Gold 1.3
+`arm64-apple-darwin` / `docker` as **app_version 38**. The image-only update
+preserved the publisher's other template, configuration and identity settings.
+Existing Linux Gold 1.3 remained registered as app_version 28.
+
+The ordinary scheduler initially sent Mac host 1 two existing generic Gold
+jobs with incompatible historical/AMD64 bases. WU 15712 / result 32108 and
+WU 15721 / result 32109 both exited 1 before OCR: the strict engine-base check
+correctly rejected them. They are not calibration measurements. Generic
+architecture-safe Gold routing remains tracked in [#747](https://github.com/tgoodyear/usnewsmap.com/issues/747);
+publishing a platform sibling does not by itself constrain queued jobs to
+that platform's base.
+
+With zero pending Mac Gold and zero global unsent Gold, the normal preparer
+verified a separate campaign at `/project/gold/mac-arm-20261017-80bf` from
+the existing unchanged full-v1 bundle and cached originals. Its prepared
+metadata is identical to the Linux campaign's 142-crop expectations; no
+source downloads or modified original archives were needed. With all six
+lifecycle jobs idle and the controller lease held, one ordinary targeted
+Gold job was submitted to existing **host 1 / user 2**, naming the ARM base
+`sha256:86418d991a798c885a7a505bc94ce27cbfe0c5361fa3dde319b7d6b400d9ebad`.
+No client preference, priority, abort, trust or fresh-OCR admission override
+was used.
+
+Actual **WU 16733 / result 32110 / app_version 38** completed with outcome 1,
+validation state 1 and exit status 0. Result 32110 became canonical; the
+workunit reached assimilation state 2 with error mask zero. The native
+canonical database host matches the report's host claim. The deployed
+validator passed and normal `gold collect` reported one collected, zero
+pending and zero failed. The canonical counts-only report SHA-256 is
+`0a41d70086c4bed79d89489f293853a7bc3fc64fb0e94386145e3841618f32fb`;
+its job ID is `d0f4b1eada04766e01f2a8ac03972ff86b66ab9d6d6cd992213cfedffa5e9460`.
+The immutable job, prepared metadata and collector tables remain in that
+campaign root.
+
+After receipt-hash verification, all **142 unique crops, zero skips**, match
+both offline ARM and AMD64 baselines exactly in source, profile, and integer
+character/word edit and reference counts: **125,622 reference characters,
+11,336 edits, CER 0.09023897088**. This establishes actual Mac BOINC
+execution/validation/collection and cross-architecture benchmark parity
+for the pinned `80bf2d65...` worker. It does not calibrate newer worker
+`247c131a...`, supply independent held-out truth, establish a production
+threshold, promote trust, or complete the fresh-page OCR/native
+handoff/release/search lifecycle. The [native acceptance receipt](https://github.com/tgoodyear/usnewsmap.com/issues/527#issuecomment-6228584575)
+records the same boundaries.
+
 ## Licensing
 
 The library believes the newspapers in Chronicling America are in the public domain or have no known copyright restrictions, and that those published more than 95 years ago are in the public domain in their entirety; newer ones may hold copyrighted third-party material ([Rights and Access](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/)). Pages in the sample run to 1963, so in 2026 crops from pages published in 1931 or later carry that caveat. Transcriptions are original work and go in under the repository's licence.
