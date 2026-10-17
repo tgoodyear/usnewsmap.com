@@ -170,6 +170,35 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(c.CatalogError, "checkpoint missing"):
             self.run_import()
 
+    def test_rebuild_of_only_final_slice_is_rejected(self):
+        with mock.patch.object(inv, "ROWS", 2):
+            self.run_import()
+        self.db.rename(self.root / "complete.sqlite")
+        for cache_set in ("keep", "buffer"):
+            c.ingest(self.db, self.work / "batch-00000002" / (cache_set + ".jsonl"))
+        with self.assertRaisesRegex(c.CatalogError, "checkpoint missing"):
+            self.run_import()
+
+    def test_created_ancestors_are_durable_before_import(self):
+        self.work = self.root / "nested" / "inventory"
+        synced = []
+        original_sync = inv.sync_dir
+        original_ingest = c.ingest
+
+        def sync(path):
+            synced.append(path)
+            original_sync(path)
+
+        def ingest(*args):
+            self.assertIn(self.root, synced)
+            self.assertIn(self.root / "nested", synced)
+            self.assertIn(self.work, synced)
+            return original_ingest(*args)
+
+        with mock.patch.object(inv, "sync_dir", side_effect=sync), \
+                mock.patch.object(c, "ingest", side_effect=ingest):
+            self.assertTrue(self.run_import()["finished"])
+
     def test_invalid_rows_publish_no_evidence(self):
         for raw in (b"invalid\n", b"x" * (c.MAX_LINE + 1) + b"\n"):
             with self.subTest(raw_size=len(raw)):

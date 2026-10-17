@@ -30,6 +30,17 @@ def sync_dir(path):
         os.close(fd)
 
 
+def durable_mkdir(path):
+    missing = []
+    parent = path
+    while not parent.exists():
+        missing.append(parent)
+        parent = parent.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        sync_dir(directory.parent)
+
+
 def publish(path, raw):
     """Only unpublished scratch is replaceable; final evidence is retained."""
     scratch = path.with_name(path.name + ".writing")
@@ -88,7 +99,7 @@ def run(db, index, scan_root, work, source, cache_sets, max_batches=10):
     # Output names must not overwrite input, database, or its journal.
     c.require(not index.is_relative_to(work) and not db.is_relative_to(work) and
               not work.is_relative_to(scan_root), "inventory directory must be separate from inputs and catalog")
-    work.mkdir(mode=0o700, parents=True, exist_ok=True)
+    durable_mkdir(work)
     with lock(work), index.open("rb") as stream:
         info = os.fstat(stream.fileno())
         c.require(stat.S_ISREG(info.st_mode), "index must be a regular file")
@@ -109,10 +120,11 @@ def run(db, index, scan_root, work, source, cache_sets, max_batches=10):
             if state["batches"]:
                 conn = c.connect(db)
                 try:
-                    for cache_set in cache_sets:
-                        row = conn.execute("SELECT sha256 FROM batches WHERE batch_id=?",
-                                           (batch_id(state, state["batches"] - 1, cache_set),)).fetchone()
-                        c.require(row is not None, "catalog checkpoint missing; rebuild by replaying retained evidence")
+                    for number in range(state["batches"]):
+                        for cache_set in cache_sets:
+                            row = conn.execute("SELECT sha256 FROM batches WHERE batch_id=?",
+                                               (batch_id(state, number, cache_set),)).fetchone()
+                            c.require(row is not None, "catalog checkpoint missing; rebuild by replaying retained evidence")
                 finally:
                     conn.close()
         else:
