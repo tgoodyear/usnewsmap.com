@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="dg" viewBox="0 0 1100 820" width="1100" height="820" role="img" aria-labelledby="loc-keep-t loc-keep-d">
 <title id="loc-keep-t">LoC keep set: pages read again on the home nodes</title>
-<desc id="loc-keep-d">Pages whose LoC text is badly damaged, except English outside the worst batches: listed by the damage pass, fetched from LoC to the scan store, read by the OCR nodes, uploaded to ocr-out, picked up by ocr-sync into curated/ocr-local, and put into the index at the full rebuild.</desc>
+<desc id="loc-keep-d">Pages whose LoC text is badly damaged, except English outside the worst batches: listed by the damage pass, fetched to the scan store, read by configured OCR workers, uploaded to ocr-out, imported by ocr-sync and considered when an enabled release indexes that batch. Previously published batches require a full rebuild.</desc>
 <style>
 .dg { --k:#0b0b0b; --k2:#52514e; --bg:#fcfcfb; --lx:#f4f1e6; --lh:#f1f1ee; --la:#e8f0fb; --bx:#ffffff;
   --good:#0ca30c; --run:#2a78d6; --wait:#fab219; --none:#898781; width:100%; height:auto; max-width:1500px; display:block;
@@ -73,7 +73,7 @@
 <g id="loc-keep-node" class="box local" data-state="@@cls:nodes@@">
 <rect class="card" x="450" y="332" width="200" height="139" rx="4"/>
 <rect class="bar" x="450" y="333" width="6" height="137" rx="2"/>
-<text class="ttl" x="464" y="351">7  OCR nodes 3 and 4</text>
+<text class="ttl" x="464" y="351">7  Configured OCR workers</text>
 <text x="464" y="366">worker + Tesseract in a</text>
 <text x="464" y="381">container per page; reads</text>
 <text x="464" y="396">the scan over HTTP, LoC</text>
@@ -145,11 +145,11 @@
 <g id="loc-keep-rb" class="box azure" data-state="@@cls:rebuild@@">
 <rect class="card" x="670" y="674" width="200" height="109" rx="4"/>
 <rect class="bar" x="670" y="675" width="6" height="107" rx="2"/>
-<text class="ttl" x="684" y="693">11  Full rebuild (#283)</text>
+<text class="ttl" x="684" y="693">11  Release / rebuild</text>
 <text x="684" y="708">release --ocr-local, set with</text>
 <text x="684" y="723">USNM_OCR_LOCAL: our text</text>
-<text x="684" y="738">replaces LoC's where it</text>
-<text x="684" y="753">scores clearly lower damage</text>
+<text x="684" y="738">replaces text where preferred;</text>
+<text x="684" y="753">old batches need a rebuild</text>
 <text class="st" x="684" y="768">@@lbl:rebuild@@</text>
 </g>
 <g id="loc-keep-idx" class="box azure" data-state="@@cls:index-ocr@@">

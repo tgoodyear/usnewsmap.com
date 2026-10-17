@@ -224,6 +224,20 @@ pub const NODE_FRESH: Duration = Duration::minutes(3);
 /// A look at the queues older than this is marked stale.
 pub const QUEUES_FRESH: Duration = Duration::minutes(5);
 
+pub fn fetch_status_fresh(v: &View) -> bool {
+    v.fetch.status_error.is_none()
+        && v.fetch.plan_error.is_none()
+        && v.fetch.status.as_ref().is_some_and(|s| {
+            DateTime::parse_from_rfc3339(&s.updated_at).is_ok_and(|at| {
+                (0..=900).contains(&(v.generated_at - at.with_timezone(&Utc)).num_seconds())
+            })
+        })
+}
+
+pub fn node_status_fresh(n: &NodeView, now: DateTime<Utc>) -> bool {
+    n.ok && n.last_ok.is_some_and(|at| now - at <= NODE_FRESH)
+}
+
 /// Where the queues come from (12 §12.2.5).
 pub const QUEUES_NOTE: &str = "From the nodes: each worker with a status port looks once a minute, with Get Queue \
 Metadata and Peek Messages (Storage Queue Data Reader on each queue), and takes nothing. The lengths count hidden \

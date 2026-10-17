@@ -169,6 +169,10 @@ section.wide svg { margin:6px 0 10px; min-width:760px; }
 .pipeline-table details p { margin:6px 0; color:var(--ink2); }
 .pipeline-meta { margin-top:12px; }
 .pipeline-meta > summary { cursor:pointer; color:var(--ink2); }
+.step-rates { table-layout:fixed; }
+.step-rates th, .step-rates td { white-space:normal; overflow-wrap:anywhere; }
+.step-rates th:first-child { width:25%; }
+.step-rates th:nth-child(2) { width:20%; }
 .ecosystem-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr)); gap:14px; }
 .ecosystem-card { border:1px solid var(--grid); border-radius:6px; padding:14px; min-width:0; }
 .ecosystem-card h3 { margin:0 0 8px; font-size:16px; }
@@ -582,7 +586,7 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
     o
 }
 
-fn summary_stage<'a>(v: &'a View, id: &str) -> Option<&'a crate::pipeline::Stage> {
+pub(crate) fn summary_stage<'a>(v: &'a View, id: &str) -> Option<&'a crate::pipeline::Stage> {
     let pipeline = &v.pipeline;
     let snapshot = pipeline.snapshot.as_ref()?;
     let stage = snapshot.stages.iter().find(|s| s.id == id)?;
@@ -618,15 +622,7 @@ fn ecosystem_panel(v: &View) -> String {
          are different populations, not one progress bar.</p><div class=\"ecosystem-cards\">",
     );
     let f = &v.fetch;
-    let fetch_time = f
-        .status
-        .as_ref()
-        .and_then(|s| DateTime::parse_from_rfc3339(&s.updated_at).ok());
-    let fetch_fresh = fetch_time
-        .is_some_and(|t| (0..=900).contains(&(now - t.with_timezone(&Utc)).num_seconds()))
-        && f.status_error.is_none()
-        && f.plan_error.is_none();
-    if fetch_fresh {
+    if crate::view::fetch_status_fresh(v) {
         let state = f.status.as_ref().map_or("unknown", |s| s.state.as_str());
         let keep = f.sets.iter().find(|s| s.name == "keep");
         let population = keep.map_or_else(
@@ -663,11 +659,7 @@ fn ecosystem_panel(v: &View) -> String {
     let fresh_nodes: Vec<_> = v
         .nodes
         .iter()
-        .filter(|n| {
-            n.ok && n
-                .last_ok
-                .is_some_and(|at| now - at <= crate::view::NODE_FRESH)
-        })
+        .filter(|n| crate::view::node_status_fresh(n, now))
         .collect();
     if fresh_nodes.is_empty() {
         summary_card(

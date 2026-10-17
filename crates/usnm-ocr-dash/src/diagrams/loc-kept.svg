@@ -86,7 +86,7 @@
 <text x="464" y="302">go on to the keep-set and</text>
 <text x="464" y="317">buffer-set paths; LoC's text</text>
 <text x="464" y="332">stays in the index until the</text>
-<text x="464" y="347">full rebuild replaces it</text>
+<text x="464" y="347">enabled release replaces it</text>
 </g>
 <path class="arrow" d="M110 92 L110 150" marker-end="url(#ah-loc-kept)"/>
 <path class="arrow" d="M210 197 L230 189.5" marker-end="url(#ah-loc-kept)"/>

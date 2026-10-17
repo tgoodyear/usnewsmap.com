@@ -73,7 +73,7 @@
 <g id="loc-buffer-node" class="box local" data-state="@@cls:nodes@@">
 <rect class="card" x="450" y="332" width="200" height="139" rx="4"/>
 <rect class="bar" x="450" y="333" width="6" height="137" rx="2"/>
-<text class="ttl" x="464" y="351">7  OCR nodes 3 and 4</text>
+<text class="ttl" x="464" y="351">7  Configured OCR workers</text>
 <text x="464" y="366">worker + Tesseract in a</text>
 <text x="464" y="381">container per page; reads</text>
 <text x="464" y="396">the scan over HTTP, LoC</text>
@@ -145,11 +145,11 @@
 <g id="loc-buffer-rb" class="box azure" data-state="@@cls:rebuild@@">
 <rect class="card" x="670" y="674" width="200" height="109" rx="4"/>
 <rect class="bar" x="670" y="675" width="6" height="107" rx="2"/>
-<text class="ttl" x="684" y="693">11  Full rebuild (#283)</text>
+<text class="ttl" x="684" y="693">11  Release / rebuild</text>
 <text x="684" y="708">release --ocr-local, set with</text>
 <text x="684" y="723">USNM_OCR_LOCAL: our text</text>
-<text x="684" y="738">replaces LoC's where it</text>
-<text x="684" y="753">scores clearly lower damage</text>
+<text x="684" y="738">replaces text where preferred;</text>
+<text x="684" y="753">old batches need a rebuild</text>
 <text class="st" x="684" y="768">@@lbl:rebuild@@</text>
 </g>
 <g id="loc-buffer-idx" class="box azure" data-state="@@cls:index-ocr@@">
