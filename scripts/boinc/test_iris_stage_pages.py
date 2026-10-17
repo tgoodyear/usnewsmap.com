@@ -42,6 +42,7 @@ class StagePagesTest(unittest.TestCase):
             result = pages.stage(*args)
             self.assertEqual(result["pages"], 2)
             self.assertEqual(result["distinct_page_ids"], 2)
+            self.assertEqual(result["distinct_page_sha256"], 2)
             self.assertFalse(result["dispatch_enabled"])
             self.assertEqual(result["executable_workunits"], 0)
             self.assertTrue((args[3] / "DISPATCH_DISABLED").is_file())
@@ -101,6 +102,28 @@ class StagePagesTest(unittest.TestCase):
                 pages.stage(*args)
             self.assertFalse(args[3].exists())
             self.assertFalse(args[3].with_name("campaign.staging").exists())
+
+    def test_latest_jpeg_index_entry_is_used_after_source_refresh(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pages, "COUNT", 2):
+            args = self.fixture(Path(directory))
+            records = [json.loads(line) for line in args[1].read_text().splitlines()]
+            records[0] = dict(records[0], sha256="0" * 64, bytes=999)
+            records.append(dict(records[1], format="jp2", sha256="b" * 64))
+            args[1].write_text("".join(json.dumps(row) + "\n" for row in records))
+            self.assertEqual(pages.stage(*args)["pages"], 2)
+
+    def test_identical_pixels_under_different_page_ids_do_not_count_twice(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pages, "COUNT", 2):
+            args = self.fixture(Path(directory))
+            records = [json.loads(line) for line in args[1].read_text().splitlines()]
+            records[-1]["sha256"] = records[0]["sha256"]
+            source = args[0] / "batch/sn1/1900-01-01/1"
+            (source / "2.jpg").write_bytes((source / "1.jpg").read_bytes())
+            (source / "2.jpg.json").write_text(json.dumps(records[-1]))
+            args[1].write_text("".join(json.dumps(row) + "\n" for row in records))
+            with self.assertRaisesRegex(ValueError, "found 1"):
+                pages.stage(*args)
+            self.assertFalse(args[3].exists())
 
 
 if __name__ == "__main__":

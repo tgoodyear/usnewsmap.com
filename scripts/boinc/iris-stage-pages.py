@@ -28,34 +28,42 @@ def stage(cache, index, acceptance_path, out, image):
         raise FileExistsError("campaign or incomplete staging exists; inspect rather than overwrite")
     if out.is_relative_to(cache):
         raise ValueError("staging must not be inside the fetcher's keep tree")
-    selected, seen = [], set()
+    selected, seen, seen_hashes, latest = [], set(), set(), {}
     with index.open() as source:
         for line in source:
             row = json.loads(line)
             match = DOC_ID.fullmatch(row["doc_id"])
-            if not match or match[2][:4] > "1922" or row["doc_id"] in seen:
+            if not match or match[2][:4] > "1922" or row.get("format", "jpeg") != "jpeg":
                 continue
             if not re.fullmatch(r"[A-Za-z0-9_-]+", row["batch"]):
                 raise ValueError("invalid source batch")
-            path = cache / row["batch"] / match[1] / match[2] / match[3] / (match[4] + ".jpg")
-            if not path.is_file():
-                continue
-            if not path.resolve().is_relative_to(cache):
-                raise ValueError("source image outside cache")
-            sidecar_path = path.with_suffix(".jpg.json")
-            if not sidecar_path.resolve().is_relative_to(cache):
-                raise ValueError("source sidecar outside cache")
-            sidecar = json.loads(sidecar_path.read_text())
-            if (path.stat().st_size != row["bytes"] or row["resolution"] != "full"
-                    or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
-                    or not row["loc_url"].startswith("https://tile.loc.gov/")
-                    or any(sidecar[key] != row[key] for key in
-                           ("doc_id", "batch", "bytes", "sha256", "loc_url", "resolution"))):
-                raise ValueError("source metadata differs from the full-resolution cache index")
-            selected.append((path, row))
-            seen.add(row["doc_id"])
-            if len(selected) == COUNT:
-                break
+            latest[(row["batch"], row["doc_id"])] = row
+    for row in latest.values():
+        if row["doc_id"] in seen:
+            continue
+        match = DOC_ID.fullmatch(row["doc_id"])
+        path = cache / row["batch"] / match[1] / match[2] / match[3] / (match[4] + ".jpg")
+        if not path.is_file():
+            continue
+        if not path.resolve().is_relative_to(cache):
+            raise ValueError("source image outside cache")
+        sidecar_path = path.with_suffix(".jpg.json")
+        if not sidecar_path.resolve().is_relative_to(cache):
+            raise ValueError("source sidecar outside cache")
+        sidecar = json.loads(sidecar_path.read_text())
+        if (path.stat().st_size != row["bytes"] or row["resolution"] != "full"
+                or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+                or not row["loc_url"].startswith("https://tile.loc.gov/")
+                or any(sidecar[key] != row[key] for key in
+                       ("doc_id", "batch", "bytes", "sha256", "loc_url", "resolution"))):
+            raise ValueError("source metadata differs from the full-resolution cache index")
+        if row["sha256"] in seen_hashes:
+            continue
+        selected.append((path, row))
+        seen.add(row["doc_id"])
+        seen_hashes.add(row["sha256"])
+        if len(selected) == COUNT:
+            break
     if len(selected) != COUNT:
         raise ValueError(f"need {COUNT} distinct cached pre-1923 pages; found {len(selected)}")
     total = sum(row["bytes"] for _, row in selected)
@@ -92,7 +100,8 @@ def stage(cache, index, acceptance_path, out, image):
         manifest.flush()
         os.fsync(manifest.fileno())
     summary = {
-        "v": 1, "pages": COUNT, "distinct_page_ids": len(seen), "source_bytes": total,
+        "v": 1, "pages": COUNT, "distinct_page_ids": len(seen),
+        "distinct_page_sha256": len(seen_hashes), "source_bytes": total,
         "worker_image": image, "stage_only": True, "dispatch_enabled": False,
         "executable_workunits": 0,
         "host_policy": "Intel OpenVINO only; NVIDIA and AMD excluded",
