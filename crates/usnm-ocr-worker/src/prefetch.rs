@@ -1022,15 +1022,14 @@ impl Run {
             self.streak_ok();
             return Ok(Outcome::Done);
         }
-        // A buffer page a worker has read and the scan server deleted.
-        if set == Set::Buffer {
-            for f in formats(size) {
-                let done = consumed_path(&scan_path(&self.opts.out, &row, size, *f));
-                if tokio::fs::try_exists(done).await.unwrap_or(false) {
-                    c.already_there.fetch_add(1, Ordering::SeqCst);
-                    self.streak_ok();
-                    return Ok(Outcome::Done);
-                }
+        // A buffer page a worker has read and the scan server deleted, or a
+        // page verified in the scan archive and evicted locally.
+        for f in formats(size) {
+            let done = consumed_path(&scan_path(&self.opts.out, &row, size, *f));
+            if tokio::fs::try_exists(done).await.unwrap_or(false) {
+                c.already_there.fetch_add(1, Ordering::SeqCst);
+                self.streak_ok();
+                return Ok(Outcome::Done);
             }
         }
         let t = tag(size);
@@ -1778,17 +1777,20 @@ mod tests {
     #[tokio::test]
     async fn a_consumed_buffer_page_isnt_fetched_again() {
         let dir = tempfile::tempdir().unwrap();
-        let r = row("sn1", 1890, 1, "eng");
+        let r_buf = row("sn1", 1890, 1, "eng");
+        let r_keep = row("sn2", 1890, 1, "deu");
         let manifest = dir.path().join("m.parquet");
         std::fs::write(
             &manifest,
-            prefetch::encode(std::slice::from_ref(&r)).unwrap(),
+            prefetch::encode(&[r_buf.clone(), r_keep.clone()]).unwrap(),
         )
         .unwrap();
         let out = dir.path().join("scans");
-        let path = scan_path(&out, &r, ImageSize::Full, ScanFormat::Jpeg);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(consumed_path(&path), b"{}").unwrap();
+        for r in [&r_buf, &r_keep] {
+            let path = scan_path(&out, r, ImageSize::Full, ScanFormat::Jpeg);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(consumed_path(&path), b"{}").unwrap();
+        }
         let opts = Options {
             manifest,
             out,
@@ -1803,7 +1805,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!((s.already_there, s.fetched, s.failed_transient), (1, 0, 0));
+        assert_eq!((s.already_there, s.fetched, s.failed_transient), (2, 0, 0));
     }
 
     #[test]
