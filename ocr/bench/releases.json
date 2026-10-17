@@ -1,4 +1,101 @@
 {
   "format": "usnm-ocr-bench-releases",
-  "releases": []
+  "releases": [
+    {
+      "archive": {
+        "bytes": 68325888,
+        "name": "usnm-ocr-bench-v1.0.0.tar",
+        "sha256": "4835d64e5607b1642290102bcaf02ebc807237931a187b25aea162195ea60a42"
+      },
+      "content_digest": "c5e38736b6e60610ef0dbe6d8296c3dc58f8a945d6e1cfea5aa47b03fb163800",
+      "inputs_sha256": "5aebb18861073e64e1405a1c17df5a7ddae8b84f3efe735e857c0283bd42019f",
+      "manifest_sha256": "ffd1d54147966c562d1f6e13c0fe2c2badb12c726406cbd50d61d8f8a395fe29",
+      "release": "v1.0.0",
+      "samples": 1000,
+      "spec_sha256": "31a552cc099080e06443bd90ccc41186d4a7abc8eaab20e79e81e7b00d5ba451",
+      "subsets": {
+        "all-1000": {
+          "count": 1000,
+          "digest": "3f8972e16e61f568394aac5e2ec59591d654e5dde15a9b7b53b54e03ae31a39c",
+          "pages": 38
+        },
+        "legacy/overproof-en-100": {
+          "count": 100,
+          "digest": "e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04",
+          "pages": 18
+        },
+        "legacy/overproof-en-paired-a-100": {
+          "count": 100,
+          "digest": "fb385d16f84107214c94a0404d4aac35ada7d362d62335511eee94addc7390ac",
+          "pages": 17
+        },
+        "legacy/overproof-en-paired-b-100": {
+          "count": 100,
+          "digest": "736ad90987f99f6ef6429db8e2265afa58ee37fb99fe9c2301594afb23fd1ab6",
+          "pages": 12
+        },
+        "legacy/reichsanzeiger-de-lines-000": {
+          "count": 100,
+          "digest": "70187a7a927941f4f0b111be4a0f84ff892dfb209c66514e56422aa65bf73d0b",
+          "pages": 20
+        },
+        "legacy/reichsanzeiger-de-lines-100": {
+          "count": 100,
+          "digest": "07fadeed8d5b5ab5771a42c14f4e0acbf78106e6881a089bf83ec71f0a11b2fe",
+          "pages": 20
+        },
+        "legacy/reichsanzeiger-de-lines-200": {
+          "count": 100,
+          "digest": "79969fbc13c9610bb42c72f849ae54ead22c797e38a8fe28aa17e40505904dbc",
+          "pages": 20
+        },
+        "legacy/reichsanzeiger-de-lines-300": {
+          "count": 100,
+          "digest": "97483c0bf4249bb83c1042575d8179de6472ce0ece9b957dc597366c28346084",
+          "pages": 20
+        },
+        "legacy/reichsanzeiger-de-lines-400": {
+          "count": 100,
+          "digest": "8e90f92473b3b1ac784dbbddfc4e7177e9ff2f0156d608446b6ae6dc47489ba0",
+          "pages": 20
+        },
+        "legacy/reichsanzeiger-de-lines-500": {
+          "count": 100,
+          "digest": "acd17009efa0150e488e8a89b4c6844dbda7dbc952fa48dd846385ac286db3a6",
+          "pages": 20
+        },
+        "legacy/reichsanzeiger-de-lines-600": {
+          "count": 100,
+          "digest": "ac3441d38c6d7e0cede1bd13a17926d93908fea1de33b156eaf827c9a77c5f4b",
+          "pages": 20
+        },
+        "overproof-en/all-300": {
+          "count": 300,
+          "digest": "d8a2d706c959faa00bb02139426231d3ebb7a6aa9fcbc95d1f48f4f6c5c92b8a",
+          "pages": 18
+        },
+        "overproof-en/smoke-10": {
+          "count": 10,
+          "digest": "e4256f3e6c9ae9e0453e74d7b38c5c862e8265ab88a50ca95dd3fbfd8fd10576",
+          "pages": 9
+        },
+        "reichsanzeiger-de/acceptance-100": {
+          "count": 100,
+          "digest": "3d9fe76ed4c7080a166a3d3c3c79b8aed247c30cb4757dc6ca2949c07fda9ae5",
+          "pages": 20
+        },
+        "reichsanzeiger-de/all-700": {
+          "count": 700,
+          "digest": "433d2485a815872b26b7ac03b794960f9ae7f92fcde7eecd410ee5fa49129c82",
+          "pages": 20
+        },
+        "reichsanzeiger-de/smoke-10": {
+          "count": 10,
+          "digest": "0aa2c383e04e0d2709ec11faedd8a6d2bdc1850430ca3e8ea6efc68e2239b695",
+          "pages": 8
+        }
+      },
+      "tag": "ocr-bench-v1.0.0"
+    }
+  ]
 }
