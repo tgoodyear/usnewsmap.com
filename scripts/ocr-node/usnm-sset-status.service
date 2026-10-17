@@ -7,5 +7,6 @@ ConditionFileIsExecutable=/usr/local/bin/usnm-sset-status
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/usnm-sset-status --unit usnm-sset.service --out /var/lib/usnm-sset/status.json --done /var/lib/usnm-sset/done --push-url http://ocr.tjg.fyi/api/sset/usnm-sset
+EnvironmentFile=/etc/usnm/sset-status.env
+ExecStart=/usr/local/bin/usnm-sset-status --unit usnm-sset.service --out /var/lib/usnm-sset/status.json --done /var/lib/usnm-sset/done --push-url ${USNM_SSET_STATUS_PUSH_URL}
 StandardOutput=null
