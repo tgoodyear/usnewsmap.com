@@ -326,7 +326,9 @@ for outstanding work, retries and rollback, with backup and disk headroom.
 
 Before writing `Submitting`, every attempt streams a fresh HTTP 200 GET,
 checking exact size and SHA-256 with the existing scan-size cap and a 120-second
-request timeout. DNS resolution has a separate 10-second timeout; only public
+request timeout. DNS resolution has a separate 10-second timeout and runs
+outside Tokio's blocking pool so stalled system DNS cannot delay CLI shutdown;
+only public
 addresses are allowed and pinned, proxies and redirects are disabled. Local
 existence is not readiness proof. Unavailable/mismatched downloads leave the
 job reserved without invoking stock tools.

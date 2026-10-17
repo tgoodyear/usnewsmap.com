@@ -6,7 +6,7 @@ use sha2::Sha256;
 use std::{
     fs::File,
     io::{Read, Write},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -167,12 +167,16 @@ async fn public_client(url: &Url) -> anyhow::Result<Client> {
     let host = url.host_str().context("missing host")?;
     let host = host.trim_matches(['[', ']']);
     let port = url.port_or_known_default().context("missing port")?;
-    let addresses: Vec<SocketAddr> = tokio::time::timeout(
+    let name = host.to_owned();
+    let addresses = resolve(
+        move || {
+            (name.as_str(), port)
+                .to_socket_addrs()
+                .map(Iterator::collect)
+        },
         Duration::from_secs(10),
-        tokio::net::lookup_host((host, port)),
     )
-    .await??
-    .collect();
+    .await?;
     ensure!(
         !addresses.is_empty() && addresses.iter().all(|a| public_ip(a.ip())),
         "download host must resolve exclusively to public addresses"
@@ -186,6 +190,22 @@ async fn public_client(url: &Url) -> anyhow::Result<Client> {
         // Pin validated DNS results, avoiding a second lookup/rebinding.
         .resolve_to_addrs(host, &addresses)
         .build()?)
+}
+
+async fn resolve(
+    lookup: impl FnOnce() -> std::io::Result<Vec<SocketAddr>> + Send + 'static,
+    deadline: Duration,
+) -> anyhow::Result<Vec<SocketAddr>> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    // System getaddrinfo cannot be cancelled. Keep it outside Tokio's blocking
+    // pool so runtime shutdown cannot undo the CLI deadline. No project/journal
+    // handles cross this boundary; late results are discarded after timeout.
+    std::thread::Builder::new()
+        .name("boinc-download-dns".into())
+        .spawn(move || {
+            let _ = send.send(lookup());
+        })?;
+    Ok(tokio::time::timeout(deadline, receive).await???)
 }
 
 async fn probe(client: &Client, url: Url, expected: usize, sha256: &str) -> anyhow::Result<()> {

@@ -168,6 +168,7 @@ fn test_download(fx: &Fixture, base: Url) -> Download {
         test_client: Some(
             Client::builder()
                 .no_proxy()
+                .pool_max_idle_per_host(0)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(2))
                 .build()
@@ -243,6 +244,7 @@ async fn remote_failures_leave_reserved_and_never_dispatch() {
     let fx = Fixture::new();
     let (url, task) = server(StatusCode::OK, PAGE.to_vec()).await;
     task.abort();
+    let _ = task.await;
     let download = test_download(&fx, url);
     assert!(
         submit_with_download(&fx.root, &fx.project, &fx.id, Some(&download))
@@ -274,6 +276,7 @@ async fn mirror_uncertainty_requires_reconcile_then_fresh_probe() {
     fx.tool(true, false);
     // Identical immutable input is reused, but HTTP is still required.
     task.abort();
+    let _ = task.await;
     assert!(
         submit_with_download(&fx.root, &fx.project, &fx.id, Some(&download))
             .await
@@ -282,9 +285,23 @@ async fn mirror_uncertainty_requires_reconcile_then_fresh_probe() {
     assert_eq!(load(&fx.root, &fx.id).unwrap().stage, Stage::Reserved);
     let (url, task) = server(StatusCode::OK, PAGE.to_vec()).await;
     let download = test_download(&fx, url);
-    submit_with_download(&fx.root, &fx.project, &fx.id, Some(&download))
-        .await
-        .unwrap();
+    // Parallel tests spawn processes on Linux. An unrelated pre-exec child can
+    // briefly inherit a flock even after its parent's descriptor was closed.
+    // Retry only failure to acquire the lock, never an attempted submission.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match submit_with_download(&fx.root, &fx.project, &fx.id, Some(&download)).await {
+            Ok(()) => break,
+            Err(error)
+                if error.to_string().contains("another BOINC bridge process")
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                assert_eq!(load(&fx.root, &fx.id).unwrap().stage, Stage::Reserved);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("{error:#}"),
+        }
+    }
     task.abort();
 }
 
@@ -434,4 +451,52 @@ async fn chunked_downloads_are_bounded_and_stalls_time_out() {
         assert_eq!(result.is_ok(), success, "{result:?}");
         task.abort();
     }
+}
+
+#[test]
+fn stalled_dns_process_child() {
+    if std::env::var_os("USNM_TEST_STALLED_DNS_CHILD").is_none() {
+        return;
+    }
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_started = started.clone();
+    let result = runtime.block_on(resolve(
+        move || {
+            worker_started.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(Duration::from_secs(60));
+            Ok(vec![])
+        },
+        Duration::from_secs(1),
+    ));
+    assert!(result.is_err());
+    assert!(started.load(std::sync::atomic::Ordering::SeqCst));
+    // This drop would wait sixty seconds with tokio::net::lookup_host's
+    // blocking-pool resolution. The isolated worker must not delay process exit.
+    drop(runtime);
+}
+
+#[tokio::test]
+async fn stalled_dns_deadline_bounds_process_exit() {
+    let child = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "submit::remote::tests::stalled_dns_process_child",
+            "--nocapture",
+        ])
+        .env("USNM_TEST_STALLED_DNS_CHILD", "1")
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+        .await
+        .expect("stalled DNS prevented process exit")
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
