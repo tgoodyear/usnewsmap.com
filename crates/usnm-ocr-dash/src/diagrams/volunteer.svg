@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="dg" viewBox="0 0 1100 390" width="1100" height="390" role="img" aria-labelledby="volunteer-t volunteer-d">
+<title id="volunteer-t">Volunteer compute and experiments</title>
+<desc id="volunteer-d">Staged inputs feed the project scheduler and volunteer assignments, independently of local OCR. Returned work requires validation and campaign acceptance before import or publication. Queue counts are result replicas, not unique pages, active devices or measured throughput.</desc>
+<defs><marker id="ah-volunteer" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="tip" d="M0 0 L10 5 L0 10 z"/></marker></defs>
+<rect class="band h" x="4" y="6" width="1092" height="176" rx="6"/>
+<rect class="band a" x="4" y="190" width="1092" height="194" rx="6"/>
+<text class="lane h" x="14" y="22">Project staging and volunteer execution (separate from local OCR)</text>
+<text class="lane a" x="14" y="206">Validation and publication gates (not connected to this dashboard)</text>
+<g id="volunteer-inputs" class="box" data-state="@@cls:boinc-staging@@">
+<rect class="card" x="10" y="40" width="240" height="126" rx="4"/>
+<rect class="bar" x="10" y="41" width="6" height="124" rx="2"/>
+<text class="ttl" x="24" y="60">1  Campaign inputs / mirror</text>
+<text x="24" y="80">Explicitly staged originals or crops;</text>
+<text x="24" y="98">input provenance and rollout gates.</text>
+<text x="24" y="116">Mirror coverage not verified here.</text>
+<text class="st" x="24" y="150">@@lbl:boinc-staging@@</text>
+</g>
+<g id="volunteer-ready" class="box" data-state="@@cls:boinc-ready@@">
+<rect class="card" x="300" y="40" width="240" height="126" rx="4"/>
+<rect class="bar" x="300" y="41" width="6" height="124" rx="2"/>
+<text class="ttl" x="314" y="60">2  Scheduler work available</text>
+<text x="314" y="80">Eligible clients request work.</text>
+<text x="314" y="98">Queue stock is not dispatch rate.</text>
+<text x="314" y="126">@@txt:boinc-ready@@</text>
+<text class="st" x="314" y="150">@@lbl:boinc-ready@@</text>
+</g>
+<g id="volunteer-assigned" class="box" data-state="@@cls:boinc-assigned@@">
+<rect class="card" x="590" y="40" width="240" height="126" rx="4"/>
+<rect class="bar" x="590" y="41" width="6" height="124" rx="2"/>
+<text class="ttl" x="604" y="60">3  Volunteer assignments</text>
+<text x="604" y="80">OCR, comparisons and experiments.</text>
+<text x="604" y="98">Assigned does not mean computing.</text>
+<text x="604" y="126">@@txt:boinc-assigned@@</text>
+<text class="st" x="604" y="150">@@lbl:boinc-assigned@@</text>
+</g>
+<g id="volunteer-validate" class="box" data-state="@@cls:boinc-validation@@">
+<rect class="card" x="590" y="230" width="240" height="126" rx="4"/>
+<rect class="bar" x="590" y="231" width="6" height="124" rx="2"/>
+<text class="ttl" x="604" y="250">4  Validate and evaluate</text>
+<text x="604" y="270">Returned work, reference checks,</text>
+<text x="604" y="288">paired results and campaign gates.</text>
+<text x="604" y="306">No quality gains inferred here.</text>
+<text class="st" x="604" y="340">@@lbl:boinc-validation@@</text>
+</g>
+<g id="volunteer-publish" class="box" data-state="@@cls:boinc-publication@@">
+<rect class="card" x="300" y="230" width="240" height="126" rx="4"/>
+<rect class="bar" x="300" y="231" width="6" height="124" rx="2"/>
+<text class="ttl" x="314" y="250">5  Accepted output / publication</text>
+<text x="314" y="270">Relevant acceptance, import and</text>
+<text x="314" y="288">release gates must pass.</text>
+<text x="314" y="306">Research work need not publish text.</text>
+<text class="st" x="314" y="340">@@lbl:boinc-publication@@</text>
+</g>
+<path class="arrow" d="M250 103 L300 103" marker-end="url(#ah-volunteer)"/>
+<path class="arrow" d="M540 103 L590 103" marker-end="url(#ah-volunteer)"/>
+<path class="arrow" d="M710 166 L710 230" marker-end="url(#ah-volunteer)"/>
+<path class="arrow" d="M590 293 L540 293" marker-end="url(#ah-volunteer)"/>
+</svg>
