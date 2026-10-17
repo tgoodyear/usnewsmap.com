@@ -54,6 +54,13 @@ enum Commands {
         #[arg(long, default_value = "/work")]
         dir: PathBuf,
     },
+    /// Publish a page on the local producer; this is NOT public readiness proof.
+    PrepareDownload {
+        #[arg(long)]
+        page: PathBuf,
+        #[arg(long)]
+        download_root: PathBuf,
+    },
     /// Stage and submit one reserved job with stock create_work.
     Submit {
         #[arg(long)]
@@ -63,7 +70,7 @@ enum Commands {
         #[arg(long)]
         job: String,
         /// Public HTTPS prefix serving immutable content-addressed page bytes.
-        #[arg(long, requires = "download_root")]
+        #[arg(long)]
         download_base_url: Option<String>,
         /// Existing local directory mapped to download-base-url (no symlinks).
         #[arg(long, requires = "download_base_url")]
@@ -1083,6 +1090,18 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Work { dir } => usnm_boinc::worker::run(&dir).await?,
+        Commands::PrepareDownload {
+            page,
+            download_root,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string(&usnm_boinc::submit::prepare_download(
+                    &page,
+                    &download_root
+                )?)?
+            );
+        }
         Commands::Submit {
             root,
             project,
@@ -1092,8 +1111,9 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let download = match (download_base_url, download_root) {
                 (Some(base), Some(root)) => Some(usnm_boinc::submit::Download::new(&base, &root)?),
+                (Some(base), None) => Some(usnm_boinc::submit::Download::remote(&base)?),
                 (None, None) => None,
-                _ => anyhow::bail!("download-base-url and download-root must be supplied together"),
+                (None, Some(_)) => anyhow::bail!("download-root requires download-base-url"),
             };
             usnm_boinc::submit::submit_with_download(&root, &project, &job, download.as_ref())
                 .await?

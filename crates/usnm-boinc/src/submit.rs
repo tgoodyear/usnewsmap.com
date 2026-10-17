@@ -5,7 +5,7 @@ use std::path::Path;
 use tokio::process::Command;
 
 mod remote;
-pub use remote::Download;
+pub use remote::{prepare_download, Download, PreparedDownload};
 
 pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()> {
     submit_with_download(root, project, id, None).await

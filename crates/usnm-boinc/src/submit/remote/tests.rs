@@ -164,7 +164,7 @@ fn test_download(fx: &Fixture, base: Url) -> Download {
     // public pinned DNS and normal certificate validation.
     Download {
         base,
-        root: fx.mirror.clone(),
+        root: Some(fx.mirror.clone()),
         test_client: Some(
             Client::builder()
                 .no_proxy()
@@ -195,6 +195,26 @@ async fn default_and_remote_order_readiness_and_replay() {
         assert!(fx.project.join("called").exists());
         task.abort();
     }
+}
+
+#[tokio::test]
+async fn separately_published_origin_needs_no_local_mount() {
+    let fx = Fixture::new();
+    fx.tool(true, false);
+    // Producer publishes independently; the Azure submitter has no origin path.
+    let receipt =
+        prepare_download(&fx.root.join("jobs").join(&fx.id).join("page"), &fx.mirror).unwrap();
+    assert_eq!(receipt.sha256, boinc::sha256(PAGE));
+    assert_eq!(receipt.bytes, PAGE.len() as u64);
+    assert_eq!(receipt.md5, hex(&Md5::digest(PAGE)));
+    let (url, task) = server(StatusCode::OK, PAGE.to_vec()).await;
+    let mut download = test_download(&fx, url);
+    download.root = None;
+    submit_with_download(&fx.root, &fx.project, &fx.id, Some(&download))
+        .await
+        .unwrap();
+    assert_eq!(load(&fx.root, &fx.id).unwrap().stage, Stage::Submitted);
+    task.abort();
 }
 
 #[tokio::test]

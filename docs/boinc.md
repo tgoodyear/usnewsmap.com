@@ -289,19 +289,36 @@ target/debug/usnm-boinc submit --root /srv/usnm/boinc-state \
 
 #### Optional local page hosting (native OCR pilot only, #783)
 
-The native `usnm-boinc submit` command alone accepts paired
-`--download-base-url https://downloads.example.org/ocr-pages/` and
-`--download-root /srv/usnm/immutable-ocr-pages` flags. Default submission is
+The native `usnm-boinc submit` command alone accepts
+`--download-base-url https://downloads.example.org/ocr-pages/` for an
+independently published origin. The Azure submitting process does not need an
+origin mount: the trusted local producer must first publish the exact staged
+page as `<origin-root>/<sha256>`, atomically and immutably. Default submission is
 unchanged. This does **not** migrate gold, Qwen, quality, Surya, NDLOCR, model,
 application, upload or result files; the scheduler, application and database
 remain in Azure.
 
+Two-host flow (no origin filesystem mount on Azure):
+
+```sh
+# Trusted local producer: receipt records publication, NOT HTTPS readiness.
+usnm-boinc prepare-download --page /srv/local/staged-page \
+  --download-root /srv/usnm/immutable-ocr-pages
+# Azure project server: retains the existing verified staged job/request.
+usnm-boinc submit --root /srv/usnm/boinc-state \
+  --project /srv/boinc/newspapers --job JOB_ID \
+  --download-base-url https://downloads.example.org/ocr-pages/
+```
+
+When the submitter also runs on the producer, optional
+`--download-root /srv/usnm/immutable-ocr-pages` adds create-only publication
+before the same mandatory public probe (and requires `--download-base-url`).
 Provision the existing absolute local directory without symlinks in any path
 component and without group/world write access. This must be the trusted
 producer's writable path, **not** a web-server container's read-only bind mount.
 Map that directory exactly to
 the public HTTPS prefix, with a valid certificate, anonymous GET and no redirects
-or rewriting. Submission verifies the staged SHA-256, publishes a create-only
+or rewriting. In this mode submission verifies the staged SHA-256, publishes a create-only
 `<root>/<sha256>` file as read-only `0444`, and fsyncs the file and directory.
 An existing object must be identical and read-only; conflicts are never replaced.
 Keep the directory operator-controlled and its content immutable; retain files

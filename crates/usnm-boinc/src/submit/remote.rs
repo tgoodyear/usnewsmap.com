@@ -15,7 +15,7 @@ use usnm_ocr_contract::boinc::MAX_SCAN;
 /// Explicitly opt in to local bulk hosting for the native OCR pilot.
 pub struct Download {
     base: Url,
-    root: PathBuf,
+    root: Option<PathBuf>,
     #[cfg(test)]
     test_client: Option<Client>,
 }
@@ -26,8 +26,38 @@ pub(super) struct Ready {
     pub md5: String,
 }
 
+/// Local publication receipt, not public-download readiness proof.
+#[derive(Debug, serde::Serialize)]
+pub struct PreparedDownload {
+    pub sha256: String,
+    pub bytes: u64,
+    pub md5: String,
+}
+
+/// Run on the trusted local producer; never invokes BOINC or changes a journal.
+pub fn prepare_download(page: &Path, download_root: &Path) -> anyhow::Result<PreparedDownload> {
+    let scan = crate::read(page, MAX_SCAN)?;
+    ensure!(!scan.is_empty(), "empty page");
+    let sha256 = usnm_ocr_contract::boinc::sha256(&scan);
+    publish(download_root, &sha256, &scan)?;
+    Ok(PreparedDownload {
+        sha256,
+        bytes: scan.len() as u64,
+        md5: hex(&Md5::digest(&scan)),
+    })
+}
+
 impl Download {
+    /// Publish on this producer as well as probing the public URL.
     pub fn new(base: &str, root: &Path) -> anyhow::Result<Self> {
+        let mut download = Self::remote(base)?;
+        open_root(root)?;
+        download.root = Some(root.to_owned());
+        Ok(download)
+    }
+
+    /// Probe a separately published origin without mounting it on the submitter.
+    pub fn remote(base: &str) -> anyhow::Result<Self> {
         // Reject parser normalization (dot segments, escaped delimiters, backslashes)
         // and XML metacharacters before BOINC embeds the URL in workunit XML.
         ensure!(
@@ -63,11 +93,9 @@ impl Download {
         if !url.path().ends_with('/') {
             url.set_path(&format!("{}/", url.path()));
         }
-        // Validate before doing any publication; open again at publication time.
-        open_root(root)?;
         Ok(Self {
             base: url,
-            root: root.to_owned(),
+            root: None,
             #[cfg(test)]
             test_client: None,
         })
@@ -83,7 +111,9 @@ impl Download {
             url.as_str().len() < 1024,
             "download URL too long for stock create_work"
         );
-        publish(&self.root, sha256, scan)?;
+        if let Some(root) = &self.root {
+            publish(root, sha256, scan)?;
+        }
         #[cfg(not(test))]
         let client = public_client(&url).await?;
         #[cfg(test)]
