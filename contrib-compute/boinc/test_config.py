@@ -36,6 +36,12 @@ class DaemonConfig(unittest.TestCase):
         )
         self.assertEqual(root.findtext("./config/shmem_work_items"), "1000")
 
+    def test_replicas_need_different_hosts_not_different_accounts(self):
+        # The project's hosts share one account; a per-account rule starves them on quorum-2 work.
+        config = ET.parse(Path(__file__).with_name("config.xml.template")).find("./config")
+        self.assertIsNotNone(config.find("one_result_per_host_per_wu"))
+        self.assertIsNone(config.find("one_result_per_user_per_wu"))
+
     def test_matching_runtime_links_are_not_removed_or_replaced(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "contrib-compute/images/server/lib.sh").read_text()
