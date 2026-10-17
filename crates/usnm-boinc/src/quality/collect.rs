@@ -320,11 +320,7 @@ fn loc_pair_metrics(
 
 /// Enriches `PageRow` entries with intrinsic single-reader lexical and garbage
 /// damage metrics (`usnm_core::damage`) computed from each reader's text in `texts`.
-pub fn enrich_rows_with_damage(
-    rows: &mut [PageRow],
-    texts: &Texts,
-    loc_fallback: Option<&str>,
-) {
+pub fn enrich_rows_with_damage(rows: &mut [PageRow], texts: &Texts, loc_fallback: Option<&str>) {
     for row in rows {
         let mut text_opt = texts
             .readers
