@@ -20,6 +20,7 @@ on:
       - ".github/workflows/boinc-iris.yml"
       - "ocr/boinc/iris/**"
       - "scripts/boinc/test_iris_worker.py"
+      - "scripts/boinc/test_iris_bundle.py"
       - "!**/*.md"
 
 permissions:
@@ -44,7 +45,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Contract and worker tests (no GPU, no OpenVINO)
-        run: python3 -m unittest -v scripts/boinc/test_iris_worker.py
+        run: python3 -m unittest -v scripts/boinc/test_iris_worker.py scripts/boinc/test_iris_bundle.py
       # Disposable hosted runner only; never run this cleanup on a volunteer node.
       - name: Free disk space
         run: |
