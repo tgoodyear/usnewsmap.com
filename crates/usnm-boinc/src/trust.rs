@@ -526,21 +526,17 @@ mod tests {
     }
 
     #[test]
-    fn newest_wrong_profile_or_all_skipped_report_revokes() {
+    fn newest_wrong_or_mixed_profile_report_revokes() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("reports.jsonl");
         let image = format!("sha256:{}", "a".repeat(64));
         let good = row(&image, Some(42), Some(0.01));
-        for kind in ["wrong-profile", "mixed-profiles", "all-skipped"] {
+        for kind in ["wrong-profile", "mixed-profiles"] {
             let mut failed: serde_json::Value = serde_json::from_str(&good).unwrap();
             failed["completed_at"] = serde_json::json!("2026-10-16T00:00:00Z");
             failed["profiles"] = serde_json::json!(["fra"]);
             if kind == "mixed-profiles" {
                 failed["profiles"] = serde_json::json!(["eng", "fra"]);
-            } else if kind == "all-skipped" {
-                failed["profiles"] = serde_json::json!([]);
-                failed["crops"] = serde_json::json!(0);
-                failed["skipped"] = serde_json::json!(2);
             }
             std::fs::write(&path, format!("{good}\n{failed}\n")).unwrap();
             assert!(

@@ -906,7 +906,8 @@ record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) and
 Gold currently supports PSM 3 / 300 DPI only; the trust artifact records these,
 and different page configurations are refused. The collector records observed
 profiles and scoring configuration, and every scored crop in an eligible report must use the declared profile.
-A newer report with missing/mixed profiles or no scored crops revokes earlier eligibility.
+A newer valid canonical report with a different/mixed profile or failed crop
+quality revokes earlier eligibility.
 The operator must establish the declared
 source-language scope from the pinned challenge and calibration evidence;
 observing an English model profile alone does not establish an English source.
@@ -921,6 +922,12 @@ reports to derive counts-only crop-loss and scope metadata, then rebuild trust
 with the calibrated manifest and scope; do not edit or relabel legacy lists.
 Old tables without those fields and mixed-challenge tables fail explicitly.
 Deploying this guard neither chooses a threshold nor promotes hosts.
+Only validated canonical quality reports establish or revoke eligibility.
+Terminal attempts, including an engine failing every crop without producing
+a valid report, are counted separately by the collector; their spool markers
+do not carry authoritative host/time attribution and do not automatically revoke
+an earlier passing host. Do not infer that attribution from file timestamps or
+claim that this quality signal detects terminal failures or malicious hosts.
 The handoff spool shares one global `gold/trust.json`; passing a separate local
 file does not isolate its policy to one job. Both native and handoff publication,
 and independent-host spot replay/comparison, enforce the job scope. English-only

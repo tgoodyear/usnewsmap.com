@@ -201,12 +201,53 @@ mod tests {
             &[out.join("reports.jsonl")],
             1.0,
             &e.manifest_sha256,
-            scope,
+            scope.clone(),
         )
         .unwrap();
         assert!(
             !trust.hosts.is_empty(),
             "complete positive remains eligible"
         );
+        for wrong_profile in [false, true] {
+            let mut newer = tests::report(&e, &jobs[2].id);
+            newer.completed_at = "2026-10-14T00:00:00Z".into();
+            if wrong_profile {
+                newer.crops[0].profile = "fra".into();
+            } else {
+                let counts = &mut newer.crops[0].result.counts;
+                counts.char_edits = counts.ref_chars;
+                counts.word_edits = counts.ref_words;
+            }
+            newer.summary = usnm_ocr_survey::bundle::summarize(
+                &newer
+                    .crops
+                    .iter()
+                    .map(|c| c.result.clone())
+                    .collect::<Vec<_>>(),
+            );
+            std::fs::write(
+                options
+                    .spool
+                    .join(format!("{}__file_{RESULT_FILE}", jobs[2].workunit())),
+                serde_json::to_vec(&newer).unwrap(),
+            )
+            .unwrap();
+            let collected = run(&options).unwrap();
+            assert_eq!(
+                (collected.collected, collected.failed, collected.pending),
+                (2, 1, 0)
+            );
+            let trust = crate::trust::Trust::build(
+                &[out.join("reports.jsonl")],
+                1.0,
+                &e.manifest_sha256,
+                scope.clone(),
+            )
+            .unwrap();
+            assert!(
+                trust.hosts.is_empty(),
+                "newer validated canonical quality failure revokes the prior positive"
+            );
+        }
     }
 }
