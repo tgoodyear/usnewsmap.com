@@ -500,3 +500,27 @@ async fn stalled_dns_deadline_bounds_process_exit() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn interrupted_publication_scratch_names_are_skipped_without_removal() {
+    let fx = Fixture::new();
+    let stale = format!(".publish-{}-0", std::process::id());
+    std::fs::write(fx.mirror.join(&stale), b"interrupted publisher").unwrap();
+    let next = std::sync::atomic::AtomicU64::new(0);
+    let directory = open_root(&fx.mirror).unwrap();
+    let (name, mut file) = scratch_file(&directory, &next).unwrap();
+    assert_eq!(name, format!(".publish-{}-1", std::process::id()));
+    file.write_all(PAGE).unwrap();
+    assert_eq!(
+        std::fs::read(fx.mirror.join(&stale)).unwrap(),
+        b"interrupted publisher"
+    );
+    drop(file);
+    std::fs::remove_file(fx.mirror.join(name)).unwrap();
+    publish(&fx.mirror, &boinc::sha256(PAGE), PAGE).unwrap();
+    publish(&fx.mirror, &boinc::sha256(PAGE), PAGE).unwrap();
+    assert_eq!(
+        std::fs::read(fx.mirror.join(&stale)).unwrap(),
+        b"interrupted publisher"
+    );
+}

@@ -271,10 +271,7 @@ fn open_root(_: &Path) -> anyhow::Result<File> {
 #[cfg(unix)]
 fn publish(root: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
     use rustix::fs::{linkat, openat, unlinkat, AtFlags, Mode, OFlags};
-    use std::{
-        os::unix::fs::PermissionsExt,
-        sync::atomic::{AtomicU64, Ordering},
-    };
+    use std::{os::unix::fs::PermissionsExt, sync::atomic::AtomicU64};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let directory = open_root(root)?;
     let verify = || -> anyhow::Result<()> {
@@ -307,17 +304,7 @@ fn publish(root: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
     };
     // A fully written, synced inode is linked create-only; no partial public file
     // and no rename-overwrite, including when independent dispatch roots race.
-    let scratch = format!(
-        ".publish-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut file = File::from(openat(
-        &directory,
-        scratch.as_str(),
-        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::RUSR | Mode::WUSR,
-    )?);
+    let (scratch, mut file) = scratch_file(&directory, &NEXT)?;
     let result = (|| -> anyhow::Result<()> {
         file.write_all(bytes)?;
         file.set_permissions(std::fs::Permissions::from_mode(0o444))?;
@@ -340,6 +327,35 @@ fn publish(root: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
     result?;
     cleanup?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn scratch_file(
+    directory: &File,
+    next: &std::sync::atomic::AtomicU64,
+) -> anyhow::Result<(String, File)> {
+    use rustix::fs::{openat, Mode, OFlags};
+    use std::sync::atomic::Ordering;
+    // Skip crash leftovers or another publisher's files without removing them.
+    // Bound retries so an unexpectedly cluttered directory fails closed.
+    for _ in 0..1024 {
+        let name = format!(
+            ".publish-{}-{}",
+            std::process::id(),
+            next.fetch_add(1, Ordering::Relaxed)
+        );
+        match openat(
+            directory,
+            name.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        ) {
+            Ok(fd) => return Ok((name, File::from(fd))),
+            Err(rustix::io::Errno::EXIST) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("too many interrupted publication scratch files")
 }
 
 #[cfg(not(unix))]
