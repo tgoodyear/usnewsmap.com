@@ -474,7 +474,7 @@ pub fn section(v: &View) -> String {
             .collect();
         if !active.is_empty() {
             o.push_str(
-                "<table><caption>Active steps: rates and measurement scope</caption>\
+                "<table class=\"step-rates\"><caption>Active steps: rates and measurement scope</caption>\
                 <thead><tr><th>Step</th><th>Rate</th><th>Window / scope</th></tr></thead><tbody>",
             );
             for (key, step) in active {

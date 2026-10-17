@@ -169,6 +169,10 @@ section.wide svg { margin:6px 0 10px; min-width:760px; }
 .pipeline-table details p { margin:6px 0; color:var(--ink2); }
 .pipeline-meta { margin-top:12px; }
 .pipeline-meta > summary { cursor:pointer; color:var(--ink2); }
+.step-rates { table-layout:fixed; }
+.step-rates th, .step-rates td { white-space:normal; overflow-wrap:anywhere; }
+.step-rates th:first-child { width:25%; }
+.step-rates th:nth-child(2) { width:20%; }
 .ecosystem-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr)); gap:14px; }
 .ecosystem-card { border:1px solid var(--grid); border-radius:6px; padding:14px; min-width:0; }
 .ecosystem-card h3 { margin:0 0 8px; font-size:16px; }
