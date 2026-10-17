@@ -2938,6 +2938,7 @@ dependencies = [
  "md-5",
  "parquet",
  "quick-xml",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
