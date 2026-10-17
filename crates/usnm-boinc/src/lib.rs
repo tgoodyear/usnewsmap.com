@@ -28,6 +28,7 @@ use usnm_state::state::State;
 use usnm_store::ObjectStore;
 
 pub mod assess;
+pub mod claim;
 pub mod gold;
 pub mod handoff;
 pub mod host_trust;
@@ -189,10 +190,59 @@ pub struct Record {
     /// Fixed once, so interrupted publishing uses the same native object paths.
     pub stamp: String,
     pub error: Option<String>,
+    /// For a job that came off the work queues (`claim`): the ledger row the
+    /// queue message was written with, which the result is imported against.
+    /// An explicit cohort has none, and `queued` makes its row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger: Option<LedgerRow>,
+}
+/// A native ledger row as a claim carries it (`ledger::Queued` with its
+/// times as RFC 3339 text).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerRow {
+    pub batch_version: u16,
+    pub reason: String,
+    pub language: String,
+    pub plan: String,
+    pub attempt: u32,
+    pub request_day: Option<String>,
+    pub queued_at: String,
+}
+impl LedgerRow {
+    pub fn from_queued(q: &Queued) -> Self {
+        Self {
+            batch_version: q.batch_version,
+            reason: q.reason.clone(),
+            language: q.language.clone(),
+            plan: q.plan.clone(),
+            attempt: q.attempt,
+            request_day: q.request_day.map(|d| d.to_string()),
+            queued_at: q
+                .queued_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        }
+    }
+    pub fn to_queued(&self, doc_id: &str, batch: &str) -> anyhow::Result<Queued> {
+        Ok(Queued {
+            doc_id: doc_id.into(),
+            batch: batch.into(),
+            batch_version: self.batch_version,
+            reason: self.reason.clone(),
+            language: self.language.clone(),
+            plan: self.plan.clone(),
+            attempt: self.attempt,
+            request_day: self.request_day.as_deref().map(str::parse).transpose()?,
+            queued_at: DateTime::parse_from_rfc3339(&self.queued_at)?.with_timezone(&Utc),
+        })
+    }
 }
 impl Record {
     pub fn queued(&self) -> anyhow::Result<Queued> {
         let key = self.job.message.key()?;
+        if let Some(row) = &self.ledger {
+            return row.to_queued(&key.doc_id(), &self.job.message.batch);
+        }
         Ok(Queued {
             doc_id: key.doc_id(),
             batch: self.job.message.batch.clone(),
@@ -311,6 +361,20 @@ pub struct ExportOptions {
     pub plan: String,
     pub image: String,
     pub timeout_secs: u32,
+    /// A directory of `claim` files, one per selected page
+    /// (`<doc_id>.json`): the pages came off the work queues, so each job
+    /// carries its queue message and ledger row instead of a new one.
+    pub claims: Option<PathBuf>,
+}
+/// The Tesseract models the worker image holds, from the model lock.
+pub fn installed_models() -> BTreeSet<String> {
+    engine::MODELS_LOCK
+        .lines()
+        .filter(|s| !s.starts_with('#'))
+        .filter_map(|s| s.split_whitespace().next())
+        .filter_map(|s| s.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
+        .map(str::to_owned)
+        .collect()
 }
 /// Export a small, explicitly allocated cohort and register native requests.
 pub async fn export(
@@ -368,13 +432,7 @@ pub async fn export(
         chosen.len() == selected.len(),
         "selected pages missing from manifest/batch"
     );
-    let installed = engine::MODELS_LOCK
-        .lines()
-        .filter(|s| !s.starts_with('#'))
-        .filter_map(|s| s.split_whitespace().next())
-        .filter_map(|s| s.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
-        .map(str::to_owned)
-        .collect();
+    let installed = installed_models();
     let snapshot = ocr_local::boinc::Snapshot::load(state, reference).await?;
     let mut records = Vec::new();
     for (page, row) in chosen {
@@ -383,16 +441,25 @@ pub async fn export(
             .titles
             .get(&row.lccn)
             .context("selected title is not published")?;
-        let language = ocr_local::enqueue::message_language(row.lang.as_deref(), title_languages)
-            .context("page has no mapped detected or title language")?;
-        let selected = engine::route(&language, &installed)
-            .context("selected engine/profile unavailable on this Tesseract node")?;
-        let profile = selected.profile;
         let now = Utc::now();
-        let mut job = Job {
-            v: boinc::VERSION,
-            id: String::new(),
-            message: OcrMessage {
+        // A queued page keeps its queue message and ledger row; a cohort page
+        // gets a bulk message of its own now.
+        let (message, ledger_row) = if let Some(dir) = &opts.claims {
+            let claim = claim::read_local(dir, &row.doc_id)?;
+            let message = claim.message()?;
+            ensure!(
+                message.page == page
+                    && message.batch == row.batch
+                    && claim.ledger.batch_version == row.batch_version,
+                "the claim for {} is not the manifest's page or batch version",
+                row.doc_id
+            );
+            (message, Some(claim.ledger))
+        } else {
+            let language =
+                ocr_local::enqueue::message_language(row.lang.as_deref(), title_languages)
+                    .context("page has no mapped detected or title language")?;
+            let message = OcrMessage {
                 v: 1,
                 page,
                 batch: row.batch.clone(),
@@ -400,7 +467,16 @@ pub async fn export(
                 reason: Reason::Bulk,
                 score: Some(row.damage_rate),
                 queued_at: now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-            },
+            };
+            (message, None)
+        };
+        let selected = engine::route(&message.language, &installed)
+            .context("selected engine/profile unavailable on this Tesseract node")?;
+        let profile = selected.profile;
+        let mut job = Job {
+            v: boinc::VERSION,
+            id: String::new(),
+            message,
             batch_version: row.batch_version,
             scan: boinc::Scan {
                 url: side.loc_url,
@@ -444,6 +520,7 @@ pub async fn export(
                 stage: Stage::Prepared,
                 stamp: now.format("%Y%m%dT%H%M%S%6fZ").to_string(),
                 error: None,
+                ledger: ledger_row,
             };
             save(&opts.root, &record)?;
             record
@@ -459,11 +536,17 @@ pub async fn export(
             .iter()
             .map(|r| r.queued())
             .collect::<anyhow::Result<Vec<_>>>()?;
-        // Deterministic cohort name from full IDs; request times remain in the
-        // persisted records. A retry can contain already-written reservations.
-        let ids: Vec<_> = pending.iter().map(|r| &r.job.id).collect();
-        let run = format!("boinc-{}", boinc::sha256(&serde_json::to_vec(&ids)?));
-        ocr_local::boinc::reserve(state, curated, &snapshot, &rows, &run).await?;
+        if opts.claims.is_some() {
+            // Their rows are in the ledger already: check, don't write.
+            ocr_local::boinc::adopt(state, curated, &snapshot, &rows).await?;
+        } else {
+            // Deterministic cohort name from full IDs; request times remain in
+            // the persisted records. A retry can contain already-written
+            // reservations.
+            let ids: Vec<_> = pending.iter().map(|r| &r.job.id).collect();
+            let run = format!("boinc-{}", boinc::sha256(&serde_json::to_vec(&ids)?));
+            ocr_local::boinc::reserve(state, curated, &snapshot, &rows, &run).await?;
+        }
         for record in &mut records {
             if record.stage == Stage::Prepared {
                 record.stage = Stage::Reserved;

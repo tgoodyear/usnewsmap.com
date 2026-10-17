@@ -1,5 +1,8 @@
-//! Reserve explicitly allocated BOINC pages using the same lock and native
-//! requested-work ledger as enqueue/seed. Does not send Azure queue messages.
+//! Reserve BOINC pages using the same lock and native requested-work ledger
+//! as enqueue/seed. [`reserve`] writes the ledger rows of an explicitly
+//! allocated cohort and sends no Azure queue message. [`adopt`] is for pages
+//! that came off the work queues (`usnm-boinc claim`): their ledger rows
+//! exist already, so it only checks them and writes nothing.
 use std::collections::{HashMap, HashSet};
 
 use super::{ledger, sync::Lease, LOCK};
@@ -14,6 +17,21 @@ pub struct Snapshot {
     pub titles: HashMap<String, Vec<String>>,
 }
 impl Snapshot {
+    /// The curation version of `batch` in the published index, if it is there.
+    pub fn batch_version(&self, batch: &str) -> Option<u16> {
+        self.batches
+            .iter()
+            .find(|b| b.batch == batch)
+            .map(|b| b.curated.version)
+    }
+
+    /// Whether the title lists Japanese, which has its own OCR pipeline.
+    pub fn is_japanese(&self, lccn: &str) -> bool {
+        self.titles
+            .get(lccn)
+            .is_some_and(|l| l.iter().any(|l| l == "jpn"))
+    }
+
     pub async fn load(state: &State, reference: &dyn ObjectStore) -> anyhow::Result<Self> {
         let version = state
             .current_version()
@@ -111,6 +129,60 @@ pub async fn reserve(
             lease.check()?;
             ledger::write_queued(curated, &fresh, first.queued_at, run).await?;
         }
+        Ok(())
+    }
+    .await;
+    drop(lease);
+    let unlock = state.unlock(LOCK, &owner).await;
+    result?;
+    unlock
+}
+
+/// Check, under the same lock, that every page's ledger row is still the
+/// outstanding one a queue message carried, and write nothing: the row was
+/// written when the message was queued (`ocr-enqueue`, the seeder or the
+/// requests step), and the page's result will be imported against it. A row
+/// that has since been answered, replaced or never existed is refused.
+pub async fn adopt(
+    state: &State,
+    curated: &dyn ObjectStore,
+    snapshot: &Snapshot,
+    rows: &[ledger::Queued],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !rows.is_empty() && rows.len() <= 100,
+        "adopt 1 to 100 pages"
+    );
+    let owner = crate::owner_id();
+    let lease = Lease::take(state, &owner).await?;
+    let result = async {
+        anyhow::ensure!(
+            state.current_version().await?.as_deref() == Some(&snapshot.version),
+            "published snapshot changed during export; repeat export"
+        );
+        let ledger = ledger::load(curated).await?;
+        let mut seen = HashSet::new();
+        for row in rows {
+            anyhow::ensure!(seen.insert(&row.doc_id), "duplicate cohort page");
+            anyhow::ensure!(
+                snapshot.batch_version(&row.batch) == Some(row.batch_version),
+                "selected batch version is not published"
+            );
+            let key = usnm_core::ids::PageKey::from_doc_id(&row.doc_id)?;
+            anyhow::ensure!(
+                snapshot.titles.contains_key(&key.lccn),
+                "selected title is not published"
+            );
+            anyhow::ensure!(
+                !snapshot.is_japanese(&key.lccn),
+                "Japanese titles use the existing Japanese OCR pipeline"
+            );
+            anyhow::ensure!(
+                ledger.outstanding(&row.doc_id) == Some(row),
+                "the queued page is no longer outstanding in the ledger"
+            );
+        }
+        lease.check()?;
         Ok(())
     }
     .await;

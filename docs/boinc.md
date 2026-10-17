@@ -38,7 +38,9 @@ baselines and adapted models with `usnm_qwen`.
   - **Native apps** (`usnm_quality` and `usnm_qwen`) run directly on the volunteer's host without a container runtime ([boinc-quality.md](boinc-quality.md)). `usnm_quality` ships as a standalone CPU binary (`crates/usnm-quality-app`, built by `.github/workflows/boinc-quality-native.yml`) across all five platforms. `usnm_qwen` ships as a native driver binary paired with the pinned `llama.cpp` release archives in `ocr/boinc/qwen/llama.lock` and `<sticky/><no_delete/>` GGUF model files under plan classes `apple_gpu_8b` (Apple Silicon Metal, >= 7,000 MB available unified RAM), `nvidia_cuda_8b` (>= 7,000 MB VRAM), `nvidia_cuda_2b` (>= 3,000 MB VRAM), and `mt` (4–8 CPU threads).
   - **The `boinc_finish_called` contract**: because BOINC's client treats a plain executable exiting `0` without writing `boinc_finish_called` in the slot directory as a premature exit and restarts it up to 100 times before aborting with `ERR_TOO_MANY_EXITS` (`client/app_control.cpp:533-546`), native binaries use `<copy_file/>` on all slot inputs and outputs, update `fraction_done`, and write `boinc_finish_called` containing `0\n` as their final act before exiting `0`.
 - Explicit cohorts of 1-100 pages from one batch, selected from the prefetch
-  manifest. No automatic consumption of Azure queues or LoC fetching.
+  manifest, or pages the [batch controller](boinc-batch-scheduler.md#queue-fed-work)
+  claims off `ocr-bulk` as a second consumer beside the on-prem worker. Neither
+  fetches from LoC: a page needs a scan the scan fetcher already cached.
 - Central bridge: native work reservations, BOINC staging and submission,
   validation and publishing. Only it can access Azure through the existing Entra
   credential path. Volunteers get images and processing metadata, never
@@ -50,11 +52,14 @@ baselines and adapted models with `usnm_qwen`.
   Docker daemon. BOINC's Docker wrapper controls the outer container.
 
 ```
-explicit page selection + cached scans
-  -> native requested-work reservation + local dispatch journal
+explicit page selection + cached scans,
+  or a message claimed off the Azure work queue + its cached scan
+  -> native requested-work reservation (or, for a queue message, its ledger row
+     checked, not rewritten) + local dispatch journal
   -> stock BOINC -> pinned worker container
   -> stock batch_collect_assimilator spool
   -> usnm-boinc collect -> native ALTO/Parquet in ocr-out
+     (a queue message is deleted here)
   -> existing ocr-sync -> existing release/index
 ```
 
@@ -511,11 +516,11 @@ blob container, `boinc-handoff`, sits between them. Nothing reads `/tank/ocr` ex
 fetcher, and nothing asks LoC for a page again: the scan fetcher (CT 211) stays the only LoC
 fetcher, and volunteers download the page from our project server.
 
-| Who                                 | Runs                                                | Reads                                     | Writes                                       |
-| ----------------------------------- | --------------------------------------------------- | ----------------------------------------- | -------------------------------------------- |
-| Scan fetcher, CT 211 (Arc identity) | `scripts/ocr-node/push-boinc-scan.sh` (az only)     | `/tank/ocr/scans`, `/tank/ocr/manifests`  | `scans/`, `manifests/`                       |
-| Hand-off job, main environment      | `handoff-job.sh`: `export`, later `collect --trust` | `scans/`, `manifests/`, `spool/`, `gold/` | `dispatch/`, Cosmos lease, ledger, `ocr-out` |
-| BOINC bridge job, BOINC environment | `submit-remote`, later `spool-out`                  | `dispatch/jobs/<id>/`                     | `spool/<id>/`, `gold/trust.json`             |
+| Who                                 | Runs                                                                                                                                     | Reads                                                                 | Writes                                                                   |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Scan fetcher, CT 211 (Arc identity) | `scripts/ocr-node/push-boinc-scan.sh` (az only)                                                                                          | `/tank/ocr/scans`, `/tank/ocr/manifests`                              | `scans/`, `manifests/`                                                   |
+| Hand-off job, main environment      | `handoff-job.sh`: `export`, later `collect --trust`; `claim` and `release` for [queue-fed work](boinc-batch-scheduler.md#queue-fed-work) | `scans/`, `manifests/`, `spool/`, `gold/`, `claims/`, the work queues | `dispatch/`, `claims/`, Cosmos lease, ledger, `ocr-out`, the work queues |
+| BOINC bridge job, BOINC environment | `submit-remote`, later `spool-out`                                                                                                       | `dispatch/jobs/<id>/`                                                 | `spool/<id>/`, `gold/trust.json`                                         |
 
 The hand-off job runs in the main Container Apps environment because that environment
 already reaches Cosmos and the lake through their private endpoints; neither is opened to
@@ -631,6 +636,14 @@ dispatch root's `quarantine/<job>/`. Stop there: `ocr-sync` is the next step, as
 marks the job failed. Each run writes back only the journal entries it touched; run one
 execution at a time all the same. If a write-back keeps failing, the job's log carries the
 record (`USNM-HANDOFF-RECORD` lines), since a lost reservation's record can't be made again.
+
+For pages taken off the Azure work queues, the controller runs two more steps, `claim`
+(`CLAIM_NONCE`, `HANDOFF_MANIFEST`, optionally `CLAIM_MAX`, `CLAIM_QUEUES`,
+`CLAIM_LEASE_HOURS`) and `release` (`HANDOFF_DOCS`), and pushes with
+`push-boinc-scan.sh --keep-page <batch>/<lccn>/<date>/<edition>/<seq>` instead of `--scan`.
+`export` takes `HANDOFF_CLAIMS=1` for those pages, and `collect` then deletes the queue
+message once the page is published. All of it is in [Queue-fed
+work](boinc-batch-scheduler.md#queue-fed-work).
 
 ### The scan fetcher's identity (scan-fetch container)
 

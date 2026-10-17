@@ -8,6 +8,13 @@
 #   push-boinc-scan.sh --account <exchange account> --scan /tank/ocr/scans/keep/<batch>/.../<seq>.jp2 \
 #     [--scan ...] [--manifest /tank/ocr/manifests/<version>/manifest.parquet]
 #     [--scans-root /tank/ocr/scans] [--manifests-root /tank/ocr/manifests] [--what-if]
+#   push-boinc-scan.sh --account <exchange account> --keep-page <batch>/<lccn>/<date>/<edition>/<seq> ...
+#
+# --keep-page names a page by where the fetcher files it (keep/<that path>.jp2 or .jpg), for
+# pages that came off the work queues, whose scan format nobody has said. It pushes each one
+# it finds, prints `pushed <path under scans/>` for it on stdout, prints `missing <page>` for
+# one with no cached scan, and then exits 3 if any was missing, so the caller can hand that
+# message back to the queue. It may be given with --scan.
 #
 # Each --scan goes up with its sidecar (<scan>.json) as scans/<path under --scans-root>, and
 # --manifest as manifests/<path under --manifests-root> (the hand-off job's HANDOFF_MANIFEST),
@@ -17,11 +24,12 @@
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 ACCOUNT="" MANIFEST="" SCANS_ROOT=/tank/ocr/scans MANIFESTS_ROOT=/tank/ocr/manifests WHAT_IF=false
-SCANS=()
+SCANS=() KEEP_PAGES=()
 while [ $# -gt 0 ]; do
   case $1 in
     --account) [ $# -ge 2 ] || usage; ACCOUNT=$2; shift 2 ;;
     --scan) [ $# -ge 2 ] || usage; SCANS+=("$2"); shift 2 ;;
+    --keep-page) [ $# -ge 2 ] || usage; KEEP_PAGES+=("$2"); shift 2 ;;
     --manifest) [ $# -ge 2 ] || usage; MANIFEST=$2; shift 2 ;;
     --scans-root) [ $# -ge 2 ] || usage; SCANS_ROOT=${2%/}; shift 2 ;;
     --manifests-root) [ $# -ge 2 ] || usage; MANIFESTS_ROOT=${2%/}; shift 2 ;;
@@ -31,13 +39,24 @@ while [ $# -gt 0 ]; do
   esac
 done
 die() { echo "error: $*" >&2; exit 1; }
-[ -n "$ACCOUNT" ] && { [ ${#SCANS[@]} -gt 0 ] || [ -n "$MANIFEST" ]; } || usage
+[ -n "$ACCOUNT" ] && { [ ${#SCANS[@]} -gt 0 ] || [ ${#KEEP_PAGES[@]} -gt 0 ] || [ -n "$MANIFEST" ]; } || usage
 [[ $ACCOUNT =~ ^[a-z0-9]{3,24}$ ]] || die "--account is a storage account name"
 CONTAINER=boinc-handoff
 # Blob names are /-separated segments of [A-Za-z0-9._-], starting with a letter or digit
 # (usnm_store::validate_path), so the hand-off job can copy them.
 segments='^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$'
-uploads=()
+uploads=() missing=()
+# A page the fetcher filed under keep/ is a scan like any other once its format is found.
+for p in ${KEEP_PAGES[@]+"${KEEP_PAGES[@]}"}; do
+  [[ $p =~ ^[a-z]{2,10}_[A-Za-z0-9_]+/[A-Za-z0-9_-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]+/[0-9]+$ ]] ||
+    die "--keep-page $p is <batch>/<lccn>/<date>/<edition>/<seq>"
+  found=""
+  for ext in jp2 jpg; do
+    f="$SCANS_ROOT/keep/$p.$ext"
+    if [ -f "$f" ] && [ ! -L "$f" ] && [ -f "$f.json" ]; then found=$f; break; fi
+  done
+  if [ -n "$found" ]; then SCANS+=("$found"); else missing+=("$p"); fi
+done
 for s in ${SCANS[@]+"${SCANS[@]}"}; do
   case $s in "$SCANS_ROOT"/*) ;; *) die "--scan $s is not under $SCANS_ROOT" ;; esac
   [ -f "$s" ] && [ ! -L "$s" ] || die "--scan $s is not a regular file"
@@ -45,6 +64,7 @@ for s in ${SCANS[@]+"${SCANS[@]}"}; do
   rel=${s#"$SCANS_ROOT"/}
   [[ $rel =~ $segments ]] && [[ $rel != *..* ]] || die "--scan $s: its path has characters a blob name can't take"
   uploads+=("$s" "scans/$rel" "$s.json" "scans/$rel.json")
+  [ ${#KEEP_PAGES[@]} -eq 0 ] || echo "pushed $rel"
 done
 if [ -n "$MANIFEST" ]; then
   case $MANIFEST in "$MANIFESTS_ROOT"/*) ;; *) die "--manifest $MANIFEST is not under $MANIFESTS_ROOT" ;; esac
@@ -71,3 +91,5 @@ for ((i = 0; i < ${#uploads[@]}; i += 2)); do
     --name "$blob" --file "$file" --no-progress --only-show-errors -o none || die "can't upload $file"
   echo "uploaded $CONTAINER/$blob" >&2
 done
+for p in ${missing[@]+"${missing[@]}"}; do echo "missing $p"; done
+[ ${#missing[@]} -eq 0 ] || exit 3
