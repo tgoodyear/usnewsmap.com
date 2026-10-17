@@ -125,7 +125,21 @@ class InventoryTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 self.run_import(cache_sets=["keep"])
         before = (self.work / "batch-00000000/keep.jsonl").read_bytes()
-        with mock.patch.object(c, "write_cached_scan_evidence", side_effect=AssertionError("restat")):
+        original_sync = inv.sync_dir
+        original_ingest = c.ingest
+        synced = []
+
+        def sync(path):
+            synced.append(path)
+            original_sync(path)
+
+        def ingest(*args):
+            self.assertIn(self.work / "batch-00000000", synced)
+            return original_ingest(*args)
+
+        with mock.patch.object(c, "write_cached_scan_evidence", side_effect=AssertionError("restat")), \
+                mock.patch.object(inv, "sync_dir", side_effect=sync), \
+                mock.patch.object(c, "ingest", side_effect=ingest):
             self.assertTrue(self.run_import(cache_sets=["keep"])["finished"])
         self.assertEqual(self.count(), 5)
         self.assertEqual((self.work / "batch-00000000/keep.jsonl").read_bytes(), before)
@@ -178,6 +192,24 @@ class InventoryTests(unittest.TestCase):
             c.ingest(self.db, self.work / "batch-00000002" / (cache_set + ".jsonl"))
         with self.assertRaisesRegex(c.CatalogError, "checkpoint missing"):
             self.run_import()
+
+    def test_resume_recovers_hot_sqlite_rollback_journal(self):
+        with mock.patch.object(inv, "ROWS", 2):
+            self.run_import(max_batches=1)
+        process = subprocess.run([sys.executable, "-c", """
+import os, sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("PRAGMA cache_size=1")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("UPDATE latest SET data=printf('%01000000d',1)")
+os._exit(0)
+""", str(self.db)], cwd=ROOT, capture_output=True, text=True, timeout=10)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        journal = Path(str(self.db) + "-journal")
+        self.assertTrue(journal.is_file())
+        self.assertTrue(self.run_import()["finished"])
+        self.assertEqual(self.count(), 10)
+        self.assertEqual(len(c.query(self.db, "artifact", {})["items"]), 10)
 
     def test_created_ancestors_are_durable_before_import(self):
         self.work = self.root / "nested" / "inventory"

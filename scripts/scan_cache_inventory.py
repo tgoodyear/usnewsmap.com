@@ -118,7 +118,8 @@ def run(db, index, scan_root, work, source, cache_sets, max_batches=10):
                       "captured index prefix changed; use a new inventory directory")
             # Do not silently skip evidence if a database was lost or replaced.
             if state["batches"]:
-                conn = c.connect(db)
+                c.require(db.is_file(), "catalog checkpoint missing; rebuild by replaying retained evidence")
+                conn = c.connect(db, writable=True)
                 try:
                     for number in range(state["batches"]):
                         for cache_set in cache_sets:
@@ -183,7 +184,7 @@ def run(db, index, scan_root, work, source, cache_sets, max_batches=10):
                     c.write_cached_scan_evidence(db, index_slice, scan_root, build,
                                                  batch_id(state, number, cache_set), source, cache_set)
                     os.replace(build, evidence)
-                    sync_dir(directory)
+                sync_dir(directory)
                 c.ingest(db, evidence)
             state.update(offset=pending["end"], rows=state["rows"] + pending["rows"],
                          batches=number + 1, pending=None,
