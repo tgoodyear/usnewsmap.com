@@ -1199,8 +1199,12 @@ impl Server {
         }
         // --device takes the names --list-devices printed. GGML_VK_VISIBLE_DEVICES would index
         // the unfiltered physical-device list instead, which can include llvmpipe.
+        // The vision projector picks its backend separately (MTMD_BACKEND_DEVICE, else a
+        // default GPU), so it is pinned to the same device.
         if let Some(dev) = gpu.vulkan_device {
-            cmd.args(["--device", &format!("Vulkan{dev}")]);
+            let name = format!("Vulkan{dev}");
+            cmd.args(["--device", &name]);
+            cmd.env("MTMD_BACKEND_DEVICE", &name);
         }
         if let Some((var, value)) = library_env(server_bin) {
             cmd.env(var, value);
