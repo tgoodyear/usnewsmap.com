@@ -47,7 +47,19 @@ pub struct StageOptions {
     pub weights_lock: PathBuf,
     pub pages_per_slot: usize,
     pub timeout_secs: u32,
+    /// Written to each slot's `init_data.xml`, as BOINC would for the app version under test.
+    pub plan_class: String,
+    /// `gpu_type` in `init_data.xml` (`intel_gpu`, `NVIDIA`, ...), if the class is a GPU class.
+    pub gpu_type: Option<String>,
     pub root: PathBuf,
+}
+
+/// The fields of BOINC's `init_data.xml` that the app reads to pick its device.
+fn init_data(plan_class: &str, gpu_type: Option<&str>) -> String {
+    let gpu = gpu_type
+        .map(|g| format!("<gpu_type>{g}</gpu_type><gpu_device_num>0</gpu_device_num>"))
+        .unwrap_or_default();
+    format!("<app_init_data><plan_class>{plan_class}</plan_class>{gpu}</app_init_data>\n")
 }
 
 fn doc_id(sample: &str) -> String {
@@ -84,10 +96,26 @@ pub fn stage(o: &StageOptions) -> anyhow::Result<Staged> {
         slots: BTreeMap::new(),
         crops: BTreeMap::new(),
     };
-    let part = o.root.with_extension("part");
-    if part.exists() {
-        std::fs::remove_dir_all(&part)?;
-    }
+    let ok_name = |s: &str| {
+        !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    };
+    ensure!(ok_name(&o.plan_class), "invalid --plan-class");
+    ensure!(
+        o.gpu_type.as_deref().is_none_or(ok_name),
+        "invalid --gpu-type"
+    );
+    let parent = o
+        .root
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    // A fresh directory beside the destination, renamed into place at the end.
+    let tmp = tempfile::Builder::new()
+        .prefix(".qwen-bench-")
+        .tempdir_in(parent)?;
+    let part = tmp.path().to_path_buf();
+    let init = init_data(&o.plan_class, o.gpu_type.as_deref());
     for chunk in subset.members.chunks(o.pages_per_slot) {
         let mut bundle = Vec::new();
         let mut pages = Vec::new();
@@ -140,10 +168,11 @@ pub fn stage(o: &StageOptions) -> anyhow::Result<Staged> {
         std::fs::write(dir.join("qwen.json"), serde_json::to_vec_pretty(&job)?)?;
         std::fs::write(dir.join("page.jpg"), &bundle)?;
         std::fs::write(dir.join("weights.lock"), &weights)?;
+        std::fs::write(dir.join("init_data.xml"), &init)?;
         staged.slots.insert(job.id.clone(), chunk.to_vec());
     }
     std::fs::write(part.join(STAGE_FILE), serde_json::to_vec_pretty(&staged)?)?;
-    std::fs::rename(&part, &o.root)?;
+    std::fs::rename(tmp.keep(), &o.root)?;
     Ok(staged)
 }
 
@@ -244,6 +273,8 @@ mod tests {
             weights_lock: lock,
             pages_per_slot: 2,
             timeout_secs: 600,
+            plan_class: "intel_vulkan_8b".into(),
+            gpu_type: Some("intel_gpu".into()),
             root: root.clone(),
         })
         .unwrap();
@@ -261,6 +292,8 @@ mod tests {
                 .input
                 .matches(&std::fs::read(dir.join("page.jpg")).unwrap()));
             assert!(job.crops.iter().all(|c| c.loc_text.is_empty()));
+            let init = std::fs::read_to_string(dir.join("init_data.xml")).unwrap();
+            assert!(init.contains("<plan_class>intel_vulkan_8b</plan_class>"));
         }
         // One slot reads its crops; the others never ran.
         let (job_id, members) = s.slots.iter().next().unwrap();

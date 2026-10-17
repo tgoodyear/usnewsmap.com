@@ -18,8 +18,10 @@ classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win
 - **Scheduler.** BOINC finds Intel GPUs through OpenCL, so the class needs `gpu_type intel` and
   an OpenCL device with at least 7,000 MB.
 - **App.** The app lists the Vulkan devices with its own `llama-server --list-devices` and takes
-  the device BOINC assigned. It never takes a software device (llvmpipe, lavapipe, SwiftShader).
-  It pins `llama-server` to that device with `GGML_VK_VISIBLE_DEVICES`.
+  the Intel device BOINC assigned. BOINC numbers Intel GPUs among themselves, so device 0 is the
+  first Intel device in the list, whatever its `VulkanN` name. The app never takes a software
+  device (llvmpipe, lavapipe, SwiftShader) or a device BOINC didn't assign. It runs `llama-server`
+  with `--device VulkanN` for that device.
 - **No CPU fallback.** With no hardware Vulkan device, or less free device memory than the model
   needs (7,000 MiB), the unit ends `no_gpu` with the reason in `diag.txt` and reads nothing.
 
@@ -35,8 +37,18 @@ refused by the app.
   should list the Intel device.
 - **Windows:** The current Intel graphics driver, which includes both Vulkan and OpenCL.
 - **Memory:** An integrated GPU's memory is system RAM. One 8B unit used up to 8,609 MiB of GPU
-  buffers and process memory on Computer 9, and the class reserves 9 GiB. Run one unit at a time
-  until a host's headroom is measured.
+  buffers and process memory on Computer 9. The BOINC scheduler reserves no host memory for GPU
+  classes, so on an integrated GPU, run one unit at a time and leave headroom for other work, in
+  the project's `app_config.xml`:
+
+  ```xml
+  <app_config>
+      <app>
+          <name>usnm_qwen</name>
+          <max_concurrent>1</max_concurrent>
+      </app>
+  </app_config>
+  ```
 
 ## Supported hardware
 

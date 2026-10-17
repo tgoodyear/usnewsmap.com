@@ -135,6 +135,13 @@ enum Commands {
         pages_per_slot: usize,
         #[arg(long, default_value_t = 14400)]
         timeout_secs: u32,
+        /// The plan class written to each slot's init_data.xml (e.g. intel_vulkan_8b); the app
+        /// picks its device from it.
+        #[arg(long)]
+        plan_class: String,
+        /// The gpu_type for init_data.xml (e.g. intel_gpu, NVIDIA); omit for CPU classes.
+        #[arg(long)]
+        gpu_type: Option<String>,
         /// A new directory for the slots.
         #[arg(long)]
         root: PathBuf,
@@ -327,6 +334,8 @@ async fn main() -> anyhow::Result<()> {
             weights_lock,
             pages_per_slot,
             timeout_secs,
+            plan_class,
+            gpu_type,
             root,
         } => {
             let engine = serde_json::from_slice(&std::fs::read(&engine)?)
@@ -338,6 +347,8 @@ async fn main() -> anyhow::Result<()> {
                 weights_lock,
                 pages_per_slot,
                 timeout_secs,
+                plan_class,
+                gpu_type,
                 root,
             })?;
             println!(

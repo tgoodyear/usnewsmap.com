@@ -281,9 +281,11 @@ struct VulkanDevice {
 const SOFTWARE_VULKAN: [&str; 3] = ["llvmpipe", "lavapipe", "swiftshader"];
 
 /// Parses `  Vulkan0: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)` lines
-/// and returns the hardware device BOINC assigned (`wanted`), or the first hardware device when
-/// that index isn't listed.
-fn vulkan_device(list: &str, wanted: u32) -> Option<VulkanDevice> {
+/// and returns the device BOINC assigned. BOINC numbers a vendor's GPUs among themselves
+/// (`gpu_device_num` for `gpu_type intel` counts Intel GPUs only), so `wanted` is an ordinal
+/// among the listed hardware devices of `vendor`, not a `VulkanN` index. There is no fallback to
+/// another device: one BOINC did not assign may be running another task.
+fn vulkan_device(list: &str, vendor: &str, wanted: u32) -> Option<VulkanDevice> {
     let devices: Vec<VulkanDevice> = list
         .lines()
         .filter_map(|l| {
@@ -303,14 +305,10 @@ fn vulkan_device(list: &str, wanted: u32) -> Option<VulkanDevice> {
         })
         .filter(|d| {
             let n = d.name.to_ascii_lowercase();
-            !SOFTWARE_VULKAN.iter().any(|s| n.contains(s))
+            !SOFTWARE_VULKAN.iter().any(|s| n.contains(s)) && n.contains(vendor)
         })
         .collect();
-    devices
-        .iter()
-        .find(|d| d.index == wanted)
-        .or_else(|| devices.first())
-        .cloned()
+    devices.into_iter().nth(usize::try_from(wanted).ok()?)
 }
 
 /// The library search variable and value that let a bundled `llama-server` find its libraries.
@@ -387,7 +385,8 @@ fn vulkan_refusal(gpu: &GpuState, job: &Job) -> Option<String> {
 #[derive(Debug, Clone)]
 struct GpuState {
     cuda_device: Option<u32>,
-    /// The `GGML_VK_VISIBLE_DEVICES` index of the hardware Vulkan device (#786).
+    /// The `VulkanN` ordinal of the assigned device, as `llama-server --list-devices` names it and
+    /// `--device` takes it (#786).
     vulkan_device: Option<u32>,
     free_mb: Option<u64>,
     used_before_mb: Option<u64>,
@@ -423,7 +422,9 @@ fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuState {
         let (vulkan_device, free_mb) = match &devices {
             Ok(text) => {
                 let _ = writeln!(body, "llama-server --list-devices:\n{}", text.trim());
-                match vulkan_device(text, wanted) {
+                // Only Intel Vulkan classes exist (#786); the vendor follows the plan class.
+                let vendor = if plan.contains("intel") { "intel" } else { "" };
+                match vulkan_device(text, vendor, wanted) {
                     Some(d) => {
                         host.gpu = Some(d.name.chars().take(64).collect());
                         host.gpu_mem_total_mib = Some(d.total_mib);
@@ -1196,8 +1197,10 @@ impl Server {
         if let Some(dev) = gpu.cuda_device {
             cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
         }
+        // --device takes the names --list-devices printed. GGML_VK_VISIBLE_DEVICES would index
+        // the unfiltered physical-device list instead, which can include llvmpipe.
         if let Some(dev) = gpu.vulkan_device {
-            cmd.env("GGML_VK_VISIBLE_DEVICES", dev.to_string());
+            cmd.args(["--device", &format!("Vulkan{dev}")]);
         }
         if let Some((var, value)) = library_env(server_bin) {
             cmd.env(var, value);
@@ -2012,19 +2015,21 @@ mod tests {
     #[test]
     fn vulkan_device_list_skips_software_devices() {
         let list = "load_backend: loaded Vulkan backend\nAvailable devices:\n  Vulkan0: llvmpipe (LLVM 19.1.7, 256 bits) (15834 MiB, 15000 MiB free)\n  Vulkan1: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)\n";
-        let d = vulkan_device(list, 0).unwrap();
+        let d = vulkan_device(list, "intel", 0).unwrap();
         assert_eq!(d.index, 1);
         assert_eq!(d.name, "Intel(R) Iris(R) Xe Graphics (TGL GT2)");
         assert_eq!((d.total_mib, d.free_mib), (7917, 7125));
-        assert!(vulkan_device(
-            "  Vulkan0: llvmpipe (LLVM 19.1.7, 256 bits) (1 MiB, 1 MiB free)",
-            0
-        )
-        .is_none());
+        let soft = "  Vulkan0: llvmpipe (LLVM 19.1.7, 256 bits) (1 MiB, 1 MiB free)";
+        assert!(vulkan_device(soft, "", 0).is_none());
         let two = "  Vulkan0: Intel(R) Arc(TM) A770 Graphics (16384 MiB, 16000 MiB free)\n  Vulkan1: Intel(R) UHD Graphics 770 (7000 MiB, 6500 MiB free)";
-        assert_eq!(vulkan_device(two, 1).unwrap().index, 1);
-        assert_eq!(vulkan_device(two, 5).unwrap().index, 0);
-        assert!(vulkan_device("no devices", 0).is_none());
+        assert_eq!(vulkan_device(two, "intel", 1).unwrap().index, 1);
+        // No fallback to an unassigned device.
+        assert!(vulkan_device(two, "intel", 5).is_none());
+        // BOINC's Intel device 0 is the first Intel device, not Vulkan0.
+        let mixed = "  Vulkan0: NVIDIA GeForce RTX 3060 (12288 MiB, 11000 MiB free)\n  Vulkan1: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)";
+        assert_eq!(vulkan_device(mixed, "intel", 0).unwrap().index, 1);
+        assert!(vulkan_device(mixed, "intel", 1).is_none());
+        assert!(vulkan_device("no devices", "intel", 0).is_none());
     }
 
     #[cfg(unix)]
