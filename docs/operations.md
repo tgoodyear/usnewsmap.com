@@ -392,6 +392,27 @@ scripts/provision.sh --env prod
 
 Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would rebuild the whole corpus. Don't leave `USNM_INGEST_SCRATCH_GIB` set either: the share, its private endpoint and its DNS zone cost about $25 a month (#308), and deltas don't need them. Its contents are scratch: a release empties the writer's data before it starts, so deleting the share loses nothing, and the next rebuild's provision creates it again, empty, under the same names. Don't leave `USNM_DEDICATED_PROFILE` set either: while the environment has the E4 profile it pays the Dedicated plan management fee every hour (about $0.10 an hour in East US 2 in October 2026), whether or not a node runs. An E4 node itself (4 vCPU, 32 GiB) costs about $0.39 an hour while the job runs.
 
+**The WAL stays local even with scratch enabled.** Mounted jobs set the internal
+`USNM_WRITER_WAL_DIR=/work`: the ingest image's writable ephemeral disk, not
+`/scratch`. Each writer creates a fresh private directory there and links
+`qwdata/wal` to it (Quickwit 0.9.1's v2 WAL path). Startup requires at least
+8 GiB free locally for the bounded 4 GiB WAL plus headroom; `writer WAL on local
+disk` records the actual path and free MiB. `wal_disk_free_mb` in
+`release progress` and `release merges` tracks the local volume separately from
+the NFS `disk_free_mb`. The directory lives until the writer
+stops and is not replayed by the next run. Split cache, merge files and decade
+spill remain on the large NFS share and retain their existing caps/checks. Jobs
+without scratch keep the existing all-local layout. Neither layout resumes an
+interrupted rebuild: the next run clears its writer data before starting.
+
+This separates the WAL's latency-sensitive persist lock from NFS. The first
+#283 production attempt failed after 25 h at 43.9%: a persist held that lock for
+45.51 s against Quickwit 0.9.1's hard 6 s persist timeout (five router attempts),
+then returned HTTP 500. It was not a full-disk or confirmed OOM failure. Retrying
+that HTTP 500 blindly is unsafe because acceptance is ambiguous and can duplicate
+documents. A failed staged run publishes nothing; keep the serving version and
+rollback intact while fixing and restarting it.
+
 **Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why ordinary ingest has a 48 h replica timeout (#173). Explicit full rebuilds and staging runs now get 96 h, from the slower #283 dev measurement above. Benchmark afterwards with `scripts/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
 
 ## Index storage cutover

@@ -705,6 +705,7 @@ async fn poll_until_sealed(
                 disk_free_mb = work_dir
                     .and_then(progress::disk_free)
                     .map(|b| b / (1024 * 1024)),
+                wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
                 "release merges"
             );
         }

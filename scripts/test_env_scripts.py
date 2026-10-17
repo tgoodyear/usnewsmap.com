@@ -326,6 +326,22 @@ class IngestTimeoutTemplate(unittest.TestCase):
         self.assertEqual(backfill["properties"]["configuration"]["replicaTimeout"],
                          "[variables('replicaTimeoutSecs')]")
 
+    def test_only_scratch_jobs_place_the_bounded_wal_on_local_disk(self):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
+                              "infra/modules/ingestjobs.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        template = json.loads(run.stdout)
+        scratch = template["variables"]["scratchEnv"]
+        self.assertTrue(scratch.startswith("[if(variables('scratch'),"))
+        self.assertIn("'USNM_WRITER_WAL_DIR'", scratch)
+        self.assertIn("'/work'", scratch)
+        resources = template["resources"]
+        if isinstance(resources, dict):
+            resources = list(resources.values())
+        ingest = next(r for r in resources if r.get("name") == "[parameters('ingestJobName')]")
+        self.assertIn("variables('scratchEnv')", ingest["properties"]["template"]["containers"][0]["env"])
+
+
 
 @unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
 class SearcherRollbackTemplate(unittest.TestCase):
