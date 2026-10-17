@@ -1,0 +1,61 @@
+{
+ "label": "big_warmup_n1",
+ "n": 1,
+ "count": 1,
+ "config": {
+  "INFERENCE_PRECISION_HINT": "f16",
+  "CACHE_DIR": "/cache"
+ },
+ "engine": {
+  "openvino": "2026.4.1-22982-e213a147257-releases/2026/4",
+  "openvino_genai": "2026.4.1.0-3408-ab01d1771e4"
+ },
+ "device": {
+  "full_device_name": "Intel(R) Iris(R) Xe Graphics (iGPU)",
+  "device_architecture": "GPU: vendor=0x8086 arch=v12.0.0",
+  "gpu_total_mem_bytes": 15135723520
+ },
+ "wall_ms": 37058.7,
+ "cache_bytes": 3169716221,
+ "groups": [
+  {
+   "crops": 1,
+   "load_ms": 26958.5,
+   "group_ms": 36755.9,
+   "memory_after_release": {
+    "cgroup_current": 4127551488,
+    "cgroup_peak": 8227389440,
+    "rss": 852094976
+   }
+  }
+ ],
+ "crops": [
+  {
+   "crop_id": "pub-overproof-ca-168",
+   "page_sha256": "5c9f7a3c7b36d286ce3fe627907def6062d720e94a7b3391aa2b18ae010fa882",
+   "width": 825,
+   "height": 430,
+   "decode_ms": 29.5,
+   "generate_ms": 9661.5,
+   "tokens": 62,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "in the sun to draw the marks out.\nGlaze the bottom crust of fruit pies\nwith white of egg and they will not be\nsoggy.\nUse white oilcloth back of the kitchen\ntable and sink and under hooks that hold\nware.\nIt is said that the application of a piece",
+   "text_sha256": "13f80a944321b4703fd23d0ff5b7f82e51260d0dac38218f020e0c6d449eb50f",
+   "ttft_ms": 5652.98583984375,
+   "tpot_ms": 65.67373657226562,
+   "tokens_per_s": 15.226786613464355,
+   "tokenization_ms": 0.6970000267028809,
+   "prepare_embeddings_ms": 2037.0889892578125,
+   "inference_ms": 5513.8017578125,
+   "memory": {
+    "cgroup_current": 7904518144,
+    "cgroup_peak": 8227389440,
+    "rss": 1258213376
+   },
+   "position_in_group": 0
+  }
+ ],
+ "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n"
+}

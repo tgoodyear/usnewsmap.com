@@ -73,3 +73,38 @@ because no ground truth was available. Required before any release: score N=1 vs
   release (3.18 GB per cache; the 8-crop soak shows reuse alone is already 3.8x without any writable mount).
 - Not tested: batching, prefetch, stream/latency properties, thermal counters, German vs English split (all 8 crops
   were from the staged 100-crop pilot units, which were not separated by language here).
+
+## Addendum: N = 16, 32, 64, 128 with a warm compile cache
+
+Same host, image, limits and method; BOINC stopped for the run and restored afterwards. 128 distinct,
+SHA-256-checked crops (every staged pilot unit on the host with a unique image), one trial per N, one
+warm-up run first to fill the cache (`k16`, 3.2 GB), then each N in the order 16, 32, 64, 128, 8. Raw
+data and table: `large-n/`. End-to-end time includes container start and, for N below 128, the repeated
+(warm, about 1.8 s) pipeline loads.
+
+| Crops/load | Crops/min | Load ms | Gen ms p50/p95 (non-first) | Peak cgroup GiB | GPU busy | Trunc/empty/OOM | Text differences vs N=8 |
+|---:|---:|---:|---|---:|---:|---|---|
+| 8 | 11.9 | 1,832 | 4,400 / 6,663 | 4.77 | 81% | 0/0/0 | reference |
+| 16 | 12.8 | 1,875 | 4,260 / 6,696 | 5.33 | 85% | 0/0/0 | 3 chars, 2 crops |
+| 32 | 13.6 | 1,841 | 4,124 / 6,434 | 4.14 | 87% | 0/0/0 | 14 chars, 4 crops |
+| 64 | 14.0 | 1,824 | 4,046 / 6,427 | 3.98 | 88% | 0/0/0 | 27 chars, 7 crops |
+| 128 | 13.7 | 1,826 | 4,193 / 6,434 | 3.96 | 89% | 0/0/0 | 41 chars, 10 crops |
+
+- **Throughput saturates by N=16-32.** With a warm cache, load is only about 1.8 s, so N=16 already
+  captures most of the gain (12.8 vs 11.9 crops/min at N=8, +8%); N=64 is the best at 14.0 (+18% over N=8, +9% over N=32).
+  N=128 is no better than N=64. Throughput is then bound by generation (about 4.2 s p50, 2 CPUs plus the iGPU; GPU 89% busy).
+  Without the cache, load is about 24 s, so a larger N matters more: 128 crops amortize it to about 0.2 s per crop.
+- **Memory is bounded.** `memory.current` grew about 0.3 GiB per 64 crops in a group and peaked at 3.9-5.3 GiB;
+  no `oom_kill`, no truncations or empty outputs, 5,502-5,504 total generated tokens in every run. Process and cgroup
+  memory both stayed flat enough that a 128-crop (about 30-minute) workunit has more than 3.5 GiB of headroom under the 9 GiB limit with a warm cache.
+- **Output drift grows with the number of crops in one pipeline.** Texts differ from the N=8 run on a growing
+  number of crops (2, 4, 7, 10 crops; 0.02% to 0.26% of characters), always at crop positions after the first
+  40 of a group, and the same crops recur (50, 80, 91, 116). Run-to-run N=1 repeats earlier differed on only one
+  crop, so this looks like state carried across crops or accumulated f16 numerical differences rather than noise. This
+  is relative to N=8, not ground truth: score against the references before choosing N, and test whether resetting
+  more state per crop removes it.
+- The cache is single-process and trusted only because it was produced here. See Decision above for the production cache requirements.
+
+**Recommended first release:** N between 16 and 32 per workunit (about 5-8 minutes, +8-14% over N=8 on
+a warm cache), with the cache as a separate release, pending reference-scored CER. N above 64 adds no throughput
+and the most drift. BOINC runtimes up to an hour would allow it, but there's no measured reason to.
