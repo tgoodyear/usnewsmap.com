@@ -131,6 +131,30 @@ record the per-page crop/tiling policy, preserve input checksums and provenance,
 and measure full-page memory, truncation, and runtime before opening dispatch.
 Staging is not permission to dispatch all 20,000 jobs automatically.
 
+For a source-only snapshot from the existing full-resolution JPEG cache:
+
+```sh
+python3 scripts/boinc/iris-stage-pages.py \
+  --cache /tank/ocr/scans/keep --index /tank/ocr/scans/index-full.jsonl \
+  --acceptance inspected-pilot-acceptance.json --out iris-20000-pages \
+  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_DIGEST
+```
+
+The acceptance file must identify the same `worker_image`, `host_id: 9`,
+`inspected: true`, and 100 each for `jobs`, `ok`, `boinc_records`,
+`boinc_terminal`, and `boinc_valid`, with zero `errors` and `pending`.
+The operator creates this evidence only after inspecting the pilot report.
+The command copies and SHA-256-verifies exactly 20,000 distinct cached pre-1923
+page IDs, keeping full-resolution inputs and attribution. It does not alter the
+cache or its fetcher, create workunits, or call LoC. Existing or incomplete
+staging paths refuse overwrite.
+
+This snapshot is **not an executable 20,000-page queue**. `DISPATCH_DISABLED`
+and the campaign's explicit readiness gates require validated layout-aware
+line-block segmentation, page reconstruction, per-page memory/truncation/runtime
+measurements, tile bindings, and explicit dispatch authorization. The crop
+worker's 512-token limit must not be applied blindly to whole newspaper pages.
+
 Keep NVIDIA devices on the existing CUDA path. The current class requires an
 **Intel** OpenCL GPU and therefore excludes every NVIDIA and AMD GPU. OpenCL
 availability alone does not make an OpenVINO model executable on other vendors:
