@@ -855,7 +855,8 @@ scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN
 # Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
 scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_MAX_CER=<calibrated-threshold> \
-  --var GOLD_MANIFEST_SHA256=<calibrated-manifest-sha256> --wait-mins 10
+  --var GOLD_MANIFEST_SHA256=<calibrated-manifest-sha256> \
+  --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile> --wait-mins 10
 ```
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
@@ -892,6 +893,7 @@ A unit left with a `submitting` marker is handled as for the assessment.
 well-formed result. So `collect` can gate publication on the gold check (#468):
 a result counts only when the host that returned it has a gold report for the
 same engine image (the worker image digest) on the exact calibrated challenge,
+and the page's source language and model profile match the declared calibration,
 with every crop scored, no skips, no crop with character edits at least its
 reference length, and overall CER at or below a threshold. The per-crop guard
 rejects complete loss (including empty output) even when an aggregate hides it;
@@ -899,19 +901,38 @@ it is not a guarantee against subtler OCR errors. There is **no default
 scientific threshold**: calibrate on the first campaign for the locked image,
 bundle, languages and scoring configuration;
 record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) and
-`--manifest-sha256` (bridge: `GOLD_MANIFEST_SHA256`) explicitly.
-An earlier MVP's 0.10 was not calibrated. Trust format v3 deliberately rejects
-old v1/v2 lists. Rerun the updated normal `gold collect` against the original
-validated canonical reports to derive counts-only `complete_loss_crops`, then
-rebuild trust with the calibrated manifest; do not edit or relabel legacy lists.
-Old tables without that quality field and mixed-challenge tables fail explicitly.
+`--manifest-sha256` (bridge: `GOLD_MANIFEST_SHA256`), `--language`
+(`GOLD_LANGUAGE`) and `--profile` (`GOLD_PROFILE`) explicitly.
+Gold currently supports PSM 3 / 300 DPI only; the trust artifact records these,
+and different page configurations are refused. The collector records observed
+profiles and scoring configuration, and every scored crop in an eligible report must use the declared profile.
+A newer report with missing/mixed profiles or no scored crops revokes earlier eligibility.
+The operator must establish the declared
+source-language scope from the pinned challenge and calibration evidence;
+observing an English model profile alone does not establish an English source.
+One artifact covers one language/profile/configuration, not every language
+supported by its image.
+
+An earlier MVP's 0.10 was not calibrated. Trust format v4 deliberately rejects
+old unscoped v1/v2/v3 lists for publication. Gold onboarding logs those legacy
+policies and treats every host as untrusted, so it can issue new challenges.
+Rerun the updated normal `gold collect` against the original validated canonical
+reports to derive counts-only crop-loss and scope metadata, then rebuild trust
+with the calibrated manifest and scope; do not edit or relabel legacy lists.
+Old tables without those fields and mixed-challenge tables fail explicitly.
 Deploying this guard neither chooses a threshold nor promotes hosts.
+The handoff spool shares one global `gold/trust.json`; passing a separate local
+file does not isolate its policy to one job. Both native and handoff publication,
+and independent-host spot replay/comparison, enforce the job scope. English-only
+evidence never implicitly authorizes French, Japanese, another model profile or
+another page segmentation/DPI configuration.
 
 ```sh
 # Build the trust list from one or more campaigns' reports.
 usnm-boinc gold trust --reports <share>/gold/v1-tess550/out/reports.jsonl \
   [--reports ...] --max-cer CALIBRATED_THRESHOLD \
-  --manifest-sha256 CALIBRATED_MANIFEST_SHA256 --out <share>/gold/trust.json
+  --manifest-sha256 CALIBRATED_MANIFEST_SHA256 \
+  --language CALIBRATED_LANGUAGE --profile CALIBRATED_PROFILE --out <share>/gold/trust.json
 # The canonical result's host, from the project database:
 #   select r.hostid from workunit w join result r on r.id = w.canonical_resultid
 #   where w.name = 'usnm_JOB_ID';

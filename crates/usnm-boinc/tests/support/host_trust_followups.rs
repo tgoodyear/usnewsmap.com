@@ -71,7 +71,8 @@ exit "${CREATE_STATUS:-0}"
             &trust,
             serde_json::to_vec(&serde_json::json!({
                 "hosts": {IMAGE: [1,2]}, "max_cer": 0.1, "v": usnm_boinc::trust::TRUST_VERSION,
-                "manifest_sha256": "b".repeat(64)
+                "manifest_sha256": "b".repeat(64),
+                "scope": {"language":"eng", "profile":"eng", "psm":3, "dpi":300}
             }))
             .unwrap(),
         );
@@ -390,6 +391,34 @@ async fn spot_replay_is_idempotent_and_uncertainty_never_retries() {
     assert!(c
         .calls()
         .contains(&format!("usnm_spot_{}_1_2_request_json", c.id)));
+}
+
+#[tokio::test]
+async fn calibrated_scope_gates_spot_replay_and_revokes_existing_quorum() {
+    let c = Controller::new().await;
+    let path = c.fx.tmp.path().join("trust.json");
+    let valid: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for field in ["language", "profile"] {
+        let mut wrong = valid.clone();
+        wrong["scope"][field] = "fra".into();
+        write(&path, serde_json::to_vec(&wrong).unwrap());
+        assert!(!c.spot(true, false).status.success(), "{field}");
+        assert!(c.calls().is_empty());
+    }
+    write(&path, serde_json::to_vec(&valid).unwrap());
+    success(&c.spot(true, false));
+    c.results();
+    success(&c.compare(2));
+    assert_eq!(c.comparison()["agrees"], true);
+    for field in ["language", "profile"] {
+        let mut wrong = valid.clone();
+        wrong["scope"][field] = "fra".into();
+        write(&path, serde_json::to_vec(&wrong).unwrap());
+        assert!(!c.compare(2).status.success(), "{field}");
+        assert_eq!(c.comparison()["status"], "unverified");
+        assert_eq!(c.comparison()["agrees"], false);
+    }
+    assert_eq!(c.calls().lines().count(), 1);
 }
 
 #[tokio::test]

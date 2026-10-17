@@ -1211,6 +1211,12 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
     let mut trust = Trust {
         hosts: Default::default(),
         manifest_sha256: Some("b".repeat(64)),
+        scope: Some(usnm_boinc::trust::Scope {
+            language: "eng".into(),
+            profile: "eng".into(),
+            psm: 3,
+            dpi: 300,
+        }),
         max_cer: 0.1,
         v: usnm_boinc::trust::TRUST_VERSION,
     };
@@ -1242,6 +1248,36 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
         .entry(record.job.engine.image.clone())
         .or_default()
         .insert(42);
+    for field in ["language", "profile"] {
+        let mut wrong_scope = trust.clone();
+        let scope = wrong_scope.scope.as_mut().unwrap();
+        if field == "language" {
+            scope.language = "fra".into();
+        } else {
+            scope.profile = "fra".into();
+        }
+        assert!(run(wrong_scope)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("outside calibrated trust"));
+        assert_ne!(
+            usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+            Stage::Published
+        );
+    }
+    for field in ["language", "profile", "psm", "dpi", "kind"] {
+        let mut job = record.job.clone();
+        match field {
+            "language" => job.message.language = "fra".into(),
+            "profile" => job.engine.profile = "fra".into(),
+            "psm" => job.engine.psm = 6,
+            "dpi" => job.engine.dpi = 150,
+            "kind" => job.engine.kind = usnm_ocr_contract::routing::EngineKind::NdlocrLite,
+            _ => unreachable!(),
+        }
+        assert!(trust.refuse_job(&job, Some(42)).is_some(), "{field}");
+    }
     run(trust).await.unwrap();
     assert_eq!(
         usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
@@ -1457,6 +1493,12 @@ async fn remote_handoff_round_trip_through_the_container() {
     let trust = Trust {
         hosts: [(record.job.engine.image.clone(), [42].into())].into(),
         manifest_sha256: Some("b".repeat(64)),
+        scope: Some(usnm_boinc::trust::Scope {
+            language: "eng".into(),
+            profile: "eng".into(),
+            psm: 3,
+            dpi: 300,
+        }),
         max_cer: 0.1,
         v: usnm_boinc::trust::TRUST_VERSION,
     };
