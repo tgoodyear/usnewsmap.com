@@ -367,7 +367,7 @@ It is safe to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks u
 deletes or deprecates anything. The step needs a bridge image with this step in it
 (`scripts/build-boinc-images.sh`, then `scripts/provision-boinc.sh`).
 
-### Prepared current-worker OCR 1.5 siblings, 17 October 2026
+### Current-worker OCR 1.5 publication, 17 October 2026
 
 The native app inventory found that Linux OCR 1.3/app 20 and Mac OCR 1.4/apps
 23 and 24 still pin worker `80bf`, whereas current export and scoped trust
@@ -380,22 +380,28 @@ The normal prepare-only signing workflow produced immutable `usnm_ocr` 1.5
 siblings with all three payload signatures verified for each platform.
 Publisher repository: `crusnmprodffapzy.azurecr.io/usnm-boinc-appver`.
 
-| Platform              | ACR build | Prepared publisher digest                                                 |
-| --------------------- | --------- | ------------------------------------------------------------------------- |
-| `x86_64-pc-linux-gnu` | `ch7a`    | `sha256:b9bf07591a265cb7b9a260221bcfd719b320cd96e204cc78ec8d7196eec70dd2` |
-| `arm64-apple-darwin`  | `ch7b`    | `sha256:ccdf4a46376776ede3621be447b15e518e15e5594bdf99ad97bcd56feb07c8d2` |
-| `x86_64-apple-darwin` | `ch7c`    | `sha256:74a718918a031125e5103125a1142a35533fc73efe91b525cb8899bca96ee626` |
+| Platform              | ACR build | Publisher digest                                                          | Succeeded execution suffix | Native app version |
+| --------------------- | --------- | ------------------------------------------------------------------------- | -------------------------- | -----------------: |
+| `x86_64-pc-linux-gnu` | `ch7a`    | `sha256:b9bf07591a265cb7b9a260221bcfd719b320cd96e204cc78ec8d7196eec70dd2` | `9rbj04a`                  |                 41 |
+| `arm64-apple-darwin`  | `ch7b`    | `sha256:ccdf4a46376776ede3621be447b15e518e15e5594bdf99ad97bcd56feb07c8d2` | `sia7vgx`                  |                 42 |
+| `x86_64-apple-darwin` | `ch7c`    | `sha256:74a718918a031125e5103125a1142a35533fc73efe91b525cb8899bca96ee626` | `n7hkbcb`                  |                 43 |
 
 All pin the exact current `247c` worker; existing signed versions remain
 unchanged. The desired `images.appver` pin names the final Intel sibling;
-it is not a multi-platform publisher. After review/CI and merge, publish
-Linux, ARM and Intel separately and serially, under the normal production
-mutex, all-six-idle preflight and controller lease. Preserve every non-image
-publisher setting, wait for terminal success, and independently verify each
-native version-105 registration, exact Dockerfile and public download bytes.
-Do not assume IDs or repeat an uncertain execution.
+it is not a multi-platform publisher. After exact-head Copilot GREEN review,
+zero threads, all CI and merge of #762, Linux, ARM and Intel were published
+separately and serially. Each execution has prefix
+`usnm-boinc-publish-caj-prod-` plus the suffix above and terminated Succeeded
+before the next started. Normal production mutex, all-six-idle preflight,
+infinite controller lease and expected-previous-image guards protected each
+image-only update. Exact comparisons preserved every other template,
+configuration and identity property; no broad stack provision was run.
 
-These artifacts are **prepared, not yet published or registered**. The
+Independent checks verified all three unique active version-105 / `docker`
+registrations, exact `247c` Dockerfiles and three payload/signature pairs per
+platform. All nine native download URLs returned anonymous HTTP 200 and
+byte-identical SHA-256 hashes. Scoped global trust stayed unchanged.
+Publication and registration are **not actual OCR-client acceptance**. The
 [current-worker native Gold evidence and English-only scoped promotion](ocr-gold-set.md#current-worker-native-canonical-evidence-and-scoped-promotion)
 are separate from fresh-page OCR execution, native handoff, release/search and
 Intel-client acceptance. No allocation, continuous-feed activation or
