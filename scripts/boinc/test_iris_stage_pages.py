@@ -90,6 +90,18 @@ class StagePagesTest(unittest.TestCase):
                 pages.stage(*args[:3], root / "alias/new-campaign", args[4])
             self.assertFalse((args[0] / "new-campaign").exists())
 
+    def test_conflicting_sidecar_resolution_cannot_publish_campaign(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pages, "COUNT", 2):
+            args = self.fixture(Path(directory))
+            sidecar = args[0] / "batch/sn1/1900-01-01/1/1.jpg.json"
+            metadata = json.loads(sidecar.read_text())
+            metadata["resolution"] = "thumbnail"
+            sidecar.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "metadata differs"):
+                pages.stage(*args)
+            self.assertFalse(args[3].exists())
+            self.assertFalse(args[3].with_name("campaign.staging").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

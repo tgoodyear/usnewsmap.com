@@ -50,7 +50,7 @@ def stage(cache, index, acceptance_path, out, image):
                     or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
                     or not row["loc_url"].startswith("https://tile.loc.gov/")
                     or any(sidecar[key] != row[key] for key in
-                           ("doc_id", "batch", "bytes", "sha256", "loc_url"))):
+                           ("doc_id", "batch", "bytes", "sha256", "loc_url", "resolution"))):
                 raise ValueError("source metadata differs from the full-resolution cache index")
             selected.append((path, row))
             seen.add(row["doc_id"])
