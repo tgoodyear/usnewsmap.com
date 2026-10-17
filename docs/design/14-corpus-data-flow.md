@@ -303,6 +303,12 @@ private key 0600, owned by `ocrdash`). Do not copy an administrator's private ke
 
 Each tick imports at most 100 captures, each at most 64 KiB, with a 10 MiB
 transport limit, strict schema/checksum/identity checks and a single-writer lock.
+The collector permits half a CPU for short bursts. At 112,640 inventory rows,
+snapshot generation measured about 0.35 seconds without throttling; a 10% CPU
+quota caused its unchanged two-second wall-clock query deadline to expire.
+The 50% quota restored successful scheduled import and acknowledgement. Keep the
+query deadline, bounded batches and 128 MiB memory limit; measure snapshot cost
+again before growing the inventory beyond the deployed size.
 Incomplete worker `.pending-*` files are ignored. Each received capture and its
 derived JSONL are retained durably under
 `worker-sync/retained/<source>/`; retry replays the same immutable evidence.

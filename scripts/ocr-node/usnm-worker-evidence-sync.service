@@ -23,6 +23,6 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 TimeoutStartSec=120
 MemoryMax=128M
-CPUQuota=10%
+CPUQuota=50%
 StandardOutput=journal
 StandardError=journal
