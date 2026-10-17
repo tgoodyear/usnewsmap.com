@@ -103,6 +103,24 @@ Inspect worst-error transcriptions, truncated answers, empty outputs, timings, a
 BOINC terminal outcomes; a schema-valid result alone is not an accuracy pass.
 Do not describe the pilot as complete while any result remains pending.
 
+## Paired comparison extension
+
+Additional, separately prepared 100-job campaigns can use
+`pub-reichsanzeiger-lines-NNN` crops from the cached Reichsanzeiger PAGE ground
+truth. Retain the source's CC-BY attribution and Public Domain Mark for images.
+Each crop must identify its PAGE line IDs, `ground_truth_status: "GT"`,
+`source_dataset: "reichsanzeiger"`, source checksum, and attribution in provenance.
+Use bounded adjacent line pairs from the same text region, with a matching
+published reference; do not repeat images to inflate the queue. All existing
+host, resource, image-signature, exact-100 and immutable dispatch checks apply.
+
+Score each engine on the same image checksums, references and returned subset
+using the same normalization. Report English Overproof and German Fraktur
+separately as well as any aggregate. Previously measured full-region German
+outputs are not baselines for newly cut line pairs: run those exact new images
+through the comparison engines. These crops do not replace the original
+100-English-crop acceptance gate or count as distinct full pages for scaling.
+
 ## Larger campaign gate
 
 The operator authorized staging a **20,000-page** run only after the 100-job pilot

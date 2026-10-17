@@ -242,6 +242,60 @@ class IrisCampaignTest(unittest.TestCase):
         self.assertEqual(outputs.findtext("./result/file_ref/open_name"), "iris-result.json")
         self.assertEqual(outputs.findtext("./file_info/max_nbytes"), "65536")
 
+    def test_reichsanzeiger_line_crops_require_ground_truth_and_attribution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "images").mkdir()
+            (root / "LICENSES").mkdir()
+            rows = []
+            for number in range(100):
+                data = f"fixture-{number}".encode()
+                filename = f"images/{number}.jpg"
+                (root / filename).write_bytes(data)
+                rows.append({
+                    "crop_id": f"pub-reichsanzeiger-lines-{number:03}",
+                    "image": filename, "image_sha256": campaign.sha(data),
+                    "reference": "published reference",
+                    "provenance": {
+                        "for_scoring": True, "source_dataset": "reichsanzeiger",
+                        "source_license": "CC-BY-4.0; images Public Domain Mark 1.0",
+                        "source_attribution": "Mannheim University Library",
+                        "ground_truth_status": "GT", "line_ids": ["l1", "l2"],
+                        "page_id": f"page-{number}",
+                    },
+                })
+            image = MagicMock()
+            picture = image.open.return_value.__enter__.return_value
+            picture.format = "JPEG"
+            picture.size = (32, 32)
+            worker = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "a" * 64
+            with patch.dict(sys.modules, {"PIL": SimpleNamespace(Image=image)}):
+                for key in ("source_dataset", "source_attribution", "ground_truth_status", "line_ids"):
+                    original = rows[0]["provenance"].pop(key)
+                    (root / "dataset.json").write_text(json.dumps({"evaluation_only": True, "crops": rows}))
+                    with self.assertRaisesRegex(ValueError, "PAGE ground truth"):
+                        campaign.prepare(root, root / "out", worker)
+                    self.assertFalse((root / "out").exists())
+                    rows[0]["provenance"][key] = original
+                for malformed in (True, "line1", {"l1": True}, [1, 2], ["l1"], ["l1", "l2", "l3"],
+                                  ["", "l2"], [" ", "l2"], ["l1", "l1"], ["l1", " l1 "]):
+                    rows[0]["provenance"]["line_ids"] = malformed
+                    (root / "dataset.json").write_text(json.dumps({"evaluation_only": True, "crops": rows}))
+                    with self.subTest(line_ids=malformed), self.assertRaisesRegex(ValueError, "PAGE ground truth"):
+                        campaign.prepare(root, root / "out", worker)
+                    self.assertFalse((root / "out").exists())
+                rows[0]["provenance"]["line_ids"] = ["l1", "l2"]
+                for malformed in (" ", "\t", True, 123, ["attribution"]):
+                    rows[0]["provenance"]["source_attribution"] = malformed
+                    (root / "dataset.json").write_text(json.dumps({"evaluation_only": True, "crops": rows}))
+                    with self.subTest(attribution=malformed), self.assertRaisesRegex(ValueError, "PAGE ground truth"):
+                        campaign.prepare(root, root / "out", worker)
+                    self.assertFalse((root / "out").exists())
+                rows[0]["provenance"]["source_attribution"] = "Mannheim University Library"
+                (root / "dataset.json").write_text(json.dumps({"evaluation_only": True, "crops": rows}))
+                self.assertEqual(campaign.prepare(root, root / "out", worker)["jobs"], 100)
+                self.assertEqual(len(campaign.load_campaign(root / "out")["jobs"]), 100)
+
     def test_validator_binds_to_registered_job_and_retains_failure_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
