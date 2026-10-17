@@ -5,5 +5,6 @@
 
 pub mod bench;
 pub mod bundle;
+pub mod qwen_bench;
 pub mod score;
 pub use usnm_ocr_quality::{distance, text};
