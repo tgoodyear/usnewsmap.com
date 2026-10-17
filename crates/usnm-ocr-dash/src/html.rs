@@ -169,7 +169,7 @@ section.wide svg { margin:6px 0 10px; min-width:760px; }
 .pipeline-table details p { margin:6px 0; color:var(--ink2); }
 .pipeline-meta { margin-top:12px; }
 .pipeline-meta > summary { cursor:pointer; color:var(--ink2); }
-.ecosystem-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:14px; }
+.ecosystem-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr)); gap:14px; }
 .ecosystem-card { border:1px solid var(--grid); border-radius:6px; padding:14px; min-width:0; }
 .ecosystem-card h3 { margin:0 0 8px; font-size:16px; }
 .ecosystem-card p { margin:8px 0; }
@@ -246,10 +246,13 @@ const localTimes = (root) => {
     if (!isNaN(d)) t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'});
   }
 };
-const panels = () => [...document.querySelectorAll('.dashboard > section')];
+const panelGroups = ['.dashboard', '.diagnostics > .grid'];
+const childPanels = (grid) => [...grid.children].filter(s => s.matches('section:not(#operational-details)'));
+const panels = (root = document) => panelGroups.flatMap(selector => childPanels(root.querySelector(selector)));
 const titleOf = (s) => (s.querySelector('h2') || {}).textContent || '';
+const panelKey = (s) => s.id || titleOf(s);
 let rawSub = (document.querySelector('.sub time') || {outerHTML: ''}).outerHTML;
-let raw = panels().map((s) => s.outerHTML);
+const raw = new WeakMap(panels().map(s => [s, s.outerHTML]));
 localTimes(document);
 
 const selecting = (el) => {
@@ -289,8 +292,8 @@ const update = async () => {
     const r = await fetch(location.pathname + location.search, {cache:'no-store', signal:ctl.signal});
     if (!r.ok) throw new Error('status ' + r.status);
     const next = new DOMParser().parseFromString(await r.text(), 'text/html');
-    const now = panels();
-    const then = [...next.querySelectorAll('.dashboard > section')];
+    if (panelGroups.some(selector => !next.querySelector(selector))) throw new Error('not the dashboard');
+    const then = panels(next);
     const nextSub = next.querySelector('.sub');
     if (!nextSub || !then.length) throw new Error('not the dashboard');
     const t = sub.querySelector('time'), nt = nextSub.querySelector('time');
@@ -301,18 +304,26 @@ const update = async () => {
       localTimes(sub);
     }
     sub.querySelector('.stale')?.remove();
-    if (now.length === then.length && now.every((s, i) => titleOf(s) === titleOf(then[i]))) {
-      then.forEach((fresh, i) => {
-        if (raw[i] === fresh.outerHTML || selecting(now[i])) return;
-        raw[i] = fresh.outerHTML;
-        swap(now[i], fresh);
+    for (const selector of panelGroups) {
+      const grid = document.querySelector(selector);
+      const old = childPanels(grid);
+      const freshPanels = childPanels(next.querySelector(selector));
+      if (selecting(grid) && (old.length !== freshPanels.length ||
+          old.some((s, i) => panelKey(s) !== panelKey(freshPanels[i])))) continue;
+      const kept = freshPanels.map(fresh => {
+        const current = old.find(s => panelKey(s) === panelKey(fresh));
+        if (current && (raw.get(current) === fresh.outerHTML || selecting(current))) return current;
+        const node = current ? swap(current, fresh) : document.importNode(fresh, true);
+        raw.set(node, fresh.outerHTML);
+        if (!current) localTimes(node);
+        return node;
       });
-    } else {
-      const grid = document.querySelector('.dashboard');
-      if (selecting(grid)) return;
-      grid.replaceChildren(...then.map((s) => document.importNode(s, true)));
-      localTimes(grid);
-      raw = then.map((s) => s.outerHTML);
+      let cursor = grid.firstElementChild;
+      for (const node of kept) {
+        if (node !== cursor) grid.insertBefore(node, cursor);
+        cursor = node.nextElementSibling;
+      }
+      for (const node of old) if (!kept.includes(node)) node.remove();
     }
   } catch (e) {
     if (!sub.querySelector('.stale')) {
@@ -537,7 +548,10 @@ fn summary_stage<'a>(v: &'a View, id: &str) -> Option<&'a crate::pipeline::Stage
     let snapshot = pipeline.snapshot.as_ref()?;
     let stage = snapshot.stages.iter().find(|s| s.id == id)?;
     let freshness = pipeline.stage_freshness.iter().find(|s| s.id == id)?;
-    (stage.state == crate::pipeline::StageState::Observed && !freshness.stale).then_some(stage)
+    (stage.state == crate::pipeline::StageState::Observed
+        && stage.count.is_some()
+        && !freshness.stale)
+        .then_some(stage)
 }
 
 fn summary_count(v: &View, id: &str) -> String {
@@ -641,13 +655,28 @@ fn ecosystem_panel(v: &View) -> String {
                     .saturating_add(*q.counts.get("ocr-priority")?),
             )
         });
-        summary_card(&mut o, "Local OCR", &format!("{} pages completed in the last hour", int(done)),
-            &format!("{} pages in flight across {} reporting workers; {} configured workers lack fresh status. \
-                Local queue: {}.", int(in_flight as u64), int(fresh_nodes.len() as u64),
+        summary_card(
+            &mut o,
+            "Local OCR",
+            &format!("{} pages completed in the last hour", int(done)),
+            &format!(
+                "{} pages in flight. Reporting workers: {}; without current status: {}. \
+                Local queue: {}.",
+                int(in_flight as u64),
+                int(fresh_nodes.len() as u64),
                 int((v.nodes.len() - fresh_nodes.len()) as u64),
-                backlog.map_or_else(|| "unknown".into(), |n| format!("about {} messages, including leased work", int(n)))),
-            &format!("{} failed and {} abandoned attempts in the last hour may retry. \
-                Completion means worker output, not accepted or searchable text.", int(failed), int(abandoned)));
+                backlog.map_or_else(
+                    || "unknown".into(),
+                    |n| format!("about {} messages, including leased work", int(n))
+                )
+            ),
+            &format!(
+                "{} failed and {} abandoned attempts in the last hour may retry. \
+                Completion means worker output, not accepted or searchable text.",
+                int(failed),
+                int(abandoned)
+            ),
+        );
     }
     let boinc_current = summary_stage(v, "boinc_unsent").is_some()
         && summary_stage(v, "boinc_in_progress").is_some();
@@ -683,7 +712,7 @@ fn ecosystem_panel(v: &View) -> String {
         "Experiments and evaluation",
         &assigned.map_or_else(
             || "Current activity unknown".into(),
-            |n| format!("{} assigned evaluation replicas observed", int(n)),
+            |n| format!("{} assigned evaluation replicas", int(n)),
         ),
         &format!("<ul>{research}</ul>"),
         "These are subsets of volunteer work, not additional totals. Scheduler assignments show \
@@ -707,24 +736,55 @@ fn ecosystem_panel(v: &View) -> String {
         summary_card(
             &mut o,
             "Other source acquisition",
-            &format!("{} Serial Set volumes processed", int(done)),
+            &format!("{} Serial Set volumes processed (reported)", int(done)),
             &format!(
                 "{} of {} planned volumes reported, containing {} extracted pages. \
-                {} collectors report running.",
+                Collectors running: {}.",
                 int(done),
                 int(total),
                 int(pages),
                 int(running as u64)
             ),
-            "Volume progress includes empty/incomplete volumes, not just successes. \
+            "Reports may overlap and include empty/incomplete volumes. \
              PDF text extraction is separate from OCR and search publication.",
         );
     }
     let snapshot = v.pipeline.snapshot.as_ref();
-    let coverage = snapshot.map_or_else(|| "No valid catalog snapshot is loaded.".into(), |s|
-        format!("Imported evidence covers {} artifact locations ({} verified) and {} engine runs on {} pages. \
-            This is a partial inventory, not corpus coverage.", int(s.artifacts.locations),
-            int(s.artifacts.verified), int(s.runs.total), int(s.runs.pages)));
+    let historical_stage = |id: &str| {
+        snapshot.and_then(|s| {
+            s.stages.iter().find(|stage| {
+                stage.id == id
+                    && stage.state == crate::pipeline::StageState::Observed
+                    && stage.count.is_some()
+            })
+        })
+    };
+    let mut coverage = String::new();
+    if let Some(s) = snapshot {
+        if historical_stage("artifact_verified").is_some() {
+            let _ = write!(
+                coverage,
+                "Cataloged artifact locations: {} ({} verified). ",
+                int(s.artifacts.locations),
+                int(s.artifacts.verified)
+            );
+        } else {
+            coverage.push_str("Artifact inventory is not connected. ");
+        }
+        if historical_stage("run_history").is_some() {
+            let _ = write!(
+                coverage,
+                "Recorded runs: {}; pages: {}. ",
+                int(s.runs.total),
+                int(s.runs.pages)
+            );
+        } else {
+            coverage.push_str("Run history is not connected. ");
+        }
+        coverage.push_str("Imported evidence only, not corpus coverage.");
+    } else {
+        coverage.push_str("No valid catalog snapshot is loaded.");
+    }
     let mut publishing = String::new();
     for (id, label) in [
         ("accepted", "Accepted"),
@@ -736,22 +796,30 @@ fn ecosystem_panel(v: &View) -> String {
     let publication_connected = ["accepted", "imported", "indexed"]
         .iter()
         .all(|id| summary_stage(v, id).and_then(|s| s.count).is_some());
-    summary_card(&mut o, "Validation and publication",
-        if publication_connected { "Publication counts reported" } else { "Coverage is incomplete" },
+    summary_card(
+        &mut o,
+        "Validation and publication",
+        if publication_connected {
+            "Publication counts reported"
+        } else {
+            "Coverage is incomplete"
+        },
         &format!("<ul>{publishing}</ul>{coverage}"),
-        "No end-to-end publication rate or OCR quality improvement is inferred from execution counts. \
-         Historical catalog observations keep their original age when live counters refresh.");
+        "Execution counts do not establish OCR quality gains or publication. \
+         Historical observations keep their original age when live counters refresh.",
+    );
     o.push_str("</div>");
     if v.pipeline.last_error.is_some() {
-        o.push_str("<p class=\"note\">Some volunteer/catalog evidence is old, unknown or unreadable. \
-            This does not describe the freshness of every lane; source errors and ages are in operational details.</p>");
+        o.push_str(
+            "<p class=\"note\">Some volunteer/catalog evidence is old, unknown or unreadable. \
+            Source errors and individual ages are in operational details.</p>",
+        );
     }
     if let Some(s) = snapshot {
         let _ = write!(
             o,
             "<p class=\"note\">Volunteer/catalog snapshot generated {} ({} ago). \
-            Live-counter freshness is checked independently of historical evidence. \
-            Expand operational details for per-source ages, failures and provenance.</p>",
+            Live-counter freshness is independent of historical evidence.</p>",
             time(s.generated_at),
             span((now - s.generated_at).num_seconds().max(0) as u64)
         );
@@ -1534,7 +1602,8 @@ mod tests {
         assert!(html.find("Across the ecosystem") < html.find("Operational details"));
         assert!(html
             .contains("<details class=\"diagnostics\" data-refresh-key=\"operational-details\">"));
-        assert!(SCRIPT.contains(".dashboard > section"));
+        assert!(SCRIPT.contains("section:not(#operational-details)"));
+        assert!(SCRIPT.contains("'.diagnostics > .grid'"));
         assert!(!SCRIPT.contains(".grid > section"));
     }
 
@@ -1605,7 +1674,7 @@ mod tests {
         });
         let summary = ecosystem_panel(&v);
         assert!(summary.contains("30 pages completed in the last hour"));
-        assert!(summary.contains("2 reporting workers; 2 configured workers lack fresh status"));
+        assert!(summary.contains("Reporting workers: 2; without current status: 2"));
         assert!(summary.contains("4 failed and 0 abandoned attempts"));
         assert!(summary.contains("about 610 messages, including leased work"));
         assert!(!summary.contains("worker-sentinel"));
@@ -1652,6 +1721,39 @@ mod tests {
         pipeline.poll(v.generated_at);
         v.pipeline = pipeline.view(v.generated_at);
         assert!(!ecosystem_panel(&v).contains("6,789 assigned result replicas"));
+    }
+
+    #[test]
+    fn missing_catalog_and_runs_only_catalog_are_not_empty_inventories() {
+        let mut v = summary_view();
+        let mut source = crate::pipeline::tests::fixture(v.generated_at);
+        source["stages"] = serde_json::json!([
+            {"id":"artifact_verified","label":"Artifacts","count":null,"state":"unknown","detail":""},
+            {"id":"run_history","label":"Runs","count":null,"state":"unknown","detail":""}
+        ]);
+        source["artifacts"] = serde_json::json!({"locations":0,"verified":0,"missing":0});
+        source["runs"] = serde_json::json!({"total":0,"pages":0});
+        v.pipeline.snapshot = Some(
+            crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), v.generated_at).unwrap(),
+        );
+        let unknown = ecosystem_panel(&v);
+        assert!(unknown.contains("Artifact inventory is not connected"));
+        assert!(unknown.contains("Run history is not connected"));
+        assert!(!unknown.contains("Recorded runs: 0"));
+        assert!(!unknown.contains("artifact locations: 0"));
+        source["runs"] = serde_json::json!({"total":5,"pages":3});
+        source["stages"][1]["state"] = "observed".into();
+        source["stages"][1]["count"] = 3.into();
+        source["stages"][1]["observed_at"] = (v.generated_at - chrono::Duration::days(1))
+            .to_rfc3339()
+            .into();
+        v.pipeline.snapshot = Some(
+            crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), v.generated_at).unwrap(),
+        );
+        let runs = ecosystem_panel(&v);
+        assert!(runs.contains("Recorded runs: 5; pages: 3"));
+        assert!(runs.contains("Artifact inventory is not connected"));
+        assert!(runs.contains("Imported evidence only, not corpus coverage"));
     }
 
     #[test]
