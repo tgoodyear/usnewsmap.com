@@ -306,6 +306,14 @@ lock_changed_uncached() {
   after=$(closure_tree . "$@") || after=
   [ -z "$before" ] || [ -z "$after" ] || [ "$before" != "$after" ]
 }
+# fail_open KIND PART: run PART because what it builds can't be worked out. The
+# build kinds are forced, which the loop below honours for any change; the
+# pattern '.' matches only built files, and a change to the gold set alone has
+# none, though the BOINC images embed its lock. KIND test keeps '.', so the
+# application jobs still leave the gold set out.
+fail_open() {
+  if [ "$1" = test ]; then printf -v "$2" '.'; else forced="$forced $2"; fi
+}
 # _narrow KIND PART ROOT...: run PART when a crate in the roots' closure
 # changed, or the workspace manifest or lock file changed what Cargo resolves
 # for them. KIND test takes the closure the tests build (closure_crates).
@@ -322,7 +330,8 @@ _narrow() {
     examples) dirs=$(closure_build_crates true "$@") || listed=false ;;
   esac
   if [ "$listed" = false ] || [ -z "$dirs" ]; then
-    echo "cargo metadata failed: running $part"; printf -v "$part" '.'
+    echo "cargo metadata failed: running $part"
+    fail_open "$kind" "$part"
     return 0
   elif matches_built "^($(paste -sd'|' - <<< "$dirs"))"; then
     printf -v "$part" '.'
@@ -331,10 +340,10 @@ _narrow() {
   if [ "$kind" != test ]; then
     # shellcheck disable=SC2086 # one argument per crate directory
     if ! embeds=$(closure_embeds $dirs); then
-      echo "can't list what $* embed: running $part"; printf -v "$part" '.'
+      echo "can't list what $* embed: running $part"
+      fail_open "$kind" "$part"
       return 0
     elif [ -n "$embeds" ] && matches "$(paste -sd'|' - <<< "$embeds")"; then
-      # Forced, not '.': the loop below matches built files, which leave out the gold set.
       forced="$forced $part"
       return 0
     fi

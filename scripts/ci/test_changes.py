@@ -507,6 +507,14 @@ class BuildInputs(unittest.TestCase):
         self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD)
         self.assertIn("running boinc_qwen", self.log)
 
+    def test_a_broken_tool_still_runs_the_images_for_a_gold_set_only_change(self):
+        # The gold set is left out of the built files, so only the images that embed its lock can
+        # run for this change, and only if the failure is handled as such.
+        for tool in ("cargo", "perl"):
+            with self.subTest(tool=tool):
+                on = self.select("fixtures/ocr-gold/bundle-v1.lock.json", env=self.stub_tool(tool))
+                self.assertGreaterEqual(on, BOINC_IMAGES)
+
     def test_a_broken_embed_scan_runs_everything_that_links_a_crate(self):
         on = self.select("crates/usnm-ocr-dash/src/html.rs", env=self.stub_tool("perl"))
         self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD)
