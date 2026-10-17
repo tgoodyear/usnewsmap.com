@@ -1021,6 +1021,46 @@ fn quick_merges() -> usnm_ingest::merges::MergeWait {
 /// Runs when `QUICKWIT_BIN` is set.
 #[tokio::test]
 async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
+    writer_merges_small_splits(7395, None).await;
+}
+
+#[cfg(unix)]
+#[test]
+fn a_writer_uses_a_fresh_local_wal_and_seals_an_index() {
+    if std::env::var_os("QUICKWIT_BIN").is_none_or(|b| b.is_empty()) {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    }
+    if let Some(root) = std::env::var_os("USNM_TEST_LOCAL_WAL_ROOT") {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(writer_merges_small_splits(7851, Some(Path::new(&root))));
+        return;
+    }
+    // Isolate the environment override from all other concurrent writer tests.
+    let root = tempfile::tempdir().unwrap();
+    let local = root.path().join("local");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_writer_uses_a_fresh_local_wal_and_seals_an_index",
+            "--nocapture",
+        ])
+        .env("USNM_TEST_LOCAL_WAL_ROOT", &local)
+        .env("USNM_WRITER_WAL_DIR", &local)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "local-WAL writer failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn writer_merges_small_splits(port: u16, local_wal_root: Option<&Path>) {
     let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
         eprintln!("QUICKWIT_BIN not set; skipping");
         return;
@@ -1035,7 +1075,7 @@ async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
     std::fs::write(qw.join("qwdata/wal/stale"), b"x").unwrap();
     let meta = format!("file://{}/meta", qw.display());
     let root = format!("file://{}/indexes", qw.display());
-    let node = QuickwitNode::start(Path::new(&bin), &qw, 7395, &meta, &root)
+    let node = QuickwitNode::start(Path::new(&bin), &qw, port, &meta, &root)
         .await
         .unwrap();
     assert!(!qw.join("qwdata/wal/stale").exists());
@@ -1072,6 +1112,15 @@ async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
             .await
             .unwrap();
         assert_eq!(v["num_rejected_docs"], 0);
+    }
+    if let Some(local) = local_wal_root {
+        let wal = std::fs::read_link(qw.join("qwdata/wal")).unwrap();
+        assert!(wal.starts_with(local.canonicalize().unwrap()));
+        assert!(
+            std::fs::read_dir(&wal).unwrap().next().is_some(),
+            "Quickwit wrote no WAL files"
+        );
+        assert!(!wal.join("stale").exists());
     }
     let n = Node {
         http: &http,
@@ -1129,6 +1178,9 @@ async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
         .unwrap();
     assert_eq!(source["enabled"], false);
     node.stop().await.unwrap();
+    if let Some(local) = local_wal_root {
+        assert_eq!(std::fs::read_dir(local).unwrap().count(), 0);
+    }
 }
 
 fn deadline(secs: u64) -> tokio::time::Instant {

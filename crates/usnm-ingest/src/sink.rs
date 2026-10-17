@@ -1140,20 +1140,85 @@ pub fn describe_exit(
     why
 }
 
+// Quickwit 0.9.1 puts the v2 WAL in data_dir/wal. A fresh local directory
+// avoids NFS persist-lock stalls without moving the large merge/split files.
+fn prepare_local_wal(
+    data: &Path,
+    local_root: Option<&Path>,
+    min_free_bytes: u64,
+) -> anyhow::Result<Option<tempfile::TempDir>> {
+    let Some(root) = local_root else {
+        return Ok(None);
+    };
+    anyhow::ensure!(root.is_absolute(), "USNM_WRITER_WAL_DIR must be absolute");
+    std::fs::create_dir_all(root)?;
+    let root = root.canonicalize()?;
+    let data = data.canonicalize()?;
+    anyhow::ensure!(
+        !root.starts_with(&data) && !data.starts_with(&root),
+        "the local WAL root must not overlap the writer data directory"
+    );
+    let free = progress::disk_free(&root).context("reading local WAL free disk space")?;
+    anyhow::ensure!(
+        free >= min_free_bytes,
+        "insufficient local WAL disk space: {free} bytes free, need {min_free_bytes}"
+    );
+    let wal = tempfile::Builder::new()
+        .prefix("usnm-wal-")
+        .tempdir_in(&root)
+        .context("creating a fresh local writer WAL")?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(wal.path(), data.join("wal"))
+        .context("linking the writer WAL to local disk")?;
+    #[cfg(not(unix))]
+    anyhow::bail!("USNM_WRITER_WAL_DIR requires Unix symbolic links");
+    tracing::info!(
+        dir = %wal.path().display(),
+        disk_free_mb = free / 1_048_576,
+        max_queue_disk_bytes = WAL_DISK_BYTES,
+        "writer WAL on local disk"
+    );
+    Ok(Some(wal))
+}
+
+// Construct this owner before spawning: even a never-polled supervisor must
+// signal the child before its local WAL is removed. Fields drop in this order.
+struct SupervisedWriter {
+    child: tokio::process::Child,
+    _local_wal: Option<tempfile::TempDir>,
+}
+
+impl SupervisedWriter {
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait().await
+    }
+}
+
+impl Drop for SupervisedWriter {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
+    }
+}
+
 /// Wait for the writer to exit, let the readers take in its last output,
 /// then record why it exited in `events` and on the returned channel.
 fn supervise(
-    mut child: tokio::process::Child,
+    child: tokio::process::Child,
     mut readers: Vec<tokio::task::JoinHandle<()>>,
     tail: Tail,
     events: Arc<NodeEvents>,
+    local_wal: Option<tempfile::TempDir>,
 ) -> (
     tokio::task::JoinHandle<()>,
     tokio::sync::watch::Receiver<Option<String>>,
 ) {
     let (tx, rx) = tokio::sync::watch::channel(None);
+    let mut writer = SupervisedWriter {
+        child,
+        _local_wal: local_wal,
+    };
     let task = tokio::spawn(async move {
-        let status = child.wait().await;
+        let status = writer.wait().await;
         for r in readers.iter_mut() {
             let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
         }
@@ -1193,6 +1258,8 @@ impl QuickwitNode {
                 .with_context(|| format!("removing {}", data.display()))?;
         }
         std::fs::create_dir_all(&data)?;
+        let local_root = std::env::var_os("USNM_WRITER_WAL_DIR").map(PathBuf::from);
+        let local_wal = prepare_local_wal(&data, local_root.as_deref(), 8 * 1024 * 1024 * 1024)?;
         let queue = WriterTuning::from_env()?.queue;
         let mut config = format!(
             "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
@@ -1253,7 +1320,8 @@ impl QuickwitNode {
             readers.push(forward(err, true, tail.clone(), events.clone()));
         }
         let pid = child.id();
-        let (supervisor, mut exit) = supervise(child, readers, tail.clone(), events.clone());
+        let (supervisor, mut exit) =
+            supervise(child, readers, tail.clone(), events.clone(), local_wal);
         let node = Self {
             pid,
             url: format!("http://127.0.0.1:{port}"),
@@ -1334,6 +1402,133 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[test]
+    fn an_unconfigured_wal_keeps_the_existing_data_layout() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(prepare_local_wal(root.path(), None, u64::MAX)
+            .unwrap()
+            .is_none());
+        assert!(!root.path().join("wal").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_wal_is_fresh_and_scratch_cleanup_does_not_follow_its_link() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("scratch/qwdata");
+        let local = root.path().join("local");
+        std::fs::create_dir_all(&data).unwrap();
+        let wal = prepare_local_wal(&data, Some(&local), 0).unwrap().unwrap();
+        let previous = wal.path().to_owned();
+        assert!(std::fs::symlink_metadata(data.join("wal"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(data.join("wal").canonicalize().unwrap(), previous);
+        std::fs::write(data.join("wal/accepted"), b"page").unwrap();
+        std::fs::write(local.join("unrelated"), b"keep").unwrap();
+        std::fs::remove_dir_all(&data).unwrap();
+        assert_eq!(std::fs::read(previous.join("accepted")).unwrap(), b"page");
+        drop(wal);
+        assert!(!previous.exists());
+        assert!(local.join("unrelated").exists());
+        std::fs::create_dir_all(&data).unwrap();
+        let next = prepare_local_wal(&data, Some(&local), 0).unwrap().unwrap();
+        assert_ne!(next.path(), previous);
+        assert!(!next.path().join("accepted").exists());
+    }
+
+    #[tokio::test]
+    async fn the_supervisor_keeps_the_local_wal_until_the_child_stops() {
+        let root = tempfile::tempdir().unwrap();
+        let wal = tempfile::Builder::new().tempdir_in(root.path()).unwrap();
+        let path = wal.path().to_owned();
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "read line"])
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take().unwrap();
+        let (task, _) = supervise(
+            child,
+            vec![],
+            Tail::default(),
+            Arc::new(NodeEvents::default()),
+            Some(wal),
+        );
+        assert!(path.exists());
+        drop(input);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_an_unpolled_supervisor_kills_the_child_and_cleans_its_wal() {
+        let root = tempfile::tempdir().unwrap();
+        let wal = tempfile::Builder::new().tempdir_in(root.path()).unwrap();
+        let path = wal.path().to_owned();
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "read line"])
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap().to_string();
+        let input = child.stdin.take().unwrap();
+        let (task, _) = supervise(
+            child,
+            vec![],
+            Tail::default(),
+            Arc::new(NodeEvents::default()),
+            Some(wal),
+        );
+        // There has been no yield: the supervisor has not run even once.
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!path.exists());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let alive = tokio::process::Command::new("kill")
+                    .args(["-0", &pid])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success();
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // Keep stdin open until after the kill proof, so EOF cannot mask a leak.
+        drop(input);
+    }
+
+    #[test]
+    fn local_wal_rejects_relative_overlapping_and_full_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("qwdata");
+        let local = root.path().join("local");
+        std::fs::create_dir_all(&data).unwrap();
+        assert!(prepare_local_wal(&data, Some(Path::new("relative")), 0).is_err());
+        assert!(prepare_local_wal(&data, Some(&data), 0).is_err());
+        assert!(prepare_local_wal(&data, Some(root.path()), 0).is_err());
+        let error = prepare_local_wal(&data, Some(&local), u64::MAX).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("insufficient local WAL disk space"));
+        assert_eq!(std::fs::read_dir(local).unwrap().count(), 0);
+    }
 
     #[test]
     fn the_writer_always_logs_its_merge_pipelines() {
@@ -1554,7 +1749,7 @@ mod tests {
                 events.clone(),
             ),
         ];
-        let (task, mut exit) = supervise(child, readers, tail, events.clone());
+        let (task, mut exit) = supervise(child, readers, tail, events.clone(), None);
         tokio::time::timeout(Duration::from_secs(10), exit.wait_for(Option::is_some))
             .await
             .unwrap()
