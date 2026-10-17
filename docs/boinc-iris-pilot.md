@@ -181,3 +181,24 @@ multi-crop contract and a signed release are still required: see
 [the report](reports/2026-10-iris-model-reuse/README.md). Rollback needs nothing: the published
 single-crop app version is unchanged. To rerun, stop BOINC on the host first
 (`systemctl stop boinc-client` in the CT) and restore it with `systemctl start boinc-client` afterwards.
+
+### Multi-crop bundles (app version 1.1)
+
+`ocr/boinc/iris/bundle.py` defines the v2 unit: `iris.json` (`"v": 2`) plus `pages.pack` (the crops' JPEGs
+concatenated). The worker loads the model once and runs the crops in order. Each crop has its own v1-shaped
+result bound to a derived v1 job (id, crop id, page checksum), so a bundle cannot hide a failed crop.
+The bundle status is `ok`, `partial` or `error`; a partial bundle exits 0 so its finished crops upload, and
+the validator retains it but rejects it. A crash or the watchdog (900 s + 90 s per crop) keeps the crops
+already finished. A `generate()` exception aborts the remaining crops (`bundle_aborted`) because pipeline
+state is untrusted afterwards. A unit without `pages.pack` takes the unchanged v1 path.
+
+Limits: at most 32 crops and 128 MiB per unit; stage 16 (measured 12.8 crops/min warm, 5.3 GiB peak, no
+truncation). Real worker image on Computer 9, 16 distinct crops, production container limits, cold
+cache: 16/16 ok in 98 s (load 14.5 s), text identical to the benchmark's N=16 run. Templates:
+`usnm_iris_bundle_in` / `usnm_iris_bundle_out` (result up to 2 MiB). The compile cache is not part of 1.1.
+
+Evaluation re-run of the accepted 100 crops, host 9 only (batch 105, version 1.1):
+`iris-bundle-campaign.py prepare --source <v1 campaign> --out <dir> --worker-image <digest> --bundle-size 16`,
+then `submit` (dry run unless `--apply`) and `collect --seen <dir> --v1-seen <1.0 seen>` for per-crop CER and
+drift from the 1.0 results. Rollback: deprecate version 1.1 (1.0 is untouched).
+The 20,000-page set stays gated by its own `campaign.json`; this release does not dispatch it.

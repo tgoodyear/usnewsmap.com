@@ -21,6 +21,8 @@ on:
       - "ocr/boinc/iris/**"
       - "scripts/boinc/test_iris_worker.py"
       - "scripts/boinc/test_iris_bundle.py"
+      - "scripts/boinc/iris-bundle-campaign.py"
+      - "scripts/boinc/iris-check.py"
       - "!**/*.md"
 
 permissions:
