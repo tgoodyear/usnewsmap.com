@@ -272,15 +272,28 @@ The returned state archive SHA-256 is
 Do not reconstruct this state from volunteer files or rerun collection from
 the older pre-publication snapshot.
 
-**Normal release/search acceptance remains pending.** An existing full rebuild,
-`caj-usnm-ingest-prod-pg4wqlz` for `pages-v20261016-1`, was still running at
-33.4% at 22:09 UTC; public search still named `pages-v20261010-2`.
-Do not start a competing release, change its full-rebuild settings, or treat
-reader acceptance or the page's older native search result as publication of
-this canonical part. The next serialized normal release must record this
-part in its Japanese overlay manifest before live Japanese/Latin searches
-and credits can establish final acceptance. This already-native page remains
-separate from the genuinely fresh-page Mac pilot and current-image Gold trust.
+**Normal release/search acceptance remains pending.** The prior full rebuild
+`caj-usnm-ingest-prod-pg4wqlz` failed; the #283 release owner merged the local-WAL
+recovery in #753 and started replacement
+`caj-usnm-ingest-prod-si5kesp` at `2026-10-17T05:40:57Z` for
+`pages-v20261017-1`. The owner verified Running/Ready with no restart, actual
+local WAL placement and main-page progress. Public search still serves
+`pages-v20261010-2`; see [#283](https://github.com/tgoodyear/usnewsmap.com/issues/283)
+for current progress and forecasts.
+
+The replacement's startup count of 12,768 Japanese pages is not evidence
+that this BOINC part won. Its eventual frozen overlay manifest must contain
+the exact part/hash, and the selected row must actually be from that part.
+The normal reader chooses the newest `(ocred_at, part path)` per document
+among rows in the release's batches with catalogued titles; a read part need
+not be the winning row. Only then can Japanese/Latin queries and source
+credits against the newly served version establish final acceptance, rather
+than merely finding the page's older native OCR.
+
+Do not start a competing release, change the running full-rebuild settings,
+break locks or prune old indexes to advance this gate. The original accepted
+bytes and state remain intact. This already-native page is separate from the
+genuinely fresh-page Mac pilot and current-image Gold trust.
 
 ## BOINC lifecycle (phase 2, #626)
 
