@@ -274,3 +274,58 @@ Corpus-wide inventory, automatic worker transport/retention, BOINC and
 `ocr-file` capture, and authoritative validation/import/index exporters remain
 separate rollout steps. Do not enable an uncalibrated corpus-wide job merely
 because the control plane is online.
+
+## Live worker evidence transport
+
+`scripts/worker_evidence_sync.py` adds an administrative, bounded transport for
+the existing opt-in captures. It does not read queues, upload OCR output or grant
+acceptance. A restricted SSH key on the catalog host may run only the root-owned
+exporter on the worker:
+
+```text
+restrict,command="/usr/sbin/runuser -u usnm -- /usr/bin/python3 /usr/local/lib/usnm-data-flow/worker_evidence_sync.py export --root /var/lib/usnm-ocr/run-metadata" <dedicated-public-key>
+```
+
+Install `data_catalog.py` beside that helper. Keep both files and their parent
+directory root-owned and not writable by the worker. The forced command accepts
+only a bounded export or checksum-matched acknowledgements; it cannot run a
+shell, choose a directory or forward connections. Drop to the worker's unprivileged
+account before reading its files, even when the SSH entry point is root. Pin the worker's already
+verified SSH host key in the receiver's `known_hosts`; do not disable host checks.
+Never publish deployment hostnames, keys or local connection settings.
+
+The receiver's `usnm-worker-evidence-sync.service` and timer run as `ocrdash`.
+Its required `/etc/usnm/worker-evidence-sync.env` supplies
+`USNM_WORKER_EVIDENCE_HOST=<ssh-user>@<worker-host>` and
+`USNM_WORKER_EVIDENCE_SOURCE=worker-node3-live`. Its dedicated private key and
+`known_hosts` live under `/var/lib/usnm-data-flow/worker-sync` (directory 0700,
+private key 0600, owned by `ocrdash`). Do not copy an administrator's private key.
+
+Each tick imports at most 100 captures, each at most 64 KiB, with a 10 MiB
+transport limit, strict schema/checksum/identity checks and a single-writer lock.
+Incomplete worker `.pending-*` files are ignored. Each received capture and its
+derived JSONL are retained durably under
+`worker-sync/retained/<source>/`; retry replays the same immutable evidence.
+Only after catalog commit and snapshot publication does the receiver acknowledge
+the exact capture checksums. The worker moves those files into `acknowledged/`,
+retaining the originals without re-exporting old runs forever. An interrupted
+acknowledgement is safely replayed. Nothing is automatically deleted.
+
+Retain both copies during this initial rollout. Inspect disk growth and collector
+failures with `systemctl status usnm-worker-evidence-sync.timer` and
+`journalctl -u usnm-worker-evidence-sync.service`; failed schema, oversized records,
+SSH, checksum or database operations exit nonzero rather than silently skipping
+evidence. Disk retention is deliberately conservative, not a claimed corpus-scale
+compaction policy. Before pruning either copy, produce and verify a durable
+checksummed archive and rebuild the catalog from retained JSONL. Snapshot counters
+remain partial. The observer joins explicit catalog acceptance/import/index
+observations with their original source timestamps; it does not infer those stages
+from successful execution. A one-page import proof is one observed import, not the
+total imported corpus. Unconnected stages remain unknown.
+
+Enable capture by adding only `USNM_OCR_RUN_METADATA_DIR` at a planned worker
+deployment boundary. Preserve the binary, routes, models, queue and timeout
+configuration. Verify drain-on-stop and sufficient systemd stop timeout first;
+let the existing worker drain its in-flight pages rather than killing engines.
+Rollback removes only the capture setting at another graceful boundary; retained
+evidence and its read-only query service remain intact.

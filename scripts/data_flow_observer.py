@@ -293,7 +293,7 @@ def add_catalog(value, path, now=None):
     for candidate in catalog_stages:
         candidate = object_value(candidate)
         identifier = candidate["id"]
-        if identifier not in ("runs", "artifacts"):
+        if identifier not in ("runs", "artifacts", "accepted", "imported", "indexed"):
             continue
         if identifier in evidence:
             raise ValueError("Duplicate catalog evidence stage")
@@ -302,18 +302,24 @@ def add_catalog(value, path, now=None):
             raise ValueError("Invalid catalog evidence state")
         amount = count(candidate["count"]) if candidate["count"] is not None else None
         source_at = observed(candidate["observed_at"], now) if candidate["observed_at"] is not None else None
-        total = runs["total"] if identifier == "runs" else artifacts["locations"]
+        total = (runs["total"] if identifier == "runs" else
+                 artifacts["locations"] if identifier == "artifacts" else 0)
         if state == "observed" and (amount is None or source_at is None):
             raise ValueError("Observed catalog evidence requires a count and timestamp")
         if state == "unknown" and amount is not None:
             raise ValueError("Unknown catalog evidence cannot have a count")
-        count_invalid = (amount != runs["pages"] if identifier == "runs" else
-                         amount is not None and (amount > total or bool(amount) != bool(total)))
+        count_invalid = False
+        if identifier == "runs":
+            count_invalid = amount != runs["pages"]
+        elif identifier == "artifacts":
+            count_invalid = amount is not None and (amount > total or bool(amount) != bool(total))
         if amount is not None and (count_invalid or source_at is None):
             raise ValueError("Inconsistent catalog evidence stage")
         if amount is None and total:
             raise ValueError("Nonempty catalog totals have no stage evidence")
         evidence[identifier] = {"state": state, "count": amount, "observed_at": source_at}
+        if identifier in ("accepted", "imported", "indexed"):
+            evidence[identifier]["detail"] = bounded_text(candidate["detail"], 512)
     for identifier, expected in (("runs", runs["total"]), ("artifacts", artifacts["locations"])):
         if identifier not in evidence:
             if expected:
@@ -335,7 +341,7 @@ def add_catalog(value, path, now=None):
                              coverage[:room - 1] + ["Additional catalog coverage omitted; query the catalog directly."])
     value["issues"] = [issue for issue in value["issues"] if issue["code"] != "partial-coverage"]
     value["issues"].append({"code": "partial-catalog",
-                            "detail": "Catalog totals cover imported evidence only. Unconnected validation/import/index stages remain unknown."})
+                            "detail": "Catalog counts cover retained evidence only, not the corpus. Missing acceptance/import/index sources remain unknown."})
     room = 128 - len(value["issues"])
     value["issues"].extend(issues[:room] if len(issues) <= room else
                            issues[:room - 1] + [{"code": "catalog-issues-truncated",
@@ -344,13 +350,19 @@ def add_catalog(value, path, now=None):
         "artifact_verified": ("artifacts", "Cataloged verified locations", artifacts["verified"]),
         "run_history": ("runs", "Cataloged engine runs", runs["total"]),
     }
+    for identifier, label in (("accepted", "Cataloged acceptance observations"),
+                              ("imported", "Cataloged curated imports"),
+                              ("indexed", "Cataloged search inclusion")):
+        if identifier in evidence:
+            replacements[identifier] = (identifier, label, evidence[identifier]["count"])
     for item in value["stages"]:
         if item["id"] in replacements:
             identifier, label, amount = replacements[item["id"]]
             source = evidence[identifier]
             item.update(label=label, count=amount if source["count"] is not None else None,
                         state=source["state"], observed_at=source["observed_at"],
-                        detail="Imported page evidence only; source age is independent of live aggregate refresh.")
+                        detail=source.get("detail",
+                            "Imported page evidence only; source age is independent of live aggregate refresh."))
     times = [timestamp(item["observed_at"]) for item in value["stages"]
              if item.get("observed_at") is not None]
     value["observed_at"] = utc(min(times)) if times else None

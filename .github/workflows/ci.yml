@@ -631,7 +631,7 @@ jobs:
       - name: changes.sh runs the Quickwit job only for what its tests build
         run: python3 -m unittest -v scripts/ci/test_changes.py
       - name: The bounded local corpus catalog's tests pass
-        run: python3 -m unittest -v scripts/test_data_catalog.py scripts/test_scan_cache_inventory.py
+        run: python3 -m unittest -v scripts/test_data_catalog.py scripts/test_scan_cache_inventory.py scripts/test_worker_evidence_sync.py
       - name: Read-only corpus flow observations preserve scope and freshness
         run: python3 -m unittest -v scripts/test_data_flow_observer.py
       - name: Pinned model downloads retry TLS failures without bypassing verification
