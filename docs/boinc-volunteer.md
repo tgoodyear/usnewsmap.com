@@ -122,7 +122,30 @@ sudo python3 scripts/boinc/setup_volunteer.py --apply
 
 The helper accepts both `x86_64` and `aarch64` Linux hosts, detects the service's existing data directory, and uses the published worker digest in this checkout's `contrib-compute/infra/boinc/env/prod.json` (`images.worker`). It does not move data. The default service is `boinc-client.service`; use `--service` if the installed package names it differently. `--data-dir` and `--image` can override the detected directory and released image, but the directory must still be the service's existing working directory and the image must use its full immutable digest.
 
-The helper preserves account data and unrelated settings, backs up the preference and configuration XML it changes, and sets a conservative pilot profile: one BOINC CPU, no GPUs, idle-only processing after five minutes, no battery use, 50% memory allowance, and no extra work buffer. Apps stay in memory while suspended so the wrapper can pause their container. CPU-load suspension is disabled because the client can count whole-machine load against its simulated single CPU; the idle policy and actual per-container CPU limit remain active.
+The helper preserves account data and unrelated settings, backs up the preference and configuration XML it changes, and sets a conservative pilot profile: one BOINC CPU, no GPUs (see the `--gpu` section below), idle-only processing after five minutes, no battery use, 50% memory allowance, and no extra work buffer. Apps stay in memory while suspended so the wrapper can pause their container. CPU-load suspension is disabled because the client can count whole-machine load against its simulated single CPU; the idle policy and actual per-container CPU limit remain active.
+
+##### NVIDIA GPU work (opt-in)
+
+GPUs stay off unless you pass `--gpu`. It also needs a GPU job profile, so that every start of the service checks that a container can see the GPU:
+
+```sh
+sudo python3 scripts/boinc/setup_volunteer.py --apply --gpu \
+  --job-toml "$PWD/ocr/boinc/job.toml" --job-toml "$PWD/ocr/boinc/qwen/job-gpu.toml"
+```
+
+Before you run it:
+
+1. Install the NVIDIA driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+2. Generate the CDI spec that Podman's `--gpus all` uses: `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
+
+The scheduler sends GPU work by plan class:
+
+| Work                                        | Plan class            | NVIDIA GPU                                                                                                                 | Host                                                                                                                                        |
+| ------------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `usnm_surya` and `usnm_qwen` container work | `docker_nvidia_cuda`  | at least 3,000 MB of VRAM, compute capability 5.0+, CUDA 12                                                                |                                                                                                                                             |
+| LoRA training trials (`usnm_qwen_train`)    | `docker_nvidia_train` | compute capability **8.0+** (Ampere or newer, for hardware BF16), at least **15 GiB of VRAM**, a driver with **CUDA 12.8** | `x86_64` Linux; BOINC's memory allowance must cover the 16 GiB container (a 32 GiB host with the default 50%, or `--dedicated-node` at 85%) |
+
+To run the training profile's preflight check too, add `--job-toml "$PWD/ocr/boinc/train/job.toml"`. The training path has not yet run on a volunteer host (#583).
 
 Installation enables the BOINC user's systemd session at boot and configures Podman to use that session for cgroups. It makes the service's cgroups writable (`ProtectControlGroups=false`); the unprivileged UID still limits which cgroups it can modify. It allows read-only home-directory traversal while keeping the data directory writable and retaining the service's other restrictions. The service unsets `INVOCATION_ID`, so Podman starts each container's monitor (conmon) in its own scope in the BOINC user's session rather than in the service's cgroup. A BOINC restart then pauses and later resumes running tasks instead of killing their monitors and losing the exit status (seen on node 4 on 16 October 2026). Runtime files survive service restarts. Only the slots directory receives a persistent `container_file_t` label when SELinux is enabled; SELinux remains enabled and the account and configuration files outside slots retain their labels. The helper does not grant Docker access or change other users' Podman settings. If this dedicated account already belongs to `docker`, an administrator can remove that unused access.
 

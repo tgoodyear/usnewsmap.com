@@ -534,6 +534,18 @@ class SetupTest(unittest.TestCase):
             with self.assertRaises(setup.SetupError):
                 setup.setup("boinc-client.service", Path("/var/lib/boinc"), IMAGE, **kwargs)
 
+    def test_gpu_is_opt_in_and_needs_a_gpu_job_profile(self):
+        root = Path(__file__).resolve().parents[2]
+        self.assertEqual(setup.client_options(1)["no_gpus"], "1")
+        self.assertEqual(setup.client_options(4, gpu=True), {"ncpus": "4", "no_gpus": "0"})
+        for tomls in [[], [root / "ocr/boinc/job.toml"]]:
+            with self.assertRaisesRegex(setup.SetupError, "use_gpu"):
+                setup.check_gpu_profile(tomls)
+        for gpu_toml in ["ocr/boinc/qwen/job-gpu.toml", "ocr/boinc/train/job.toml"]:
+            setup.check_gpu_profile([root / "ocr/boinc/job.toml", root / gpu_toml])
+        with self.assertRaisesRegex(setup.SetupError, "use_gpu"):
+            setup.setup("boinc-client.service", Path("/var/lib/boinc"), IMAGE, gpu=True)
+
     def test_dedicated_node_requires_retired_ocr_worker(self):
         def states(load, enabled, active):
             values = {"LoadState": load, "UnitFileState": enabled, "ActiveState": active}

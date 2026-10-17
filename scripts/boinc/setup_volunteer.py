@@ -15,9 +15,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 try:
-    from volunteer_preflight import check_ocr_groups, PreflightError
+    from volunteer_preflight import check_ocr_groups, limits_from_job_toml, PreflightError
 except ModuleNotFoundError:
-    from scripts.boinc.volunteer_preflight import check_ocr_groups, PreflightError
+    from scripts.boinc.volunteer_preflight import check_ocr_groups, limits_from_job_toml, PreflightError
 
 SERVICE = re.compile(r"[A-Za-z0-9_-]{1,80}\.service\Z")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
@@ -426,7 +426,23 @@ def prepare_slots(data_dir, uid, gid, trust=None):
         os.close(parent_fd)
 
 
-def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, ocr_node=False, dedicated_node=False, ncpus=None):
+def client_options(ncpus, gpu=False):
+    return {"ncpus": str(ncpus), "no_gpus": "0" if gpu else "1"}
+
+
+def check_gpu_profile(job_tomls):
+    """--gpu needs a GPU job.toml, so the startup preflight proves a container can see the GPU."""
+    try:
+        if any(limits_from_job_toml(path).use_gpu for path in job_tomls):
+            return
+    except PreflightError as error:
+        raise SetupError(str(error)) from error
+    raise SetupError("--gpu needs a --job-toml with use_gpu = true (for example ocr/boinc/qwen/job-gpu.toml "
+                     "or ocr/boinc/train/job.toml) so the preflight verifies GPU access in a container.")
+
+
+def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, ocr_node=False, dedicated_node=False, ncpus=None,
+          gpu=False):
     if ocr_node and dedicated_node:
         raise SetupError("Choose either --ocr-node or --dedicated-node.")
     if ncpus is not None and not dedicated_node:
@@ -435,9 +451,12 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
     ncpus = (host_cpus if ncpus is None else ncpus) if dedicated_node else 1
     if not 1 <= ncpus <= host_cpus:
         raise SetupError(f"--ncpus must be between 1 and this host's {host_cpus} CPUs.")
-    cc_options = {"ncpus": str(ncpus), "no_gpus": "1"}
+    cc_options = client_options(ncpus, gpu)
     prefs_values = {**PREFS, **DEDICATED_PREFS} if dedicated_node else PREFS
     normalized_tomls = normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)
+    if gpu:
+        check_gpu_profile(normalized_tomls)
+    gpus = "GPUs allowed" if gpu else "no GPUs"
     if not SERVICE.fullmatch(service) or (data_dir is not None and not SAFE_PATH.fullmatch(str(data_dir))) or not IMAGE.fullmatch(image):
         raise SetupError("Use a plain systemd service name, an absolute path without spaces/special characters, and a registry image pinned by full sha256 digest.")
     binary, working, dir_overrides = resolve_launch(service)
@@ -512,9 +531,9 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None, 
     print(f"Worker image: {image}")
     print("Install rootless Podman configuration and a mandatory startup slot/limits/pause check.")
     if dedicated_node:
-        print(f"Set {ncpus} BOINC CPUs, no GPUs, run while users are logged in, no task buffer, and 85% memory allowance (matching the slice cap) (task containers keep their own caps).")
+        print(f"Set {ncpus} BOINC CPUs, {gpus}, run while users are logged in, no task buffer, and 85% memory allowance (matching the slice cap) (task containers keep their own caps).")
     else:
-        print("Set one BOINC CPU, no GPUs, idle after 5 minutes, no battery use, no task buffer, and 50% memory allowance (task containers remain capped at 1536 MiB).")
+        print(f"Set one BOINC CPU, {gpus}, idle after 5 minutes, no battery use, no task buffer, and 50% memory allowance (task containers remain capped at 1536 MiB).")
     print("Preserve accounts and unrelated preferences; back up changed XML before writing.")
     print("Enable the user's systemd session at boot; allow writable cgroups for rootless resource controls.")
     print(f"SELinux: {'label only ' + str(data_dir / 'slots') + ' as container_file_t' if selinux else 'disabled/not installed; no policy changes'}")
@@ -618,6 +637,8 @@ def main():
     parser.add_argument("--dedicated-node", action="store_true",
                         help="Former OCR node retired to BOINC only: lift the OCR-node cap, use --ncpus CPUs, enable and start BOINC")
     parser.add_argument("--ncpus", type=int, help="CPUs BOINC may use with --dedicated-node (default: all)")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Let BOINC use NVIDIA GPUs; needs a GPU --job-toml so the preflight checks container GPU access")
     args = parser.parse_args()
     try:
         image = args.image
@@ -625,7 +646,7 @@ def main():
             settings = Path(__file__).resolve().parents[2] / "contrib-compute/infra/boinc/env/prod.json"
             image = json.loads(settings.read_text())["images"]["worker"]
         setup(args.service, args.data_dir, image, args.apply, job_tomls=args.job_toml, ocr_node=args.ocr_node,
-              dedicated_node=args.dedicated_node, ncpus=args.ncpus)
+              dedicated_node=args.dedicated_node, ncpus=args.ncpus, gpu=args.gpu)
     except (SetupError, OSError, KeyError, TypeError, ValueError, ET.ParseError, subprocess.TimeoutExpired) as error:
         print(f"Volunteer setup failed: {error}", file=sys.stderr)
         print("After an installation failure, BOINC may remain stopped. Inspect journalctl -u " + args.service + " and the setup backups before retrying.", file=sys.stderr)
