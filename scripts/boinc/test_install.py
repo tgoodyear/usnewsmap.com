@@ -63,7 +63,7 @@ class InstallTest(unittest.TestCase):
         self.assertIn("--network=none", job)
         self.assertIn("--memory=9g --memory-swap=9g", job)
         self.assertNotIn("use_gpu = true", job)
-        for name in ("usnm_iris_in", "usnm_iris_out"):
+        for name in ("usnm_iris_in", "usnm_iris_out", "usnm_iris_bundle_in", "usnm_iris_bundle_out"):
             self.assertTrue((self.project / "templates" / name).is_file())
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_iris", "docker_nvidia_cuda")

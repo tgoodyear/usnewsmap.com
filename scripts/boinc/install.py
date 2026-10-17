@@ -30,7 +30,7 @@ TEMPLATES = {
     "usnm_quality": ["usnm_quality_in", "usnm_quality_out"],
     "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"],
     "usnm_qwen_train": ["usnm_qwen_train_in", "usnm_qwen_train_out"],
-    "usnm_iris": ["usnm_iris_in", "usnm_iris_out"],
+    "usnm_iris": ["usnm_iris_in", "usnm_iris_out", "usnm_iris_bundle_in", "usnm_iris_bundle_out"],
 }
 QWEN_NATIVE_MODEL_TEMPLATES = {
     "apple_gpu_8b": "usnm_qwen_8b_in",

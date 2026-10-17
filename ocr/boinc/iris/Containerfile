@@ -64,7 +64,7 @@ RUN python3 -m venv /opt/iris/venv \
 COPY --from=fetch /out/model/ /opt/iris/model/
 COPY --from=fetch /out/LICENSE /opt/iris/LICENSE
 COPY ocr/boinc/iris/model.lock ocr/boinc/iris/runtime.lock ocr/boinc/iris/NOTICE /opt/iris/
-COPY ocr/boinc/iris/contract.py ocr/boinc/iris/worker.py /opt/iris/app/
+COPY ocr/boinc/iris/contract.py ocr/boinc/iris/bundle.py ocr/boinc/iris/worker.py /opt/iris/app/
 # The image's model is the contract's: the manifest digest, every file's name and size, and the
 # pinned engine version, checked offline (there is no GPU at build time).
 RUN /opt/iris/venv/bin/python -I -c 'import sys; sys.path.insert(0, "/opt/iris/app"); \
