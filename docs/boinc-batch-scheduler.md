@@ -31,8 +31,11 @@ The hand-off job is in the **main** resource group, not the BOINC runtime
 group. Updating the BOINC server and bridge pair does not update this job.
 `USNM_BOINC_HANDOFF_IMAGE` in `infra/env/prod.json` must name a reviewed bridge
 artifact containing the bounded export, exact-file reads and accepted-snapshot
-collection code. Production pins the existing #675 artifact built from
-`7e634564c77acb64936f6f61092f451bb7110adc`; no additional cloud build is needed.
+collection code. The desired production pin is the scoped-trust v4 bridge
+artifact built from merged #755 source `38893b3008708f6f25c2beab2dcba40ab7521fab`,
+also selected for the BOINC bridge. It includes the current-worker Gold routing
+registry and rejects unscoped legacy trust for publication. This pin alone is
+not a runtime rollout or host promotion.
 
 After the pin PR passes review and CI and merges, serialize a hand-off-only
 update through #529. Verify the job and other lifecycle jobs are idle and retain
