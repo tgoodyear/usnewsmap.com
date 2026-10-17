@@ -340,44 +340,6 @@ async fn urls_and_nonpublic_addresses_are_rejected() {
         assert!(Download::new(url, &fx.mirror).is_err(), "{url}");
     }
 
-    #[tokio::test]
-    async fn chunked_downloads_are_bounded_and_stalls_time_out() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        for (body, stall, success) in [
-            (PAGE.to_vec(), false, true),
-            (vec![b'x'; PAGE.len() + 1], false, false),
-            (PAGE.to_vec(), true, false),
-        ] {
-            let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let url = Url::parse(&format!("http://{}/page", socket.local_addr().unwrap())).unwrap();
-            let task = tokio::spawn(async move {
-                let (mut stream, _) = socket.accept().await.unwrap();
-                let mut request = [0; 4096];
-                stream.read(&mut request).await.unwrap();
-                stream
-                    .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
-                    .await
-                    .unwrap();
-                if stall {
-                    std::future::pending::<()>().await;
-                }
-                stream
-                    .write_all(format!("{:x}\r\n", body.len()).as_bytes())
-                    .await
-                    .unwrap();
-                stream.write_all(&body).await.unwrap();
-                stream.write_all(b"\r\n0\r\n\r\n").await.unwrap();
-            });
-            let client = Client::builder()
-                .no_proxy()
-                .timeout(Duration::from_millis(300))
-                .build()
-                .unwrap();
-            let result = probe(&client, url, PAGE.len(), &boinc::sha256(PAGE)).await;
-            assert_eq!(result.is_ok(), success, "{result:?}");
-            task.abort();
-        }
-    }
     for base in [
         "https://downloads.example.org/pages",
         "https://downloads.example.org/pages/",
@@ -414,5 +376,44 @@ async fn urls_and_nonpublic_addresses_are_rejected() {
         "https://10.0.0.1/page",
     ] {
         assert!(public_client(&Url::parse(url).unwrap()).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn chunked_downloads_are_bounded_and_stalls_time_out() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for (body, stall, success) in [
+        (PAGE.to_vec(), false, true),
+        (vec![b'x'; PAGE.len() + 1], false, false),
+        (PAGE.to_vec(), true, false),
+    ] {
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/page", socket.local_addr().unwrap())).unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = socket.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(stream.read(&mut request).await.unwrap() > 0);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            if stall {
+                std::future::pending::<()>().await;
+            }
+            stream
+                .write_all(format!("{:x}\r\n", body.len()).as_bytes())
+                .await
+                .unwrap();
+            stream.write_all(&body).await.unwrap();
+            stream.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+        });
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(300))
+            .build()
+            .unwrap();
+        let result = probe(&client, url, PAGE.len(), &boinc::sha256(PAGE)).await;
+        assert_eq!(result.is_ok(), success, "{result:?}");
+        task.abort();
     }
 }

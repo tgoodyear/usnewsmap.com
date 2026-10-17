@@ -327,7 +327,10 @@ template maps them to logical `page` and `request.json`. Any failure after
 write-ahead remains uncertain and requires existing explicit reconciliation.
 Allocation, trust, validation, acceptance and publication gates are unchanged.
 Before enabling this opt-in, verify ingress from outside the LAN and adequate
-upload bandwidth; no service or deployment change is included here.
+upload bandwidth; no service or deployment change is included here. Public
+HTTPS ingress is not yet established: the local origin is LAN-only, so
+production volunteer submission/cutover remains blocked pending an approved,
+persistent public ingress path. Do not relax the HTTPS probe to enable it.
 
 Attach one friend's stock BOINC client to the project. Configure idle-only
 processing and conservative preferences, and update the project. After the task
