@@ -335,6 +335,67 @@ preparation alone is not registration, canonical execution or trust promotion.
 Its publication does not authorize additional workunits or change the source,
 assignment, backlog or trust gates.
 
+### Current-image canonical CC-BY-only measurement, 17 October 2026
+
+Gold 1.3 publication completed successfully in execution
+`usnm-boinc-publish-caj-prod-nbtft5q`; the native database registered Linux
+`docker` version 103 as **app_version 28**. The registered signed Dockerfile
+and its public download both pin the measured `80bf2d65...` worker. The
+publisher-only update preserved all other template, configuration and identity
+properties and did not replace the concurrent server/bridge runtime.
+
+The full v1 campaign remains held pending verification of NonCommercial-use
+eligibility. Instead, the normal builder prepared a separate **52-crop,
+CC-BY-4.0-only** bundle from the existing converted NewsEye validation inputs:
+BnF 24, Finnish 18 and Swedish 10. No BLN600, Overproof or NZZ content is in it.
+All source licence files and attribution travel unchanged with the crops.
+There are **zero remote inputs** and no source downloads were needed.
+
+```sh
+usnm-ocr-survey bundle-build \
+  --source newseye-bnf=/project/gold/build-v1/out/newseye-bnf \
+  --source newseye-nlf-fi=/project/gold/build-v1/out/newseye-nlf-fi \
+  --source newseye-nlf-sv=/project/gold/build-v1/out/newseye-nlf-sv \
+  --version 2 --seed 457 --per-source 30 \
+  --out /project/gold/ccby-newseye-20261016-80bf/build \
+  --lock /project/gold/ccby-newseye-20261016-80bf/bundle-v2.lock.json
+```
+
+The normal `bundle-verify` and `gold prepare` passed. Immutable receipts:
+
+| Artifact | SHA-256 |
+| -------- | ------- |
+| Manifest | `3fcafeabc8e77ad1118a724a0e844d7c8def74022e0c4b31178599e6ddecfee6` |
+| Bundle tar, 8,893,952 bytes | `9e13ed3a2294889c76efd1ba325f0edca725e321f659410631139c657c8fe547` |
+| Canonical counts-only report | `8fad861dbd3f5a112babbb33d23dc6473efbec01ca1b4f4c62dc5a44db2ca5b7` |
+
+After all six lifecycle jobs were idle, one normal targeted Gold measurement
+was submitted under the controller lease to existing **host 8 / user 2**.
+No client preference, task priority, abort, trust or OCR queue-admission override
+was used. Actual **WU 16571 / result 31526 / app_version 28** finished with
+outcome 1, validation state 1 and exit status 0; result 31526 became canonical,
+the workunit reached assimilation state 2 and its error mask is zero.
+The actual canonical database host matches the report's host claim. Its job
+is `ae4e2cd9e6e86201e368819be699fcfc7c7826ec6cfe4a3d4554c9b2729564e9`,
+with exact current worker/base, Tesseract 5.5.0, PSM 3, DPI 300 and timeout
+300 seconds. The deployed validator and normal `gold collect` both passed.
+
+All **52 unique crops, zero skips**, have exactly the same per-crop source,
+profile and integer character/word edit and reference counts as the offline
+baseline above: 28,135 reference characters, 2,511 edits, **CER 0.089248**.
+The normal collector's reports and crop tables are retained under
+`/project/gold/ccby-newseye-20261016-80bf/collected`; the immutable job, prepared
+metadata and text-free bundle lock remain in that campaign root. The genuine
+report is in the stock assimilator's `results/0/` spool, named
+`usnm_gold_<job>__file_gold-result.json`.
+
+This establishes actual current-image canonical execution and measured
+French/Finnish/Swedish coverage on host 8, **not English accuracy or Mac host
+calibration**. These are reused validation crops, not an independent unseen
+holdout. No production threshold was inferred and no trust was promoted.
+English-representative calibration, a defensible trust disposition, and the
+fresh Mac OCR publication/search lifecycle remain open.
+
 ## Licensing
 
 The library believes the newspapers in Chronicling America are in the public domain or have no known copyright restrictions, and that those published more than 95 years ago are in the public domain in their entirety; newer ones may hold copyrighted third-party material ([Rights and Access](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/)). Pages in the sample run to 1963, so in 2026 crops from pages published in 1931 or later carry that caveat. Transcriptions are original work and go in under the repository's licence.
