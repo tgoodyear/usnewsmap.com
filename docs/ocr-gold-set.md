@@ -363,10 +363,10 @@ usnm-ocr-survey bundle-build \
 
 The normal `bundle-verify` and `gold prepare` passed. Immutable receipts:
 
-| Artifact | SHA-256 |
-| -------- | ------- |
-| Manifest | `3fcafeabc8e77ad1118a724a0e844d7c8def74022e0c4b31178599e6ddecfee6` |
-| Bundle tar, 8,893,952 bytes | `9e13ed3a2294889c76efd1ba325f0edca725e321f659410631139c657c8fe547` |
+| Artifact                     | SHA-256                                                            |
+| ---------------------------- | ------------------------------------------------------------------ |
+| Manifest                     | `3fcafeabc8e77ad1118a724a0e844d7c8def74022e0c4b31178599e6ddecfee6` |
+| Bundle tar, 8,893,952 bytes  | `9e13ed3a2294889c76efd1ba325f0edca725e321f659410631139c657c8fe547` |
 | Canonical counts-only report | `8fad861dbd3f5a112babbb33d23dc6473efbec01ca1b4f4c62dc5a44db2ca5b7` |
 
 After all six lifecycle jobs were idle, one normal targeted Gold measurement
