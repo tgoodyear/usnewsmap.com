@@ -367,6 +367,40 @@ It is safe to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks u
 deletes or deprecates anything. The step needs a bridge image with this step in it
 (`scripts/build-boinc-images.sh`, then `scripts/provision-boinc.sh`).
 
+### Prepared current-worker OCR 1.5 siblings, 17 October 2026
+
+The native app inventory found that Linux OCR 1.3/app 20 and Mac OCR 1.4/apps
+23 and 24 still pin worker `80bf`, whereas current export and scoped trust
+name worker `247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa`.
+Publishing current-worker Gold does not update these OCR payloads. Do not
+export a current-worker pilot and assume its signed OCR app matches, or
+weaken the worker's identity check.
+
+The normal prepare-only signing workflow produced immutable `usnm_ocr` 1.5
+siblings with all three payload signatures verified for each platform.
+Publisher repository: `crusnmprodffapzy.azurecr.io/usnm-boinc-appver`.
+
+| Platform              | ACR build | Prepared publisher digest                                                 |
+| --------------------- | --------- | ------------------------------------------------------------------------- |
+| `x86_64-pc-linux-gnu` | `ch7a`    | `sha256:b9bf07591a265cb7b9a260221bcfd719b320cd96e204cc78ec8d7196eec70dd2` |
+| `arm64-apple-darwin`  | `ch7b`    | `sha256:ccdf4a46376776ede3621be447b15e518e15e5594bdf99ad97bcd56feb07c8d2` |
+| `x86_64-apple-darwin` | `ch7c`    | `sha256:74a718918a031125e5103125a1142a35533fc73efe91b525cb8899bca96ee626` |
+
+All pin the exact current `247c` worker; existing signed versions remain
+unchanged. The desired `images.appver` pin names the final Intel sibling;
+it is not a multi-platform publisher. After review/CI and merge, publish
+Linux, ARM and Intel separately and serially, under the normal production
+mutex, all-six-idle preflight and controller lease. Preserve every non-image
+publisher setting, wait for terminal success, and independently verify each
+native version-105 registration, exact Dockerfile and public download bytes.
+Do not assume IDs or repeat an uncertain execution.
+
+These artifacts are **prepared, not yet published or registered**. The
+[current-worker native Gold evidence and English-only scoped promotion](ocr-gold-set.md#current-worker-native-canonical-evidence-and-scoped-promotion)
+are separate from fresh-page OCR execution, native handoff, release/search and
+Intel-client acceptance. No allocation, continuous-feed activation or
+backlog-policy exception is authorized by this publisher pin.
+
 ## Server and maintainer on different hosts
 
 The bridge has no remote-submit API. `submit` and `reconcile` must run on the
