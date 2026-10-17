@@ -283,13 +283,14 @@ acceptance. A restricted SSH key on the catalog host may run only the root-owned
 exporter on the worker:
 
 ```text
-restrict,command="/usr/bin/python3 /usr/local/lib/usnm-data-flow/worker_evidence_sync.py export --root /var/lib/usnm-ocr/run-metadata" <dedicated-public-key>
+restrict,command="/usr/sbin/runuser -u usnm -- /usr/bin/python3 /usr/local/lib/usnm-data-flow/worker_evidence_sync.py export --root /var/lib/usnm-ocr/run-metadata" <dedicated-public-key>
 ```
 
 Install `data_catalog.py` beside that helper. Keep both files and their parent
 directory root-owned and not writable by the worker. The forced command accepts
 only a bounded export or checksum-matched acknowledgements; it cannot run a
-shell, choose a directory or forward connections. Pin the worker's already
+shell, choose a directory or forward connections. Drop to the worker's unprivileged
+account before reading its files, even when the SSH entry point is root. Pin the worker's already
 verified SSH host key in the receiver's `known_hosts`; do not disable host checks.
 Never publish deployment hostnames, keys or local connection settings.
 
@@ -317,7 +318,10 @@ SSH, checksum or database operations exit nonzero rather than silently skipping
 evidence. Disk retention is deliberately conservative, not a claimed corpus-scale
 compaction policy. Before pruning either copy, produce and verify a durable
 checksummed archive and rebuild the catalog from retained JSONL. Snapshot counters
-remain partial and acceptance/import/index stages remain unknown.
+remain partial. The observer joins explicit catalog acceptance/import/index
+observations with their original source timestamps; it does not infer those stages
+from successful execution. A one-page import proof is one observed import, not the
+total imported corpus. Unconnected stages remain unknown.
 
 Enable capture by adding only `USNM_OCR_RUN_METADATA_DIR` at a planned worker
 deployment boundary. Preserve the binary, routes, models, queue and timeout
