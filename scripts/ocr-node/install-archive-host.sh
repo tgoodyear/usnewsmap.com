@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 # Install attestation-verified inputs staged by the operator on the scan host.
 #   install-archive-host.sh --dir DIR --release TAG --binary-sha256 HEX \
-#     --archive-url https://ACCOUNT.blob.core.windows.net/scans [--dry-run]
+#     --archive-url https://ACCOUNT.blob.core.windows.net/scans \
+#     [--set keep|buffer|both] [--evict] [--on-calendar SPEC] \
+#     [--seed-done ARCHIVED_TSV] [--dry-run]
 # Does not start uploads or enable timers. Binary attestation must be checked
 # by the operator before staging; the supplied digest is rechecked here.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-DIR="" RELEASE="" SHA="" URL="" DRY_RUN=false
+DIR="" RELEASE="" SHA="" URL="" SET="" EVICT=false ON_CALENDAR="" SEED_DONE="" DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir) DIR=${2:-}; shift 2 ;;
     --release) RELEASE=${2:-}; shift 2 ;;
     --binary-sha256) SHA=${2:-}; shift 2 ;;
     --archive-url) URL=${2:-}; shift 2 ;;
+    --set) SET=${2:-}; shift 2 ;;
+    --evict) EVICT=true; shift ;;
+    --on-calendar) ON_CALENDAR=${2:-}; shift 2 ;;
+    --seed-done) SEED_DONE=${2:-}; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     *) die "unknown option $1" ;;
   esac
@@ -21,6 +27,8 @@ done
 [[ $RELEASE =~ ^ocr-worker-[0-9]{8}-[0-9a-f]{7}$ ]] || die "invalid release"
 [[ $SHA =~ ^[0-9a-f]{64}$ ]] || die "invalid verified binary digest"
 [[ $URL =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/scans$ ]] || die "invalid archive container URL"
+[ -z "$SET" ] || [[ $SET =~ ^(keep|buffer|both)$ ]] || die "invalid --set ($SET): expected keep, buffer, or both"
+[ -z "$SEED_DONE" ] || [ -f "$SEED_DONE" ] || die "missing --seed-done file $SEED_DONE"
 [ -d "$DIR" ] && [ ! -L "$DIR" ] || die "missing staging directory"
 [ -d /tank/ocr/scans/keep ] || die "keep scans are not mounted"
 getent group himds > /dev/null || die "missing Arc token group"
@@ -74,6 +82,69 @@ ENVFILE=/etc/usnm/scan-archive.env
 if [ ! -e "$ENVFILE" ]; then
   (umask 027; printf 'USNM_ARCHIVE_URL=%s\n' "$URL" > "$ENVFILE")
   chown root:usnm "$ENVFILE"
+fi
+if [ -n "$SET" ]; then
+  grep -v '^USNM_ARCHIVE_SET=' "$ENVFILE" > "$ENVFILE.tmp" || true
+  printf 'USNM_ARCHIVE_SET=%s\n' "$SET" >> "$ENVFILE.tmp"
+  mv "$ENVFILE.tmp" "$ENVFILE"
+fi
+if [ "$EVICT" = true ]; then
+  grep -v '^USNM_ARCHIVE_EVICT=' "$ENVFILE" > "$ENVFILE.tmp" || true
+  printf 'USNM_ARCHIVE_EVICT=true\n' >> "$ENVFILE.tmp"
+  mv "$ENVFILE.tmp" "$ENVFILE"
+  chown root:ocrdata "$ENVFILE"
+  chmod 0640 "$ENVFILE"
+  install -d -m 0755 /etc/systemd/system/usnm-scan-archive.service.d \
+    /var/lib/usnm-scan-archive
+  chown -R ocrdata:ocrdata /var/lib/usnm-scan-archive
+  cat > /etc/systemd/system/usnm-scan-archive.service.d/spool.conf <<'EOF'
+[Service]
+User=ocrdata
+Group=ocrdata
+SupplementaryGroups=himds usnm
+ReadWritePaths=/run/lock/usnm-scan-archive /tank/ocr/scans
+EOF
+fi
+if [ -n "$ON_CALENDAR" ]; then
+  install -d -m 0755 /etc/systemd/system/usnm-scan-archive.timer.d
+  cat > /etc/systemd/system/usnm-scan-archive.timer.d/override.conf <<EOF
+[Timer]
+OnCalendar=
+OnCalendar=$ON_CALENDAR
+RandomizedDelaySec=1min
+Persistent=true
+EOF
+fi
+if [ -n "$SEED_DONE" ]; then
+  install -d -m 0755 /var/lib/usnm-scan-archive
+  cp "$SEED_DONE" /var/lib/usnm-scan-archive/archived.tsv
+  if [ "$EVICT" = true ]; then
+    chown ocrdata:ocrdata /var/lib/usnm-scan-archive/archived.tsv
+  else
+    chown usnm:usnm /var/lib/usnm-scan-archive/archived.tsv
+  fi
+  python3 - "$SEED_DONE" /tank/ocr/scans <<'PY'
+import os
+import sys
+
+tsv_path, scans_root = sys.argv[1], sys.argv[2]
+keep_root = os.path.join(scans_root, "keep")
+seeded = 0
+with open(tsv_path, "r", encoding="utf-8") as fh:
+    for line in fh:
+        rel = line.split("\t", 1)[0].strip()
+        if not rel or ".." in rel:
+            continue
+        target = os.path.join(scans_root, rel) if rel.startswith(("keep/", "buffer/")) else os.path.join(keep_root, rel)
+        done = target + ".done"
+        os.makedirs(os.path.dirname(done), exist_ok=True)
+        if not os.path.exists(done):
+            open(done, "wb").close()
+            seeded += 1
+print(f"seeded {seeded} .done markers from {tsv_path}")
+PY
+  chown -R ocrdata:ocrdata /tank/ocr/scans/keep
+  [ ! -d /tank/ocr/scans/buffer ] || chown -R ocrdata:ocrdata /tank/ocr/scans/buffer
 fi
 systemd-analyze verify /etc/systemd/system/usnm-scan-archive.service \
   /etc/systemd/system/usnm-scan-archive-verify.service

@@ -85,6 +85,26 @@ class HostInstallTest(unittest.TestCase):
         self.assertIn("different", envfile.read_text())
         self.assertFalse((self.root / "usr/local/bin/usnm-ocr-worker").exists())
 
+    def test_spool_options_configure_evict_schedule_and_seed_done_markers(self):
+        tsv = self.root / "archived.tsv"
+        tsv.write_text("sn83030214/1900-01-01/ed-1/seq-1.jp2\t123\t456\n"
+                       "buffer/sn83030214/1900-01-02/ed-1/seq-1.jp2\t789\t101\n")
+        result = self.run_it(
+            "--set", "both", "--evict", "--on-calendar", "*:0/15",
+            "--seed-done", str(tsv)
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        env_text = (self.root / "etc/usnm/scan-archive.env").read_text()
+        self.assertIn("USNM_ARCHIVE_SET=both\n", env_text)
+        self.assertIn("USNM_ARCHIVE_EVICT=true\n", env_text)
+        spool_conf = (self.root / "etc/systemd/system/usnm-scan-archive.service.d/spool.conf").read_text()
+        self.assertIn("User=ocrdata", spool_conf)
+        self.assertIn("/tank/ocr/scans", spool_conf)
+        timer_conf = (self.root / "etc/systemd/system/usnm-scan-archive.timer.d/override.conf").read_text()
+        self.assertIn("OnCalendar=*:0/15", timer_conf)
+        self.assertTrue((self.root / "tank/ocr/scans/keep/sn83030214/1900-01-01/ed-1/seq-1.jp2.done").exists())
+        self.assertTrue((self.root / "tank/ocr/scans/buffer/sn83030214/1900-01-02/ed-1/seq-1.jp2.done").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
