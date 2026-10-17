@@ -54,6 +54,13 @@ class open_directory:
         os.close(self.fd)
 
 
+def sync_directory_tree(path):
+    # Also retry publication barriers on replay after a prior directory fsync failure.
+    for directory in (path, *path.parents):
+        with open_directory(directory) as fd:
+            os.fsync(fd)
+
+
 def export(root, after):
     catalog.require(not after or NAME.fullmatch(after), "invalid export cursor")
     root = Path(root)
@@ -143,11 +150,13 @@ def receive(db, root, source, bundle):
             # Rebuild/retry from immutable evidence, never regenerate with a new timestamp.
             result = catalog.ingest(db, evidence)
         else:
-            result = catalog.ingest_worker(db, capture, evidence, "worker-" + name[:-5], source)
+            result = catalog.ingest_worker(db, capture, evidence,
+                                           "worker-" + catalog.digest([source, name]), source)
         imported += result["inserted"]
     catalog.require(names == sorted(set(names)), "export filenames must be ordered and unique")
     catalog.require(not cursor or (len(names) == MAX_FILES and cursor == names[-1]),
                     "next cursor does not match export")
+    sync_directory_tree(root.resolve())
     return {"files": len(names), "inserted": imported, "next": cursor}
 
 

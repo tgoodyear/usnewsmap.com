@@ -131,6 +131,24 @@ class SyncTests(unittest.TestCase):
         with self.assertRaises(c.CatalogError):
             w.receive(self.db, self.retained, "worker-test", bundle)
 
+    def test_same_capture_from_two_sources_has_independent_batch_identity(self):
+        self.capture()
+        bundle = w.export(self.spool, "")
+        w.receive(self.db, self.retained / "first", "first", bundle)
+        w.receive(self.db, self.retained / "second", "second", bundle)
+        self.assertEqual(len(c.query(self.db, "execution", {})["items"]), 2)
+        self.assertEqual(w.receive(self.db, self.retained / "second", "second", bundle)["inserted"], 0)
+
+    def test_directory_durability_failure_never_becomes_success_on_replay(self):
+        self.capture()
+        bundle = w.export(self.spool, "")
+        with patch.object(w, "sync_directory_tree", side_effect=OSError("directory fsync failed")) as barrier:
+            for _ in range(3):
+                with self.assertRaises(OSError):
+                    w.receive(self.db, self.retained, "worker-test", bundle)
+            self.assertEqual(barrier.call_count, 3)
+        self.assertEqual(w.receive(self.db, self.retained, "worker-test", bundle)["inserted"], 0)
+
     def test_fifo_is_rejected_before_any_blocking_read(self):
         name = "a" * 64 + ".json"
         os.mkfifo(self.spool / name)
