@@ -251,7 +251,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         "HANDOFF_DIR",
     }
     container = job_doc["properties"]["template"]["containers"][0]
-    container["command"] = ["/usr/local/bin/bridge-job.sh"]
+    container["command"] = ["/usr/local/bin/bridge-job"]
     container.pop("args", None)
     container.pop("imageType", None)
     container["env"] = [e for e in container.get("env", []) if e.get("name") in base_names]
@@ -295,7 +295,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
     finally:
         tmp_spec.unlink(missing_ok=True)
 
-    print(f"Restored {args.job_name} to canonical single-replica bridge-job.sh configuration.")
+    print(f"Restored {args.job_name} to canonical single-replica bridge-job configuration.")
     return 0
 
 
