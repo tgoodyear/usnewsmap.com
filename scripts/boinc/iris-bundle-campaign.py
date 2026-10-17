@@ -25,7 +25,7 @@ import bundle as b  # noqa: E402  (path set up by iris-campaign)
 import contract as c  # noqa: E402
 
 BATCH = 105
-VERSION_NUM = 110
+VERSION_NUM = 101  # publish-appver.sh: 100 * major + minor
 DEFAULT_SIZE = 16
 
 
