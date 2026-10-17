@@ -1181,6 +1181,25 @@ fn prepare_local_wal(
     Ok(Some(wal))
 }
 
+// Construct this owner before spawning: even a never-polled supervisor must
+// signal the child before its local WAL is removed. Fields drop in this order.
+struct SupervisedWriter {
+    child: tokio::process::Child,
+    _local_wal: Option<tempfile::TempDir>,
+}
+
+impl SupervisedWriter {
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait().await
+    }
+}
+
+impl Drop for SupervisedWriter {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
+    }
+}
+
 /// Wait for the writer to exit, let the readers take in its last output,
 /// then record why it exited in `events` and on the returned channel.
 fn supervise(
@@ -1194,11 +1213,12 @@ fn supervise(
     tokio::sync::watch::Receiver<Option<String>>,
 ) {
     let (tx, rx) = tokio::sync::watch::channel(None);
+    let mut writer = SupervisedWriter {
+        child,
+        _local_wal: local_wal,
+    };
     let task = tokio::spawn(async move {
-        // Keep the WAL until exit; on abort, drop/kill the child before its WAL.
-        let _local_wal = local_wal;
-        let mut child = child;
-        let status = child.wait().await;
+        let status = writer.wait().await;
         for r in readers.iter_mut() {
             let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
         }
@@ -1445,6 +1465,53 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_an_unpolled_supervisor_kills_the_child_and_cleans_its_wal() {
+        let root = tempfile::tempdir().unwrap();
+        let wal = tempfile::Builder::new().tempdir_in(root.path()).unwrap();
+        let path = wal.path().to_owned();
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "read line"])
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap().to_string();
+        let input = child.stdin.take().unwrap();
+        let (task, _) = supervise(
+            child,
+            vec![],
+            Tail::default(),
+            Arc::new(NodeEvents::default()),
+            Some(wal),
+        );
+        // There has been no yield: the supervisor has not run even once.
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!path.exists());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let alive = tokio::process::Command::new("kill")
+                    .args(["-0", &pid])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success();
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // Keep stdin open until after the kill proof, so EOF cannot mask a leak.
+        drop(input);
     }
 
     #[test]
