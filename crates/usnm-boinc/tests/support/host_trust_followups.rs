@@ -70,7 +70,8 @@ exit "${CREATE_STATUS:-0}"
         write(
             &trust,
             serde_json::to_vec(&serde_json::json!({
-                "hosts": {IMAGE: [1,2]}, "max_cer": 0.1, "v": usnm_boinc::trust::TRUST_VERSION
+                "hosts": {IMAGE: [1,2]}, "max_cer": 0.1, "v": usnm_boinc::trust::TRUST_VERSION,
+                "manifest_sha256": "b".repeat(64)
             }))
             .unwrap(),
         );

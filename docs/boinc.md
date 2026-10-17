@@ -854,7 +854,8 @@ scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN
   --var GOLD_SPOOL=/project/usnmocr/results/<batch>
 # Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
 scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
-  --var GOLD_MAX_CER=<calibrated-threshold> --wait-mins 10
+  --var GOLD_MAX_CER=<calibrated-threshold> \
+  --var GOLD_MANIFEST_SHA256=<calibrated-manifest-sha256> --wait-mins 10
 ```
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
@@ -890,17 +891,27 @@ A unit left with a `submitting` marker is handled as for the assessment.
 `usnm_ocr` validates with `sample_trivial_validator`, which accepts any
 well-formed result. So `collect` can gate publication on the gold check (#468):
 a result counts only when the host that returned it has a gold report for the
-same engine image (the worker image digest) with overall CER at or below a
-threshold. There is **no default scientific threshold**: calibrate on the first
-campaign for the locked image, bundle, languages and scoring configuration;
-record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) explicitly.
-An earlier MVP's 0.10 was not calibrated. Trust format v2 deliberately rejects
-old v1 lists; rebuild before using the updated collector.
+same engine image (the worker image digest) on the exact calibrated challenge,
+with every crop scored, no skips, no crop with character edits at least its
+reference length, and overall CER at or below a threshold. The per-crop guard
+rejects complete loss (including empty output) even when an aggregate hides it;
+it is not a guarantee against subtler OCR errors. There is **no default
+scientific threshold**: calibrate on the first campaign for the locked image,
+bundle, languages and scoring configuration;
+record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) and
+`--manifest-sha256` (bridge: `GOLD_MANIFEST_SHA256`) explicitly.
+An earlier MVP's 0.10 was not calibrated. Trust format v3 deliberately rejects
+old v1/v2 lists. Rerun the updated normal `gold collect` against the original
+validated canonical reports to derive counts-only `complete_loss_crops`, then
+rebuild trust with the calibrated manifest; do not edit or relabel legacy lists.
+Old tables without that quality field and mixed-challenge tables fail explicitly.
+Deploying this guard neither chooses a threshold nor promotes hosts.
 
 ```sh
 # Build the trust list from one or more campaigns' reports.
 usnm-boinc gold trust --reports <share>/gold/v1-tess550/out/reports.jsonl \
-  [--reports ...] --max-cer CALIBRATED_THRESHOLD --out <share>/gold/trust.json
+  [--reports ...] --max-cer CALIBRATED_THRESHOLD \
+  --manifest-sha256 CALIBRATED_MANIFEST_SHA256 --out <share>/gold/trust.json
 # The canonical result's host, from the project database:
 #   select r.hostid from workunit w join result r on r.id = w.canonical_resultid
 #   where w.name = 'usnm_JOB_ID';

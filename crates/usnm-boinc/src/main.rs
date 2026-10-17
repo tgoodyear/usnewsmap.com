@@ -511,6 +511,9 @@ enum Gold {
         /// The highest overall CER that passes.
         #[arg(long)]
         max_cer: f64,
+        /// The exact challenge whose complete reports calibrated this threshold.
+        #[arg(long)]
+        manifest_sha256: String,
         #[arg(long)]
         out: PathBuf,
     },
@@ -1295,9 +1298,10 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
         Gold::Trust {
             reports,
             max_cer,
+            manifest_sha256,
             out,
         } => {
-            let t = usnm_boinc::trust::Trust::build(&reports, max_cer)?;
+            let t = usnm_boinc::trust::Trust::build(&reports, max_cer, &manifest_sha256)?;
             let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
                 std::path::Path::new(".").join(out)
             } else {

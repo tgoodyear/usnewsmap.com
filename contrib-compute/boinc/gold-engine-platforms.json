@@ -4,5 +4,11 @@
     "x86_64-apple-darwin": "sha256:d0b841b521a4a68aab2d585a019d9ad1d011e25a65f2f9286d6851fcc64ded57",
     "arm64-apple-darwin": "sha256:86418d991a798c885a7a505bc94ce27cbfe0c5361fa3dde319b7d6b400d9ebad",
     "aarch64-unknown-linux-gnu": "sha256:86418d991a798c885a7a505bc94ce27cbfe0c5361fa3dde319b7d6b400d9ebad"
+  },
+  "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa": {
+    "x86_64-pc-linux-gnu": "sha256:e088ef6f8004aa66091ee4bdaa06a42e5061a42dfd505db31c5d7257b747d065",
+    "x86_64-apple-darwin": "sha256:e088ef6f8004aa66091ee4bdaa06a42e5061a42dfd505db31c5d7257b747d065",
+    "arm64-apple-darwin": "sha256:7bc7b78658562430ec95a1b1048c2f689c26f8d2443d6ed0c5e981e311cbab93",
+    "aarch64-unknown-linux-gnu": "sha256:7bc7b78658562430ec95a1b1048c2f689c26f8d2443d6ed0c5e981e311cbab93"
   }
 }

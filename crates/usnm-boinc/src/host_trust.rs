@@ -817,6 +817,7 @@ mod tests {
     fn trust() -> Trust {
         Trust {
             hosts: [(format!("sha256:{}", "a".repeat(64)), [1, 2].into())].into(),
+            manifest_sha256: Some("b".repeat(64)),
             max_cer: 0.1,
             v: crate::trust::TRUST_VERSION,
         }
