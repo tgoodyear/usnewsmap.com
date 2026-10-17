@@ -191,3 +191,31 @@ pub async fn adopt(
     result?;
     unlock
 }
+
+/// The `ocr-sync` lock held across a read-only pass. Every producer writes a
+/// page's ledger row before it sends the page's message and holds this lock
+/// while it does, so a ledger read under it has the row of every message
+/// that is already on a queue, and no row changes until it is released.
+pub struct Held {
+    lease: Lease,
+    owner: String,
+}
+
+impl Held {
+    pub async fn take(state: &State) -> anyhow::Result<Self> {
+        let owner = crate::owner_id();
+        let lease = Lease::take(state, &owner).await?;
+        Ok(Self { lease, owner })
+    }
+
+    /// Fails if the lock could not be renewed.
+    pub fn check(&self) -> anyhow::Result<()> {
+        self.lease.check()
+    }
+
+    pub async fn release(self, state: &State) -> anyhow::Result<()> {
+        let Self { lease, owner } = self;
+        drop(lease);
+        state.unlock(LOCK, &owner).await
+    }
+}

@@ -1286,34 +1286,41 @@ async fn claim(c: ClaimCmd) -> anyhow::Result<()> {
             let reference = usnm_store::open(&reference_url)?;
             let exchange_out = usnm_store::open(&out_url)?;
             let queue = usnm_store::queue::open(&queue_url)?;
-            let snapshot =
-                usnm_ingest::ocr_local::boinc::Snapshot::load(&state, reference.as_ref()).await?;
-            let ledger = usnm_ingest::ocr_local::ledger::load(curated.as_ref()).await?;
-            let (_, fetched) = usnm_ingest::ocr_local::seed::newest_fetched(
-                exchange_out.as_ref(),
-                &manifest_version,
-            )
-            .await?;
-            let installed = usnm_boinc::installed_models();
+            // The lock keeps the ledger as it is while messages are judged against it.
+            let held = usnm_ingest::ocr_local::boinc::Held::take(&state).await?;
             let mut report = x::Report::default();
-            let pulled = x::pull(
-                &x::Sources {
-                    queue: queue.as_ref(),
-                    snapshot: &snapshot,
-                    ledger: &ledger,
-                    fetched: &fetched,
-                    installed: &installed,
-                },
-                &x::Options {
-                    queues,
-                    max,
-                    max_receives: max_receives.unwrap_or(max * 3).max(max),
-                    lease: std::time::Duration::from_secs(lease_hours * 3600),
-                },
-                &out,
-                &mut report,
-            )
+            let pulled = async {
+                let snapshot =
+                    usnm_ingest::ocr_local::boinc::Snapshot::load(&state, reference.as_ref())
+                        .await?;
+                let ledger = usnm_ingest::ocr_local::ledger::load(curated.as_ref()).await?;
+                let (_, fetched) = usnm_ingest::ocr_local::seed::newest_fetched(
+                    exchange_out.as_ref(),
+                    &manifest_version,
+                )
+                .await?;
+                let installed = usnm_boinc::installed_models();
+                x::pull(
+                    &x::Sources {
+                        queue: queue.as_ref(),
+                        snapshot: &snapshot,
+                        ledger: &ledger,
+                        fetched: &fetched,
+                        installed: &installed,
+                    },
+                    &x::Options {
+                        queues,
+                        max,
+                        max_receives: max_receives.unwrap_or(max * 3).max(max),
+                        lease: std::time::Duration::from_secs(lease_hours * 3600),
+                    },
+                    &out,
+                    &mut report,
+                )
+                .await
+            }
             .await;
+            let unlocked = held.release(&state).await;
             let mut claims = Vec::new();
             for claim in &report.claims {
                 let m = claim.message()?;
@@ -1324,6 +1331,7 @@ async fn claim(c: ClaimCmd) -> anyhow::Result<()> {
                     "batch": m.batch,
                     "queue": claim.queue,
                     "scan": format!("keep/{}/{}/{}/{}/{}", m.batch, key.lccn, key.date, key.edition, key.seq),
+                    "message_sha256": usnm_ocr_contract::boinc::sha256(claim.text.as_bytes()),
                     "lease_until": claim.lease_until,
                 }));
             }
@@ -1346,6 +1354,7 @@ async fn claim(c: ClaimCmd) -> anyhow::Result<()> {
             );
             // The summary says what was taken even when the run then failed.
             pulled?;
+            unlocked?;
         }
         ClaimCmd::Finish {
             root,

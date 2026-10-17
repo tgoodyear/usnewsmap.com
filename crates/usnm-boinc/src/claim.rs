@@ -196,6 +196,7 @@ pub async fn pull(
     );
     std::fs::create_dir_all(out)?;
     let mut sent_back = HashSet::new();
+    let mut claimed = HashSet::new();
     for queue in &opts.queues {
         if report.claims.len() >= opts.max || report.received >= opts.max_receives {
             break;
@@ -223,8 +224,16 @@ pub async fn pull(
                 report.released += 1;
                 break;
             }
+            let doc = message::decode(&msg.text).ok().map(|(_, key)| key.doc_id());
             match judge(&msg.text, src) {
+                Verdict::Use(_) if doc.as_ref().is_some_and(|d| claimed.contains(d)) => {
+                    // A second delivery of a page this pull already holds: the first claim
+                    // covers it, and writing a second would replace the first's pop receipt.
+                    src.queue.delete(&msg).await?;
+                    report.stale += 1;
+                }
                 Verdict::Use(ledger) => {
+                    claimed.extend(doc.clone());
                     let now = Utc::now();
                     let claim = Claim {
                         v: VERSION,

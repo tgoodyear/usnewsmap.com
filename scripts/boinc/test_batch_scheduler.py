@@ -472,7 +472,7 @@ def message(number, batch="test_batch"):
     page = f"sn12345678/1900-01-01/ed-1/seq-{number}"
     return {"page": page, "doc_id": page.replace("/", "_"), "batch": batch, "queue": "ocr-bulk",
             "scan": f"keep/{batch}/sn12345678/1900-01-01/1/{number}",
-            "lease_until": "2026-10-21T00:00:00Z"}
+            "lease_until": "2026-10-21T00:00:00Z", "message_sha256": f"{number:064x}"}
 
 
 class QueueFake(Fake):
@@ -640,6 +640,33 @@ class QueueModeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.tick()
 
+    def test_the_same_message_again_after_its_lease_is_the_same_claim(self):
+        self.tick()
+        before = copy.deepcopy(self.state["claims"])
+        jobs = len(self.fake.jobs)
+        # The lease on page 1 ran out while its job was pending; the message came round again.
+        self.fake.waiting = [message(1)] + self.fake.waiting
+        self.fake.other = 0
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.tick()
+        self.assertEqual(self.fake.claimed.count("sn12345678/1900-01-01/ed-1/seq-1"), 2)
+        self.assertEqual(self.state["claims"]["sn12345678/1900-01-01/ed-1/seq-1"],
+                         before["sn12345678/1900-01-01/ed-1/seq-1"])
+        self.assertGreaterEqual(len(self.fake.jobs), jobs)
+        self.assertEqual(len([row for row in self.fake.rows
+                              if row["job"]["message"]["page"] == "sn12345678/1900-01-01/ed-1/seq-1"]), 1)
+
+    def test_a_different_message_for_a_claimed_page_stops_the_feed(self):
+        self.tick()
+        other = message(1)
+        other["message_sha256"] = "f" * 64
+        self.fake.waiting = [other]
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        with self.assertRaisesRegex(ValueError, "different message"):
+            self.tick()
+
     def test_claims_made_before_a_failed_claim_step_are_kept(self):
         def failing(count):
             raise batch.ClaimFailed("claim step failed", [message(1)])
@@ -745,17 +772,49 @@ class QueueTransportTests(unittest.TestCase):
 
     def test_push_pages_reads_what_the_script_reports(self):
         base = "keep/test_batch/sn12345678/1900-01-01/1/"
-        output = f"pushed {base}1.jp2\nmissing {base}2\n"
+        # The script takes a page without "keep/", prints the pushed path with it, and names a
+        # missing page without it.
+        output = f"pushed {base}1.jp2\nmissing {base[5:]}2\n"
         with patch.object(self.transport, "run", return_value=output) as run:
             found, missing = self.transport.push_pages([base + "1", base + "2"])
         self.assertEqual((found, missing), ({base + "1": base + "1.jp2"}, [base + "2"]))
         argv = run.call_args.args[0]
-        self.assertEqual(argv[argv.index("--keep-page") + 1], base + "1")
+        pages = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--keep-page"]
+        self.assertEqual(pages, [base[5:] + "1", base[5:] + "2"])
         self.assertEqual(run.call_args.kwargs["ok"], (0, 3))
         # A page the script said nothing about is an error, not a quiet skip.
         with patch.object(self.transport, "run", return_value=f"pushed {base}1.jp2\n"), \
                 self.assertRaisesRegex(ValueError, "account for every"):
             self.transport.push_pages([base + "1", base + "2"])
+
+    def test_push_pages_against_the_real_push_script(self):
+        directory = Path(__file__).parent.resolve() / (".push-test-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            scans, manifests = directory / "scans", directory / "manifests"
+            for number, ext in ((1, "jp2"), (3, "jpg")):
+                scan = scans / "keep/test_batch/sn12345678/1900-01-01/1" / f"{number}.{ext}"
+                scan.parent.mkdir(parents=True, exist_ok=True)
+                scan.write_bytes(b"scan")
+                Path(f"{scan}.json").write_text("{}")
+            (manifests / "v1").mkdir(parents=True)
+            (manifests / "v1/manifest.parquet").write_bytes(b"manifest")
+            bin_dir = directory / "bin"
+            bin_dir.mkdir()
+            az = bin_dir / "az"
+            az.write_text('#!/usr/bin/env bash\n[ "$3" = show ] && exit 1\nexit 0\n')
+            az.chmod(0o755)
+            config = {**self.config, "scans_root": str(scans), "manifests_root": str(manifests),
+                      "push_command": [str(batch.REPO / "scripts/ocr-node/push-boinc-scan.sh")]}
+            transport = batch.Transport(config, directory)
+            base = "keep/test_batch/sn12345678/1900-01-01/1/"
+            with patch.dict(batch.os.environ, {"PATH": f"{bin_dir}:{batch.os.environ['PATH']}"}):
+                found, missing = transport.push_pages([base + "1", base + "2", base + "3"])
+            self.assertEqual(found, {base + "1": base + "1.jp2", base + "3": base + "3.jpg"})
+            self.assertEqual(missing, [base + "2"])
+        finally:
+            import shutil
+            shutil.rmtree(directory)
 
     def test_queue_export_passes_claims_and_one_batch_per_step(self):
         pages = [{"page": "sn12345678/1900-01-01/ed-1/seq-1", "batch": "aa_one",

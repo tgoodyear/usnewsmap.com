@@ -635,6 +635,17 @@ pub async fn import(
         save(root, &record)?;
         return Ok(());
     }
+    if record.ledger.is_some()
+        && ledger.outstanding(&key.doc_id()).is_none()
+        && ledger.imported(&key.doc_id())
+    {
+        // A queue-fed job shares its reservation with the nodes: its claim lapsed, and a
+        // node imported the page first. That answer stands; this one is not published.
+        record.stage = Stage::Published;
+        record.error = Some("superseded: another producer imported this page".into());
+        save(root, &record)?;
+        return Ok(());
+    }
     ensure!(
         ledger.outstanding(&key.doc_id()) == Some(&expected),
         "native reservation is no longer outstanding"

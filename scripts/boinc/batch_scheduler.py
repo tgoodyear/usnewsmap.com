@@ -262,7 +262,9 @@ class Transport:
         Returns ({base: path under scans/}, [bases with no cached scan])."""
         argv = self.push_args()
         for base in bases:
-            argv += ["--keep-page", base]
+            # The script names a page by where the fetcher files it under keep/, without "keep/".
+            require(base.startswith("keep/"), "claimed scan is not under keep/")
+            argv += ["--keep-page", base[len("keep/"):]]
         output = self.run(argv, "cached scan push", ok=(0, 3))
         pushed, missing = {}, []
         for line in output.splitlines():
@@ -270,7 +272,7 @@ class Transport:
             if kind == "pushed":
                 pushed[value] = value
             elif kind == "missing":
-                missing.append(value)
+                missing.append("keep/" + value)
         found = {}
         for base in bases:
             match = [rel for rel in pushed if rel.startswith(f"{base}.")]
@@ -353,7 +355,7 @@ class QueueFeed:
                 and scan == f"keep/{batch}/{lccn}/{date}/{edition[3:]}/{seq[4:]}",
                 "claim names a different page than its scan")
         return page, {"page": page, "doc_id": claim["doc_id"], "batch": batch,
-                      "scan_base": scan, "scan": None}
+                      "scan_base": scan, "scan": None, "message": claim.get("message_sha256")}
 
     def fill(self, count, selected):
         """Make `count` more pages ready: claim them (less any already claimed but not yet
@@ -389,7 +391,13 @@ class QueueFeed:
         require(isinstance(fresh, list) and len(fresh) <= need, "claimed more pages than asked")
         for item in fresh:
             page, claim = self.checked(item)
-            require(page not in self.claims, "claimed a page already in this plan")
+            if page in self.claims:
+                # Its lease ran out while the job was pending and the same message came again,
+                # now hidden for a fresh lease: the existing claim, its scan and its job stand.
+                # A different message for the page is two attempts at once: stop.
+                require(claim["message"] is not None and claim["message"] == self.claims[page].get("message"),
+                        "claimed a page already in this plan with a different message")
+                continue
             self.claims[page] = claim
         self.persist()
 

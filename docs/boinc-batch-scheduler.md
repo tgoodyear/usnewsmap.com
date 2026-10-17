@@ -205,8 +205,11 @@ ocr-bulk (and ocr-priority) --claim--> claims/<doc_id>.json in boinc-handoff
 The hand-off job's `claim` step (`usnm-boinc claim pull`, in the main
 environment, which reaches the queues, the ledger and `ocr-out`) receives up to
 `CLAIM_MAX` messages with a hide of `lease_hours` (96 by default: the three-day
-`delay_bound` and a day to collect; Azure allows seven days). It uses a message
-only when all of these hold, and otherwise puts it back:
+`delay_bound` and a day to collect; Azure allows seven days). It holds the `ocr-sync`
+lock while it reads the ledger and receives, so no producer changes a row between
+the two: every producer writes a page's row before it sends the page's message, and a
+ledger read under the lock has the row of every message already queued. It uses a
+message only when all of these hold, and otherwise puts it back:
 
 - it decodes, and the ledger has the page **outstanding** with the same batch,
   reason and language (the seeder, `ocr-enqueue` and the requests step write the
@@ -246,13 +249,14 @@ row exactly as it does for the node's pages.
 
 ### The queue message's life
 
-| What happens                                        | The message                                                                                                                                 |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claimed                                             | Hidden for the lease; a node doesn't see it                                                                                                 |
-| `collect` published the page                        | Deleted, by `collect` itself (`usnm-boinc claim finish`)                                                                                    |
-| `collect`'s delete failed, or the lease ended first | Visible again. A claim finds the page answered and deletes the message; a node would read the page again, and the newest row per page wins  |
-| The job failed, or was never collected              | Visible again when the lease ends, for a node or a later claim. The controller still stops on a terminal failure for an operator, as before |
-| A re-delivered message whose job exists             | The same job: its identity is the message and the scan, so no second workunit is made                                                       |
+| What happens                                               | The message                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claimed                                                    | Hidden for the lease; a node doesn't see it                                                                                                                                                                                                 |
+| `collect` published the page                               | Deleted, by `collect` itself (`usnm-boinc claim finish`)                                                                                                                                                                                    |
+| `collect`'s delete failed, or the lease ended first        | Visible again. A claim finds the page answered and deletes the message; a node would read the page again, and the newest row per page wins                                                                                                  |
+| The job failed, or was never collected                     | Visible again when the lease ends, for a node or a later claim. The controller still stops on a terminal failure for an operator, as before                                                                                                 |
+| The same message again after its lease (job still pending) | Kept as the same claim: the summary carries the message's hash, the controller recognizes it and keeps its scan, selection and job, and the new delivery is hidden for a fresh lease. A different message for a claimed page stops the feed |
+| A second delivery of a page within one pull                | Deleted; the first claim covers the page and keeps its pop receipt                                                                                                                                                                          |
 
 This is at-least-once, like a node's. `ocr-sync`'s import and the ledger already
 tolerate the same page being read twice. Nothing in a claim carries search text:
@@ -277,6 +281,11 @@ provisioned. `claims/` expires after 30 days.
 - A message queued again after its claim lapsed (the seeder re-queues a page outstanding
   for 14 days) is a different message and so a different job. The controller then sees two
   jobs on one page and stops for an operator to reconcile, as it does for any two.
+- A claim can lapse while the job is pending, and a node can then import the page. When
+  the BOINC result arrives, `collect` finds the page answered by another producer and marks
+  the job `published` with a `superseded` note, without publishing anything, so the feed
+  goes on. This applies only to queue-fed jobs; an explicit cohort's page is not read by a
+  node, so the same finding there remains an error.
 - A claim that failed after taking messages leaves their claim files in the container.
   The controller records those it finds in the summary and stops the tick; any other
   message comes back when its lease runs out.

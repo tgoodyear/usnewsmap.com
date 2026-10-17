@@ -1921,6 +1921,86 @@ mod queue_feed {
     }
 
     #[tokio::test]
+    async fn a_second_delivery_of_a_claimed_page_keeps_the_first_receipt() {
+        let f = fed(true).await;
+        let q = f.fx.stores.queue.as_ref();
+        q.send(BULK, &f.message.encode()).await.unwrap(); // the same page twice
+        let claims = f.fx.tmp.path().join("claims");
+        let report = pull(&f, &claims, Duration::from_secs(3600)).await;
+        assert_eq!((report.claims.len(), report.stale), (1, 1));
+        // The file on disk is the one claim the summary reports, and nothing is left queued.
+        let on_disk = claim::read_local(&claims, DOC).unwrap();
+        assert_eq!(on_disk, report.claims[0]);
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_a_node_imported_first_supersedes_the_boinc_job() {
+        let mut f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        f.fx.options.claims = Some(claims);
+        let id = f.fx.export().await;
+        // The claim lapsed and a node answered the page: its import is in the ledger.
+        let at = f.queued.queued_at + chrono::Duration::minutes(5);
+        ledger::write_outcomes(
+            f.fx.stores.curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: DOC.into(),
+                outcome: ledger::IMPORTED.into(),
+                cause: None,
+                kind: None,
+                source: "pages/by-a-node.parquet".into(),
+                at,
+                run: "sync".into(),
+            }],
+            at,
+            "node-run",
+        )
+        .await
+        .unwrap();
+        let files = f.fx.result(&id);
+        f.fx.import(&id, &files).await.unwrap();
+        let record = usnm_boinc::load(&f.fx.options.root, &id).unwrap();
+        assert_eq!(record.stage, Stage::Published);
+        assert!(record.error.unwrap().starts_with("superseded"));
+        // Nothing was published for it.
+        assert!(f.fx.stores.out.list("pages").await.unwrap().is_empty());
+        assert!(f.fx.stores.out.list("alto").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_explicit_cohort_job_is_never_superseded() {
+        let f = Fixture::new("ger").await;
+        let id = f.export().await;
+        let key = usnm_boinc::load(&f.options.root, &id)
+            .unwrap()
+            .job
+            .message
+            .key()
+            .unwrap();
+        let at = Utc::now() + chrono::Duration::minutes(5);
+        ledger::write_outcomes(
+            f.stores.curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: key.doc_id(),
+                outcome: ledger::IMPORTED.into(),
+                cause: None,
+                kind: None,
+                source: "pages/elsewhere.parquet".into(),
+                at,
+                run: "sync".into(),
+            }],
+            at,
+            "other-run",
+        )
+        .await
+        .unwrap();
+        let files = f.result(&id);
+        assert!(f.import(&id, &files).await.is_err());
+    }
+
+    #[tokio::test]
     async fn a_cohort_job_is_not_queue_fed() {
         let f = Fixture::new("ger").await;
         let id = f.export().await;
