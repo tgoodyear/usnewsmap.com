@@ -263,6 +263,12 @@ const rowKeys = (panel) => {
   const texts = [...panel.querySelectorAll('details')].map((d) => d.dataset.refreshKey || (d.querySelector('summary') || {}).textContent || '');
   return texts.map((t, i) => texts.indexOf(t) === texts.lastIndexOf(t) ? t : i + ':' + t);
 };
+const positions = new WeakMap();
+const setPosition = (el, top, left) => {
+  el.scrollTop = top;
+  el.scrollLeft = left;
+  positions.set(el, [top, left]);
+};
 const swap = (old, fresh) => {
   const scrolls = [...old.querySelectorAll('.scroll')].map((e) => [e.getAttribute('aria-label'), e.scrollTop, e.scrollLeft]);
   const open = rowKeys(old).filter((k, i) => old.querySelectorAll('details')[i].open).filter(Boolean);
@@ -273,15 +279,23 @@ const swap = (old, fresh) => {
   const keys = rowKeys(node);
   node.querySelectorAll('details').forEach((d, i) => { if (open.includes(keys[i])) d.open = true; });
   old.replaceWith(node);
-  node.scrollLeft = left;
-  for (const [label, top, lf] of scrolls) {
-    const e = [...node.querySelectorAll('.scroll')].find((x) => x.getAttribute('aria-label') === label);
-    if (e) { e.scrollTop = top; e.scrollLeft = lf; if (label === focused) e.focus({preventScroll:true}); }
-  }
+  const restore = () => {
+    node.getBoundingClientRect();
+    setPosition(node, 0, left);
+    for (const [label, top, lf] of scrolls) {
+      const e = [...node.querySelectorAll('.scroll')].find((x) => x.getAttribute('aria-label') === label);
+      if (e) setPosition(e, top, lf);
+    }
+  };
+  restore();
+  const focus = [...node.querySelectorAll('.scroll')].find(e => e.getAttribute('aria-label') === focused);
+  if (focus) focus.focus({preventScroll:true});
+  requestAnimationFrame(() => { if (node.isConnected && node.checkVisibility()) restore(); });
   return node;
 };
 
 let busy = false;
+let restoringDiagnostics = false;
 const update = async () => {
   if (busy || document.hidden) return;
   busy = true;
@@ -305,6 +319,8 @@ const update = async () => {
     }
     sub.querySelector('.stale')?.remove();
     for (const selector of panelGroups) {
+      if (selector === '.diagnostics > .grid' &&
+          (!document.querySelector('.diagnostics').open || restoringDiagnostics)) continue;
       const grid = document.querySelector(selector);
       const old = childPanels(grid);
       const freshPanels = childPanels(next.querySelector(selector));
@@ -337,6 +353,29 @@ const update = async () => {
     busy = false;
   }
 };
+const diagnostics = document.querySelector('.diagnostics');
+// Closed details may reset descendant offsets even without replacing the elements.
+const diagnosticScrolls = () => diagnostics.querySelectorAll('section, .scroll');
+diagnostics.querySelector(':scope > summary').addEventListener('click', () => {
+  if (diagnostics.open) diagnosticScrolls().forEach(el => positions.set(el, [el.scrollTop, el.scrollLeft]));
+});
+document.addEventListener('scroll', event => {
+  const el = event.target;
+  if (diagnostics.open && !restoringDiagnostics && el instanceof Element && diagnostics.contains(el) && el.matches('section, .scroll'))
+    positions.set(el, [el.scrollTop, el.scrollLeft]);
+}, true);
+new MutationObserver(() => {
+  if (!diagnostics.open) return;
+  restoringDiagnostics = true;
+  requestAnimationFrame(() => {
+    if (diagnostics.open) diagnosticScrolls().forEach(el => {
+      const saved = positions.get(el);
+      if (saved) { el.getBoundingClientRect(); setPosition(el, ...saved); }
+    });
+    restoringDiagnostics = false;
+    if (diagnostics.open) update();
+  });
+}).observe(diagnostics, {attributes:true, attributeFilter:['open']});
 const every = Math.max(5, Number(document.body.dataset.refresh) || 30) * 1000;
 setInterval(update, every);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) update(); });

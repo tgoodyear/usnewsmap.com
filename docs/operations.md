@@ -1568,7 +1568,7 @@ Node 4 is intentionally BOINC-only since 16 October 2026; do not configure it as
 
 **Corpus data flow snapshot (#704).** The optional "Corpus data flow" panel reads a local metadata-only `corpus-catalog` JSON file at the usual file polling cadence (15 seconds by default). It appears at `/api/pipeline.json` and as `pipeline` in `/api/view.json`, under the same LAN access controls. It never queries a database or cloud service and needs no credentials. Cataloged stage, run and artifact counts are separate from local worker journal totals, not whole-corpus totals: zero can mean no catalog loaded. The producer must include coverage and issues for absent sources and must not include OCR text or storage URIs.
 
-The panel spans the operational-details section below "At a glance". Its stage list scrolls independently; expand a stage for provenance, or "Coverage, provenance and issues" for source limits and diagnostics. Open details and list positions survive automatic refresh, including the outer operational-details disclosure.
+The panel spans the operational-details section below "At a glance". Its stage list scrolls independently; expand a stage for provenance, or "Coverage, provenance and issues" for source limits and diagnostics. Open details and list positions survive automatic refresh. Closed operational details retain their existing panels and refresh on reopening, preserving list positions while summaries continue to update.
 
 After installing a binary that supports the option, have the producer atomically publish the file at an existing container path readable by `ocrdash`, for example root-owned `/etc/usnm/pipeline.json` (0644). No new mount or service write permission is needed. As root on pve-big, enable **only** the source setting:
 
