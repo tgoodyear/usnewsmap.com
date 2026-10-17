@@ -24,6 +24,5 @@ CapabilityBoundingSet=
 TimeoutStartSec=120
 MemoryMax=128M
 CPUQuota=10%
-LimitFSIZE=16M
 StandardOutput=journal
 StandardError=journal

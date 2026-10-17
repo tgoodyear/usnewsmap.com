@@ -13,6 +13,7 @@ import re
 import sqlite3
 import stat
 import sys
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -621,11 +622,18 @@ def ingest_worker(db, input_path, evidence_out, batch_id, source):
     out = Path(evidence_out)
     protect_catalog_output(out, db)
     require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
-    with out.open("xb") as stream:
-        os.chmod(out, 0o600)
+    with tempfile.NamedTemporaryFile(dir=out.parent, prefix="." + out.name + ".",
+                                     suffix=".pending") as stream:
+        os.chmod(stream.name, 0o600)
         stream.write("".join(events).encode())
         stream.flush()
         os.fsync(stream.fileno())
+        os.link(stream.name, out)
+        directory = os.open(out.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     return ingest(db, out)
 
 

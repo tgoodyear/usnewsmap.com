@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -73,6 +74,37 @@ class SyncTests(unittest.TestCase):
                 w.receive(self.db, self.retained, "worker-test", bundle)
         self.assertEqual(w.receive(self.db, self.retained, "worker-test", bundle)["inserted"], 2)
 
+    def test_interrupted_jsonl_write_cannot_publish_partial_evidence(self):
+        self.capture()
+        bundle = w.export(self.spool, "")
+        factory = c.tempfile.NamedTemporaryFile
+
+        class Interrupted:
+            def __init__(self, *args, **kwargs):
+                self.file = factory(*args, **kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __getattr__(self, name):
+                return getattr(self.file, name)
+
+            def __exit__(self, *args):
+                return self.file.__exit__(*args)
+
+            def write(self, raw):
+                self.file.write(raw.splitlines(keepends=True)[0])
+                self.file.flush()
+                raise OSError("interrupted after execution, before RunRecord")
+
+        with patch.object(c.tempfile, "NamedTemporaryFile", Interrupted):
+            with self.assertRaises(OSError):
+                w.receive(self.db, self.retained, "worker-test", bundle)
+        self.assertEqual(list(self.retained.glob("*.jsonl")), [])
+        self.assertEqual(w.receive(self.db, self.retained, "worker-test", bundle)["inserted"], 2)
+        self.assertEqual(len(c.query(self.db, "execution", {})["items"]), 1)
+        self.assertEqual(len(c.query(self.db, "run", {})["items"]), 1)
+
     def test_rejects_corruption_symlinks_and_oversized_captures(self):
         name = self.capture()
         bundle = w.export(self.spool, "")
@@ -98,6 +130,14 @@ class SyncTests(unittest.TestCase):
         next(self.retained.glob("*.json")).write_text("changed")
         with self.assertRaises(c.CatalogError):
             w.receive(self.db, self.retained, "worker-test", bundle)
+
+    def test_fifo_is_rejected_before_any_blocking_read(self):
+        name = "a" * 64 + ".json"
+        os.mkfifo(self.spool / name)
+        with self.assertRaises(c.CatalogError):
+            w.export(self.spool, "")
+        with self.assertRaises(c.CatalogError):
+            w.acknowledge(self.spool, [(name, "b" * 64)])
 
     def test_acknowledgement_is_checksum_checked_idempotent_and_not_deletion(self):
         name = self.capture()

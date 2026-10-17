@@ -65,7 +65,7 @@ def export(root, after):
         ))
     files = []
     for name in names[:MAX_FILES]:
-        fd = os.open(root / name, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(root / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
             catalog.require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "non-regular capture")
             raw = stream.read(catalog.MAX_LINE + 1)
@@ -93,7 +93,7 @@ def acknowledge(root, receipts):
         path = root / name
         destination = archived / name
         current = path if path.exists() else destination
-        fd = os.open(current, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(current, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
             catalog.require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "invalid capture")
             raw = stream.read(catalog.MAX_LINE + 1)
