@@ -2,14 +2,15 @@
 # Build, check and publish the OCR benchmark releases (#738, docs/ocr-bench.md) in CI.
 #   scripts/ocr-bench/release-ci.sh --mode check|publish --survey BIN --work DIR
 # For every ocr/bench/v*/spec.json:
-# - Published (its GitHub release tag exists): the committed spec and inventory must still hash
-#   to the releases.json entry, and scripts/ocr-bench/fetch --verify must pass against the
-#   published archive. Published releases never change.
+# - Published: scripts/ocr-bench/fetch --verify must pass against the published archive, the
+#   committed spec, inventory and releases.json entry must still match the published manifest,
+#   and bench-verify --index must pass. Published releases never change.
 # - Not yet published: download its inputs tar (--inputs-base), check every file against the
 #   committed inventory, build it with `usnm-ocr-survey bench-build`, and require the result to
 #   equal its releases.json entry. With no entry, print the built entry to add and fail.
-#   --mode publish then creates the GitHub release (archive, SHA256SUMS, manifest, notes) and
-#   fetches it back with --verify.
+#   --mode publish then creates a draft release tagged at GITHUB_SHA (archive, SHA256SUMS,
+#   manifest, notes), downloads its assets and compares them with the build, publishes it and
+#   fetches it back with --verify. A draft left by an unfinished run is replaced.
 # Needs gh (GH_TOKEN), curl, jq, tar and sha256sum.
 set -euo pipefail
 die() { echo "release-ci: $*" >&2; exit 1; }
@@ -22,7 +23,7 @@ while [ $# -gt 0 ]; do
     --survey) SURVEY=${2:-}; shift 2 ;;
     --work) WORK=${2:-}; shift 2 ;;
     --inputs-base) INPUTS_BASE=${2:-}; shift 2 ;;
-    -h | --help) sed -n '2,14s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,16s/^# \{0,1\}//p' "$0"; exit 0 ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -47,16 +48,24 @@ for spec in "$root"/ocr/bench/v*/spec.json; do
   tag="ocr-bench-$version"
   entry=$(jq -c --arg v "$version" '.releases[] | select(.release == $v)' "$index")
 
-  if gh release view "$tag" --repo "$REPO" > /dev/null 2>&1; then
+  # published, draft (a publication that didn't finish) or none.
+  state=$(gh release view "$tag" --repo "$REPO" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2> /dev/null || echo none)
+  if [ "$state" = published ]; then
     [ -n "$entry" ] || die "$tag is published but not in releases.json"
-    [ "$(sha "$spec")" = "$(jq -r .spec_sha256 <<< "$entry")" ] ||
-      die "$version is published; its spec.json must not change"
-    [ "$(sha "$inventory")" = "$(jq -r .inputs_sha256 <<< "$entry")" ] ||
-      die "$version is published; its inputs.sha256 must not change"
-    "$root/scripts/ocr-bench/fetch" --version "$version" --verify --dest "$WORK/fetched" > /dev/null
+    fetched=$("$root/scripts/ocr-bench/fetch" --version "$version" --verify --dest "$WORK/fetched")
+    # The published manifest records the recipe it was built from; the checkout and the index
+    # must both still name it.
+    for pair in "spec_sha256:$spec" "inputs_sha256:$inventory"; do
+      key=${pair%%:*} file=${pair#*:}
+      published=$(jq -r ".$key" "$fetched/manifest.json")
+      [ "$(sha "$file")" = "$published" ] || die "$version is published; $(basename "$file") must not change"
+      [ "$(jq -r ".$key" <<< "$entry")" = "$published" ] || die "$version is published; its releases.json $key must not change"
+    done
+    "$SURVEY" bench-verify --release "$fetched" --index "$index" > /dev/null
     echo "release-ci: $version is published and verifies"
     continue
   fi
+  [ "$state" = none ] || echo "release-ci: $tag is a draft from an unfinished publication; rebuilding" >&2
 
   # Unpublished: build from the staged inputs.
   inputs="$WORK/inputs-$version"
@@ -101,8 +110,22 @@ for spec in "$root"/ocr/bench/v*/spec.json; do
     mkdir -p "$assets"
     cp "$out/$name.tar" "$assets/"
     cp "$out/$name/SHA256SUMS" "$out/$name/manifest.json" "$assets/"
-    gh release create "$tag" --repo "$REPO" --title "OCR benchmark $version" \
-      --notes-file "$out/$name/RELEASE-NOTES.md" "$assets"/*
+    [[ ${GITHUB_SHA:-} =~ ^[0-9a-f]{40}$ ]] || die "publishing needs GITHUB_SHA, the commit that was built"
+    # A leftover draft has no tag yet and nothing anyone could have fetched: replace it.
+    if [ "$state" = draft ]; then
+      gh release delete "$tag" --repo "$REPO" --yes
+    fi
+    # Draft first, tagged at the built commit; publish only once its assets download intact.
+    gh release create "$tag" --repo "$REPO" --draft --target "$GITHUB_SHA" \
+      --title "OCR benchmark $version" --notes-file "$out/$name/RELEASE-NOTES.md" "$assets"/*
+    check="$WORK/draft-$version"
+    rm -rf "$check"
+    gh release download "$tag" --repo "$REPO" --dir "$check"
+    for f in "$assets"/*; do
+      [ "$(sha "$check/$(basename "$f")")" = "$(sha "$f")" ] || die "draft asset $(basename "$f") differs from the build"
+    done
+    [ "$(find "$check" -type f | wc -l)" -eq "$(find "$assets" -type f | wc -l)" ] || die "the draft has extra assets"
+    gh release edit "$tag" --repo "$REPO" --draft=false
     "$root/scripts/ocr-bench/fetch" --version "$version" --verify --dest "$WORK/fetched" > /dev/null
     echo "release-ci: published $tag and fetched it back"
   fi
