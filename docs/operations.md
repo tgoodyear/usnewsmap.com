@@ -1619,6 +1619,67 @@ Without `--configure`, this validates readability inside the container, atomical
 
 Input is limited to 1 MiB and schema version 1, producer `corpus-catalog`; unknown fields, invalid UTC RFC3339 times, times more than 60 seconds ahead, negative/fractional or over-trillion counts, and `verified + missing > locations` are rejected. Bounds: 32 coverage strings (128 characters), 64 stages (id 256, label 128, detail 512), 128 issues (code 64, detail 512). No control characters; stage ids must be unique; unknown stage counts must be null. The wrapper reports `retrieved_at`, `last_error`, `age_secs`, `stale`, optional `snapshot`, and `stage_freshness`. Source `observed_at`, not `generated_at` or retrieval time, determines freshness; null means unknown/unavailable. Optional stage `observed_at` supplies independent evidence times (explicit null is unknown; omission uses the snapshot evidence time). Stale stage evidence remains visible even when another source was just observed. Missing, oversized or malformed files retain the last valid snapshot with an explicit error indication and suppress its live summary counts; no valid snapshot shows unavailable, never a silent fallback to worker totals. The API's aggregate `stale` flag remains unchanged; the diagnostic heading says "Some evidence old or unknown", with actual read errors shown beneath it.
 
+**Resumable local scan-cache inventory (#704).** For indexes larger than the
+single-batch adapter's 10,000-row/16 MiB limits, run the stdlib orchestrator
+**on the POSIX machine holding the scan files**:
+
+```bash
+python3 scripts/scan_cache_inventory.py \
+  --db catalog.sqlite --index scans/index-full.jsonl --scan-root scans \
+  --work-dir inventory-20261017 --source local-cache-stat \
+  --cache-set keep --cache-set buffer --max-batches 10
+```
+
+Repeat the identical command until `finished` is true. Select only cache sets
+that this operator intends to observe; the index does not encode membership.
+No scans are downloaded, hashed, modified or deleted. A regular file with the
+expected size is `present`, **not checksum-verified**. Missing/wrong-size copies
+are observations, not deletion requests; absent rows are not deletions either.
+This does not change workers, cloud archives, acceptance, publication or indexing.
+
+The first invocation fixes an input byte prefix, inode, and prefix SHA-256.
+That hash protects the **index metadata**, not image bytes. Each resume checks
+the captured prefix by streaming it with at most 1 MiB reads; replacement,
+truncation, or edits fail closed. The index must remain append-only during an
+invocation. Appends are deliberately excluded; use a new inventory directory
+to observe a later prefix (overlapping observations are allowed). A trailing
+record without a newline is excluded and remains explicitly uncovered.
+
+Each slice is limited to 256 rows/1 MiB and the existing 64 KiB line limit.
+It is statted separately for each selected set and imported through the existing
+transactional catalog ingestion. `--max-batches` limits newly completed slices
+per invocation, not the prefix integrity scan. Output reports covered/captured
+bytes, uncovered bytes, rows, completed batches, selected sets, and later
+appended bytes. Counts are index rows/observations, **not unique pages or corpus
+completeness**. Even `finished: true` means only that the fixed prefix's complete
+records were processed; LAN dashboard coverage remains partial.
+
+Keep the private inventory directory on durable local storage. It contains
+bounded raw index slices (including original discarded metadata), immutable
+`batch-*/keep.jsonl` / `batch-*/buffer.jsonl` evidence and atomic `state.json`
+checkpoints. Published evidence is reused without re-statting after interruption.
+Checkpoints advance only after all selected sets commit. A crash after a commit
+is recovered by idempotent replay, while an interrupted unpublished build is
+retained as replaceable `.interrupted` scratch. A filesystem lock prevents
+concurrent use of one inventory directory; do not share its catalog with a
+different inventory job concurrently. State/evidence storage grows with the
+observed prefix; working memory is bounded to one slice/adapter batch.
+
+To rebuild a lost catalog, replay only the retained evidence, not `index.jsonl`
+slices or scratch files, into the **same database pathname**:
+
+```bash
+for batch in inventory-20261017/batch-*/keep.jsonl inventory-20261017/batch-*/buffer.jsonl; do
+  [ -f "$batch" ] || continue
+  python3 scripts/data_catalog.py --db catalog.sqlite ingest --batch "$batch" || break
+done
+```
+
+The normal resume command refuses a missing catalog checkpoint; after evidence
+replay it can resume. Evidence is independent of the original scan files and can
+also rebuild a different database for inspection. Do not hand-edit checkpoints
+or evidence. Input transport, scheduling and retention policy are separate work.
+
 **Dashboard-only binary updates.** `cargo build --locked --release -p usnm-ocr-dash --bin usnm-ocrdash` builds only the dashboard executable, not BOINC binaries or engine images. A Linux x86_64 static build can add `--target x86_64-unknown-linux-musl` on a Linux builder with the Rust target and musl C tools installed; validate the resulting artifact in CI, not on the busy Proxmox host. The crate's existing worker-library dependency brings Arrow/Parquet, image, store and telemetry libraries; native compilation includes ring and zstd, but not an OCR engine or BOINC application build. `ocrdash-ct.sh --install` supports worker release tags only, not local binaries/archives. For a dashboard-only CI artifact, verify the exact reviewed commit and checksums, copy the binary to a new versioned `/usr/local/lib/usnm-ocrdash/<commit>/` directory inside CT 212, retain the previous symlink target for rollback, atomically replace `/usr/local/bin/usnm-ocrdash` using a sibling symlink and rename, and restart only `usnm-ocrdash.service`. Keep the existing environment, unit, TLS files, mounts and firewall. Verify `/healthz`, `/api/pipeline.json`, `/api/nodes.json` and the panel over the existing LAN HTTPS endpoint; a process-health response alone does not establish snapshot freshness.
 
 **HTTPS.** The certificate for the locally configured name is a Let's Encrypt one that pve-big gets and renews itself, with home-infra's `home-acme` (lego over the DNS-01 challenge, signed in as pve-big's Arc managed identity; [home-infra README, "Let's Encrypt with DNS-01"](https://github.com/tgoodyear/home-infra#lets-encrypt-with-dns-01)). CT 212 holds no Azure credentials and never talks to Let's Encrypt. Substitute the actual local name for every `dashboard.example.invalid` example below, including unit instances and certificate paths.
