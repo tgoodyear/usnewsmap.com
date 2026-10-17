@@ -1,0 +1,8 @@
+{
+  "sha256:80bf2d6586fb3a9f6ef644937ddd40ca2304b1b433d3b9e657e193ba6f573ae0": {
+    "x86_64-pc-linux-gnu": "sha256:d0b841b521a4a68aab2d585a019d9ad1d011e25a65f2f9286d6851fcc64ded57",
+    "x86_64-apple-darwin": "sha256:d0b841b521a4a68aab2d585a019d9ad1d011e25a65f2f9286d6851fcc64ded57",
+    "arm64-apple-darwin": "sha256:86418d991a798c885a7a505bc94ce27cbfe0c5361fa3dde319b7d6b400d9ebad",
+    "aarch64-unknown-linux-gnu": "sha256:86418d991a798c885a7a505bc94ce27cbfe0c5361fa3dde319b7d6b400d9ebad"
+  }
+}

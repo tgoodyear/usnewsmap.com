@@ -470,6 +470,26 @@ threshold, promote trust, or complete the fresh-page OCR/native
 handoff/release/search lifecycle. The [native acceptance receipt](https://github.com/tgoodyear/usnewsmap.com/issues/527#issuecomment-6228584575)
 records the same boundaries.
 
+### Gold architecture and image routing
+
+The scheduler's Gold-specific compatibility hook reads the authoritative
+staged `<job-id>_gold_json`, including for work queued before the hook was
+deployed. Before dispatch, it requires the selected app's registered
+Dockerfile to pin that job's exact worker image, and requires the job's base
+to match the reviewed image/platform entry in
+`contrib-compute/boinc/gold-engine-platforms.json`. Missing or malformed
+metadata, anonymous app versions, unknown bindings, and mismatches refuse
+dispatch with an explicit `[Gold routing]` scheduler log. Other apps retain
+their existing routing.
+
+Adding a new Gold worker requires independently verifying its per-architecture
+base digests and reviewing the registry entries before deployment; this is
+execution compatibility, not accuracy calibration or host trust. A refusal
+may leave a stale workunit pending for operator disposition rather than
+sending it to an incompatible host. Do not change signed payloads, weaken
+the worker/validator identity checks, or abort/reprioritize existing jobs
+to disguise this gate.
+
 ## Licensing
 
 The library believes the newspapers in Chronicling America are in the public domain or have no known copyright restrictions, and that those published more than 95 years ago are in the public domain in their entirety; newer ones may hold copyrighted third-party material ([Rights and Access](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/)). Pages in the sample run to 1963, so in 2026 crops from pages published in 1931 or later carry that caveat. Transcriptions are original work and go in under the repository's licence.
