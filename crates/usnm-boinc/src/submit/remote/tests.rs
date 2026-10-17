@@ -352,7 +352,6 @@ async fn urls_and_nonpublic_addresses_are_rejected() {
     }
     for ip in [
         "127.0.0.1",
-        "10.0.0.1",
         "169.254.169.254",
         "100.64.0.1",
         "192.0.2.1",
@@ -370,11 +369,10 @@ async fn urls_and_nonpublic_addresses_are_rejected() {
     for ip in ["8.8.8.8", "2606:4700:4700::1111"] {
         assert!(public_ip(ip.parse().unwrap()), "{ip}");
     }
-    for url in [
-        "https://127.0.0.1/page",
-        "https://[::1]/page",
-        "https://10.0.0.1/page",
-    ] {
+    let private_ip = IpAddr::from([10, 0, 0, 1]);
+    assert!(!public_ip(private_ip));
+    let private_url = format!("https://{private_ip}/page");
+    for url in ["https://127.0.0.1/page", "https://[::1]/page", &private_url] {
         assert!(public_client(&Url::parse(url).unwrap()).await.is_err());
     }
 }
