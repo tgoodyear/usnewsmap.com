@@ -27,23 +27,28 @@ def require(ok, message):
         raise ValueError(message)
 
 
+COMMON = {"schema_version", "env", "account", "plan", "manifest", "image", "push_command",
+          "scans_root", "manifests_root", "batch_size", "max_pending", "pages_per_host"}
+PAGES_FIELDS = COMMON | {"batch", "pages"}
+QUEUE_FIELDS = COMMON | {"source", "claim_queues", "lease_hours"}
+QUEUES = ("ocr-bulk", "ocr-priority")
+PAGE_KEY = re.compile(r"[A-Za-z0-9_-]+/\d{4}-\d{2}-\d{2}/ed-\d+/seq-\d+")
+
+
 def load_config(path):
     config = json.loads(path.read_text())
-    fields = {"schema_version", "env", "account", "plan", "batch", "manifest", "image",
-              "push_command", "scans_root", "manifests_root", "pages", "batch_size",
-              "max_pending", "pages_per_host"}
-    require(set(config) == fields and config["schema_version"] == 1, "invalid config fields/version")
+    queue = config.get("source") == "queue"
+    require(set(config) == (QUEUE_FIELDS if queue else PAGES_FIELDS) and config["schema_version"] == 1,
+            "invalid config fields/version")
     for key, pattern in (
         ("env", r"[a-z][a-z0-9-]{0,30}"), ("account", r"[a-z0-9]{3,24}"),
-        ("plan", r"[A-Za-z0-9-]{1,64}"), ("batch", r"[a-z]{2,10}_[A-Za-z0-9_]+"),
+        ("plan", r"[A-Za-z0-9-]{1,64}"),
         ("image", r"sha256:[0-9a-f]{64}"),
         ("manifest", r"[A-Za-z0-9][A-Za-z0-9._/-]*"),
         ("scans_root", r"/[A-Za-z0-9_./-]+"), ("manifests_root", r"/[A-Za-z0-9_./-]+"),
     ):
         require(isinstance(config[key], str) and re.fullmatch(pattern, config[key])
                 and ".." not in config[key], f"invalid {key}")
-    require(len(config["batch"]) <= 128 and not re.search(r"_ver[0-9]+$", config["batch"]),
-            "batch must be an unversioned base batch of at most 128 bytes")
     require(not config["manifest"].startswith("/") and
             config["manifest"].endswith("/manifest.parquet"), "invalid manifest snapshot path")
     for key, maximum in (("batch_size", 100), ("max_pending", 10000), ("pages_per_host", 100)):
@@ -52,13 +57,28 @@ def load_config(path):
     require(isinstance(command, list) and command and
             all(isinstance(arg, str) and re.fullmatch(r"[A-Za-z0-9_/@=.:+-]+", arg)
                 for arg in command), "push_command must be a trusted, literal argv prefix")
+    if queue:
+        # BOINC is a second consumer of the work queues, beside the on-prem nodes
+        # (docs/boinc-batch-scheduler.md#queue-fed-work). The page list is whatever it claims.
+        require(config["source"] == "queue", "invalid source")
+        queues = config["claim_queues"]
+        require(isinstance(queues, list) and queues and len(set(queues)) == len(queues)
+                and all(q in QUEUES for q in queues), "claim_queues is ocr-bulk and/or ocr-priority")
+        require(type(config["lease_hours"]) is int and 1 <= config["lease_hours"] <= 168,
+                "lease_hours is 1 to 168")
+        config["pages"] = []
+        return config
+    for key, pattern in (("batch", r"[a-z]{2,10}_[A-Za-z0-9_]+"),):
+        require(isinstance(config[key], str) and re.fullmatch(pattern, config[key])
+                and ".." not in config[key], f"invalid {key}")
+    require(len(config["batch"]) <= 128 and not re.search(r"_ver[0-9]+$", config["batch"]),
+            "batch must be an unversioned base batch of at most 128 bytes")
     require(isinstance(config["pages"], list) and 1 <= len(config["pages"]) <= MAX_JOBS,
             "allocate 1-10000 explicit pages")
     seen = set()
     for page in config["pages"]:
         require(set(page) == {"page", "scan"}, "invalid page fields")
-        require(isinstance(page["page"], str) and
-                re.fullmatch(r"[A-Za-z0-9_-]+/\d{4}-\d{2}-\d{2}/ed-\d+/seq-\d+", page["page"]),
+        require(isinstance(page["page"], str) and PAGE_KEY.fullmatch(page["page"]),
                 "invalid page key")
         require(page["page"] not in seen, "duplicate page allocation")
         seen.add(page["page"])
@@ -88,17 +108,28 @@ def save(path, state):
         os.close(fd)
 
 
+class ClaimFailed(RuntimeError):
+    """The claim step failed after taking messages: `claims` are the ones it did take."""
+
+    def __init__(self, message, claims):
+        super().__init__(message)
+        self.claims = claims
+
+
 class Transport:
     def __init__(self, config, directory):
         self.config = config
         self.directory = directory
 
-    def run(self, argv, label, timeout=2100):
+    def run(self, argv, label, timeout=2100, ok=(0,)):
         try:
-            return subprocess.run(argv, check=True, text=True, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, timeout=timeout, cwd=REPO).stdout
+            done = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, timeout=timeout, cwd=REPO)
         except (OSError, subprocess.SubprocessError) as error:
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying") from error
+        if done.returncode not in ok:
+            raise RuntimeError(f"{label} failed; inspect the execution privately before retrying")
+        return done.stdout
 
     def az(self, *args):
         return self.run(["az", "storage", "blob", *args, "--auth-mode", "login",
@@ -172,21 +203,87 @@ class Transport:
             records.append(record)
         return records
 
-    def export(self, pages, job_ids=()):
-        argv = self.config["push_command"] + [
+    def push_args(self):
+        return self.config["push_command"] + [
             "--account", self.config["account"], "--scans-root", self.config["scans_root"],
             "--manifests-root", self.config["manifests_root"],
             "--manifest", self.config["manifests_root"].rstrip("/") + "/" + self.config["manifest"],
         ]
+
+    def export(self, pages, job_ids=()):
+        queue = self.config.get("source") == "queue"
+        if not queue:
+            argv = self.push_args()
+            for page in pages:
+                argv += ["--scan", page["scan"]]
+            self.run(argv, "cached scan push")
+        # The exporter takes one base batch at a time; queued pages come from many.
+        batches = {}
         for page in pages:
-            argv += ["--scan", page["scan"]]
-        self.run(argv, "cached scan push")
-        self.step("handoff", "export", HANDOFF_PAGES=",".join(page["page"] for page in pages),
-                  HANDOFF_BATCH=self.config["batch"], HANDOFF_PLAN=self.config["plan"],
-                  HANDOFF_MANIFEST=self.config["manifest"], ENGINE_IMAGE=self.config["image"],
-                  HANDOFF_SCANS=",".join(page["scan"][len(self.config["scans_root"].rstrip("/")) + 1:]
-                                         for page in pages),
-                  HANDOFF_JOBS=",".join(job_ids))
+            batches.setdefault(page.get("batch") or self.config["batch"], []).append(page)
+        for batch, group in sorted(batches.items()):
+            variables = dict(
+                HANDOFF_PAGES=",".join(page["page"] for page in group),
+                HANDOFF_BATCH=batch, HANDOFF_PLAN=self.config["plan"],
+                HANDOFF_MANIFEST=self.config["manifest"], ENGINE_IMAGE=self.config["image"],
+                HANDOFF_SCANS=",".join(page["scan"][len(self.config["scans_root"].rstrip("/")) + 1:]
+                                       for page in group),
+                HANDOFF_JOBS=",".join(job_ids))
+            if queue:
+                variables["HANDOFF_CLAIMS"] = "1"
+            self.step("handoff", "export", **variables)
+
+    def claim(self, count):
+        """Take up to `count` usable pages off the work queues (the hand-off job's claim step)."""
+        nonce = uuid.uuid4().hex
+        failure = None
+        try:
+            self.step("handoff", "claim", HANDOFF_MANIFEST=self.config["manifest"], CLAIM_NONCE=nonce,
+                      CLAIM_MAX=count, CLAIM_QUEUES=",".join(self.config["claim_queues"]),
+                      CLAIM_LEASE_HOURS=self.config["lease_hours"])
+        except RuntimeError as error:
+            # Messages taken before the failure are hidden now and their claims are written:
+            # record them if the job got as far as its summary, then stop the tick.
+            failure = error
+        try:
+            summary = self.blob("scheduler/claims.json")
+            require(summary.get("schema_version") == 1 and summary.get("nonce") == nonce,
+                    "stale/concurrent claim summary; another controller may be active")
+        except (RuntimeError, ValueError):
+            if failure:
+                raise failure
+            raise
+        if failure:
+            raise ClaimFailed(str(failure), summary["claims"]) from failure
+        return summary["claims"]
+
+    def push_pages(self, bases):
+        """Push the cached scans of claimed pages, finding each one's format on the scan server.
+        Returns ({base: path under scans/}, [bases with no cached scan])."""
+        argv = self.push_args()
+        for base in bases:
+            # The script names a page by where the fetcher files it under keep/, without "keep/".
+            require(base.startswith("keep/"), "claimed scan is not under keep/")
+            argv += ["--keep-page", base[len("keep/"):]]
+        output = self.run(argv, "cached scan push", ok=(0, 3))
+        pushed, missing = {}, []
+        for line in output.splitlines():
+            kind, _, value = line.partition(" ")
+            if kind == "pushed":
+                pushed[value] = value
+            elif kind == "missing":
+                missing.append("keep/" + value)
+        found = {}
+        for base in bases:
+            match = [rel for rel in pushed if rel.startswith(f"{base}.")]
+            if match:
+                found[base] = match[0]
+        require(set(found) | set(missing) == set(bases) and not (set(found) & set(missing)),
+                "scan push did not account for every claimed page")
+        return found, missing
+
+    def release(self, doc_ids):
+        self.step("handoff", "release", HANDOFF_DOCS=",".join(doc_ids))
 
     def submit(self, job_id):
         self.step("bridge", "submit-remote", JOB_ID=job_id,
@@ -199,7 +296,8 @@ class Transport:
 
 
 def owned_records(config, records):
-    wanted = {page["page"] for page in config["pages"]}
+    # Each allocated page's base batch: one for the whole cohort, or the claimed page's own.
+    wanted = {page["page"]: page.get("batch") or config["batch"] for page in config["pages"]}
     owned = {}
     for record in records:
         require(record["stage"] in STAGES and ID.fullmatch(record["job"]["id"]),
@@ -210,7 +308,7 @@ def owned_records(config, records):
             require(page not in wanted,
                     "page is already allocated to another plan; reconcile the allocation before export")
             continue
-        require(job["message"]["batch"] == config["batch"] and page in wanted
+        require(wanted.get(page) == job["message"]["batch"]
                 and job["engine"]["image"] == config["image"],
                 "plan already exists with a different allocation/image; operator migration required")
         require(page not in owned, "multiple jobs for one allocated page; reconcile before feeding")
@@ -218,7 +316,104 @@ def owned_records(config, records):
     return owned
 
 
+BATCH = re.compile(r"[a-z]{2,10}_[A-Za-z0-9_]+")
+
+
+class QueueFeed:
+    """Pages claimed off the work queues, kept in the controller's state.
+
+    The hand-off job's `claim` step takes usable messages off `ocr-bulk` (and `ocr-priority`
+    when asked), as a second consumer beside the on-prem nodes. Each claimed page is recorded
+    here *before* anything else is done for it, because its message is hidden from the nodes
+    for the lease and only a later `collect` deletes it. A page whose scan turns out not to be
+    on the scan server goes back to the queue. The record also stays after the page is
+    published: its journal belongs to this plan, and `owned_records` refuses a journal for a
+    page the plan doesn't know."""
+
+    def __init__(self, config, state, transport, persist):
+        self.config = config
+        self.transport = transport
+        self.persist = persist
+        self.claims = state.setdefault("claims", {})
+        require(len(self.claims) <= MAX_JOBS, "too many claimed pages; archive drained history first")
+
+    def restore(self):
+        self.config["pages"] = [
+            {"page": page, "batch": claim["batch"], "scan": claim["scan"]}
+            for page, claim in sorted(self.claims.items()) if claim.get("scan")]
+
+    @staticmethod
+    def checked(claim):
+        require(isinstance(claim, dict) and {"page", "doc_id", "batch", "scan"} <= set(claim),
+                "invalid claim")
+        page, batch, scan = claim["page"], claim["batch"], claim["scan"]
+        require(isinstance(page, str) and PAGE_KEY.fullmatch(page) and isinstance(batch, str)
+                and BATCH.fullmatch(batch) and not re.search(r"_ver[0-9]+$", batch),
+                "invalid claimed page or batch")
+        lccn, date, edition, seq = page.split("/")
+        require(claim["doc_id"] == page.replace("/", "_")
+                and scan == f"keep/{batch}/{lccn}/{date}/{edition[3:]}/{seq[4:]}",
+                "claim names a different page than its scan")
+        return page, {"page": page, "doc_id": claim["doc_id"], "batch": batch,
+                      "scan_base": scan, "scan": None, "message": claim.get("message_sha256")}
+
+    def fill(self, count, selected):
+        """Make `count` more pages ready: claim them (less any already claimed but not yet
+        started), push their scans and give back the ones with none."""
+        self.retry_releases()
+        started = set(selected)
+        waiting = [claim for page, claim in self.claims.items() if page not in started]
+        need = max(0, count - len(waiting))
+        if need:
+            try:
+                fresh = self.transport.claim(need)
+            except ClaimFailed as error:
+                # Their messages are hidden now: keep the claims that were made, then stop.
+                self.record(error.claims, need)
+                raise
+            self.record(fresh, need)
+        unpushed = {page: claim for page, claim in self.claims.items()
+                    if claim.get("scan") is None and not claim.get("release")}
+        if unpushed:
+            found, missing = self.transport.push_pages(
+                sorted(claim["scan_base"] for claim in unpushed.values()))
+            root = self.config["scans_root"].rstrip("/")
+            for page, claim in unpushed.items():
+                if claim["scan_base"] in found:
+                    claim["scan"] = f"{root}/{found[claim['scan_base']]}"
+                else:
+                    claim["release"] = True
+            self.persist()
+        self.retry_releases()
+        self.restore()
+
+    def record(self, fresh, need):
+        require(isinstance(fresh, list) and len(fresh) <= need, "claimed more pages than asked")
+        for item in fresh:
+            page, claim = self.checked(item)
+            if page in self.claims:
+                # Its lease ran out while the job was pending and the same message came again,
+                # now hidden for a fresh lease: the existing claim, its scan and its job stand.
+                # A different message for the page is two attempts at once: stop.
+                require(claim["message"] is not None and claim["message"] == self.claims[page].get("message"),
+                        "claimed a page already in this plan with a different message")
+                continue
+            self.claims[page] = claim
+        self.persist()
+
+    def retry_releases(self):
+        pages = sorted(page for page, claim in self.claims.items() if claim.get("release"))
+        if pages:
+            self.transport.release([self.claims[page]["doc_id"] for page in pages])
+            for page in pages:
+                del self.claims[page]
+            self.persist()
+
+
 def tick(config, state, transport, persist, now=None):
+    feed = QueueFeed(config, state, transport, persist) if config.get("source") == "queue" else None
+    if feed:
+        feed.restore()
     snapshot = transport.inventory()
     now = time.time() if now is None else now
     require(snapshot["schema_version"] == 1 and -60 <= now - snapshot["created_at"] <= 3600,
@@ -286,6 +481,8 @@ def tick(config, state, transport, persist, now=None):
                bool(server.get(record["job"]["id"], {}).get("spool")) for record in owned.values())
     if target and not held:
         free = max(0, target - pending)
+        if feed:
+            feed.fill(min(config["batch_size"], free), selected)
         fresh = [page for page in config["pages"] if page["page"] not in selected][
             :min(config["batch_size"], free)]
         for page in fresh:
@@ -350,6 +547,7 @@ def main(argv=None):
         config = load_config(args.config)
         if not args.apply:
             print(json.dumps({"event": "boinc_batch_plan", "apply": False, "plan": config["plan"],
+                              "source": config.get("source", "pages"),
                               "allocated_pages": len(config["pages"]),
                               "max_pending": config["max_pending"], "config_sha256": digest(config)}))
             return 0

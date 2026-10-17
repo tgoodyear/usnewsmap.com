@@ -461,5 +461,382 @@ elif args[0] == "export":
             shutil.rmtree(directory)
 
 
+def queue_config():
+    value = config()
+    del value["batch"]
+    value.update(source="queue", claim_queues=["ocr-bulk"], lease_hours=96, pages=[])
+    return value
+
+
+def message(number, batch="test_batch"):
+    page = f"sn12345678/1900-01-01/ed-1/seq-{number}"
+    return {"page": page, "doc_id": page.replace("/", "_"), "batch": batch, "queue": "ocr-bulk",
+            "scan": f"keep/{batch}/sn12345678/1900-01-01/1/{number}",
+            "lease_until": "2026-10-21T00:00:00Z", "message_sha256": f"{number:064x}"}
+
+
+class QueueFake(Fake):
+    """The work queue behind the claim step: messages in line, and the scan server's cache."""
+
+    def __init__(self, waiting):
+        super().__init__()
+        self.waiting = list(waiting)
+        self.uncached = set()
+        self.claimed = []
+        self.released = []
+        self.pushes = []
+
+    def claim(self, count):
+        self.actions.append(("claim", count))
+        taken, self.waiting = self.waiting[:count], self.waiting[count:]
+        self.claimed += [item["page"] for item in taken]
+        return copy.deepcopy(taken)
+
+    def push_pages(self, bases):
+        self.pushes.append(list(bases))
+        found = {base: f"{base}.jp2" for base in bases if base not in self.uncached}
+        return found, [base for base in bases if base in self.uncached]
+
+    def release(self, doc_ids):
+        self.actions.append(("release", sorted(doc_ids)))
+        self.released += doc_ids
+
+    def export(self, pages, job_ids=()):
+        by_batch = {}
+        for page in pages:
+            by_batch.setdefault(page["batch"], []).append(page)
+        for name, group in sorted(by_batch.items()):
+            self.actions.append(("export", name, [page["page"] for page in group]))
+            for page in group:
+                self.assertions.append(page["scan"])
+                if not any(row["job"]["message"]["page"] == page["page"] for row in self.rows):
+                    row = record(page["page"], len(self.rows) + 1)
+                    row["job"]["message"]["batch"] = name
+                    self.rows.append(row)
+
+    assertions = []
+
+
+class QueueModeTests(unittest.TestCase):
+    def setUp(self):
+        self.config = queue_config()
+        self.state = {}
+        self.fake = QueueFake([message(number) for number in range(1, 8)])
+        self.fake.assertions = []
+        self.saved = []
+
+    def tick(self):
+        return batch.tick(self.config, self.state, self.fake,
+                          lambda: self.saved.append(copy.deepcopy(self.state)), NOW)
+
+    def test_claims_only_what_it_can_start_then_pushes_exports_and_submits(self):
+        first = self.tick()
+        self.assertEqual(self.fake.actions[0], ("claim", 2))
+        self.assertEqual(first["selected"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+        # The claim is on disk before its scan is pushed or anything else is done for it.
+        claimed = next(state for state in self.saved if state.get("claims"))["claims"]
+        self.assertEqual(len(claimed), 2)
+        self.assertTrue(all(c["scan"] is None for c in claimed.values()))
+        # The scan path is the one the push reported, under the configured scans root.
+        self.assertEqual(self.fake.assertions,
+                         [f"/tank/ocr/scans/keep/test_batch/sn12345678/1900-01-01/1/{n}.jp2" for n in (1, 2)])
+        self.tick()
+        self.assertEqual(len(self.fake.jobs), 4)
+        # At the cap (max_pending 4): no more claims, so no more messages are hidden.
+        claims = [a for a in self.fake.actions if a[0] == "claim"]
+        self.assertTrue(self.tick()["backpressure"])
+        self.assertEqual([a for a in self.fake.actions if a[0] == "claim"], claims)
+        self.assertEqual(len(self.fake.waiting), 3)
+
+    def test_other_work_in_line_shrinks_the_claim(self):
+        self.fake.other = 3
+        self.tick()
+        self.assertEqual(self.fake.actions[0], ("claim", 1))
+        self.assertEqual(len(self.fake.claimed), 1)
+
+    def test_no_hosts_claims_nothing(self):
+        self.fake.hosts = 0
+        self.tick()
+        self.assertEqual(self.fake.actions, [])
+        self.assertEqual(len(self.fake.waiting), 7)
+
+    def test_a_page_with_no_cached_scan_goes_back_to_the_queue(self):
+        self.fake.uncached = {"keep/test_batch/sn12345678/1900-01-01/1/1"}
+        self.tick()
+        self.assertEqual(self.fake.released, ["sn12345678_1900-01-01_ed-1_seq-1"])
+        self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["claims"])
+        exported = [a for a in self.fake.actions if a[0] == "export"]
+        self.assertEqual(exported, [("export", "test_batch", ["sn12345678/1900-01-01/ed-1/seq-2"])])
+
+    def test_a_failed_release_is_retried_before_anything_else(self):
+        self.fake.uncached = {"keep/test_batch/sn12345678/1900-01-01/1/1"}
+        original = self.fake.release
+        self.fake.release = lambda ids: (_ for _ in ()).throw(RuntimeError("release failed"))
+        with self.assertRaisesRegex(RuntimeError, "release failed"):
+            self.tick()
+        self.assertTrue(self.state["claims"]["sn12345678/1900-01-01/ed-1/seq-1"]["release"])
+        self.fake.release = original
+        self.fake.uncached = set()
+        self.tick()
+        self.assertEqual(self.fake.released, ["sn12345678_1900-01-01_ed-1_seq-1"])
+        self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["claims"])
+
+    def test_restart_resumes_claimed_pages_without_claiming_again(self):
+        # A crash between claiming and pushing: the claims are in the state, not yet pushed.
+        self.fake.push_pages = lambda bases: (_ for _ in ()).throw(RuntimeError("push interrupted"))
+        with self.assertRaisesRegex(RuntimeError, "push interrupted"):
+            self.tick()
+        self.assertEqual(len(self.state["claims"]), 2)
+        del self.fake.push_pages
+        self.tick()
+        self.assertEqual(len(self.fake.claimed), 2)  # nothing more taken off the queue
+        self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_pages_from_several_batches_export_one_batch_at_a_time(self):
+        self.fake.waiting = [message(1, "aa_one"), message(2, "bb_two")]
+        self.tick()
+        exported = [a for a in self.fake.actions if a[0] == "export"]
+        self.assertEqual(exported, [("export", "aa_one", ["sn12345678/1900-01-01/ed-1/seq-1"]),
+                                    ("export", "bb_two", ["sn12345678/1900-01-01/ed-1/seq-2"])])
+        self.tick()
+        self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_a_journal_for_a_page_the_plan_never_claimed_stops_the_feed(self):
+        stray = record("sn99999999/1900-01-01/ed-1/seq-1", 9)
+        self.fake.rows = [stray]
+        with self.assertRaisesRegex(ValueError, "different allocation"):
+            self.tick()
+        self.assertEqual(self.fake.actions, [])
+
+    def test_a_journal_in_another_batch_than_the_claim_stops_the_feed(self):
+        self.tick()
+        self.fake.rows[0]["job"]["message"]["batch"] = "zz_other"
+        with self.assertRaisesRegex(ValueError, "different allocation"):
+            self.tick()
+
+    def test_collection_goes_on_and_published_pages_stay_in_the_plan(self):
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        event = self.tick()
+        self.assertEqual(event["newly_published"], 2)
+        # Published pages stay in the plan's state (their journals belong to it) beside the
+        # pages claimed to refill the queue.
+        self.assertEqual(len(self.state["claims"]), 4)
+        self.assertEqual(sorted(self.state["claims"])[:2],
+                         ["sn12345678/1900-01-01/ed-1/seq-1", "sn12345678/1900-01-01/ed-1/seq-2"])
+
+    def test_a_claim_naming_another_pages_scan_is_refused(self):
+        bad = message(1)
+        bad["scan"] = "keep/test_batch/sn12345678/1900-01-01/1/2"
+        self.fake.waiting = [bad]
+        with self.assertRaisesRegex(ValueError, "different page"):
+            self.tick()
+        for field, value in (("batch", "Bad_Batch_ver01"), ("page", "../x"), ("doc_id", "other")):
+            broken = message(1)
+            broken[field] = value
+            self.fake.waiting = [broken]
+            with self.assertRaises(ValueError):
+                self.tick()
+
+    def test_the_same_message_again_after_its_lease_is_the_same_claim(self):
+        self.tick()
+        before = copy.deepcopy(self.state["claims"])
+        jobs = len(self.fake.jobs)
+        # The lease on page 1 ran out while its job was pending; the message came round again.
+        self.fake.waiting = [message(1)] + self.fake.waiting
+        self.fake.other = 0
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.tick()
+        self.assertEqual(self.fake.claimed.count("sn12345678/1900-01-01/ed-1/seq-1"), 2)
+        self.assertEqual(self.state["claims"]["sn12345678/1900-01-01/ed-1/seq-1"],
+                         before["sn12345678/1900-01-01/ed-1/seq-1"])
+        self.assertGreaterEqual(len(self.fake.jobs), jobs)
+        self.assertEqual(len([row for row in self.fake.rows
+                              if row["job"]["message"]["page"] == "sn12345678/1900-01-01/ed-1/seq-1"]), 1)
+
+    def test_a_different_message_for_a_claimed_page_stops_the_feed(self):
+        self.tick()
+        other = message(1)
+        other["message_sha256"] = "f" * 64
+        self.fake.waiting = [other]
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        with self.assertRaisesRegex(ValueError, "different message"):
+            self.tick()
+
+    def test_claims_made_before_a_failed_claim_step_are_kept(self):
+        def failing(count):
+            raise batch.ClaimFailed("claim step failed", [message(1)])
+
+        self.fake.claim = failing
+        with self.assertRaisesRegex(RuntimeError, "claim step failed"):
+            self.tick()
+        self.assertEqual(list(self.state["claims"]), ["sn12345678/1900-01-01/ed-1/seq-1"])
+        self.assertEqual(self.saved[-1]["claims"], self.state["claims"])
+
+    def test_more_claims_than_asked_for_is_refused(self):
+        self.fake.claim = lambda count: [message(n) for n in range(1, 10)]
+        with self.assertRaisesRegex(ValueError, "more pages than asked"):
+            self.tick()
+
+    def test_queue_config_validation(self):
+        directory = Path(__file__).parent.resolve() / (".queue-config-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            path = directory / "config.json"
+            good = queue_config()
+            del good["pages"]
+            path.write_text(json.dumps(good))
+            loaded = batch.load_config(path)
+            self.assertEqual((loaded["source"], loaded["pages"]), ("queue", []))
+            for change in ({"claim_queues": ["ocr-deadletter"]}, {"claim_queues": []},
+                           {"claim_queues": ["ocr-bulk", "ocr-bulk"]}, {"lease_hours": 169},
+                           {"lease_hours": 0}, {"batch": "test_batch"}, {"pages": [message(1)]},
+                           {"source": "other"}):
+                with self.subTest(change=change):
+                    path.write_text(json.dumps({**good, **change}))
+                    with self.assertRaises((ValueError, KeyError)):
+                        batch.load_config(path)
+            missing = {k: v for k, v in good.items() if k != "lease_hours"}
+            path.write_text(json.dumps(missing))
+            with self.assertRaises(ValueError):
+                batch.load_config(path)
+            # Offline: the plan names its source and takes nothing from the queue.
+            path.write_text(json.dumps(good))
+            out = io.StringIO()
+            with patch.object(batch.subprocess, "run", side_effect=AssertionError("offline")), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory)]), 0)
+            event = json.loads(out.getvalue())
+            self.assertEqual((event["source"], event["allocated_pages"]), ("queue", 0))
+        finally:
+            for file in directory.iterdir():
+                file.unlink()
+            directory.rmdir()
+
+
+class QueueTransportTests(unittest.TestCase):
+    def setUp(self):
+        self.config = queue_config()
+        self.transport = batch.Transport(self.config, Path("."))
+
+    def test_claim_step_variables_and_nonce(self):
+        sent = {}
+
+        def step(target, name, **variables):
+            sent.update(target=target, name=name, **variables)
+
+        summary = {"schema_version": 1, "nonce": None, "claims": [message(1)]}
+
+        def blob(name):
+            self.assertEqual(name, "scheduler/claims.json")
+            return {**summary, "nonce": sent["CLAIM_NONCE"]}
+
+        with patch.object(self.transport, "step", side_effect=step), \
+                patch.object(self.transport, "blob", side_effect=blob):
+            self.assertEqual(self.transport.claim(3), [message(1)])
+        self.assertEqual((sent["target"], sent["name"]), ("handoff", "claim"))
+        self.assertEqual((sent["CLAIM_MAX"], sent["CLAIM_QUEUES"], sent["CLAIM_LEASE_HOURS"]),
+                         (3, "ocr-bulk", 96))
+        self.assertEqual(sent["HANDOFF_MANIFEST"], "v1/manifest.parquet")
+        with patch.object(self.transport, "step"), \
+                patch.object(self.transport, "blob", return_value={**summary, "nonce": "other"}), \
+                self.assertRaisesRegex(ValueError, "stale/concurrent"):
+            self.transport.claim(1)
+
+    def test_a_failed_claim_step_still_returns_the_claims_it_made(self):
+        def step(*args, **kwargs):
+            raise RuntimeError("handoff/claim failed")
+
+        def blob(name):
+            return {"schema_version": 1, "nonce": nonce["value"], "claims": [message(1)]}
+
+        nonce = {}
+        original = batch.uuid.uuid4
+        with patch.object(self.transport, "step", side_effect=step), \
+                patch.object(self.transport, "blob", side_effect=blob):
+            with patch.object(batch.uuid, "uuid4") as make:
+                make.return_value = original()
+                nonce["value"] = make.return_value.hex
+                with self.assertRaises(batch.ClaimFailed) as caught:
+                    self.transport.claim(2)
+        self.assertEqual(caught.exception.claims, [message(1)])
+        # No summary: the plain failure, nothing to keep.
+        with patch.object(self.transport, "step", side_effect=step), \
+                patch.object(self.transport, "blob", side_effect=RuntimeError("no blob")), \
+                self.assertRaisesRegex(RuntimeError, "claim failed"):
+            self.transport.claim(2)
+
+    def test_push_pages_reads_what_the_script_reports(self):
+        base = "keep/test_batch/sn12345678/1900-01-01/1/"
+        # The script takes a page without "keep/", prints the pushed path with it, and names a
+        # missing page without it.
+        output = f"pushed {base}1.jp2\nmissing {base[5:]}2\n"
+        with patch.object(self.transport, "run", return_value=output) as run:
+            found, missing = self.transport.push_pages([base + "1", base + "2"])
+        self.assertEqual((found, missing), ({base + "1": base + "1.jp2"}, [base + "2"]))
+        argv = run.call_args.args[0]
+        pages = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--keep-page"]
+        self.assertEqual(pages, [base[5:] + "1", base[5:] + "2"])
+        self.assertEqual(run.call_args.kwargs["ok"], (0, 3))
+        # A page the script said nothing about is an error, not a quiet skip.
+        with patch.object(self.transport, "run", return_value=f"pushed {base}1.jp2\n"), \
+                self.assertRaisesRegex(ValueError, "account for every"):
+            self.transport.push_pages([base + "1", base + "2"])
+
+    def test_push_pages_against_the_real_push_script(self):
+        directory = Path(__file__).parent.resolve() / (".push-test-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            scans, manifests = directory / "scans", directory / "manifests"
+            for number, ext in ((1, "jp2"), (3, "jpg")):
+                scan = scans / "keep/test_batch/sn12345678/1900-01-01/1" / f"{number}.{ext}"
+                scan.parent.mkdir(parents=True, exist_ok=True)
+                scan.write_bytes(b"scan")
+                Path(f"{scan}.json").write_text("{}")
+            (manifests / "v1").mkdir(parents=True)
+            (manifests / "v1/manifest.parquet").write_bytes(b"manifest")
+            bin_dir = directory / "bin"
+            bin_dir.mkdir()
+            az = bin_dir / "az"
+            az.write_text('#!/usr/bin/env bash\n[ "$3" = show ] && exit 1\nexit 0\n')
+            az.chmod(0o755)
+            config = {**self.config, "scans_root": str(scans), "manifests_root": str(manifests),
+                      "push_command": [str(batch.REPO / "scripts/ocr-node/push-boinc-scan.sh")]}
+            transport = batch.Transport(config, directory)
+            base = "keep/test_batch/sn12345678/1900-01-01/1/"
+            with patch.dict(batch.os.environ, {"PATH": f"{bin_dir}:{batch.os.environ['PATH']}"}):
+                found, missing = transport.push_pages([base + "1", base + "2", base + "3"])
+            self.assertEqual(found, {base + "1": base + "1.jp2", base + "3": base + "3.jpg"})
+            self.assertEqual(missing, [base + "2"])
+        finally:
+            import shutil
+            shutil.rmtree(directory)
+
+    def test_queue_export_passes_claims_and_one_batch_per_step(self):
+        pages = [{"page": "sn12345678/1900-01-01/ed-1/seq-1", "batch": "aa_one",
+                  "scan": "/tank/ocr/scans/keep/aa_one/sn12345678/1900-01-01/1/1.jp2"},
+                 {"page": "sn12345678/1900-01-01/ed-1/seq-2", "batch": "bb_two",
+                  "scan": "/tank/ocr/scans/keep/bb_two/sn12345678/1900-01-01/1/2.jp2"}]
+        with patch.object(self.transport, "run", return_value="") as run:
+            self.transport.export(pages, ["a" * 64])
+        argvs = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(len(argvs), 2)  # no --scan push here: the scans went up when claimed
+        self.assertTrue(all("HANDOFF_CLAIMS=1" in argv for argv in argvs))
+        self.assertIn("HANDOFF_BATCH=aa_one", argvs[0])
+        self.assertIn("HANDOFF_BATCH=bb_two", argvs[1])
+        self.assertTrue(all("--scan" not in argv for argv in argvs))
+
+    def test_release_step(self):
+        with patch.object(self.transport, "run", return_value="") as run:
+            self.transport.release(["a_b", "c_d"])
+        argv = run.call_args.args[0]
+        self.assertIn("release", argv)
+        self.assertIn("HANDOFF_DOCS=a_b,c_d", argv)
+
+
 if __name__ == "__main__":
     unittest.main()

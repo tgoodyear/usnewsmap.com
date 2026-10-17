@@ -161,6 +161,7 @@ impl Fixture {
             plan: "pilot-test".into(),
             image: IMAGE.into(),
             timeout_secs: 600,
+            claims: None,
         };
         Self {
             tmp,
@@ -1597,4 +1598,420 @@ async fn pull_refuses_a_changed_page_or_another_jobs_record() {
     assert!(handoff::get_spool(container.as_ref(), &id, &server)
         .await
         .is_err());
+}
+
+// ----- Queue-fed work (#296): BOINC as a second consumer of the work queues.
+
+mod queue_feed {
+    use super::*;
+    use std::collections::HashSet;
+    use std::time::Duration;
+    use usnm_boinc::claim;
+    use usnm_ingest::ocr_local::{boinc::Snapshot, seed::newest_fetched};
+    use usnm_ocr_contract::{
+        fetched::{self, Fetched},
+        message::{OcrMessage, Reason},
+    };
+    use usnm_store::queue::BULK;
+
+    const PAGE: &str = "sn00000001/1900-01-01/ed-1/seq-1";
+    const DOC: &str = "sn00000001_1900-01-01_ed-1_seq-1";
+
+    struct Fed {
+        fx: Fixture,
+        handoff: Arc<dyn ObjectStore>,
+        message: OcrMessage,
+        queued: ledger::Queued,
+    }
+
+    /// A German page the seeder has queued: a ledger row and a message on `ocr-bulk`.
+    async fn fed(list_it: bool) -> Fed {
+        let fx = Fixture::new("ger").await;
+        let queued_at = Utc::now();
+        let message = OcrMessage {
+            v: 1,
+            page: PAGE.into(),
+            batch: "test_pilot".into(),
+            language: "deu".into(),
+            reason: Reason::Bulk,
+            score: Some(0.5),
+            queued_at: queued_at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        };
+        let queued = ledger::Queued {
+            doc_id: DOC.into(),
+            batch: "test_pilot".into(),
+            batch_version: 1,
+            reason: "bulk".into(),
+            language: "deu".into(),
+            plan: "seed-test".into(),
+            attempt: 2,
+            request_day: None,
+            queued_at: chrono::DateTime::parse_from_rfc3339(&message.queued_at)
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+        ledger::write_queued(
+            fx.stores.curated.as_ref(),
+            std::slice::from_ref(&queued),
+            queued.queued_at,
+            "seed-test-run",
+        )
+        .await
+        .unwrap();
+        fx.stores.queue.send(BULK, &message.encode()).await.unwrap();
+        let pages: HashSet<Fetched> = if list_it {
+            [Fetched {
+                batch: "test_pilot".into(),
+                doc_id: DOC.into(),
+            }]
+            .into()
+        } else {
+            HashSet::new()
+        };
+        fx.stores
+            .out
+            .put(
+                &fetched::path("v1", "node3", "20261016T000000Z"),
+                fetched::encode("v1", &pages).unwrap(),
+                "application/octet-stream",
+            )
+            .await
+            .unwrap();
+        let handoff = store(fx.tmp.path(), "handoff");
+        Fed {
+            fx,
+            handoff,
+            message,
+            queued,
+        }
+    }
+
+    async fn pull(f: &Fed, dir: &Path, lease: Duration) -> claim::Report {
+        let snapshot = Snapshot::load(&f.fx.state, f.fx.stores.reference.as_ref())
+            .await
+            .unwrap();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let (_, list) = newest_fetched(f.fx.stores.out.as_ref(), "v1")
+            .await
+            .unwrap();
+        let mut report = claim::Report::default();
+        claim::pull(
+            &claim::Sources {
+                queue: f.fx.stores.queue.as_ref(),
+                snapshot: &snapshot,
+                ledger: &ledger,
+                fetched: &list,
+                installed: &usnm_boinc::installed_models(),
+            },
+            &claim::Options {
+                queues: vec![BULK.into()],
+                max: 5,
+                max_receives: 10,
+                lease,
+            },
+            dir,
+            &mut report,
+        )
+        .await
+        .unwrap();
+        report
+    }
+
+    async fn publish_claim(f: &Fed, dir: &Path) {
+        f.handoff
+            .put(
+                &claim::path(DOC),
+                std::fs::read(dir.join(format!("{DOC}.json"))).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_queued_page_goes_through_boinc_and_its_message_is_deleted() {
+        let mut f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        let report = pull(&f, &claims, Duration::from_secs(3600)).await;
+        assert_eq!(
+            (report.claims.len(), report.released, report.stale),
+            (1, 0, 0)
+        );
+        assert_eq!(
+            report.claims[0].ledger,
+            usnm_boinc::LedgerRow::from_queued(&f.queued)
+        );
+        // Hidden, not gone, so a node does not read the page too.
+        assert!(f
+            .fx
+            .stores
+            .queue
+            .receive(BULK, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(f.fx.stores.queue.approximate_count(BULK).await.unwrap(), 1);
+        publish_claim(&f, &claims).await;
+
+        f.fx.options.claims = Some(claims);
+        let id = f.fx.export().await;
+        let record = usnm_boinc::load(&f.fx.options.root, &id).unwrap();
+        assert_eq!(record.job.message, f.message);
+        assert_eq!(record.plan, "pilot-test");
+        assert_eq!(record.queued().unwrap(), f.queued);
+        // The ledger already had the row: export wrote no second one.
+        let after = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        assert_eq!(after.outstanding(DOC), Some(&f.queued));
+        assert_eq!(
+            f.fx.stores
+                .curated
+                .list("ocr-local/queued")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        // A replay is the same job.
+        assert_eq!(f.fx.export().await, id);
+
+        // Not published yet: the message must stay hidden.
+        assert!(
+            claim::finish(f.handoff.as_ref(), f.fx.stores.queue.as_ref(), &record)
+                .await
+                .is_err()
+        );
+
+        let files = f.fx.result(&id);
+        f.fx.import(&id, &files).await.unwrap();
+        let status = sync::run(
+            &f.fx.state,
+            "test-boinc",
+            &f.fx.stores,
+            &sync::Options::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.last_run.imported, 1);
+        assert!(status.last_run.rejected.is_empty());
+
+        let record = usnm_boinc::load(&f.fx.options.root, &id).unwrap();
+        assert_eq!(record.stage, Stage::Published);
+        let q = f.fx.stores.queue.as_ref();
+        assert_eq!(
+            claim::finish(f.handoff.as_ref(), q, &record).await.unwrap(),
+            claim::Ended::Deleted
+        );
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+        // Again: nothing more to delete.
+        assert_eq!(
+            claim::finish(f.handoff.as_ref(), q, &record).await.unwrap(),
+            claim::Ended::Already
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_without_a_cached_scan_is_left_alone() {
+        let f = fed(false).await;
+        let report = pull(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            Duration::from_secs(3600),
+        )
+        .await;
+        // The front of the queue holds nothing usable, so nothing was received.
+        assert_eq!(
+            (report.claims.len(), report.received, report.released),
+            (0, 0, 0)
+        );
+        let m =
+            f.fx.stores
+                .queue
+                .receive(BULK, Duration::from_secs(60))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(m.dequeue_count, 1);
+    }
+
+    #[tokio::test]
+    async fn an_answered_page_is_deleted_and_a_released_claim_goes_back() {
+        let f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        publish_claim(&f, &claims).await;
+        let q = f.fx.stores.queue.as_ref();
+        // Giving the claim back leaves one message to read, at count zero.
+        assert!(claim::release(f.handoff.as_ref(), q, DOC).await.unwrap());
+        assert!(!claim::release(f.handoff.as_ref(), q, DOC).await.unwrap());
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 1);
+        let again = q
+            .receive(BULK, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (again.dequeue_count, again.text.as_str()),
+            (1, f.message.encode().as_str())
+        );
+        q.delete(&again).await.unwrap();
+
+        // The page is answered while its message is still queued: it is deleted.
+        q.send(BULK, &f.message.encode()).await.unwrap();
+        ledger::write_outcomes(
+            f.fx.stores.curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: DOC.into(),
+                outcome: ledger::IMPORTED.into(),
+                cause: None,
+                kind: None,
+                source: "pages/x.parquet".into(),
+                at: f.queued.queued_at + chrono::Duration::minutes(5),
+                run: "sync".into(),
+            }],
+            f.queued.queued_at + chrono::Duration::minutes(5),
+            "sync-run",
+        )
+        .await
+        .unwrap();
+        let report = pull(
+            &f,
+            &f.fx.tmp.path().join("claims2"),
+            Duration::from_secs(3600),
+        )
+        .await;
+        assert_eq!((report.claims.len(), report.stale), (0, 1));
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_short_queue_is_not_cycled_and_nothing_is_stranded() {
+        let f = fed(true).await;
+        // A page the ledger has never heard of sits ahead of the usable one.
+        let stray = OcrMessage {
+            page: "sn00000001/1900-01-01/ed-1/seq-2".into(),
+            ..f.message.clone()
+        };
+        let q = f.fx.stores.queue.as_ref();
+        let first = q
+            .receive(BULK, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+        q.delete(&first).await.unwrap();
+        q.send(BULK, &stray.encode()).await.unwrap();
+        q.send(BULK, &f.message.encode()).await.unwrap();
+        let report = pull(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            Duration::from_secs(3600),
+        )
+        .await;
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].message().unwrap(), f.message);
+        // The stray went back (and went round again once), but is visible, not held for
+        // the lease: a node can read it now.
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 2);
+        let back = q
+            .receive(BULK, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.text, stray.encode());
+        assert_eq!(back.dequeue_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_delivery_of_a_claimed_page_keeps_the_first_receipt() {
+        let f = fed(true).await;
+        let q = f.fx.stores.queue.as_ref();
+        q.send(BULK, &f.message.encode()).await.unwrap(); // the same page twice
+        let claims = f.fx.tmp.path().join("claims");
+        let report = pull(&f, &claims, Duration::from_secs(3600)).await;
+        assert_eq!((report.claims.len(), report.stale), (1, 1));
+        // The file on disk is the one claim the summary reports, and nothing is left queued.
+        let on_disk = claim::read_local(&claims, DOC).unwrap();
+        assert_eq!(on_disk, report.claims[0]);
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_a_node_imported_first_supersedes_the_boinc_job() {
+        let mut f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        f.fx.options.claims = Some(claims);
+        let id = f.fx.export().await;
+        // The claim lapsed and a node answered the page: its import is in the ledger.
+        let at = f.queued.queued_at + chrono::Duration::minutes(5);
+        ledger::write_outcomes(
+            f.fx.stores.curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: DOC.into(),
+                outcome: ledger::IMPORTED.into(),
+                cause: None,
+                kind: None,
+                source: "pages/by-a-node.parquet".into(),
+                at,
+                run: "sync".into(),
+            }],
+            at,
+            "node-run",
+        )
+        .await
+        .unwrap();
+        let files = f.fx.result(&id);
+        f.fx.import(&id, &files).await.unwrap();
+        let record = usnm_boinc::load(&f.fx.options.root, &id).unwrap();
+        assert_eq!(record.stage, Stage::Published);
+        assert!(record.error.unwrap().starts_with("superseded"));
+        // Nothing was published for it.
+        assert!(f.fx.stores.out.list("pages").await.unwrap().is_empty());
+        assert!(f.fx.stores.out.list("alto").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_explicit_cohort_job_is_never_superseded() {
+        let f = Fixture::new("ger").await;
+        let id = f.export().await;
+        let key = usnm_boinc::load(&f.options.root, &id)
+            .unwrap()
+            .job
+            .message
+            .key()
+            .unwrap();
+        let at = Utc::now() + chrono::Duration::minutes(5);
+        ledger::write_outcomes(
+            f.stores.curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: key.doc_id(),
+                outcome: ledger::IMPORTED.into(),
+                cause: None,
+                kind: None,
+                source: "pages/elsewhere.parquet".into(),
+                at,
+                run: "sync".into(),
+            }],
+            at,
+            "other-run",
+        )
+        .await
+        .unwrap();
+        let files = f.result(&id);
+        assert!(f.import(&id, &files).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_cohort_job_is_not_queue_fed() {
+        let f = Fixture::new("ger").await;
+        let id = f.export().await;
+        let record = usnm_boinc::load(&f.options.root, &id).unwrap();
+        assert!(record.ledger.is_none());
+        let handoff = store(f.tmp.path(), "handoff");
+        assert_eq!(
+            claim::finish(handoff.as_ref(), f.stores.queue.as_ref(), &record)
+                .await
+                .unwrap(),
+            claim::Ended::NotQueueFed
+        );
+    }
 }

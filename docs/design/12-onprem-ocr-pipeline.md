@@ -290,7 +290,19 @@ stateDiagram-v2
   Hidden --> DeadLettered: invalid, permanent LoC error, or received a 6th time
   Done --> [*]
   DeadLettered --> [*]: drained by ocr-sync
+  Visible --> Claimed: BOINC claim step (Get Messages, hidden up to 96 h)
+  Claimed --> Done: collect published the page, Delete Message
+  Claimed --> Visible: lease ran out (job failed or never collected)
+  Visible --> Visible: BOINC can't use it, so it is sent back (a copy sent, the original deleted)
+  Visible --> Done: BOINC finds its page answered in the ledger, Delete Message
 ```
+
+BOINC reads the same two queues as the nodes (the hand-off job's `claim` step,
+`docs/boinc-batch-scheduler.md#queue-fed-work`), so a page has one place in line whichever pool
+takes it. A claim keeps the message hidden for its lease (`Claimed`), with the pop receipt in
+`boinc-handoff/claims/`; the message is only deleted once the page is in `ocr-out`. The hand-off
+job's identity has the nodes' queue roles plus Message Sender, so it can put an unusable message
+back, and no Update Message.
 
 ### 12.3.4 Result pickup and release
 

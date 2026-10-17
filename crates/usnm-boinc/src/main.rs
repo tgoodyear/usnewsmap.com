@@ -40,6 +40,10 @@ enum Commands {
         image: String,
         #[arg(long, default_value_t = 600)]
         timeout_secs: u32,
+        /// A directory of `claim pull` files (`<doc_id>.json`) for these pages: they came off
+        /// the work queues, so each job keeps its queue message and ledger row.
+        #[arg(long)]
+        claims: Option<PathBuf>,
         #[arg(long)]
         curated_url: String,
         #[arg(long)]
@@ -49,6 +53,9 @@ enum Commands {
         #[arg(long)]
         cosmos: Option<String>,
     },
+    /// BOINC as a consumer of the OCR work queues (#296).
+    #[command(subcommand)]
+    Claim(ClaimCmd),
     /// Run one page inside the pinned BOINC worker container.
     Work {
         #[arg(long, default_value = "/work")]
@@ -288,6 +295,72 @@ async fn ndlocr(command: Ndlocr) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Subcommand)]
+enum ClaimCmd {
+    /// Hand-off job: take usable pages off the work queues, writing one claim file each
+    /// and a summary. Messages that can't be used here go back for the nodes.
+    Pull {
+        /// The exchange account's queue endpoint (https://<account>.queue.core.windows.net).
+        #[arg(long)]
+        queue_url: String,
+        /// The exchange account's ocr-out, where the nodes' fetched-scans lists are.
+        #[arg(long)]
+        out_url: String,
+        #[arg(long)]
+        curated_url: String,
+        #[arg(long)]
+        reference_url: String,
+        /// The prefetch manifest version the cohort uses (the fetched list is per version).
+        #[arg(long)]
+        manifest_version: String,
+        /// A queue to take from; repeat for more, in order. Default: ocr-bulk only.
+        #[arg(long = "queue", default_value = "ocr-bulk")]
+        queues: Vec<String>,
+        #[arg(long, default_value_t = 10)]
+        max: usize,
+        /// Most messages received, usable or not (default: three times --max).
+        #[arg(long)]
+        max_receives: Option<usize>,
+        /// Hours a claimed message stays hidden.
+        #[arg(long, default_value_t = 96)]
+        lease_hours: u64,
+        /// Where the claim files go.
+        #[arg(long)]
+        out: PathBuf,
+        /// Where the summary goes.
+        #[arg(long)]
+        summary: PathBuf,
+        /// Echoed in the summary, so a reader can tell this run's from an older one.
+        #[arg(long)]
+        nonce: String,
+        #[arg(long, required_unless_present = "cosmos", conflicts_with = "cosmos")]
+        state_file: Option<PathBuf>,
+        #[arg(long)]
+        cosmos: Option<String>,
+    },
+    /// Hand-off job: after `collect` published a job, delete its queue message.
+    Finish {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        job: String,
+        #[arg(long)]
+        handoff_url: String,
+        #[arg(long)]
+        queue_url: String,
+    },
+    /// Hand-off job: give claimed pages back to the queue, for the nodes.
+    Release {
+        #[arg(long)]
+        handoff_url: String,
+        #[arg(long)]
+        queue_url: String,
+        /// A doc id (`sn83045462_1890-05-03_ed-1_seq-7`); repeat for more.
+        #[arg(long = "doc-id", required = true)]
+        doc_ids: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1038,6 +1111,7 @@ async fn main() -> anyhow::Result<()> {
             plan,
             image,
             timeout_secs,
+            claims,
             curated_url,
             reference_url,
             state_file,
@@ -1066,6 +1140,7 @@ async fn main() -> anyhow::Result<()> {
                     plan,
                     image,
                     timeout_secs,
+                    claims,
                 },
                 &State::new(docs),
                 store.as_ref(),
@@ -1159,11 +1234,160 @@ async fn main() -> anyhow::Result<()> {
         Commands::Quality(q) => quality(q).await?,
         Commands::Qwen(q) => qwen(q).await?,
         Commands::Handoff(h) => handoff(h).await?,
+        Commands::Claim(c) => claim(c).await?,
         Commands::Status { root } => {
             for r in records(&root)? {
                 println!(
                     "{}",
                     serde_json::json!({"job":r.job.id,"workunit":r.job.workunit(),"page":r.job.message.page,"stage":r.stage,"error":r.error})
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn claim(c: ClaimCmd) -> anyhow::Result<()> {
+    use usnm_boinc::claim as x;
+    match c {
+        ClaimCmd::Pull {
+            queue_url,
+            out_url,
+            curated_url,
+            reference_url,
+            manifest_version,
+            queues,
+            max,
+            max_receives,
+            lease_hours,
+            out,
+            summary,
+            nonce,
+            state_file,
+            cosmos,
+        } => {
+            anyhow::ensure!(
+                usnm_store::is_safe_segment(&manifest_version),
+                "invalid --manifest-version"
+            );
+            let docs: Arc<dyn DocStore> = if let Some(endpoint) = cosmos {
+                Arc::new(CosmosDocs::new(
+                    &endpoint,
+                    usnm_state::DATABASE,
+                    usnm_store::credential::from_env_for(usnm_store::credential::COSMOS_RESOURCE),
+                )?)
+            } else {
+                Arc::new(FileDocs::open(
+                    state_file.context("--state-file required")?,
+                )?)
+            };
+            let state = State::new(docs);
+            let curated = usnm_store::open(&curated_url)?;
+            let reference = usnm_store::open(&reference_url)?;
+            let exchange_out = usnm_store::open(&out_url)?;
+            let queue = usnm_store::queue::open(&queue_url)?;
+            // The lock keeps the ledger as it is while messages are judged against it.
+            let held = usnm_ingest::ocr_local::boinc::Held::take(&state).await?;
+            let mut report = x::Report::default();
+            let pulled = async {
+                let snapshot =
+                    usnm_ingest::ocr_local::boinc::Snapshot::load(&state, reference.as_ref())
+                        .await?;
+                let ledger = usnm_ingest::ocr_local::ledger::load(curated.as_ref()).await?;
+                let (_, fetched) = usnm_ingest::ocr_local::seed::newest_fetched(
+                    exchange_out.as_ref(),
+                    &manifest_version,
+                )
+                .await?;
+                let installed = usnm_boinc::installed_models();
+                x::pull(
+                    &x::Sources {
+                        queue: queue.as_ref(),
+                        snapshot: &snapshot,
+                        ledger: &ledger,
+                        fetched: &fetched,
+                        installed: &installed,
+                    },
+                    &x::Options {
+                        queues,
+                        max,
+                        max_receives: max_receives.unwrap_or(max * 3).max(max),
+                        lease: std::time::Duration::from_secs(lease_hours * 3600),
+                    },
+                    &out,
+                    &mut report,
+                )
+                .await
+            }
+            .await;
+            let unlocked = held.release(&state).await;
+            let mut claims = Vec::new();
+            for claim in &report.claims {
+                let m = claim.message()?;
+                let key = m.key()?;
+                claims.push(serde_json::json!({
+                    "page": m.page,
+                    "doc_id": key.doc_id(),
+                    "batch": m.batch,
+                    "queue": claim.queue,
+                    "scan": format!("keep/{}/{}/{}/{}/{}", m.batch, key.lccn, key.date, key.edition, key.seq),
+                    "message_sha256": usnm_ocr_contract::boinc::sha256(claim.text.as_bytes()),
+                    "lease_until": claim.lease_until,
+                }));
+            }
+            let body = serde_json::json!({
+                "schema_version": 1,
+                "nonce": nonce,
+                "created_at": chrono::Utc::now().timestamp(),
+                "received": report.received,
+                "released": report.released,
+                "stale": report.stale,
+                "claims": claims,
+            });
+            usnm_boinc::atomic(&summary, &serde_json::to_vec_pretty(&body)?)?;
+            eprintln!(
+                "claimed {}, sent back {}, deleted {} answered, of {} received",
+                report.claims.len(),
+                report.released,
+                report.stale,
+                report.received
+            );
+            // The summary says what was taken even when the run then failed.
+            pulled?;
+            unlocked?;
+        }
+        ClaimCmd::Finish {
+            root,
+            job,
+            handoff_url,
+            queue_url,
+        } => {
+            let record = usnm_boinc::load(&root, &job)?;
+            let handoff = usnm_store::open(&handoff_url)?;
+            let queue = usnm_store::queue::open(&queue_url)?;
+            let ended = x::finish(handoff.as_ref(), queue.as_ref(), &record).await?;
+            println!("{ended:?}");
+        }
+        ClaimCmd::Release {
+            handoff_url,
+            queue_url,
+            doc_ids,
+        } => {
+            let handoff = usnm_store::open(&handoff_url)?;
+            let queue = usnm_store::queue::open(&queue_url)?;
+            for doc_id in doc_ids {
+                anyhow::ensure!(
+                    usnm_core::ids::PageKey::from_doc_id(&doc_id).is_ok(),
+                    "invalid doc id"
+                );
+                let released = x::release(handoff.as_ref(), queue.as_ref(), &doc_id).await?;
+                println!(
+                    "{doc_id} {}",
+                    if released {
+                        "released"
+                    } else {
+                        "already ended"
+                    }
                 );
             }
         }
