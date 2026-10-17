@@ -62,6 +62,12 @@ enum Commands {
         project: PathBuf,
         #[arg(long)]
         job: String,
+        /// Public HTTPS prefix serving immutable content-addressed page bytes.
+        #[arg(long, requires = "download_root")]
+        download_base_url: Option<String>,
+        /// Existing local directory mapped to download-base-url (no symlinks).
+        #[arg(long, requires = "download_base_url")]
+        download_root: Option<PathBuf>,
     },
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile {
@@ -1077,8 +1083,20 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Work { dir } => usnm_boinc::worker::run(&dir).await?,
-        Commands::Submit { root, project, job } => {
-            usnm_boinc::submit::submit(&root, &project, &job).await?
+        Commands::Submit {
+            root,
+            project,
+            job,
+            download_base_url,
+            download_root,
+        } => {
+            let download = match (download_base_url, download_root) {
+                (Some(base), Some(root)) => Some(usnm_boinc::submit::Download::new(&base, &root)?),
+                (None, None) => None,
+                _ => anyhow::bail!("download-base-url and download-root must be supplied together"),
+            };
+            usnm_boinc::submit::submit_with_download(&root, &project, &job, download.as_ref())
+                .await?
         }
         Commands::Reconcile { root, job, found } => {
             usnm_boinc::submit::reconcile(&root, &job, matches!(found, Found::Present))?

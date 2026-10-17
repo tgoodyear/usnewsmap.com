@@ -287,6 +287,48 @@ target/debug/usnm-boinc submit --root /srv/usnm/boinc-state \
   --project /srv/boinc/newspapers --job JOB_ID
 ```
 
+#### Optional local page hosting (native OCR pilot only, #783)
+
+The native `usnm-boinc submit` command alone accepts paired
+`--download-base-url https://downloads.example.org/ocr-pages/` and
+`--download-root /srv/usnm/immutable-ocr-pages` flags. Default submission is
+unchanged. This does **not** migrate gold, Qwen, quality, Surya, NDLOCR, model,
+application, upload or result files; the scheduler, application and database
+remain in Azure.
+
+Provision the existing absolute local directory without symlinks in any path
+component and without group/world write access. This must be the trusted
+producer's writable path, **not** a web-server container's read-only bind mount.
+Map that directory exactly to
+the public HTTPS prefix, with a valid certificate, anonymous GET and no redirects
+or rewriting. Submission verifies the staged SHA-256, publishes a create-only
+`<root>/<sha256>` file as read-only `0444`, and fsyncs the file and directory.
+An existing object must be identical and read-only; conflicts are never replaced.
+Keep the directory operator-controlled and its content immutable; retain files
+for outstanding work, retries and rollback, with backup and disk headroom.
+
+Before writing `Submitting`, every attempt streams a fresh HTTP 200 GET,
+checking exact size and SHA-256 with the existing scan-size cap and a 120-second
+request timeout. DNS resolution has a separate 10-second timeout; only public
+addresses are allowed and pinned, proxies and redirects are disabled. Local
+existence is not readiness proof. Unavailable/mismatched downloads leave the
+job reserved without invoking stock tools.
+
+Only tiny `request.json` is then staged on the project share. Stock
+`create_work --remote_file URL nbytes md5` occupies input position 0; the
+request filename remains position 1. At pinned BOINC commit
+`22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`,
+[`tools/create_work.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/tools/create_work.cpp)
+appends remote descriptors in argument order and
+[`tools/process_input_template.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/tools/process_input_template.cpp)
+names them `jf_<md5>` while preserving the supplied URL verbatim (the URL
+basename need not equal that physical name). The unchanged `usnm_ocr_in`
+template maps them to logical `page` and `request.json`. Any failure after
+write-ahead remains uncertain and requires existing explicit reconciliation.
+Allocation, trust, validation, acceptance and publication gates are unchanged.
+Before enabling this opt-in, verify ingress from outside the LAN and adequate
+upload bandwidth; no service or deployment change is included here.
+
 Attach one friend's stock BOINC client to the project. Configure idle-only
 processing and conservative preferences, and update the project. After the task
 uploads and the assimilator spools it:
