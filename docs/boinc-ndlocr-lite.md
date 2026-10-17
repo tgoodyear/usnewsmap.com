@@ -290,6 +290,23 @@ not be the winning row. Only then can Japanese/Latin queries and source
 credits against the newly served version establish final acceptance, rather
 than merely finding the page's older native OCR.
 
+A read-only check on 17 October downloaded the four current same-issue
+parts. Three contain this document; the `.3.parquet` part contains another
+page. The BOINC part is byte-identical to the retained canonical collection,
+SHA-256 `a55a3f72505803e0cb99d01864cc6362bab5e921c074238fe957120077fb9fe8`.
+Its `ocred_at`, `2026-10-16T22:07:36.345231Z`, is newer than both native
+copies (`2026-10-05T17:12:02.136580Z` and
+`2026-10-05T01:54:36.725406Z`), so it wins among these same-issue candidates.
+All three rows name batch `dlc_ballston` and have identical 7,607-character
+text and text hashes. A text-search hit alone therefore cannot distinguish
+BOINC from native OCR. The BOINC row's engine is
+`ndlocr-lite/636d1cfeb1331f89f4048f416e49e23a09a714b5 default`;
+the native rows use
+`ndlocr-lite 636d1cfeb1331f89f4048f416e49e23a09a714b5`.
+This bounded present-state comparison does not prove the running release's
+frozen release-wide winner or its batch/catalog qualification. Preserve the
+exact winning part/hash and engine provenance at release acceptance.
+
 Do not start a competing release, change the running full-rebuild settings,
 break locks or prune old indexes to advance this gate. The original accepted
 bytes and state remain intact. This already-native page is separate from the

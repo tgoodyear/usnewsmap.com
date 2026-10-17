@@ -407,6 +407,70 @@ are separate from fresh-page OCR execution, native handoff, release/search and
 Intel-client acceptance. No allocation, continuous-feed activation or
 backlog-policy exception is authorized by this publisher pin.
 
+### Fresh-page Mac computation, collection and import, 17 October 2026
+
+The normal one-page controller admitted
+`sn82014782/1789-04-04/ed-2/seq-1` from base batch `kyu_frenchie`
+(LoC version `kyu_frenchie_ver02`) under plan
+`boinc-mac-current247c-20261017`. Four earlier ticks correctly held at
+617 pending workunits against the normal target of 600. The existing managed
+laptop client had 59 successful completed results waiting to report; an
+identity-guarded ordinary project update reported them, reducing pending
+work to 558. The unchanged allocation/configuration and persisted controller
+state then admitted exactly one page. No cap exception, task cancellation,
+reprioritization, account change or client-preference change was used.
+
+The existing Mac fetched the page through ordinary scheduling; this was not
+a targeted Gold challenge or a relabeled Linux result. Native evidence:
+
+| Field                        | Accepted value                                                     |
+| ---------------------------- | ------------------------------------------------------------------ |
+| Job                          | `cae8426495087616cdf46bcadbf648406c96c1e24561b81aa99f6d7fcee6b232` |
+| Workunit / canonical result  | `16738` / `32119`                                                  |
+| Canonical host / app version | `1` / `42` (Apple Silicon OCR 1.5)                                 |
+| Outcome / validation / exit  | `1` / `1` / `0`                                                    |
+| Assimilation / error mask    | `2` / `0`                                                          |
+| Canonical report SHA-256     | `d5ac93f0be4e05258affaddecb642b01e38f4caf31f4fb40dde40e0168f51b6e` |
+| Input scan SHA-256           | `64c0a1122e17ced977e1540536acdd88a8fbdeff268192fb634f832de729d958` |
+| Output text SHA-256          | `92d54913897d94a50dda409f1610f9c291e88dfe0a557e482ba7e2c88e4d52de` |
+
+The canonical report names current worker `247c`, Tesseract 5.5.0 and
+profile `eng` / PSM 3 / DPI 300. Global scoped trust stayed at SHA-256
+`3bfc19016cf38b47455faa4ddbe8fbbe27577c410c1d8e74a2ccdd8a0a6a651b`.
+Normal controller collection then completed through `spool-out` and
+trust-checked handoff execution `usnm-boinc-handoff-caj-prod-71j1xrr`
+(Succeeded). The durable dispatch record is `published`; the one-page
+controller reports selected 1 / published 1 / collection backlog 0.
+This marker means published to `ocr-out`, not to public search.
+
+Normal pickup execution `usnm-ocrs-caj-prod-ye8ldw4` also Succeeded.
+Its durable import record
+`ocr-local/import/20261017T091059970936Z-2a10320b-0000.json`
+records the exact BOINC page part and ALTO as `imported`. The merged part is
+`ocr-local/pages/sn82014782/20261017T091059970936Z-2a10320b-0000.parquet`,
+SHA-256 `ed7f2968107ced85fec4031c7d327bcf26413c3be9680bb94d4ae702a6e0e86e`.
+Its one row names the expected document, node `boinc-cae842649508`,
+worker `247c`, `route=boinc@r1` and 8,669 normalized characters. The
+normalized text SHA-256 is
+`0747212670a1df26014df567c1226180eaee373da196775990aeb55ba99c8d4b`;
+the collector applies `normalize_ocr` after validating the raw canonical
+text hash, so this is not the raw worker text hash above.
+
+Stored metric-v2 scores detect English for both readings: our damage rate
+is `0.20512820512820512`, versus LoC's `0.2841726618705036`, with head-word
+counts 341 versus 199. These stored scores clear rule v1's 0.05 margin and
+head-count test, but are an estimate: a real release scores the texts again,
+checks title languages, revocations and competing candidates, and records
+its actual selection. The already-running `pages-v20261017-1` rebuild
+started before this import; do not assume its frozen local-OCR inputs
+include the new part or restart its owner's writer to force inclusion.
+
+This proves fresh-page Mac computation, native canonical assimilation,
+trust-checked handoff and native import. Actual release selection,
+new-version search/source credits and Intel-client execution remain open.
+Retain the same controller state and journals; never manufacture another
+submission or reset the page to fresh.
+
 ## Server and maintainer on different hosts
 
 The bridge has no remote-submit API. `submit` and `reconcile` must run on the
