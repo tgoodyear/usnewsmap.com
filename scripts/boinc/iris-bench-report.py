@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarizes scripts/boinc/iris-bench.sh trials (#736) into the issue's results table.
 
-  iris-bench-report.py DIR [--reference LABEL_PREFIX]
+  iris-bench-report.py --dir DIR [--reference LABEL]
 
 Per label: whole-trial wall time (container start to exit, so startup is included), crops/min,
 pipeline load ms, generate ms p50/p95 (first crop in each group reported separately), tokens,
@@ -60,7 +60,7 @@ def cpu_mean(path: Path):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("dir", type=Path)
+    parser.add_argument("--dir", type=Path, required=True)
     parser.add_argument("--reference", default="n1_r1")
     args = parser.parse_args()
     reference = {}

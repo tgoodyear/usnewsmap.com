@@ -3,7 +3,7 @@
 Raw per-crop results (`*.json`, with text, tokens, per-crop timings, cgroup counters), trial wall
 times (`*.time.txt`), whole-trial `intel_gpu_top` and `vmstat` samples (`telemetry.tar.gz`), and the
 generated table (`summary.md`). Regenerate the table with
-`python3 scripts/boinc/iris-bench-report.py DIR` over the unpacked artifacts.
+`python3 scripts/boinc/iris-bench-report.py --dir DIR` over the unpacked artifacts.
 
 ## Setup
 

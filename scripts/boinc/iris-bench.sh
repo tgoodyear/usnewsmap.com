@@ -1,13 +1,21 @@
 #!/bin/sh
 # Experiment driver for #736, run on the Proxmox host that owns the Iris Xe (BOINC stopped).
-#   iris-bench.sh LABEL COUNT N [cache-key [offset]]
+#   iris-bench.sh --label L --count C --n N [--cache-key K] [--offset O]
 # Runs ocr/boinc/iris/bench.py in the pinned worker image inside CT $CT with the worker's limits
 # (job.toml create_args: read-only root, no network, 9 GiB, tmpfs /tmp), while sampling the whole
 # trial from outside the container: GPU engines/frequency (intel_gpu_top), CPU and memory (vmstat).
 # Output: $OUT/LABEL.{json,gpu.json,vmstat.txt,time.txt}. A cache-key mounts a persistent writable
 # CACHE_DIR (cold the first time; delete $CACHE/KEY to reset).
 set -eu
-LABEL=$1 COUNT=$2 N=$3 KEY=${4:-} OFFSET=${5:-0}
+LABEL="" COUNT="" N="" KEY="" OFFSET=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --label) LABEL=$2;; --count) COUNT=$2;; --n) N=$2;; --cache-key) KEY=$2;; --offset) OFFSET=$2;;
+    *) echo "unknown option $1" >&2; exit 2;;
+  esac
+  shift 2
+done
+: "${LABEL:?--label}" "${COUNT:?--count}" "${N:?--n}"
 CT=${CT:-110}
 IMAGE=${IMAGE:?set IMAGE to the worker image id}
 OUT=${OUT:-/root/iris-bench}
