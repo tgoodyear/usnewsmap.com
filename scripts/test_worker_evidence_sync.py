@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -111,6 +112,30 @@ class SyncTests(unittest.TestCase):
         self.assertEqual((self.spool / "acknowledged" / name).read_bytes(),
                          (self.retained / name).read_bytes())
         self.assertEqual(w.acknowledge(self.spool, [(name, checksum)]), {"acknowledged": 1})
+
+    def test_sync_acknowledges_only_after_snapshot_and_replays_on_snapshot_failure(self):
+        self.capture()
+        bundle = w.export(self.spool, "")
+        state = self.root / "sync"
+        snapshot = self.root / "snapshot.json"
+        args = SimpleNamespace(db=self.db, state_dir=state, source="worker-test",
+                               host="root@worker.example.invalid", identity="dedicated-key",
+                               snapshot=snapshot)
+
+        def transfer(*_, stdout, **kwargs):
+            stdout.write(c.canonical(bundle).encode())
+
+        with patch.object(w.subprocess, "run", side_effect=transfer), \
+                patch.object(w.subprocess, "check_output") as ack:
+            with patch.object(c, "atomic_snapshot", side_effect=OSError("disk failure")):
+                with self.assertRaises(OSError):
+                    w.sync(args)
+            ack.assert_not_called()
+            ack.return_value = '{"acknowledged":1}'
+            self.assertEqual(w.sync(args)["inserted"], 0)
+            ack.assert_called_once()
+            self.assertIn("ack ", ack.call_args.args[0][-1])
+            self.assertTrue(snapshot.exists())
 
 
 if __name__ == "__main__":
