@@ -1,5 +1,70 @@
 # OCR gold set
 
+## Issue-disjoint current-worker calibration (17 October 2026)
+
+For #527/#751, the original BLN600 archive's publication/date metadata excluded
+all 28 issues represented by the old 142-crop benchmark. An outcome-blind hash
+ordering selected one excerpt per unused issue: 30 for calibration and the next
+30 for sealed testing. These are newspaper excerpts, not asserted independent
+original pages or absent from model training. The experiment is English BLN
+only; it does not establish multilingual or American-newspaper performance.
+Selection SHA-256:
+`204b2d1b468eea53cdab3b9fadd289b90e6cdc55454da88f046efcf44b8a0054`.
+Normal reference-only bundle manifests are calibration
+`d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f`
+and heldout
+`2bc0e24ebdf20adfb5577eab8634279391ba135f3ffd066d0a6cc4a5307056ea`.
+Original archives/licences stayed unchanged; only counts are reported here.
+
+Actual ARM runs used production worker
+`sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa`,
+base `sha256:7bc7b78658562430ec95a1b1048c2f689c26f8d2443d6ed0c5e981e311cbab93`,
+Tesseract 5.5.0, PSM 3 and 300 DPI. Fault controls ran the real engine but
+returned empty output for 1, 2 or 4 outcome-blind hash-ranked crops; report
+scores were not edited. Each run scored all 30 crops with zero skips.
+The external unmodified control matched native integer character/word counts
+on every crop in both partitions.
+
+| Partition   | Native / unmodified edits | One lost crop | Two lost crops | Four lost crops | Reference characters |
+| ----------- | ------------------------: | ------------: | -------------: | --------------: | -------------------: |
+| Calibration |                     5,929 |         8,534 |         10,874 |          14,491 |               82,794 |
+| Heldout     |                     4,719 |         7,084 |          7,993 |          14,361 |               85,685 |
+
+Before opening heldout, candidate
+`9cfe342402d4fe5c3facd09e83fc048555d093f6f3f6a6333e7331abe73fc0f2`
+fixed the aggregate CER limit at the calibration positive/nearest-fault
+midpoint, `14463/165588 = 0.08734328574534386`. It required both positives
+to pass and every fault to fail, without retuning on heldout.
+**This candidate failed:** heldout lost-one-crop CER
+`7084/85685 = 0.08267491392892572` incorrectly passed. This is not a usable
+production threshold or statistical error guarantee. The numerical threshold
+has not been retuned against this spent test partition.
+
+Trust format v3 therefore binds one explicit calibrated manifest and also
+requires complete scoring with no skips or crop whose character edits reach
+its reference length. The normal validated collector derives the counts-only
+`complete_loss_crops` field; old tables cannot silently satisfy this policy.
+This structural guard catches empty-output controls but does not prove
+resilience to partial omissions, wrong-language models or other fault families.
+A revised candidate needs a newly untouched issue-disjoint test partition,
+current-image canonical host evidence and explicit deployment before promotion.
+No host was promoted by this offline experiment; none of these runs is fresh
+page OCR, handoff publication, release or search acceptance.
+
+The reviewed routing registry also records the current `247c` image's separately
+verified native base on each architecture: ARM above and AMD64
+`sha256:e088ef6f8004aa66091ee4bdaa06a42e5061a42dfd505db31c5d7257b747d065`.
+This permits future correctly signed current-image Gold apps; it is not app
+publication or calibration by itself. The existing `80bf` mapping stays intact.
+After #749/#750's image-only rollout, production revision 54 was healthy and
+the native targeted path dispatched compatible Mac WU 16734/result 32114 using
+app 38. It reached canonical 32114, assimilation 2, outcome/validation 1 and
+exit 0; normal `gold check` and collection accepted all 142 crops with zero
+skips (report SHA-256
+`d2c0781be7863cf3c2170bed03c3abab50770192d279ce4a524a2823a7d582a5`).
+That validates a live compatible dispatch on `80bf`, not a `247c` measurement
+or an observed live incompatible refusal.
+
 Part of [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296). The [engine survey](reports/2026-10-ocr-engine-survey/report.md) has no ground truth, so it can't report a character error rate (CER) or word error rate (WER); it relies on the damage metric. The gold set is a fixed set of crops with a person's transcription, so any engine, profile or route change can be scored by CER and WER on the same text. The plan in [13 §13.9](design/13-ocr-engines.md#139-how-the-survey-and-production-share-engine-images) already names `score --truth <crops dir>`; the gold set is what goes in that directory.
 
 The transcriptions of the 60 crops are not written yet. Every `transcription` field is empty, and none may be filled from an engine's output. Until they are, the 60 are scored as engine agreement only (`gold.py agree`), and the accuracy numbers come from public datasets that already have human transcriptions, described in [Public ground truth](#public-ground-truth).

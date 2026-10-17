@@ -1210,6 +1210,7 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
     }
     let mut trust = Trust {
         hosts: Default::default(),
+        manifest_sha256: Some("b".repeat(64)),
         max_cer: 0.1,
         v: usnm_boinc::trust::TRUST_VERSION,
     };
@@ -1455,6 +1456,7 @@ async fn remote_handoff_round_trip_through_the_container() {
     std::fs::write(spool.join("usnm_unrelated__file_text.txt"), "other job").unwrap();
     let trust = Trust {
         hosts: [(record.job.engine.image.clone(), [42].into())].into(),
+        manifest_sha256: Some("b".repeat(64)),
         max_cer: 0.1,
         v: usnm_boinc::trust::TRUST_VERSION,
     };

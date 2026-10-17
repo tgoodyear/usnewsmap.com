@@ -30,8 +30,8 @@
 #                               outstanding, and a fresh one after a failed unit
 #   BRIDGE_STEP=gold-mirror-loc stages only the 18 locked v1 LoC JPEGs; no BLN or work creation
 #   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>; writes <campaign>/out
-#   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold>; writes $SHARE_DIR/gold/trust.json from this
-#                               campaign's out/reports.jsonl, for `usnm-boinc collect --trust`
+#   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold> GOLD_MANIFEST_SHA256=<challenge hash>;
+#                               writes $SHARE_DIR/gold/trust.json from this campaign's complete reports
 #   BRIDGE_STEP=gold-bundle     builds the bundle v1 from its publishers onto the share, checks it
 #                               against the committed lock and writes <campaign>/bundle.tar
 #                               (gold-bundle.sh; the gold bundle job, bridge image only)
@@ -304,7 +304,9 @@ case "$step" in
   gold-trust)
     # No database or secrets: reads this campaign's reports and writes the share's trust list.
     exec usnm-boinc gold trust --reports "$GOLD/out/reports.jsonl" \
-      --max-cer "${GOLD_MAX_CER:?set GOLD_MAX_CER from campaign calibration}" --out "$SHARE_DIR/gold/trust.json" ;;
+      --max-cer "${GOLD_MAX_CER:?set GOLD_MAX_CER from campaign calibration}" \
+      --manifest-sha256 "${GOLD_MANIFEST_SHA256:?set GOLD_MANIFEST_SHA256 to the calibrated challenge}" \
+      --out "$SHARE_DIR/gold/trust.json" ;;
 esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&

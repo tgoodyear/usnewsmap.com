@@ -119,9 +119,16 @@ int main(int argc, char** argv) {
         )
 
     def test_current_arm_and_amd64(self):
-        for platform, base in BASES.items():
-            self.job["engine"]["base"] = base
-            self.assertEqual(self.run_gate(platform).returncode, 0, platform)
+        for image, bases in json.loads(BINDINGS.read_text()).items():
+            self.job["engine"]["image"] = image
+            self.payload = f"FROM ghcr.io/tgoodyear/usnm-boinc-worker@{image}\n"
+            for platform, base in bases.items():
+                self.job["engine"]["base"] = base
+                self.assertEqual(self.run_gate(platform).returncode, 0, (image, platform))
+            self.job["engine"]["base"] = bases["arm64-apple-darwin"]
+            self.assertEqual(self.run_gate("arm64-apple-darwin").returncode, 0)
+            self.job["engine"]["base"] = bases["x86_64-pc-linux-gnu"]
+            self.assertEqual(self.run_gate("arm64-apple-darwin").returncode, 1)
 
     def test_stale_job_and_wrong_architecture_are_refused(self):
         for base in ("sha256:" + "f" * 64, BASES["x86_64-pc-linux-gnu"]):

@@ -6,7 +6,7 @@
 //!
 //! - `reports.jsonl`: one line per result, keyed by bundle version, manifest sha256 and engine
 //!   (version, image, base), with the host id the client claimed, the per-source and overall
-//!   CER and WER, and how many crops were scored and skipped;
+//!   CER and WER, how many crops were scored/skipped, and complete-loss crop counts;
 //! - `crops.jsonl`: one line per scored crop with the same keys and its counts.
 //!
 //! Counts only: no page text and no transcription is in the results or in these files.
@@ -79,6 +79,11 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         row["completed_at"] = json!(r.completed_at);
         row["crops"] = json!(r.crops.len());
         row["skipped"] = json!(r.skipped.len());
+        row["complete_loss_crops"] = json!(r
+            .crops
+            .iter()
+            .filter(|c| c.result.counts.char_edits >= c.result.counts.ref_chars)
+            .count());
         row["summary"] = serde_json::to_value(&r.summary)?;
         reports.push_str(&serde_json::to_string(&row)?);
         reports.push('\n');
@@ -122,30 +127,64 @@ mod tests {
             std::fs::write(d.join(JOB_FILE), serde_json::to_vec(j).unwrap()).unwrap();
             std::fs::write(d.join("submitted"), j.workunit()).unwrap();
         }
+        let mut damaged = tests::report(&e, &jobs[0].id);
+        damaged.crops[0].result.counts.char_edits = damaged.crops[0].result.counts.ref_chars;
+        damaged.crops[0].result.counts.word_edits = damaged.crops[0].result.counts.ref_words;
+        damaged.summary = usnm_ocr_survey::bundle::summarize(
+            &damaged
+                .crops
+                .iter()
+                .map(|c| c.result.clone())
+                .collect::<Vec<_>>(),
+        );
         std::fs::write(
             spool.join(format!("{}__file_{RESULT_FILE}", jobs[0].workunit())),
-            serde_json::to_vec(&tests::report(&e, &jobs[0].id)).unwrap(),
+            serde_json::to_vec(&damaged).unwrap(),
         )
         .unwrap();
         std::fs::write(spool.join(format!("{}_error", jobs[1].workunit())), "").unwrap();
         let out = tmp.path().join("out");
-        let s = run(&Options {
+        let options = Options {
             root,
             project,
             spool,
             out: out.clone(),
-        })
-        .unwrap();
+        };
+        let s = run(&options).unwrap();
         assert_eq!((s.collected, s.failed, s.pending), (1, 1, 1));
         let rows = std::fs::read_to_string(out.join("reports.jsonl")).unwrap();
         assert_eq!(rows.lines().count(), 1);
         assert!(rows.contains("\"host_id\":7"));
+        let row: serde_json::Value = serde_json::from_str(rows.trim()).unwrap();
+        assert_eq!(row["complete_loss_crops"], 1);
+        let trust =
+            crate::trust::Trust::build(&[out.join("reports.jsonl")], 1.0, &e.manifest_sha256)
+                .unwrap();
+        assert!(
+            trust.hosts.is_empty(),
+            "aggregate acceptance cannot hide a lost crop"
+        );
         assert_eq!(
             std::fs::read_to_string(out.join("crops.jsonl"))
                 .unwrap()
                 .lines()
                 .count(),
             2
+        );
+        std::fs::write(
+            options
+                .spool
+                .join(format!("{}__file_{RESULT_FILE}", jobs[0].workunit())),
+            serde_json::to_vec(&tests::report(&e, &jobs[0].id)).unwrap(),
+        )
+        .unwrap();
+        run(&options).unwrap();
+        let trust =
+            crate::trust::Trust::build(&[out.join("reports.jsonl")], 1.0, &e.manifest_sha256)
+                .unwrap();
+        assert!(
+            !trust.hosts.is_empty(),
+            "complete positive remains eligible"
         );
     }
 }
