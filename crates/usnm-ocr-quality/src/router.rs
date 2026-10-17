@@ -274,9 +274,8 @@ pub fn route_page(
 
     // High-resolution scan with bleed-through or top-decile median-filter noise (p90 = 14.5) and comfortable type size:
     // 0.5x downscaling (`tess-half`) smooths speckle/halftone dots, cutting garbage_share by 20% at 3x speed.
-    let high_bleed_speckle = width >= 2800
-        && line_height >= 28.0
-        && ((bleed >= 0.18 && ink >= 0.25) || noise >= 14.5);
+    let high_bleed_speckle =
+        width >= 2800 && line_height >= 28.0 && ((bleed >= 0.18 && ink >= 0.25) || noise >= 14.5);
     if high_bleed_speckle {
         reasons.push(format!(
             "half_scale_denoise:bleed={bleed:.3},ink={ink:.3},noise={noise:.2},lh={line_height:.1}"
@@ -318,6 +317,7 @@ mod tests {
     use super::*;
     use usnm_ocr_contract::quality::{ImageFeatures, LayoutFeatures};
 
+    #[allow(clippy::too_many_arguments)]
     fn sample_features(
         width: u32,
         bleed_through: f64,
