@@ -140,8 +140,11 @@
          OpenCL, so gpu_type intel with <opencl/> is the eligibility gate; the app lists the
          Vulkan devices with its own llama-server, refuses software devices, and ends no_gpu when
          the device has less free memory than the model needs, never reading on the CPU. An
-         integrated GPU's memory is system RAM, so mem_usage_base_mb also reserves the unit's
-         measured host memory (#787). Closed until an operator opens one audited workunit. -->
+         integrated GPU's memory is system RAM: on Computer 9's Iris Xe (#787) an 8B unit peaked at
+         8,609 MiB of GPU buffers plus process memory, so mem_usage_base_mb reserves 9 GiB. OpenCL
+         reports nearly all system RAM as an integrated GPU's memory, so min_gpu_ram_mb admits
+         such hosts that the app may still refuse. Closed until an operator opens one audited
+         workunit. -->
     <plan_class>
         <name>intel_vulkan_8b</name>
         <min_wu_id>2</min_wu_id>
@@ -151,7 +154,7 @@
         <min_core_client_version>80211</min_core_client_version>
         <min_gpu_ram_mb>7000</min_gpu_ram_mb>
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
-        <mem_usage_base_mb>MEASURED_MB</mem_usage_base_mb>
+        <mem_usage_base_mb>9216</mem_usage_base_mb>
         <min_batch>8</min_batch>
         <max_batch>8</max_batch>
         <avg_ncpus>2</avg_ncpus>
