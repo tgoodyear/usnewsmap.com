@@ -67,9 +67,10 @@ match that scope. The collector records actual profiles/configuration and trust
 building checks those against the declared policy; language scope must also
 be established by the operator's pinned-manifest evidence. This English-only
 experiment does not authorize other languages or profiles on the same image.
-Current-image canonical host evidence and explicit deployment are still required
-before promotion. No host was promoted by these offline experiments; none of
-these runs is fresh page OCR, handoff publication, release or search acceptance.
+These offline experiments alone did not promote a host; current-image canonical
+evidence and explicit deployment were required before the scoped promotion
+recorded below. None of these experiments is fresh page OCR, handoff publication,
+release or search acceptance.
 
 The reviewed routing registry also records the current `247c` image's separately
 verified native base on each architecture: ARM above and AMD64
@@ -84,6 +85,56 @@ skips (report SHA-256
 `d2c0781be7863cf3c2170bed03c3abab50770192d279ce4a524a2823a7d582a5`).
 That validates a live compatible dispatch on `80bf`, not a `247c` measurement
 or an observed live incompatible refusal.
+
+### Current-worker native canonical evidence and scoped promotion
+
+The reviewed #755/#761 image-only rollout reached healthy production revision
+55, including the separate handoff job without changing its command or other
+settings. Signed Gold 1.4 publication then succeeded for Linux
+(`usnm-boinc-publish-caj-prod-uucz4sm`) and Apple Silicon
+(`usnm-boinc-publish-caj-prod-p57pptb`). Independent native registration checks
+found active version 104 / `docker` apps 39 and 40 respectively, and both
+published Dockerfiles pin the exact `247c` worker above. All six registered
+public download URLs returned anonymous HTTP 200 with SHA-256 hashes identical
+to the signed published payloads. Gold publication does not update `usnm_ocr`.
+
+One normal targeted challenge per existing user-2 host used the unchanged
+30-crop calibration manifest above:
+
+| Platform      | Host | Workunit | Canonical result | App version | Canonical report SHA-256                                           |
+| ------------- | ---: | -------: | ---------------: | ----------: | ------------------------------------------------------------------ |
+| Apple Silicon |    1 |    16736 |            32117 |          40 | `082649110586b90dab6ab717ee9aea60914f11205cfbfdd7f8819aaa47bab2f4` |
+| Linux x86_64  |    8 |    16737 |            32118 |          39 | `d9b67382e7a4127fd1ffa046d4792d688f1b32b1705903b47ca7ea56556c7a4e` |
+
+Both native results have outcome 1, validation 1 and exit 0; their workunits
+have assimilation 2 and error mask 0. Normal `gold check` and `gold collect`
+accepted each report with no pending or failed result. All 30 unique crops
+have zero skips and complete losses, and every source, profile and integer
+character/word edit and reference count exactly matches the offline ARM
+baseline: **5,929 edits / 82,794 reference characters**. A separate local AMD64
+emulation also matched those counts (report SHA-256
+`c17ff88f1051623b5f71879981b07b8d8a900e08771f751b8536522a1c1baf41`);
+it is not a substitute for the actual Linux BOINC result.
+
+At `2026-10-17T07:19:56Z`, the normal local production mutex, all-six-idle
+preflight and infinite controller lease guarded the global trust promotion.
+Native receipts and the unchanged old policy were rechecked before publishing.
+`/project/gold/current247c-scope-eng-20261017/` retains the before-policy
+snapshot, generated candidate and promotion receipt. The actual shared
+`/project/gold/trust.json` has SHA-256
+`3bfc19016cf38b47455faa4ddbe8fbbe27577c410c1d8e74a2ccdd8a0a6a651b`:
+v4, only worker `247c`, hosts **1 and 8**, calibration manifest `d8cd7279...`,
+source language/profile **eng/eng**, PSM 3, 300 DPI and frozen limit
+`0.08734328574534386`. It does not authorize another worker, language,
+profile or configuration.
+
+This is an English BLN fixed-worker quality pilot, not proof of American-corpus,
+multilingual, statistical, availability or malicious-host performance.
+Terminal/no-valid-report attribution remains [#756](https://github.com/tgoodyear/usnewsmap.com/issues/756).
+The [native promotion receipt](https://github.com/tgoodyear/usnewsmap.com/issues/527#issuecomment-6231138896)
+does not close the separate fresh-page Mac OCR, handoff, release or search gates.
+No queue-admission exception, client preference, task abort or priority change
+was used.
 
 Part of [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296). The [engine survey](reports/2026-10-ocr-engine-survey/report.md) has no ground truth, so it can't report a character error rate (CER) or word error rate (WER); it relies on the damage metric. The gold set is a fixed set of crops with a person's transcription, so any engine, profile or route change can be scored by CER and WER on the same text. The plan in [13 §13.9](design/13-ocr-engines.md#139-how-the-survey-and-production-share-engine-images) already names `score --truth <crops dir>`; the gold set is what goes in that directory.
 
