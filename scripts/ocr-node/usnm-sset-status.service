@@ -8,5 +8,6 @@ ConditionFileIsExecutable=/usr/local/bin/usnm-sset-status
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/usnm/sset-status.env
+ExecStartPre=/usr/bin/test -n ${USNM_SSET_STATUS_PUSH_URL}
 ExecStart=/usr/local/bin/usnm-sset-status --unit usnm-sset.service --out /var/lib/usnm-sset/status.json --done /var/lib/usnm-sset/done --push-url ${USNM_SSET_STATUS_PUSH_URL}
 StandardOutput=null

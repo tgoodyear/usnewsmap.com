@@ -712,6 +712,12 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
    sudo install -m 0644 src/scripts/ocr-node/usnm-sset.service src/scripts/ocr-node/usnm-sset-status.service \
      src/scripts/ocr-node/usnm-sset-status.timer /etc/systemd/system/
    sudo install -d -o usnm -g usnm -m 0750 /var/lib/usnm-sset /var/lib/usnm-sset/raw /var/lib/usnm-sset/reference
+   sudo install -d -m 0755 /etc/usnm
+   # Create only if absent; preserve an existing local endpoint on upgrades.
+   sudo test -e /etc/usnm/sset-status.env || sudo install -m 0600 /dev/null /etc/usnm/sset-status.env
+   sudoedit /etc/usnm/sset-status.env
+   # Before continuing, set USNM_SSET_STATUS_PUSH_URL to the local dashboard's
+   # full http://<local-dashboard>/api/sset/usnm-sset endpoint (not a placeholder).
    sudo systemctl daemon-reload
    sudo systemctl enable --now usnm-sset-status.timer
    sudo systemctl enable usnm-sset
@@ -1580,7 +1586,7 @@ Before installing `usnm-sset-status.service`, create a root-owned
 `/etc/usnm/sset-status.env` containing
 `USNM_SSET_STATUS_PUSH_URL=http://dashboard.example.invalid/api/sset/usnm-sset`,
 substituting the local endpoint. Its required environment file keeps deployment
-addresses out of the service template; missing configuration fails the unit
+addresses out of the service template; missing or empty configuration fails the unit
 instead of silently dropping status pushes. Existing installed units are unchanged
 by a dashboard-only binary update.
 
