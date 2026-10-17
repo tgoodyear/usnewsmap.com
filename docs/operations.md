@@ -712,6 +712,12 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
    sudo install -m 0644 src/scripts/ocr-node/usnm-sset.service src/scripts/ocr-node/usnm-sset-status.service \
      src/scripts/ocr-node/usnm-sset-status.timer /etc/systemd/system/
    sudo install -d -o usnm -g usnm -m 0750 /var/lib/usnm-sset /var/lib/usnm-sset/raw /var/lib/usnm-sset/reference
+   sudo install -d -m 0755 /etc/usnm
+   # Create only if absent; preserve an existing local endpoint on upgrades.
+   sudo test -e /etc/usnm/sset-status.env || sudo install -m 0600 /dev/null /etc/usnm/sset-status.env
+   sudoedit /etc/usnm/sset-status.env
+   # Before continuing, set USNM_SSET_STATUS_PUSH_URL to the local dashboard's
+   # full http://<local-dashboard>/api/sset/usnm-sset endpoint (not a placeholder).
    sudo systemctl daemon-reload
    sudo systemctl enable --now usnm-sset-status.timer
    sudo systemctl enable usnm-sset
@@ -1553,7 +1559,7 @@ scripts/provision.sh --env prod
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication at <https://ocr.tjg.fyi/>, from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Operational details (workers, batches, pages, queues, host stats and provenance) are collapsed by default; open them without leaving the page. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. `ocr.tjg.fyi` is a static record in the LAN gateway's local DNS, with a DHCP reservation for CT 212; it has no public A record, and internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node3-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS.
+`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication on the LAN dashboard ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines opens directly beneath the summaries, independently of Operational details. On phones, diagrams become readable step cards with the same descriptions and live rates; wider screens retain the SVG maps. Operational details (workers, batches, pages, queues, host stats and provenance) remain collapsed by default. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. Deployment hostnames belong in local configuration, not GitHub. `dashboard.example.invalid` below is a placeholder: substitute the configured LAN name. The dashboard uses a local DNS record and DHCP reservation for CT 212, not a public A record.
 
 Summaries use fresh reports, not a shared pipeline percentage. Local completions are worker output; BOINC counts are assigned/unsent result replicas, not unique pages or actively computing devices. The evaluation card groups observed assignments by purpose, but campaign readiness, paired results and acceptance decisions are not connected. Catalog counts cover imported evidence only. Missing publication evidence stays unknown, never zero or inferred success. Snapshot generation time is shown separately from evidence age, so old historical observations do not label all live lanes stale.
 
@@ -1571,10 +1577,18 @@ scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve-big.js
   --pool tank --dataset tank/ocr --dataset tank/ocr/scans --dataset tank/ocr/text
 # the NUC host: pushes its stats to the dashboard
 scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve.json \
-  --push-url http://ocr.tjg.fyi/api/host/pve
+  --push-url http://dashboard.example.invalid/api/host/pve
 ```
 
 Each installs `usnm-hoststats.timer`, which runs every minute.
+
+Before installing `usnm-sset-status.service`, create a root-owned
+`/etc/usnm/sset-status.env` containing
+`USNM_SSET_STATUS_PUSH_URL=http://dashboard.example.invalid/api/sset/usnm-sset`,
+substituting the local endpoint. Its required environment file keeps deployment
+addresses out of the service template; missing or empty configuration fails the unit
+instead of silently dropping status pushes. Existing installed units are unchanged
+by a dashboard-only binary update.
 
 **The container.** As root on pve-big:
 
@@ -1584,7 +1598,7 @@ scripts/ocr-node/ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
 scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
   --worker usnm-ocr-node3=http://usnm-ocr-node3-arcs-prod.tjg.fyi:8381 \
   --host-push pve=pve.tjg.fyi --sset-push usnm-sset=usnm-ocr-node3-arcs-prod.tjg.fyi --workbook-url '<the OCR nodes workbook link>' \
-  --https-name ocr.tjg.fyi
+  --https-name dashboard.example.invalid
 ```
 
 `--create` makes CT 212 (unprivileged Debian 12, 1 core, 768 MB, onboot) with `tank/ocr/scans`, `tank/ocr/manifests` and `/var/lib/usnm-hoststats` bind-mounted read-only. `--install` takes `usnm-ocrdash` from a worker release; every release since the dashboard was merged has it. `--configure` sets the nftables input policy to drop everything but `--allow` (`lan`: the container's subnet), writes `/etc/usnm/ocrdash.env` and starts `usnm-ocrdash.service`. The worker link is the OCR nodes workbook's portal link, from `az resource list --resource-group rg-usnm-prod --resource-type microsoft.insights/workbooks`.
@@ -1607,19 +1621,19 @@ Input is limited to 1 MiB and schema version 1, producer `corpus-catalog`; unkno
 
 **Dashboard-only binary updates.** `cargo build --locked --release -p usnm-ocr-dash --bin usnm-ocrdash` builds only the dashboard executable, not BOINC binaries or engine images. A Linux x86_64 static build can add `--target x86_64-unknown-linux-musl` on a Linux builder with the Rust target and musl C tools installed; validate the resulting artifact in CI, not on the busy Proxmox host. The crate's existing worker-library dependency brings Arrow/Parquet, image, store and telemetry libraries; native compilation includes ring and zstd, but not an OCR engine or BOINC application build. `ocrdash-ct.sh --install` supports worker release tags only, not local binaries/archives. For a dashboard-only CI artifact, verify the exact reviewed commit and checksums, copy the binary to a new versioned `/usr/local/lib/usnm-ocrdash/<commit>/` directory inside CT 212, retain the previous symlink target for rollback, atomically replace `/usr/local/bin/usnm-ocrdash` using a sibling symlink and rename, and restart only `usnm-ocrdash.service`. Keep the existing environment, unit, TLS files, mounts and firewall. Verify `/healthz`, `/api/pipeline.json`, `/api/nodes.json` and the panel over the existing LAN HTTPS endpoint; a process-health response alone does not establish snapshot freshness.
 
-**HTTPS.** The certificate for `ocr.tjg.fyi` is a Let's Encrypt one that pve-big gets and renews itself, with home-infra's `home-acme` (lego over the DNS-01 challenge, signed in as pve-big's Arc managed identity; [home-infra README, "Let's Encrypt with DNS-01"](https://github.com/tgoodyear/home-infra#lets-encrypt-with-dns-01)). CT 212 holds no Azure credentials and never talks to Let's Encrypt.
+**HTTPS.** The certificate for the locally configured name is a Let's Encrypt one that pve-big gets and renews itself, with home-infra's `home-acme` (lego over the DNS-01 challenge, signed in as pve-big's Arc managed identity; [home-infra README, "Let's Encrypt with DNS-01"](https://github.com/tgoodyear/home-infra#lets-encrypt-with-dns-01)). CT 212 holds no Azure credentials and never talks to Let's Encrypt. Substitute the actual local name for every `dashboard.example.invalid` example below, including unit instances and certificate paths.
 
-- `home-acme@ocr.tjg.fyi.timer` on pve-big runs daily and renews when fewer than 30 days are left. It writes `fullchain.pem` and `privkey.pem` to `/var/lib/usnm-certs/ocr.tjg.fyi/` on the host (the key 0640, group 102001, which is ocrdash's gid 2001 in the unprivileged container), then runs `pct exec 212 -- systemctl reload-or-restart usnm-ocrdash.service`.
-- `--configure --https-name ocr.tjg.fyi` bind-mounts that directory read-only at `/etc/usnm/tls` (`mp3`) and sets `USNM_OCRDASH_TLS_CERT`, `_TLS_KEY`, `_TLS_LISTEN` (`0.0.0.0:443`) and `_HTTPS_NAME`. The dashboard then serves the page on 443; port 80 answers every request with a 308 to `https://ocr.tjg.fyi/` and the same path, except the NUC's `PUT /api/host/pve`, which stays plain HTTP (it carries no secret, it's checked by address, and `curl` wouldn't follow a redirect). `systemctl reload` (SIGHUP) makes it read the pair again; a pair it can't read is logged and the old one kept.
+- `home-acme@dashboard.example.invalid.timer` on pve-big runs daily and renews when fewer than 30 days are left. It writes `fullchain.pem` and `privkey.pem` to `/var/lib/usnm-certs/dashboard.example.invalid/` on the host (the key 0640, group 102001, which is ocrdash's gid 2001 in the unprivileged container), then runs `pct exec 212 -- systemctl reload-or-restart usnm-ocrdash.service`.
+- `--configure --https-name dashboard.example.invalid` bind-mounts that directory read-only at `/etc/usnm/tls` (`mp3`) and sets `USNM_OCRDASH_TLS_CERT`, `_TLS_KEY`, `_TLS_LISTEN` (`0.0.0.0:443`) and `_HTTPS_NAME`. The dashboard then serves the page on 443; port 80 answers every request with a 308 to `https://dashboard.example.invalid/` and the same path, except the NUC's `PUT /api/host/pve`, which stays plain HTTP (it carries no secret, it's checked by address, and `curl` wouldn't follow a redirect). `systemctl reload` (SIGHUP) makes it read the pair again; a pair it can't read is logged and the old one kept.
 - The nftables rule accepts any port from `--allow`, so 443 needs nothing new.
-- The certificate is in the public Certificate Transparency logs, so the name `ocr.tjg.fyi` is public. Its address isn't: only the TXT record `_acme-challenge.ocr.tjg.fyi` is in public DNS, and it holds a placeholder except for the seconds of a challenge.
-- Check: `curl -sv https://ocr.tjg.fyi/healthz` from a LAN machine shows `issuer: C=US; O=Let's Encrypt` and `SSL certificate verify ok`; `journalctl -u home-acme@ocr.tjg.fyi` on pve-big shows each run, with the issuer and expiry.
+- Certificate Transparency exposes the configured certificate name, not its LAN address. Only its `_acme-challenge` TXT record is in public DNS, holding a placeholder except during a challenge. Public certificate metadata is not a reason to copy deployment hostnames into GitHub.
+- Check: `curl -sv https://dashboard.example.invalid/healthz` from a LAN machine shows `issuer: C=US; O=Let's Encrypt` and `SSL certificate verify ok`; `journalctl -u home-acme@dashboard.example.invalid` on pve-big shows each run, with the issuer and expiry.
 
 **When it shows something odd.**
 
-- _A node says "no status"._ The worker isn't answering on port 8381: it is down, or it was installed without `--status-allow ocr.tjg.fyi`, or the name points somewhere else now (the worker resolves it each time its status server starts, the node's nftables rule when `install-worker.sh` runs). `scripts/ocr-node/install-worker.sh --status-allow <address>` sets the worker's settings and the node's nftables rule (`usnm-ocr-status-firewall.service`).
+- _A node says "no status"._ The worker isn't answering on port 8381: it is down, or it was installed without `--status-allow dashboard.example.invalid`, or the name points somewhere else now (the worker resolves it each time its status server starts, the node's nftables rule when `install-worker.sh` runs). `scripts/ocr-node/install-worker.sh --status-allow <address>` sets the worker's settings and the node's nftables rule (`usnm-ocr-status-firewall.service`).
 - _A node shows no routes or models before its first page._ A current worker reports the routes and models it knows at startup; install a release containing that behavior if the fields stay empty.
 - _The stats are stale._ `systemctl status usnm-hoststats.timer` on the host. On the NUC, a failed push logs `can't push` in `journalctl -u usnm-hoststats`.
 - _A new manifest._ The dashboard reads the manifest the fetcher's status names, and reads it again when its sha256 changes.
-- _The browser warns about the certificate._ `journalctl -u home-acme@ocr.tjg.fyi -n 50` on pve-big, and `openssl x509 -in /var/lib/usnm-certs/ocr.tjg.fyi/fullchain.pem -noout -enddate`. `systemctl start home-acme@ocr.tjg.fyi` tries again now.
+- _The browser warns about the certificate._ `journalctl -u home-acme@dashboard.example.invalid -n 50` on pve-big, and `openssl x509 -in /var/lib/usnm-certs/dashboard.example.invalid/fullchain.pem -noout -enddate`. `systemctl start home-acme@dashboard.example.invalid` tries again now.
 - _Logs:_ `pct exec 212 -- journalctl -u usnm-ocrdash`. The copies of the workers' journals are in `/var/lib/usnm-ocrdash` in the container; deleting them makes the dashboard copy each worker's journal again from the start.

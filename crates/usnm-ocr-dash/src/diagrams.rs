@@ -431,17 +431,64 @@ pub fn fill(svg: &str, steps: &BTreeMap<&'static str, StepState>) -> String {
     out
 }
 
+fn mobile_flow(svg: &str, steps: &BTreeMap<&'static str, StepState>) -> String {
+    let filled = fill(svg, steps);
+    let mut out = String::from("<ol class=\"mobile-flow\" aria-label=\"Pipeline steps\">");
+    let mut cards = Vec::new();
+    for group in filled
+        .split("<g ")
+        .skip(1)
+        .filter_map(|s| s.split_once("</g>").map(|(g, _)| g))
+    {
+        if !group.contains("class=\"box") {
+            continue;
+        }
+        let lines: Vec<_> = group
+            .split("<text ")
+            .skip(1)
+            .filter_map(|s| {
+                let (_, text) = s.split_once('>')?;
+                let (text, _) = text.split_once("</text>")?;
+                (!text.trim().is_empty()).then_some(text)
+            })
+            .collect();
+        if let Some((title, body)) = lines.split_first() {
+            let order = title
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(if group.contains("class=\"box x\"") {
+                    0
+                } else {
+                    usize::MAX
+                });
+            // Text is trusted SVG content or already escaped by fill().
+            cards.push((
+                order,
+                format!("<li><h4>{title}</h4><p>{}</p></li>", body.join(" ")),
+            ));
+        }
+    }
+    cards.sort_by_key(|(order, _)| *order);
+    for (_, card) in cards {
+        out.push_str(&card);
+    }
+    out.push_str("</ol>");
+    out
+}
+
 /// The "Pipelines" section.
 pub fn section(v: &View) -> String {
     let st = steps(v);
     let mut o = String::with_capacity(48 * 1024);
     o.push_str(
-        "<section class=\"wide\" id=\"pipelines\"><details><summary><h2>Pipelines</h2> — reference diagrams</summary>\
+        "<section class=\"wide\" id=\"pipelines\"><details data-refresh-key=\"pipelines\"><summary><h2>Pipelines</h2> — diagrams and rates</summary>\
          <p class=\"note\">One diagram for each data set: where it comes from, whether it needs OCR, where \
          each copy is stored and what still has to happen before it is searchable, plus the separate \
          volunteer lane. The drawings are \
          fixed; the bar on each box and the italic line under it are the live state from this page's \
-         own data. Rates marked * are shared counters or run averages, explained below each diagram. \
+         own data. On phones, step cards show the same boxes in step order; branches and storage \
+         lanes remain in the wide-screen maps. Rates marked * are shared counters or run averages, explained below each diagram. \
          Rate unknown means a throughput counter is missing, not zero. Steps without telemetry \
          show as not tracked here, not presumed idle.</p>",
     );
@@ -451,10 +498,11 @@ pub fn section(v: &View) -> String {
             &mut o,
             format_args!(
                 "<h3 id=\"pipeline-{}\">{}</h3><figure style=\"margin:0\">{}</figure>\
-                 <ul class=\"sr\" aria-label=\"Live state of each step\">{}</ul><table class=\"kv\">",
+                 {}<ul class=\"sr diagram-state\" aria-label=\"Live state of each step\">{}</ul><table class=\"kv\">",
                 d.id,
                 esc(d.heading),
                 fill(d.svg, &st),
+                mobile_flow(d.svg, &st),
                 summary(d.svg, &st)
             ),
         );
@@ -625,6 +673,24 @@ mod tests {
     }
 
     #[test]
+    fn mobile_steps_keep_descriptions_rates_and_logical_order() {
+        let mut st = steps(&empty_view());
+        st.insert("nodes", StepState::with("running", "<worker>&".into()));
+        let flow = mobile_flow(DIAGRAMS[1].svg, &st);
+        assert!(!flow.contains("<svg"));
+        assert!(!flow.contains("@@"));
+        assert!(flow.contains("&lt;worker&gt;&amp;"));
+        assert!(flow.contains("running; rate unknown"));
+        assert!(flow.find("1  Damage pass") < flow.find("2  Manifest copy"));
+        assert!(flow.find("6  Queues") < flow.find("7  Configured OCR workers"));
+        assert!(flow.contains("container per page"));
+        assert_eq!(
+            flow.matches("<li>").count(),
+            DIAGRAMS[1].svg.matches("class=\"box ").count()
+        );
+    }
+
+    #[test]
     fn the_page_has_every_diagram_once() {
         let html = crate::html::render(&empty_view());
         assert!(html.contains("<h2>Pipelines</h2>"));
@@ -635,10 +701,11 @@ mod tests {
             );
             assert!(html.contains(&esc(d.heading)));
         }
-        // Pipelines follow At a glance.
-        assert!(html.find("At a glance") < html.find("Pipelines"));
-        assert!(html.find("Azure queues and dead letters") < html.find("Pipelines"));
-        assert!(html.contains("<details><summary><h2>Pipelines</h2>"));
+        assert!(html.find("Across the ecosystem") < html.find("Pipelines"));
+        assert!(html.find("Pipelines") < html.find("Operational details"));
+        assert!(
+            html.contains("<details data-refresh-key=\"pipelines\"><summary><h2>Pipelines</h2>")
+        );
         // Element ids are unique across the inlined SVGs.
         let mut ids: Vec<&str> = html
             .split(" id=\"")
@@ -883,6 +950,9 @@ mod tests {
         assert!(s.contains("<li>"));
         assert!(s.contains("not tracked here"));
         let html = crate::html::render(&empty_view());
-        assert_eq!(html.matches("class=\"sr\"").count(), DIAGRAMS.len());
+        assert_eq!(
+            html.matches("class=\"sr diagram-state\"").count(),
+            DIAGRAMS.len()
+        );
     }
 }

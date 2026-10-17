@@ -14,7 +14,7 @@
 #     [--sset-push <name>=<name of the node running the Serial Set fetch>]...
 #     [--workbook-url URL] [--port 80]
 #     [--pipeline-snapshot /existing/read-only/path/in/container.json]
-#     [--https-name ocr.tjg.fyi [--certs /var/lib/usnm-certs]] [--ctid 212]
+#     [--https-name dashboard.example.invalid [--certs /var/lib/usnm-certs]] [--ctid 212]
 #   ocrdash-ct.sh --pipeline-snapshot /existing/path/in/container.json [--ctid 212]
 #     Without --configure, changes ONLY this environment key and restarts
 #     the service; preserves workers, TLS, mounts, firewall and other settings.
