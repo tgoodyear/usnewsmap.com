@@ -480,10 +480,13 @@ to match the reviewed image/platform entry in
 `contrib-compute/boinc/gold-engine-platforms.json`. Missing or malformed
 metadata, anonymous app versions, unknown bindings, and mismatches refuse
 dispatch with an explicit `[Gold routing]` scheduler log. Filesystem reads
-run only in the unlocked slow check, assignment, and locality paths, not
+run only in the unlocked slow check, assignment, locality, and lost-work
+resend paths, not
 the fast check under the global scheduler semaphore. Job inputs use the
 workunit fanout; registered application Dockerfiles use the flat download
-directory. Other apps retain their existing routing.
+directory. Incompatible locality candidates are skipped without stopping
+the search; incompatible lost-work resends are skipped without expiring
+the existing result. Other apps retain their existing routing.
 
 Adding a new Gold worker requires independently verifying its per-architecture
 base digests and reviewing the registry entries before deployment; this is

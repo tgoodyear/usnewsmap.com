@@ -60,19 +60,30 @@ int assigned(WORKUNIT& wu, BEST_APP_VERSION* bavp) {
 ASSIGNMENT
     return 0;
 }
+int resend(WORKUNIT& wu, APP* app, BEST_APP_VERSION* bavp) {
+    bool can_resend = true;
+    for (int result = 0; result < 1; ++result) {
+RESEND
+        return 0;
+    }
+    return 1;
+}
 int main(int argc, char** argv) {
     if (argc != 5) return 2;
     memory.platform.name = argv[2];
     const std::string xml = usnm_gold::read_file("version.xml");
     AV av{1, xml.c_str(), "docker"};
-    BEST_APP_VERSION bav{std::strcmp(argv[4], "anonymous") ? &av : nullptr};
+    BEST_APP_VERSION bav{std::strstr(argv[4], "anonymous") ? nullptr : &av};
     WORKUNIT wu{argv[1]}; APP app{argv[3]};
     memory.app.name = argv[3];
     if (!std::strcmp(argv[4], "assigned")) return assigned(wu, &bav);
+    if (!std::strncmp(argv[4], "resend", 6)) return resend(wu, &app, &bav);
     return usnm_gold_is_infeasible(wu, app, bav) ? 1 : 0;
 }
 '''.replace("HOOK", MODULE.GATE).replace(
             "ASSIGNMENT", MODULE.ASSIGNMENT_PATCHED.partition(MODULE.ASSIGNMENT_ORIGINAL)[0]
+        ).replace(
+            "RESEND", MODULE.RESEND_GATE
         ).replace(
             '"/usr/local/lib/usnm-boinc/gold-engine-platforms.json"',
             json.dumps(str(BINDINGS)),
@@ -127,6 +138,17 @@ int main(int argc, char** argv) {
         self.assertEqual(self.run_gate(mode="assigned").returncode, 1)
         self.assertEqual(self.run_gate(mode="assigned", app="usnm_quality").returncode, 0)
 
+    def test_resends_refuse_incompatible_and_anonymous_without_expiration(self):
+        self.assertEqual(self.run_gate(mode="resend").returncode, 0)
+        self.assertEqual(self.run_gate(mode="resend-anonymous").returncode, 1)
+        self.job["engine"]["base"] = BASES["x86_64-pc-linux-gnu"]
+        self.assertEqual(self.run_gate(mode="resend").returncode, 1)
+        self.assertNotIn("can_resend = false", MODULE.RESEND_GATE)
+        source = '#include "sched_check.h"\n' + MODULE.RESEND_ORIGINAL
+        self.assertIn(MODULE.RESEND_GATE, MODULE.patch_resend(source))
+        with self.assertRaises(ValueError):
+            MODULE.patch_resend(MODULE.patch_resend(source))
+
     def test_different_signed_worker_is_refused(self):
         self.payload = "FROM ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "b" * 64 + "\n"
         result = self.run_gate()
@@ -179,6 +201,11 @@ int main(int argc, char** argv) {
             self.assertIn("usnm_gold_is_infeasible", patch(source))
             with self.assertRaises(ValueError):
                 patch(patch(source))
+        locality = MODULE.patch_locality(
+            '#include "sched_check.h"\n    APP* app = ssp->lookup_app(wu.appid);'
+        )
+        self.assertIn("return INFEASIBLE_CUSTOM;", locality)
+        self.assertNotIn("return ERR_NO_APP_VERSION;", locality)
 
 
 if __name__ == "__main__":

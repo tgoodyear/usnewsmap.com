@@ -79,9 +79,21 @@ def patch_locality(text):
     target = "    APP* app = ssp->lookup_app(wu.appid);"
     return insert_gate(text, target, target + """
     if (usnm_gold_is_infeasible(wu, *app, *bavp)) {
-        return ERR_NO_APP_VERSION;
+        return INFEASIBLE_CUSTOM;
     }
 """, '#include "sched_check.h"')
+
+
+RESEND_ORIGINAL = "        if (can_resend && wu.error_mask) {"
+RESEND_GATE = """        if (can_resend && usnm_gold_is_infeasible(wu, *app, *bavp)) {
+            continue;
+        }
+"""
+
+
+def patch_resend(text):
+    return insert_gate(text, RESEND_ORIGINAL, RESEND_GATE + RESEND_ORIGINAL,
+                       '#include "sched_check.h"')
 
 
 def insert_gate(text, target, replacement, include):
@@ -121,6 +133,7 @@ def main():
         "sched_assign.cpp": patch_assignment,
         "sched_check.cpp": patch_slow_check,
         "sched_locality.cpp": patch_locality,
+        "sched_resend.cpp": patch_resend,
     }
     updates = {args.sched_dir / name: patch((args.sched_dir / name).read_text())
                for name, patch in patches.items()}
