@@ -11,6 +11,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,34 +29,27 @@ VERSION_NUM = 110
 DEFAULT_SIZE = 16
 
 
-def prepare(source: Path, out: Path, image: str, size: int):
+def build(items, out: Path, image: str, size: int):
+    """items: dicts with crop_id, doc_id, width, height, page (JPEG bytes), reference, v1_id."""
     if not base.IMAGE.fullmatch(image):
         raise ValueError("expected immutable public worker image digest")
     if not 1 <= size <= b.MAX_CROPS:
         raise ValueError(f"bundle size must be 1..{b.MAX_CROPS}")
-    origin = base.load_campaign(source)
-    rows = origin["jobs"]
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".iris-bundle-", dir=out.parent) as temp:
         staged = Path(temp) / "campaign"
         (staged / "units").mkdir(parents=True)
         bundles = []
-        for start in range(0, len(rows), size):
-            group = rows[start:start + size]
-            crops = []
-            for row in group:
-                v1 = json.loads((source / "units" / row["id"] / "iris.json").read_text())
-                crops.append({"crop_id": v1["crop_id"], "doc_id": v1["doc_id"], "width": v1["box"][2],
-                              "height": v1["box"][3],
-                              "page": (source / "units" / row["id"] / "page.jpg").read_bytes()})
-            job, pack = b.make_bundle(crops=crops, worker_image=image, host_id=base.HOST_ID)
+        for start in range(0, len(items), size):
+            group = items[start:start + size]
+            job, pack = b.make_bundle(crops=group, worker_image=image, host_id=base.HOST_ID)
             unit = staged / "units" / job["id"]
             unit.mkdir()
             data = b.encode_bundle_job(job)
             base.durable(unit / "iris.json", data)
             base.durable(unit / "pages.pack", pack)
             bundles.append({"id": job["id"], "job_sha256": base.sha(data), "pack_sha256": job["pack_sha256"],
-                            "crops": [{"crop_id": r["crop_id"], "v1_id": r["id"], "reference": r["reference"]}
+                            "crops": [{"crop_id": r["crop_id"], "v1_id": r.get("v1_id"), "reference": r["reference"]}
                                       for r in group]})
         manifest = {"v": 2, "app": base.APP, "host_id": base.HOST_ID, "batch": BATCH, "worker_image": image,
                     "evaluation_only": True, "bundle_size": size, "bundles": bundles}
@@ -63,7 +57,56 @@ def prepare(source: Path, out: Path, image: str, size: int):
         if out.exists():
             raise FileExistsError("campaign already exists; inspect instead of overwriting")
         staged.rename(out)
-    return {"bundles": len(bundles), "crops": len(rows), "bundle_size": size, "campaign": str(out)}
+    return {"bundles": len(bundles), "crops": len(items), "bundle_size": size, "campaign": str(out)}
+
+
+def prepare(source: Path, out: Path, image: str, size: int):
+    """Regroup the crops of a prepared iris-campaign.py campaign."""
+    origin = base.load_campaign(source)
+    items = []
+    for row in origin["jobs"]:
+        v1 = json.loads((source / "units" / row["id"] / "iris.json").read_text())
+        items.append({"crop_id": v1["crop_id"], "doc_id": v1["doc_id"], "width": v1["box"][2], "height": v1["box"][3],
+                      "page": (source / "units" / row["id"] / "page.jpg").read_bytes(),
+                      "reference": row["reference"], "v1_id": row["id"]})
+    return build(items, out, image, size)
+
+
+def stage(url: str, sha256: str, subset: str, out: Path, image: str, size: int):
+    """Download the pinned OCR benchmark release (docs/ocr-bench.md), check it, and bundle one subset."""
+    import io
+    import tarfile
+    import urllib.request
+    if not url.startswith("https://github.com/tgoodyear/usnewsmap.com/releases/download/"):
+        raise ValueError("the benchmark archive must come from this repository's releases")
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("--archive-sha256 must be 64 hex characters")
+    with urllib.request.urlopen(url, timeout=300) as response:
+        blob = response.read(256 * 1024 * 1024 + 1)
+    if len(blob) > 256 * 1024 * 1024 or base.sha(blob) != sha256:
+        raise ValueError("benchmark archive checksum mismatch")
+    files = {}
+    with tarfile.open(fileobj=io.BytesIO(blob)) as archive:
+        for member in archive.getmembers():
+            parts = Path(member.name).parts
+            if member.isreg() and len(parts) >= 2 and ".." not in parts and not member.name.startswith("/"):
+                files["/".join(parts[1:])] = member
+        manifest = json.loads(archive.extractfile(files["manifest.json"]).read())
+        members = manifest["subsets"][subset]["members"]
+        samples = {row["id"]: row for row in manifest["samples"]}
+        items = []
+        for crop_id in members:
+            row = samples[crop_id]
+            page = archive.extractfile(files[row["image"]["path"]]).read()
+            if base.sha(page) != row["image"]["sha256"]:
+                raise ValueError(f"{crop_id}: image checksum mismatch")
+            reference = archive.extractfile(files[row["reference"]["path"]]).read().decode("utf-8")
+            if base.sha(reference.encode("utf-8")) != row["reference"]["sha256"]:
+                raise ValueError(f"{crop_id}: reference checksum mismatch")
+            items.append({"crop_id": crop_id, "doc_id": row["provenance"]["page_id"], "width": row["image_width"],
+                          "height": row["image_height"], "page": page, "reference": reference,
+                          "v1_id": (row.get("legacy") or {}).get("job_id")})
+    return build(items, out, image, size)
 
 
 def load(root: Path):
@@ -161,7 +204,7 @@ def collect(root: Path, seen: Path, v1_seen: Path | None = None):
     v1_text = {}
     for path in sorted(v1_seen.glob("*.json")) if v1_seen else []:
         result = json.loads(path.read_text())
-        if result.get("status") == "ok":
+        if result.get("v") == 1 and result.get("status") == "ok":
             v1_text[result["id"]] = result["text"]
     ids = {row["id"]: row for row in campaign["bundles"]}
     returned = {}
@@ -209,11 +252,18 @@ def collect(root: Path, seen: Path, v1_seen: Path | None = None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    stage = commands.add_parser("prepare")
-    stage.add_argument("--source", type=Path, required=True, help="a prepared iris-campaign.py campaign")
-    stage.add_argument("--out", type=Path, required=True)
-    stage.add_argument("--worker-image", required=True)
-    stage.add_argument("--bundle-size", type=int, default=DEFAULT_SIZE)
+    stage_cmd = commands.add_parser("prepare")
+    stage_cmd.add_argument("--source", type=Path, required=True, help="a prepared iris-campaign.py campaign")
+    stage_cmd.add_argument("--out", type=Path, required=True)
+    stage_cmd.add_argument("--worker-image", required=True)
+    stage_cmd.add_argument("--bundle-size", type=int, default=DEFAULT_SIZE)
+    release = commands.add_parser("stage")
+    release.add_argument("--archive-url", required=True)
+    release.add_argument("--archive-sha256", required=True)
+    release.add_argument("--subset", required=True)
+    release.add_argument("--out", type=Path, required=True)
+    release.add_argument("--worker-image", required=True)
+    release.add_argument("--bundle-size", type=int, default=DEFAULT_SIZE)
     send = commands.add_parser("submit")
     send.add_argument("--root", type=Path, required=True)
     send.add_argument("--project", type=Path, required=True)
@@ -225,6 +275,9 @@ def main():
     args = parser.parse_args()
     if args.command == "prepare":
         result = prepare(args.source, args.out, args.worker_image, args.bundle_size)
+    elif args.command == "stage":
+        result = stage(args.archive_url, args.archive_sha256, args.subset, args.out, args.worker_image,
+                       args.bundle_size)
     elif args.command == "submit":
         result = submit(args.root, args.project, args.apply)
     else:
