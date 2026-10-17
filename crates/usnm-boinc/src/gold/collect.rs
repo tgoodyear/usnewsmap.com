@@ -6,7 +6,8 @@
 //!
 //! - `reports.jsonl`: one line per result, keyed by bundle version, manifest sha256 and engine
 //!   (version, image, base), with the host id the client claimed, the per-source and overall
-//!   CER and WER, how many crops were scored/skipped, and complete-loss crop counts;
+//!   CER and WER, scoring configuration, observed model profiles, how many crops were
+//!   scored/skipped, and complete-loss crop counts;
 //! - `crops.jsonl`: one line per scored crop with the same keys and its counts.
 //!
 //! Counts only: no page text and no transcription is in the results or in these files.
@@ -15,6 +16,7 @@ use crate::gold::job::{Job, JOB_FILE, MAX_JSON, RESULT_FILE};
 use crate::{atomic, read};
 use anyhow::Context;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -79,6 +81,9 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         row["completed_at"] = json!(r.completed_at);
         row["crops"] = json!(r.crops.len());
         row["skipped"] = json!(r.skipped.len());
+        row["profiles"] = json!(r.crops.iter().map(|c| &c.profile).collect::<BTreeSet<_>>());
+        row["psm"] = json!(r.engine.psm);
+        row["dpi"] = json!(r.engine.dpi);
         row["complete_loss_crops"] = json!(r
             .crops
             .iter()
@@ -157,9 +162,22 @@ mod tests {
         assert!(rows.contains("\"host_id\":7"));
         let row: serde_json::Value = serde_json::from_str(rows.trim()).unwrap();
         assert_eq!(row["complete_loss_crops"], 1);
-        let trust =
-            crate::trust::Trust::build(&[out.join("reports.jsonl")], 1.0, &e.manifest_sha256)
-                .unwrap();
+        assert_eq!(row["profiles"], serde_json::json!(["eng"]));
+        assert_eq!(row["psm"], 3);
+        assert_eq!(row["dpi"], 300);
+        let scope = crate::trust::Scope {
+            language: "eng".into(),
+            profile: "eng".into(),
+            psm: 3,
+            dpi: 300,
+        };
+        let trust = crate::trust::Trust::build(
+            &[out.join("reports.jsonl")],
+            1.0,
+            &e.manifest_sha256,
+            scope.clone(),
+        )
+        .unwrap();
         assert!(
             trust.hosts.is_empty(),
             "aggregate acceptance cannot hide a lost crop"
@@ -179,12 +197,57 @@ mod tests {
         )
         .unwrap();
         run(&options).unwrap();
-        let trust =
-            crate::trust::Trust::build(&[out.join("reports.jsonl")], 1.0, &e.manifest_sha256)
-                .unwrap();
+        let trust = crate::trust::Trust::build(
+            &[out.join("reports.jsonl")],
+            1.0,
+            &e.manifest_sha256,
+            scope.clone(),
+        )
+        .unwrap();
         assert!(
             !trust.hosts.is_empty(),
             "complete positive remains eligible"
         );
+        for wrong_profile in [false, true] {
+            let mut newer = tests::report(&e, &jobs[2].id);
+            newer.completed_at = "2026-10-14T00:00:00Z".into();
+            if wrong_profile {
+                newer.crops[0].profile = "fra".into();
+            } else {
+                let counts = &mut newer.crops[0].result.counts;
+                counts.char_edits = counts.ref_chars;
+                counts.word_edits = counts.ref_words;
+            }
+            newer.summary = usnm_ocr_survey::bundle::summarize(
+                &newer
+                    .crops
+                    .iter()
+                    .map(|c| c.result.clone())
+                    .collect::<Vec<_>>(),
+            );
+            std::fs::write(
+                options
+                    .spool
+                    .join(format!("{}__file_{RESULT_FILE}", jobs[2].workunit())),
+                serde_json::to_vec(&newer).unwrap(),
+            )
+            .unwrap();
+            let collected = run(&options).unwrap();
+            assert_eq!(
+                (collected.collected, collected.failed, collected.pending),
+                (2, 1, 0)
+            );
+            let trust = crate::trust::Trust::build(
+                &[out.join("reports.jsonl")],
+                1.0,
+                &e.manifest_sha256,
+                scope.clone(),
+            )
+            .unwrap();
+            assert!(
+                trust.hosts.is_empty(),
+                "newer validated canonical quality failure revokes the prior positive"
+            );
+        }
     }
 }

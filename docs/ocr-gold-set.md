@@ -40,16 +40,36 @@ to pass and every fault to fail, without retuning on heldout.
 production threshold or statistical error guarantee. The numerical threshold
 has not been retuned against this spent test partition.
 
-Trust format v3 therefore binds one explicit calibrated manifest and also
+Trust format v4 therefore binds one explicit calibrated manifest and also
 requires complete scoring with no skips or crop whose character edits reach
 its reference length. The normal validated collector derives the counts-only
 `complete_loss_crops` field; old tables cannot silently satisfy this policy.
 This structural guard catches empty-output controls but does not prove
 resilience to partial omissions, wrong-language models or other fault families.
-A revised candidate needs a newly untouched issue-disjoint test partition,
-current-image canonical host evidence and explicit deployment before promotion.
-No host was promoted by this offline experiment; none of these runs is fresh
-page OCR, handoff publication, release or search acceptance.
+The revised candidate kept the same numerical limit and froze this structural
+guard before OCR on the next 30 outcome-blind issues, disjoint from baseline,
+calibration and the spent heldout. Selection SHA-256:
+`11183a39b1b64616745e6e2bcb8adb86a757649704fd5d85a69cc91465ab9c3f`;
+manifest `70600f006cdfce3cfba273028fc7a3f52bb30df3e7934b9ccde6e8f5265f468c`;
+frozen candidate
+`ff12ee4cc80d94f7812876cda2c4953f380f76cb529dca20b7488e64e7279023`.
+Both real-engine positives matched every integer count and passed, with
+6,255 edits / 87,111 reference characters. Lost-one/two/four-crop controls had
+9,099 / 11,339 / 17,172 edits and respectively 1 / 2 / 4 complete-loss crops;
+all failed. Every run scored 30 crops with zero skips. Thus this independently
+tested revised policy passed its preregistered criteria, not the original
+aggregate-only policy.
+
+The shared handoff trust file cannot be isolated by passing a pilot-only path.
+Trust v4 therefore additionally records source language `eng`, model profile
+`eng`, PSM 3 and 300 DPI, and publication/spot checks require the actual job to
+match that scope. The collector records actual profiles/configuration and trust
+building checks those against the declared policy; language scope must also
+be established by the operator's pinned-manifest evidence. This English-only
+experiment does not authorize other languages or profiles on the same image.
+Current-image canonical host evidence and explicit deployment are still required
+before promotion. No host was promoted by these offline experiments; none of
+these runs is fresh page OCR, handoff publication, release or search acceptance.
 
 The reviewed routing registry also records the current `247c` image's separately
 verified native base on each architecture: ARM above and AMD64

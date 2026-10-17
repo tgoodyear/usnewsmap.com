@@ -551,6 +551,10 @@ pub async fn spot_submit(c: &Config, jobs: &Path, execute: bool) -> anyhow::Resu
             "candidate worker image differs"
         );
         let host = canonical_host(c, &record.job.workunit()).await?;
+        ensure!(
+            trust.refuse_job(&record.job, Some(host)).is_none(),
+            "source job is outside calibrated host trust"
+        );
         let mut spot = plan(&id, &record.job.engine.image, host, &trust)?;
         let path = c.root.join("spots").join(&id).join("submission.json");
         if path.exists() {
@@ -678,9 +682,9 @@ pub async fn spot_compare(
         "canonical hosts do not match independent assignment"
     );
     ensure!(
-        trust.refuse(&spot.image, Some(source)).is_none()
-            && trust.refuse(&spot.image, Some(target)).is_none(),
-        "spot-check host trust revoked"
+        trust.refuse_job(&record.job, Some(source)).is_none()
+            && trust.refuse_job(&record.job, Some(target)).is_none(),
+        "spot-check job scope or host trust revoked"
     );
     let a = result(&record.job, original_spool, &record.job.workunit())?;
     let b = result(&record.job, spot_spool, &spot.workunit)?;
@@ -818,6 +822,12 @@ mod tests {
         Trust {
             hosts: [(format!("sha256:{}", "a".repeat(64)), [1, 2].into())].into(),
             manifest_sha256: Some("b".repeat(64)),
+            scope: Some(crate::trust::Scope {
+                language: "eng".into(),
+                profile: "eng".into(),
+                psm: 3,
+                dpi: 300,
+            }),
             max_cer: 0.1,
             v: crate::trust::TRUST_VERSION,
         }

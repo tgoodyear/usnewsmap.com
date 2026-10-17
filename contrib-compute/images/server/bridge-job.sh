@@ -30,7 +30,8 @@
 #                               outstanding, and a fresh one after a failed unit
 #   BRIDGE_STEP=gold-mirror-loc stages only the 18 locked v1 LoC JPEGs; no BLN or work creation
 #   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>; writes <campaign>/out
-#   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold> GOLD_MANIFEST_SHA256=<challenge hash>;
+#   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold> GOLD_MANIFEST_SHA256=<challenge hash>
+#                              GOLD_LANGUAGE=<source language> GOLD_PROFILE=<model profile>;
 #                               writes $SHARE_DIR/gold/trust.json from this campaign's complete reports
 #   BRIDGE_STEP=gold-bundle     builds the bundle v1 from its publishers onto the share, checks it
 #                               against the committed lock and writes <campaign>/bundle.tar
@@ -306,6 +307,8 @@ case "$step" in
     exec usnm-boinc gold trust --reports "$GOLD/out/reports.jsonl" \
       --max-cer "${GOLD_MAX_CER:?set GOLD_MAX_CER from campaign calibration}" \
       --manifest-sha256 "${GOLD_MANIFEST_SHA256:?set GOLD_MANIFEST_SHA256 to the calibrated challenge}" \
+      --language "${GOLD_LANGUAGE:?set GOLD_LANGUAGE to the calibrated source language}" \
+      --profile "${GOLD_PROFILE:?set GOLD_PROFILE to the calibrated model profile}" \
       --out "$SHARE_DIR/gold/trust.json" ;;
 esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&

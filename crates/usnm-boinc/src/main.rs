@@ -514,6 +514,12 @@ enum Gold {
         /// The exact challenge whose complete reports calibrated this threshold.
         #[arg(long)]
         manifest_sha256: String,
+        /// The source language covered by the calibration (three-letter lower-case code).
+        #[arg(long)]
+        language: String,
+        /// The calibrated model profile; Gold uses PSM 3 / 300 DPI.
+        #[arg(long)]
+        profile: String,
         #[arg(long)]
         out: PathBuf,
     },
@@ -1299,9 +1305,21 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
             reports,
             max_cer,
             manifest_sha256,
+            language,
+            profile,
             out,
         } => {
-            let t = usnm_boinc::trust::Trust::build(&reports, max_cer, &manifest_sha256)?;
+            let t = usnm_boinc::trust::Trust::build(
+                &reports,
+                max_cer,
+                &manifest_sha256,
+                usnm_boinc::trust::Scope {
+                    language,
+                    profile,
+                    psm: 3,
+                    dpi: 300,
+                },
+            )?;
             let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
                 std::path::Path::new(".").join(out)
             } else {
