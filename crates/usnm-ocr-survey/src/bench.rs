@@ -993,13 +993,19 @@ pub fn unpack(tar: &Path, dest: &Path) -> anyhow::Result<PathBuf> {
             first.starts_with("usnm-ocr-bench-v") && s.len() > first.len() + 1,
             "unexpected tar entry {s}"
         );
+        if top.is_none() {
+            ensure!(
+                !dest.join(&first).exists(),
+                "{} already exists; unpack into a fresh directory",
+                dest.join(&first).display()
+            );
+        }
         ensure!(
             top.get_or_insert_with(|| first.clone()) == &first,
             "release tar has more than one top directory"
         );
-        let out = dest.join(&p);
-        std::fs::create_dir_all(out.parent().context("path")?)?;
-        e.unpack(&out)?;
+        // unpack_in refuses to write outside dest, even through a symlink already there.
+        ensure!(e.unpack_in(dest)?, "unsafe path in tar: {s}");
     }
     Ok(dest.join(top.context("empty release tar")?))
 }
@@ -1169,6 +1175,12 @@ fn check_manifest(dir: &Path, m: &Manifest, sums: &BTreeMap<String, String>) -> 
         );
     }
     for e in &m.examples {
+        ensure!(
+            sums.contains_key(&e.hypotheses),
+            "example {}: {} is not in SHA256SUMS",
+            e.name,
+            e.hypotheses
+        );
         let outputs = read_outputs(&std::fs::read_to_string(dir.join(&e.hypotheses))?)?;
         let (t, _) = score(dir, m, &e.subset, &outputs, &e.rule)?;
         ensure!(
@@ -1487,6 +1499,48 @@ mod tests {
         let rows = select(&a.dir, &m, "all-5", false).unwrap();
         assert_eq!(rows.len(), 5);
         assert!(rows[0].get("reference").is_none());
+    }
+
+    #[test]
+    fn unpack_refuses_an_existing_release_dir_and_symlinked_parents() {
+        let f = fixture(None);
+        let a = build(&f.opts).unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let top = work.path().join(release_name("v1.0.0"));
+        std::fs::create_dir_all(&top).unwrap();
+        let e = unpack(&a.archive, work.path()).unwrap_err().to_string();
+        assert!(e.contains("already exists"), "{e}");
+        // A symlinked parent inside dest can't redirect writes outside it.
+        std::fs::remove_dir_all(&top).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(&top).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), top.join("images")).unwrap();
+        let mut ar = tar::Archive::new(std::fs::File::open(&a.archive).unwrap());
+        let mut tried = false;
+        for e in ar.entries().unwrap() {
+            let mut e = e.unwrap();
+            if e.path().unwrap().to_string_lossy().contains("/images/") {
+                assert!(!matches!(e.unpack_in(work.path()), Ok(true)));
+                tried = true;
+                break;
+            }
+        }
+        assert!(tried);
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn an_example_outside_sha256sums_fails_verification() {
+        let f = fixture(None);
+        let a = build(&f.opts).unwrap();
+        let mut m = read_manifest(&a.dir).unwrap();
+        let outside = a.dir.with_file_name("outside.jsonl");
+        std::fs::copy(a.dir.join("examples/pilot.jsonl"), &outside).unwrap();
+        m.examples[0].hypotheses = "../outside.jsonl".into();
+        let sums = read_sums(&std::fs::read_to_string(a.dir.join(SUMS)).unwrap()).unwrap();
+        let e = check_manifest(&a.dir, &m, &sums).unwrap_err().to_string();
+        assert!(e.contains("is not in SHA256SUMS"), "{e}");
     }
 
     #[test]
