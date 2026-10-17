@@ -344,8 +344,8 @@ and its public download both pin the measured `80bf2d65...` worker. The
 publisher-only update preserved all other template, configuration and identity
 properties and did not replace the concurrent server/bridge runtime.
 
-The full v1 campaign remains held pending verification of NonCommercial-use
-eligibility. Instead, the normal builder prepared a separate **52-crop,
+At the time of this measurement, verification of NonCommercial-use eligibility
+for the full v1 campaign was pending. The normal builder therefore prepared a separate **52-crop,
 CC-BY-4.0-only** bundle from the existing converted NewsEye validation inputs:
 BnF 24, Finnish 18 and Swedish 10. No BLN600, Overproof or NZZ content is in it.
 All source licence files and attribution travel unchanged with the crops.
@@ -393,8 +393,33 @@ This establishes actual current-image canonical execution and measured
 French/Finnish/Swedish coverage on host 8, **not English accuracy or Mac host
 calibration**. These are reused validation crops, not an independent unseen
 holdout. No production threshold was inferred and no trust was promoted.
-English-representative calibration, a defensible trust disposition, and the
-fresh Mac OCR publication/search lifecycle remain open.
+Subsequent [full-v1 canonical verification in #527](https://github.com/tgoodyear/usnewsmap.com/issues/527#issuecomment-6227645406)
+established four successful `80bf2d65...` executions on hosts 6, 9, 2 and 8:
+all 142 unique crops, zero skips, and exact per-crop integer-count parity with
+the offline baseline (125,622 reference characters, 11,336 edits, CER
+0.09023897088). This includes the English benchmark coverage missing from the
+separate CC-BY-only bundle, but is still reused benchmark material, not an
+independent unseen holdout. Four hosts are independent executions, not four
+independent truth sets.
+
+The [recorded project-purpose fact in #526](https://github.com/tgoodyear/usnewsmap.com/issues/526#issuecomment-6227671263)
+resolves the earlier factual NonCommercial-purpose unknown. It does not waive
+NoDerivatives, attribution or other licence conditions; the original archive
+and licence/attribution files remain unchanged. A defensible trust disposition,
+Mac calibration, and the fresh Mac OCR publication/search lifecycle remain open.
+
+### Prepared Mac Gold sibling, 17 October 2026
+
+ACR build `ch6r` prepared the signed Gold 1.3 `arm64-apple-darwin` / `docker`
+sibling, with all three payload signatures verified. Its publisher image is
+`crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:89a345d9a6f765cae467448438ee61ba70066562dcdff1280f816064aed9880c`.
+It deliberately pins the same measured `80bf2d65...` worker as Linux Gold 1.3;
+the newer production worker pin is not rolled back or implicitly calibrated.
+Preparation is not publication, native registration, Mac execution or host
+trust. A Mac job must name the ARM base, not the Linux AMD64 base. Existing
+Linux Gold 1.3 payloads must remain unchanged when publishing this platform
+sibling. No additional workunit or queue-admission exception is authorized by
+this artifact pin.
 
 ## Licensing
 
