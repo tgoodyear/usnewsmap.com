@@ -1,0 +1,313 @@
+{
+ "label": "cache_warm_n1",
+ "n": 1,
+ "count": 8,
+ "config": {
+  "INFERENCE_PRECISION_HINT": "f16",
+  "CACHE_DIR": "/cache"
+ },
+ "engine": {
+  "openvino": "2026.4.1-22982-e213a147257-releases/2026/4",
+  "openvino_genai": "2026.4.1.0-3408-ab01d1771e4"
+ },
+ "device": {
+  "full_device_name": "Intel(R) Iris(R) Xe Graphics (iGPU)",
+  "device_architecture": "GPU: vendor=0x8086 arch=v12.0.0",
+  "gpu_total_mem_bytes": 15135723520
+ },
+ "wall_ms": 65104.1,
+ "cache_bytes": 3177319213,
+ "groups": [
+  {
+   "crops": 1,
+   "load_ms": 1767.3,
+   "group_ms": 10535.0,
+   "memory_after_release": {
+    "cgroup_current": 322195456,
+    "cgroup_peak": 3930058752,
+    "rss": 542453760
+   }
+  },
+  {
+   "crops": 1,
+   "load_ms": 1696.4,
+   "group_ms": 7977.5,
+   "memory_after_release": {
+    "cgroup_current": 442118144,
+    "cgroup_peak": 3930058752,
+    "rss": 662953984
+   }
+  },
+  {
+   "crops": 1,
+   "load_ms": 1666.2,
+   "group_ms": 6119.5,
+   "memory_after_release": {
+    "cgroup_current": 581029888,
+    "cgroup_peak": 3930443776,
+    "rss": 799784960
+   }
+  },
+  {
+   "crops": 1,
+   "load_ms": 1694.3,
+   "group_ms": 8377.6,
+   "memory_after_release": {
+    "cgroup_current": 740929536,
+    "cgroup_peak": 4301426688,
+    "rss": 960303104
+   }
+  },
+  {
+   "crops": 1,
+   "load_ms": 1702.6,
+   "group_ms": 6642.7,
+   "memory_after_release": {
+    "cgroup_current": 871960576,
+    "cgroup_peak": 4301426688,
+    "rss": 1090252800
+   }
+  },
+  {
+   "crops": 1,
+   "load_ms": 1702.1,
+   "group_ms": 8722.2,
+   "memory_after_release": {
+    "cgroup_current": 1012322304,
+    "cgroup_peak": 4501655552,
+    "rss": 1229987840
+   }
+  },
+  {
+   "crops": 1,
+   "load_ms": 1709.8,
+   "group_ms": 8397.8,
+   "memory_after_release": {
+    "cgroup_current": 1136271360,
+    "cgroup_peak": 4630994944,
+    "rss": 1353732096
+   }
+  },
+  {
+   "crops": 1,
+   "load_ms": 1712.2,
+   "group_ms": 8043.2,
+   "memory_after_release": {
+    "cgroup_current": 1233457152,
+    "cgroup_peak": 4725567488,
+    "rss": 1450819584
+   }
+  }
+ ],
+ "crops": [
+  {
+   "crop_id": "pub-overproof-ca-168",
+   "page_sha256": "5c9f7a3c7b36d286ce3fe627907def6062d720e94a7b3391aa2b18ae010fa882",
+   "width": 825,
+   "height": 430,
+   "decode_ms": 15.7,
+   "generate_ms": 8678.3,
+   "tokens": 62,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "in the sun to draw the marks out.\nGlaze the bottom crust of fruit pies\nwith white of egg and they will not be\nsoggy.\nUse white oilcloth back of the kitchen\ntable and sink and under hooks that hold\nware.\nIt is said that the application of a piece",
+   "text_sha256": "13f80a944321b4703fd23d0ff5b7f82e51260d0dac38218f020e0c6d449eb50f",
+   "ttft_ms": 4841.80126953125,
+   "tpot_ms": 62.87818908691406,
+   "tokens_per_s": 15.903765678405762,
+   "tokenization_ms": 0.7350000143051147,
+   "prepare_embeddings_ms": 1555.373046875,
+   "inference_ms": 5131.56494140625,
+   "memory": {
+    "cgroup_current": 3893227520,
+    "cgroup_peak": 3930058752,
+    "rss": 747405312
+   },
+   "position_in_group": 0
+  },
+  {
+   "crop_id": "pub-reichsanzeiger-lines-016",
+   "page_sha256": "a90b21605c63732e13a0254d9d4c5fcf34481736a74b4f70ef5cc2ec8c8fe699",
+   "width": 1395,
+   "height": 102,
+   "decode_ms": 3.9,
+   "generate_ms": 6198.2,
+   "tokens": 39,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "Ruhrgiebet in der vergangenen Woche unter den Auswirungen der Streifbewegung in den westlichen Bezirken. Die Sonntagsarbeit, die",
+   "text_sha256": "839d855766e2e06d287c7cc6c26ece6c3e4a12b95f9bb640ef87e1575922969a",
+   "ttft_ms": 3863.36181640625,
+   "tpot_ms": 61.42605209350586,
+   "tokens_per_s": 16.27973747253418,
+   "tokenization_ms": 0.5960000157356262,
+   "prepare_embeddings_ms": 788.8300170898438,
+   "inference_ms": 3413.950927734375,
+   "memory": {
+    "cgroup_current": 3820601344,
+    "cgroup_peak": 3930058752,
+    "rss": 824205312
+   },
+   "position_in_group": 0
+  },
+  {
+   "crop_id": "pub-reichsanzeiger-lines-657",
+   "page_sha256": "133eda1c5c963e377c381fb27bfed9c57fe40c2c4492b6753974cddb8fe1fdc2",
+   "width": 804,
+   "height": 95,
+   "decode_ms": 3.3,
+   "generate_ms": 4377.9,
+   "tokens": 20,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "der Kaufmann Julius Semer in M\u00fcnster\ni. M. eingetragen.",
+   "text_sha256": "c4367ad4a6c0caa3ca90d742b6d1cbd8c9879b1f7ec3bdf3c51fd27af4d5e38f",
+   "ttft_ms": 3204.794189453125,
+   "tpot_ms": 61.71213912963867,
+   "tokens_per_s": 16.204267501831055,
+   "tokenization_ms": 0.7080000042915344,
+   "prepare_embeddings_ms": 626.52001953125,
+   "inference_ms": 1908.35400390625,
+   "memory": {
+    "cgroup_current": 3917950976,
+    "cgroup_peak": 3930443776,
+    "rss": 956825600
+   },
+   "position_in_group": 0
+  },
+  {
+   "crop_id": "pub-reichsanzeiger-lines-344",
+   "page_sha256": "a45b1c287274f564b28ab9d0d7513fb526fdd44e10c2e0b972aaca549cfed88d",
+   "width": 1894,
+   "height": 148,
+   "decode_ms": 5.0,
+   "generate_ms": 6598.1,
+   "tokens": 35,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "19. d. Mts. den ersten Ausgang unternehmen konnte und vor- ausfichtlich in B\u00e4lde zur badischen Division wird zur\u00fcckkehren",
+   "text_sha256": "ac898d27bc91a8adb9933359fe16d9300fd42e82cd0fb12b7d933706f58cb52a",
+   "ttft_ms": 4468.54736328125,
+   "tpot_ms": 62.60987854003906,
+   "tokens_per_s": 15.971920013427734,
+   "tokenization_ms": 0.7559999823570251,
+   "prepare_embeddings_ms": 1369.6500244140625,
+   "inference_ms": 3272.9208984375,
+   "memory": {
+    "cgroup_current": 4269391872,
+    "cgroup_peak": 4301426688,
+    "rss": 1155801088
+   },
+   "position_in_group": 0
+  },
+  {
+   "crop_id": "pub-reichsanzeiger-lines-009",
+   "page_sha256": "e5231a09e151b1e7040955d989c67b5d919f62de82473cb775bcd0f4cb3e3edf",
+   "width": 934,
+   "height": 95,
+   "decode_ms": 3.4,
+   "generate_ms": 4865.0,
+   "tokens": 25,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "H\u00f6lzernen Ausfahrtshoren f\u00fcr den Lokomotiv-\nschuppen in Breslau",
+   "text_sha256": "aed52328e28dce02cc02a7b59b9139e7112595ed109636dcfe4bff9e3479f3b4",
+   "ttft_ms": 3380.03271484375,
+   "tpot_ms": 61.84828567504883,
+   "tokens_per_s": 16.168596267700195,
+   "tokenization_ms": 0.5659999847412109,
+   "prepare_embeddings_ms": 681.656005859375,
+   "inference_ms": 2265.556884765625,
+   "memory": {
+    "cgroup_current": 4217098240,
+    "cgroup_peak": 4301426688,
+    "rss": 1248231424
+   },
+   "position_in_group": 0
+  },
+  {
+   "crop_id": "pub-reichsanzeiger-lines-601",
+   "page_sha256": "c1745e0172a0aa61d78d53b6832eff1bc41ce85dcbf12a6edd2ab7653992d232",
+   "width": 1474,
+   "height": 164,
+   "decode_ms": 2.8,
+   "generate_ms": 6942.2,
+   "tokens": 48,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "zur\u00fcckgewiesen. Herr Mendizabal erscheint gegenw\u00e4rtig gro\u00df durch die Fehler seiner Vorg\u00e4nger, und besonders dadurch, da\u00df er allein steht, da\u00df er durch geheime Zuschrei-",
+   "text_sha256": "a428d6ec7ad714fa54814534fd4750b865297c4d5ab37ff40cef8136b7acac7e",
+   "ttft_ms": 3997.83740234375,
+   "tpot_ms": 62.62825393676758,
+   "tokens_per_s": 15.96723461151123,
+   "tokenization_ms": 0.7129999995231628,
+   "prepare_embeddings_ms": 1116.8680419921875,
+   "inference_ms": 3843.93310546875,
+   "memory": {
+    "cgroup_current": 4477124608,
+    "cgroup_peak": 4501655552,
+    "rss": 1407434752
+   },
+   "position_in_group": 0
+  },
+  {
+   "crop_id": "pub-reichsanzeiger-lines-082",
+   "page_sha256": "7b631f900415a5316500a582a4620cca4d0266b20e91dce07bac8b67b95470c6",
+   "width": 1930,
+   "height": 137,
+   "decode_ms": 2.8,
+   "generate_ms": 6610.0,
+   "tokens": 41,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "Aenderung eintrat. Effektive Waare besonders in polnischen Sorten \nvielseitig angeboten. Hafer zur Stelle billiger erlassen. Termine",
+   "text_sha256": "b4d0337b9c6bd5b8c415458c4634c2ee7a4b2266b78c0dd81edb0961399330e7",
+   "ttft_ms": 4113.623046875,
+   "tpot_ms": 62.390628814697266,
+   "tokens_per_s": 16.028047561645508,
+   "tokenization_ms": 0.7009999752044678,
+   "prepare_embeddings_ms": 1132.1319580078125,
+   "inference_ms": 3607.778076171875,
+   "memory": {
+    "cgroup_current": 4607627264,
+    "cgroup_peak": 4630994944,
+    "rss": 1532952576
+   },
+   "position_in_group": 0
+  },
+  {
+   "crop_id": "pub-reichsanzeiger-lines-543",
+   "page_sha256": "d34dbb7d076c41286214b0871a4a25c38de91dbfc15121d743c3fb36d048a4fe",
+   "width": 1853,
+   "height": 139,
+   "decode_ms": 4.8,
+   "generate_ms": 6254.7,
+   "tokens": 37,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "vor schriftsm\u00e4\u00dfigen Lebungssturzus nachholen zu lassen. Die Briggas \u00bbMusquito\u00ab und \u00bbUndine\u00ab sind zur Aus-",
+   "text_sha256": "84465961c7b5927c6e0163835fb566d9524433bbd13ae4cd5e321ee9b41d905c",
+   "ttft_ms": 4000.50634765625,
+   "tpot_ms": 62.598731994628906,
+   "tokens_per_s": 15.974764823913574,
+   "tokenization_ms": 0.734000027179718,
+   "prepare_embeddings_ms": 1102.427978515625,
+   "inference_ms": 3165.14208984375,
+   "memory": {
+    "cgroup_current": 4700880896,
+    "cgroup_peak": 4725567488,
+    "rss": 1629720576
+   },
+   "position_in_group": 0
+  }
+ ],
+ "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n"
+}

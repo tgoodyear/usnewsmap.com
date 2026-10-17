@@ -169,3 +169,15 @@ OpenVINO 2026.4.1 on an i7-1185G7 Iris Xe. Warm-cache newspaper-crop inference t
 7.5 seconds on GPU versus 27.6 seconds on two CPU threads. The clear text card was
 read exactly. The newspaper transcription had errors and CPU/GPU differences;
 these two images do not establish corpus accuracy or sustained performance.
+
+## Throughput experiment (#736)
+
+`ocr/boinc/iris/bench.py` and `scripts/boinc/iris-bench.sh` measure one resident `VLMPipeline`
+for N sequential crops and an optional persistent `CACHE_DIR`, with the worker's device checks, prompt,
+f16 hint and container limits. They are experiment tools, not shipped in the worker image, and change no
+BOINC behavior. On Computer 9 pipeline construction was about 70% of each task; N=8 gave 3.8x and
+a warm compile cache plus N=8 gave 6.4x end-to-end crops/min with no truncations or OOMs. Reference-scored CER, the
+multi-crop contract and a signed release are still required: see
+[the report](reports/2026-10-iris-model-reuse/README.md). Rollback needs nothing: the published
+single-crop app version is unchanged. To rerun, stop BOINC on the host first
+(`systemctl stop boinc-client` in the CT) and restore it with `systemctl start boinc-client` afterwards.
