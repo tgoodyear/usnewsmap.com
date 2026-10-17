@@ -169,6 +169,14 @@ section.wide svg { margin:6px 0 10px; min-width:760px; }
 .pipeline-table details p { margin:6px 0; color:var(--ink2); }
 .pipeline-meta { margin-top:12px; }
 .pipeline-meta > summary { cursor:pointer; color:var(--ink2); }
+.ecosystem-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:14px; }
+.ecosystem-card { border:1px solid var(--grid); border-radius:6px; padding:14px; min-width:0; }
+.ecosystem-card h3 { margin:0 0 8px; font-size:16px; }
+.ecosystem-card p { margin:8px 0; }
+.ecosystem-card .headline { font-size:22px; font-weight:650; }
+.ecosystem-card .note { margin-bottom:0; }
+.diagnostics > summary { cursor:pointer; font-weight:600; }
+.diagnostics > .grid { margin-top:16px; }
 .sr { position:absolute; width:1px; height:1px; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 /* Long lists scroll inside their panel, under a header that stays put. */
 .scroll { max-height:360px; overflow:auto; border-bottom:1px solid var(--grid); }
@@ -238,7 +246,7 @@ const localTimes = (root) => {
     if (!isNaN(d)) t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'});
   }
 };
-const panels = () => [...document.querySelectorAll('.grid > section')];
+const panels = () => [...document.querySelectorAll('.dashboard > section')];
 const titleOf = (s) => (s.querySelector('h2') || {}).textContent || '';
 let rawSub = (document.querySelector('.sub time') || {outerHTML: ''}).outerHTML;
 let raw = panels().map((s) => s.outerHTML);
@@ -282,7 +290,7 @@ const update = async () => {
     if (!r.ok) throw new Error('status ' + r.status);
     const next = new DOMParser().parseFromString(await r.text(), 'text/html');
     const now = panels();
-    const then = [...next.querySelectorAll('.grid > section')];
+    const then = [...next.querySelectorAll('.dashboard > section')];
     const nextSub = next.querySelector('.sub');
     if (!nextSub || !then.length) throw new Error('not the dashboard');
     const t = sub.querySelector('time'), nt = nextSub.querySelector('time');
@@ -300,7 +308,7 @@ const update = async () => {
         swap(now[i], fresh);
       });
     } else {
-      const grid = document.querySelector('.grid');
+      const grid = document.querySelector('.dashboard');
       if (selecting(grid)) return;
       grid.replaceChildren(...then.map((s) => document.importNode(s, true)));
       localTimes(grid);
@@ -437,7 +445,7 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
     o.push_str(&badge(
         if v.stale { "warning" } else { "good" },
         if v.stale {
-            "STALE / unavailable"
+            "Some evidence old or unknown"
         } else {
             "observed"
         },
@@ -524,6 +532,236 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
     o
 }
 
+fn summary_stage<'a>(v: &'a View, id: &str) -> Option<&'a crate::pipeline::Stage> {
+    let pipeline = &v.pipeline;
+    let snapshot = pipeline.snapshot.as_ref()?;
+    let stage = snapshot.stages.iter().find(|s| s.id == id)?;
+    let freshness = pipeline.stage_freshness.iter().find(|s| s.id == id)?;
+    (stage.state == crate::pipeline::StageState::Observed && !freshness.stale).then_some(stage)
+}
+
+fn summary_count(v: &View, id: &str) -> String {
+    summary_stage(v, id)
+        .and_then(|s| s.count)
+        .map_or_else(|| "not currently observed".into(), int)
+}
+
+fn summary_card(o: &mut String, title: &str, headline: &str, body: &str, note: &str) {
+    let _ = write!(
+        o,
+        "<article class=\"ecosystem-card\"><h3>{}</h3><p class=\"headline\">{}</p>\
+         <div>{body}</div><p class=\"note\">{note}</p></article>",
+        esc(title),
+        esc(headline),
+    );
+}
+
+fn ecosystem_panel(v: &View) -> String {
+    let now = v.generated_at;
+    let mut o = String::from(
+        "<section class=\"wide\" id=\"ecosystem\"><h2>Across the ecosystem</h2>\
+         <p>Acquire originals, run OCR and comparisons, then validate and publish. \
+         These lanes run independently: cached pages, worker completions and volunteer tasks \
+         are different populations, not one progress bar.</p><div class=\"ecosystem-cards\">",
+    );
+    let f = &v.fetch;
+    let fetch_time = f
+        .status
+        .as_ref()
+        .and_then(|s| DateTime::parse_from_rfc3339(&s.updated_at).ok());
+    let fetch_fresh = fetch_time
+        .is_some_and(|t| (0..=900).contains(&(now - t.with_timezone(&Utc)).num_seconds()))
+        && f.status_error.is_none()
+        && f.plan_error.is_none();
+    if fetch_fresh {
+        let state = f.status.as_ref().map_or("unknown", |s| s.state.as_str());
+        let keep = f.sets.iter().find(|s| s.name == "keep");
+        let population = keep.map_or_else(
+            || "Current cache population unavailable.".into(),
+            |s| {
+                format!(
+                    "{} of {} planned keep-set originals cached ({}).",
+                    int(s.fetched),
+                    int(s.total),
+                    bytes(s.bytes)
+                )
+            },
+        );
+        summary_card(&mut o, "Fetching originals",
+            &format!("{} pages in the last hour", int(f.last_hour.pages)),
+            &format!("{} {} {}",
+                badge(if matches!(state, "running" | "done") { "good" } else { "warning" }, state),
+                population,
+                if f.status.as_ref().is_some_and(|s| s.error.is_some()) {
+                    "Fetcher reports an error; see operational details."
+                } else { "" }),
+            &format!("{} source holds and {} failed attempts in the last hour. \
+                Failures are attempts, not unique lost pages. Scan caching is not public-mirror verification.",
+                int(f.holds_last_hour as u64), int(f.failures_last_hour as u64)));
+    } else {
+        summary_card(
+            &mut o,
+            "Fetching originals",
+            "Current activity unknown",
+            "Fetcher status or its plan is missing, old or invalid.",
+            "Historical download details remain available below; no current rate is inferred.",
+        );
+    }
+    let fresh_nodes: Vec<_> = v
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.ok && n
+                .last_ok
+                .is_some_and(|at| now - at <= crate::view::NODE_FRESH)
+        })
+        .collect();
+    if fresh_nodes.is_empty() {
+        summary_card(
+            &mut o,
+            "Local OCR",
+            "Current activity unknown",
+            "No configured worker has fresh telemetry.",
+            "Missing telemetry does not establish that the machines are idle.",
+        );
+    } else {
+        let done: u64 = fresh_nodes.iter().map(|n| n.pages_per_hour).sum();
+        let in_flight: usize = fresh_nodes.iter().map(|n| n.in_flight.len()).sum();
+        let failed: u64 = fresh_nodes.iter().map(|n| n.last_hour.failed).sum();
+        let abandoned: u64 = fresh_nodes.iter().map(|n| n.last_hour.abandoned).sum();
+        let queue = v
+            .azure
+            .queues
+            .as_ref()
+            .filter(|q| !v.azure.queues_stale && q.error.is_none());
+        let backlog = queue.and_then(|q| {
+            Some(
+                q.counts
+                    .get("ocr-bulk")?
+                    .saturating_add(*q.counts.get("ocr-priority")?),
+            )
+        });
+        summary_card(&mut o, "Local OCR", &format!("{} pages completed in the last hour", int(done)),
+            &format!("{} pages in flight across {} reporting workers; {} configured workers lack fresh status. \
+                Local queue: {}.", int(in_flight as u64), int(fresh_nodes.len() as u64),
+                int((v.nodes.len() - fresh_nodes.len()) as u64),
+                backlog.map_or_else(|| "unknown".into(), |n| format!("about {} messages, including leased work", int(n)))),
+            &format!("{} failed and {} abandoned attempts in the last hour may retry. \
+                Completion means worker output, not accepted or searchable text.", int(failed), int(abandoned)));
+    }
+    let boinc_current = summary_stage(v, "boinc_unsent").is_some()
+        && summary_stage(v, "boinc_in_progress").is_some();
+    summary_card(&mut o, "Volunteer compute",
+        &if boinc_current { format!("{} assigned result replicas", summary_count(v, "boinc_in_progress")) }
+         else { "Current activity unknown".into() },
+        &format!("{} unsent result replicas reported by the project. \
+            Volunteer execution is a separate lane from local OCR.", summary_count(v, "boinc_unsent")),
+        "Assigned does not mean actively computing. Replicas are not unique pages; \
+         device eligibility, completion throughput and source cache age are not provided by this feed.");
+    let mut research = String::new();
+    let mut assigned = None::<u64>;
+    for (app, name) in [
+        ("quality", "Quality comparisons"),
+        ("qwen", "Qwen crop readings"),
+        ("iris", "Iris pilot readings"),
+        ("gold", "Reference checks"),
+        ("qwen_train", "Training work"),
+    ] {
+        let id = format!("boinc_usnm_{app}_in_progress");
+        if let Some(count) = summary_stage(v, &id).and_then(|s| s.count) {
+            assigned = Some(assigned.unwrap_or(0).saturating_add(count));
+        }
+        let _ = write!(
+            research,
+            "<li>{}: {} assigned replicas</li>",
+            name,
+            summary_count(v, &id)
+        );
+    }
+    summary_card(
+        &mut o,
+        "Experiments and evaluation",
+        &assigned.map_or_else(
+            || "Current activity unknown".into(),
+            |n| format!("{} assigned evaluation replicas observed", int(n)),
+        ),
+        &format!("<ul>{research}</ul>"),
+        "These are subsets of volunteer work, not additional totals. Scheduler assignments show \
+         activity, not experiment success, quality gains or approved rollout. Campaign readiness, \
+         paired results and acceptance decisions are not connected to this dashboard.",
+    );
+    let ssets: Vec<_> = v.serial_set.iter().filter(|s| !s.stale).collect();
+    if ssets.is_empty() {
+        summary_card(
+            &mut o,
+            "Other source acquisition",
+            "Current activity unknown",
+            "Serial Set collection has no fresh report.",
+            "This source extracts existing PDF text; it does not use the OCR queue.",
+        );
+    } else {
+        let done: u64 = ssets.iter().map(|s| s.done).sum();
+        let total: u64 = ssets.iter().map(|s| s.status.to_fetch).sum();
+        let pages: u64 = ssets.iter().map(|s| s.status.pages).sum();
+        let running = ssets.iter().filter(|s| s.state == "running").count();
+        summary_card(
+            &mut o,
+            "Other source acquisition",
+            &format!("{} Serial Set volumes processed", int(done)),
+            &format!(
+                "{} of {} planned volumes reported, containing {} extracted pages. \
+                {} collectors report running.",
+                int(done),
+                int(total),
+                int(pages),
+                int(running as u64)
+            ),
+            "Volume progress includes empty/incomplete volumes, not just successes. \
+             PDF text extraction is separate from OCR and search publication.",
+        );
+    }
+    let snapshot = v.pipeline.snapshot.as_ref();
+    let coverage = snapshot.map_or_else(|| "No valid catalog snapshot is loaded.".into(), |s|
+        format!("Imported evidence covers {} artifact locations ({} verified) and {} engine runs on {} pages. \
+            This is a partial inventory, not corpus coverage.", int(s.artifacts.locations),
+            int(s.artifacts.verified), int(s.runs.total), int(s.runs.pages)));
+    let mut publishing = String::new();
+    for (id, label) in [
+        ("accepted", "Accepted"),
+        ("imported", "Curated imports"),
+        ("indexed", "Search inclusion"),
+    ] {
+        let _ = write!(publishing, "<li>{}: {}</li>", label, summary_count(v, id));
+    }
+    let publication_connected = ["accepted", "imported", "indexed"]
+        .iter()
+        .all(|id| summary_stage(v, id).and_then(|s| s.count).is_some());
+    summary_card(&mut o, "Validation and publication",
+        if publication_connected { "Publication counts reported" } else { "Coverage is incomplete" },
+        &format!("<ul>{publishing}</ul>{coverage}"),
+        "No end-to-end publication rate or OCR quality improvement is inferred from execution counts. \
+         Historical catalog observations keep their original age when live counters refresh.");
+    o.push_str("</div>");
+    if v.pipeline.last_error.is_some() {
+        o.push_str("<p class=\"note\">Some volunteer/catalog evidence is old, unknown or unreadable. \
+            This does not describe the freshness of every lane; source errors and ages are in operational details.</p>");
+    }
+    if let Some(s) = snapshot {
+        let _ = write!(
+            o,
+            "<p class=\"note\">Volunteer/catalog snapshot generated {} ({} ago). \
+            Live-counter freshness is checked independently of historical evidence. \
+            Expand operational details for per-source ages, failures and provenance.</p>",
+            time(s.generated_at),
+            span((now - s.generated_at).num_seconds().max(0) as u64)
+        );
+    } else {
+        o.push_str("<p class=\"note\">Volunteer/catalog snapshot unavailable. Local collection reports are independent.</p>");
+    }
+    o.push_str("</section>");
+    o
+}
+
 pub fn render(v: &View) -> String {
     let now = v.generated_at;
     let mut o = String::with_capacity(64 * 1024);
@@ -532,15 +770,19 @@ pub fn render(v: &View) -> String {
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <noscript><meta http-equiv=\"refresh\" content=\"{}\"></noscript>\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>usnm OCR, local</title><style>{STYLE}</style></head><body data-refresh=\"{}\">\
-         <h1>usnm OCR, local</h1><div class=\"sub\">The scan fetch, the nodes and the hosts on the LAN. \
+         <title>USNewsMap processing</title><style>{STYLE}</style></head><body data-refresh=\"{}\">\
+         <h1>USNewsMap processing</h1><div class=\"sub\">Source acquisition, local OCR, volunteer compute and evaluation. \
          Read-only; no page text. Made {}; refreshes every {}s. \
-         JSON: <a href=\"/api/view.json\">/api/view.json</a>.</div><div class=\"grid\">",
+         JSON: <a href=\"/api/view.json\">/api/view.json</a>.</div><div class=\"grid dashboard\">",
         v.refresh_secs,
         v.refresh_secs,
         time(now),
         v.refresh_secs
     );
+    o.push_str(&ecosystem_panel(v));
+    o.push_str("<section class=\"wide\" id=\"operational-details\"><h2>Operational details</h2>\
+        <details class=\"diagnostics\" data-refresh-key=\"operational-details\"><summary>\
+        Show workers, queues, page lists, source evidence and reference diagrams</summary><div class=\"grid\">");
 
     // 0. At a glance.
     o.push_str("<section class=\"wide\"><h2>At a glance</h2><table><tr><th>What</th><th>State</th><th>Progress</th><th class=\"r\">Per hour</th><th class=\"r\">Done in</th></tr>");
@@ -1177,7 +1419,10 @@ pub fn render(v: &View) -> String {
     );
 
     o.push_str(&crate::diagrams::section(v));
-    let _ = write!(o, "</div><script>{SCRIPT}</script></body></html>");
+    let _ = write!(
+        o,
+        "</div></details></section></div><script>{SCRIPT}</script></body></html>"
+    );
     o
 }
 
@@ -1210,7 +1455,7 @@ mod tests {
         assert_eq!(html.matches("data-refresh-key=\"stage-").count(), 2);
         assert!(!html.contains("colspan=\"3\""));
         assert!(html.contains("data-refresh-key=\"corpus-metadata\"><summary>"));
-        assert!(html.contains("STALE / unavailable"));
+        assert!(html.contains("Some evidence old or unknown"));
         assert!(html.contains("separate from local worker totals"));
         for s in [
             "&lt;coverage&gt;",
@@ -1244,6 +1489,169 @@ mod tests {
         assert!(html.contains("data-refresh-key=\"stage-scan\""));
         assert!(html.contains("data-refresh-key=\"corpus-metadata\""));
         assert!(SCRIPT.contains("d.dataset.refreshKey ||"));
+    }
+
+    fn summary_view() -> View {
+        let dir = tempfile::tempdir().unwrap();
+        crate::view::build(
+            &mut crate::fetch::Fetch::new(dir.path().to_owned(), None),
+            &crate::nodes::Nodes::open(
+                dir.path().join("state"),
+                &[("worker-sentinel".into(), "http://127.0.0.1:1".into())],
+            )
+            .unwrap(),
+            &crate::hosts::Hosts::new(Vec::new()),
+            &crate::sset::Ssets::default(),
+            None,
+            &crate::view::Settings::default(),
+            Utc::now(),
+        )
+    }
+
+    #[test]
+    fn ecosystem_summaries_do_not_expose_page_or_batch_identifiers() {
+        let mut v = summary_view();
+        v.fetch.status = Some(crate::fetch::FetchStatus {
+            updated_at: v.generated_at.to_rfc3339(),
+            state: "running".into(),
+            last_doc_id: "private-page-sentinel".into(),
+            manifest: "private-batch-sentinel".into(),
+            ..Default::default()
+        });
+        v.fetch.status_error = None;
+        v.fetch.plan_error = None;
+        v.fetch.last_hour.pages = 1574;
+        let summary = ecosystem_panel(&v);
+        assert!(summary.contains("1,574 pages in the last hour"));
+        assert!(summary.contains("Volunteer compute"));
+        assert!(summary.contains("Experiments and evaluation"));
+        assert!(summary.contains("Validation and publication"));
+        assert!(summary.contains("Current activity unknown"));
+        assert!(!summary.contains("private-page-sentinel"));
+        assert!(!summary.contains("private-batch-sentinel"));
+        assert!(!summary.contains("STALE"));
+        let html = render(&v);
+        assert!(html.find("Across the ecosystem") < html.find("Operational details"));
+        assert!(html
+            .contains("<details class=\"diagnostics\" data-refresh-key=\"operational-details\">"));
+        assert!(SCRIPT.contains(".dashboard > section"));
+        assert!(!SCRIPT.contains(".grid > section"));
+    }
+
+    #[test]
+    fn summary_uses_fresh_volunteer_counts_without_hiding_unknown_acceptance() {
+        let mut v = summary_view();
+        let mut source = crate::pipeline::tests::fixture(v.generated_at);
+        source["stages"] = serde_json::json!([
+            {"id":"boinc_unsent","label":"Unsent","count":12345,"state":"observed","detail":""},
+            {"id":"boinc_in_progress","label":"Assigned","count":6789,"state":"observed","detail":""},
+            {"id":"boinc_usnm_iris_in_progress","label":"Iris","count":2345,"state":"observed","detail":""}
+        ]);
+        let snapshot =
+            crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), v.generated_at).unwrap();
+        v.pipeline.stage_freshness = snapshot
+            .stages
+            .iter()
+            .map(|s| crate::pipeline::StageFreshness {
+                id: s.id.clone(),
+                age_secs: Some(5),
+                stale: false,
+            })
+            .collect();
+        v.pipeline.snapshot = Some(snapshot);
+        // Historical or unknown stages may mark the evidence bundle stale without hiding fresh lanes.
+        v.pipeline.stale = true;
+        let html = ecosystem_panel(&v);
+        assert!(html.contains("6,789 assigned result replicas"));
+        assert!(html.contains("12,345 unsent"));
+        assert!(html.contains("Iris pilot readings: 2,345 assigned"));
+        assert!(html.contains("Accepted: not currently observed"));
+        v.pipeline
+            .stage_freshness
+            .iter_mut()
+            .for_each(|s| s.stale = true);
+        let stale = ecosystem_panel(&v);
+        assert!(!stale.contains("6,789 assigned result replicas"));
+        assert!(!stale.contains("12,345 unsent"));
+        assert!(stale.contains("Current activity unknown"));
+    }
+
+    #[test]
+    fn summaries_exclude_old_or_failed_reports_and_keep_queue_units() {
+        let mut v = summary_view();
+        let node = |done, at, ok| {
+            let mut n = summary_view().nodes.remove(0);
+            n.ok = ok;
+            n.last_ok = Some(at);
+            n.pages_per_hour = done;
+            n.last_hour.failed = 2;
+            n
+        };
+        v.nodes = vec![
+            node(10, v.generated_at, true),
+            node(20, v.generated_at, true),
+            node(10000, v.generated_at - chrono::Duration::minutes(4), true),
+            node(10000, v.generated_at, false),
+        ];
+        v.azure.queues_stale = false;
+        v.azure.queues = Some(usnm_ocr_contract::status::QueueStats {
+            counts: [
+                ("ocr-bulk".into(), 607),
+                ("ocr-priority".into(), 3),
+                ("ocr-deadletter".into(), 999),
+            ]
+            .into(),
+            ..Default::default()
+        });
+        let summary = ecosystem_panel(&v);
+        assert!(summary.contains("30 pages completed in the last hour"));
+        assert!(summary.contains("2 reporting workers; 2 configured workers lack fresh status"));
+        assert!(summary.contains("4 failed and 0 abandoned attempts"));
+        assert!(summary.contains("about 610 messages, including leased work"));
+        assert!(!summary.contains("worker-sentinel"));
+        v.azure.queues_stale = true;
+        assert!(ecosystem_panel(&v).contains("Local queue: unknown"));
+        v.fetch.status = Some(crate::fetch::FetchStatus {
+            state: "running".into(),
+            updated_at: (v.generated_at - chrono::Duration::minutes(16)).to_rfc3339(),
+            ..Default::default()
+        });
+        v.fetch.status_error = None;
+        v.fetch.plan_error = None;
+        v.fetch.last_hour.pages = 123456;
+        assert!(!ecosystem_panel(&v).contains("123,456 pages in the last hour"));
+        v.fetch.status.as_mut().unwrap().updated_at = v.generated_at.to_rfc3339();
+        v.fetch.plan_error = Some("bad plan".into());
+        assert!(!ecosystem_panel(&v).contains("123,456 pages in the last hour"));
+    }
+
+    #[test]
+    fn malformed_or_missing_snapshot_suppresses_retained_live_counts() {
+        let mut v = summary_view();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.json");
+        let mut source = crate::pipeline::tests::fixture(v.generated_at);
+        source["stages"] = serde_json::json!([
+            {"id":"boinc_unsent","label":"Unsent","count":12345,"state":"observed","detail":""},
+            {"id":"boinc_in_progress","label":"Assigned","count":6789,"state":"observed","detail":""}
+        ]);
+        std::fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let mut pipeline = crate::pipeline::Pipeline::new(Some(path.clone()), 900);
+        pipeline.poll(v.generated_at);
+        v.pipeline = pipeline.view(v.generated_at);
+        assert!(ecosystem_panel(&v).contains("6,789 assigned result replicas"));
+        v.pipeline = pipeline.view(v.generated_at + chrono::Duration::minutes(16));
+        assert!(!ecosystem_panel(&v).contains("6,789 assigned result replicas"));
+        std::fs::write(&path, b"not valid JSON").unwrap();
+        pipeline.poll(v.generated_at);
+        v.pipeline = pipeline.view(v.generated_at);
+        assert!(v.pipeline.snapshot.is_some());
+        assert!(!ecosystem_panel(&v).contains("6,789 assigned result replicas"));
+        assert!(ecosystem_panel(&v).contains("old, unknown or unreadable"));
+        std::fs::remove_file(path).unwrap();
+        pipeline.poll(v.generated_at);
+        v.pipeline = pipeline.view(v.generated_at);
+        assert!(!ecosystem_panel(&v).contains("6,789 assigned result replicas"));
     }
 
     #[test]
