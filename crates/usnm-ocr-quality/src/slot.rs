@@ -14,7 +14,7 @@ use crate::{
 };
 use anyhow::{ensure, Context};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     io::{Read as _, Seek as _, SeekFrom, Write as _},
     ops::ControlFlow,
@@ -26,7 +26,8 @@ use usnm_alto::{Page, ParseError, ParseOptions};
 use usnm_ocr_contract::{
     boinc::sha256,
     quality::{
-        Engine, Host, Job, Outcome, ResultManifest, Texts, Timings, MAX_ALTO, MAX_DIAG, MAX_ERROR,
+        ConfusionPair, Engine, Host, Job, Outcome, PageResult, ReaderSpec, ResultManifest, Texts,
+        Timings, MAX_ALTO, MAX_BUNDLE_ALTO, MAX_BUNDLE_SCAN, MAX_BUNDLE_TEXTS, MAX_DIAG, MAX_ERROR,
         MAX_JOB_JSON, MAX_PLACES, MAX_SCAN, MAX_TEXTS,
     },
 };
@@ -42,6 +43,7 @@ pub const DIAG_FILE: &str = "diag.txt";
 pub const FRACTION_FILE: &str = "fraction_done";
 pub const FINISH_FILE: &str = "boinc_finish_called";
 pub const MMAP_FILE: &str = "boinc_mmap_file";
+pub const CHECKPOINT_FILE: &str = "quality_checkpoint.json";
 
 /// Embedded BOINC `API_VERSION_` marker (`lib/boinc_api.cpp` convention) so
 /// `update_versions` (`strings | grep 'API_VERSION_[0-9]+\.[0-9]+\.[0-9]+$'`)
@@ -791,17 +793,39 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Normalizes early NDNP ALTO 1.x files (`http://schema.ccs-gmbh.com/ALTO`)
+/// to the LoC ALTO v2 namespace (`http://www.loc.gov/standards/alto/ns-v2#`)
+/// so `usnm_alto::check` and `usnm_alto::parse` accept 2008-era NDNP batches.
+pub fn normalize_alto_ns(xml: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    const CCS_NS: &[u8] = b"http://schema.ccs-gmbh.com/ALTO";
+    const V2_NS: &[u8] = b"http://www.loc.gov/standards/alto/ns-v2#";
+    let head_len = xml.len().min(4096);
+    if let Some(pos) = xml[..head_len]
+        .windows(CCS_NS.len())
+        .position(|w| w == CCS_NS)
+    {
+        let mut out = Vec::with_capacity(xml.len() + V2_NS.len() - CCS_NS.len());
+        out.extend_from_slice(&xml[..pos]);
+        out.extend_from_slice(V2_NS);
+        out.extend_from_slice(&xml[pos + CCS_NS.len()..]);
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(xml)
+    }
+}
+
 /// Reads an ALTO into a page in the image's pixels. LoC's ALTO is in
 /// 1/1200 inch; it is read at 1200 dpi (its own units) and then scaled to
 /// the image by the page's width and height, as the gold set's `crops.py`
 /// scales it, so the units never matter.
 pub fn parse_alto(xml: &[u8], width: f64, height: f64) -> anyhow::Result<Page> {
     ensure!(width > 0.0 && height > 0.0, "page has no size");
+    let xml = normalize_alto_ns(xml);
     let opts = ParseOptions::default();
-    let mut page = match usnm_alto::parse(xml, &opts) {
+    let mut page = match usnm_alto::parse(&xml, &opts) {
         Ok(p) => p,
         Err(ParseError::NeedsDpi(_)) => usnm_alto::parse(
-            xml,
+            &xml,
             &ParseOptions {
                 dpi: Some(1200.0),
                 ..opts
@@ -1017,18 +1041,64 @@ pub fn cpu_ms() -> Option<u64> {
     Some(ticks * 10)
 }
 
-/// The computation for one unit: deterministic, single-threaded.
-pub fn compute(inputs: &Inputs) -> anyhow::Result<Computed> {
+/// Per-page checkpoint state persisted atomically in `quality_checkpoint.json`
+/// so multi-page workunits resume from the last completed page after BOINC
+/// preemption or client restart.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualityCheckpoint {
+    pub v: u32,
+    pub job_id: String,
+    pub engine: Engine,
+    pub pages: Vec<PageResult>,
+    pub confusions: BTreeMap<String, Vec<ConfusionPair>>,
+}
+
+impl QualityCheckpoint {
+    pub fn load_valid(work: &Path, job: &Job) -> Option<Self> {
+        let bytes = std::fs::read(work.join(CHECKPOINT_FILE)).ok()?;
+        let cp: Self = serde_json::from_slice(&bytes).ok()?;
+        if cp.v != usnm_ocr_contract::quality::VERSION
+            || cp.job_id != job.id
+            || cp.engine != job.engine
+            || cp.pages.len() > job.pages.len()
+        {
+            return None;
+        }
+        for (got, want) in cp.pages.iter().zip(&job.pages) {
+            if got.doc_id != want.doc_id {
+                return None;
+            }
+        }
+        Some(cp)
+    }
+
+    pub fn save(&self, work: &Path) -> anyhow::Result<()> {
+        write_atomic(
+            &work.join(CHECKPOINT_FILE),
+            &serde_json::to_vec_pretty(self)?,
+        )
+    }
+}
+
+fn compute_page_record(
+    doc_id: &str,
+    readers_spec: &[ReaderSpec],
+    function_words_list: &[String],
+    page_bytes: &[u8],
+    alto_bytes: &[u8],
+    texts: &Texts,
+    places: &Places,
+) -> anyhow::Result<(PageResult, BTreeMap<String, Vec<ConfusionPair>>)> {
     let started = Instant::now();
-    let job = inputs.job;
-    job.validate()?;
-    inputs.texts.validate(job)?;
+    texts.validate_readers(readers_spec)?;
     let t = Instant::now();
-    let image = image::load_from_memory(inputs.page)
-        .context("decoding page.jpg")?
+    let image = image::load_from_memory(page_bytes)
+        .with_context(|| format!("decoding page.jpg for {doc_id}"))?
         .to_luma8();
     let (w, h) = image.dimensions();
-    let alto = parse_alto(inputs.alto, f64::from(w), f64::from(h))?;
+    let alto = parse_alto(alto_bytes, f64::from(w), f64::from(h))
+        .with_context(|| format!("parsing ALTO for {doc_id}"))?;
     let decode_ms = ms(t);
     let t = Instant::now();
     let page = PageFeatures {
@@ -1037,13 +1107,10 @@ pub fn compute(inputs: &Inputs) -> anyhow::Result<Computed> {
     };
     let features_ms = ms(t);
     let t = Instant::now();
-    let places = Places::parse(inputs.places);
-    let readers: Vec<ReaderInput> = job
-        .readers
+    let readers: Vec<ReaderInput> = readers_spec
         .iter()
         .map(|spec| {
-            let text = inputs
-                .texts
+            let text = texts
                 .readers
                 .iter()
                 .find(|r| r.name == spec.name)
@@ -1056,8 +1123,7 @@ pub fn compute(inputs: &Inputs) -> anyhow::Result<Computed> {
             }
         })
         .collect();
-    let function_words: BTreeSet<String> = job
-        .function_words
+    let function_words: BTreeSet<String> = function_words_list
         .iter()
         .map(|w| crate::consensus::fold(w))
         .collect();
@@ -1066,23 +1132,14 @@ pub fn compute(inputs: &Inputs) -> anyhow::Result<Computed> {
         alto: None,
         readers,
         function_words,
-        places: &places,
+        places,
     });
     let text_ms = ms(t);
-    let confusions = serde_json::to_vec_pretty(&analysis.confusions)?;
     let r = analysis.report;
-    Ok(Computed {
-        result: ResultManifest {
-            v: usnm_ocr_contract::quality::VERSION,
-            job_id: job.id.clone(),
-            completed_at: String::new(),
-            confusions_bytes: confusions.len() as u64,
-            confusions_sha256: sha256(&confusions),
-            diag_bytes: 0,
-            diag_sha256: sha256(b""),
-            engine: job.engine.clone(),
+    Ok((
+        PageResult {
+            doc_id: doc_id.to_owned(),
             hat: Some(r.hat),
-            host: Host::default(),
             legibility: Some(r.legibility),
             outcome: Outcome::Ok,
             page: Some(page),
@@ -1097,8 +1154,112 @@ pub fn compute(inputs: &Inputs) -> anyhow::Result<Computed> {
             },
             unit_error: None,
         },
-        confusions,
-    })
+        analysis.confusions,
+    ))
+}
+
+/// The computation for one unit: deterministic, single-threaded.
+pub fn compute(inputs: &Inputs) -> anyhow::Result<Computed> {
+    let started = Instant::now();
+    let job = inputs.job;
+    job.validate()?;
+    let places = Places::parse(inputs.places);
+    if job.pages.is_empty() {
+        let (pr, conf_map) = compute_page_record(
+            &job.doc_id,
+            &job.readers,
+            &job.function_words,
+            inputs.page,
+            inputs.alto,
+            inputs.texts,
+            &places,
+        )?;
+        let confusions = serde_json::to_vec_pretty(&conf_map)?;
+        Ok(Computed {
+            result: ResultManifest {
+                v: usnm_ocr_contract::quality::VERSION,
+                job_id: job.id.clone(),
+                completed_at: String::new(),
+                confusions_bytes: confusions.len() as u64,
+                confusions_sha256: sha256(&confusions),
+                diag_bytes: 0,
+                diag_sha256: sha256(b""),
+                engine: job.engine.clone(),
+                hat: pr.hat,
+                host: Host::default(),
+                legibility: pr.legibility,
+                outcome: Outcome::Ok,
+                page: pr.page,
+                pages: vec![],
+                readers: pr.readers,
+                timings: Timings {
+                    total_ms: ms(started),
+                    ..pr.timings
+                },
+                unit_error: None,
+            },
+            confusions,
+        })
+    } else {
+        let mut page_results = Vec::with_capacity(job.pages.len());
+        let mut all_confusions: BTreeMap<String, Vec<ConfusionPair>> = BTreeMap::new();
+        let mut timings = Timings::default();
+        let raw_texts = serde_json::to_vec(inputs.texts).unwrap_or_default();
+        for p in &job.pages {
+            let page_bytes = p.inputs.page.extract(inputs.page, "page")?;
+            let alto_bytes = p.inputs.alto.extract(inputs.alto, "alto")?;
+            let texts_bytes = p.inputs.texts.extract(&raw_texts, "texts");
+            let page_texts: Texts = match texts_bytes {
+                Ok(b) => serde_json::from_slice(b).context("bundle page texts.json")?,
+                Err(_) => inputs.texts.clone(),
+            };
+            let fw = if p.function_words.is_empty() {
+                &job.function_words
+            } else {
+                &p.function_words
+            };
+            let (pr, conf_map) = compute_page_record(
+                &p.doc_id,
+                &p.readers,
+                fw,
+                page_bytes,
+                alto_bytes,
+                &page_texts,
+                &places,
+            )?;
+            timings.decode_ms += pr.timings.decode_ms;
+            timings.features_ms += pr.timings.features_ms;
+            timings.text_ms += pr.timings.text_ms;
+            for (k, v) in conf_map {
+                all_confusions.insert(format!("{}:{k}", p.doc_id), v);
+            }
+            page_results.push(pr);
+        }
+        timings.total_ms = ms(started);
+        let confusions = serde_json::to_vec_pretty(&all_confusions)?;
+        Ok(Computed {
+            result: ResultManifest {
+                v: usnm_ocr_contract::quality::VERSION,
+                job_id: job.id.clone(),
+                completed_at: String::new(),
+                confusions_bytes: confusions.len() as u64,
+                confusions_sha256: sha256(&confusions),
+                diag_bytes: 0,
+                diag_sha256: sha256(b""),
+                engine: job.engine.clone(),
+                hat: None,
+                host: Host::default(),
+                legibility: None,
+                outcome: Outcome::Ok,
+                page: None,
+                pages: page_results,
+                readers: vec![],
+                timings,
+                unit_error: None,
+            },
+            confusions,
+        })
+    }
 }
 
 /// The unit's files, read and checked against the job.
@@ -1107,6 +1268,7 @@ pub struct Loaded {
     pub page: Vec<u8>,
     pub alto: Vec<u8>,
     pub texts: Texts,
+    pub bundle_texts: Vec<Texts>,
     pub places: String,
 }
 
@@ -1115,23 +1277,47 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
     let job_path = resolve_slot_file(work, JOB_FILE);
     let job: Job = serde_json::from_slice(&read_bounded(&job_path, MAX_JOB_JSON)?)?;
     job.validate()?;
-    let page = read_bounded(&resolve_slot_file(work, PAGE_FILE), MAX_SCAN)?;
+    let (max_scan, max_alto, max_texts) = if job.pages.is_empty() {
+        (MAX_SCAN, MAX_ALTO, MAX_TEXTS)
+    } else {
+        (MAX_BUNDLE_SCAN, MAX_BUNDLE_ALTO, MAX_BUNDLE_TEXTS)
+    };
+    let page = read_bounded(&resolve_slot_file(work, PAGE_FILE), max_scan)?;
     ensure!(
         job.inputs.page.matches(&page),
         "input page checksum mismatch"
     );
-    let alto = read_bounded(&resolve_slot_file(work, ALTO_FILE), MAX_ALTO)?;
+    let alto = read_bounded(&resolve_slot_file(work, ALTO_FILE), max_alto)?;
     ensure!(
         job.inputs.alto.matches(&alto),
         "input ALTO checksum mismatch"
     );
-    let texts_bytes = read_bounded(&resolve_slot_file(work, TEXTS_FILE), MAX_TEXTS)?;
+    let texts_bytes = read_bounded(&resolve_slot_file(work, TEXTS_FILE), max_texts)?;
     ensure!(
         job.inputs.texts.matches(&texts_bytes),
         "input texts checksum mismatch"
     );
-    let texts: Texts = serde_json::from_slice(&texts_bytes).context("texts.json")?;
-    texts.validate(&job)?;
+    let (texts, bundle_texts) = if job.pages.is_empty() {
+        let t: Texts = serde_json::from_slice(&texts_bytes).context("texts.json")?;
+        t.validate(&job)?;
+        (t, vec![])
+    } else {
+        let mut b_texts = Vec::with_capacity(job.pages.len());
+        for p in &job.pages {
+            p.inputs.page.extract(&page, "page")?;
+            p.inputs.alto.extract(&alto, "alto")?;
+            let tb = p.inputs.texts.extract(&texts_bytes, "texts")?;
+            let t: Texts = serde_json::from_slice(tb)
+                .with_context(|| format!("texts.json for {}", p.doc_id))?;
+            t.validate_readers(&p.readers)?;
+            b_texts.push(t);
+        }
+        let first = b_texts.first().cloned().unwrap_or(Texts {
+            page: None,
+            readers: vec![],
+        });
+        (first, b_texts)
+    };
     let places_bytes = read_bounded(&resolve_slot_file(work, PLACES_FILE), MAX_PLACES)?;
     ensure!(
         job.inputs.places.matches(&places_bytes),
@@ -1143,6 +1329,7 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
         page,
         alto,
         texts,
+        bundle_texts,
         places,
     })
 }
@@ -1167,21 +1354,26 @@ fn empty(
         legibility: None,
         outcome,
         page: None,
+        pages: vec![],
         readers: vec![],
         timings: Timings::default(),
         unit_error: error,
     }
 }
 
-fn compute_with_deadline(
-    l: Loaded,
+fn run_on_worker_thread<T, F>(
+    job: &Job,
     deadline: Duration,
     control: &BoincControl,
-) -> Result<Computed, Box<(Job, anyhow::Error)>> {
-    let job = l.job.clone();
+    f: F,
+) -> Result<T, Box<(Job, anyhow::Error)>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
     if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
         return Err(Box::new((
-            job,
+            job.clone(),
             anyhow::anyhow!("boinc control requested exit ({reason})"),
         )));
     }
@@ -1190,14 +1382,7 @@ fn compute_with_deadline(
         .name("quality-compute".into())
         .stack_size(64 << 20)
         .spawn(move || {
-            let r = compute(&Inputs {
-                job: &l.job,
-                page: &l.page,
-                alto: &l.alto,
-                texts: &l.texts,
-                places: &l.places,
-            });
-            let _ = tx.send(r);
+            let _ = tx.send(f());
         })
         .map_err(|e| {
             Box::new((
@@ -1210,14 +1395,14 @@ fn compute_with_deadline(
     loop {
         if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
             return Err(Box::new((
-                job,
+                job.clone(),
                 anyhow::anyhow!("boinc control requested exit ({reason})"),
             )));
         }
         let remaining = deadline.saturating_sub(active_elapsed);
         if remaining.is_zero() {
             return Err(Box::new((
-                job,
+                job.clone(),
                 anyhow::anyhow!("computation exceeded {} s", deadline.as_secs()),
             )));
         }
@@ -1226,13 +1411,13 @@ fn compute_with_deadline(
             Ok(Ok(c)) => {
                 if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
                     return Err(Box::new((
-                        job,
+                        job.clone(),
                         anyhow::anyhow!("boinc control requested exit ({reason})"),
                     )));
                 }
                 return Ok(c);
             }
-            Ok(Err(e)) => return Err(Box::new((job, e))),
+            Ok(Err(e)) => return Err(Box::new((job.clone(), e))),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if !control.is_suspended() {
                     active_elapsed += step_start.elapsed();
@@ -1240,12 +1425,148 @@ fn compute_with_deadline(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(Box::new((
-                    job,
+                    job.clone(),
                     anyhow::anyhow!("computation thread ended without a result"),
                 )));
             }
         }
     }
+}
+
+fn compute_with_deadline(
+    work: &Path,
+    l: Loaded,
+    deadline: Duration,
+    control: &BoincControl,
+    diag: &mut Diag,
+) -> Result<Computed, Box<(Job, anyhow::Error)>> {
+    if l.job.pages.is_empty() {
+        let job = l.job.clone();
+        return run_on_worker_thread(&job, deadline, control, move || {
+            compute(&Inputs {
+                job: &l.job,
+                page: &l.page,
+                alto: &l.alto,
+                texts: &l.texts,
+                places: &l.places,
+            })
+        });
+    }
+
+    let started = Instant::now();
+    let job = l.job.clone();
+    let total_pages = job.pages.len();
+    let places = Places::parse(&l.places);
+    let mut cp = match QualityCheckpoint::load_valid(work, &job) {
+        Some(existing) => {
+            if !existing.pages.is_empty() {
+                diag.section(
+                    "checkpoint",
+                    &format!(
+                        "resumed from checkpoint: {} of {} pages already complete",
+                        existing.pages.len(),
+                        total_pages
+                    ),
+                    256,
+                );
+                let frac = existing.pages.len() as f64 / total_pages.max(1) as f64;
+                let _ = write_atomic(&work.join(FRACTION_FILE), format!("{frac:.6}\n").as_bytes());
+            }
+            existing
+        }
+        None => QualityCheckpoint {
+            v: usnm_ocr_contract::quality::VERSION,
+            job_id: job.id.clone(),
+            engine: job.engine.clone(),
+            pages: Vec::with_capacity(total_pages),
+            confusions: BTreeMap::new(),
+        },
+    };
+
+    for idx in cp.pages.len()..total_pages {
+        if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+            return Err(Box::new((
+                job,
+                anyhow::anyhow!("boinc control requested exit ({reason})"),
+            )));
+        }
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(Box::new((
+                job,
+                anyhow::anyhow!("computation exceeded {} s", deadline.as_secs()),
+            )));
+        }
+        let bp = job.pages[idx].clone();
+        let page_bytes = match bp.inputs.page.extract(&l.page, "page") {
+            Ok(s) => s.to_vec(),
+            Err(e) => return Err(Box::new((job, e))),
+        };
+        let alto_bytes = match bp.inputs.alto.extract(&l.alto, "alto") {
+            Ok(s) => s.to_vec(),
+            Err(e) => return Err(Box::new((job, e))),
+        };
+        let page_texts = l.bundle_texts[idx].clone();
+        let fw = if bp.function_words.is_empty() {
+            job.function_words.clone()
+        } else {
+            bp.function_words.clone()
+        };
+        let places_clone = places.clone();
+        let doc_id = bp.doc_id.clone();
+        let readers_spec = bp.readers.clone();
+        let (pr, conf_map) = run_on_worker_thread(&job, remaining, control, move || {
+            compute_page_record(
+                &doc_id,
+                &readers_spec,
+                &fw,
+                &page_bytes,
+                &alto_bytes,
+                &page_texts,
+                &places_clone,
+            )
+        })?;
+        for (k, v) in conf_map {
+            cp.confusions.insert(format!("{}:{k}", bp.doc_id), v);
+        }
+        cp.pages.push(pr);
+        let _ = cp.save(work);
+        let frac = cp.pages.len() as f64 / total_pages.max(1) as f64;
+        let _ = write_atomic(&work.join(FRACTION_FILE), format!("{frac:.6}\n").as_bytes());
+    }
+
+    let _ = std::fs::remove_file(work.join(CHECKPOINT_FILE));
+    let mut timings = Timings::default();
+    for p in &cp.pages {
+        timings.decode_ms += p.timings.decode_ms;
+        timings.features_ms += p.timings.features_ms;
+        timings.text_ms += p.timings.text_ms;
+        timings.total_ms += p.timings.total_ms;
+    }
+    let confusions = serde_json::to_vec_pretty(&cp.confusions)
+        .map_err(|e| Box::new((job.clone(), anyhow::Error::from(e))))?;
+    Ok(Computed {
+        result: ResultManifest {
+            v: usnm_ocr_contract::quality::VERSION,
+            job_id: job.id,
+            completed_at: String::new(),
+            confusions_bytes: confusions.len() as u64,
+            confusions_sha256: sha256(&confusions),
+            diag_bytes: 0,
+            diag_sha256: sha256(b""),
+            engine: job.engine,
+            hat: None,
+            host: Host::default(),
+            legibility: None,
+            outcome: Outcome::Ok,
+            page: None,
+            pages: cp.pages,
+            readers: vec![],
+            timings,
+            unit_error: None,
+        },
+        confusions,
+    })
 }
 
 /// Runs a complete native `usnm_quality` unit in `work`, monitoring BOINC's
@@ -1319,7 +1640,7 @@ fn run_slot_with_mode(work: &Path, native_lifecycle: bool) -> anyhow::Result<()>
                 1024,
             );
             let started = Instant::now();
-            match compute_with_deadline(l, DEADLINE, &control) {
+            match compute_with_deadline(work, l, DEADLINE, &control, &mut diag) {
                 Ok(c) => {
                     diag.section("timings", &format!("{:?}", c.result.timings), 512);
                     (c.result, c.confusions)
@@ -1573,6 +1894,229 @@ mod tests {
         assert_eq!(bytes[HEARTBEAT_OFFSET], 1);
         assert!(!slot.join(FINISH_FILE).exists());
         assert!(slot.join(RESULT_FILE).is_file());
+    }
+
+    #[test]
+    fn multipage_bundle_checkpoints_per_page_and_resumes_cleanly() {
+        use usnm_ocr_contract::quality::{
+            BundlePage, BundlePageInputs, BundleSlice, Input, Inputs, TextReader, VERSION,
+        };
+
+        let mut jpg1 = Vec::new();
+        image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(32, 32, image::Luma([220])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg1),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        let mut jpg2 = Vec::new();
+        image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(32, 32, image::Luma([200])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg2),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+
+        let alto1 = br#"<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v2#">
+  <Layout><Page ID="P1" WIDTH="32" HEIGHT="32" PHYSICAL_IMG_NR="1">
+    <PrintSpace HPOS="0" VPOS="0" WIDTH="32" HEIGHT="32">
+      <TextBlock ID="B1" HPOS="2" VPOS="2" WIDTH="28" HEIGHT="12">
+        <TextLine ID="L1" HPOS="2" VPOS="2" WIDTH="28" HEIGHT="12">
+          <String ID="S1" CONTENT="washington" HPOS="2" VPOS="2" WIDTH="28" HEIGHT="12" WC="0.95"/>
+        </TextLine>
+      </TextBlock>
+    </PrintSpace>
+  </Page></Layout>
+</alto>"#;
+        let alto2 = br#"<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v2#">
+  <Layout><Page ID="P2" WIDTH="32" HEIGHT="32" PHYSICAL_IMG_NR="2">
+    <PrintSpace HPOS="0" VPOS="0" WIDTH="32" HEIGHT="32">
+      <TextBlock ID="B1" HPOS="2" VPOS="2" WIDTH="28" HEIGHT="12">
+        <TextLine ID="L1" HPOS="2" VPOS="2" WIDTH="28" HEIGHT="12">
+          <String ID="S1" CONTENT="baltimore" HPOS="2" VPOS="2" WIDTH="28" HEIGHT="12" WC="0.92"/>
+        </TextLine>
+      </TextBlock>
+    </PrintSpace>
+  </Page></Layout>
+</alto>"#;
+
+        let readers_spec = vec![
+            ReaderSpec {
+                name: "loc".into(),
+                source: "loc".into(),
+            },
+            ReaderSpec {
+                name: "surya".into(),
+                source: "surya".into(),
+            },
+        ];
+        let t1 = serde_json::to_vec(&Texts {
+            page: None,
+            readers: vec![
+                TextReader {
+                    name: "loc".into(),
+                    source: "loc".into(),
+                    text: "the washington news".into(),
+                    alto: false,
+                    regions: vec![],
+                },
+                TextReader {
+                    name: "surya".into(),
+                    source: "surya".into(),
+                    text: "the washington news".into(),
+                    alto: false,
+                    regions: vec![],
+                },
+            ],
+        })
+        .unwrap();
+        let t2 = serde_json::to_vec(&Texts {
+            page: None,
+            readers: vec![
+                TextReader {
+                    name: "loc".into(),
+                    source: "loc".into(),
+                    text: "the baltimore sun".into(),
+                    alto: false,
+                    regions: vec![],
+                },
+                TextReader {
+                    name: "surya".into(),
+                    source: "surya".into(),
+                    text: "the baltimore sun".into(),
+                    alto: false,
+                    regions: vec![],
+                },
+            ],
+        })
+        .unwrap();
+
+        let mut page_blob = Vec::new();
+        let p_slice1 = BundleSlice::of(0, &jpg1, "s3://b/p1.jpg");
+        page_blob.extend_from_slice(&jpg1);
+        let p_slice2 = BundleSlice::of(page_blob.len() as u64, &jpg2, "s3://b/p2.jpg");
+        page_blob.extend_from_slice(&jpg2);
+
+        let mut alto_blob = Vec::new();
+        let a_slice1 = BundleSlice::of(0, alto1, "s3://b/p1.xml");
+        alto_blob.extend_from_slice(alto1);
+        let a_slice2 = BundleSlice::of(alto_blob.len() as u64, alto2, "s3://b/p2.xml");
+        alto_blob.extend_from_slice(alto2);
+
+        let mut texts_blob = Vec::new();
+        let t_slice1 = BundleSlice::of(0, &t1, "s3://b/t1.json");
+        texts_blob.extend_from_slice(&t1);
+        let t_slice2 = BundleSlice::of(texts_blob.len() as u64, &t2, "s3://b/t2.json");
+        texts_blob.extend_from_slice(&t2);
+
+        let places_bytes = b"washington\nbaltimore\n";
+        let mut job = Job {
+            v: VERSION,
+            id: String::new(),
+            crop_seed: 7,
+            doc_id: "bundle_p1".into(),
+            engine: Engine {
+                image: format!("sha256:{}", "a".repeat(64)),
+            },
+            function_words: vec!["the".into()],
+            group: "pilot".into(),
+            inputs: Inputs {
+                alto: Input::of(&alto_blob, "bundle:loc.xml"),
+                page: Input::of(&page_blob, "bundle:page.jpg"),
+                places: Input::of(places_bytes, "curated:places"),
+                texts: Input::of(&texts_blob, "bundle:texts.json"),
+            },
+            k_crops: 6,
+            language: "en".into(),
+            pages: vec![
+                BundlePage {
+                    crop_seed: 7,
+                    doc_id: "bundle_p1".into(),
+                    function_words: vec![],
+                    group: "pilot".into(),
+                    inputs: BundlePageInputs {
+                        alto: a_slice1,
+                        page: p_slice1,
+                        texts: t_slice1,
+                    },
+                    k_crops: 6,
+                    language: "en".into(),
+                    readers: readers_spec.clone(),
+                },
+                BundlePage {
+                    crop_seed: 7,
+                    doc_id: "bundle_p2".into(),
+                    function_words: vec![],
+                    group: "pilot".into(),
+                    inputs: BundlePageInputs {
+                        alto: a_slice2,
+                        page: p_slice2,
+                        texts: t_slice2,
+                    },
+                    k_crops: 6,
+                    language: "en".into(),
+                    readers: readers_spec,
+                },
+            ],
+            readers: vec![],
+        };
+        job.id = job.identity().unwrap();
+
+        let write_slot_inputs = |dir: &Path| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(PAGE_FILE), &page_blob).unwrap();
+            std::fs::write(dir.join(ALTO_FILE), &alto_blob).unwrap();
+            std::fs::write(dir.join(TEXTS_FILE), &texts_blob).unwrap();
+            std::fs::write(dir.join(PLACES_FILE), places_bytes).unwrap();
+            std::fs::write(dir.join(JOB_FILE), serde_json::to_vec_pretty(&job).unwrap()).unwrap();
+        };
+
+        let tmp = TestDir::new("multipage-bundle");
+        let slot_full = tmp.path().join("full");
+        write_slot_inputs(&slot_full);
+        run_slot(&slot_full).unwrap();
+        assert!(slot_full.join(FINISH_FILE).is_file());
+        assert!(!slot_full.join(CHECKPOINT_FILE).exists());
+        let res_full: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot_full.join(RESULT_FILE)).unwrap()).unwrap();
+        let conf_full_bytes = std::fs::read(slot_full.join(CONFUSIONS_FILE)).unwrap();
+        let diag_full_bytes = std::fs::read(slot_full.join(DIAG_FILE)).unwrap();
+        assert_eq!(res_full.pages.len(), 2);
+        res_full.check(&conf_full_bytes, &diag_full_bytes).unwrap();
+
+        // Simulate resuming from a 1-page checkpoint on a second slot.
+        let slot_resume = tmp.path().join("resume");
+        write_slot_inputs(&slot_resume);
+        let full_conf: BTreeMap<String, Vec<ConfusionPair>> =
+            serde_json::from_slice(&conf_full_bytes).unwrap();
+        let page1_conf: BTreeMap<String, Vec<ConfusionPair>> = full_conf
+            .into_iter()
+            .filter(|(k, _)| k.starts_with("bundle_p1:"))
+            .collect();
+        let cp = QualityCheckpoint {
+            v: VERSION,
+            job_id: job.id.clone(),
+            engine: job.engine.clone(),
+            pages: vec![res_full.pages[0].clone()],
+            confusions: page1_conf,
+        };
+        cp.save(&slot_resume).unwrap();
+        assert!(slot_resume.join(CHECKPOINT_FILE).is_file());
+
+        run_slot(&slot_resume).unwrap();
+        assert!(!slot_resume.join(CHECKPOINT_FILE).exists());
+        let res_resume: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot_resume.join(RESULT_FILE)).unwrap()).unwrap();
+        let conf_resume_bytes = std::fs::read(slot_resume.join(CONFUSIONS_FILE)).unwrap();
+        let diag_resume_bytes = std::fs::read(slot_resume.join(DIAG_FILE)).unwrap();
+        res_resume
+            .check(&conf_resume_bytes, &diag_resume_bytes)
+            .unwrap();
+        usnm_ocr_contract::quality::agree(&res_full, &res_resume).unwrap();
+        let diag_str = std::fs::read_to_string(slot_resume.join(DIAG_FILE)).unwrap();
+        assert!(diag_str.contains("resumed from checkpoint: 1 of 2 pages already complete"));
     }
 
     #[cfg(windows)]

@@ -41,7 +41,10 @@ use std::{
 };
 use usnm_alto::Page;
 use usnm_ocr_contract::{
-    quality::{Job, ResultManifest, Texts, MAX_ALTO, MAX_JOB_JSON, MAX_SCAN, MAX_TEXTS},
+    quality::{
+        BundlePage, Job, PageResult, ResultManifest, Texts, MAX_ALTO, MAX_BUNDLE_ALTO,
+        MAX_BUNDLE_SCAN, MAX_BUNDLE_TEXTS, MAX_JOB_JSON, MAX_SCAN, MAX_TEXTS,
+    },
     qwen::{self, Crop, Readings},
 };
 use usnm_ocr_quality::{align, crops, hat, report::round6};
@@ -336,6 +339,63 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
         .collect()
 }
 
+/// The rows of `pages.parquet` for one page of a multi-page bundle result.
+pub fn bundle_page_rows(
+    job: &Job,
+    bp: &BundlePage,
+    pr: &PageResult,
+    plan_class: Option<String>,
+    with_readings: bool,
+) -> Vec<PageRow> {
+    let img = pr.page.as_ref().and_then(|p| p.image.as_ref());
+    let lay = pr.page.as_ref().and_then(|p| p.layout.as_ref());
+    pr.readers
+        .iter()
+        .map(|x| PageRow {
+            doc_id: bp.doc_id.clone(),
+            group: bp.group.clone(),
+            language: bp.language.clone(),
+            job_id: job.id.clone(),
+            outcome: format!("{:?}", pr.outcome).to_lowercase(),
+            reader: x.name.clone(),
+            source: x.source.clone(),
+            chars: x.chars,
+            words: x.words,
+            est_cer: x.est_cer,
+            est_cer_raw: x.est_cer_raw,
+            completeness: x.completeness,
+            precision: x.precision,
+            findable_content: x.findable_content,
+            findable_places: x.findable_places,
+            content_found: x.content_found,
+            content_total: x.content_total,
+            places_found: x.places_found,
+            places_total: x.places_total,
+            pairs_json: serde_json::to_string(&x.pairs).unwrap_or_default(),
+            hat_determined: pr.hat.as_ref().map(|h| h.determined),
+            hat_residual: pr.hat.as_ref().and_then(|h| h.residual),
+            legibility_ceiling: pr.legibility.as_ref().and_then(|l| l.ceiling_est),
+            consensus_words: pr.legibility.as_ref().map(|l| l.consensus_words),
+            width: img.map(|i| i.width),
+            height: img.map(|i| i.height),
+            skew_deg: img.map(|i| i.skew_deg),
+            blur: img.map(|i| i.blur),
+            contrast: img.map(|i| i.contrast),
+            noise: img.map(|i| i.noise),
+            bleed_through: img.map(|i| i.bleed_through),
+            ink_density: img.map(|i| i.ink_density),
+            blocks: lay.map(|l| l.blocks),
+            lines: lay.map(|l| l.lines),
+            line_words: lay.map(|l| l.words),
+            line_height_px: lay.and_then(|l| l.line_height_px),
+            columns: lay.map(|l| l.columns),
+            mean_word_conf: lay.and_then(|l| l.mean_word_conf),
+            total_ms: pr.timings.total_ms,
+            plan_class: plan_class.clone(),
+            with_readings,
+        })
+        .collect()
+}
 /// A column of a table being built: every column is nullable.
 enum Column {
     Str(Vec<Option<String>>),
@@ -514,14 +574,14 @@ fn gave_up(spool: &Path, workunit: &str) -> bool {
         || spool.join(format!("{workunit}_no_output_files")).exists()
 }
 
-/// A page's `usnm_qwen` unit and its canonical readings, when both exist.
+/// A page's `usnm_qwen` crops and canonical readings, when both exist.
 struct QwenPage {
-    job: qwen::Job,
+    crops: Vec<Crop>,
     readings: Option<Readings>,
 }
 
-/// Every submitted `usnm_qwen` unit by doc id, with its readings where
-/// the result is in.
+/// Every submitted `usnm_qwen` unit by doc id (supporting both single-page
+/// and multi-page bundle units), with its readings where the result is in.
 fn qwen_pages(root: &Path, spool: &Path) -> anyhow::Result<BTreeMap<String, QwenPage>> {
     let mut out = BTreeMap::new();
     let dir = units(root);
@@ -553,7 +613,42 @@ fn qwen_pages(root: &Path, spool: &Path) -> anyhow::Result<BTreeMap<String, Qwen
         } else {
             None
         };
-        out.insert(job.doc_id.clone(), QwenPage { job, readings });
+        if job.pages.is_empty() {
+            out.insert(
+                job.doc_id.clone(),
+                QwenPage {
+                    crops: job.crops,
+                    readings,
+                },
+            );
+        } else {
+            for bp in &job.pages {
+                let prefix = format!("{}:", bp.doc_id);
+                let page_readings = readings.as_ref().map(|r| {
+                    let mut pr = r.clone();
+                    pr.readings = r
+                        .readings
+                        .iter()
+                        .filter_map(|rd| {
+                            rd.id.strip_prefix(&prefix).map(|cid| qwen::Reading {
+                                id: cid.to_owned(),
+                                ms: rd.ms,
+                                text: rd.text.clone(),
+                                tokens: rd.tokens,
+                            })
+                        })
+                        .collect();
+                    pr
+                });
+                out.insert(
+                    bp.doc_id.clone(),
+                    QwenPage {
+                        crops: bp.crops.clone(),
+                        readings: page_readings,
+                    },
+                );
+            }
+        }
     }
     Ok(out)
 }
@@ -599,43 +694,107 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             got.result.job_id == job.id && got.result.engine == job.engine,
             "{wu}: result does not belong to its job"
         );
-        summary.pages += 1;
-        let q = qwen.get(&job.doc_id);
-        let readings = q.and_then(|q| q.readings.as_ref());
-        if readings.is_some() {
-            summary.with_readings += 1;
-        }
-        pages.extend(page_rows(&job, &got.result, readings.is_some()));
-        if let Some(q) = q {
-            let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
-            let (w, h) = image::load_from_memory(&page)
-                .with_context(|| format!("{wu}: page.jpg"))?
-                .dimensions();
-            let loc = parse_alto(
-                &read(&unit.join(ALTO_FILE), MAX_ALTO)?,
-                f64::from(w),
-                f64::from(h),
-            )?;
-            let ours = if unit.join(OURS_FILE).exists() {
-                Some(parse_alto(
-                    &read(&unit.join(OURS_FILE), MAX_ALTO)?,
+        if job.pages.is_empty() {
+            summary.pages += 1;
+            let q = qwen.get(&job.doc_id);
+            let readings = q.and_then(|q| q.readings.as_ref());
+            if readings.is_some() {
+                summary.with_readings += 1;
+            }
+            pages.extend(page_rows(&job, &got.result, readings.is_some()));
+            if let Some(q) = q {
+                let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
+                let (w, h) = image::load_from_memory(&page)
+                    .with_context(|| format!("{wu}: page.jpg"))?
+                    .dimensions();
+                let loc = parse_alto(
+                    &read(&unit.join(ALTO_FILE), MAX_ALTO)?,
                     f64::from(w),
                     f64::from(h),
-                )?)
-            } else {
-                None
-            };
-            let texts: Texts = serde_json::from_slice(&read(&unit.join(TEXTS_FILE), MAX_TEXTS)?)?;
-            let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
-            crop_table.extend(crop_rows(&CropInputs {
-                doc_id: &job.doc_id,
-                loc: &loc,
-                ours: ours.as_ref(),
-                texts: &texts,
-                readers: &readers,
-                crops: &q.job.crops,
-                readings,
-            }));
+                )?;
+                let ours = if unit.join(OURS_FILE).exists() {
+                    Some(parse_alto(
+                        &read(&unit.join(OURS_FILE), MAX_ALTO)?,
+                        f64::from(w),
+                        f64::from(h),
+                    )?)
+                } else {
+                    None
+                };
+                let texts: Texts =
+                    serde_json::from_slice(&read(&unit.join(TEXTS_FILE), MAX_TEXTS)?)?;
+                let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
+                crop_table.extend(crop_rows(&CropInputs {
+                    doc_id: &job.doc_id,
+                    loc: &loc,
+                    ours: ours.as_ref(),
+                    texts: &texts,
+                    readers: &readers,
+                    crops: &q.crops,
+                    readings,
+                }));
+            }
+        } else {
+            anyhow::ensure!(
+                got.result.pages.len() == job.pages.len(),
+                "{wu}: bundle result has {} pages, expected {}",
+                got.result.pages.len(),
+                job.pages.len()
+            );
+            let bundle_page = read(&unit.join(PAGE_FILE), MAX_BUNDLE_SCAN)?;
+            let bundle_alto = read(&unit.join(ALTO_FILE), MAX_BUNDLE_ALTO)?;
+            let bundle_texts = read(&unit.join(TEXTS_FILE), MAX_BUNDLE_TEXTS)?;
+            for (bp, pr) in job.pages.iter().zip(&got.result.pages) {
+                anyhow::ensure!(
+                    bp.doc_id == pr.doc_id,
+                    "{wu}: bundle page doc_id mismatch ({} vs {})",
+                    bp.doc_id,
+                    pr.doc_id
+                );
+                summary.pages += 1;
+                let q = qwen.get(&bp.doc_id);
+                let readings = q.and_then(|q| q.readings.as_ref());
+                if readings.is_some() {
+                    summary.with_readings += 1;
+                }
+                pages.extend(bundle_page_rows(
+                    &job,
+                    bp,
+                    pr,
+                    got.result.host.plan_class.clone(),
+                    readings.is_some(),
+                ));
+                if let Some(q) = q {
+                    let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
+                    let a_bytes = bp.inputs.alto.extract(&bundle_alto, "alto")?;
+                    let t_bytes = bp.inputs.texts.extract(&bundle_texts, "texts")?;
+                    let (w, h) = image::load_from_memory(p_bytes)
+                        .with_context(|| format!("{wu} ({}): page.jpg", bp.doc_id))?
+                        .dimensions();
+                    let loc = parse_alto(a_bytes, f64::from(w), f64::from(h))?;
+                    let ours_path = unit.join(format!("{}.ours.xml", bp.doc_id));
+                    let ours = if ours_path.exists() {
+                        Some(parse_alto(
+                            &read(&ours_path, MAX_ALTO)?,
+                            f64::from(w),
+                            f64::from(h),
+                        )?)
+                    } else {
+                        None
+                    };
+                    let texts: Texts = serde_json::from_slice(t_bytes)?;
+                    let readers: Vec<String> = bp.readers.iter().map(|r| r.name.clone()).collect();
+                    crop_table.extend(crop_rows(&CropInputs {
+                        doc_id: &bp.doc_id,
+                        loc: &loc,
+                        ours: ours.as_ref(),
+                        texts: &texts,
+                        readers: &readers,
+                        crops: &q.crops,
+                        readings,
+                    }));
+                }
+            }
         }
     }
     summary.page_rows = pages.len();

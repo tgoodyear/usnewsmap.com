@@ -1,0 +1,12 @@
+| engine | group | crops | reference chars | CER | WER |
+|---|---|---|---|---|---|
+| american-stories | all | 345 | 94627 | 1.3008 | 1.3181 |
+| american-stories | pub-overproof-ca | 345 | 94627 | 1.3008 | 1.3181 |
+| doctr-1.1.0-db_resnet50-parseq-multilingual | all | 345 | 94627 | 0.0525 | 0.2009 |
+| doctr-1.1.0-db_resnet50-parseq-multilingual | pub-overproof-ca | 345 | 94627 | 0.0525 | 0.2009 |
+| loc-alto | all | 345 | 94627 | 0.0922 | 0.3158 |
+| loc-alto | pub-overproof-ca | 345 | 94627 | 0.0922 | 0.3158 |
+| tesseract-5.5-eng-psm4 | all | 345 | 94627 | 0.0398 | 0.1289 |
+| tesseract-5.5-eng-psm4 | pub-overproof-ca | 345 | 94627 | 0.0398 | 0.1289 |
+| tesseract-5.5-eng-psm6 | all | 345 | 94627 | 0.0368 | 0.1252 |
+| tesseract-5.5-eng-psm6 | pub-overproof-ca | 345 | 94627 | 0.0368 | 0.1252 |

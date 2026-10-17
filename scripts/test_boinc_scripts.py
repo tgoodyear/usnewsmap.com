@@ -113,8 +113,10 @@ class StartBridge(unittest.TestCase):
             f.write(STUB_AZ)
         os.chmod(os.path.join(bin_dir, "az"), 0o755)
         self.log = os.path.join(self.tmp, "az.log")
+        self.lock_dir = os.path.join(self.tmp, "boinc.lock")
         self.env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp,
-                    "STUB_LOG": self.log, "STUB_SUB": SUB, "STUB_TEMPLATE": template()}
+                    "STUB_LOG": self.log, "STUB_SUB": SUB, "STUB_TEMPLATE": template(),
+                    "USNM_BOINC_LOCK_DIR": self.lock_dir}
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -617,6 +619,134 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(any("quality collect --campaign pilot-1" in c for c in self.calls()))
+
+
+PVE_BOINC_CT_SCRIPT = os.path.join(HERE, "boinc/pve-boinc-ct.sh")
+
+
+class BoincLockAndPveClient(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        bin_dir = os.path.join(self.tmp, "bin")
+        os.mkdir(bin_dir)
+        with open(os.path.join(bin_dir, "az"), "w") as f:
+            f.write(STUB_AZ)
+        os.chmod(os.path.join(bin_dir, "az"), 0o755)
+        self.log = os.path.join(self.tmp, "az.log")
+        self.lock_dir = os.path.join(self.tmp, "boinc-prod.lock")
+        self.env = {
+            "PATH": bin_dir + os.pathsep + os.environ["PATH"],
+            "HOME": self.tmp,
+            "STUB_LOG": self.log,
+            "STUB_SUB": SUB,
+            "STUB_TEMPLATE": template(),
+            "USNM_BOINC_LOCK_DIR": self.lock_dir,
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_refuses_when_live_pid_holds_lock_and_allows_reentrant_owner(self):
+        os.mkdir(self.lock_dir)
+        with open(os.path.join(self.lock_dir, "pid"), "w") as f:
+            f.write(f"{os.getpid()}\n")
+        with open(os.path.join(self.lock_dir, "cmd"), "w") as f:
+            f.write("provision-boinc.sh --env prod\n")
+
+        r = subprocess.run(
+            [SCRIPT, "--env", "prod", "--step", "register-apps"],
+            cwd=ROOT,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("another BOINC operation is already holding", r.stderr)
+
+        r_reentrant = subprocess.run(
+            [SCRIPT, "--env", "prod", "--step", "register-apps"],
+            cwd=ROOT,
+            env={**self.env, "USNM_BOINC_LOCK_OWNER": str(os.getpid())},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r_reentrant.returncode, 0, r_reentrant.stderr)
+        self.assertTrue(os.path.isdir(self.lock_dir))
+
+    def test_recovers_stale_dead_pid_lock_and_releases_on_exit(self):
+        os.mkdir(self.lock_dir)
+        with open(os.path.join(self.lock_dir, "pid"), "w") as f:
+            f.write("999999\n")
+        r = subprocess.run(
+            [SCRIPT, "--env", "prod", "--step", "register-apps"],
+            cwd=ROOT,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(self.lock_dir))
+
+    def test_pve_boinc_ct_what_if_and_validation(self):
+        r = subprocess.run(
+            [PVE_BOINC_CT_SCRIPT, "--ctid", "101", "--name", "boinc-volunteer-2", "--what-if"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("pct create 101", r.stdout)
+        self.assertIn("--features nesting=1,keyctl=1", r.stdout)
+
+        for bad in (
+            ["--ctid", "50", "--what-if"],
+            ["--name", "bad_name", "--what-if"],
+            ["--max-ncpus-pct", "120", "--what-if"],
+            ["--project-url", "http://insecure.example.org/", "--what-if"],
+        ):
+            res = subprocess.run([PVE_BOINC_CT_SCRIPT, *bad], cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0, bad)
+
+
+QUALITY_CAMPAIGN_SCRIPT = os.path.join(HERE, "boinc-quality-campaign.py")
+
+
+class QualityCampaignCli(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_prepare_splits_manifest_into_round_robin_shards(self):
+        manifest = Path(self.tmp, "sample.jsonl")
+        rows = [{"doc_id": f"sn83045081_1900-01-{i:02d}_ed-1_seq-1", "lang": "deu"} for i in range(1, 11)]
+        manifest.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        out_dir = Path(self.tmp, "out")
+        res = subprocess.run(
+            [
+                "python3",
+                QUALITY_CAMPAIGN_SCRIPT,
+                "prepare",
+                "--campaign",
+                "v1-test",
+                "--manifest",
+                str(manifest),
+                "--out-dir",
+                str(out_dir),
+                "--count",
+                "8",
+                "--shards",
+                "4",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("Prepared 8 pages across 4 shards", res.stdout)
+        for s in range(4):
+            self.assertTrue((out_dir / "shards" / f"shard-s{s}.tar.gz").is_file())
 
 
 if __name__ == "__main__":

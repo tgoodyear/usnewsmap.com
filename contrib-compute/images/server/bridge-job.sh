@@ -214,6 +214,15 @@ case "$step" in
       for p in "${pages[@]}"; do page_args+=(--page "$p"); done
     fi
     sample="${QUALITY_SAMPLE:-}"
+    if [ -n "$sample" ] && [[ "$sample" != /* ]] && [ ! -f "$sample" ] && [ -n "${HANDOFF_URL:-}" ]; then
+      usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix quality-samples --to "$QUALITY/samples"
+      if [ -f "$QUALITY/samples/$sample" ]; then
+        sample="$QUALITY/samples/$sample"
+      fi
+      if [ ! -f "${QUALITY_PLACES:-$QUALITY/places.txt}" ] && [ -f "$QUALITY/samples/places.txt" ]; then
+        cp "$QUALITY/samples/places.txt" "$QUALITY/places.txt"
+      fi
+    fi
     if [ -z "$sample" ] && [ -f "$QUALITY/sample.jsonl" ]; then
       sample="$QUALITY/sample.jsonl"
     fi
@@ -224,13 +233,15 @@ case "$step" in
     [ "${#page_args[@]}" -gt 0 ] || fail "set QUALITY_PAGES or QUALITY_SAMPLE (or place $QUALITY/sample.jsonl)"
     [[ "${QUALITY_READERS:-loc,as,ours-tesseract}" =~ ^[a-z0-9_,-]+$ ]] ||
       fail "QUALITY_READERS must be comma-separated reader names"
+    [[ "${QUALITY_BUNDLE_SIZE:-300}" =~ ^[1-9][0-9]*$ ]] || fail "QUALITY_BUNDLE_SIZE must be a positive integer"
     exec usnm-boinc quality stage "${page_args[@]}" --root "$QUALITY" \
       --texts-dir "$QUALITY/texts" --scans-dir "${QUALITY_SCANS_DIR:-$QUALITY/texts}" \
       --places "${QUALITY_PLACES:-$QUALITY/places.txt}" \
       --function-words-dir "$QUALITY/function-words" \
       --readers "${QUALITY_READERS:-loc,as,ours-tesseract}" \
       --engine-image "${QUALITY_ENGINE_IMAGE:?set QUALITY_ENGINE_IMAGE}" \
-      --max-pages "${QUALITY_MAX:-100}" --batch-cache "$QUALITY/batch-cache" \
+      --max-pages "${QUALITY_MAX:-100}" --bundle-size "${QUALITY_BUNDLE_SIZE:-300}" \
+      --batch-cache "$QUALITY/batch-cache" \
       ${SCAN_ARCHIVE_URL:+--scan-archive "$SCAN_ARCHIVE_URL"} ;;
   quality-collect)
     qwen_root="$QUALITY/no-qwen"
@@ -413,14 +424,14 @@ case "$step" in
     rc=0
     usnm-boinc quality submit --root "$QUALITY" --project "$PROJ" --max-units "${QUALITY_MAX:-500}" || rc=$?
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
-    rm -f "$stamp"
+    rm -f "$stamp" "$PROJ/html/cache/f2/server_status.php_job_status" 2>/dev/null || true
     exit "$rc" ;;
   qwen-submit)
     stamp="$(mktemp)"
     rc=0
     usnm-boinc qwen submit --root "$QWEN" --project "$PROJ" --target "${QWEN_TARGET:-container}" --max-units "${QWEN_MAX:-20}" || rc=$?
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
-    rm -f "$stamp"
+    rm -f "$stamp" "$PROJ/html/cache/f2/server_status.php_job_status" 2>/dev/null || true
     exit "$rc" ;;
   gold-submit)
     stamp="$(mktemp)"

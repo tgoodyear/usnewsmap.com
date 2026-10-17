@@ -38,12 +38,13 @@
         <enable_delete_account>1</enable_delete_account>
         <enable_privacy_by_default>1</enable_privacy_by_default>
         <show_results>1</show_results>
-        <one_result_per_user_per_wu/>
         <enable_assignment>1</enable_assignment>
-        <min_sendwork_interval>30</min_sendwork_interval>
-        <max_wus_in_progress>4</max_wus_in_progress>
-        <daily_result_quota>200</daily_result_quota>
-        <max_wus_to_send>8</max_wus_to_send>
+        <min_sendwork_interval>2</min_sendwork_interval>
+        <max_wus_in_progress>32</max_wus_in_progress>
+        <daily_result_quota>50000</daily_result_quota>
+        <max_wus_to_send>64</max_wus_to_send>
+        <resend_lost_results>1</resend_lost_results>
+        <cache_md5_info>1</cache_md5_info>
         <shmem_work_items>1000</shmem_work_items>
         <delete_delay_hours>168</delete_delay_hours>
         <!-- Upload certificates on: the transitioner signs each output file_info (name and

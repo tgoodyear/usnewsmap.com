@@ -8,7 +8,7 @@
 //! Every way a run ends is an outcome, including a unit the host could not
 //! run at all (`unit_error`): the result and its diagnostics still upload.
 use crate::boinc::{is_sha256, sha256};
-use anyhow::ensure;
+use anyhow::{ensure, Context as _};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -183,12 +183,12 @@ pub struct ConfusionPair {
 }
 
 pub const VERSION: u32 = 1;
-/// `quality.json`: the job holds the function-word list.
-pub const MAX_JOB_JSON: usize = 64 * 1024;
+/// `quality.json`: the job holds the function-word list and optional bundle pages.
+pub const MAX_JOB_JSON: usize = 2 * 1024 * 1024;
 /// `result.json`.
-pub const MAX_RESULT_JSON: usize = 256 * 1024;
+pub const MAX_RESULT_JSON: usize = 8 * 1024 * 1024;
 /// `confusions.json`.
-pub const MAX_CONFUSIONS: usize = 256 * 1024;
+pub const MAX_CONFUSIONS: usize = 8 * 1024 * 1024;
 /// `diag.txt`.
 pub const MAX_DIAG: usize = 64 * 1024;
 /// `texts.json`: every text we hold of the page, with regions.
@@ -197,6 +197,12 @@ pub const MAX_TEXTS: usize = 4 * 1024 * 1024;
 pub const MAX_PLACES: usize = 8 * 1024 * 1024;
 pub const MAX_ALTO: usize = crate::boinc::MAX_ALTO;
 pub const MAX_SCAN: usize = crate::boinc::MAX_SCAN;
+/// Maximum size of a bundled multi-page `page.jpg`, `loc.xml`, and `texts.json`.
+pub const MAX_BUNDLE_SCAN: usize = 1024 * 1024 * 1024;
+pub const MAX_BUNDLE_ALTO: usize = 512 * 1024 * 1024;
+pub const MAX_BUNDLE_TEXTS: usize = 128 * 1024 * 1024;
+/// Maximum number of pages in a single `usnm_quality` workunit bundle (~10–15 min runtime).
+pub const MAX_BUNDLE_PAGES: usize = 500;
 /// Longest error text kept in a result.
 pub const MAX_ERROR: usize = 1024;
 pub const MAX_READERS: usize = 8;
@@ -277,6 +283,121 @@ pub struct ReaderSpec {
     pub source: String,
 }
 
+/// A contiguous byte range within a bundled slot file (`page.jpg`, `loc.xml`,
+/// or `texts.json`), verified by byte offset, byte length, and SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleSlice {
+    pub bytes: u64,
+    pub offset: u64,
+    pub sha256: String,
+    pub source: String,
+}
+impl BundleSlice {
+    pub fn of(offset: u64, bytes: &[u8], source: &str) -> Self {
+        Self {
+            bytes: bytes.len() as u64,
+            offset,
+            sha256: sha256(bytes),
+            source: source.to_owned(),
+        }
+    }
+    pub fn validate(&self, max: usize, what: &str) -> anyhow::Result<()> {
+        ensure!(
+            self.bytes > 0 && self.bytes <= max as u64,
+            "invalid {what} slice size"
+        );
+        ensure!(is_sha256(&self.sha256), "invalid {what} slice checksum");
+        ensure!(
+            !self.source.is_empty()
+                && self.source.len() <= 512
+                && !self
+                    .source
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace()),
+            "invalid {what} slice source"
+        );
+        Ok(())
+    }
+    pub fn extract<'a>(&self, container: &'a [u8], what: &str) -> anyhow::Result<&'a [u8]> {
+        let start = usize::try_from(self.offset).context("slice offset overflow")?;
+        let len = usize::try_from(self.bytes).context("slice length overflow")?;
+        let end = start.checked_add(len).context("slice range overflow")?;
+        ensure!(
+            end <= container.len(),
+            "{what} slice {start}..{end} out of bounds for {} bytes",
+            container.len()
+        );
+        let slice = &container[start..end];
+        ensure!(
+            sha256(slice) == self.sha256,
+            "{what} slice checksum mismatch at offset {start}"
+        );
+        Ok(slice)
+    }
+}
+
+/// Per-page byte slices within a bundled `page.jpg`, `loc.xml`, and `texts.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundlePageInputs {
+    pub alto: BundleSlice,
+    pub page: BundleSlice,
+    pub texts: BundleSlice,
+}
+
+/// One page in a multi-page `usnm_quality` workunit bundle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundlePage {
+    pub crop_seed: u64,
+    pub doc_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub function_words: Vec<String>,
+    pub group: String,
+    pub inputs: BundlePageInputs,
+    pub k_crops: u32,
+    pub language: String,
+    pub readers: Vec<ReaderSpec>,
+}
+
+fn validate_readers_list(readers: &[ReaderSpec]) -> anyhow::Result<()> {
+    ensure!(
+        !readers.is_empty() && readers.len() <= MAX_READERS,
+        "a job compares 1 to {MAX_READERS} readers"
+    );
+    let mut names: Vec<&str> = readers.iter().map(|r| r.name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    ensure!(names.len() == readers.len(), "a reader is listed twice");
+    for r in readers {
+        check_name(&r.name, "reader name")?;
+        ensure!(
+            !r.source.is_empty()
+                && r.source.len() <= 128
+                && !r
+                    .source
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace()),
+            "invalid reader source"
+        );
+    }
+    Ok(())
+}
+
+fn validate_function_words(words: &[String]) -> anyhow::Result<()> {
+    ensure!(words.len() <= MAX_FUNCTION_WORDS, "too many function words");
+    for w in words {
+        ensure!(
+            !w.is_empty()
+                && w.len() <= 64
+                && !w.chars().any(|c| c.is_control() || c.is_whitespace()),
+            "invalid function word"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
@@ -296,23 +417,42 @@ pub struct Job {
     pub k_crops: u32,
     /// ISO 639-3.
     pub language: String,
+    /// Optional multi-page bundle entries; empty for single-page workunits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<BundlePage>,
     /// The texts the unit compares, in the order they are reported.
     pub readers: Vec<ReaderSpec>,
 }
 impl Job {
     pub fn identity(&self) -> anyhow::Result<String> {
-        Ok(sha256(&serde_json::to_vec(&(
-            self.v,
-            &self.doc_id,
-            &self.language,
-            &self.group,
-            &self.inputs,
-            &self.engine,
-            &self.readers,
-            &self.function_words,
-            self.crop_seed,
-            self.k_crops,
-        ))?))
+        if self.pages.is_empty() {
+            Ok(sha256(&serde_json::to_vec(&(
+                self.v,
+                &self.doc_id,
+                &self.language,
+                &self.group,
+                &self.inputs,
+                &self.engine,
+                &self.readers,
+                &self.function_words,
+                self.crop_seed,
+                self.k_crops,
+            ))?))
+        } else {
+            Ok(sha256(&serde_json::to_vec(&(
+                self.v,
+                &self.doc_id,
+                &self.language,
+                &self.group,
+                &self.inputs,
+                &self.engine,
+                &self.readers,
+                &self.function_words,
+                self.crop_seed,
+                self.k_crops,
+                &self.pages,
+            ))?))
+        }
     }
     pub fn workunit(&self) -> String {
         format!("usnm_quality_{}", self.id)
@@ -323,9 +463,15 @@ impl Job {
             is_sha256(&self.id) && self.id == self.identity()?,
             "job identity mismatch"
         );
-        self.inputs.page.validate(MAX_SCAN, "page")?;
-        self.inputs.alto.validate(MAX_ALTO, "alto")?;
-        self.inputs.texts.validate(MAX_TEXTS, "texts")?;
+        if self.pages.is_empty() {
+            self.inputs.page.validate(MAX_SCAN, "page")?;
+            self.inputs.alto.validate(MAX_ALTO, "alto")?;
+            self.inputs.texts.validate(MAX_TEXTS, "texts")?;
+        } else {
+            self.inputs.page.validate(MAX_BUNDLE_SCAN, "page")?;
+            self.inputs.alto.validate(MAX_BUNDLE_ALTO, "alto")?;
+            self.inputs.texts.validate(MAX_BUNDLE_TEXTS, "texts")?;
+        }
         self.inputs.places.validate(MAX_PLACES, "places")?;
         ensure!(
             self.engine
@@ -334,41 +480,10 @@ impl Job {
                 .is_some_and(is_sha256),
             "engine image must be a full sha256 digest"
         );
-        ensure!(
-            !self.readers.is_empty() && self.readers.len() <= MAX_READERS,
-            "a job compares 1 to {MAX_READERS} readers"
-        );
-        let mut names: Vec<&str> = self.readers.iter().map(|r| r.name.as_str()).collect();
-        names.sort_unstable();
-        names.dedup();
-        ensure!(
-            names.len() == self.readers.len(),
-            "a reader is listed twice"
-        );
-        for r in &self.readers {
-            check_name(&r.name, "reader name")?;
-            ensure!(
-                !r.source.is_empty()
-                    && r.source.len() <= 128
-                    && !r
-                        .source
-                        .chars()
-                        .any(|c| c.is_control() || c.is_whitespace()),
-                "invalid reader source"
-            );
+        if self.pages.is_empty() || !self.readers.is_empty() {
+            validate_readers_list(&self.readers)?;
         }
-        ensure!(
-            self.function_words.len() <= MAX_FUNCTION_WORDS,
-            "too many function words"
-        );
-        for w in &self.function_words {
-            ensure!(
-                !w.is_empty()
-                    && w.len() <= 64
-                    && !w.chars().any(|c| c.is_control() || c.is_whitespace()),
-                "invalid function word"
-            );
-        }
+        validate_function_words(&self.function_words)?;
         ensure!(
             (1..=MAX_CROPS).contains(&self.k_crops),
             "k_crops must be 1 to {MAX_CROPS}"
@@ -377,6 +492,75 @@ impl Job {
             check_name(s, what)?;
         }
         check_doc_id(&self.doc_id)?;
+        if !self.pages.is_empty() {
+            ensure!(
+                self.pages.len() <= MAX_BUNDLE_PAGES,
+                "a bundle has at most {MAX_BUNDLE_PAGES} pages"
+            );
+            let mut doc_ids: Vec<&str> = self.pages.iter().map(|p| p.doc_id.as_str()).collect();
+            doc_ids.sort_unstable();
+            doc_ids.dedup();
+            ensure!(
+                doc_ids.len() == self.pages.len(),
+                "a page doc_id is listed twice in bundle"
+            );
+            let mut page_off = 0u64;
+            let mut alto_off = 0u64;
+            let mut texts_off = 0u64;
+            for p in &self.pages {
+                check_doc_id(&p.doc_id)?;
+                check_name(&p.group, "page group")?;
+                check_name(&p.language, "page language")?;
+                ensure!(
+                    (1..=MAX_CROPS).contains(&p.k_crops),
+                    "page k_crops must be 1 to {MAX_CROPS}"
+                );
+                validate_readers_list(&p.readers)?;
+                validate_function_words(&p.function_words)?;
+                p.inputs.page.validate(MAX_SCAN, "bundle page")?;
+                p.inputs.alto.validate(MAX_ALTO, "bundle alto")?;
+                p.inputs.texts.validate(MAX_TEXTS, "bundle texts")?;
+                ensure!(
+                    p.inputs.page.offset == page_off,
+                    "bundle page slice offset mismatch for {}",
+                    p.doc_id
+                );
+                ensure!(
+                    p.inputs.alto.offset == alto_off,
+                    "bundle alto slice offset mismatch for {}",
+                    p.doc_id
+                );
+                ensure!(
+                    p.inputs.texts.offset == texts_off,
+                    "bundle texts slice offset mismatch for {}",
+                    p.doc_id
+                );
+                page_off = page_off
+                    .checked_add(p.inputs.page.bytes)
+                    .context("bundle page offset overflow")?;
+                alto_off = alto_off
+                    .checked_add(p.inputs.alto.bytes)
+                    .context("bundle alto offset overflow")?;
+                texts_off = texts_off
+                    .checked_add(p.inputs.texts.bytes)
+                    .context("bundle texts offset overflow")?;
+            }
+            ensure!(
+                page_off == self.inputs.page.bytes,
+                "bundle page slices sum to {page_off}, expected {}",
+                self.inputs.page.bytes
+            );
+            ensure!(
+                alto_off == self.inputs.alto.bytes,
+                "bundle alto slices sum to {alto_off}, expected {}",
+                self.inputs.alto.bytes
+            );
+            ensure!(
+                texts_off == self.inputs.texts.bytes,
+                "bundle texts slices sum to {texts_off}, expected {}",
+                self.inputs.texts.bytes
+            );
+        }
         Ok(())
     }
 }
@@ -392,6 +576,26 @@ pub fn check_doc_id(doc_id: &str) -> anyhow::Result<()> {
         "invalid doc id {doc_id:?}"
     );
     Ok(())
+}
+
+/// Normalizes a reader source string to 1..=128 non-whitespace, non-control bytes.
+pub fn normalize_source(s: &str) -> String {
+    let joined: String = s
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(";");
+    let mut out = if joined.is_empty() {
+        "unknown".to_owned()
+    } else {
+        joined
+    };
+    while out.len() > 128 {
+        out.pop();
+    }
+    out
 }
 
 /// Lower-case ASCII letters, digits and hyphens, 1 to 32 bytes.
@@ -412,7 +616,7 @@ pub fn check_name(s: &str, what: &str) -> anyhow::Result<()> {
 #[serde(deny_unknown_fields)]
 pub struct Region {
     /// `[x0, y0, x1, y1]`.
-    #[serde(rename = "box")]
+    #[serde(rename = "box", alias = "rect")]
     pub rect: [u32; 4],
     pub kind: Option<String>,
     /// `legible`, `borderline` or `illegible`.
@@ -453,8 +657,13 @@ impl Texts {
     /// Checks the file against the job: every reader the job names is
     /// there once, with text within the limit.
     pub fn validate(&self, job: &Job) -> anyhow::Result<()> {
+        self.validate_readers(&job.readers)
+    }
+
+    /// Checks the file against an explicit reader list (`Job` or `BundlePage`).
+    pub fn validate_readers(&self, specs: &[ReaderSpec]) -> anyhow::Result<()> {
         ensure!(self.readers.len() <= MAX_READERS, "too many texts");
-        for spec in &job.readers {
+        for spec in specs {
             let found: Vec<&TextReader> = self
                 .readers
                 .iter()
@@ -535,6 +744,41 @@ pub struct Timings {
     pub total_ms: u64,
 }
 
+/// Per-page result record within a multi-page `usnm_quality` workunit bundle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PageResult {
+    pub doc_id: String,
+    pub hat: Option<HatReport>,
+    pub legibility: Option<Legibility>,
+    pub outcome: Outcome,
+    pub page: Option<PageFeatures>,
+    pub readers: Vec<ReaderReport>,
+    pub timings: Timings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_error: Option<String>,
+}
+
+fn check_readers_report(readers: &[ReaderReport]) -> anyhow::Result<()> {
+    ensure!(readers.len() <= MAX_READERS, "too many readers");
+    let mut names: Vec<&str> = readers.iter().map(|r| r.name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    ensure!(names.len() == readers.len(), "a reader is reported twice");
+    for r in readers {
+        ensure!(
+            r.pairs.len() + 1 == readers.len(),
+            "pairs do not match the readers"
+        );
+        ensure!(
+            r.est_cer
+                .is_none_or(|e| e.is_finite() && (0.0..=10.0).contains(&e)),
+            "estimate out of range"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResultManifest {
@@ -551,6 +795,8 @@ pub struct ResultManifest {
     pub legibility: Option<Legibility>,
     pub outcome: Outcome,
     pub page: Option<PageFeatures>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<PageResult>,
     pub readers: Vec<ReaderReport>,
     pub timings: Timings,
     /// Set with `unit_error`: the reason.
@@ -587,43 +833,58 @@ impl ResultManifest {
             (self.outcome == Outcome::UnitError) == self.unit_error.is_some(),
             "a unit error has a reason and nothing else does"
         );
-        ensure!(self.readers.len() <= MAX_READERS, "too many readers");
-        match self.outcome {
-            Outcome::UnitError => ensure!(
-                self.readers.is_empty()
-                    && self.hat.is_none()
-                    && self.page.is_none()
-                    && parsed.is_empty(),
-                "a unit error has no record"
-            ),
-            Outcome::Ok => {
-                ensure!(
-                    self.hat.is_some() && self.legibility.is_some() && self.page.is_some(),
-                    "an ok result has the whole record"
-                );
-                for r in &self.readers {
-                    ensure!(parsed.contains_key(&r.name), "confusions missing a reader");
+        check_readers_report(&self.readers)?;
+        if self.pages.is_empty() {
+            match self.outcome {
+                Outcome::UnitError => ensure!(
+                    self.readers.is_empty()
+                        && self.hat.is_none()
+                        && self.page.is_none()
+                        && parsed.is_empty(),
+                    "a unit error has no record"
+                ),
+                Outcome::Ok => {
+                    ensure!(
+                        self.hat.is_some() && self.legibility.is_some() && self.page.is_some(),
+                        "an ok result has the whole record"
+                    );
+                    for r in &self.readers {
+                        ensure!(parsed.contains_key(&r.name), "confusions missing a reader");
+                    }
+                }
+                Outcome::Failed | Outcome::Timeout => {}
+            }
+        } else {
+            ensure!(
+                self.pages.len() <= MAX_BUNDLE_PAGES,
+                "too many pages in result"
+            );
+            let mut doc_ids: Vec<&str> = self.pages.iter().map(|p| p.doc_id.as_str()).collect();
+            doc_ids.sort_unstable();
+            doc_ids.dedup();
+            ensure!(
+                doc_ids.len() == self.pages.len(),
+                "a page doc_id is reported twice"
+            );
+            for p in &self.pages {
+                check_doc_id(&p.doc_id)?;
+                check_readers_report(&p.readers)?;
+                if p.outcome == Outcome::Ok {
+                    ensure!(
+                        p.hat.is_some() && p.legibility.is_some() && p.page.is_some(),
+                        "an ok page result has the whole record"
+                    );
+                    for r in &p.readers {
+                        let key = format!("{}:{}", p.doc_id, r.name);
+                        ensure!(
+                            parsed.contains_key(&key) || parsed.contains_key(&r.name),
+                            "confusions missing reader {} for {}",
+                            r.name,
+                            p.doc_id
+                        );
+                    }
                 }
             }
-            Outcome::Failed | Outcome::Timeout => {}
-        }
-        let mut names: Vec<&str> = self.readers.iter().map(|r| r.name.as_str()).collect();
-        names.sort_unstable();
-        names.dedup();
-        ensure!(
-            names.len() == self.readers.len(),
-            "a reader is reported twice"
-        );
-        for r in &self.readers {
-            ensure!(
-                r.pairs.len() + 1 == self.readers.len(),
-                "pairs do not match the readers"
-            );
-            ensure!(
-                r.est_cer
-                    .is_none_or(|e| e.is_finite() && (0.0..=10.0).contains(&e)),
-                "estimate out of range"
-            );
         }
         Ok(())
     }
@@ -631,18 +892,49 @@ impl ResultManifest {
     /// The part of the result two hosts must agree on: everything but the
     /// host, the timings, the time and the diagnostics.
     pub fn canonical(&self) -> serde_json::Value {
-        canonicalise(serde_json::json!({
-            "confusions_sha256": self.confusions_sha256,
-            "engine": self.engine,
-            "hat": self.hat,
-            "job_id": self.job_id,
-            "legibility": self.legibility,
-            "outcome": self.outcome,
-            "page": self.page,
-            "readers": self.readers,
-            "unit_error": self.unit_error,
-            "v": self.v,
-        }))
+        if self.pages.is_empty() {
+            canonicalise(serde_json::json!({
+                "confusions_sha256": self.confusions_sha256,
+                "engine": self.engine,
+                "hat": self.hat,
+                "job_id": self.job_id,
+                "legibility": self.legibility,
+                "outcome": self.outcome,
+                "page": self.page,
+                "readers": self.readers,
+                "unit_error": self.unit_error,
+                "v": self.v,
+            }))
+        } else {
+            let pages: Vec<serde_json::Value> = self
+                .pages
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "doc_id": p.doc_id,
+                        "hat": p.hat,
+                        "legibility": p.legibility,
+                        "outcome": p.outcome,
+                        "page": p.page,
+                        "readers": p.readers,
+                        "unit_error": p.unit_error,
+                    })
+                })
+                .collect();
+            canonicalise(serde_json::json!({
+                "confusions_sha256": self.confusions_sha256,
+                "engine": self.engine,
+                "hat": self.hat,
+                "job_id": self.job_id,
+                "legibility": self.legibility,
+                "outcome": self.outcome,
+                "page": self.page,
+                "pages": pages,
+                "readers": self.readers,
+                "unit_error": self.unit_error,
+                "v": self.v,
+            }))
+        }
     }
 }
 
@@ -679,6 +971,7 @@ pub fn agree(a: &ResultManifest, b: &ResultManifest) -> Result<(), String> {
     let (ca, cb) = (a.canonical(), b.canonical());
     if ca != cb {
         let what = [
+            "pages",
             "page",
             "readers",
             "hat",
@@ -722,6 +1015,7 @@ pub(crate) mod tests {
             },
             k_crops: 12,
             language: "srp".into(),
+            pages: vec![],
             readers: vec![
                 ReaderSpec {
                     name: "loc".into(),
@@ -803,6 +1097,7 @@ pub(crate) mod tests {
                     image: None,
                     layout: None,
                 }),
+                pages: vec![],
                 readers: if unit {
                     vec![]
                 } else {
@@ -903,5 +1198,124 @@ pub(crate) mod tests {
             serde_json::to_string(&v).unwrap(),
             r#"{"a":[1,2.0],"b":0.123457,"c":{"y":null,"z":1}}"#
         );
+    }
+
+    #[test]
+    fn multipage_bundle_job_and_result_validate_and_agree() {
+        use super::{BundlePage, BundlePageInputs, BundleSlice, PageResult};
+        let p1_jpg = b"jpeg-one";
+        let p2_jpg = b"jpeg-two-longer";
+        let mut pages_blob = Vec::new();
+        pages_blob.extend_from_slice(p1_jpg);
+        pages_blob.extend_from_slice(p2_jpg);
+
+        let a1 = b"<alto id=\"1\"/>";
+        let a2 = b"<alto id=\"2\"/>";
+        let mut alto_blob = Vec::new();
+        alto_blob.extend_from_slice(a1);
+        alto_blob.extend_from_slice(a2);
+
+        let t1 = br#"{"page":null,"readers":[{"name":"loc","source":"loc-alto","text":"a"},{"name":"as","source":"american-stories","text":"a"}]}"#;
+        let t2 = br#"{"page":null,"readers":[{"name":"loc","source":"loc-alto","text":"b"},{"name":"as","source":"american-stories","text":"b"}]}"#;
+        let mut texts_blob = Vec::new();
+        texts_blob.extend_from_slice(t1);
+        texts_blob.extend_from_slice(t2);
+
+        let mut j = job();
+        j.inputs.page = Input::of(&pages_blob, "bundle:page.jpg");
+        j.inputs.alto = Input::of(&alto_blob, "bundle:loc.xml");
+        j.inputs.texts = Input::of(&texts_blob, "bundle:texts.json");
+        let readers = j.readers.clone();
+        j.pages = vec![
+            BundlePage {
+                crop_seed: 522,
+                doc_id: "sn85055101_1917-04-03_ed-1_seq-1".into(),
+                function_words: vec![],
+                group: "serbian".into(),
+                inputs: BundlePageInputs {
+                    page: BundleSlice::of(0, p1_jpg, "handoff:scans/seq-1.jpg"),
+                    alto: BundleSlice::of(0, a1, "handoff:scans/seq-1.xml"),
+                    texts: BundleSlice::of(0, t1, "handoff:texts/seq-1.json"),
+                },
+                k_crops: 6,
+                language: "srp".into(),
+                readers: readers.clone(),
+            },
+            BundlePage {
+                crop_seed: 522,
+                doc_id: "sn85055101_1917-04-03_ed-1_seq-2".into(),
+                function_words: vec![],
+                group: "serbian".into(),
+                inputs: BundlePageInputs {
+                    page: BundleSlice::of(p1_jpg.len() as u64, p2_jpg, "handoff:scans/seq-2.jpg"),
+                    alto: BundleSlice::of(a1.len() as u64, a2, "handoff:scans/seq-2.xml"),
+                    texts: BundleSlice::of(t1.len() as u64, t2, "handoff:texts/seq-2.json"),
+                },
+                k_crops: 6,
+                language: "srp".into(),
+                readers,
+            },
+        ];
+        j.id = j.identity().unwrap();
+        j.validate().unwrap();
+        assert_eq!(
+            j.pages[1].inputs.page.extract(&pages_blob, "page").unwrap(),
+            p2_jpg
+        );
+
+        let (single, _) = result(Outcome::Ok);
+        let confusions = br#"{"sn85055101_1917-04-03_ed-1_seq-1:as":[],"sn85055101_1917-04-03_ed-1_seq-1:loc":[],"sn85055101_1917-04-03_ed-1_seq-2:as":[],"sn85055101_1917-04-03_ed-1_seq-2:loc":[]}"#;
+        let pr1 = PageResult {
+            doc_id: "sn85055101_1917-04-03_ed-1_seq-1".into(),
+            hat: single.hat.clone(),
+            legibility: single.legibility.clone(),
+            outcome: Outcome::Ok,
+            page: single.page.clone(),
+            readers: single.readers.clone(),
+            timings: Timings {
+                total_ms: 10,
+                ..Default::default()
+            },
+            unit_error: None,
+        };
+        let pr2 = PageResult {
+            doc_id: "sn85055101_1917-04-03_ed-1_seq-2".into(),
+            timings: Timings {
+                total_ms: 20,
+                ..Default::default()
+            },
+            ..pr1.clone()
+        };
+        let mut ra = ResultManifest {
+            v: VERSION,
+            job_id: j.id.clone(),
+            completed_at: "2026-10-16T00:00:00Z".into(),
+            confusions_bytes: confusions.len() as u64,
+            confusions_sha256: sha256(confusions),
+            diag_bytes: 0,
+            diag_sha256: sha256(b""),
+            engine: engine(),
+            hat: None,
+            host: Host::default(),
+            legibility: None,
+            outcome: Outcome::Ok,
+            page: None,
+            pages: vec![pr1, pr2],
+            readers: vec![],
+            timings: Timings {
+                total_ms: 30,
+                ..Default::default()
+            },
+            unit_error: None,
+        };
+        ra.check(confusions, b"").unwrap();
+        let mut rb = ra.clone();
+        rb.pages[0].timings.total_ms = 999;
+        rb.timings.total_ms = 1019;
+        agree(&ra, &rb).unwrap();
+        rb.pages[1].readers[0].words += 1;
+        assert_eq!(agree(&ra, &rb).unwrap_err(), "pages differs");
+        ra.pages[1].doc_id = ra.pages[0].doc_id.clone();
+        assert!(ra.check(confusions, b"").is_err());
     }
 }

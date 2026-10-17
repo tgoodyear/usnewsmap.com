@@ -375,6 +375,25 @@ class PreflightTest(unittest.TestCase):
                 with self.assertRaises(pre.PreflightError):
                     pre.limits_from_job_toml(bad_toml)
 
+    def test_ensure_runtime_systemd_links_creates_systemd_and_bus_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user_root = root / "run_user"
+            user_dir = user_root / "983"
+            (user_dir / "systemd").mkdir(parents=True)
+            (user_dir / "bus").write_text("socket")
+            xdg_dir = root / "xdg"
+            xdg_dir.mkdir()
+
+            pre._ensure_runtime_systemd_links(xdg_dir, 983, user_runtime_root=user_root)
+            self.assertTrue((xdg_dir / "systemd").is_symlink())
+            self.assertEqual((xdg_dir / "systemd").resolve(), (user_dir / "systemd").resolve())
+            self.assertTrue((xdg_dir / "bus").is_symlink())
+            self.assertEqual((xdg_dir / "bus").resolve(), (user_dir / "bus").resolve())
+
+            # Second call is idempotent
+            pre._ensure_runtime_systemd_links(xdg_dir, 983, user_runtime_root=user_root)
+
 
 class SetupTest(unittest.TestCase):
     def test_overlapping_subordinate_ids_are_rejected_without_reallocation(self):

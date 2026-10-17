@@ -34,8 +34,10 @@ use usnm_core::ids::PageKey;
 use usnm_ocr_contract::{
     boinc::is_sha256,
     quality::{
-        Engine, Input, Inputs, Job, PageSize, ReaderSpec, Region, TextReader, Texts, MAX_ALTO,
-        MAX_PLACES, MAX_SCAN, MAX_TEXT, MAX_TEXTS, VERSION,
+        BundlePage, BundlePageInputs, BundleSlice, Engine, Input, Inputs, Job, PageSize,
+        ReaderSpec, Region, TextReader, Texts, MAX_ALTO, MAX_BUNDLE_ALTO, MAX_BUNDLE_PAGES,
+        MAX_BUNDLE_SCAN, MAX_BUNDLE_TEXTS, MAX_JOB_JSON, MAX_PLACES, MAX_SCAN, MAX_TEXT, MAX_TEXTS,
+        VERSION,
     },
 };
 use usnm_ocr_worker::loc::FetchError;
@@ -75,6 +77,7 @@ pub struct Options {
     pub k_crops: u32,
     pub gap: Duration,
     pub max_pages: usize,
+    pub bundle_size: usize,
     pub scan_archive: Option<String>,
     pub batch_cache: Option<PathBuf>,
 }
@@ -86,6 +89,8 @@ pub struct Summary {
     pub already: usize,
     /// Pages whose export has no text but LoC's.
     pub loc_only: usize,
+    /// Multi-page bundles written when `bundle_size > 1`.
+    pub bundles: usize,
 }
 
 /// The pages to stage: `--page` specs, plus the sample's rows as pages of
@@ -94,7 +99,7 @@ pub fn pages_of(opts: &Options) -> anyhow::Result<Vec<(PageSpec, Option<SampleRo
     let mut out: Vec<(PageSpec, Option<SampleRow>)> =
         opts.pages.iter().cloned().map(|p| (p, None)).collect();
     if let Some(sample) = &opts.sample {
-        crate::surya::check_word(&opts.group, "group")?;
+        usnm_ocr_contract::quality::check_name(&opts.group, "group")?;
         for row in crate::assess::read_sample(sample)? {
             crate::assess::check_doc_id(&row.doc_id)?;
             crate::surya::check_word(&row.lang, "language")?;
@@ -126,6 +131,15 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
 
 /// Stages up to `max_pages` units using `src`; stops at the first LoC refusal.
 pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Result<Summary> {
+    let bundle_size = if opts.bundle_size == 0 {
+        1
+    } else {
+        opts.bundle_size
+    };
+    ensure!(
+        (1..=MAX_BUNDLE_PAGES).contains(&bundle_size),
+        "--bundle-size must be 1 to {MAX_BUNDLE_PAGES}"
+    );
     ensure!(
         opts.engine
             .image
@@ -136,8 +150,15 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
     ensure!(!opts.readers.is_empty(), "--readers must name at least one");
     check_no_hold(&opts.root)?;
     let pages = pages_of(opts)?;
-    let dir = units(&opts.root);
-    std::fs::create_dir_all(&dir)?;
+    let units_dir = units(&opts.root);
+    std::fs::create_dir_all(&units_dir)?;
+    let page_dir = if bundle_size > 1 {
+        let p = opts.root.join("pages");
+        std::fs::create_dir_all(&p)?;
+        p
+    } else {
+        units_dir.clone()
+    };
     let places = read_places(&opts.places)?;
     ensure!(places.len() <= MAX_PLACES, "places over size limit");
     let mut function_words: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -146,9 +167,9 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
         if summary.staged + summary.missing >= opts.max_pages {
             break;
         }
-        crate::surya::check_word(&p.group, "group")?;
+        usnm_ocr_contract::quality::check_name(&p.group, "group")?;
         crate::surya::check_word(&p.lang, "language")?;
-        let unit = dir.join(&p.doc_id);
+        let unit = page_dir.join(&p.doc_id);
         if unit.join(JOB_FILE).exists() || unit.join("missing").exists() {
             summary.already += 1;
             continue;
@@ -187,7 +208,97 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
             }
         }
     }
+    if bundle_size > 1 {
+        summary.bundles = pack_bundles(&page_dir, &units_dir, bundle_size)?;
+    }
     Ok(summary)
+}
+
+/// Packs any staged single-page units in `page_dir` that are not yet present in
+/// a bundle under `units_dir` into multi-page bundle units of up to `bundle_size` pages.
+fn pack_bundles(page_dir: &Path, units_dir: &Path, bundle_size: usize) -> anyhow::Result<usize> {
+    let mut bundled_docs = BTreeSet::new();
+    let mut existing_bundles = 0usize;
+    if units_dir.exists() {
+        for entry in std::fs::read_dir(units_dir)?.filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if p.join(JOB_FILE).exists() {
+                existing_bundles += 1;
+                if let Ok(job) =
+                    serde_json::from_slice::<Job>(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?)
+                {
+                    if job.pages.is_empty() {
+                        bundled_docs.insert(job.doc_id);
+                    } else {
+                        for bp in job.pages {
+                            bundled_docs.insert(bp.doc_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut unbundled: Vec<PathBuf> = std::fs::read_dir(page_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.join(JOB_FILE).exists()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| !bundled_docs.contains(n))
+        })
+        .collect();
+    unbundled.sort();
+    let mut created = 0usize;
+    let mut chunk: Vec<PathBuf> = Vec::new();
+    let mut scan_bytes = 0usize;
+    let mut alto_bytes = 0usize;
+    let mut texts_bytes = 0usize;
+    let flush = |chunk: &mut Vec<PathBuf>, idx: usize| -> anyhow::Result<()> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        let first_doc = chunk[0]
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("bundle");
+        let dir = units_dir.join(format!("bundle-{idx:05}-{first_doc}"));
+        write_bundle(&dir, chunk)?;
+        chunk.clear();
+        Ok(())
+    };
+    for u in unbundled {
+        let p_len = std::fs::metadata(u.join(PAGE_FILE))
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let a_len = std::fs::metadata(u.join(ALTO_FILE))
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let t_len = std::fs::metadata(u.join(TEXTS_FILE))
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let over_size = !chunk.is_empty()
+            && (chunk.len() >= bundle_size
+                || scan_bytes + p_len > MAX_BUNDLE_SCAN
+                || alto_bytes + a_len > MAX_BUNDLE_ALTO
+                || texts_bytes + t_len > MAX_BUNDLE_TEXTS);
+        if over_size {
+            created += 1;
+            flush(&mut chunk, existing_bundles + created)?;
+            scan_bytes = 0;
+            alto_bytes = 0;
+            texts_bytes = 0;
+        }
+        scan_bytes += p_len;
+        alto_bytes += a_len;
+        texts_bytes += t_len;
+        chunk.push(u);
+    }
+    if !chunk.is_empty() {
+        created += 1;
+        flush(&mut chunk, existing_bundles + created)?;
+    }
+    Ok(created)
 }
 
 fn missing(unit: &Path, why: &str) -> anyhow::Result<Option<bool>> {
@@ -315,7 +426,8 @@ async fn page(
         .context("decoding page.jpg")?
         .to_luma8()
         .dimensions();
-    let parsed = super::parse_alto(&scan.alto, f64::from(width), f64::from(height))?;
+    let alto = usnm_ocr_quality::slot::normalize_alto_ns(&scan.alto);
+    let parsed = super::parse_alto(&alto, f64::from(width), f64::from(height))?;
     let texts = join_texts(
         exported,
         &usnm_alto::text(&parsed),
@@ -332,7 +444,7 @@ async fn page(
         language: &p.lang,
         page: &scan.page,
         page_source: &scan.page_source,
-        alto: &scan.alto,
+        alto: &alto,
         alto_source: &scan.alto_source,
         texts: &texts,
         texts_source: &format!("handoff:texts/{}.json", p.doc_id),
@@ -362,7 +474,18 @@ pub fn join_texts(exported: Texts, loc_text: &str, order: &[String], w: u32, h: 
         source: LOC_SOURCE.into(),
         text: loc_text.to_owned(),
     }];
-    all.extend(exported.readers);
+    all.extend(exported.readers.into_iter().map(|mut r| {
+        r.source = usnm_ocr_contract::quality::normalize_source(&r.source);
+        r.regions
+            .retain(|g| g.rect[0] < g.rect[2] && g.rect[1] < g.rect[3]);
+        for g in &mut r.regions {
+            g.legibility = g
+                .legibility
+                .take()
+                .filter(|l| ["legible", "borderline", "illegible"].contains(&l.as_str()));
+        }
+        r
+    }));
     let readers = order
         .iter()
         .filter_map(|name| all.iter().find(|r| &r.name == name).cloned())
@@ -434,6 +557,7 @@ pub fn write_unit(u: &WriteUnit) -> anyhow::Result<Job> {
         },
         k_crops: u.k_crops,
         language: u.language.to_owned(),
+        pages: vec![],
         readers,
     };
     job.id = job.identity()?;
@@ -444,6 +568,146 @@ pub fn write_unit(u: &WriteUnit) -> anyhow::Result<Job> {
     atomic(&u.dir.join(TEXTS_FILE), &texts_bytes)?;
     atomic(&u.dir.join(PLACES_FILE), u.places.as_bytes())?;
     atomic(&u.dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
+    Ok(job)
+}
+
+/// Packs `page_units` (1 to [`MAX_BUNDLE_PAGES`] staged single-page unit
+/// directories) into a single multi-page bundle unit directory `dir`.
+pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
+    ensure!(
+        !page_units.is_empty() && page_units.len() <= MAX_BUNDLE_PAGES,
+        "a bundle requires 1 to {MAX_BUNDLE_PAGES} page units"
+    );
+    std::fs::create_dir_all(dir)?;
+    let mut page_blob = Vec::new();
+    let mut alto_blob = Vec::new();
+    let mut texts_blob = Vec::new();
+    let mut bundle_pages = Vec::with_capacity(page_units.len());
+    let mut first_job: Option<Job> = None;
+    let mut places_bytes: Option<Vec<u8>> = None;
+
+    for u_dir in page_units {
+        let pj: Job = serde_json::from_slice(&read(&u_dir.join(JOB_FILE), MAX_JOB_JSON)?)
+            .with_context(|| format!("reading {}/quality.json", u_dir.display()))?;
+        pj.validate()?;
+        ensure!(
+            pj.pages.is_empty(),
+            "{} is already a multi-page bundle",
+            u_dir.display()
+        );
+        let p_bytes = read(&u_dir.join(PAGE_FILE), MAX_SCAN)?;
+        ensure!(
+            pj.inputs.page.matches(&p_bytes),
+            "{}: page.jpg checksum mismatch",
+            pj.doc_id
+        );
+        let a_bytes = read(&u_dir.join(ALTO_FILE), MAX_ALTO)?;
+        ensure!(
+            pj.inputs.alto.matches(&a_bytes),
+            "{}: loc.xml checksum mismatch",
+            pj.doc_id
+        );
+        let t_bytes = read(&u_dir.join(TEXTS_FILE), MAX_TEXTS)?;
+        ensure!(
+            pj.inputs.texts.matches(&t_bytes),
+            "{}: texts.json checksum mismatch",
+            pj.doc_id
+        );
+        if places_bytes.is_none() {
+            let pl = read(&u_dir.join(PLACES_FILE), MAX_PLACES)?;
+            ensure!(
+                pj.inputs.places.matches(&pl),
+                "{}: places.txt checksum mismatch",
+                pj.doc_id
+            );
+            places_bytes = Some(pl);
+        }
+
+        let page_slice = BundleSlice::of(page_blob.len() as u64, &p_bytes, &pj.inputs.page.source);
+        page_blob.extend_from_slice(&p_bytes);
+
+        let alto_slice = BundleSlice::of(alto_blob.len() as u64, &a_bytes, &pj.inputs.alto.source);
+        alto_blob.extend_from_slice(&a_bytes);
+
+        let texts_slice =
+            BundleSlice::of(texts_blob.len() as u64, &t_bytes, &pj.inputs.texts.source);
+        texts_blob.extend_from_slice(&t_bytes);
+
+        let ours = u_dir.join(OURS_ALTO_FILE);
+        if ours.exists() {
+            atomic(
+                &dir.join(format!("{}.ours.xml", pj.doc_id)),
+                &read(&ours, MAX_ALTO)?,
+            )?;
+        }
+
+        let fw = match &first_job {
+            Some(fj) if fj.function_words == pj.function_words => vec![],
+            None => vec![],
+            Some(_) => pj.function_words.clone(),
+        };
+
+        bundle_pages.push(BundlePage {
+            crop_seed: pj.crop_seed,
+            doc_id: pj.doc_id.clone(),
+            function_words: fw,
+            group: pj.group.clone(),
+            inputs: BundlePageInputs {
+                alto: alto_slice,
+                page: page_slice,
+                texts: texts_slice,
+            },
+            k_crops: pj.k_crops,
+            language: pj.language.clone(),
+            readers: pj.readers.clone(),
+        });
+
+        if first_job.is_none() {
+            first_job = Some(pj);
+        }
+    }
+
+    ensure!(
+        page_blob.len() <= MAX_BUNDLE_SCAN,
+        "bundle page.jpg over size limit"
+    );
+    ensure!(
+        alto_blob.len() <= MAX_BUNDLE_ALTO,
+        "bundle loc.xml over size limit"
+    );
+    ensure!(
+        texts_blob.len() <= MAX_BUNDLE_TEXTS,
+        "bundle texts.json over size limit"
+    );
+    let fj = first_job.expect("non-empty page_units");
+    let places_bytes = places_bytes.expect("non-empty page_units");
+
+    let mut job = Job {
+        v: VERSION,
+        id: String::new(),
+        crop_seed: fj.crop_seed,
+        doc_id: fj.doc_id,
+        engine: fj.engine,
+        function_words: fj.function_words,
+        group: fj.group,
+        inputs: Inputs {
+            alto: Input::of(&alto_blob, "bundle:loc.xml"),
+            page: Input::of(&page_blob, "bundle:page.jpg"),
+            places: Input::of(&places_bytes, &fj.inputs.places.source),
+            texts: Input::of(&texts_blob, "bundle:texts.json"),
+        },
+        k_crops: fj.k_crops,
+        language: fj.language,
+        pages: bundle_pages,
+        readers: fj.readers,
+    };
+    job.id = job.identity()?;
+    job.validate().context("staged bundle job")?;
+    atomic(&dir.join(PAGE_FILE), &page_blob)?;
+    atomic(&dir.join(ALTO_FILE), &alto_blob)?;
+    atomic(&dir.join(TEXTS_FILE), &texts_blob)?;
+    atomic(&dir.join(PLACES_FILE), &places_bytes)?;
+    atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(job)
 }
 
@@ -856,13 +1120,10 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
             }
         }
         let name = ours_reader_name(&cand.row.ocr_engine, &cand.row.ocr_source);
-        let engine = cand
-            .row
-            .ocr_engine
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(";");
-        let source = format!("ocr-local:{engine}");
+        let source = usnm_ocr_contract::quality::normalize_source(&format!(
+            "ocr-local:{}",
+            cand.row.ocr_engine
+        ));
         ours_by_doc.insert(
             doc_id,
             TextReader {
@@ -1065,6 +1326,7 @@ pub(crate) mod tests {
             k_crops: 12,
             gap: MIN_GAP,
             max_pages: 10,
+            bundle_size: 1,
             scan_archive: None,
             batch_cache: None,
         };
@@ -1193,6 +1455,7 @@ pub(crate) mod tests {
             k_crops: 12,
             gap: MIN_GAP,
             max_pages: 10,
+            bundle_size: 1,
             scan_archive: None,
             batch_cache: None,
         };
@@ -1370,6 +1633,107 @@ pub(crate) mod tests {
         assert_eq!(
             std::fs::read(out_dir.join(format!("{doc_id}.ours.xml"))).unwrap(),
             alto_xml
+        );
+    }
+
+    #[tokio::test]
+    async fn stages_bundled_units_and_normalizes_sources_and_regions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fixture = tmp.path().join("fixture");
+        let j = crate::quality::work::tests::unit(&fixture);
+        let doc1 = "sn83045462_1890-05-03_ed-1_seq-1";
+        let doc2 = "sn83045462_1890-05-03_ed-1_seq-2";
+        let scans = tmp.path().join("scans");
+        std::fs::create_dir_all(&scans).unwrap();
+        let texts_dir = tmp.path().join("texts");
+        std::fs::create_dir_all(&texts_dir).unwrap();
+        for doc_id in [doc1, doc2] {
+            std::fs::copy(fixture.join(PAGE_FILE), scans.join(format!("{doc_id}.jpg"))).unwrap();
+            std::fs::copy(fixture.join(ALTO_FILE), scans.join(format!("{doc_id}.xml"))).unwrap();
+            let raw = serde_json::json!({
+                "page": {"width": 1000, "height": 2000},
+                "readers": [
+                    {
+                        "name": "as",
+                        "source": "american stories v1",
+                        "text": "American Stories text",
+                        "regions": [
+                            {"rect": [10, 20, 300, 400], "kind": "article", "legibility": "legible"},
+                            {"rect": [500, 20, 300, 400], "kind": "article", "legibility": "unknown"}
+                        ]
+                    },
+                    {
+                        "name": "ours-tesseract",
+                        "source": "ocr-local:tesseract 5.5.0 --oem 1",
+                        "text": "Our Tesseract text",
+                        "alto": false
+                    }
+                ]
+            });
+            std::fs::write(
+                texts_dir.join(format!("{doc_id}.json")),
+                serde_json::to_vec(&raw).unwrap(),
+            )
+            .unwrap();
+        }
+        let fw = tmp.path().join("fw");
+        write_function_words(&["eng".into()], 100, &fw).unwrap();
+        std::fs::write(tmp.path().join("places.txt"), "Albany\n").unwrap();
+        let sample = tmp.path().join("sample.jsonl");
+        let mut sample_lines = String::new();
+        for doc_id in [doc1, doc2] {
+            let row = SampleRow {
+                batch: "dlc_abc".into(),
+                batch_version: 1,
+                crash_weight: 1.0,
+                damage: "low".into(),
+                damage_rate: 0.01,
+                decade: 1890,
+                doc_id: doc_id.into(),
+                lang: "eng".into(),
+                mode: usnm_ocr_contract::assess::Mode::Ocr,
+                prefix: "dlc".into(),
+                stratum_pages: 10,
+                weight: 10.0,
+                year: 1890,
+            };
+            sample_lines.push_str(&serde_json::to_string(&row).unwrap());
+            sample_lines.push('\n');
+        }
+        std::fs::write(&sample, sample_lines).unwrap();
+        let opts = Options {
+            pages: vec![],
+            sample: Some(sample),
+            group: "v1-wave5".into(),
+            root: tmp.path().join("root"),
+            engine: j.engine.clone(),
+            texts_dir,
+            scans_dir: Some(scans),
+            places: tmp.path().join("places.txt"),
+            function_words_dir: fw,
+            readers: vec!["loc".into(), "as".into(), "ours-tesseract".into()],
+            crop_seed: 522,
+            k_crops: 12,
+            gap: MIN_GAP,
+            max_pages: 10,
+            bundle_size: 2,
+            scan_archive: None,
+            batch_cache: None,
+        };
+        let s = run(&opts).await.unwrap();
+        assert_eq!((s.staged, s.bundles), (2, 1));
+        let bundle_dir = units(&opts.root).join(format!("bundle-00001-{doc1}"));
+        let job: Job =
+            serde_json::from_slice(&std::fs::read(bundle_dir.join(JOB_FILE)).unwrap()).unwrap();
+        job.validate().unwrap();
+        assert_eq!(job.pages.len(), 2);
+        assert_eq!(job.pages[0].doc_id, doc1);
+        assert_eq!(job.pages[1].doc_id, doc2);
+        assert_eq!(job.pages[0].group, "v1-wave5");
+        assert_eq!(job.pages[0].readers[1].source, "american;stories;v1");
+        assert_eq!(
+            job.pages[0].readers[2].source,
+            "ocr-local:tesseract;5.5.0;--oem;1"
         );
     }
 }

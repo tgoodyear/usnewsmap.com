@@ -68,3 +68,12 @@ class DaemonConfig(unittest.TestCase):
         ]
         purge = [cmd for cmd in commands if cmd[0] == "db_purge"]
         self.assertEqual(purge, [["db_purge", "-d", "2", "--min_age_days", "30"]])
+
+    def test_high_throughput_scheduler_dispatch_limits(self):
+        root = ET.parse(Path(__file__).with_name("config.xml.template"))
+        self.assertEqual(root.findtext("./config/min_sendwork_interval"), "2")
+        self.assertEqual(root.findtext("./config/max_wus_in_progress"), "32")
+        self.assertEqual(root.findtext("./config/daily_result_quota"), "50000")
+        self.assertEqual(root.findtext("./config/max_wus_to_send"), "64")
+
+

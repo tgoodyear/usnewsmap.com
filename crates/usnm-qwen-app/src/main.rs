@@ -29,7 +29,7 @@ use std::{
 };
 use usnm_ocr_contract::{
     boinc::sha256,
-    quality::MAX_SCAN,
+    quality::{MAX_BUNDLE_SCAN, MAX_SCAN},
     qwen::{
         Crop, Engine, Job, Model, Outcome, Reading, Readings, ResultManifest, MAX_CROP_TEXT,
         MAX_ERROR, MAX_JOB_JSON, PROMPT, PROMPT_VERSION, VERSION,
@@ -43,6 +43,7 @@ use usnm_ocr_quality::slot::{
 
 pub const JOB_FILE: &str = "qwen.json";
 pub const READINGS_FILE: &str = "readings.json";
+pub const CHECKPOINT_FILE: &str = "qwen_checkpoint.json";
 pub const ENV_LLAMA_IMAGE: &str = "USNM_QWEN_LLAMA_IMAGE";
 pub const ENV_WEIGHTS: &str = "USNM_QWEN_WEIGHTS";
 pub const ENV_MODEL_DIR: &str = "USNM_QWEN_MODEL_DIR";
@@ -394,6 +395,50 @@ fn gpu_used_mib(dev: u32) -> Option<u64> {
 pub struct Loaded {
     pub job: Job,
     pub page: image::DynamicImage,
+    pub bundle_pages: BTreeMap<String, image::DynamicImage>,
+}
+
+/// Per-crop checkpoint state persisted atomically in `qwen_checkpoint.json`
+/// so interrupted single-page or multi-page `usnm_qwen` workunits resume from
+/// the last completed crop without re-running completed crops.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QwenCheckpoint {
+    pub v: u32,
+    pub job_id: String,
+    pub engine: Engine,
+    pub model: String,
+    pub device: String,
+    pub readings: Vec<Reading>,
+}
+
+impl QwenCheckpoint {
+    pub fn load_valid(work: &Path, job: &Job, model: &str, device: &str) -> Option<Self> {
+        let bytes = std::fs::read(work.join(CHECKPOINT_FILE)).ok()?;
+        let cp: Self = serde_json::from_slice(&bytes).ok()?;
+        if cp.v != VERSION
+            || cp.job_id != job.id
+            || cp.engine != job.engine
+            || cp.model != model
+            || cp.device != device
+            || cp.readings.len() > job.crops.len()
+        {
+            return None;
+        }
+        for (got, want) in cp.readings.iter().zip(&job.crops) {
+            if got.id != want.id {
+                return None;
+            }
+        }
+        Some(cp)
+    }
+
+    pub fn save(&self, work: &Path) -> anyhow::Result<()> {
+        write_atomic(
+            &work.join(CHECKPOINT_FILE),
+            &serde_json::to_vec_pretty(self)?,
+        )
+    }
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -607,23 +652,62 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
     let job: Job = serde_json::from_slice(&read_bounded(&job_path, MAX_JOB_JSON)?)?;
     job.validate()?;
     check_engine(work, &job)?;
-    let page_bytes = read_bounded(&resolve_slot_file(work, PAGE_FILE), MAX_SCAN)?;
+    let max_scan = if job.pages.is_empty() {
+        MAX_SCAN
+    } else {
+        MAX_BUNDLE_SCAN
+    };
+    let page_bytes = read_bounded(&resolve_slot_file(work, PAGE_FILE), max_scan)?;
     ensure!(
         job.input.matches(&page_bytes),
         "input page checksum mismatch"
     );
-    let page = image::load_from_memory(&page_bytes).context("decoding page.jpg")?;
-    let (w, h) = page.dimensions();
-    for c in &job.crops {
-        let [_, _, x1, y1] = c.rect;
-        ensure!(
-            x1 <= w && y1 <= h,
-            "crop {} {:?} is outside a {w}x{h} page",
-            c.id,
-            c.rect
-        );
+    if job.pages.is_empty() {
+        let page = image::load_from_memory(&page_bytes).context("decoding page.jpg")?;
+        let (w, h) = page.dimensions();
+        for c in &job.crops {
+            let [_, _, x1, y1] = c.rect;
+            ensure!(
+                x1 <= w && y1 <= h,
+                "crop {} {:?} is outside a {w}x{h} page",
+                c.id,
+                c.rect
+            );
+        }
+        Ok(Loaded {
+            job,
+            page,
+            bundle_pages: BTreeMap::new(),
+        })
+    } else {
+        let mut bundle_pages = BTreeMap::new();
+        let mut first_page: Option<image::DynamicImage> = None;
+        for bp in &job.pages {
+            let slice = bp.input.extract(&page_bytes, "page")?;
+            let img = image::load_from_memory(slice)
+                .with_context(|| format!("decoding page.jpg for {}", bp.doc_id))?;
+            let (w, h) = img.dimensions();
+            for c in &bp.crops {
+                let [_, _, x1, y1] = c.rect;
+                ensure!(
+                    x1 <= w && y1 <= h,
+                    "crop {}:{} {:?} is outside a {w}x{h} page",
+                    bp.doc_id,
+                    c.id,
+                    c.rect
+                );
+            }
+            if first_page.is_none() {
+                first_page = Some(img.clone());
+            }
+            bundle_pages.insert(bp.doc_id.clone(), img);
+        }
+        Ok(Loaded {
+            job,
+            page: first_page.expect("non-empty bundle pages"),
+            bundle_pages,
+        })
     }
-    Ok(Loaded { job, page })
 }
 
 pub fn crop_png(page: &image::DynamicImage, c: &Crop) -> anyhow::Result<Vec<u8>> {
@@ -634,6 +718,21 @@ pub fn crop_png(page: &image::DynamicImage, c: &Crop) -> anyhow::Result<Vec<u8>>
     sub.write_to(&mut out, image::ImageFormat::Png)
         .with_context(|| format!("encoding crop {}", c.id))?;
     Ok(out.into_inner())
+}
+
+pub fn crop_png_for_loaded(l: &Loaded, c: &Crop) -> anyhow::Result<Vec<u8>> {
+    if l.job.pages.is_empty() {
+        crop_png(&l.page, c)
+    } else {
+        let (doc, _) =
+            c.id.split_once(':')
+                .context("bundle crop id missing doc_id prefix")?;
+        let page = l
+            .bundle_pages
+            .get(doc)
+            .with_context(|| format!("bundle page {doc} not found"))?;
+        crop_png(page, c)
+    }
 }
 
 pub fn clean_reading(s: &str) -> String {
@@ -1322,11 +1421,36 @@ fn run_crops(
     };
 
     let started = Instant::now();
-    let mut out_readings = Vec::with_capacity(l.job.crops.len());
+    let mut cp = match QwenCheckpoint::load_valid(work, &l.job, &model.name, &gpu.device_label) {
+        Some(existing) => {
+            if !existing.readings.is_empty() {
+                diag.section(
+                    "checkpoint",
+                    &format!(
+                        "resumed from checkpoint: {} of {} crops already complete",
+                        existing.readings.len(),
+                        l.job.crops.len()
+                    ),
+                    256,
+                );
+                let frac = existing.readings.len() as f64 / (l.job.crops.len().max(1)) as f64;
+                let _ = write_atomic(&work.join(FRACTION_FILE), format!("{frac:.4}\n").as_bytes());
+            }
+            existing
+        }
+        None => QwenCheckpoint {
+            v: VERSION,
+            job_id: l.job.id.clone(),
+            engine: l.job.engine.clone(),
+            model: model.name.clone(),
+            device: gpu.device_label.clone(),
+            readings: Vec::with_capacity(l.job.crops.len()),
+        },
+    };
     let mut outcome = Outcome::Ok;
     let mut gpu_peak_mib: Option<u64> = None;
 
-    for (idx, crop) in l.job.crops.iter().enumerate() {
+    for (idx, crop) in l.job.crops.iter().enumerate().skip(cp.readings.len()) {
         if control.wait_if_suspended_or_should_exit().is_break() {
             outcome = Outcome::Failed;
             break;
@@ -1346,7 +1470,7 @@ fn run_crops(
             break;
         }
         let remaining = deadline.saturating_sub(elapsed);
-        let png = match crop_png(&l.page, crop) {
+        let png = match crop_png_for_loaded(l, crop) {
             Ok(b) => b,
             Err(e) => {
                 diag.section("crop error", &format!("{}: {e:#}", crop.id), 1024);
@@ -1357,12 +1481,13 @@ fn run_crops(
         let t_crop = Instant::now();
         match chat_completion(port, &png, l.job.max_tokens(crop), remaining) {
             Ok((text, tokens)) => {
-                out_readings.push(Reading {
+                cp.readings.push(Reading {
                     id: crop.id.clone(),
                     ms: ms(t_crop),
                     text,
                     tokens,
                 });
+                let _ = cp.save(work);
                 if let Some(dev) = gpu.cuda_device {
                     if let Some(used) = gpu_used_mib(dev) {
                         let delta = used.saturating_sub(gpu.used_before_mb.unwrap_or(0));
@@ -1388,6 +1513,11 @@ fn run_crops(
             }
         }
     }
+
+    if outcome == Outcome::Ok && cp.readings.len() == l.job.crops.len() {
+        let _ = std::fs::remove_file(work.join(CHECKPOINT_FILE));
+    }
+    let out_readings = cp.readings;
 
     let engine_ms = ms(started);
     if let Some(ref srv) = srv_guard {
@@ -1517,6 +1647,7 @@ mod tests {
             input: Input::of(&page, "local:page.jpg"),
             language: "srp".into(),
             max_tokens_per_1000px2: 4,
+            pages: vec![],
             prompt_version: PROMPT_VERSION,
         };
         job.id = job.identity().unwrap();
@@ -1783,6 +1914,144 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chosen_8b.name, "qwen3-vl-8b-q4km");
+    }
+
+    #[test]
+    fn qwen_slot_checkpoints_per_crop_and_resumes_multipage_bundle() {
+        use usnm_ocr_contract::{quality::BundleSlice, qwen::BundlePage};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path().join("slot");
+        std::fs::create_dir_all(&slot).unwrap();
+
+        let p1 = synthetic_jpeg(200, 200);
+        let p2 = synthetic_jpeg(220, 220);
+        let mut page_blob = Vec::new();
+        let slice1 = BundleSlice::of(0, &p1, "s3://b/p1.jpg");
+        page_blob.extend_from_slice(&p1);
+        let slice2 = BundleSlice::of(page_blob.len() as u64, &p2, "s3://b/p2.jpg");
+        page_blob.extend_from_slice(&p2);
+
+        let weights_lock = test_weights_lock_bytes();
+        std::fs::write(slot.join("weights.lock"), &weights_lock).unwrap();
+        std::fs::write(slot.join("Qwen3-VL-2B-Instruct-Q8_0.gguf"), FAKE_GGUF).unwrap();
+        std::fs::write(
+            slot.join("mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf"),
+            FAKE_MMPROJ,
+        )
+        .unwrap();
+
+        let models = vec![Model {
+            file: "Qwen3-VL-2B-Instruct-Q8_0.gguf".into(),
+            min_gpu_mb: 0,
+            mmproj: "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf".into(),
+            name: "qwen3-vl-2b-q8".into(),
+        }];
+        let c1 = Crop {
+            rect: [10, 10, 100, 60],
+            id: "c01".into(),
+            loc_text: "first page crop".into(),
+            stratum: "wc-low/top".into(),
+        };
+        let c2 = Crop {
+            rect: [10, 80, 100, 140],
+            id: "c01".into(),
+            loc_text: "second page crop".into(),
+            stratum: "wc-high/bottom".into(),
+        };
+        let mut job = Job {
+            v: VERSION,
+            id: String::new(),
+            cpu_timeout_secs: 600,
+            crops: vec![
+                Crop {
+                    id: "page_one:c01".into(),
+                    ..c1.clone()
+                },
+                Crop {
+                    id: "page_two:c01".into(),
+                    ..c2.clone()
+                },
+            ],
+            doc_id: "page_one".into(),
+            engine: Engine {
+                image: format!("sha256:{}", "a".repeat(64)),
+                llama: format!("sha256:{}", sha256(EMBEDDED_LLAMA_LOCK)),
+                models,
+                weights: format!("sha256:{}", sha256(&weights_lock)),
+            },
+            gpu_timeout_secs: 300,
+            group: "pilot".into(),
+            input: Input::of(&page_blob, "bundle:page.jpg"),
+            language: "eng".into(),
+            max_tokens_per_1000px2: 4,
+            pages: vec![
+                BundlePage {
+                    crops: vec![c1],
+                    doc_id: "page_one".into(),
+                    group: "pilot".into(),
+                    input: slice1,
+                    language: "eng".into(),
+                },
+                BundlePage {
+                    crops: vec![c2],
+                    doc_id: "page_two".into(),
+                    group: "pilot".into(),
+                    input: slice2,
+                    language: "eng".into(),
+                },
+            ],
+            prompt_version: PROMPT_VERSION,
+        };
+        job.id = job.identity().unwrap();
+        std::fs::write(slot.join(PAGE_FILE), &page_blob).unwrap();
+        std::fs::write(
+            slot.join(JOB_FILE),
+            serde_json::to_vec_pretty(&job).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            slot.join("init_data.xml"),
+            "<app_init_data><plan_class>mt</plan_class></app_init_data>",
+        )
+        .unwrap();
+
+        // Pre-populate a checkpoint with crop 1 of 2 already complete.
+        let cp = QwenCheckpoint {
+            v: VERSION,
+            job_id: job.id.clone(),
+            engine: job.engine.clone(),
+            model: "qwen3-vl-2b-q8".into(),
+            device: "cpu".into(),
+            readings: vec![Reading {
+                id: "page_one:c01".into(),
+                ms: 42,
+                text: "cached first page crop".into(),
+                tokens: 4,
+            }],
+        };
+        cp.save(&slot).unwrap();
+        assert!(slot.join(CHECKPOINT_FILE).is_file());
+
+        // Mock server only needs to answer 1 request (the remaining crop 2 of 2).
+        let port = spawn_mock_llama_server(vec!["fresh second page crop"]);
+        run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+
+        assert!(!slot.join(CHECKPOINT_FILE).exists());
+        let result_bytes = std::fs::read(slot.join(RESULT_FILE)).unwrap();
+        let readings_bytes = std::fs::read(slot.join(READINGS_FILE)).unwrap();
+        let diag_bytes = std::fs::read(slot.join(DIAG_FILE)).unwrap();
+        let result: ResultManifest = serde_json::from_slice(&result_bytes).unwrap();
+        assert_eq!(result.outcome, Outcome::Ok);
+        assert_eq!(result.crops, 2);
+        assert_eq!(result.read, 2);
+        let readings = result.check(&readings_bytes, &diag_bytes).unwrap();
+        assert_eq!(readings.readings[0].id, "page_one:c01");
+        assert_eq!(readings.readings[0].text, "cached first page crop");
+        assert_eq!(readings.readings[1].id, "page_two:c01");
+        assert_eq!(readings.readings[1].text, "fresh second page crop");
+        let diag_str = String::from_utf8_lossy(&diag_bytes);
+        assert!(diag_str.contains("resumed from checkpoint: 1 of 2 crops already complete"));
     }
 
     #[test]

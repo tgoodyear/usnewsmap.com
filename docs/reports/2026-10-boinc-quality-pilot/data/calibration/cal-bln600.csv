@@ -1,0 +1,4 @@
+reader,hat,crops,true_cer,est_cer,bias,mae,pearson,spearman
+doctr,without_vlm,120,0.124352,0.121112,-0.003240,0.016066,0.814623,0.885186
+tesseract-psm4,without_vlm,120,0.063124,0.017386,-0.045738,0.048124,0.615500,0.674097
+tesseract-psm6,without_vlm,120,0.082665,0.034034,-0.048631,0.049681,0.901096,0.696343

@@ -46,7 +46,7 @@ use std::{
 };
 use usnm_ocr_contract::{
     boinc::sha256,
-    quality::MAX_SCAN,
+    quality::{MAX_BUNDLE_SCAN, MAX_SCAN},
     qwen::{
         Crop, Engine, Job, Model, Outcome, Reading, Readings, ResultManifest, MAX_CROP_TEXT,
         MAX_ERROR, MAX_JOB_JSON, PROMPT, PROMPT_VERSION, VERSION,
@@ -58,7 +58,12 @@ use usnm_ocr_contract::{
 pub fn prepare(work: &Path) -> anyhow::Result<(Job, Vec<u8>)> {
     let job: Job = serde_json::from_slice(&read(&work.join(JOB_FILE), MAX_JOB_JSON)?)?;
     job.validate()?;
-    let page = read(&work.join(PAGE_FILE), MAX_SCAN)?;
+    let max_scan = if job.pages.is_empty() {
+        MAX_SCAN
+    } else {
+        MAX_BUNDLE_SCAN
+    };
+    let page = read(&work.join(PAGE_FILE), max_scan)?;
     ensure!(job.input.matches(&page), "input page checksum mismatch");
     for (var, want) in [
         (ENV_LLAMA_IMAGE, &job.engine.llama),
@@ -586,18 +591,109 @@ fn gpu_free_mb(gpu: Option<u32>) -> Option<u64> {
         .flatten()
 }
 
-/// Reads every crop within the deadline; sets the outcome.
-fn read_crops(
+pub const CHECKPOINT_FILE: &str = "qwen_checkpoint.json";
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QwenCheckpoint {
+    pub v: u32,
+    pub job_id: String,
+    pub engine: Engine,
+    pub model: String,
+    pub device: String,
+    pub readings: Vec<Reading>,
+}
+
+impl QwenCheckpoint {
+    pub fn load_valid(work: &Path, job: &Job, model: &str, device: &str) -> Option<Self> {
+        let bytes = std::fs::read(work.join(CHECKPOINT_FILE)).ok()?;
+        let cp: Self = serde_json::from_slice(&bytes).ok()?;
+        if cp.v != VERSION
+            || cp.job_id != job.id
+            || cp.engine != job.engine
+            || cp.model != model
+            || cp.device != device
+            || cp.readings.len() > job.crops.len()
+        {
+            return None;
+        }
+        for (got, want) in cp.readings.iter().zip(&job.crops) {
+            if got.id != want.id {
+                return None;
+            }
+        }
+        Some(cp)
+    }
+
+    pub fn save(&self, work: &Path) -> anyhow::Result<()> {
+        atomic(
+            &work.join(CHECKPOINT_FILE),
+            &serde_json::to_vec_pretty(self)?,
+        )
+    }
+}
+
+fn crop_png_for_job(
     job: &Job,
-    page: &image::DynamicImage,
+    single_page: Option<&image::DynamicImage>,
+    bundle_pages: &BTreeMap<String, image::DynamicImage>,
+    crop: &Crop,
+) -> anyhow::Result<Vec<u8>> {
+    if job.pages.is_empty() {
+        let page = single_page.context("missing decoded page")?;
+        crop_png(page, crop)
+    } else {
+        let (doc, _) = crop
+            .id
+            .split_once(':')
+            .context("bundle crop id missing doc_id prefix")?;
+        let page = bundle_pages
+            .get(doc)
+            .with_context(|| format!("bundle page {doc} not found"))?;
+        crop_png(page, crop)
+    }
+}
+
+/// Reads every crop within the deadline; sets the outcome and checkpoints per crop.
+#[allow(clippy::too_many_arguments)]
+fn read_crops(
+    work: &Path,
+    job: &Job,
+    single_page: Option<&image::DynamicImage>,
+    bundle_pages: &BTreeMap<String, image::DynamicImage>,
     server: &Server,
     started: Instant,
     deadline: Duration,
     diag: &mut Diag,
     done: &mut Done,
 ) {
+    let mut cp = match QwenCheckpoint::load_valid(work, job, &server.model, &server.device) {
+        Some(existing) => {
+            if !existing.readings.is_empty() {
+                diag.section(
+                    "checkpoint",
+                    &format!(
+                        "resumed from checkpoint: {} of {} crops already complete",
+                        existing.readings.len(),
+                        job.crops.len()
+                    ),
+                    256,
+                );
+            }
+            existing
+        }
+        None => QwenCheckpoint {
+            v: VERSION,
+            job_id: job.id.clone(),
+            engine: job.engine.clone(),
+            model: server.model.clone(),
+            device: server.device.clone(),
+            readings: Vec::with_capacity(job.crops.len()),
+        },
+    };
+    done.readings = cp.readings.clone();
     let first = Instant::now();
-    for crop in &job.crops {
+    for (idx, crop) in job.crops.iter().enumerate().skip(done.readings.len()) {
         let remaining = deadline.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             done.outcome = Outcome::Timeout;
@@ -608,7 +704,7 @@ fn read_crops(
             );
             break;
         }
-        let png = match crop_png(page, crop) {
+        let png = match crop_png_for_job(job, single_page, bundle_pages, crop) {
             Ok(p) => p,
             Err(e) => {
                 diag.section(&format!("crop {}", crop.id), &format!("{e:#}"), 512);
@@ -616,7 +712,16 @@ fn read_crops(
             }
         };
         match transcribe(server, crop, &png, job.max_tokens(crop), remaining) {
-            Ok(r) => done.readings.push(r),
+            Ok(r) => {
+                done.readings.push(r.clone());
+                cp.readings.push(r);
+                let _ = cp.save(work);
+                let frac = (idx + 1) as f64 / (job.crops.len().max(1)) as f64;
+                let _ = atomic(
+                    &work.join("fraction_done"),
+                    format!("{frac:.4}\n").as_bytes(),
+                );
+            }
             Err(e) => {
                 if e.root_cause().is::<TimedOut>() {
                     done.outcome = Outcome::Timeout;
@@ -629,10 +734,18 @@ fn read_crops(
     done.engine_ms = u64::try_from(first.elapsed().as_millis()).unwrap_or(u64::MAX);
     if done.readings.len() == job.crops.len() {
         done.outcome = Outcome::Ok;
+        let _ = std::fs::remove_file(work.join(CHECKPOINT_FILE));
     }
 }
 
-fn read_unit(job: &Job, page: &[u8], gpu: Option<u32>, threads: u32, diag: &mut Diag) -> Done {
+fn read_unit(
+    work: &Path,
+    job: &Job,
+    page: &[u8],
+    gpu: Option<u32>,
+    threads: u32,
+    diag: &mut Diag,
+) -> Done {
     let mut done = Done::none(Outcome::Failed);
     let gpu_free = gpu_free_mb(gpu);
     let payload = std::env::var(ENV_MODEL).unwrap_or_default();
@@ -662,13 +775,36 @@ fn read_unit(job: &Job, page: &[u8], gpu: Option<u32>, threads: u32, diag: &mut 
         .into(),
     );
     let started = Instant::now();
-    let page = match image::load_from_memory(page) {
-        Ok(p) => p,
-        Err(e) => {
-            diag.section("page", &format!("decoding page.jpg: {e}"), 512);
-            return done;
+    let mut single_page = None;
+    let mut bundle_pages = BTreeMap::new();
+    if job.pages.is_empty() {
+        match image::load_from_memory(page) {
+            Ok(p) => single_page = Some(p),
+            Err(e) => {
+                diag.section("page", &format!("decoding page.jpg: {e}"), 512);
+                return done;
+            }
         }
-    };
+    } else {
+        for bp in &job.pages {
+            let slice = match bp.input.extract(page, "page") {
+                Ok(s) => s,
+                Err(e) => {
+                    diag.section("page", &format!("{}: {e:#}", bp.doc_id), 512);
+                    return done;
+                }
+            };
+            match image::load_from_memory(slice) {
+                Ok(p) => {
+                    bundle_pages.insert(bp.doc_id.clone(), p);
+                }
+                Err(e) => {
+                    diag.section("page", &format!("decoding {}: {e}", bp.doc_id), 512);
+                    return done;
+                }
+            }
+        }
+    }
     let server = match serve(model, gpu, threads, deadline) {
         Ok(s) => s,
         Err(e) => {
@@ -680,7 +816,17 @@ fn read_unit(job: &Job, page: &[u8], gpu: Option<u32>, threads: u32, diag: &mut 
     done.device = server.device.clone();
     done.load_ms = server.load_ms;
     done.diag = server.diag.clone();
-    read_crops(job, &page, &server, started, deadline, diag, &mut done);
+    read_crops(
+        work,
+        job,
+        single_page.as_ref(),
+        &bundle_pages,
+        &server,
+        started,
+        deadline,
+        diag,
+        &mut done,
+    );
     let stats = server.stats();
     let log_text = server.log_text();
     let gpu_before = server.gpu_mem_before_mib;
@@ -744,7 +890,7 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
             let done = if gpu_version && gpu.is_none() {
                 Done::none(Outcome::NoGpu)
             } else {
-                read_unit(&job, &page, gpu, threads, &mut diag)
+                read_unit(work, &job, &page, gpu, threads, &mut diag)
             };
             (job.id, job.engine, job.crops.len() as u32, None, done)
         }

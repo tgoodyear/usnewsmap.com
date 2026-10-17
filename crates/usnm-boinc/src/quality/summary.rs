@@ -43,26 +43,53 @@ pub fn run(root: &Path, seen: &Path, pairs: &Path) -> anyhow::Result<String> {
             .into_owned();
         let (doc, group) = pages.get(&r.job_id).cloned().unwrap_or_default();
         let o = |s: &Option<String>| s.clone().unwrap_or_default();
-        let head = format!(
-            "| {name} | {doc} | {group} | {} | {} | {:?} | {:.1} |",
-            o(&r.host.boinc_client),
-            o(&r.host.plan_class),
-            r.outcome,
-            r.timings.total_ms as f64 / 1000.0
-        );
-        if r.readers.is_empty() {
-            let _ = writeln!(out, "{head} | | | | | {} |", o(&r.unit_error));
-        }
-        for x in &r.readers {
-            let _ = writeln!(
-                out,
-                "{head} {} | {} | {} | {} | {} | |",
-                x.name,
-                opt(x.est_cer),
-                opt(x.completeness),
-                opt(x.findable_content),
-                opt(x.findable_places),
+        if r.pages.is_empty() {
+            let head = format!(
+                "| {name} | {doc} | {group} | {} | {} | {:?} | {:.1} |",
+                o(&r.host.boinc_client),
+                o(&r.host.plan_class),
+                r.outcome,
+                r.timings.total_ms as f64 / 1000.0
             );
+            if r.readers.is_empty() {
+                let _ = writeln!(out, "{head} | | | | | {} |", o(&r.unit_error));
+            }
+            for x in &r.readers {
+                let _ = writeln!(
+                    out,
+                    "{head} {} | {} | {} | {} | {} | |",
+                    x.name,
+                    opt(x.est_cer),
+                    opt(x.completeness),
+                    opt(x.findable_content),
+                    opt(x.findable_places),
+                );
+            }
+        } else {
+            for pr in &r.pages {
+                let head = format!(
+                    "| {name} | {} | {group} | {} | {} | {:?} | {:.1} |",
+                    pr.doc_id,
+                    o(&r.host.boinc_client),
+                    o(&r.host.plan_class),
+                    pr.outcome,
+                    pr.timings.total_ms as f64 / 1000.0
+                );
+                if pr.readers.is_empty() {
+                    let _ = writeln!(out, "{head} | | | | | {} |", o(&pr.unit_error));
+                }
+                for x in &pr.readers {
+                    let _ = writeln!(
+                        out,
+                        "{head} {} | {} | {} | {} | {} | |",
+                        x.name,
+                        opt(x.est_cer),
+                        opt(x.completeness),
+                        opt(x.findable_content),
+                        opt(x.findable_places),
+                    );
+                }
+            }
         }
     }
     out.push_str("\n| Job | Page | A | B | Agree | Reason |\n|---|---|---|---|---|---|\n");

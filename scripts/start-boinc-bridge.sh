@@ -128,6 +128,10 @@ if $WHAT_IF; then
   echo "then start one execution of it with no override"
   exit 0
 fi
+if [ "$TARGET" = bridge ]; then
+  boinc_acquire_lock "start-boinc-bridge.sh --env $ENV_NAME --target $TARGET --step $STEP"
+  trap 'boinc_release_lock' EXIT
+fi
 # running_executions: the job's executions that haven't ended.
 running_executions() {
   baz containerapp job execution list --name "$job" --resource-group "$JOB_RG" \

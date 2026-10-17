@@ -1,0 +1,3022 @@
+cer_vs_vlm,crop_id,dice_vs_vlm,doc_id,hat_est_cer,hat_readers,reader,region_kind,region_legibility,region_overlap,stratum,text,vlm_device,vlm_model,vlm_text,x0,x1,y0,y1
+0.396947,c01,0.494118,sn82014761_1866-08-04_ed-1_seq-4,0.229611,3,loc,,,False,wc-low/top,"No. 284 West Pratt Str., 3 Toüten lnterhaib —
+Howard Str.,in der Nahe der Turxerhalle, über—
+nunen ur sowie
+freun —
+das Vene an Bar und Küche ir d
+ist eht
+; Ma ua-
+TI ——
+Charles F. Siebert,
+almporleur
+ʒ ron n n6—",cpu,qwen3-vl-2b-q8,"No. 284 West Pratt Str., 3 Thüren unterhalb Howard Str., in der Nähe der Turnerhalle, übernommen habe.
+Für freundliche Zimmer und gute Betten, sowie das Beste an Bar und Küche ist fets gesorgt.
+28 J. Jung.
+Charles F. Siebert,
+Importeur
+von
+Weinen Brandies Gin v.",5322,6344,2490,3069
+0.622137,c01,0.243243,sn82014761_1866-08-04_ed-1_seq-4,0.572587,3,ours-tesseract,,,False,wc-low/top,"Hadard an. Laare
+Euumnen bubk.
+1 an Burt Zimmer und gute — ſowie
+35 85 n er mid Ruche iſt ſirrs 3e ———
+—
+Charles Tebent,
+F.
+Importeur
+von
+Brandies, Giu 2—",cpu,qwen3-vl-2b-q8,"No. 284 West Pratt Str., 3 Thüren unterhalb Howard Str., in der Nähe der Turnerhalle, übernommen habe.
+Für freundliche Zimmer und gute Betten, sowie das Beste an Bar und Küche ist fets gesorgt.
+28 J. Jung.
+Charles F. Siebert,
+Importeur
+von
+Weinen Brandies Gin v.",5322,6344,2490,3069
+0.0,c01,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.211067,3,vlm,,,False,wc-low/top,"No. 284 West Pratt Str., 3 Thüren unterhalb Howard Str., in der Nähe der Turnerhalle, übernommen habe.
+Für freundliche Zimmer und gute Betten, sowie das Beste an Bar und Küche ist fets gesorgt.
+28 J. Jung.
+Charles F. Siebert,
+Importeur
+von
+Weinen Brandies Gin v.",cpu,qwen3-vl-2b-q8,"No. 284 West Pratt Str., 3 Thüren unterhalb Howard Str., in der Nähe der Turnerhalle, übernommen habe.
+Für freundliche Zimmer und gute Betten, sowie das Beste an Bar und Küche ist fets gesorgt.
+28 J. Jung.
+Charles F. Siebert,
+Importeur
+von
+Weinen Brandies Gin v.",5322,6344,2490,3069
+0.48913,c02,0.166667,sn82014761_1866-08-04_ed-1_seq-4,0.235602,3,loc,,,False,wc-low/bottom,"——
+— d e izeigen.
+Lagerbier und Wein-Salon
+0 41— yen 1
+Sharle - Ett el,
+R Vara d Straher Rew doctin",cpu,qwen3-vl-2b-q8,"New York Anzeigen.
+Lagerbier und Wein-Sal
+von
+Charles Prestel,
+No. 7 Bayard Straße, New York",4364,5199,8640,9218
+1.0,c02,0.0,sn82014761_1866-08-04_ed-1_seq-4,1.764398,3,ours-tesseract,,,False,wc-low/bottom,,cpu,qwen3-vl-2b-q8,"New York Anzeigen.
+Lagerbier und Wein-Sal
+von
+Charles Prestel,
+No. 7 Bayard Straße, New York",4364,5199,8640,9218
+0.0,c02,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.235602,3,vlm,,,False,wc-low/bottom,"New York Anzeigen.
+Lagerbier und Wein-Sal
+von
+Charles Prestel,
+No. 7 Bayard Straße, New York",cpu,qwen3-vl-2b-q8,"New York Anzeigen.
+Lagerbier und Wein-Sal
+von
+Charles Prestel,
+No. 7 Bayard Straße, New York",4364,5199,8640,9218
+0.248292,c03,0.590361,sn82014761_1866-08-04_ed-1_seq-4,0.148024,3,loc,,,False,wc-mid/top,"“ lagr Gehause·nhren
+50 Diamant-Ringe 100 bis 8200 pr. Stück. .
+25 Nadeln, 8100 pr. Stück .
+40 Nähmaschinen ʒIOO pr. Stück.
+20 2t Sld
+209 Silberplatirle Thee-Service 975 pr. Slück
+o Silber· Aufsate 25 pr. t
+5,000 Wanduhren, Albums, Schmucdsachen u.s. w. 85 bis 10 pr. Stück
+10,000 Eh- und Theelbffel . s w- 92 bis ʒ5 pr. Stück..
+HGoldfedern, Hemdenknöpfe u. s. w.Bl bis $3 pr. Stück.
+/453 Bücher, Galanlerie Waaren, Stahlstiche u. s. w. 1 bis ʒlO pr.",cpu,qwen3-vl-2b-q8,"50 Diamant-Ringe $100 bis $200 pr. Stüd. 25 "" Nadeln, $100 pr. Stüd. 40 Nähmaschinen $100 pr. Stüd. 20 "" $75 pr. Stüd. 20 Silberplatirte Thee-Service $75 pr. Stüd. 50 Silber-Aussäge $25 pr. Stüd. 000 Wanduhren, Albums, Schmucksachen u. f. w. $5 bis $10 pr. Stüd. 000 Gf- und Theelöffel u. f. w. $2 bis $5 pr. Stüd. 000 Goldfedern, Hemdenknöpfe u. f. w. $1 bis $3 pr. Stüd. 453 Bücher, Galanterie Waaren, Stahlstiche u. f. w. $1 bis $10 pr.",2665,4295,2178,2757
+0.471526,c03,0.407643,sn82014761_1866-08-04_ed-1_seq-4,0.434255,3,ours-tesseract,,,False,wc-mid/top,"3— amant⸗ Ie 2100 bis 5200 hr. Sü
+nge i r. Stüc 2
+1091 atie100 . 2 99——— 2
+40 ma 100 Ei G Stükk...
+20•— ems, 1 pr. Sa FFPF
+7⁵ e
+Silb erplatirte 575 pr. Sück.
+30 2225
+0003 u. f. w. 65 bis 10 pr.
+10,000 Eß. und Theclöffel f . ac
+Goldfedern, Hemdenknöpfe u. ſ. w. 81 bis 3 pr. Stü
+Bücher, Galanterie Waaren, Stahlſtiche u. ſ. w. 81 bis 810 pr.",cpu,qwen3-vl-2b-q8,"50 Diamant-Ringe $100 bis $200 pr. Stüd. 25 "" Nadeln, $100 pr. Stüd. 40 Nähmaschinen $100 pr. Stüd. 20 "" $75 pr. Stüd. 20 Silberplatirte Thee-Service $75 pr. Stüd. 50 Silber-Aussäge $25 pr. Stüd. 000 Wanduhren, Albums, Schmucksachen u. f. w. $5 bis $10 pr. Stüd. 000 Gf- und Theelöffel u. f. w. $2 bis $5 pr. Stüd. 000 Goldfedern, Hemdenknöpfe u. f. w. $1 bis $3 pr. Stüd. 453 Bücher, Galanterie Waaren, Stahlstiche u. f. w. $1 bis $10 pr.",2665,4295,2178,2757
+0.0,c03,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.097196,3,vlm,,,False,wc-mid/top,"50 Diamant-Ringe $100 bis $200 pr. Stüd. 25 "" Nadeln, $100 pr. Stüd. 40 Nähmaschinen $100 pr. Stüd. 20 "" $75 pr. Stüd. 20 Silberplatirte Thee-Service $75 pr. Stüd. 50 Silber-Aussäge $25 pr. Stüd. 000 Wanduhren, Albums, Schmucksachen u. f. w. $5 bis $10 pr. Stüd. 000 Gf- und Theelöffel u. f. w. $2 bis $5 pr. Stüd. 000 Goldfedern, Hemdenknöpfe u. f. w. $1 bis $3 pr. Stüd. 453 Bücher, Galanterie Waaren, Stahlstiche u. f. w. $1 bis $10 pr.",cpu,qwen3-vl-2b-q8,"50 Diamant-Ringe $100 bis $200 pr. Stüd. 25 "" Nadeln, $100 pr. Stüd. 40 Nähmaschinen $100 pr. Stüd. 20 "" $75 pr. Stüd. 20 Silberplatirte Thee-Service $75 pr. Stüd. 50 Silber-Aussäge $25 pr. Stüd. 000 Wanduhren, Albums, Schmucksachen u. f. w. $5 bis $10 pr. Stüd. 000 Gf- und Theelöffel u. f. w. $2 bis $5 pr. Stüd. 000 Goldfedern, Hemdenknöpfe u. f. w. $1 bis $3 pr. Stüd. 453 Bücher, Galanterie Waaren, Stahlstiche u. f. w. $1 bis $10 pr.",2665,4295,2178,2757
+0.423664,c04,0.382353,sn82014761_1866-08-04_ed-1_seq-4,0.230905,3,loc,,,False,wc-mid/bottom,"Klagen
+wn de ger xterenen Ceurto dee Dier drunbi-t
+und w ndurch Pauktlichkeit Mit und ellig-
+tiù Satelo
+i inka sstrüng von Schulden und Forderungen
+im Allgemeinen, werden besonders betrieben· 44
+wnẽ nortn American Hoya.
+Nete Linie vr Seltenrad - Dampfern erster
+Klasse zwischen —
+, Nereit und Bremen, via
+Dir zurrtee 2 Eu
+ghea ineeri t und ru die Ver. Staaten
+lbfahrt findet Don",cpu,qwen3-vl-2b-q8,"und Gemeinderats-Notizen, verbinden die Städte in den verschiedenen Courts des Distr. Columbia, und wird Seden durch Pünftlichkeit und Schnelligkeit zufrieden stellen.
+A Ginkassierung von Schulden und Forderungen im Allgemeinen, werden besonders betrieben. 44
+The North American Lloyd.
+Neue Linie von Seitenrad - Dampfern erster Klasse zwischen
+New York und Bremen, via Cöwes.
+Diese Dampfer sind für Passagiere aller Klassen bequem eingerichtet und befördern die Ver. Staaten
+Nicht: Die Abfahrt derjenigen findet nur an D...",364,1363,6643,7221
+0.44084,c04,0.351145,sn82014761_1866-08-04_ed-1_seq-4,0.25435,3,ours-tesseract,,,False,wc-mid/bottom,"alle Klagen
+ver ſchiedenen Courts des Diſtr. Columbia⸗
+umn 5 Pauktlichkeit
+550 2— 9 und Schnellig⸗
+Eintafrung von Schulden und Forderungen
+* Allgemeinen, werden beſonders betrieben. 44
+εEMorth American L1IOyd.
+Neue Linie voll Seitenrab⸗ erſter
+al ＋0 en
+Hork und Bremen, via G owes.
+Oit w für Paſſagiere aller Klaſſen
+amn dibeſördern die Ver. Staaten
+. ie 81916 derſelben",cpu,qwen3-vl-2b-q8,"und Gemeinderats-Notizen, verbinden die Städte in den verschiedenen Courts des Distr. Columbia, und wird Seden durch Pünftlichkeit und Schnelligkeit zufrieden stellen.
+A Ginkassierung von Schulden und Forderungen im Allgemeinen, werden besonders betrieben. 44
+The North American Lloyd.
+Neue Linie von Seitenrad - Dampfern erster Klasse zwischen
+New York und Bremen, via Cöwes.
+Diese Dampfer sind für Passagiere aller Klassen bequem eingerichtet und befördern die Ver. Staaten
+Nicht: Die Abfahrt derjenigen findet nur an D...",364,1363,6643,7221
+0.0,c04,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.262429,3,vlm,,,False,wc-mid/bottom,"und Gemeinderats-Notizen, verbinden die Städte in den verschiedenen Courts des Distr. Columbia, und wird Seden durch Pünftlichkeit und Schnelligkeit zufrieden stellen.
+A Ginkassierung von Schulden und Forderungen im Allgemeinen, werden besonders betrieben. 44
+The North American Lloyd.
+Neue Linie von Seitenrad - Dampfern erster Klasse zwischen
+New York und Bremen, via Cöwes.
+Diese Dampfer sind für Passagiere aller Klassen bequem eingerichtet und befördern die Ver. Staaten
+Nicht: Die Abfahrt derjenigen findet nur an D...",cpu,qwen3-vl-2b-q8,"und Gemeinderats-Notizen, verbinden die Städte in den verschiedenen Courts des Distr. Columbia, und wird Seden durch Pünftlichkeit und Schnelligkeit zufrieden stellen.
+A Ginkassierung von Schulden und Forderungen im Allgemeinen, werden besonders betrieben. 44
+The North American Lloyd.
+Neue Linie von Seitenrad - Dampfern erster Klasse zwischen
+New York und Bremen, via Cöwes.
+Diese Dampfer sind für Passagiere aller Klassen bequem eingerichtet und befördern die Ver. Staaten
+Nicht: Die Abfahrt derjenigen findet nur an D...",364,1363,6643,7221
+0.044226,c05,0.784314,sn82014761_1866-08-04_ed-1_seq-4,0.029427,3,loc,,,False,wc-high/top,"und 11.15 Morgens und um 245, 4,30 und 800
+Nachmittags.
+Nach allen —. Weg-Slationen.
+Tägich, ausgenommen Sonntags, um 7.00 Mor--
+gens ünd 2.45 Nachmittags und 5.00 Abends.
+Nach Weg-Stationen südlich von Anna
+polis Junction.
+Tägich, ausgenommen Sonntags, 6.15 und 7.00
+Morgens und 2.45 und 4.35 Nachmittags.
+Nach Annapolis.
+Um 6.20 und 7.30 Moryens und 4.20 Nachmit
+tags. Am Sonntag geht kern Zug nach Annapois.",cpu,qwen3-vl-2b-q8,"und 11.15 Morgens und um 2.45, 4.30 und 8.00
+Nachmittags.
+Nach allen Weg-Stationen.
+Täglich, ausgenommen Sonntags, um 7.00 Morgens und 2.45 Nachmittags und 8.00 Abends.
+Nach Weg-Stationen südlich von Anna-
+polis Junction.
+Täglich, ausgenommen Sonntags, 6.15 und 7.00
+Morgens und 2.45 und 4.35 Nachmittags.
+Nach Annapolis.
+Um 6.20 und 7.30 Morgens und 4.30 Nachmittags. Am Sonntag geht kein Zug nach Annapolis.",1358,2333,2178,2757
+0.04914,c05,0.877419,sn82014761_1866-08-04_ed-1_seq-4,0.034455,3,ours-tesseract,,,False,wc-high/top,"und 11.15 Morgens und um 2.45, 4.30 und 8.00
+Nachmittags.
+Nach allen Weg⸗Stationen.
+Tägich, ausgenommen Sonntags, um 7.00 Mor⸗
+gens und 2.45 Nachmittags und 8.00 Abends.
+Nach Weg⸗Stationen ſüdlich von Anna⸗
+polis Junction.
+Tägich, ausgenommen Sonntags, 6. 15 und 7.00
+Morgens und 2.45 und 4.35 Nachmittags.
+Nach Annapolis.
+Um 6.20 und 7.30 m. und 4.30 Nachmit⸗
+tags. Am Sonntag geht kein Zug nach Annapois.",cpu,qwen3-vl-2b-q8,"und 11.15 Morgens und um 2.45, 4.30 und 8.00
+Nachmittags.
+Nach allen Weg-Stationen.
+Täglich, ausgenommen Sonntags, um 7.00 Morgens und 2.45 Nachmittags und 8.00 Abends.
+Nach Weg-Stationen südlich von Anna-
+polis Junction.
+Täglich, ausgenommen Sonntags, 6.15 und 7.00
+Morgens und 2.45 und 4.35 Nachmittags.
+Nach Annapolis.
+Um 6.20 und 7.30 Morgens und 4.30 Nachmittags. Am Sonntag geht kein Zug nach Annapolis.",1358,2333,2178,2757
+0.0,c05,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.014745,3,vlm,,,False,wc-high/top,"und 11.15 Morgens und um 2.45, 4.30 und 8.00
+Nachmittags.
+Nach allen Weg-Stationen.
+Täglich, ausgenommen Sonntags, um 7.00 Morgens und 2.45 Nachmittags und 8.00 Abends.
+Nach Weg-Stationen südlich von Anna-
+polis Junction.
+Täglich, ausgenommen Sonntags, 6.15 und 7.00
+Morgens und 2.45 und 4.35 Nachmittags.
+Nach Annapolis.
+Um 6.20 und 7.30 Morgens und 4.30 Nachmittags. Am Sonntag geht kein Zug nach Annapolis.",cpu,qwen3-vl-2b-q8,"und 11.15 Morgens und um 2.45, 4.30 und 8.00
+Nachmittags.
+Nach allen Weg-Stationen.
+Täglich, ausgenommen Sonntags, um 7.00 Morgens und 2.45 Nachmittags und 8.00 Abends.
+Nach Weg-Stationen südlich von Anna-
+polis Junction.
+Täglich, ausgenommen Sonntags, 6.15 und 7.00
+Morgens und 2.45 und 4.35 Nachmittags.
+Nach Annapolis.
+Um 6.20 und 7.30 Morgens und 4.30 Nachmittags. Am Sonntag geht kein Zug nach Annapolis.",1358,2333,2178,2757
+0.121519,c06,0.727273,sn82014761_1866-08-04_ed-1_seq-4,0.054186,3,loc,,,False,wc-high/bottom,"anderswo kaufen. Die Erfindung ist allgemein
+die beste dieser Art, welche in Europa und Amerifo
+in dem 19. Jahrhundert gemacht worden ist, er
+lannt. — Übren jeder Art werden dauerhaft, gut
+und gründlich reparirt. 2455
+— —
+Stosch& Kesstl.
+;
+Berliner Weißbier-Brauerei
+Nrl69 7. Str. zwischen O und Et
+— Dem geehrten Publikum empfehlen wir un
+ser neu gebautes Winterlokal zur gefälligen Beach--",cpu,qwen3-vl-2b-q8,"andersw lassen. Die Erfindung ist augemehn als die beste dieser Art, welche in Europa und Amerika, in dem 19. Jahrhundert gemacht worden ist, anerkannt. — Ihren jeder Art werden dauerhaft, gut und gründlich reparirt. 20,45,5
+
+Stoß & Ressel,  
+Berliner Weißbier-Brauerei  
+Nr. 169 7. Str. zwischen D und P Str.  
+
+Dem geehrten Publikum empfehlen wir unser neu gebautes Winterlokal zur gefälligen Beach-  
+[?]",2347,3344,7191,7769
+0.351899,c06,0.5,sn82014761_1866-08-04_ed-1_seq-4,0.29262,3,ours-tesseract,,,False,wc-high/bottom,"ufen. Erfindung iſt allgemein
+die beſte die ſer Art, welche in Europa und Ameriko
+in dem 19. ber wert worden iſt, aner⸗
+kannt. — Ubren Ahren jeder Ebor Art Art werden dauerhaft, gut
+und Ar reparirt. 22—
+— ö ——
+Stoſch 0 —94. 30
+Drauerei
+Berliner Weiſbier⸗
+Nr. 169 7. Str. zwi ſchen O und P Str.
+dDem geehrten Publikum emp ehlen wir un⸗
+10 neu vanlee Winterlokal zur ge II 1.—17",cpu,qwen3-vl-2b-q8,"andersw lassen. Die Erfindung ist augemehn als die beste dieser Art, welche in Europa und Amerika, in dem 19. Jahrhundert gemacht worden ist, anerkannt. — Ihren jeder Art werden dauerhaft, gut und gründlich reparirt. 20,45,5
+
+Stoß & Ressel,  
+Berliner Weißbier-Brauerei  
+Nr. 169 7. Str. zwischen D und P Str.  
+
+Dem geehrten Publikum empfehlen wir unser neu gebautes Winterlokal zur gefälligen Beach-  
+[?]",2347,3344,7191,7769
+0.0,c06,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.067951,3,vlm,,,False,wc-high/bottom,"andersw lassen. Die Erfindung ist augemehn als die beste dieser Art, welche in Europa und Amerika, in dem 19. Jahrhundert gemacht worden ist, anerkannt. — Ihren jeder Art werden dauerhaft, gut und gründlich reparirt. 20,45,5
+
+Stoß & Ressel,  
+Berliner Weißbier-Brauerei  
+Nr. 169 7. Str. zwischen D und P Str.  
+
+Dem geehrten Publikum empfehlen wir unser neu gebautes Winterlokal zur gefälligen Beach-  
+[?]",cpu,qwen3-vl-2b-q8,"andersw lassen. Die Erfindung ist augemehn als die beste dieser Art, welche in Europa und Amerika, in dem 19. Jahrhundert gemacht worden ist, anerkannt. — Ihren jeder Art werden dauerhaft, gut und gründlich reparirt. 20,45,5
+
+Stoß & Ressel,  
+Berliner Weißbier-Brauerei  
+Nr. 169 7. Str. zwischen D und P Str.  
+
+Dem geehrten Publikum empfehlen wir unser neu gebautes Winterlokal zur gefälligen Beach-  
+[?]",2347,3344,7191,7769
+0.452096,c07,0.342857,sn82014761_1866-08-04_ed-1_seq-4,0.284103,3,loc,,,False,wc-low/top,"steigerte ner ennuns des Publikün:s belohnt.
+Füb Rinder die zgleih Kost und Logio nehmen.
+bietet das Institut in leiblicher wie geistiger
+-t 3
+eine rlrgente! dir tir bittn und Vor m n
+ii eitoh ;
+erten peita 4
+tiits i4ur line
+Nos. d Straßez
+— “ 7 — — - — — ì — “ —— :
+—
+—
+uyhrmacher,
+— No. 2 Wes Baltindre Dre",cpu,qwen3-vl-2b-q8,"neigeterer Anrernennung des Publikums belohnt.  
+Für Kinder, die zugleich Kost und Logis nehmen.  
+bietet das Institut in leiblicher wie geistiger Hinsicht eine Gelegenheit, die für Eltern und Vormünder höchst beachtungswert ist.  
+Man wende sich an den Principal  
+24  
+Nos. 174 und 166 Hamburg Straße  
+W. F. BISSING,  
+Uhrmacher,  
+No 282 M. G. B.",5319,6311,4350,4928
+0.44012,c07,0.407407,sn82014761_1866-08-04_ed-1_seq-4,0.286367,3,ours-tesseract,,,False,wc-low/top,"ber, rkennüng des Publik
+Für Ki die z Ahleich ich Koſt und Leni 4.—
+bietet das Jumitut in
+leiblicher wie gei
+ſicht eine Gelegenheit, die für Eltern anb Berml
+n⸗
+.— — iſt.
+n wen de ſich an den
+＋* 940 ö
+— Ros. 174 und 106 —.— — Straſe)
+411— w. k. ISSINXG.
+14 0
+5
+Uhrmacher
+No. 282 Baltimbre",cpu,qwen3-vl-2b-q8,"neigeterer Anrernennung des Publikums belohnt.  
+Für Kinder, die zugleich Kost und Logis nehmen.  
+bietet das Institut in leiblicher wie geistiger Hinsicht eine Gelegenheit, die für Eltern und Vormünder höchst beachtungswert ist.  
+Man wende sich an den Principal  
+24  
+Nos. 174 und 166 Hamburg Straße  
+W. F. BISSING,  
+Uhrmacher,  
+No 282 M. G. B.",5319,6311,4350,4928
+0.0,c07,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.186302,3,vlm,,,False,wc-low/top,"neigeterer Anrernennung des Publikums belohnt.  
+Für Kinder, die zugleich Kost und Logis nehmen.  
+bietet das Institut in leiblicher wie geistiger Hinsicht eine Gelegenheit, die für Eltern und Vormünder höchst beachtungswert ist.  
+Man wende sich an den Principal  
+24  
+Nos. 174 und 166 Hamburg Straße  
+W. F. BISSING,  
+Uhrmacher,  
+No 282 M. G. B.",cpu,qwen3-vl-2b-q8,"neigeterer Anrernennung des Publikums belohnt.  
+Für Kinder, die zugleich Kost und Logis nehmen.  
+bietet das Institut in leiblicher wie geistiger Hinsicht eine Gelegenheit, die für Eltern und Vormünder höchst beachtungswert ist.  
+Man wende sich an den Principal  
+24  
+Nos. 174 und 166 Hamburg Straße  
+W. F. BISSING,  
+Uhrmacher,  
+No 282 M. G. B.",5319,6311,4350,4928
+0.371901,c08,0.450704,sn82014761_1866-08-04_ed-1_seq-4,0.203404,3,loc,,,False,wc-low/bottom,"No. 4148 Siebente Straße—
+awischen d und G Str.
+William Stewart's
+NRestauraut,
+4154 New Jork Avenue,
+awischen 14. und 15. Straße, ——
+en L remud tn nbden besten Spet—
+ant
+dnn dite",cpu,qwen3-vl-2b-q8,"No. 448 Siebente Straße, zwischen F und G Str.
+William Stewart's
+Restaurant,
+v. 454 New York Avenue,
+zwischen 14. und 15. Straße,
+mit allen Bequemlichkeiten und den besten Spel-
+und Getränken versehen. Betten und Zimmer
+auf's beste eingerichtet",4394,5306,5148,5727
+0.367769,c08,0.48,sn82014761_1866-08-04_ed-1_seq-4,0.177548,3,ours-tesseract,,,False,wc-low/bottom,"No. 448 Siebente Straße,
+zwi ſchen F und G Str.
+William
+Stewart's
+Ne ſtauraut,
+454 Ne w Rork — — —
+zwi ſchen 14. und 15. Straße,
+mit nuce unb den beſten Spei⸗
+Nactenegeten uund
+e eingertchtet. Reren
+—",cpu,qwen3-vl-2b-q8,"No. 448 Siebente Straße, zwischen F und G Str.
+William Stewart's
+Restaurant,
+v. 454 New York Avenue,
+zwischen 14. und 15. Straße,
+mit allen Bequemlichkeiten und den besten Spel-
+und Getränken versehen. Betten und Zimmer
+auf's beste eingerichtet",4394,5306,5148,5727
+0.0,c08,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.225167,3,vlm,,,False,wc-low/bottom,"No. 448 Siebente Straße, zwischen F und G Str.
+William Stewart's
+Restaurant,
+v. 454 New York Avenue,
+zwischen 14. und 15. Straße,
+mit allen Bequemlichkeiten und den besten Spel-
+und Getränken versehen. Betten und Zimmer
+auf's beste eingerichtet",cpu,qwen3-vl-2b-q8,"No. 448 Siebente Straße, zwischen F und G Str.
+William Stewart's
+Restaurant,
+v. 454 New York Avenue,
+zwischen 14. und 15. Straße,
+mit allen Bequemlichkeiten und den besten Spel-
+und Getränken versehen. Betten und Zimmer
+auf's beste eingerichtet",4394,5306,5148,5727
+0.221277,c09,0.730594,sn82014761_1866-08-04_ed-1_seq-4,0.146768,3,loc,,,False,wc-mid/top,"—
+17— n Geschäftsführende Directoren:
+Majoer HA Ha 1 Prsident der Soldiers' und Sailors' Union, Col Chas. E-Ca
+72 ; 12147 — Erkasury
+— ; 1511— t -
+Da H. A. Hall und andere Directoren des welches am 2.
+Ereten National-Concerto.
+Clephane, dem Internal Revenve Collector des Districtes um die Erlaubniß nachgesucht
+genügende Beweise beigebracht haben, daß genanntes Unternehmen einem wohlthätigen
+durch ertheilt unb sollen dieselben für ihr Unternehmen weder Steuern zu zahlen haben,
+: —— —— ; 112
+Alle Personen, welche Neigung sühlen werden ersucht, als Agenten zu fungiren.
+Gelder c und
+erbitten wir uns in Fällen in registrirten Bresen per in
+Wir ferner, uns siets den Namen, die Adresse, das County und den Staat jedes",cpu,qwen3-vl-2b-q8,"Geschäftsführende Director
+jor H. A. Hall, Präsident der Soldiers' und Sailors' Union, Col. Chas. E. C.
+Treasury Depo
+Da H. A. Hall und andere Directoren des „Großen National-Concerts, welches am 2. ephane, dem Internal-Revenue Collector des Districtes um die Erlaubnis nachgesucht h
+nugende Beweise beigebracht haben, dass genanntes Unternehmen einem wohlhätigen Zn
+rch ertheilt und sollen dieselben für ihr Unternehmen weder Steuern zu zahlen haben, n
+Alle Personen, welche Neigung fühlen, werden ersucht, als Agenten zu fungiren. Co
+Gelder erbitten wir uns in allen Fällen in registrierten Briefen, per Erpress und in P
+Wir ersuchen ferner, uns nets den Namen, die Adresse, das County und den Staat jed",2427,4057,3268,3846
+0.26383,c09,0.6,sn82014761_1866-08-04_ed-1_seq-4,0.192694,3,ours-tesseract,,,False,wc-mid/top,"verſchiehen, an
+Ge ſaftefgbrende Directoren:
+Major A. der Suldiers und Col. Chas. E. Ca
+8. Halk, Präſtdent Sanſp
+Trraſury
+Da H. A. Hall und andere Directoren des „Oroßen Rational⸗Concerte, welches am 2.
+Clephane, dem Internal⸗Revenve Collector des Diſtrictes um die Erlauhniß nachgeſucht
+genügende Beweiſe beigebracht haben, daß genanntes Unternehmen einem wohlthäligen
+durch ertheilt und ſollen die ſelben für ihr Unternehmen we der Steuern zahlen haben,
+zu
+welche fühlen, werden erſucht, als zu ſun iren.
+Alle Per ſonen, Neigun
+Gelder erbitten wir uns in allen Fällen in regiſtrirten Briefen, per Expreß und in
+Wir erſu en ferner, uns ſtets den Namen, die Adreſſe, das County und den Staat jedes",cpu,qwen3-vl-2b-q8,"Geschäftsführende Director
+jor H. A. Hall, Präsident der Soldiers' und Sailors' Union, Col. Chas. E. C.
+Treasury Depo
+Da H. A. Hall und andere Directoren des „Großen National-Concerts, welches am 2. ephane, dem Internal-Revenue Collector des Districtes um die Erlaubnis nachgesucht h
+nugende Beweise beigebracht haben, dass genanntes Unternehmen einem wohlhätigen Zn
+rch ertheilt und sollen dieselben für ihr Unternehmen weder Steuern zu zahlen haben, n
+Alle Personen, welche Neigung fühlen, werden ersucht, als Agenten zu fungiren. Co
+Gelder erbitten wir uns in allen Fällen in registrierten Briefen, per Erpress und in P
+Wir ersuchen ferner, uns nets den Namen, die Adresse, das County und den Staat jed",2427,4057,3268,3846
+0.0,c09,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.072641,3,vlm,,,False,wc-mid/top,"Geschäftsführende Director
+jor H. A. Hall, Präsident der Soldiers' und Sailors' Union, Col. Chas. E. C.
+Treasury Depo
+Da H. A. Hall und andere Directoren des „Großen National-Concerts, welches am 2. ephane, dem Internal-Revenue Collector des Districtes um die Erlaubnis nachgesucht h
+nugende Beweise beigebracht haben, dass genanntes Unternehmen einem wohlhätigen Zn
+rch ertheilt und sollen dieselben für ihr Unternehmen weder Steuern zu zahlen haben, n
+Alle Personen, welche Neigung fühlen, werden ersucht, als Agenten zu fungiren. Co
+Gelder erbitten wir uns in allen Fällen in registrierten Briefen, per Erpress und in P
+Wir ersuchen ferner, uns nets den Namen, die Adresse, das County und den Staat jed",cpu,qwen3-vl-2b-q8,"Geschäftsführende Director
+jor H. A. Hall, Präsident der Soldiers' und Sailors' Union, Col. Chas. E. C.
+Treasury Depo
+Da H. A. Hall und andere Directoren des „Großen National-Concerts, welches am 2. ephane, dem Internal-Revenue Collector des Districtes um die Erlaubnis nachgesucht h
+nugende Beweise beigebracht haben, dass genanntes Unternehmen einem wohlhätigen Zn
+rch ertheilt und sollen dieselben für ihr Unternehmen weder Steuern zu zahlen haben, n
+Alle Personen, welche Neigung fühlen, werden ersucht, als Agenten zu fungiren. Co
+Gelder erbitten wir uns in allen Fällen in registrierten Briefen, per Erpress und in P
+Wir ersuchen ferner, uns nets den Namen, die Adresse, das County und den Staat jed",2427,4057,3268,3846
+0.450602,c10,0.396694,sn82014761_1866-08-04_ed-1_seq-4,0.202431,3,loc,,,False,wc-mid/bottom,"— — 395 D Stra enüber City Hall,
+Agenten für den trnt Columbia.
+gei - ron ; 21— — 8 -
+Mllen dieser Gesen shaft
+ite Fesensa
+rela ; 1 ere Beibenten teru 22
+den-
+Chas. Walter,
+Agenten 8 für den Distritt Columbia.
+122 en fur den i etumbria
+G ia n eine
+ian 2
+t: - e orranden
+und dem rerehrten Pubt
+Anzeige zu mchen, daß ste unter dem heutigen Da",cpu,qwen3-vl-2b-q8,"395 D Straße, gegenüber City Hall,  
+Agenten für den Distrikt Columbia.  
+
+Zehnungen von Aktien dieser Gesellschaft  
+welche eine sichere Dividenden zahlende Anlage bil-  
+den, werden entgegen genommen bei  
+Chas. Walter,  
+Agenten für den Distrikt Columbia  
+
+Geschäfts = Anzeige.  
+
+Die Unterzeichneten beehren sich, ihren Freundern  
+und dem verehrten Publikum überhaupt die ergebnen  
+Anzeige zu machen, daß sie unter dem heutigen Da-  
+[?]",405,1333,8085,8664
+0.583133,c10,0.326923,sn82014761_1866-08-04_ed-1_seq-4,0.453654,3,ours-tesseract,,,False,wc-mid/bottom,"395 D Smafe egenüber City Hall,
+Agenten für Columbia.
+ven Mtien ehe Leitaaft
+nde Anlage
+B44. 5 al
+er,
+genten Columbia.
+—.— ——
+11⁰ Geſoäfts⸗ Vy
+n 307
+Pie u e r ren öreui
+und dem yt die ergt ene
+Anzeige zu michen, daß ſte dem reh Da⸗",cpu,qwen3-vl-2b-q8,"395 D Straße, gegenüber City Hall,  
+Agenten für den Distrikt Columbia.  
+
+Zehnungen von Aktien dieser Gesellschaft  
+welche eine sichere Dividenden zahlende Anlage bil-  
+den, werden entgegen genommen bei  
+Chas. Walter,  
+Agenten für den Distrikt Columbia  
+
+Geschäfts = Anzeige.  
+
+Die Unterzeichneten beehren sich, ihren Freundern  
+und dem verehrten Publikum überhaupt die ergebnen  
+Anzeige zu machen, daß sie unter dem heutigen Da-  
+[?]",405,1333,8085,8664
+0.0,c10,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.295572,3,vlm,,,False,wc-mid/bottom,"395 D Straße, gegenüber City Hall,  
+Agenten für den Distrikt Columbia.  
+
+Zehnungen von Aktien dieser Gesellschaft  
+welche eine sichere Dividenden zahlende Anlage bil-  
+den, werden entgegen genommen bei  
+Chas. Walter,  
+Agenten für den Distrikt Columbia  
+
+Geschäfts = Anzeige.  
+
+Die Unterzeichneten beehren sich, ihren Freundern  
+und dem verehrten Publikum überhaupt die ergebnen  
+Anzeige zu machen, daß sie unter dem heutigen Da-  
+[?]",cpu,qwen3-vl-2b-q8,"395 D Straße, gegenüber City Hall,  
+Agenten für den Distrikt Columbia.  
+
+Zehnungen von Aktien dieser Gesellschaft  
+welche eine sichere Dividenden zahlende Anlage bil-  
+den, werden entgegen genommen bei  
+Chas. Walter,  
+Agenten für den Distrikt Columbia  
+
+Geschäfts = Anzeige.  
+
+Die Unterzeichneten beehren sich, ihren Freundern  
+und dem verehrten Publikum überhaupt die ergebnen  
+Anzeige zu machen, daß sie unter dem heutigen Da-  
+[?]",405,1333,8085,8664
+0.336735,c11,0.626263,sn82014761_1866-08-04_ed-1_seq-4,0.237853,3,loc,,,False,wc-high/top,"Parkersburg u. s.w. gehenden r ;
+Durchtickẽts nach dem Westen, Philadelphia, New
+Jork und Boston sind in der Etttene und in
+dem American Oftte 43 unb
+Telegraph-Gebäude, zwischen
+Straße, zu jeder Tageszeit zu haben. ;
+2 W. T.Smitth,
+7 Transportat-Dirxekltor.
+General-Ticket-Agent.
+; Gebo.S. Koont,
+Agent Washington.
+M. Pabst,",cpu,qwen3-vl-2b-q8,"Durchtickets nach dem Westen, Philadelphia, New York und Boston find in der Stations-Office und in em American Telegraph-Gebäude, zwischen 4½ und Straße, zu jeder Tageszeit zu haben.
+W. T. Smith,
+Transportat-Direktor.
+L. M. Cole,
+General-Tidet-Agent.
+Gev. S. Koong,
+Agent. Washington.
+M. Pabst,",1399,2344,3267,3845
+0.238095,c11,0.585859,sn82014761_1866-08-04_ed-1_seq-4,0.147727,3,ours-tesseract,,,False,wc-high/top,"Parkersburg ſ.
+Durchtickets nach dem Weſten, Voilapelphia, New
+Aork und Boſton ſind in der Stations⸗Office und in
+dem American Telegraph⸗Gebäude, zwi ſchen 41 und
+Straße, zu jeder 229.2. zu haben.
+Smith,
+WTtrancherint⸗Direkior.
+L. M. Cotle,
+General⸗Ticket⸗Agent.
+Gev. S. Koontz,
+Agent Wa ſhington.
+M. Pa bſt,
+Turn⸗",cpu,qwen3-vl-2b-q8,"Durchtickets nach dem Westen, Philadelphia, New York und Boston find in der Stations-Office und in em American Telegraph-Gebäude, zwischen 4½ und Straße, zu jeder Tageszeit zu haben.
+W. T. Smith,
+Transportat-Direktor.
+L. M. Cole,
+General-Tidet-Agent.
+Gev. S. Koong,
+Agent. Washington.
+M. Pabst,",1399,2344,3267,3845
+0.0,c11,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.082536,3,vlm,,,False,wc-high/top,"Durchtickets nach dem Westen, Philadelphia, New York und Boston find in der Stations-Office und in em American Telegraph-Gebäude, zwischen 4½ und Straße, zu jeder Tageszeit zu haben.
+W. T. Smith,
+Transportat-Direktor.
+L. M. Cole,
+General-Tidet-Agent.
+Gev. S. Koong,
+Agent. Washington.
+M. Pabst,",cpu,qwen3-vl-2b-q8,"Durchtickets nach dem Westen, Philadelphia, New York und Boston find in der Stations-Office und in em American Telegraph-Gebäude, zwischen 4½ und Straße, zu jeder Tageszeit zu haben.
+W. T. Smith,
+Transportat-Direktor.
+L. M. Cole,
+General-Tidet-Agent.
+Gev. S. Koong,
+Agent. Washington.
+M. Pabst,",1399,2344,3267,3845
+0.309237,c12,0.444444,sn82014761_1866-08-04_ed-1_seq-4,0.159788,3,loc,,,False,wc-high/bottom,"Stebent
+dabrikant von Berliner Goltleisten, Rosenhohh erttn
+und Wallnuß-Mouldings
+Ovalxahmen in Gold und Resenholz n. s. w halt
+haub stete cin Lager von Quasten und Schnüren und
+euyßehlt siq besonders im Reuvergolden glter Rar—",cpu,qwen3-vl-2b-q8,"Fabrikant von Berliner Goldleitnen, Rosenholz und Wallnuss-Mouldings, einfachen und verzierten Ovalrahmen in Gold und Rosenholz u. f. w., hält auch stets ein Lager von Quasten und Schnüren und empfiehlt sich besonders im Neuvorgolden alter Maben. 49",2397,3342,8774,9352
+0.630522,c12,0.241379,sn82014761_1866-08-04_ed-1_seq-4,0.682619,3,ours-tesseract,,,False,wc-high/bottom,"Sebritant von Berliner oldlei
+und buhmen in Seldund einſachen Rerten
+old 1 und Roſenholz Sonur
+von Sualen und
+r Rar⸗
+nater",cpu,qwen3-vl-2b-q8,"Fabrikant von Berliner Goldleitnen, Rosenholz und Wallnuss-Mouldings, einfachen und verzierten Ovalrahmen in Gold und Rosenholz u. f. w., hält auch stets ein Lager von Quasten und Schnüren und empfiehlt sich besonders im Neuvorgolden alter Maben. 49",2397,3342,8774,9352
+0.0,c12,1.0,sn82014761_1866-08-04_ed-1_seq-4,0.163742,3,vlm,,,False,wc-high/bottom,"Fabrikant von Berliner Goldleitnen, Rosenholz und Wallnuss-Mouldings, einfachen und verzierten Ovalrahmen in Gold und Rosenholz u. f. w., hält auch stets ein Lager von Quasten und Schnüren und empfiehlt sich besonders im Neuvorgolden alter Maben. 49",cpu,qwen3-vl-2b-q8,"Fabrikant von Berliner Goldleitnen, Rosenholz und Wallnuss-Mouldings, einfachen und verzierten Ovalrahmen in Gold und Rosenholz u. f. w., hält auch stets ein Lager von Quasten und Schnüren und empfiehlt sich besonders im Neuvorgolden alter Maben. 49",2397,3342,8774,9352
+0.105691,c01,0.860927,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-low/top,"К праздникам Рождества Христова и Новому Году
+: |
+| получены свежие гастрономические продукты из России, Польши п других |
+I стран, как-то: икра, грибы, консервы, рыба, халва, карамель и другие ела- '
+| достп в роскошной упаковке.
+ГРОМАДНЫЙ ВЫБОР РОЖДЕСТВЕНСКИХ ПОДАРКОВ: |
+| игрушки для детей, шали, каготы, туфла для дам, папиросы, табакерки, ]
+| галстух??*«**рфы для мужчин. -4
+Имеется в продаже русское полотно, узор» и канва. Русские календари на I
+1 1935 год. Настоящая водка тов. Петра Смириова по 1 дол. 75 сентов за >",cpu,qwen3-vl-2b-q8,"К праздникам Рождества Христова и Новому году
+получены свежие гастрономические продукты из России, Польши и других стран, как-то: икра, грибы, консервы, рыба, халва, карамель и другие сладости в роскошной упаковке.
+ГРОМАДНЫЙ ВЫБОР РОЖДЕСТВЕНСКИХ ПОДАРКОВ:
+игрушки для детей, шали, каготы, туфли для дам, папиросы, табакерки, галстуки, перо для мужчин.
+Имеется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за",3470,4699,2844,3235
+0.0,c01,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-low/top,"К праздникам Рождества Христова и Новому году
+получены свежие гастрономические продукты из России, Польши и других стран, как-то: икра, грибы, консервы, рыба, халва, карамель и другие сладости в роскошной упаковке.
+ГРОМАДНЫЙ ВЫБОР РОЖДЕСТВЕНСКИХ ПОДАРКОВ:
+игрушки для детей, шали, каготы, туфли для дам, папиросы, табакерки, галстуки, перо для мужчин.
+Имеется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за",cpu,qwen3-vl-2b-q8,"К праздникам Рождества Христова и Новому году
+получены свежие гастрономические продукты из России, Польши и других стран, как-то: икра, грибы, консервы, рыба, халва, карамель и другие сладости в роскошной упаковке.
+ГРОМАДНЫЙ ВЫБОР РОЖДЕСТВЕНСКИХ ПОДАРКОВ:
+игрушки для детей, шали, каготы, туфли для дам, папиросы, табакерки, галстуки, перо для мужчин.
+Имеется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за",3470,4699,2844,3235
+0.768519,c02,0.064516,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-low/bottom,"Кгаю МоНгаее 6 BопЛ ОгрюНоп, Iпс„
+IV»»! СЫсазо Ауепие, сог. НеппКазе Ауе.
+Т«lерЬопе: МСЖгое 2106.",cpu,qwen3-vl-2b-q8,"Kraus Mortgage & Bond Organization, Inc.,
+26 West Chicago Avenue, cor. Hermitage Ave
+Telephone: MONroe 2106.",535,1418,5742,6133
+0.0,c02,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-low/bottom,"Kraus Mortgage & Bond Organization, Inc.,
+26 West Chicago Avenue, cor. Hermitage Ave
+Telephone: MONroe 2106.",cpu,qwen3-vl-2b-q8,"Kraus Mortgage & Bond Organization, Inc.,
+26 West Chicago Avenue, cor. Hermitage Ave
+Telephone: MONroe 2106.",535,1418,5742,6133
+0.195652,c03,0.78,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-mid/top,"|Шl]| /I' в Америке где их знаменитая ВОДКА произ
+; водится по тем же рецептам и тем же процес-
+ШШ СOМ- по каким o!,а
+/ IНИ производилась на известных
+ДЦ СМИРНОВСКИХ заводах в Москве.
+Вы пьете то же несравненное качество,
+Ш ' но не плотите высоких ввозных налогов.
+ш Ь
+I
+ТРЕБУЙТЕ ПРИ ПОКУПКЕ
+_ г
+ТОЛП 1 НАСТОЯЩУЮ СМИРНОВКУ
+к",cpu,qwen3-vl-2b-q8,"в Америке где их знаменитая ВОДКА производится по тем же рецептам и тем же процесс- сом, по каким она производилась на известных СМИРНОВСКИХ заводах в Москве. Вы пьете то же несравненное качество, но не плотите высоких ввозных налогов. ТРЕБУЙТЕ ПРИ ПОКУПКЕ НАСТОЯЩУЮ СМИРНОВКУ",1638,2786,660,1051
+0.0,c03,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-mid/top,"в Америке где их знаменитая ВОДКА производится по тем же рецептам и тем же процесс- сом, по каким она производилась на известных СМИРНОВСКИХ заводах в Москве. Вы пьете то же несравненное качество, но не плотите высоких ввозных налогов. ТРЕБУЙТЕ ПРИ ПОКУПКЕ НАСТОЯЩУЮ СМИРНОВКУ",cpu,qwen3-vl-2b-q8,"в Америке где их знаменитая ВОДКА производится по тем же рецептам и тем же процесс- сом, по каким она производилась на известных СМИРНОВСКИХ заводах в Москве. Вы пьете то же несравненное качество, но не плотите высоких ввозных налогов. ТРЕБУЙТЕ ПРИ ПОКУПКЕ НАСТОЯЩУЮ СМИРНОВКУ",1638,2786,660,1051
+0.063492,c04,0.896552,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-mid/bottom,"Д-Р П. Л. ЧАДОВИЧ
+ЗУБНОЙ ВРАЧ
+ПРИЕМА:
+Еежедневно от 9 утра до 8:30 вечера.
+В среду от 9 утра до 1 часа дня.
+В ВОСКРЕСЕНЬЕ ПО УСЛОВИЮ.",cpu,qwen3-vl-2b-q8,"Д-р П. Л. ЧАДОВИЧ
+ЗУБНОЙ ВРАЧ
+ИЕМА:
+жедневно от 9 утра до 8:30 вече
+В среду от 9 утра до 1 часа дня.
+В ВОСКРЕСЕНЬЕ ПО УСЛОВИЮ.",3751,4411,4865,5257
+0.0,c04,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-mid/bottom,"Д-р П. Л. ЧАДОВИЧ
+ЗУБНОЙ ВРАЧ
+ИЕМА:
+жедневно от 9 утра до 8:30 вече
+В среду от 9 утра до 1 часа дня.
+В ВОСКРЕСЕНЬЕ ПО УСЛОВИЮ.",cpu,qwen3-vl-2b-q8,"Д-р П. Л. ЧАДОВИЧ
+ЗУБНОЙ ВРАЧ
+ИЕМА:
+жедневно от 9 утра до 8:30 вече
+В среду от 9 утра до 1 часа дня.
+В ВОСКРЕСЕНЬЕ ПО УСЛОВИЮ.",3751,4411,4865,5257
+0.034335,c05,0.821918,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-high/top,"будут все артисты клуба. Боль
+шая разнообразная концертная
+программа, бой конфети и сер
+пантин н много разных сюрпри
+зов. В 12 часов живая кар
+тина Россия. Танцы до утра под
+оркестр Балканских трубадуров
+Цена билета 50 септов. Верим,",cpu,qwen3-vl-2b-q8,"будут все артисты клуба. Большая разнообразная концертная программа, бой конфети и сер- пантин и много разных сюрпризов. В 12 часов — живая картина Россия. Танцы до утра под оркестр Балканских трубадуров Цена билета 50 сентов. Верим,",4076,4706,785,1177
+0.0,c05,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-high/top,"будут все артисты клуба. Большая разнообразная концертная программа, бой конфети и сер- пантин и много разных сюрпризов. В 12 часов — живая картина Россия. Танцы до утра под оркестр Балканских трубадуров Цена билета 50 сентов. Верим,",cpu,qwen3-vl-2b-q8,"будут все артисты клуба. Большая разнообразная концертная программа, бой конфети и сер- пантин и много разных сюрпризов. В 12 часов — живая картина Россия. Танцы до утра под оркестр Балканских трубадуров Цена билета 50 сентов. Верим,",4076,4706,785,1177
+0.101796,c06,0.923077,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-high/bottom,"ных, дети том, что
+будет сделано для Елки, следите |
+в газете «Рассвет».
+Комитет.
+ЖУРНАЛ «СЕЯТЕЛЬ»
+Вышел из печати и поступил в
+продажу журнал «Сеятель» №6,",cpu,qwen3-vl-2b-q8,"ых, дети безплатно. О том, что будет сделано для Елки, следите в газете «Рассвет». Комитет.  
+ЖУРНАЛ «СЕЯТЕЛЬ»  
+Вышел из печати и поступил в продажу журнал «Сеятель» № 6,",313,953,3581,3973
+0.0,c06,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-high/bottom,"ых, дети безплатно. О том, что будет сделано для Елки, следите в газете «Рассвет». Комитет.  
+ЖУРНАЛ «СЕЯТЕЛЬ»  
+Вышел из печати и поступил в продажу журнал «Сеятель» № 6,",cpu,qwen3-vl-2b-q8,"ых, дети безплатно. О том, что будет сделано для Елки, следите в газете «Рассвет». Комитет.  
+ЖУРНАЛ «СЕЯТЕЛЬ»  
+Вышел из печати и поступил в продажу журнал «Сеятель» № 6,",313,953,3581,3973
+0.2025,c07,0.76259,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-low/top,"| игрушки для детей, шали, каготы, туфла для дам, папиросы, табакерки, ]
+| галстух??*«**рфы для мужчин. -4
+Имеется в продаже русское полотно, узор» и канва. Русские календари на I
+1 1935 год. Настоящая водка тов. Петра Смириова по 1 дол. 75 сентов за >
+I бутылку для ресторанов и пивных по оптовым иенам.
+| Магазин ежедневно до 12 час. ночи. По воскресеньям целый день. {
+отнрыт
+р Те!. АКМ!(а Е е 0247. Ьаке 5803
+д- М. САГУД",cpu,qwen3-vl-2b-q8,"игрушки для детей, шали, каготы, туфли для дам, папиросы, табакерки, галстуки, перфо для мужчин. Имеется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за бутылку для ресторанов и пивных по оптовым ценам. Магазин открыт ежедневно до 12 час. ночи. По воскресеньям целый день. Л-Р М. САГУЛ Tel. ARMitage 0247. Lake 5803",3472,4699,3077,3469
+0.0,c07,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-low/top,"игрушки для детей, шали, каготы, туфли для дам, папиросы, табакерки, галстуки, перфо для мужчин. Имеется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за бутылку для ресторанов и пивных по оптовым ценам. Магазин открыт ежедневно до 12 час. ночи. По воскресеньям целый день. Л-Р М. САГУЛ Tel. ARMitage 0247. Lake 5803",cpu,qwen3-vl-2b-q8,"игрушки для детей, шали, каготы, туфли для дам, папиросы, табакерки, галстуки, перфо для мужчин. Имеется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за бутылку для ресторанов и пивных по оптовым ценам. Магазин открыт ежедневно до 12 час. ночи. По воскресеньям целый день. Л-Р М. САГУЛ Tel. ARMitage 0247. Lake 5803",3472,4699,3077,3469
+0.357527,c08,0.765625,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-low/bottom,"в продаже русское полотно, узор» и календари
+1 1935 год. Настоящая водка тов. Петра Смириова по 1 дол. 75 сентов за >
+I бутылку для ресторанов и пивных по оптовым иенам.
+| Магазин ежедневно до 12 час. ночи. По воскресеньям целый день. {
+отнрыт
+р Те!. АКМ!(а Е е 0247. Ьаке 5803
+д- М. САГУД
+Д-р Т. 3. КСЕЛОВСКИЙ
+(ЗАНШ)
+СТАРЫЙ РУССКИЙ ВРАЧ ХИРУРГ-СПЕЦИАЛИСТ",cpu,qwen3-vl-2b-q8,"Пи-тется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за бутылку для ресторанов: и пивных по оптовым ценам. Магазин открыт ежедневно до 12 час. ночи. По воскресеньям целый день. Д-Р М. САГУД (SAHUD) СТАРЫЙ РУССКИЙ ВРАЧ Тел. ARMitage 0247. Lake 5803 Д-р Т. З. КСЕЛОВСКИЙ ХИРУРГ-СПЕЦИАЛИСТ",3469,4717,3176,3567
+0.0,c08,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-low/bottom,"Пи-тется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за бутылку для ресторанов: и пивных по оптовым ценам. Магазин открыт ежедневно до 12 час. ночи. По воскресеньям целый день. Д-Р М. САГУД (SAHUD) СТАРЫЙ РУССКИЙ ВРАЧ Тел. ARMitage 0247. Lake 5803 Д-р Т. З. КСЕЛОВСКИЙ ХИРУРГ-СПЕЦИАЛИСТ",cpu,qwen3-vl-2b-q8,"Пи-тется в продаже русское полотно, узоры и канва. Русские календари на 1935 год. Настоящая вода тов. Петра Смирнова — по 1 дол. 75 сентов за бутылку для ресторанов: и пивных по оптовым ценам. Магазин открыт ежедневно до 12 час. ночи. По воскресеньям целый день. Д-Р М. САГУД (SAHUD) СТАРЫЙ РУССКИЙ ВРАЧ Тел. ARMitage 0247. Lake 5803 Д-р Т. З. КСЕЛОВСКИЙ ХИРУРГ-СПЕЦИАЛИСТ",3469,4717,3176,3567
+0.736842,c09,0.157895,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-mid/top,"015ТК1В11Т0К5 РОК ТНЕ SТАТЕ ОР 1Ы.Ш013
+ШТЕЮТАТКЖАЬ \УIИЕ & ЗРIКIТS СОКР.
+221 N. 51гее1,-СЫсазо, 111.
+РЬопе РгапкНп 7744.",cpu,qwen3-vl-2b-q8,"DISTRIBUTORS FOR THE STATE OF ILLINOIS
+INTERNATIONAL WINE & SPIRITS CORP.
+221 N. Jefferson Street, Chicago, Ill.
+Phone Franklin 7744.",1676,2708,1476,1867
+0.0,c09,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-mid/top,"DISTRIBUTORS FOR THE STATE OF ILLINOIS
+INTERNATIONAL WINE & SPIRITS CORP.
+221 N. Jefferson Street, Chicago, Ill.
+Phone Franklin 7744.",cpu,qwen3-vl-2b-q8,"DISTRIBUTORS FOR THE STATE OF ILLINOIS
+INTERNATIONAL WINE & SPIRITS CORP.
+221 N. Jefferson Street, Chicago, Ill.
+Phone Franklin 7744.",1676,2708,1476,1867
+0.061674,c10,0.869565,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-mid/bottom,"затопленного «Эмденом» в пенан *
+гском порту русского крейсера [
+«Жемчуг» поймали странное мор I
+ское чудовище. Оно имеет около Я
+пяди футов длины, и голову вро
+де обезяньей.
+•Туловище животного имеет стро
+ение рыбы с двумя плавниками.",cpu,qwen3-vl-2b-q8,"затопленного «Эмденом» в пенан
+гском порту русского крейсера
+«Жемчуг» поймали странное мор
+ское чудовище. Оно имеет около
+пяти футов длины, и голову вро-
+де обезьяней.
+. Туловище животного имеет стро
+ение рыбы с двумя плавниками.",2195,2863,4630,5021
+0.0,c10,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-mid/bottom,"затопленного «Эмденом» в пенан
+гском порту русского крейсера
+«Жемчуг» поймали странное мор
+ское чудовище. Оно имеет около
+пяти футов длины, и голову вро-
+де обезьяней.
+. Туловище животного имеет стро
+ение рыбы с двумя плавниками.",cpu,qwen3-vl-2b-q8,"затопленного «Эмденом» в пенан
+гском порту русского крейсера
+«Жемчуг» поймали странное мор
+ское чудовище. Оно имеет около
+пяти футов длины, и голову вро-
+де обезьяней.
+. Туловище животного имеет стро
+ение рыбы с двумя плавниками.",2195,2863,4630,5021
+0.034188,c11,0.894737,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-high/top,"пантин н много разных сюрпри
+зов. В 12 часов живая кар
+тина Россия. Танцы до утра под
+оркестр Балканских трубадуров
+Цена билета 50 септов. Верим,
+что как отдельные лица, так и
+организации окажут этому клубу
+свою любезную поддержку.",cpu,qwen3-vl-2b-q8,"пантин и много разных сюрпри- зов. В 12 часов — жива кар- тина России. Танцы до утра под оркестр Балканских трубадуров Цена билета 50 сентов. Верим, что как отдельные лица, так и организации окажут этому клубу свою любезную поддержку.",4074,4707,938,1329
+0.0,c11,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-high/top,"пантин и много разных сюрпри- зов. В 12 часов — жива кар- тина России. Танцы до утра под оркестр Балканских трубадуров Цена билета 50 сентов. Верим, что как отдельные лица, так и организации окажут этому клубу свою любезную поддержку.",cpu,qwen3-vl-2b-q8,"пантин и много разных сюрпри- зов. В 12 часов — жива кар- тина России. Танцы до утра под оркестр Балканских трубадуров Цена билета 50 сентов. Верим, что как отдельные лица, так и организации окажут этому клубу свою любезную поддержку.",4074,4707,938,1329
+0.5,c12,0.769231,sn82015743_1934-12-06_ed-1_seq-4,,2,loc,,,False,wc-high/bottom,|Нии учебы. Многие вовсе уезжа,cpu,qwen3-vl-2b-q8,"нии учебы. Многие вовсе уезжа
+ЕДИНСТВЕНН
+ПОГРЕБ
+КИРИОК",1572,2208,5357,5749
+0.0,c12,1.0,sn82015743_1934-12-06_ed-1_seq-4,,2,vlm,,,False,wc-high/bottom,"нии учебы. Многие вовсе уезжа
+ЕДИНСТВЕНН
+ПОГРЕБ
+КИРИОК",cpu,qwen3-vl-2b-q8,"нии учебы. Многие вовсе уезжа
+ЕДИНСТВЕНН
+ПОГРЕБ
+КИРИОК",1572,2208,5357,5749
+,c01,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-low/top,"LADIES ORES MID FANCY DRY GOODS,
+Gentlemen's Furnishing- Goods,
+BAGGING, ROPE, IRON TIES,
+wi:kh bought for cash ad will v,?. sold
+t .- As cheap as tho cheapest, FOR CASE,",,,,2458,3433,1231,1632
+,c01,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-low/top,,,,,2458,3433,1231,1632
+,c02,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-mid/top,"an examination of our STOCK,
+y are satisfied that 1
+AT 117; CVI.Y BLEABM THE MOST
+FASTIDIOUS j&
+WILL CALL AND EXAMINE OUR STOCK, BKKOKE
+GOING TO MKMI'HIS
+oiileans, tuf.y will find if to their
+advaxtagl: to
+KOM I ?",,,,2349,3449,1728,2129
+,c02,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-mid/top,,,,,2349,3449,1728,2129
+,c03,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-high/bottom,"it leemia el liieold etaodeiwecH milie
+wrae bu:nea ii.it be tut loved bet'on ibe wee tbe
+pi ramaflT, wugn , mrte end ploire. lla
+1 "" i i"". i- all ktiHlH uf ettleJee ! Ma II
+erli leUeing i n- i, iu, )ej ii: m ol Vejie. Oei
+J
+Pt A.D. BAHI.OW
+ATLANTIC AND GREAT WESTERN
+RA I I, W AY.
+TIIL SHOE! AKD DIRECT KODTK
+Tf",,,,3509,4142,4856,5257
+,c03,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-high/bottom,,,,,3509,4142,4856,5257
+,c04,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-low/top,"NEW GOODS: NEW GOODS !
+n ri? w 17
+YGOP A trvo",,,,2320,3576,361,762
+,c04,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-low/top,,,,,2320,3576,361,762
+,c05,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-mid/top,"WILL CALL AND EXAMINE OUR STOCK, BKKOKE
+GOING TO MKMI'HIS AND
+(TEW oiileans, tuf.y will find if to their
+advaxtagl: to lv
+KOM I ?
+AYSOX & LANDERS
+Canton it, 28. April -'7
+""Mhd THIS",,,,2301,3561,1965,2366
+,c05,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-mid/top,,,,,2301,3561,1965,2366
+,c06,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-high/bottom,"'.nil. !. i-i.ti.i i. .i. i-i'.i to eetttji Ue? eeWti
+I U it be leemia el liieold etaodeiwecH milie
+wrae bu:nea ii.it be tut loved bet'on ibe wee tbe
+pi ramaflT, wugn , mrte end ploire. lla
+1 "" i i"". i- all ktiHlH uf ettleJee ! Ma II
+erli leUeing i n- i, iu, )ej ii: m ol Vejie. Oei
+J
+Pt A.D. BAHI.OW
+ATLANTIC AND GREAT WESTERN
+RA I I, W AY.
+TIIL SHOE! AKD DIRECT KODTK",,,,3513,4143,4804,5205
+,c06,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-high/bottom,,,,,3513,4143,4804,5205
+,c07,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-low/top,"t .- As cheap as tho cheapest, FOR CASE,
+RESPECTFULLY solicit an examination of
+our
+are satisfied that
+117; CVI.Y BLEABM THE MOST FASTIDIOUS",,,,2442,3331,1557,1958
+,c07,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-low/top,,,,,2442,3331,1557,1958
+,c08,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-mid/top,"ITTE RESPECTFULLY solicit an examination
+of our STOCK, and
+y are satisfied that 1
+AT 117; CVI.Y BLEABM THE MOST
+FASTIDIOUS j&
+WILL CALL AND EXAMINE OUR STOCK, BKKOKE
+GOING TO MKMI'HIS AND
+(TEW oiileans, tuf.y will find if to their
+advaxtagl: to lv",,,,2313,3561,1690,2091
+,c08,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-mid/top,,,,,2313,3561,1690,2091
+,c09,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-high/bottom,"' Sleepief r,iri?., nnriinr
+. in M-tMiii i.'i'l i-iinrmt Ukoee n otliir
+mny lice,
+en atterlieo t, Ine I letftiee. Kiiuiv,. at
+Cio.in-
+'- .'y :iT- t iniimir ru.-he
+tbrejca
+i i.. ii! rhmtp in.;,. Cm, llina,, i (jtw yik.
+QkecW r;.r. j ,
+,, Ka,l.
+eak for 'tieteta ie At!,nlictnt Orret
+Wr-trre
+la v.i. i mini :i prtw ipai Tkt
+aaa 8taa
+'J' ""IS"" - Hi. s.. itb eei Wert.
+W B SHATIt rO, Oen'l
+Sarit.
+I.. D KCCKKK. tiru : Ticket
+Aeent.
+klarrb 11 'a:.!,",,,,3481,4122,5869,6270
+,c09,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-high/bottom,,,,,3481,4122,5869,6270
+,c10,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-low/top,"BAGGING, ROPE, IRON TIES, &C.
+itthioh wi:kh bought for cash ad will v,?. sold
+t .- As cheap as tho cheapest, FOR CASE,
+ITTE RESPECTFULLY solicit an examination of
+our STOCK, and
+y are satisfied that 1",,,,2311,3545,1410,1811
+,c10,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-low/top,,,,,2311,3545,1410,1811
+,c11,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-mid/top,"A I, A J c E ,XD II ;.. A'SSO
+Jl T E J) STOCK OF
+CROCKERY, HARDWARE,
+Bcols and Shoes, Hals and
+Caps, Clothing,",,,,2341,3533,849,1250
+,c11,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-mid/top,,,,,2341,3533,849,1250
+,c12,,sn83016739_1868-02-29_ed-1_seq-4,,1,loc,,,False,wc-high/bottom,"I IJ(hterhur Exjirtii, (r.,. t BetertJeee.) t -no
+f
+I : BiTive in . w Y-itk .t-rn-.J mcriiuir et ""-nn .'
+'
+M . U-.il m ' ... ....
+! ' Sleepief r,iri?.,
+nnriinr
+. in M-tMiii i.'i'l i-iinrmt Ukoee n otliir
+mny lice,
+en atterlieo t, Ine I letftiee. Kiiuiv,. at
+Cio.in-
+'- .'y :iT- t iniimir ru.-he
+tbrejca
+i i.. ii! rhmtp in.;,. Cm, llina,, i (jtw
+yik.
+QkecW r;.r. j ,
+,, Ka,l.
+eak for 'tieteta ie At!,nlictnt Orret
+Wr-trre
+la v.i. i mini :i prtw ipai Tkt
+aaa 8taa
+'J' ""IS"" - Hi. s.. itb eei Wert.
+W",,,,3481,4124,5789,6190
+,c12,,sn83016739_1868-02-29_ed-1_seq-4,,1,as,,,False,wc-high/bottom,,,,,3481,4124,5789,6190
+,c01,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-low/top,"ay joie game
+FOREIGN News—FEurope South rio Sonth Africs: | invited to call and examine for
+PO IE i thomselvey,
+Lo TIE he : a ie ’ TICKNG
+; v ; i "" .
+Terri of the Disease Franco Repl Agent, for Hos Ticknor. te* Fields, No,
+a Cuownsh=Tesile Sovages Bi \
+ee v ___ way, N.Y. Shiki
+Procoodin . a
+de a (re ai Bort sage Suton RNAMENTS.—-The most magnificent
+Cesterds : ( MY ya
+- Action Action Postpo Yesterday. IIL sa none
+Slavery; Postponed Until bi
+he Ordinance don.
+Sia Cangiivae-The » Couvention "" Repeals Choice wid.
+~ «T uree Votes "" in the Negative; . Choice ¢ of Presid ORNAMENTS. By
+po Setvasion; AEE GRAMMAR OF
+wl from Hon styles of
+AR a aw-ORLEANS—Glen. Slocum Fetodt Clash of Au lustre Ram fr J
+i . phetes 4 in py . PAN hed "" eators U POLE
+sborides: . Destitutany a a I tor ad Ne : ) 4
+h mpo 3 '
+groes: 6 Alabama Freodmen. sud ; No. 646 Broadway,
+Booksel'er luporter,
+Tux TrisL oF Wikz—luteresting Particulars of the Evi-
+Gorcn 1+] USF PUBLISHED, at No. 171
+ ieatof a Marre Stesmabin: Fxomtastion SCOTT 8 REPORT of
+of Custom-House Officers; ina te pan AE ond Edition,",,,,200,1830,3805,4299
+,c01,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-low/top,,,,,200,1830,3805,4299
+,c02,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-low/bottom,"AR Fetodt Clash of Au lustre Ram fr from J Hon
+a aw-ORLEANS—Glen. Slocum 4 U A»
+i . ad Ne phetes in py . PAN hed "" eators POLE
+sborides: . Destitutany a a I tor mpo : ) 4 '
+h 3
+groes: 6 Alabama Freodmen. sud ; No. 646 Broadway,
+Booksel'er luporter,
+Tux TrisL oF Wikz—luteresting Particulars of the Evi-
+Gorcn 1+] USF PUBLISHED, at No. 171
+ ieatof a Marre Stesmabin: Fxomtastion SCOTT 8 REPORT of
+Baggaze by Custom-House Officers; ina te pan AE ond Edition,
+of French Girl's Trunk; peteries | HOR ow
+Passengirs ; Contents a —— —
+et I Ayiique 3 Aden to IGGINS & KELLOGG, Blank
+Be X i
+5 hn ""ean 1ravel . Monufacturers, ’ wholesale Booksellers aud
+A Visit N To NEw-HiviN—From : Our Correspond- |; .
+Special N Nos. 123 Pg and 125 TIN Williem-st., New-York. >
+Art : “ 3 ™ The A Yale 4 School of Fine Arts; Its
+ent; io Connecticut; y SAT
+Btyie of Architecture. FIO "" Pp
+Ee "" choice
+Article)— F On SALE. 23 complete and
+ICULITER, CUBRTY AGRICULIURE (Fourth to
+Hor j, Co Adie bo. 103 fom Neres, 1962,
+aust Voss Froe Bond Swap Duin x) Fy Bos co.
+Low 0 102,
+The * Fox Meadow Btaic ‘ har Hoate
+Grapery; e",,,,219,1849,4101,4595
+,c02,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-low/bottom,,,,,219,1849,4101,4595
+,c03,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-mid/top,"— 329 Broadway, N. Y ’
+SORE or en
+RNY Re. J iSsrynunun 35.) which have stiained .
+1 EADING ARTICLES Lhe New Registry Law for the Kura ‘ “Of ‘ al) the . publications
+neTened FOWLER & WELLS,
+Districts; Honest Voting; Superserviceable Come to the | populurity, by
+Negro Voting—Hear Both Sides; more ndupted to general utility then this rich,
+Light : Work for Women; |
+and well-arrang Encycopedia—|N. Y. Tribune,
+Withdruwisg Colored Troops; Sucung Du the Army. Who |
+onALTUCLion— — * YEN TRV RY v5
+eo
+South The ARLOR CROQUET.
+Cur Englan Guuste iight; The War in Auiwrice;
+undersigned begs leave to announce tit
+ROMEARY val News from Washington: The
+News Rite y | eh i EAT 8 3 NEW] OIK © Ew °
+""The Q in 80 : LOR CROQUET
+we YO : New-F England; At Sonthern Atiantic States;
+o |
+The Western | of Messrs. Whipple & Smith, snd is now prepared
+She _Oull Siaivy, Reaneassts sud Keutaskys
+of this delightful game at wholesale or retail
+FOREIGN News—FEurope South ay rio Sonth Africs: joie for
+i | invited to call and examine thomselvey,
+PO TIE he IE TICKNG
+Lo v ; : a ie ’
+; Terri of the i Disease Franco Repl "" for Hos . Ticknor. te* Fields, No,
+a Cuownsh=Tesile Sovages Bi \ Agent,
+ee v ___ way, N.Y. Shiki",,,,178,1808,3444,3938
+,c03,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-mid/top,,,,,178,1808,3444,3938
+,c04,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-mid/bottom,"News BY Jlaayerio Teurerapd—Special pecial Dis Di
+nr —._._—_—_._—d,
+The RX Tgoune.
+AL—Full Reperts o 4 thi’ o Stat’ Stock, ni Money, Cotton,
+Cattle Markets, The NY, fjotels, Lr.
+specially reported ior
+————— oe
+a By a ag
+: TERMS ue
+MERICAN HOTFE Yl Broadway , and Eighth-
+1 1 00 Rows EL,
+cop, A numbers. .oeieie B44 ®. York
+European plan. Roonw iu suites
+Bo 13% 3 x or singly at heirs the
+or va, Wom esse
+remitting for 10 wil receive sn extra | [INGLAND.
+copies, $40. a y. .
+co WB - i
+remitting for opion pis, will receive ud WESTMINSTER PALACE HOTEL
+an extia
+hg and beat appointed Sp Hotel is ome of the largest
+heo=Vhis
+— “i London, and is f Fequetiod by &l th °
+HS principal Auierican visitors to England.
+THE
+Pulac JLLIAM COWELL,
+WEEKLY Mansger Westminster © Hotel Com
+TRIBUNF Limited.",,,,331,1961,6729,7223
+,c04,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-mid/bottom,,,,,331,1961,6729,7223
+,c05,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-high/top,"libel svery character; laterary to ke the the family family circle attractive attractive ; ; and and we
+orial articles, not merely local in went, tt wake circle
+Reviews and Art Criticisms; Letters from our large corps of | the weans within their reach, by publishing
+ARE ay
+war correspondents; Foreign and Domestic Letters: Special | variety of the ost iuterestivg,
+Associated Press Dispatches; a careful and | oor offered to the public.
+mud Telcgraplis
+of Foreln aud Domestic News; Lxchn NEW GAME OF AUTHORS.
+complete Summary
+sive the of the Farmers’ Club of the In neat Box. Price 5c.
+Reports of Proceedings
+Institute ; Talks about Fruit, and other Horticultural GAME OF FAMILIAR QUOTATIONS.
+American
+and Agricu'tural Information: Stock, Financial, Cattle. Dry In neat Box. Pros boc,
+and Generel Reports, which are published in GAME OF GREAT EVENTS.
+Goods Market
+DAILY TRIBUNE. It frequently contains articles Ju neat Box. Price Se.
+THE
+LAUGHABLE GAME OF WHITE
+i Oh Pally rR SE MI-Y EERLY RED,
+ally ition. ] 2 In neat Box. Price S0c.
+Ju “MI-V
+also gives, fu the course of & year, THREE or GAME OF COURTSHIP AND MARRIAGE,
+NRIBUNE
+FOUR of the In neat Box. Price Ye,
+OAME OF y Ee A h
+QT , POPULAR * | BATU ALIS EGR
+BEST AND LATEST
+BY GREAT",,,,158,1788,2519,3013
+,c05,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-high/top,,,,,158,1788,2519,3013
+,c06,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-high/bottom,"THE NeW YORK PO i bv ARD .  & AYrOTEN
+id ClLurch Building; WANTED, by an elderly
+Its Unfituness and inconvenience: ry B¢
+| of Its Approsches; Ler danghter: parior and bedroom, with water,
+Beenes io Its Vieluity Extent of ts Roulty
+; Its Incoive; in a good neighborhood near Madison Sqoare.
+The Stamp, Mowey Onder ans gos viidon und fire,
+i given and required. Address Box No. 72IN, Y.
+of aud Avalanche ape 3 iets) he
+umber Hutte iosities © NITION TG IRR
+wrature; Epistolary Rou nd Meat
+ule Miedgend RNISHED ROOMS to LET—Two
+Etrange Swindles, aie Seutisent; |
+iw, aud Grote Ocein | WM
+TS ud doe, HGOMS om tie och fge,
+Cn orn ei F,
+esac, we of The N. Y.|out No.
+board. References required. Apply at
+Lribone. sree
+NEW-YORK STAT2 FAtR—From Our - et
+Special URNISHED ROOMS to
+Eronuig Pts espondent, to LET,
+Scenes at the Opening; An KF
+i Eutries; only, at No, 5 Garden-row, Eleventhest, and
+at —— ee -
+Our § SpediitC o : ——
+Flats OOM and BOARD WANTED—In
+| in the Cums; aud Plog, ||
+terly luactivisy A Kide H anil ¥ ""
+scksonville Herald, ‘here there ey. Boater,
+Fseuly, hare i . . % Zo
+DEATHS OF SOLDIKKS IN THR NEW-York to §",,,,161,1791,6005,6499
+,c06,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-high/bottom,,,,,161,1791,6005,6499
+,c07,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-low/top,"of this delightful game at wholesale or retail Ail
+News—FEurope South ay rio Sonth Africs: joie for
+i | invited to call and examine thomselvey,
+TIE he IE TICKNG
+v ; : a ie ’
+; Terri of the i Disease Franco Repl "" for Hos . Ticknor. te* Fields, No,
+Cuownsh=Tesile Sovages Bi \ Agent, 29
+ee v ___ way, N.Y. Shiki
+Procoodin . a
+de a (re ai Bort sage Suton RNAMENTS.—-The most magnificent
+Cesterds : ( MY ya
+- Action Action Postpo Yesterday. IIL sa none fg
+Postponed Until bi
+he don.
+Cangiivae-The » Couvention "" Repeals Choice Ordinance wid.
+«T uree Votes "" in the Negative; . Choice ¢ of Presid ORNAMENTS. By Owex Joxss.
+Setvasion; AEE GRAMMAR OF
+wl styles of ornament;
+Fetodt Clash of Au lustre Ram fr from J Hon
+a aw-ORLEANS—Glen. Slocum U A»
+i . phetes 4 in py . PAN hed "" eators POLE fol. 4
+. Destitutany a a I tor ad Ne : ) 4
+h mpo 3 '
+6 Alabama Freodmen. sud ; No. 646 Broadway, ~~~
+Booksel'er luporter,
+TrisL oF Wikz—luteresting Particulars of the Evi-
+1+] USF PUBLISHED, at No. 171 Broadway,
+ ieatof a Marre Stesmabin: Fxomtastion SCOTT 8 REPORT of GENTLEMEN'S
+ina te pan AE ond Edition,",,,,307,1937,3799,4293
+,c07,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-low/top,,,,,307,1937,3799,4293
+,c08,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-low/bottom,"umber Hutte Meat iosities © NITION TG IRR
+wrature; Epistolary Rou nd RNISHED ROOMS to LET—Two
+Etrange Swindles, ule Miedgend aie Seutisent; |
+iw, aud Grote Ocein | WM
+TS ud doe, HGOMS om tie och fge, ho
+Cn orn ei F,
+esac, we of The N. Y.|out No. 47
+board. References required. Apply at
+Lribone. sree
+NEW-YORK STAT2 FAtR—From Our - et
+Special URNISHED ROOMS to
+the Eronuig Pts espondent, to LET, gent
+Scenes at Opening; An KF
+i Eutries; only, at No, 5 Garden-row, Eleventhest, and Sixth
+at —— ee -
+Our § SpediitC o : ——
+in the Flats aud Plog, OOM and BOARD WANTED—In a
+terly luactivisy | A Kide Cums; ||
+Herald, H anil ‘here there ¥ ""
+scksonville Fseuly, hare i . ey. % Zo Boater,
+DEATHS SOLDIKKS NEW-York to § .
+OF IN THR Hosprrars.
+TWO YOUNG MEN Tribune Office.
+Kerry or Junos lout 10 MONTGOMERY Lirajg—T! a os ticulars,
+Bm A wi et
+Chargen of tho Lat? Conenlerod ate Denind
+Tux REBEL LOAN—A List of the Fuglish Vietime A ANTED—Two laree PARLORS
+: unfarnished, with
+LAresT LUROPEAN MARKETS TENSION-ROOM. B(",,,,195,1825,6140,6634
+,c08,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-low/bottom,,,,,195,1825,6140,6634
+,c09,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-mid/top,"begs to announce
+ROMEARY val News from Washington: The
+News Rite y | eh i EAT 8 3 NEW] OIK © Ew °
+""The Q in 80 : LOR CROQUET
+we YO : New-F England; At Sonthern Atiantic States;
+o |
+The Western | of Messrs. Whipple & Smith, snd is now prepared
+She _Oull Siaivy, Reaneassts sud Keutaskys
+of this delightful game at wholesale or retail
+FOREIGN News—FEurope South ay rio Sonth Africs: joie for
+i | invited to call and examine thomselvey,
+PO TIE he IE TICKNG
+Lo v ; : a ie ’
+; Terri of the i Disease Franco Repl "" for Hos . Ticknor. te* Fields, No,
+a Cuownsh=Tesile Sovages Bi \ Agent,
+ee v ___ way, N.Y. Shiki
+Procoodin . a
+de a (re ai Bort sage Suton RNAMENTS.—-The most magnificent
+Cesterds : ( MY ya
+- Action Action Postpo Yesterday. IIL sa none
+Slavery; Postponed Until bi
+he don.
+Sia Cangiivae-The » Couvention "" Repeals Choice Ordinance wid.
+~ «T uree Votes "" in the Negative; . Choice ¢ of Presid ORNAMENTS. By
+po Setvasion; AEE GRAMMAR OF
+wl styles of
+AR Fetodt Clash of Au lustre Ram fr from J Hon
+a aw-ORLEANS—Glen. Slocum U
+i . phetes 4 in py . PAN hed "" eators POLE
+sborides: . Destitutany a a I tor ad Ne : ) 4
+h mpo 3 '",,,,196,1826,3686,4180
+,c09,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-mid/top,,,,,196,1826,3686,4180
+,c10,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-mid/bottom,"An extra copy
+Drafle on New-York, or Post-otlice orders, payable to the vort, Conn., and New-York State from 6
+of order “Tar TRIBUNE,"" being safer, wo preferable to any | of good LAND, with first class buildinge—water
+other mode of rewitiuuce. Address ferred. Address, with full particulars, y terme,
+v
+TE TRIBUNE, New Yok | No. 4,827, New-York Lost Office,
+:",,,,129,1759,7683,7986
+,c10,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-mid/bottom,,,,,129,1759,7683,7986
+,c11,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-high/top,"of Foreln aud Domestic News; Lxchn NEW GAME OF AUTHORS.
+complete Summary
+sive the of the Farmers’ Club of the In neat Box. Price 5c.
+Reports of Proceedings
+Institute ; Talks about Fruit, and other Horticultural GAME OF FAMILIAR QUOTATIONS.
+American
+and Agricu'tural Information: Stock, Financial, Cattle. Dry In neat Box. Pros boc,
+and Generel Reports, which are published in GAME OF GREAT EVENTS.
+Goods Market
+DAILY TRIBUNE. It frequently contains articles Ju neat Box. Price Se.
+THE
+LAUGHABLE GAME OF WHITE
+i Oh Pally rR SE MI-Y EERLY RED,
+ally ition. ] 2 In neat Box. Price S0c.
+Ju “MI-V
+also gives, fu the course of & year, THREE or GAME OF COURTSHIP AND MARRIAGE,
+NRIBUNE
+FOUR of the In neat Box. Price Ye,
+OAME OF y Ee A h
+QT , POPULAR * | BATU ALIS EGR
+BEST AND LATEST
+NOVELS GAME OF GREAT TRUTHS BY GREAT
+bonght in book- 1a neat nea Box. x. Price Price! 50c,
+yliving authors. The . cost of these alone, if in bool
+THE Ia SHAKSPEAREAN GAME
+would be from six to eight doliare. If purchased in the
+orm, In neet Box. Price Sve.
+ENGLISH MAGAZINES from which they are carefully se-",,,,160,1790,2631,3125
+,c11,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-high/top,,,,,160,1790,2631,3125
+,c12,,sn83030213_1865-09-20_ed-1_seq-2,,1,loc,,,False,wc-high/bottom,"PROFESSOR AGA*S1Z2—~What He is D in y
+THE NeW YORK i ving Brazil. .  & AYrOTEN
+PO ClLurch bv Building; ARD WANTED, by an elderly
+Its Unfituness and inconvenience: ry id B¢
+| of Its Approsches; Ler danghter: parior and bedroom, with water,
+Beenes io Its Vieluity Extent of ts Roulty
+; Its Incoive; in a good neighborhood near Madison Sqoare.
+The Stamp, Mowey Onder ans gos viidon und fire,
+i given and required. Address Box No. 72IN, Y.
+of aud Avalanche ape 3 iets) he
+umber Hutte iosities © NITION TG IRR
+wrature; Epistolary Rou nd Meat
+ule Miedgend RNISHED ROOMS to LET—Two
+Etrange Swindles, aie Seutisent; |
+iw, aud Grote Ocein | WM
+TS ud doe, HGOMS om tie och fge,
+Cn orn ei F,
+esac, we of The N. Y.|out No.
+board. References required. Apply at
+Lribone. sree
+NEW-YORK STAT2 FAtR—From Our - et
+Special URNISHED ROOMS to
+Eronuig Pts espondent, to LET,
+Scenes at the Opening; An KF
+i Eutries; only, at No, 5 Garden-row, Eleventhest, and
+at —— ee -
+Our § SpediitC o : ——
+Flats OOM and BOARD WANTED—In
+| in the Cums; aud Plog, ||
+terly luactivisy A Kide H """,,,,162,1792,5963,6457
+,c12,,sn83030213_1865-09-20_ed-1_seq-2,,1,as,article,legible,True,wc-high/bottom,,,,,162,1792,5963,6457
+,c01,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-low/top,"tvetor evoi' 7nvont6cZ. Xo inxletreo,
+<r Nu) nc> otiier untll
+z'ou n!iv<? se<.'u lt. <'nn k<?
+to nnti Winkls.
+Lverv <-unl untect!. jt<?> tor^ütu-lo^ue.
+d/ k-'Q 00..
+129 eymiaö!_e l^v.
+(März3,jL a -)
+Reue - Msjnmschmen
+für
+/:r.lst <k Skarrer,",,,,2725,3470,1089,1676
+,c01,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-low/top,"Exposifion. Greatest Horse Pro⸗
+tector ever Invented. NOo Swingletree,
+Traces or Shaft Tugs. Buy no other until
+vou have seen it. The attächments can be
+applied to any sSinsle Harness and Shafts.
+Ev Write for Catalogue.
+TPEIS R5
+RWOOO M'F'G CoO.
+129 EHUHABLE BUILONG, BALTIIMORE, MD.
+(März3, iSa—)
+Neue §50⸗-Nähmaſchinen
+für 825.00.
+Man frage nach oder adreſſire an
+Kraft & Sharrer,",,,,2725,3470,1089,1676
+,c02,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-low/bottom,"Illleinige Ngeutcu jür die berühmten
+Smith'schen amerikanischen Orgeln.
+Oebranchte Pianos,
+Baltimore:
+S? und L 4, Lst - Ballimore-Straße.
+New-Borkz Nr. 148, s. Avenue.
+Washington: 817. Pennsylvania.Ave.
+211)",,,,5117,5750,5577,6164
+,c02,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-low/bottom,"Alleinige Agenten jür die berühmten
+Smith'ſchen amerikaniſchen Orgeln.
+Gebranchte Pianos,
+darunter einige aus unſerer eigenen Fabrik,
+nur wenig benutzt.
+Baltimore:
+22 und 24, Oſt Oſt⸗Baltimore⸗Straße.
+New⸗Vort: Nr. 148, 5. Avenue.
+817. Penuſulvania⸗Ave.
+sin",,,,5117,5750,5577,6164
+,c03,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-mid/top,"Züge verlassen Caloert--ta>.>, Baltimore, wie sulgk:
+Schnell-Sinie.. '
+12.1 ic Mittag?
+Penn'ylvania, limitirt 12.0 t Mittags.
+<übica,oer uns St. üouiscr Srpreß
+B>. Hitler un slidwefilicher Erpreß
+'
+„iü4 .IS Abends.
+Pa
+Nam BZilliainSvort ns Sem Nc>re.
+New'?-S,vrrvzng 4.4"" Morgen?
+Niagara 5 8-IS Morgen,
+echNkli-VlNte -> 12.00 Mittags
+SvilliamsvoU.Erpreßzu, 4.12 Nachiii.
+?<uftalo-uno Roch-firi Erpreszilg , 8.15, Abends.
+No-diicher vxpreßz. z ll.4>> Abends.
+Vo'>k il!l°!iiii!odai>-n>j , Al>en!>-' täglich.
+früh, 12 Übr Mittag?,""V2.is! 12'Nach
+S",,,,6615,7360,593,1180
+,c03,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-mid/top,"alvert-Station, Baltimore, wie folgr:
+Nach dem Weſten.
+— . 12.00 Mittags
+tirt * 12.00 Mittags.
+duiſer Erpreß⸗
+* 4.12 Nachm.
+dweſtlicher Expreß
+323 * 8.15 Abends.
+Erprepzng 11.40 Abends.
+N Williamsvort und dem Norden.
+5 4.40 Moraens
+＋",,,,6615,7360,593,1180
+,c04,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-mid/bottom,"I'ti>- d itlclitv l.nttii Ou.iiuiitee Lo.
+Eike der Baltimore- und St. Paul-Strare.
+Lkt24,UMte>
+tzmmart L chuarttey,
+Nr. 2VL, Park-Avenue.
+FrcSko-Trkoratrure und Hausmaler
+Kuchen, Hallen, Theatern,",,,,1953,2659,6259,6846
+,c04,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-mid/bottom,"vei don
+The Fidelity Loan Guarantee Co.
+Zimmer 4 und 5.
+Pebände der „Bankof Baltimore,“
+Ecke der Baltimore⸗ und St. Paul⸗Straße.
+Olt24,6 Dite)
+Emmart & Quartley,
+Nr. 206, Park⸗Avenue.
+Fresko⸗Dekorateure und Hausmaler
+für das Innere von
+Kirchen, Hallen, Theatern,
+öoſſentlichen Sebänden, Privatwohnungen ꝛc.
+Kirchen⸗Dekorationen, Monogramme,
+Schilder, Banner ꝛc.
+Die Arbeit wird nach den beſten ki inſtleriſchen Ent⸗",,,,1953,2659,6259,6846
+,c05,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-high/top,"glänzend gewesen, von den stolzen Nach
+kommen des biederen Papiermüllers eic
+ceptirt worden. Wir haben nämlich
+schon oft die Wahrnehmung gemacht,
+daß die Nachkommen der ersten Ein
+wanderer in Pennsi)lvanicn, obwohl
+ihre Abtunst aus Elberfeld und Ereseld
+feststeht, sich streng dagegen verwahren,
+von Teutschen abzustammen, denn es
+waren ja holländische schifte, welche sie
+brachten. Taß die wenigsten jener Ein
+wanderer, deren Nachkommen heute mit
+so großer Verachtung ans die Denlfchen",,,,367,1109,2945,3533
+,c05,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-high/top,"glänzend geweſen, von den ſtolzen Nach—
+kommen des biederen Papiermüllers ac⸗
+ceptirt worden. Wir haben nämlich
+oft die Wahrnehmung gemacht,
+Darn Ein⸗
+daß die Nachkommen der erſten
+wanderer in Pennſylvanien, obwohl,
+ihre Abkunft aus Elberfeld und Crefeld
+feſtſteht, ſich ſtreng dagegen verwahren,
+von Deutſchen abzuſtammen, denn es
+waren ja holländiſche Schiffe, welche ſie
+brachten. Daß die wenigſten jener Ein⸗
+wand deren Nachkommen heute mit
+erer,
+ſo r Verachtung auf die Deutſchen",,,,367,1109,2945,3533
+,c06,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-high/bottom,"Instrumenten aus diesem Eontinentc,
+wenn nicht aar in der Welt besitzt.
+Seine Eollektion war wiederholt aus
+gestellt und hat dem Sammler reiches
+eingetragen. Hr. Steinen hat
+cincn iUustrirlen Katalog vcrösseutlicht;
+aus dcmsclbcn sehen wir, daß er nicht
+weniger, als alte Klaviere aller Art
+und über 60 Geigen, Bratschen n. s. w.
+zusammengebracht hat. Der Katalog
+enthält außerdem eine interessante Gc
+schichle des Piano-Fortcs nnd andere
+sür Mustksrcuude wcrthvolle Aussätze.",,,,359,1130,7049,7637
+,c06,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-high/bottom,"Inſtrumenten auf dieſem Continente,
+wenn nicht gar in der Welt beſitzt.
+Seine Collektion war wiederholt aus
+geſtellt und hat dem Sammler reiches
+Lob eingetragen. Hr. Steinert hat
+einen illuſtrirten Katalog veröffentlicht;
+aus rer ſehen wir, daß er nicht
+als
+weniger, als 47 alte Klaviere aller Art
+und über 60 Geigen, Bratſchen n. ſ. w.
+zuſammengebracht hat. Der Katalog
+enthält außerdem eine intereſſante Ge—
+ſchichte des Piano-Fortes und andere
+für werthvolle Aufſätze.",,,,359,1130,7049,7637
+,c07,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-low/top,"Nr. 4 k.', 2V at e r Straß e,
+/lremeiz'Z Vcrüchcrnngi-Compaqnie
+von Baltimore.
+G-g.ündet IK2S.
+Office:",,,,4301,5012,3344,3931
+,c07,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-low/top,"Nr. 415, Ee Ader air
+James Vates
+Thomas Sare
+(April10,1J) Richard X B. Voſt,
+Hiremen's Verſid cherung-Compa agnie
+von Baltimo ore.
+Eesedtt. ce:
+Offi",,,,4301,5012,3344,3931
+,c08,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-low/bottom,"B r n ch e n oser Herni e n,
+Bekanntmachungen.",,,,2752,3445,7399,7986
+,c08,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-low/bottom,"Brů chen oder Hernien,
+für Männer, Frauen und Kinder jeglichen Alters paſ⸗
+ſend. Dieſes uchbard bat vor allen anderen den
+Borzug, da das Hlaskiſſen ein ſchlechter Wärmeleiter
+iſt, weshalbees auch von alen Wundärzten der Ver.
+Siaaten empfohlen wind. Er verſertigt auch auf De⸗
+ſtellung, wie auf Lager
+Schulterbander. Unterleibsbinden,
+weiche Holzkiſſen⸗Bruchbänder,
+——
+arrangirt, daß ſeine geehrten Hunden veſtens zufrie⸗
+den geſtellt ſind.
+Alle Brucbander, Bandagen und Inſtrumente wer⸗
+den garantirt, daß ſie paſſen, und auf' Sauberſte und
+Beſte angefertigt
+Fur d Damen ſind Zimmer
+unter Aufſicht Mad. Reinhardt vorhanden.
+Nr. 12. Baltimoreſtr.
+Fabrik 12, Nord⸗Gay-, nahe
+Bekanntmachungen.",,,,2752,3445,7399,7986
+,c09,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-mid/top,"brciler Zheeling, 2>.
+2U. ?)ads sür 2! ccnrs, wciih 2S die
+2!. l.iiU!, 1 ,vcoerhailcr üa 2
+2!>. Noger:' S teeren 2! Cent?, werth tis
+2!. Brillen u.iz Zwicker je 2U Cent?.
+>nal>.., .ile je Cent.,
+,",,,,3500,4172,2388,2975
+,c09,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-mid/top,"breiter heeting, 2 Hards
+29. Hards für 29 Ce 2* Cents die
+werih
+9. Ein ſeines) iurm eſſer und eine Barbierbür—
+9. ſte, beides für 29 Cts.
+29. ahl reien in Längen
+20. ents nge
+29. 2 Nogeaux mit allem Zubehör ſür 29
+24 ** 120 Bogen hoeen ů* 125 C
+29. Schreib-Papier,
+* t, 1 RMlaſhe 2 „1
+79*
+23. Gu 1 und 2
+halter
+29. zuſammen ſu
+29. Rogers' Scheeren 29 Cents, werth 65
+25. Bri e 29 Cents
+29. und Knaben⸗Hüte je 29 Cents,",,,,3500,4172,2388,2975
+,c10,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-mid/bottom,"lO
+,dW I *4 00
+,st slO
+° 'S' "" '",,,,6660,7347,6164,6752
+,c10,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-mid/bottom,"14.10 Nachm.
+Nach Wet. und Wegſtation 2— 00, 18.10,
+59.25 Moergens, 1.15 (/4 2 Daupt⸗
+Stationen),“ 0, 6.30,*
+Nach Cur ay an? 6.28 früh.
+Verlaßt Curtis' Bap an Wochen 5.05 Nach⸗
+mittags.
+Chicago und dem Nordweſt ier
+3.10Nachn 3; von
+Clevel rgens, 10.40
+und dem Weſten
+ROIXAI. EI.UV LINE“
+nach New-⸗Hort und Philadelphia.
+Nach New-Hork, Voſton und dem Oſten täglich 4.35,
+9 exfl. n Speiſewaggon) Vor
+85
+riſ u. 8.5
+vaggon
+3 d * zon, welcher
+Annahme von Paſſagicren um 10 Uhr Avends
+geoffnet wird
+2.55 Nachmittags.",,,,6660,7347,6164,6752
+,c11,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-high/top,"viede amerikanische historische Gcsell
+schast har cincn Ausschuß für Genealo
+gie', und dieser ist der am Meisten be
+schäftigte. Dieser Tage feierte die „ge
+nealogische nnd biographische Gesell
+schaft von Neiv-?)orl"" ihr sünfund
+zwanzigjährigcs Jubiläum. Ein Herr
+führte bei jener Feier das
+große Wort und sagte den versammelten
+Ähnenjägern: „Diese Gesellschaft wurde
+.richt gegründet, um nur Thatsachen zn
+verzeichnen, sondern vielmehr, nin ein
+Fundament legen, durch welches",,,,410,1112,3804,4391
+,c11,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-high/top,"Jede amerikaniſche hiſtoriſche Geſell—
+ſchaft hat einen Ausſchuß für Genealo⸗
+gie'n, und dieſer iſt der am Meiſten be⸗
+ſchäftigte. Dieſer Tage feierte die „ge⸗
+nealogiſche und biographiſche Geſell⸗
+ſchaft von New-York“ ihr fünfund⸗
+ihiihrge Jubiläum. Ein Herr
+Lancey führte bei jener Feier das
+große Wort und ſagte den verſammelten
+Ahnenjägern: „Dieſe Geſellſchaft wurde
+nicht gegründet, um nur Thatſachen zu
+verzeichnen, ſondern vielmehr, um ein
+durch welches",,,,410,1112,3804,4391
+,c12,,sn83045081_1894-03-03_ed-1_seq-2,,2,loc,,,False,wc-high/bottom,"aus dcmsclbcn sehen wir, daß er nicht
+weniger, als alte Klaviere aller Art
+und über 60 Geigen, Bratschen n. s. w.
+zusammengebracht hat. Der Katalog
+enthält außerdem eine interessante Gc
+schichle des Piano-Fortcs nnd andere
+sür Mustksrcuude wcrthvolle Aussätze.
+Derselbe dars mit Rccht eineu Platz iu
+Bibliothek eines jeden Musillicb
+habers beanspruchen. Als Herausge
+ber nennt sich Ehas. F. Tretbar, Stein
+wah-Hall, New-'?)ork.",,,,363,1131,7320,7907
+,c12,,sn83045081_1894-03-03_ed-1_seq-2,,2,ours-tesseract,,,False,wc-high/bottom,"aus rer ſehen wir, daß er nicht
+als
+weniger, als 47 alte Klaviere aller Art
+und über 60 Geigen, Bratſchen n. ſ. w.
+zuſammengebracht hat. Der Katalog
+enthält außerdem eine intereſſante Ge—
+ſchichte des Piano-Fortes und andere
+für Muſikfreunde werthvolle Aufſätze.
+Derſelbe darf mit Recht einen Platz in
+der Bibliothek eines jeden Muſiklieb—
+habers beanſpruchen. Als Herausge—
+ver nennt ſich Chas. F. Tretbar, Stein⸗
+way⸗Hall, New⸗York.",,,,363,1131,7320,7907
+,c01,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-low/top,"! Allien derselven vaven vereil? in!
+l einei' inaleeielten Peei. neigernng tiie -
+s dieielven rejiillii'l.
+Wenn Zie ini /inmwr Ne. ZU!,!
+j kalverl Pnilding, ginichen l lllii !
+Permittag? nnd l Uvr N'aelnnillag-, .
+! veripreichen ivelle, Vever Zie iivee i
+! .Zlire Atlien versiigen, weeden Zie!
+! telepe A>l?lnnst eevallen, die nnseeee !",,,,1629,2347,1840,2262
+,c01,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,legible,True,wc-low/top,,,,,1629,2347,1840,2262
+,c01,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-low/top,"ö
+E 24
+Uhr
+4*
+on
+Inro Alff en verden Tie]
+IU 253 6 U
+ſolch lustunft erhalt die unſer",,,,1629,2347,1840,2262
+,c02,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-low/bottom,"l'il ' .sli!,il' .'p TrvpN'n peilen in
+lIN '.Ulili'.
+Tr. Nilt n Herman,
+Pliltimvrr'o crslilretrr Zpegialist,",,,,4433,5071,4150,4572
+,c02,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,,,False,wc-low/bottom,,,,,4433,5071,4150,4572
+,c02,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-low/bottom,"5 N 7
+4t Zahnmeh Tropfen heilen in
+ein r Miinnte ennie.
+—
+VDr 9 .
+Dr. lt U Herman,
+ů‚
+ö l
+Baltimore's erfährenſter Spezialiſt,
+enütit die aller
+modernſten Mit⸗
+tel 61 der Heil⸗",,,,4433,5071,4150,4572
+,c03,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-mid/top,"der N.'aiden /ane, sprang der ein
+Meländer vor dem ZchansenNer und
+t'eniaetlligte sietl einer M'nlde, eiche
+Nnwelen im Wende ven lchnnn, ent
+tlieti. Dde er mil einer Pente ent
+slieden lennie. drang T?tar Win
+ders. ein dlert. lins idn ein, iverans
+der Neger die ddelsleine lallen liesi
+nnd ennled. Winderl verlelgle ilm",,,,3021,3698,1359,1782
+,c03,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,illegible,True,wc-mid/top,,,,,3021,3698,1359,1782
+,c03,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-mid/top,"2———
+Juwelen in Werth 5öou 830,000 ent
+Vi 0
+3
+iuntt, arag Setor Win⸗",,,,3021,3698,1359,1782
+,c04,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-mid/bottom,"Uiteii, ilNliirllilird deijeniueli u>
+Odessa, derrscheu iillllllrtje Ullslnude.
+?ie leislen icheinen >u'
+lleiliU idre lerluiselzen, alleili
+>ie lind nicht erchinmrl und lenneii i
+lwch'li die jerniallln arnailijirte Idniu
+dwuie der ievellill>lilleli Pnrleiei'.
+Il'elrtle die Univerlitalen al - ipeuelle.
+7u'ld für idre Pravanandn en>ldll",,,,3700,4380,3374,3796
+,c04,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,legible,True,wc-mid/bottom,,,,,3700,4380,3374,3796
+,c04,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-mid/bottom,"dastäten namentlick (njenigen 354
+Odeſſa rrſchen liche Zuſtaände
+BEi 2 Sainn
+die meiſten AIie Un en ſcheinen g
+Uneigt, ihre Studien fortzuſetzen, allein
+ſie ſind nicht orgamſrt und toönn
+jéegen IIDñi die ſor Iygißlti f mirte 10 Ca
+ine der revolut oin Parteien
+336",,,,3700,4380,3374,3796
+,c05,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-high/top,"nelessle Prrdieiisl - I Prrilnnldirn
+Niltnird A. N >t<,etl ...
+Zelm und Zchwiegei g der „Mn
+lnal /ile Uainvami es
+'N'ew Perl"" dade- >-;>!> > m,'",,,,2350,3013,1062,1484
+,c05,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,illegible,True,wc-high/top,,,,,2350,3013,1062,1484
+,c05,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-high/top,"— Verdienſe
+Koloſſale Pertunndten
+NI Richard d A. N lrön's
+on und GEunwpt ven",,,,2350,3013,1062,1484
+,c06,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-high/bottom,"sondern auch ,>alan ,n vertrete und
+ach dem Wadlergeden der japani
+sche Urieg?gesangenen und der in
+Naschend ivodueuden Nied! Cvmdat
+tauten ;n sedeu.",,,,3015,3695,6311,6733
+,c06,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,legible,True,wc-high/bottom,,,,,3015,3695,6311,6733
+,c06,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-high/bottom,"dern aue Napa rtreten und und
+2
+nach dem ö der
+Wohlergehen japani⸗als
+6n 1910 6efl i Ieon und 67 in
+* der
+Cro⸗[Rußland wohnenden Nicht Combat
+ö
+dertanten zu ſehen.",,,,3015,3695,6311,6733
+,c07,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-low/top,"N Zechest PilUiittv? < tlpiiislil? >u> rtdil'urlen Pieiie u> vrlk.uisei,. -",,,,270,1643,1049,1472
+,c07,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,legible,True,wc-low/top,,,,,270,1643,1049,1472
+,c07,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-low/top,"Pianinos zu verkauſen.
+3 Sechzig reduzirten Preiſen
+(uprighte) .
+2 Nr. 102,. 2
+* Worah Straße U
+Reitt
+Nord HowardStraße, —
+Nr. 222,
+ten Mre
+* 1 —
+U
+H ander ‚
+— 8
+nie 5 n —
+—* — 5",,,,270,1643,1049,1472
+,c08,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-low/bottom,"luv Hliu?. Glc l-
+I,!n ornn'irt. Mütnae cl-tlhrl-u Sexlnnl '
+setzt ! >
+Uiitrrricht
+-",,,,958,1654,6259,6681
+,c08,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,legible,True,wc-low/bottom,,,,,958,1654,6259,6681
+,c08,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-low/bottom,"11 Aypewriter Masiae eöndren. Henni
+* daxuntirt li ubige N n.
+— (De6.13.I4 ½
+—
+Unterricht
+ſar Er, End ee, I
+Sudetz
+Ar. 1 Part-Nven une; ue. — Mardiand⸗Aelcbohi
+1201, Var
+18,% Aelepbon Madiſon 1151 W.
+WeiL",,,,958,1654,6259,6681
+,c09,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-mid/top,"saiiimtmigen .!>> eilier avermaligeii
+Zn?penien de-.- Unterrichte' aus den
+Unive llwen sieliee werden. Hnen
+Z > ildei lall, nilieiei Pi7iident de-
+Ze>ilnee kengiesi' lllld Aieltee de
+Unweisilal Vvli Me-tan. liat ip de
+reil - vewegen gesellen, diele Univer
+ilal illil t'-enelmiignng de - Peelepe
+lellrald- l nlilieuen liiede unten'",,,,3706,4389,2662,3084
+,c09,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,legible,True,wc-mid/top,,,,,3706,4389,2662,3084
+,c09,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-mid/top,"Ffamme u einer abermaligen
+̃ des Unterrichts auf der 9
+derttan[Suspenſion
+II Univerſitat ſichren werde werden 7 Urht
+ichren
+Trübehte wuherer Präſident de
+reits be ei ioſe Univer
+ſität mit ſmigung des Profef
+II hia (Hehe 4 kaitelt
+Htie ni",,,,3706,4389,2662,3084
+,c10,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-mid/bottom,"alt> eine t'lil wer inr die velili
+scheu Mswriüe i d l>achten, in Ivel
+(Hortsctuiiw siche ,iuritc Zcitr.)",,,,3703,4369,6378,6789
+,c10,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,legible,True,wc-mid/bottom,,,,,3703,4369,6378,6789
+,c10,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-mid/bottom,"eine Art Si X die politi
+＋
+ſchen Mißgarifi trachten, in wel⸗
+— —
+(Fortſetzung ſiche zweite Seite.)",,,,3703,4369,6378,6789
+,c11,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-high/top,"5 itlnng? v-eitiile seine Arveilen Vellen
+i det vave. Tie Neu Perler Handel
+lainmer luchm Nanse de-.- 7age
+einen Peschlns; an. ivelcher ertlarl, e
+ei nnvediugt nett'.vetidig, strengere
+! besetze gnr Negntirnng ven Zeven -
+i verlichernng? tgempagnie'ii nnd iill
+lichen tN'jetllchasleu, ivelchen grepe
+seldsmititien gnr Perwaltnng anver",,,,2317,2992,3166,3588
+,c11,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,,,False,wc-high/top,,,,,2317,2992,3166,3588
+,c11,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-high/top,"ö‚
+Comite 7 ſe lrbeiten II„ volle
+Ne Yorker 5 Hel
+Die
+—— 5 15 ＋*
+Hammer nahmein niſe de —ag
+ů lcher ertlart,
+einen Beſchluß an
+⁰ W unbesi übedingt t I 500 ſtrengere
+.
+ö ö
+(Geletze zur Regutteung von Leber
+hericht ugLorlittigtein Und knr
+lichen Ger Iu lhen (chen Irons
+30 Geſetlichäften, arm
+Geldſummen zur Verwaltung anver
+1",,,,2317,2992,3166,3588
+,c12,,sn83045081_1905-10-06_ed-1_seq-1,,2,loc,,,False,wc-high/bottom,"te?, N'evert m Nallierine Tennell,
+>!inder im AN ' an resp, 11, 7 und lu'
+a-aliren, tan in der leplrn Nacht
+bei einem n e! Wepming ilirer Kl
+lern, einem vierileckigeu ""
+Hnnie an -er N- id Avenue in Preet
+tan an gel ertra enPrande um'? Ze
+ven. g,vre ktterii wurden givar ge
+rettet, sind n aech schiver vervrmml,",,,,2336,3004,5471,5894
+,c12,,sn83045081_1905-10-06_ed-1_seq-1,,2,as,article,legible,True,wc-high/bottom,,,,,2336,3004,5471,5894
+,c12,,sn83045081_1905-10-06_ed-1_seq-1,,2,ours-tesseract,,,False,wc-high/bottom,"1 iatherine Donnelly
+—— 5„5 12
+Kinderemn rehl und
+„ der Ienten letzten Nacht Racht
+Jahren,
+bei ein Mohnung ihrer El
+ter! ctiaen töckigen „Fla
+Hauf id Avenue in Brook⸗
+1
+ů rande um's L
+1 ů
+ben wurden nurden zwar ge
+F ſchrver verbraunt.
+rettel",,,,2336,3004,5471,5894
+,c01,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-low/top,"Ein gutes Mädchen iur allgemeine Hausarbell
+ln einem ans zwei Personen bestehenden seinen
+Hanse in Washington, T. C. SieiigeS Helm.
+lreundNche Behandiung. Adrcsiire an Mrs.
+godidi, 2l W. Arving 2>., Ehr Ehasc, 'Md.
+(QN2- 8)
+Verlangt:
+Erfahrene Kischin, guter Lohn, sowie Mäd
+chen siir allgemeine Hausarbril. „Linliiig Un
+rmploliment Exchange,"" 201 Hotzma Building,
+II Ost-Lrington-Strafte. (ONI.IJ.TLISI
+Verlangt:
+Arbeitsame Haushällerin; moderne Haus
+in der Vorstadt: vier Erwachsene in Kamille:
+zniriedensleilend.",,,,79,755,896,1305
+,c01,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-low/top,"Ein gutes Mädchen für allgemeine Hausarbeit
+in einem aus zwei u . beſtehenden ſeinen
+Waſhington, d 6 Stetiges Heim,
+Hauſe in Adreſſtre
+ſreundliche Ab an. Mrs.
+Irving St., Chevy Chaſe, Md.
+80 i 42.%
+Verlangt:
+Erſahrene Köchin, guter Lohn, ſowie Mäd⸗
+chen für allgemeine Hausarbeit. „Linking Un⸗
+employment Exchange.“ 201 7% Bullding,
+90
+11 Oſi-Leington⸗Straße. 1.1,TYS)
+Verlangt:
+Arheitſame Haushälterin; modernes Haus
+in der Vorſtadt; vier Erwächſene in Familie;
+zuſfriedenſtellend.",,,,79,755,896,1305
+,c02,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-low/bottom,"Ernst Lohrenz, v.; v.;
+Emil Roß, v.; OK,stau Petzei. v.; Walter
+Wirlhs, v.; Ernst Weichler, v.",,,,2823,3495,6342,6562
+,c02,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-low/bottom,"1 Neumann,
+33— Guſtav W0 Pehel, v.; Wallet
+15.960 3 eichler, v.",,,,2823,3495,6342,6562
+,c03,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-mid/top,"v.; Johann Panels, Hanwurg. v.; Jakob
+Joß, Malslatt, schw. v.; Ludwig Kappler,
+Nennkirckien, sckUv. v.; Nikolaus Müller,
+Bliesbrücken, schlv. v.; Otto Schumacher,
+Schalke, lv.; Gfr. Josef Hcrrman, Her
+heimwever. lv.; Wilhelm Junker, Uhler,
+todt; Tamb. Gustav Kindlcr. Wanne,
+sckv. v.i Uv. Emil Ungcr. Brannschlveig,
+lv.; Johann Rimalk, Geislautern, schlv. v.
+2. Cvmp.: Lt. Esther. schlv. v.; Heinrich
+Küver, Gelsenkirchen, tvdt; Jakvb Mül
+ler, Saarbrücken, todt; Fw. August Adolf",,,,3518,4195,2733,3142
+,c03,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-mid/top,"5. v.;
+Johann Pauels, eudwi v.; Jakob
+805 Malſtatt, ſchw. v.; Ludwig Kappler,
+Neunkirchen, ſchw. v.; Nikolaus Müller,
+Bliesbrücken, ſchw. v.; Otto Schumacher,
+Schalke, lv.; Gfr. Joſef Herrmann, Hex⸗
+heimweyer, lv.; Wilhelm Junker, Uhler,
+lodt; Tamb. Guf tab Kindler, Wanne,
+ſchw. v.; Uo. Emil Unger, Braunſchweig,
+lv.; Johann Rimark, ſchd. ſchw. v.
+er 5.:
+„Comp.: Lt. Eſcher, ſchw. v.; Heinrich
+Küver, Gei ifentirchen, todt; Fatob Mül⸗
+ler, Saarbrücken, todt; Fw. Auguſt Adolf",,,,3518,4195,2733,3142
+,c04,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-mid/bottom,"Carranza'S zugekommen sind, besa
+gen, daß nach einem einleitenden
+Tressen, welches südlich von Naco,
+Sonora, stattgefunden hat, die Trup
+pen des Gouverneurs Maytorena,
+welche angriffen, den Rückzug antra
+ten. Es hieß, die Allgreifer hätten
+keinerlei Vortheil über die von Ge",,,,763,1427,5825,6234
+,c04,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-mid/bottom,"Carranza's zugekommen ſind, beſa⸗
+gen, daß nach einem einleitenden
+Trefſen, welches ſüdlich von Naco,
+Sonora, ſtattgefunden hat, die Trup⸗
+pen des Gouverneurs Maytorena,
+welche angriffen, den Rückzug antra⸗
+ten. Es hieß, die Angreifer hätten
+keinerlei Vortheil über die von Ge⸗",,,,763,1427,5825,6234
+,c05,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-high/top,"Eoutract Spot... 78 —...
+Hafer. Zufuhr 750.501 Bü
+schel: Versandt von deu Elevatoren
+082,127 Bnschel: Elevatoren-Vorrath
+1,280,121 Büschel.
+Heutige Tchlußrate:
+Standard weißer 50(4 —50
+Nr. 0 weißer. .50 -. .
+Roggen.— Zufuhr 100,002 Bü",,,,4202,4833,829,1238
+,c05,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-high/top,"Contraet 4051 78
+Hafer. Zufuhr 756,594
+ſchel; Verſandt von den Elevatoren
+382,427 Buſchel; Elevatoren⸗Vorrath
+1„280,21 Buſchel.
+Heutige Schlußrate:
+Standard weißer 50%½
+.
+Nr. J weiße 50
+Roggen.— Zufuhr 106,932",,,,4202,4833,829,1238
+,c06,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-high/bottom,"vm.;
+ge, vin.; Johann Kandel, Oberaßbach,
+vm.; Hch. Beck, Steinbvckenheim, vin.; I.
+Hofmann, Saalmühlc, vm.; Gfr. Leonh.
+Lindncr, Fluß, lv.
+4. Esk.: Johann Wellhöfer, Nordheim,
+vm.; Angnsl Malier, Reuth, vm.; Frohn
+lvieser, Gachenbach. vm.; Georg Oster
+matzer, Lindach, vm.; Joh. Weigand,
+Brachenlohc. vm.; Aug. Nainsbcrger, Re
+gcnsburg, vm.
+0. Chcvaulegcrsregittient, Batzreuth.",,,,2142,2822,4214,4623
+,c06,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-high/bottom,"vm.;
+vm.; Fohann Kandel, Oberaßbach,
+bim; ch. Beck, Steinbockenheim,
+vni.; .
+Hafhnm, W. vm.; Gfr. Leon
+10h,
+4. 6 Floß, ———
+4. Esk.: Wellhöfer, Nordheim,
+vm.; Mayer, Reuth, vm.; Frohn⸗
+wieſer, achenbach, vm. ; Geor Oſter⸗
+mayer, Lindach, vm.; Joh. Weigand,
+Brachenlohe, vm.; Aug. Ramsberger, Re⸗
+vm.
+5„
+0. Ehevaulegersreqiment, Bayreuth.",,,,2142,2822,4214,4623
+,c07,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-low/top,"Verlangt:
+Arbeitsame Haushällerin; moderne Haus
+der Vorstadt: vier Erwachsene in Kamille:
+permanentes Heim wann zniriedensleilend.
+Nachzusingen bei Mift E. D. Grane, Timo
+nium, Md. (5cp12.0tt1.3.k,7.0.10,
+Verlangt:
+Frucht und Gemüse . In
+Junge Frauen, um
+Biichsen zu verpacken: schäne, reinliche illebeil.
+Nnchzniragen bet Miller Bros. L G„ Wolfe,
+und TgamrS-Straftc. Man sraac nach Mr.
+Ebrmaii. SeplL.lMi)
+Brrlaugt—Männer und Knabeu.",,,,111,757,1225,1633
+,c07,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-low/top,"Verlangt:
+Arheitſame Haushälterin; modernes Haus
+der Vorſtadt; vier Erwächſene in Familie;
+ermanentes Heim wann zuſfriedenſtellend.
+Lachgzufragen bei Miß E. D. Crane, Timo⸗
+nium, Md. (Septeo, Okt1, 3.57.9„10)
+Verlangt:
+Junge Frauen, um Frucht und Gemiiſe in
+Hüchſen zu verväcken: ſchöne, 14166. Arbeit.
+* Wlr.
+Iud V.ameh Ein ze. Mun 1
+u ames · Straſſe an
+brman. (Septz, 1Mt)
+Verlangt—Mäuner und Knaben.",,,,111,757,1225,1633
+,c08,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-low/bottom,"nnd Bnd, huben Gasitzeil, cementirte Keller und
+feststehende Wnlchznbcr Tie Front der Häuser
+besieht ns vitristzirten Backsteinen nd zum
+Theil au Marnwrplnllcn nnd gebraucht nie
+einen neuen Anstrich.
+Alle diese Häuser sind in seder Beziehung
+modern eingerichtet. Schulen und Kirchen sind
+bon dort bcauem zu erreichen.
+Dieselbe müsse gesehen werden, um sie z
+würdigen Darunter sind medrrrc Läden.
+Die Preise werdrn Sie uderraschr.
+Lfsc täglich nd SonnlagS.
+Walter L. Westphal.
+i„,d Erbauer, an Ort „nd Stelle.",,,,74,758,5999,6407
+,c08,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-low/bottom,"Gasöſen, Pie Front Keller und
+Raett Waſchzuber. aaſtelnen der Häuſer
+Leik m65 pitrifizirten. Aund und zum
+heil aus Aalniled latten gehraucht nie
+eine Idiele An
+Rundern ei Anger W und Kirchen 7
+96 0 1
+bon dort beauem zu erreſch ů
+Dieſ müſſen unter u werden, um ſie zu
+1210 en. üwerben berrat Lüden.
+0
+en tägllch und
+We areengene und Sielle.",,,,74,758,5999,6407
+,c09,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-mid/top,"Palnoslaco, lv.-, Hugo Krause, Wolfen,
+lv.; August Nowaczhk, Kirchliude, lv.;
+Karl Tesche. Hülsberg, lv.
+7. Comp.: Mar Ruhnke. Gr.-Katspe,
+schw. v. i Hermann Rcinert, Unrnhstadt,
+todt.
+8. Comp.: Hcrni. Schubrath, Schla
+pvlv, lv.; No. Walter Weber. Barmen,
+lv.; Otto Peters, Linde, lv.: Paul Rich
+ter, Cvmrcscrau, lv.: Paul Rau, Ziillich
+an, lv.: Karl Stabs, Schonbrnnn, lv.;
+Albert Röseman, Lcngefeld, lv.; Hcrm.",,,,3520,4196,1130,1539
+,c09,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-mid/top,"Palnoslaco, lv.; Hugo Krauſe, Wolfen,
+lv.; Auguſt Nowaczht, Kirchlinde, lv.;
+Karl Teſche, Hülsberg, lv.
+7. Comp.: Max Ruhnke, Gr.⸗Katspe,
+v.; Hermann Reinert, Unruhſtadt,
+1055
+odt.
+8. Comp.: Herm. Schubrath, Schla⸗
+pow, ly.; Uo. Walter Weber, Barmen,
+lv.; Otto Peters, Linde, lv.; Paul Rich⸗
+ter, Comreſerau, lv.; Paul; Rau, Züllich⸗
+au, lv.; Karl Stabs, Schönbrunn, lv.;
+Albert Röſemann, Lengefeld, lv.; herm.",,,,3520,4196,1130,1539
+,c10,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-mid/bottom,"mar.
+Hause, todt; Heinrich Franke, Binghan
+sen, schlv. v.; Christian Knevel, Ge,„leck,
+chw. v.; Friedriai tllroll, Ellershausen,
+schlv. v.; Heinrich Hafer, Ellershaufen,
+chw. v.; Wilhelm Müllvt, Bnhlhorn,
+schlv. v.; Allgnst Spohr, Löloensen, fchlv.
+v.; Uo. Fritz Köchling, Twiste, schlv. v.
+Masch.-Oleiv.-Comp.. Gfr. Walper,
+tvdt.
+Ohne Aug. der Comp.: Wilhelm Ellen
+bergcr, v.; Jakvb Gießler, v.",,,,3511,4169,4662,5070
+,c10,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-mid/bottom,"mar, Sachſen⸗
+todt; einrich Franke, Binghau⸗
+len, ſch ſchw. Knehel, Gemleck,
+en, v.; Chriſtian
+w. v.; Friedrich Groll, en,
+Cuersban
+v. 9. Heinrich Hafer, Ellershauſen,
+Wilhelm Müllot, Buhlhorn,
+ſorn v.; Auguſt Spohr, Löwenſen, ſchw.
+J.Uo. Fritz Kochiing te, ſchw.
+—u v.
+Gew.⸗Comp. Gfr. Walper,
+Ohne 179. der Comp.: Wilhelm Ellen⸗
+berger, v.; Jalob Gief Gießler, v. v.",,,,3511,4169,4662,5070
+,c11,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-high/top,"dy Whack"" ist die (beschichte eines iri
+schen Junggesellen, der sich in Mona
+Eairn, die unter seiner Vormund
+schaft steht, verliebt, nachdem sie meh
+rere Jahre in einem Eollege zuge
+bracht hatte. Tie Pflicht von Paddy
+war, das Mädchen an einen jungen
+Mann zu verheirathen. Ter Kern
+der Geschichte ist, wie Paddy",,,,1460,2124,3068,3477
+,c11,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-high/top,"dy Whack“ iſt die Geſchichte eines iri⸗
+ſchen Junggeſellen, der ſich in Mona
+Cairn, die unter ſeiner Vormund⸗
+ſchaft ſteht, verliebt, nachdem ſie meh⸗
+rere Jahre in einem College zuge⸗
+bracht hatte. Die Pflicht von Paddy
+war, das Mädchen an einen jungen
+Mann zu verheirathen. Der Kern⸗
+der iſt, wie Paddy",,,,1460,2124,3068,3477
+,c12,,sn83045081_1914-10-06_ed-1_seq-7,,2,loc,,,False,wc-high/bottom,"Maude Müller und Ed. Stanley mit
+ihren Tänzen und Gesängen. Tic
+anderen Künstler sind Allen Tine-
+und andere. Ferner wurden auch die
+enesten Vorkommnisse in der Welt
+dnrch den Kinematographen gezeigt.",,,,1449,2126,6133,6542
+,c12,,sn83045081_1914-10-06_ed-1_seq-7,,2,ours-tesseract,,,False,wc-high/bottom,"Maude Muller und Ed. Stanley mit
+ihren Tänzen und Geſängen. Die
+anderen Künſtler ſind Allen Dine⸗
+und andere. Ferner wurden auch die
+neueſten Vorkommniſſe in der Welt
+orrrch di H Häzent",,,,1449,2126,6133,6542
+,c01,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-low/top,"Inijui's-Jfil 1 1 tiit Vny lu-
+ji ri.
+tir;ilih -Sunn liii'iiIfiiiNof
+Till- lii'rt'lll I'litl'IH'V.
+W""n. th- fam..u- St.
+nn'-ti
+b.ivr4l.. i-turn-sl tram
+.i- amatrnr
+-..-.. Vol rs-lii. He ha. i' '""""W
+for Ms defeat ht WUon I'. I'ow
+Iter
+tlnal sam or the rw in I'lass A
+ill.-
+t 'r- ""
+n.m-nt. tir-yowl fae fart",,,,307,945,1091,1535
+,c02,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-low/bottom,"I'lRhl lliey plaied he had m
+i.r--'' tlval lip 11: it.e ili. Tl.ei Mere
+1 mors alHiut even p r.ith wa playing
+111th t'le -oiilideiH of a man thut lias
+not ins 10 Io. Ii) defeat and e.-rthln
+. cam by ilemry. while To-. .i:onihrti
+..1 Smlihs n.rve. iva hesld.. liinfelf ullli
+ear that the i'la IS man mh-.ht le-nt ld!n.
+Ihiwi tin- time lie made a shot that th-
+l-f.-tee lefll-el t nW Ps illltpedlatell
+jo-( his head entirely. ..nil phomed loudli
+' What"".-, that? Win. I mad. Im-.oii.
+it
+l-nbt'""
+Ihe referee. liolev.r. refused to .hallfie
+,- ,.. i-ion. mile's Smith nas wiilms. ThN
+put it up to ihe lltt.1,. St. I.otiisin. who ven
+prompt lj 'iinfes-eil that he thought io
+had made the hl'.liaid. Of tour-e. J...",,,,264,956,4534,4978
+,c03,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-mid/top,"l...r VI l.aiideinali. V. I M.-.ie. . s
+fl.vltl. J i lt.(. ... H. Ma.ihulte J Wh' I.
+U. 1 :i.tyt-.. -- ij,.j-ei U.-lnaid
+jk .1,.
+tlei-..i. . M M.,,11.,,,., ,bi t. .-.. .evil.. ,
+A l.'Hkto-r. f r sf Lean. )! tiltker .1 i' !l
+kit a id f II smiih
+Ihe f..llt.ninc at, n,,. entries to tl.e Tur: t
+...,
+areM. stak.s. new .tKe. iilu.li . ont; rti.f itie
+1 hones in lit- ,-f itllll'e .Ju.u.l 'ra
+tietle. ltii.ii-lto.ro. Itrt-havi-ai. f.trl I Imp 1. t
+.11- llllfke. .
+Ketiuane t.u,.n. Itotterd I'll. Tl. kfnl
+l:eued. Al l-'r.s.,,. -jri-n. Kull llless. H-.i.l
+!UI t iKMieelia. s-..i-t. .ii-r.1,.11 Krink Tlni""
+mi l-ktrtur. Illi-lil;,:..! I-ttl. IM.imt.us. Ut
+and Means. II.- .., tUi'. I.i.-J'rn.tiil C.i'.y
+.,.
+i.laetnaker IJ.I,r i;jr. --a la.ai U Oi-tt,,.,
+stt.aint.-r. Sam ..,u,. i:r..,:o.k. The i'..ii.ii-i.jr
+.1. lilt tl-'ehl. Cbetliatdl. I'.i'tn. r. liteatlatij
+an I
+I-la .'jn.1.",,,,2378,3053,1342,1786
+,c04,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-mid/bottom,"i..M. t-.. markft arl s. ih.it iti-le . a U.its t
+ft l-m tn th. i...tli-n TK .11 i.j -ii
+-It.i .l-.t-l u. Th .r
+lli.ni aiMl t.ill Is-1 -rat ..
+a-
+N. t t .:f( Iji"" la-n fi3 f J. KmiM. t
+II. '""t. it. Yw i .it.Mar.t netit fi-M.T. whiU
+I tiiiatinx tit ih ih- -ilti . Ut. vti.tilt
+i-n-Mlt"" nakirx tiff-rt :i villi tha I.Ihm:i- i-i
+ot1 kraitvn. lv- ,ll If h- n-.t i. k. i- mmi
+Mtn ami 1T i'.tnt t-.-r.. t him. 'iStv lw- at
+t-t hi.v' htm ir tl- t. r.Inii-- ItfHrMk
+it v.tH.M th-tH t.ir V-. '' t i' l. tI hv
+w.ail'J IV lu.k t turn tif iti'k fr any aniai:it.
+Ih. . ha- fitHi'l it ar uttlv i h. t r-.l.ti- .M
+th ir -AJT williiiR t' yny J3.i ft.r
+rn2n
+iZrltnn t li u. A rnan 'f Jl.-1rt k- -...-.-.l m
+itil itir-iTwi f I""-- tlnn it,""'"". :iM !
+niM s-i tl.' -al. rv lin.ii N it vuuM 1 nrit'fi
+. I.ai--. Ti. ii- If.klit'. tr.- ."" h aa.kf-1-m",,,,2361,3048,4798,5242
+,c05,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-high/top,"Ulooil I'oianu- I vasi. F t -w. If"". r -
+Irtnon iilanHl'""' - M -' oir5
+"".t
+lrr .t- h ' fctr.'Pt urt
+,
+Ilea ""I ll r-ftil .- '' ' t'rn
+M.ru1nl'i""t- r ''ir -t:rltit -r a-nu!r 1.
+- ..i.r.1 fiits.fin.i-.rv : -2 i1iHt ft at
+lard -KV-fi
+PR, WHB i
+HARDWARE MENT0 MEET.
+tjiiili' .-s.u-i:iiioit I :.-itis- Its An
+una I r-i'.s-sinit To-!;;.",,,,3801,4478,2895,3339
+,c06,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-high/bottom,"Iti-nnin. -. .niv-ittMrri ami
+-iil'l, its of 11'-;.-
+or .ut- "": ' ''i'' !.'rd.ir. t...-
+toul- s
+ll... vi-i'.or- witl Ik- '''""""'IV.'
+r..-msht '
+with a lii-.t-r party. ', ""''-,,',.0J '.,;
+Mai.lw.r- Al-ns : -m "" t '. ,
+I..,- i:.i.i:l -;
+i-l'-I.t thrv tUl l. .
+ml t..-n.orro '
+:"" Ht NMi-'a.- Hui. I
+., iiaiLpu; ..'.
+-...tn. t.raatuit ll.
+EEACHM ON TRIAL
+JAMES
+nf iht- Mtiril.'i- i 'A'illi;""""!
+Ai-1-iis.i'il
+l'iis.l'!l Sl'llll.",,,,3758,4446,4101,4545
+,c07,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-low/top,"K' - tilth tlif iv-jrln 1't --f. : Sir.
+I -- ih.'ii M.'i.ilit-.i e ir n .il iiimi. ..ti-
+h""- tue rin- of ihf Rain.
+litirit'M llu;;Ktil llu iScilt.
+Th- iay thr billh luinl tli1 ra!' oo
+m- .- cnt-ush to Ii!i-at!t.ii a ?lo.l.
+Tti"" u'torlj rt-fiiM""! m K't tosethtr for m.
+.io.J ovi-rytlilin; I sl tas :ioltl.'Vtsi ihr-Misli
+: it Iianl-st l.lnI ot liiilianN. With Mr. Kos
+' ii a .tust tii -tjiiKMlr A I said h.for-.
+a- K)ii a- thins ' cj'ifitrp.v.l to hri-rik
+u .fl f r hit :!' y -oiu!nt:t.l to J u.lh
+.i ""nsisjriii that almovt i:im r'd me !.-
+Mre'i With both of u tit and v.-dl I i-.lnl; il
+.
+thin l'wr",,,,273,959,2858,3302
+,c08,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-low/bottom,".e it el-valed to the Jei'el of jtc If. ;!!-
+'irh.-t and oih.r liith-r!:is gam-.
+-j if I do -say it mj -.'If. 1 sinee;-!v o.
+tl-.it the refer t amateur
+tournament--
+lfi ut drr ttie aiiph-e of t-
+Knielc-.-o.
+her Athleth- I'hlh are n'llleil to all
+teiiit tor tile r-ent levival ""f llltre-l
+h' :aine 0 Mliiaril-.
+'at le Smith aid Tine. hi- of l!..-ton ;h-
+. ra. k ,la I! men. ai. .-im!:!! to a
+it .r.-llt for .h.- ?!:olni: itth of t!i.-n
+. the recent tonrr-n Mr. Thie-ni
+a dTshlns. natutal liilll .t'ii--, nit. Ji .. a
+a; futtne l. f.ro liiti I.- N onli T
+-a or -it-, and 1- im:aovii!; eon-tan-li.
+ti-m te- a;-.n.l. .-r KlUri ihe le.-t I ""a""",,,,316,956,3872,4316
+,c09,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-mid/top,"M-k '. i!i ' ""il I- -. - -"".. i-T -.
+-. 'l ;: ti-uin- .n '.-Itia N- ! U U HH -i
+1'i-ti tn -r.l-r Miii wilt tn.t-t i a . .i
+t . X vi -L f-T 1 1- .il Tlut . a
+!.-iti.-t ti. l.js.tt.1 Kii-ttan tn ..tr ift
+HtiJ.ti tut vt rl haf.:anl ii Ij ' .
+1""riii. ""-!. .!. la a. sr.tlran and a t'.'
+tll-. ukf ! h-ari t!w . X'.uz i! itr l
+t. tr"" !.. r that Matun I'ffc!: - j fir-1 n-arl
+nt- mIicv mr'n: -lalt th- tliir- -tr-. tha lf
+na- r it, th. 111. n iut..
+"" t liai- m Vm.I -.' -;- vT--'. ""l.ti! wln '
+.:i t .ii- f...tkd . .li .iti- 'i ittwta t
+t1.- ;-nt)M- .if I -lutiin-r tl.- i-ir' ar I in1 t;
+tuti Itilt in ttartl. Ul .r Ilri;-ii nii h-lf
+n. .!- .-aiir tr .ni '- W; .l i,- i
+,
+. -Ii df t1j.h 1.' inl t ;- i. r l'.i limit a-i
+il.- ivatiTt vilt v-tA '..r a Mi(.n wc'
+ht - t I;-ikii -ts in i.tirlj ; d 1
+t.",,,,3069,3731,2714,3158
+,c10,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-mid/bottom,"I.K I1.n1 .-Mlln V"" lull l ale IW.-lm i.l
+Islntlitsj. lito . inn t.-a.s PC'i It as a
+In-ui- "" t
+I...-H 1.. f""l a Ihi.J la-tiMu.
+tia:-- awl Kloof', iht- K :- awl lifts .tif foil
+of tn-s-i. .Ji. I..HMS has 'ui..- f.f-1 ihirl Mrtf.
+1 -.-!.. n to. l-liila.o-l.sMj .s.. ttall.motv 10.
+t r.i.oro tr.o. I'm-to-iti inrts. iiii.'ina.it t;iTf. .
+a"" 1 tti.-l.- t.tu a... i. -sti. sr-l MHHllH
+... Ml a i-ao. alfcl ou n.l trl l.iao
+-
+a..-l-i.! h .am. cav v..:h ..st'ii i-.in.i.
+'I h.- la-l lit.- .mrs of ir.- K..MI- Has lillti-4 nt
+l.'.l ti.i.-.. fi.sa -t.nl ;i.' . I I J.. li-nwM
+.nit 1II1-IS41. Tht. Dim vioo .. lilt- ini.t4t.-. 1
+i-l.lt 1.11 v-ars ax art 'norr llll-Tis Ji.il..
+.Its. l.tuiM.i M. 'ri-t. l.ir.K la an-l b-ls. I.ms
+.ilatH-t xas m l-l r-.ia in lh- .sil-in
+Ia .u last nr in In' ;.snl'.ii. t:!in .SJilllt
+i.l lb.- Ix-st s)..ltsl-... Taint- inn ta- i
+ii a tai tar two trou ill nrsl !. Is ,,; -t..i
+i. -..n.l ..oXms an.1 ..ris-.iu"". nn: jh.i as i;",,,,2365,3051,4309,4753
+,c11,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-high/top,"ilot are .-vtri .. tr.- i'.-i i.t.'sit.on th.... !rto
+t oiijtli l.t ...linear- - - T-lntli-lfs. l-a.;iifil 'it ---.r-.rv
+Nit l!U.-UIe t fiiii.il. . .:i. -iVottl i.i lw ttithoii: I.i
+It-i il .-.rtwih- .inin.i ii.l tbut'-icrHbi.' r.rr""""' l'""-'
+lsan.l ai;. Tl.. i. lv..le. I atl.litli.n K. H. m-tl-.
+.f IKtMrinsli la-.t.;tuol itttM. n .Y.br.i.'es. tli. ...
+ik. -..
+olUtiiil lusiorv ..! in- i-:.HHts uimJ h ir tss'ir.-.
+.-ilH'liett t,t- Isnth the .m.-rl-a iiitsi Pta-nli'i flor.-rnn.. n:
+-l! TIh-
+.vi b.'.vr ii.il ... i. s.i:t tour raise tt.
+It--iiiMi
+a Its I a reof : tallte will .-all on you. Btil t
+rill ii.-.! he .'sk-d to s,:i,-tb.- t'il.s it I- vuur pleastir.-
+'It. so,
+Sir. J W. Kuet. ti.e .l-nnvcn autb..r and nn-l""
+at- ""I ;. m n.,t Kl..n iv lihll-. lloi:.ate t i'se ar.i
+mill hllte re nhs-H I .i-iin.iti.-all;. .is tare tlit Our
+I--lai!.l
+ami Tl'ejr IV...le is twy i,l t .Mr.jM.ns- n. nisi",,,,4115,4996,1262,1706
+,c12,,sn84020274_1900-02-20_ed-1_seq-6,,1,loc,,,False,wc-high/bottom,"W.-ikoilt fol!..w-I li tlirt-lllf.nl r......tlr. ,?
+1 w - -....... -
+j :;.. National
+1 i'oitulist t'otnmitt-c to-iiljrht.
+1 th. .'titi-fusio.i I.-idrrs'. pf'.T I'avinc
+11
+t:ttr--U
+r of tfc-ir f-l'o.i.-rs turnt-d down i.y thu
+I i""r-I. iiti.il t'omniitt oranizttl :i b-.'
+: .
+mi. formins 11 new -oii.tnitt-.?. Tli- ir..
+fiitrnlilt- to fusio. n-I'-rs
+.if.-r tn'op:!:.; t-
+' It purl of lit- t'rvtlrtuiirs I'oiimiitlrr.
+:nl-loiirn-d
+tipllt to-nittrtow whrii In ;.'I
+II:-li!i-..1
+i' will .inTs.v.-rr tli- .-! ilrtnan '-r a
+.-I'nunlit ""f llii.-t- to rill tin Nati-rial
+""onrrtitioit for th- sam- i-itv anrt ,.r '
+'.inn .itn li tit.io.M . .tl. ...t... .,. .
+hrU.",,,,4421,5129,6499,6943
+,c01,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-low/top,"steps are being taken to înt-~
+prove all phases of the living
+conditions of these persons. The
+extent of improvement needed
+is great, and for the forseeable
+future such states as Delaware,
+Maryland, Virginia, Tennessee,
+and Mississippi can expect a
+cont ' nu ' n ®. aa ? airly constant
+ex sure to dlsase",,,,3944,4589,357,770
+,c01,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,article,legible,True,wc-low/top,,,,,3944,4589,357,770
+,c02,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/top,"Limeade [6 59°
+»»
+WITH
+LEMON
+A&P REGULAR
+Fries 6 XV 89c
+OR CRINKLE CUT
+5-ox.
+Waffles 10c
+pkg.
+4 in",,,,1656,2324,2942,3355
+,c02,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/top,,,,,1656,2324,2942,3355
+,c03,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/bottom,"Butter - 70« U 72«
+Cheese BENCH CURED lb. 59c
+Sharp CHEDDAR
+Swiss Cheese DOMESTIC Ib. 55c
+BY-THE-PIECE
+Kraft Velveeta CHEESE 2 Ä 79c
+FOOD
+Fresh Milk '/i-gal 45c
+ctn.",,,,3562,4442,5020,5433
+,c03,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/bottom,,,,,3562,4442,5020,5433
+,c04,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/top,"Center Cut Ham Slices
+SUPER-RIGHT QUALITY
+BONELESS",,,,2391,3139,1987,2400
+,c04,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/top,,,,,2391,3139,1987,2400
+,c05,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/bottom,"Fresh Fruits and Vegetables!
+MEAT NONE
+CANTALOUPES each
+ICEBERG NONE",,,,1893,2861,4039,4452
+,c05,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/bottom,,,,,1893,2861,4039,4452
+,c06,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/top,29' 39' 39',,,,496,2126,1673,2086
+,c06,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/top,,,,,496,2126,1673,2086
+,c07,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/bottom,"Jane Parker Bakery Treats!
+CRESCENT
+POUND CAKES
+MARBLE 29 c
+each SAVE 20c
+OR GOLD",,,,390,1272,4032,4445
+,c07,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/bottom,,,,,390,1272,4032,4445
+,c08,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/top,"Fresh Beef Briskets ? 59
+Fresh Spareribs SUPER-RIGHT QUALITY
+Cornish Hens (|i/ 2 TO 2 lbs. AVG.)",,,,2378,4008,2770,3183
+,c08,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/top,,,,,2378,4008,2770,3183
+,c09,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/bottom,"■— - - - - - —
+Jane Parker Bakery
+CRESCENT
+POUND CAKES
+MARBLE c
+each 29",,,,370,1079,3995,4408
+,c09,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/bottom,,,,,370,1079,3995,4408
+,c10,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/top,"ALL 7 INCH CUTS
+il
+Rib Beef Steaks",,,,445,1088,2347,2760
+,c10,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/top,,,,,445,1088,2347,2760
+,c11,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/bottom,"Blueberries =; 33c Tomatoes 3i;!L85c
+B
+FANCY WESTERN
+e Red Radishes,
+Bing Cherries . 39
+Green Peppers
+FRESH or Green Onions
+Hearts of 2 and 3 25* Year for 25'
+Celery la pkg. Ckoleal",,,,1524,3154,5378,5791
+,c11,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/bottom,,,,,1524,3154,5378,5791
+,c12,,sn84020422_1961-06-08_ed-1_seq-7,,1,loc,,,False,wc-high/bottom,"Chase & Sanborn Coffee
+10c Off ON CHASE Coffee
+AND SANBORN
+Pillsbury PINK LEMONADE
+FROSTING MIX
+Dazzle Fluff
+Cut-Rite Waxed Paper
+Yuban Coffee",,,,3469,4135,5903,6316
+,c12,,sn84020422_1961-06-08_ed-1_seq-7,,1,as,,,False,wc-high/bottom,,,,,3469,4135,5903,6316
+,c01,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-low/top,"of the moan
+just appearing in the eastern boriaou. send
+Mg a thrill of strange, romaatio delight
+ta
+CtaiVa heart, as aha gated their beau
+upon
+ty- Thera is n peculiar connection between
+the glorious moonlight and the love of bu
+a
+man b«art Seldom does tba lever fail
+ta
+declare that mystic tic of
+sympathy between
+®ia emotions and the moonlit boor, if
+even
+it is only tacitly acknowledged the
+by fre
+*••** rhoioe of snob an evening for
+long
+wsiks *ith tba laved one, or
+solitary ram
+for romantic meditation The calm",,,,2912,3756,3991,4531
+,c01,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-low/top,,,,,2912,3756,3991,4531
+,c02,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-low/bottom,"; ran God now for the i
+kindly atrok* though then it saemad i
+aa
+vere.'
+'IIavt.jou aver mat your faithless lover
+since T'
+‘Yea, I met him wifi hi* wife and child
+L ke Loid Hyron, I kitted tba child
+for its
+parent's sake; bat not beaaanv I loved him
+attll; only I f. It grateful to God that b* '
+waa tba instrument, though unknowingly, of
+r,geD*TBtion ; and »o I could forgivu Lim i
+all tb* sorrow be aver caused ma,’
+‘And yon have naver that 1
+regretted van",,,,4669,5570,4337,4877
+,c02,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,,True,wc-low/bottom,,,,,4669,5570,4337,4877
+,c03,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-mid/top,"ibao
+mrlody. with a world of meaning in
+it, to b*
+developed in a future of love.
+‘Dre.ni on. Clara,’ mi^hl
+a pitying angel
+•ay. na he guarded her slumbers, ‘for
+thy
+waking hours may be lea# and
+bright jey
+Morning came The duties of her bom*
+••re performed with unusual
+alacrity by
+liars, and bar mother remarked that
+aha
+•earned happier than ever With
+tra* ma
+trroal sympathy aha was solicitous
+to know
+the earn.*, and womanly discrimination
+ana",,,,3824,4680,2115,2655
+,c03,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,,True,wc-mid/top,,,,,3824,4680,2115,2655
+,c04,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-mid/bottom,"povter ttfalike ivtpr.-e.weM. vbirk
+vtaJera *etrace baa
+btovgbl lo ike aid o. Utobraark
+ul taaauftr.ur*
+Ill nr«4.,T.n»,»f M *>_A.
+bo.rto
+**'d'* *r«toaaar* wiih ik.
+rid r.'rr»b.»r
+* w ’ ,w**
+z itoMt to im k««.
+k«|Mr» UL<^uM« T 4iul«l»if
+i™ >M ••
+V* «-*■!—*•«■ » M..* aur
+r**1 ** Vtii*!* wkrfMktov.itti
+r««<t (War U», a, » w.
+lk*
+till »""< Oif t» • iN^ffd r ft f • ilfM
+l« f
+*• § #i rf«t v «(fi<*t mi
+Ai« , u* *h
+itfir t|t« *M to Mi f ibt'iM i|f«
+cvk",,,,5554,6422,5721,6261
+,c04,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-mid/bottom,,,,,5554,6422,5721,6261
+,c05,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-high/top,"jrrnElrTf *r* ••r-r. *•» r..M.
+!^rVT *• r*»* .. *
+N
+A*
+■
+la
+»«
+a
+*•£ <*W« «■ «. *iti Um it***
+o4 Sc4»lv »m| BfD,j
+••**••bah Ulo., .kr. >b7l
+mliurt. art* •■
+f*r Mtf|**t*,'t. with lb* Ml l«».r. ib.i
+ikr> cm
+!.P77./rt'77^ krolfh a~f lira t^r",,,,2051,2905,2408,2948
+,c05,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-high/top,,,,,2051,2905,2408,2948
+,c06,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-high/bottom,"toaato bartre ...i umpbaft.p l&toaaa
+art*, aart ba to torn otoort Let -a r to.. *,££1
+caa^jarsatarsTMaa
+"" ^rsuarwsK.
+.Bf •*-• »to —• I—pwrlaal t—rt, «*aab-«
+rf“* ,
+“t— — «p—rtrt, aarai4 art Ml rtfm —
+~ *arta to tba atoM ftrrriat part OaMtfH et,
+2^’k;.X=^rr ---
+*to.mg8ato—.
+sje^SsSSSbk' “
+;
+p. tolto—a —lrtftortrt ~lr*»rttotolb",,,,326,1204,7551,8091
+,c06,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-high/bottom,,,,,326,1204,7551,8091
+,c07,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-low/top,"apparently enjoying the
+| rights and scenes eroaud her A broad,
+rich tract of meadow land in
+apread out
+front of tbe garden, which imme
+pretty lay
+diately bat rath the window, and it
+through
+meandered the gentle river wboaa
+waters
+sparkled beneath tbe beams of the moan
+just appearing in the eastern boriaou. send
+Mg a thrill of strange, romaatio delight
+ta
+CtaiVa heart, as aha gated their beau
+upon
+ty- Thera is n peculiar connection between
+the glorious moonlight and the love of bu
+a
+man b«art Seldom does tba lever fail
+ta",,,,2889,3774,3732,4272
+,c07,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-low/top,,,,,2889,3774,3732,4272
+,c08,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-low/bottom,"the sigh
+; trg af tba ev«niag Lraaaa in the branches
+of
+• tbe wevgreena atouud. wi h
+an nudeAnahle
+emotmw af mingled lata of aadae-a. Too
+often are the tone# of sorrow
+mingled with
+I them of lore on earth, tut
+ai CJara gated
+\ upward at the gredua'ly forthcoming
+atara,
+aa the evening shades came on. aha thought
+of the land where tin- n< to* of love and
+jov
+alone may barmonis-', and there swee’t
+was
+r**re in the reflection. Thu* is
+evermore
+tbe remimbranoe of the Und
+brevenly a so
+!eee to the of life, to tba
+weary sorraw",,,,2882,3765,4677,5217
+,c08,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-low/bottom,,,,,2882,3765,4677,5217
+,c09,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-mid/top,"old Tillag* eha.ob, aid it
+we* a .ummer
+afUra,M>a aad the yellow
+••aheaiao oor*
+*V through the ««at windows, aad Ik#
+•dear hair of tho old
+dc.ooa, oho *at ia tho
+M»ytt woo turned to gold ia iu
+light, and
+tho tain liter, who wo mead
+to thiok could
+aecer da. eo good waa ho, had
+aoaala lad
+application' and ‘caburtatioo,’ aad
+tho etf
+luge Choir wero singing tho laet
+3 hymn and
+tho taae wae Corinth '
+* l» i* dare
+year*— we not think bow
+*!a« ibea many
+nod 'the prater. .,f D,iid. ttl",,,,5599,6473,2096,2636
+,c09,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-mid/top,,,,,5599,6473,2096,2636
+,c10,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-mid/bottom,"'“'tv'""* kradete. Ar 0 »e|
+Mr tv l-« va* iak.fi a* ike tiaadaid
+bare, of the
+lkev.ucra.ic yon,Vi-pima.
+ml „, »| reraaia-K*
+I r re...c.i*a r Wbr ike. yi.i
+**cA are* *
+a« ot frciiua I* klr. D,-n»l.«a V
+Ai'J*mJrn Cmultr.
+N TnirrPiu, hr
+*»■-f l|t |j ^
+»* • r‘®« miithei mtaal*. tuied
+at ik*
+United to.aie* araaerp ta ihal vbirk
+cup. baa i-i.t
+l»ea kruaaki it> perfrcltua under iV»
+d.^erkm of
+■he var depariMeat, a«d vkirb
+vltl k- mafter b*
+Made tor the taitira Tkit
+vraaca veleh* akttl
+?!*"" ""k^kali P* ka* ike ride karrtt. ia*
+Maeaard povter ttfalike
+ivtpr.-e.weM. vbirk
+vtaJera *etrace baa
+btovgbl lo ike aid o. Utobraark",,,,5563,6426,5246,5786
+,c10,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,,True,wc-mid/bottom,,,,,5563,6426,5246,5786
+,c11,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-high/top,"Ja^frrmaa - i* Atcn.1, Vi.r'r,
+/aaufcwr- M klialat M Macrfc. Jaar, Autan. N t'r.
+Afaaryc;a t'fc Monday m Mama. Jana, Auy.a.1, N .y’r.
+Pfcrn I'll Maidtr M M.rrfc, Mi), Aaital. X.anakcr.
+Jlrrlit|k«a - II kloala) x Krfc'y. Mat. Any Nor.
+,
+Mraaiatf A - Mm fcH ■*,! Tana la M'eti. Jaan.kay .Nat.
+li ar, an 34 Monday aa Vuirfc. M at, Aual, Nut 'Wi.
+# MOSTUi.Y CO CRT*.
+/Wnir«- Mm I ll'arrm Tkirl V>«Im
+• •I 1 •'""hr. Tmt"" YumnU Moral.r
+tv*. ld M<« wjas.il J J. a.rora Tfc.rd >1 %Mar.
+4th M m la Mkrr m- nki I SttmamJamA - M..dii M.
+Har4|t-M« W( IhTm. h»«4 Tarsi.)
+Mnkaiaf -Ai«na4 MoraUf. .YJanyaa I'auik Mua4aJ
+,
+Classification",,,,314,1184,3474,4014
+,c11,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-high/top,,,,,314,1184,3474,4014
+,c12,,sn84026784_1856-03-20_ed-1_seq-1,,1,loc,,,False,wc-high/bottom,"• ""‘MrAt C Terry,
+11 Y Union, ml Aam*l TV., '.in
+TWa Maryam*-TV that as P kirruait.
+Ufa J*bn«lon,
+BALTIHIORE LOCK
+WHKBK mar Wnkiiifilik* m
+»rtp for aft prime f'.Maplair.t*
+tor—, ft*—I Wrabaem. rum to <ba
+**•■• Briar,. Ito— rf tba
+Norn tort rt». tort all tbaaa rtraartM
+***** •""*•* batot to feat*, arbirt
+****** Itotolita, lairt f* Marriapa
+tba aart rtatoayi tort toalv aart alto",,,,320,958,5610,6150
+,c12,,sn84026784_1856-03-20_ed-1_seq-1,,1,as,article,legible,True,wc-high/bottom,,,,,320,958,5610,6150
+,c01,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/top,"?tU? GE.t FOIST WHACK a'
+""THEN you can Give him
+^55? ""^HT",,,,5046,5730,3971,4496
+,c02,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/bottom,"I DOnTT TplM< MUCH \ v
+0"""" OUD MANTKC.MP.SONU
+, R>C-HT NOW B'JT l k
+i wish him luck ;
+[ AM Y'A/tff 1 - y^~",,,,3854,4544,4246,4772
+,c03,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/top,"o ; x A,v; ? A Am D H'- e .
+T.-.v; i v O'.P - I
+oc-CiC r tE'-i *me v
+RUM DOVjutO th5t v?LUAGE",,,,676,1396,1307,1833
+,c04,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/bottom,rm;?r ^ i^*' ? /ttw,,,,229,1859,7818,8343
+,c05,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/top,". v.o > n-*.
+? ?. ' ?? ? l-ORSE o-- YOUR
+"" '' ~ > ~~ ""
+&MI3
+'? - < ?/ at Th =
+' TH 3? Vb'j can
+' Du. H >1' __",,,,5295,5964,1389,1914
+,c06,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/bottom,"I DOnTT TplM< MUCH \ v
+; 0"""" OUD MANTKC.MP.SONU
+, R>C-HT NOW B'JT l k
+i wish him luck ;
+[ AM Y'A/tff 1 - y^~",,,,3832,4550,4285,4811
+,c07,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/top,"?tU? GE.t FOIST WHACK a'
+""THEN you can Give him
+^55? ""^HT",,,,5045,5711,3935,4461
+,c08,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/bottom,"; 0"""" OUD MANTKC.MP.SONU
+, R>C-HT NOW B'JT l k
+i wish him luck ;
+[ AM Y'A/tff 1 - y^~",,,,3837,4522,4323,4849
+,c09,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/top,"oc-CiC r tE'-i *me v
+RUM DOVjutO th5t v?LUAGE",,,,676,1411,1415,1941
+,c10,,sn85038615_1914-08-09_ed-1_seq-37,,1,loc,,,False,wc-high/bottom,", R>C-HT NOW B'JT l
+i wish him luck ;
+[ AM Y'A/tff 1 - y^~",,,,3832,4496,4367,4893
+,c01,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-low/bottom,"*••"","" "",i? -""v'T '•/,•*
+f-!*,•?' /V'
+'Lf,* K,. ,.r TPS. |,V I,' i,-'-1'-
+«, ^yr- It u *•.
+'^i'' *r/""''•«» v
+h^ ^1 .i,,"" y v",,,,4332,5047,8336,8920
+,c02,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-mid/top,"THE FARGO FORUM 'AKD DAILY REPTTBLTOAW,",,,,1474,3104,114,697
+,c03,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-mid/bottom,"t» t, •'1 i I, ,/?&' 5-'^ {'. it V it- 0,, m!4 ii-*"" V *i 4 4 """"tibf Jtf* »,| J. ,,, 'Lf,* K,. ,.r TPS.
+& 4 *ii£c *t» ""('V «, ^yr-
+*•H ""v '^i''
+t*/* h^ ^1",,,,3012,4642,8641,9225
+,c04,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-high/bottom,"wrapping and postage. All orders will be filled at
+Call or write for one to
+FORUM FLAG DEPT., Fargo,",,,,2462,4092,6086,6670
+,c05,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-low/bottom,"3x5 feet size, CAp
+each '*,•• vvt
+accompanied by 5c extra for
+will be filled at once.",,,,3463,4499,5775,6358
+,c06,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-mid/top,"«jj aBWHWW.^ J""IP»I"" MAmmmAWI",,,,832,1500,14,597
+,c07,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-mid/bottom,"WILL 8ISTRIBUTE FLAGS AT
+To allow every home, ho matter how humble
+flag. We have secured a quantity in two sizes,
+now ready at the following prices:
+4x6 feet size, H||a 3x5 feet",,,,2262,3892,5353,5936
+,c08,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-high/bottom,"Out-of-town orders must be accompanied by 5c extra
+wrapping and postage. All orders will be filled at
+Call or write for one to
+FORUM FLAG DEPT., Fargo,",,,,2462,4092,6025,6608
+,c09,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-low/bottom,"»j s ,*-**
+•'1 i I, ,/?&' 5-'^ {'. it V it- 0,, m!4 ii-*"" V *i 4 4
+4 *ii£c *t»
+t*/*",,,,3096,4079,8608,9192
+,c10,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-mid/bottom,"FORUM FLAG DEPT.,",,,,2254,3884,6275,6858
+,c11,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-high/bottom,"Call or write for one to
+FORUM FLAG",,,,2463,3189,6158,6742
+,c12,,sn85042224_1915-05-24_ed-1_seq-16,,1,loc,,,False,wc-low/bottom,"1 f-!*,•?'
+4 4 """"tibf Jtf* »,| J. ,,, 'Lf,* K,. ,.r TPS. |,V I,' i,-'-1'- ?v v v
+""('V «, ^yr- It u *•. tf
+*•H ""v '^i'' *r/""''•«» v *v
+h^ ^1 .i,,"" y v i.T,",,,,4033,5275,8608,9192
+,c01,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-low/top,"5 rooms, J stories, oast front. good well water, fruit trees,
+one Mock froni c:ir lino: ull fur I t 5'-; lii'im. fan you Mo tetter anywhere?
+.
+1 1 no rash, 2i) monthly !or 3-rocm cottage, modern, south side.
+I 'rice 1 1,000
+for 4-room eottai'.e-, modern south t ., side.
+fir.O cash, $20 monthly
+I-rtco 1.400.
+Aire lot, fi-room cottage, deep well, (toon sort water, ctikkcn house,
+barn, tine peach, plum and cherry trees aim hemes, ull for J1.500; terms.
+Ami in Tulsa! Mow much more do you want
+Wo TTo (D)WEM9 MflfljM Now
+(E(B",,,,27,1284,1654,2049
+,c01,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,,,False,wc-low/top,,,,,27,1284,1654,2049
+,c02,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-low/bottom,"Fine east-front lot, close In; will to suit customer as
+little- as $300 rash if we build, or will sell o $50 cash, baanee $10 month,
+b per cent. Trice $650.
+11x140, with two s;od frame, plastered houses, on pave street. l'rice
+for both, $2,'I0; terms. Here's where yen can make a thr.uscnd.
+Small cottages with payments of 1100 cash and balance like rent; 3
+to 5 rooms.
+Hotter sec mc at once about these or any food Investment,
+PHONES 4670-552. ROOof 25 HAYWAUD BLDG.",,,,38,1292,3565,3960
+,c02,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,,,False,wc-low/bottom,,,,,38,1292,3565,3960
+,c03,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-mid/top,"r,i.i
+lr.o frtr itiiw U Hllv $12 (10(1. A I1I10
+for an offnp hlock fr oil toni
+tti
+iKiny.
+VHONK 4670-.152.
+SflX ILdDirS CIHI1EAP
+deliver for one .week six lots.
+fun
+nil together, close in, for Hie very low
+price of $1,200 Mr all. Minium oen.-.
+11 invest nient In Tulsa. $700
+balance Ioiik time at ti per cent.
+cash,
+Pon't pass these ny.",,,,1287,1917,1663,2058
+,c03,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,article,legible,True,wc-mid/top,,,,,1287,1917,1663,2058
+,c04,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-mid/bottom,"FOB SALf 4-room hooae close m. Price
+I 2!0, 9V0 etih, balance terms. Pbone
+43 Of).
+FOR KAI.K Koomil lt liouvea. euj uroperty
+and farm lanl; lurue. (nod bargaini, l'hone
+605.
+Ft It HAi.K Foor-room honae eloae in. Price
+11,250; 250 cash, balance term a. phone
+430(1.
+FOR HALF. Neat five-room bungalow, by
+owner. eav terini Phore 2f02.
+FOH ftl.R Five-room cottage, H44 8outb
+Unaker. Phone B291-B.
+SAi.B bongmlowa and varant",,,,1301,1933,5646,6041
+,c04,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,,,False,wc-mid/bottom,,,,,1301,1933,5646,6041
+,c05,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-high/top,"All bida will be opened and eonaideriMl by
+the Cametcie Library Hoard at a meriinic
+of the aatd board, to hi held June 'J7, lUlti,
+at 111 a. m, at CollinMVille, Oklahoma.
+II. C. HOLLMAV,
+rhairman of Library Hoard.
+KENDALL CITIZENS
+WILL GET TOGETHER
+rli inlly Mass Mu'lliiff lo TIn""iihs
+ComiittC liilo it y Ocoiin",,,,3803,4435,2555,2950
+,c05,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,article,legible,True,wc-high/top,,,,,3803,4435,2555,2950
+,c06,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-high/bottom,"all means we
+It has become a part of Tulsa and la
+looked forward tn eagerly by all. It
+has been one of the bluKt-st adver
+tisi nienls for Tulsa und has helped t'
+up mad its faino to every part of tha
+country. It Is to this city what tn
+Mardl iras is to New Orleans. We
+nn.Mt have one tins year sure.""
+Sheriff James Woolley ""I never
+had more fun In my life than I did at
+the l.urliar. Next lo runmtm for of
+fice conns the excitement of waiting",,,,3811,4444,4472,4867
+,c06,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,article,legible,True,wc-high/bottom,,,,,3811,4444,4472,4867
+,c07,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-low/top,"covered with forest trees. We are alile to sell them on EASY terms
+mid the first buyers that come will be the lucky one. REMEMBER
+there are only 44 of them. Only NINE blocks from the BRADY
+HOTEL.
+This addition is well built up with moderate homes, served with
+TWO ear lines, and in easy walking distance of the center of the
+city.
+us at once or call",,,,21,1279,686,1081
+,c07,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,,,False,wc-low/top,,,,,21,1279,686,1081
+,c08,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-low/bottom,"liberal contract offered in the
+state. Loans made without delay.
+Tunc H((flwii!all Car.
+Tlione 2C2
+210 R. T. Daniel Bldg.",,,,671,1302,4794,5189
+,c08,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,,,False,wc-low/bottom,,,,,671,1302,4794,5189
+,c09,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-mid/top,"feet, cistern, shade, nine rooms
+and servant house. Trice $4,750.
+Is worth $5,500. $2,250 cash.
+Tltac FIlEflwD)!nal Can.
+Phone 2(12
+210 K. T. Daniel Bldg.",,,,1285,1918,2354,2749
+,c09,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,article,legible,True,wc-mid/top,,,,,1285,1918,2354,2749
+,c10,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-mid/bottom,"lot. I'hrnelHH4.
+foil SAI.fc OK F.XCiiVNUfc Vatai.t iota.
+PLone 6041.",,,,1305,1935,6064,6344
+,c10,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,,,False,wc-mid/bottom,,,,,1305,1935,6064,6344
+,c11,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-high/top,".
+MAKIiAlN li.Miil 2 i acre miliurlian tract
+north uart of eity. for al liarfain,
+a
+mall iiayiui'iit down. Itoom 17 Kachaiie Na
+tiomit Hunk
+HARljAIN in fruit farm. mostly peacbes.
+fiiht cron til in neusun Siiiiiiiir now till
+Sepien.l.er On lloek Inland I, .!,, Kurt Smllli.
+I' I, Mellon rl,el..-ii, okla
+Hi: s vi. K oi kx li vm;k rki una firm
+I'iihI . a I s i . .inl,.r la'iii in tiii!i. raiiCKij
+1 VI ii-n lo one .irr.-ii an I ii I'ln.nr
+Klllt TUMlK linprnviMl 20 acre farm. li.,ne",,,,2538,3170,1387,1782
+,c11,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,article,legible,True,wc-high/top,,,,,2538,3170,1387,1782
+,c12,,sn85042344_1916-06-18_ed-1_seq-15,,1,loc,,,False,wc-high/bottom,"K. It. Young, agent
+Pfioo ""I dun t like the Durbar. Its
+too much work for the railroad man,""
+V. A. Moore, agent of the Frisco
+""We're f',r th' Durbar. We hauled
+more people during the last Durbar
+than at any other meeting or conven
+tion in the history of Tulsa.""
+R. J. Mcftine of the Stanley Me
+Cunc Co. ""Hy all means have a Dur
+bar. It Is the only advertising stunt
+ever pulled off in this city with re",,,,3819,4449,5644,6039
+,c12,,sn85042344_1916-06-18_ed-1_seq-15,,1,as,article,legible,True,wc-high/bottom,,,,,3819,4449,5644,6039
+,c01,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-low/top,".. I il. H'.s*k. am Wr».t I Ib.lt. .!...« ftt*.
+Mttrri.tk *lr.»t Pmtiwt.. *'.. tiinattlata:.
+Aafl, t.t A V AN W V K,
+4b^dA N I I'a,.- .""I a M./ak
+Ml Till: SYI.ihiS OVER .lolls
+I II I Irt HHot llkH a HI *,..nt,t .'l'f.|
+IHtflv ait.'.t. U I'l la III. aa ..
+/», g.Mad 'I#'-
+iman 4t»ip?i 11. an i.i
+•HlW I It I I- ., iba i.au..aa
+MiaKHIe. A**tl.~«a
+1* «t."" "".l.i il ii.i l.s i aat PaH|
+RESIT Hid t«E i'N I.E t'l-inK
+an », |.a.wt Hwiia.atd lk»|aM» It. I a I alia
+laat.lH .k -...•• .f II- I^.i -taudsl,. ti... it Ii
+na.s-.ra l*a Ian,4 land tinar ^f i«sa- at»t-lt a'
+.tt-a. I a a .t. .lit », I Itft!, a'ld l«
+.'int.
+...Vfl s \MI I Hit 1M4",,,,5835,6497,3068,3640
+,c01,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-low/top,,,,,5835,6497,3068,3640
+,c02,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-low/bottom,"Mrrlit"". W I I .li..1. i|.,,:*and Inaaarra, a. 1
+*t*rt tklbg waua :. k. pi in a ttn rj.i,.*!, aFufalaHii^
+Ht r.
+I K I NK ii
+Fn I^alkvi '11 'ink*aaad '.'ailata. W.'d 1' tr
+ri**t 4t.d t'aakii It„i. a.|.. i Hag* ft*
+ltr»d »i ..|.| 1 1 iiti.r
+aplUdtk -Akit. Ft i'KRMV
+IdHMlaa ^Vm.
+ASl»*»t I.ONlHiN HAS l.oHT »»Nt: OF IIER
+I'lfifta lluVi.lH.ft It AO taP «,f ||.p
+u i i*|p •«l Itu
+*.fl Ifltflt a if IU I-.I 4....ftmp,
+CaNks. a laaarrra, ir»ll«gat
+%hinm» ami l«laa« aa
+l""'aa» talwIalaaK •«»*»•!»,
+evrr l« IM* aa CAMTKHIt ipi
+KiY«a •-""it AU «*t»*• »n»*'f»• »it 4* |*r. I irt ».«4- itM?tr»",,,,4967,5752,5996,6568
+,c02,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,article,legible,True,wc-low/bottom,,,,,4967,5752,5996,6568
+,c03,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-mid/top,"l^nirulftr 4kM«l,t1 UtfHcli to tbt* Uili i»| tiftlMM
+pajrutni of Ta*pa. txirr*ncli^ vf lUai L»uir.»»
+,,f Ijiul Title*. i A- aulkal)
+Ji*l» K NfiLl iHtltM
+NI1L« 4 UKH kl,
+ATTORNEYS A rulNSELoKS AT LAW,
+N*t ft liitdiu*! Mam tu*«t. tbasaiti »«U|nrl
+low*. nu) a IMtl
+"".•« n» I IH1. IK I LIMII
+OOK, UILUIX At I.IN»L«Y.
+A T'liiKNK^S & rol'.NSLL'iRS AT I.AW,
+A 1. ft. OR.«, til ww tuiidii^ Wlkk
+iA A """"-ii^ut
+,'t4.:iift ii. ibv of *coU, C».l«r CUkldti
+auJ cnti„i:r( liiot. »l lUt iinrMiil
+Kvik la di.ii .'Iiynn lUmeU
+lir ..|i«^t|.,i, Mr •Urnlr »*|wetai",,,,1097,1856,1413,1984
+,c03,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-mid/top,,,,,1097,1856,1413,1984
+,c04,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-mid/bottom,"Oat at,. t*t k. !«J K
+IHMn 1,4 Itavta aub iBird Kai........
+li .1 Madia W l» .1 II 11 W k IW
+i' ""t ik
+A kitlrr |.iaiJ »»K
+Ua«i« I W J, II, k
+U WiMi. I. 11 and li. aab N W MB W*
+34 71 3
+W ll.siiaii l.t tl I. I* ..
+U It W n ''J it:,
+W K Oab. til l.llil HtklAW Mli
+llutn|ikrr 1. {. ai.tf a US'...... ........
+.11 Hiat' I. l. liBl ,i,ido( Mil .......
+N H.n.fc l.i.t Ml I'l tiira-lun .........
+1' Uraadj 1. aHk4
+A llttkwto,M Iti aadlt.la.Slt
+Jolt 11 II*Ira. Lf03 RarruwfM",,,,2638,3325,6140,6712
+,c04,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,article,legible,True,wc-mid/bottom,,,,,2638,3325,6140,6712
+,c05,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-high/top,"A1Tt»RNK\ ATI.AW* NoTARI PIB14T
+MR«o- Hra iv •tfv.-t Hrcr*t.l, «»*r«
+*rtilicb«i i- r. •J lHi.vrU
+n rarg
+DA V1«OlV TBt K,
+ATTORNRVr a roi'NMELi:s AT LAW
+a*t
+NUTARIKtt IM'BI.Ii'
+On Ihtdi allot In 1 'niaiin Mil taMRaa
+awpl?4*wh
+AHO« MOVKM. 44,
+TTOR.VEV AM I'ol'.N'isELuR AT LAW
+«»«-.' N n! W. .i ,i Uaiii Hawmd
+lt»ll*«»- fc* i Jb I'ltua i.«|»ruau A
+ll'H. iAUln «»k. Wall iifitti ,N Y
+|t i .u*ir, iHrtcHt MirliifcA.. I.lvai.i4
+i rr*'«i(|riit tUuk »i| iinuicrri- .,i.„, Uaa
+liuartia i.i j,|b«i",,,,1175,1852,3140,3712
+,c05,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-high/top,,,,,1175,1852,3140,3712
+,c06,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-high/bottom,"i^flata aati ,-aa I tli.- i.vt..e uf
+'ii' a1 'I .1' it li ""ttc*- At &r.>tt ll.juaa c""ta*r
+Krout at.d Uattia- u attaata n• I v
+.'M IXI SCR WORMcV.'
+HOMiK.i'I*A i ill1' l'll\ jJK'IANs ofKICE,
+••ai .ii'i a item l""ii,gst. f* ...lut nf l'«rr
+4i.d Ibiiu atiMta )aC(i d3tu
+J. H. MAKKR, M. D.,
+PIn IY8U IAN A.M» SIHUEUN ufFIfK
+l*nat oM.'r lli tk lU .af N..r:h alia of
+HAht'mt Ifiviti |:taU ki.o l\d, f«U^(
+DtN T. OUNAtlKN,""
+Poffi. I VMM'I AN :t lU.J.i A A' i ""ICUEUR
+t^#- ..i af'.t: |»»ain il. t'abiia) liaata
+i.u»t:if
+UOtT. J. H'lirilMlfliif
+/OFFERS 1114 I'RMFEstiloN Ai. SEKVJI'ER",,,,1081,1844,5796,6368
+,c06,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-high/bottom,,,,,1081,1844,5796,6368
+,c07,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-low/top,"P»rrt »t» »i *e.- »it -h crotril «f tine furtii
+tore aa it there ^athen-l W.. |i.| in.i think
+«tl 'he dealer in 11.. ,-,iy .Huhim-tt ha.l tucli
+a tt.K-k at we thrro l.-itnd in lh* different
+warrrooiotof the Mattrs MrXVtl They Lata-
+6rt lartft «ca-r «wi Iw^i.li*. bai k sini|t an*i
+|nra ba*t cm wait*. I aluioti tra.ni rt«Kr to a^-iling
+with t'urniturr varying tmui ilia* ttanmona**!
+arlia l.-t to th* Duett ri»""«i»«l brK-aiia* and
+Hlarbia- Tltl* Ita.tlta* Mlp|lia*i| l. .||l lb*'
+larKett F.aalern uiaiitil.icttireit tlw* turuituta'
+'""•iltj I lit. I|«ll\ ia*a a'i«a*d laera* ili pi I...- •.!
+up atnl rt'tiUed iu tlia* kli.i|ia oi thha e«tal»IWh",,,,2642,3390,2624,3195
+,c07,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-low/top,,,,,2642,3390,2624,3195
+,c08,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-low/bottom,"A ISO ITROIIANED THE INTEREST
+iHA |*artfpr i*« thr wpI' liiMian |ry 44«*W«
+I *|i.V »'A*. laliHM lat |k#Al r|ii»r |t» it*
+I am 1.'«r ai i. **W rf.»tr* y ta ^iao*'»
+k 1 aani.a'.-f k^ I- i' male** r- i»*i ft«i i,« »ii
+l.aora A* m* r.« w tf «-1a aati! a«**t: arrit« I am *1*
+i«*tt»»iii*'i| ati1. aii Ui.* a*
+AT iro«T,
+a* it"" l»a» my »'.* Ivt. l.orr* In tb gMBHM
+a 111 br f.i.ii..I ttak .attri,a*
+Ml'MRKIt l.p.V l.'HII.-
+KMHMOlJiHttK: l.Vli IH**ll£KY
+I \|ilt KA*. V Hi itH,
+CUitl lllNo ""IT Al l. BTTI.EH
+ttt:V*l HJHNI-llltNi. ll'IOHH
+hah i Al-H a» ar
+_KHl%1battaiaan.il-. a .-at"" fr-la tbetp aa",,,,5042,5756,7357,7929
+,c08,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-low/bottom,,,,,5042,5756,7357,7929
+,c09,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-mid/top,"na.s-.ra l*a Ian,4 land tinar ^f i«sa- at»t-lt a'
+I. .tt-a. I a a .t. .lit », I Itft!, a'ld l«
+an.- .'int.
+...Vfl s \MI I Hit 1M4
+INIRt |4C\Hi fxm TIKM IfrAKH
+a Uha rvtii #1# #•*». 1,. if,
+!.«•! a«. II,. iM,., t.| Ut.l ^.d
+«4*R t'tdtlA HIM I* IO A«|||. ta'
+I a lf«» i 1 laiaMii «Hp|r la,.-»•.* *a
+»t»p|i »»p aif»|' gad«-»
+A Tk. I ii» |. ir a' fli .i
+Mi' II till Il.i II
+Sov $alt,
+A I. tINie Lf't I'fMH St.",,,,5756,6518,3535,4107
+,c09,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-mid/top,,,,,5756,6518,3535,4107
+,c10,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-mid/bottom,"|Mfoia(i'*it
+j|i*4 Kri,Vii'k ttl tfr»titn4r rvltirtMi
+))ff 'V k.ti'.!fn»-l.iU r.ru
+4rr«l II I »Mi»Ui.ff inr^ ih«- Itir,
+itu) U ^»ii.a»«ur* tiia' twit dt«i».i« r»-tl^Ji H««
+t))f ii""\pr fitn furyrt. aitU li^r Mfiirtl aittl •U.cvf#
+WR)ri thai aurh r«!»inll m«v %rr
+«M.
+I rrak Meat*.
+fHI ROBM RIHER IIAH TA
+M- KEN Tti# t-'Tlti Mt.i:! in tltf
+i^eC'Atr^ llarK^t lluii*** and
+Im Uf y t* «i«, liafkxl i g.xxi «aa»»riiu«ui
+bm Me*** llu-ii.hr hf»i, I'tfg «uga§«-l lu lb* b«ai
+WW ii« w »Wi«i r.Aju'••1 (.it W.u.w itit#ijalogtTt hllu
+Ml hf wtii at.I# ««it
+jW i KJ It A Y^
+'h*ice FmmUp Fimnr.",,,,334,1071,7874,8445
+,c10,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,article,illegible,True,wc-mid/bottom,,,,,334,1071,7874,8445
+,c11,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-high/top,"Two w.rka til.*'
+lkr*t wr.kt ....... 4 ... i i »**,.
+'i'* ""tar.'aJn 'L« »ic i
+«Mit..,.|ll i.l
+far ,r k» If, third* ..f ill# khov*
+Jt#a:i..». jrliu. ,-.,i new,flu.uu p*r
+F«I eaci. itiangv ajditwua. -tiara* «f tk
+per ttiuare *vil: br tnadr
+«t^riv w|!! b« und«r«iool
+vj m'a-- Wtia.atMvf
+""*W »:nl a.: u'b'-r «.l'.«rl,nwi.i it.
+uiv«.ti»fr *ft .« h»rki VIU4
+.:!• uut ini'^nU I ».it r-rlit*ii
+tvrtiw..* f« ir.««n«l BUIII roitotd U|
+l.uifly
+A4v«:rlWai«ni« iu«ti«(l mi
+Sa:i'*»f. !*i|i""»« u b»Mroi*M v»r]OM«",,,,312,970,1740,2312
+,c11,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-high/top,,,,,312,970,1740,2312
+,c12,,sn87058152_1857-09-01_ed-1_seq-1,,1,loc,,,False,wc-high/bottom,"Hu »bl lueabt that Dubuque had eracted
+more hutiaaa last veai than lareoprrt anal
+afpeart to admit that kavr are.lei uiutu
+tkm veai Tba list of Uouaa* prepared hera
+.Httpriaed ail Imilt froiu August 1 IH6C u
+A ug 11 tt 1 1867 uumberinp 1 214 agaiutt Du
+btM|ue &\hj The Ltfn tst now tabbiea and
+ara it meant by la«t \ear the year I860
+What hat that got to do with making a rom
+I'trituii l^t*a*a*n the prvaeiit pi.npa-ritv of Du
+buqt,a and Davrnpoit which we umleratuoai
+to Im the objrct of I be inveatig atirni1 If there",,,,1859,2631,5890,6462
+,c12,,sn87058152_1857-09-01_ed-1_seq-1,,1,as,,,False,wc-high/bottom,,,,,1859,2631,5890,6462
+,c01,,sn88053055_1901-03-09_ed-1_seq-1,,1,loc,,,False,wc-high/top,"W AIIE, SA.TLHDA.Y. MARCH 9. 1901.
+WILMINGTON. DEL A.
+i i
+i i Received Injuries l : rom hazing.
+Cent*.
+Boston, Mass., March 8.— Fred UNCLE BILLY
+blooil, dean eric Kensel has rcccutlyr resigned
+perfect health— his cadetship at West Point Mill* OR AND
+Cathartic will ob tarv Acadeuiy and will return to GOES AHEAD.
+for you. Genu his home in the majestic Cambridge
+('ole and
+C. C. C. Never ruined in health by hazing while
+Coon town come
+druggists, ioc. sick, He entered West Point, on
+on Monday",,,,1590,3077,291,654
+,c01,,sn88053055_1901-03-09_ed-1_seq-1,,1,as,article,legible,True,wc-high/top,,,,,1590,3077,291,654
+,c01,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/top,"SgKBBp; Man * n the
+. w
+, /Ox
+-a
+hK ns/r A",,,,1181,2811,1863,2178
+,c02,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/bottom,"Monster Merry-go- .: MV
+Round, Ferris Wheel A",,,,1299,2496,4173,4488
+,c03,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/top,"kjsr A; . w
+, -a
+wB hK ns/r A",,,,818,2448,2002,2317
+,c04,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/bottom,". • - - «•*- csBtSSEiR?
+WHIP wF",,,,1323,2669,3808,4123
+,c05,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/top,"ri l r
+011? Celebration
+OwF
+SgKBBp;
+kjsr A; . w
+,",,,,775,2405,1772,2087
+,c06,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/bottom,Wild Animal Show,,,,357,1987,4674,4989
+,c07,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/top,"yBSf ’Twill
+ifSS fourth",,,,291,1921,1376,1691
+,c08,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/bottom,"WORLD, AND OTHERS
+a BIG WILD ANIMAL SHOW",,,,509,2139,3220,3535
+,c09,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/top,"n: 7
+A
+V",,,,146,1776,730,1045
+,c10,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/bottom,"-’;— -> . J Beauties of the
+Arabian Nights
+I ■>• • I <.U 3
+Shapely Diving Girls in the Neptune s show
+Daughter” Water Show",,,,308,1938,2535,2850
+,c11,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/top,"j F ri l r
+011? OwF Celebration
+SgKBBp;",,,,775,2405,1707,2022
+,c12,,sn92067236_1917-07-05_ed-1_seq-5,,1,loc,,,False,wc-high/bottom,"One of the I Ij J | I I 'll |lll
+f
+Beauties of the I
+Arabian Nights I tOOKing flt the
+show | p aces \oo. /",,,,1687,3006,2458,2773

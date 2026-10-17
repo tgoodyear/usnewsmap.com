@@ -102,12 +102,15 @@ SQL
 # - plan_class_spec.xml was copied once by init, so a changed template (the 9.0 client
 #   minimum, 2026-10-14) never reached the share.
 project_tree() {
-  local i inc="$PROJ/html/project/project.inc"
+  local i inc="$PROJ/html/project/project.inc" cache_inc="$PROJ/html/project/cache_parameters.inc"
   python3 "$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/cgi" --target "$PROJ/cgi-bin/cgi"
   cp "$TEMPLATES/plan_class_spec.xml" "$PROJ/plan_class_spec.xml"
   for i in $(seq 0 255); do mkdir -p "$PROJ/html/cache/$(printf %02x "$i")"; done
   sed -i -e 's|"REPLACE WITH PROJECT NAME"|"usnewsmap OCR"|' \
     -e 's|"REPLACE WITH COPYRIGHT HOLDER"|"Trevor Goodyear"|' "$inc"
+  if [ -f "$cache_inc" ]; then
+    sed -i -e "s|define('STATUS_PAGE_TTL', 3600);|define('STATUS_PAGE_TTL', 60);|" "$cache_inc"
+  fi
   # The project's own web pages ship in the image, so a rollout updates them; overwrites the
   # copies on the share, never deletes stock files.
   cp -R "$TEMPLATES/html/." "$PROJ/html/"
