@@ -8,7 +8,7 @@ ORIGINAL = """bool wu_is_infeasible_custom(
     APP& /*app*/,
     BEST_APP_VERSION& bav
 ) {"""
-PATCHED = """bool wu_is_infeasible_custom(
+GATE = """bool usnm_gold_is_infeasible(
     WORKUNIT& wu,
     APP& app,
     BEST_APP_VERSION& bav
@@ -28,6 +28,9 @@ PATCHED = """bool wu_is_infeasible_custom(
                         throw std::runtime_error("Gold download path lookup failed");
                     }
                     return std::string(path);
+                },
+                [](const std::string& name) {
+                    return std::string(config.download_dir) + "/" + name;
                 }
             );
         } catch (const std::exception& e) {
@@ -36,12 +39,16 @@ PATCHED = """bool wu_is_infeasible_custom(
             );
             return true;
         }
-    }"""
+    }
+    return false;
+}
+"""
+PATCHED = GATE + "\n" + ORIGINAL
 
 ASSIGNMENT_ORIGINAL = '    rtfpath = config.project_path("%s", wu.result_template_file);'
 ASSIGNMENT_PATCHED = """    APP* gold_app = ssp->lookup_app(wu.appid);
     if (gold_app && !strcmp(gold_app->name, "usnm_gold")
-        && wu_is_infeasible_custom(wu, *gold_app, *bavp)) {
+        && usnm_gold_is_infeasible(wu, *gold_app, *bavp)) {
         return ERR_NOT_FOUND;
     }
 
@@ -49,13 +56,47 @@ ASSIGNMENT_PATCHED = """    APP* gold_app = ssp->lookup_app(wu.appid);
 
 
 def patch_source(text):
-    if text.count(ORIGINAL) != 1 or text.count('#include "sched_customize.h"') != 1:
+    if (text.count(ORIGINAL) != 1 or text.count('#include "sched_customize.h"') != 1
+            or "usnm_gold_is_infeasible" in text):
         raise ValueError("expected exactly one pinned scheduler hook and include")
     return text.replace(
         '#include "sched_customize.h"',
         '#include "sched_customize.h"\n#include "gold-engine-routing.h"',
         1,
     ).replace(ORIGINAL, PATCHED, 1)
+
+
+def patch_slow_check(text):
+    target = "    WORKUNIT& wu = wu_result.workunit;"
+    return insert_gate(text, target, target + """
+    if (usnm_gold_is_infeasible(wu, *app, *bavp)) {
+        return CHECK_NO_HOST;
+    }
+""", '#include "sched_check.h"')
+
+
+def patch_locality(text):
+    target = "    APP* app = ssp->lookup_app(wu.appid);"
+    return insert_gate(text, target, target + """
+    if (usnm_gold_is_infeasible(wu, *app, *bavp)) {
+        return ERR_NO_APP_VERSION;
+    }
+""", '#include "sched_check.h"')
+
+
+def insert_gate(text, target, replacement, include):
+    if text.count(target) != 1 or text.count(include) != 1 or "usnm_gold_is_infeasible" in text:
+        raise ValueError("expected one unpatched unlocked dispatch point and include")
+    return text.replace(include, include + '\n#include "sched_customize.h"', 1).replace(
+        target, replacement, 1
+    )
+
+
+def patch_declaration(text):
+    target = "extern bool wu_is_infeasible_custom(WORKUNIT&, APP&, BEST_APP_VERSION&);"
+    if text.count(target) != 1 or "usnm_gold_is_infeasible" in text:
+        raise ValueError("expected exactly one unpatched scheduler declaration")
+    return text.replace(target, target + "\nextern bool usnm_gold_is_infeasible(WORKUNIT&, APP&, BEST_APP_VERSION&);", 1)
 
 
 def patch_assignment(text):
@@ -72,13 +113,19 @@ def patch_assignment(text):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--assignment", type=Path, required=True)
+    parser.add_argument("--sched-dir", type=Path, required=True)
     args = parser.parse_args()
-    source = patch_source(args.source.read_text())
-    assignment = patch_assignment(args.assignment.read_text())
-    args.source.write_text(source)
-    args.assignment.write_text(assignment)
+    patches = {
+        "sched_customize.cpp": patch_source,
+        "sched_customize.h": patch_declaration,
+        "sched_assign.cpp": patch_assignment,
+        "sched_check.cpp": patch_slow_check,
+        "sched_locality.cpp": patch_locality,
+    }
+    updates = {args.sched_dir / name: patch((args.sched_dir / name).read_text())
+               for name, patch in patches.items()}
+    for path, text in updates.items():
+        path.write_text(text)
 
 
 if __name__ == "__main__":

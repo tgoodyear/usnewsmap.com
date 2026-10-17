@@ -43,8 +43,9 @@ struct SHMEM {
 } memory;
 SHMEM* ssp = &memory;
 struct CONFIG {
+    const char* download_dir = "download";
     int download_path(const char* name, char* path) {
-        std::snprintf(path, 4096, "%s", name); return 0;
+        std::snprintf(path, 4096, "download/2a/%s", name); return 0;
     }
 } config;
 struct LOGGER {
@@ -53,19 +54,7 @@ struct LOGGER {
     }
 } log_messages;
 const int MSG_NORMAL = 0;
-bool wu_restricted_plan_class = false;
-struct PLANS {
-    std::string classes;
-    bool wu_is_infeasible(const char*, WORKUNIT*) { return false; }
-} plan_class_specs;
 HOOK
-    if (wu_restricted_plan_class) {
-        if (plan_class_specs.classes.size() > 0) {
-            if (plan_class_specs.wu_is_infeasible(bav.avp->plan_class, &wu)) return true;
-        }
-    }
-    return false;
-}
 const int ERR_NOT_FOUND = 1;
 int assigned(WORKUNIT& wu, BEST_APP_VERSION* bavp) {
 ASSIGNMENT
@@ -80,9 +69,9 @@ int main(int argc, char** argv) {
     WORKUNIT wu{argv[1]}; APP app{argv[3]};
     memory.app.name = argv[3];
     if (!std::strcmp(argv[4], "assigned")) return assigned(wu, &bav);
-    return wu_is_infeasible_custom(wu, app, bav) ? 1 : 0;
+    return usnm_gold_is_infeasible(wu, app, bav) ? 1 : 0;
 }
-'''.replace("HOOK", MODULE.PATCHED).replace(
+'''.replace("HOOK", MODULE.GATE).replace(
             "ASSIGNMENT", MODULE.ASSIGNMENT_PATCHED.partition(MODULE.ASSIGNMENT_ORIGINAL)[0]
         ).replace(
             '"/usr/local/lib/usnm-boinc/gold-engine-platforms.json"',
@@ -91,7 +80,7 @@ int main(int argc, char** argv) {
         subprocess.run(
             [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror",
              "-I", str(Path(__file__).parent), "-x", "c++", "-", "-o", str(cls.binary)],
-            input=source, text=True, capture_output=True, check=True,
+            input=source, text=True, check=True,
         )
 
     @classmethod
@@ -107,8 +96,11 @@ int main(int argc, char** argv) {
         )
 
     def run_gate(self, platform="arm64-apple-darwin", app="usnm_gold", mode="registered"):
-        (self.directory / (JOB_ID + "_gold_json")).write_text(json.dumps(self.job))
-        (self.directory / "Dockerfile_gold").write_text(self.payload)
+        fanout = self.directory / "download/2a"
+        fanout.mkdir(parents=True, exist_ok=True)
+        (fanout / (JOB_ID + "_gold_json")).write_text(json.dumps(self.job))
+        (fanout / "Dockerfile_gold").write_text("wrong hierarchical application path")
+        (self.directory / "download/Dockerfile_gold").write_text(self.payload)
         (self.directory / "version.xml").write_text(self.version)
         return subprocess.run(
             [str(self.binary), "usnm_gold_" + JOB_ID, platform, app, mode],
@@ -169,10 +161,24 @@ int main(int argc, char** argv) {
                 MODULE.patch_source(invalid)
         assignment = '#include "sched_assign.h"\n' + MODULE.ASSIGNMENT_ORIGINAL + "\ncreate_result();"
         patched = MODULE.patch_assignment(assignment)
-        self.assertLess(patched.index("wu_is_infeasible_custom"), patched.index("create_result"))
+        self.assertLess(patched.index("usnm_gold_is_infeasible"), patched.index("create_result"))
         for invalid in ("", assignment + assignment, patched):
             with self.assertRaises(ValueError):
                 MODULE.patch_assignment(invalid)
+
+    def test_filesystem_gate_is_not_added_to_locked_fast_check(self):
+        fast_body = "\n// unchanged fast hook\nreturn false;\n}"
+        original = '#include "sched_customize.h"\n' + MODULE.ORIGINAL + fast_body
+        patched = MODULE.patch_source(original)
+        self.assertTrue(patched.endswith(MODULE.ORIGINAL + fast_body))
+        for patch, target in (
+            (MODULE.patch_slow_check, "    WORKUNIT& wu = wu_result.workunit;"),
+            (MODULE.patch_locality, "    APP* app = ssp->lookup_app(wu.appid);"),
+        ):
+            source = '#include "sched_check.h"\n' + target
+            self.assertIn("usnm_gold_is_infeasible", patch(source))
+            with self.assertRaises(ValueError):
+                patch(patch(source))
 
 
 if __name__ == "__main__":

@@ -28,8 +28,7 @@ RUN git init /usr/local/boinc \
  && test "$(git rev-parse HEAD)" = "${BOINC_COMMIT}" \
  && python3 /opt/usnm-build/patch-server-apple-gpu.py --source /usr/local/boinc/sched/plan_class_spec.cpp \
  && python3 /usr/local/lib/patch-server-db-tls.py --source /usr/local/boinc \
- && python3 /opt/usnm-build/patch-server-gold-routing.py --source /usr/local/boinc/sched/sched_customize.cpp \
-      --assignment /usr/local/boinc/sched/sched_assign.cpp \
+ && python3 /opt/usnm-build/patch-server-gold-routing.py --sched-dir /usr/local/boinc/sched \
  && cp /opt/usnm-build/gold-engine-routing.h /usr/local/boinc/sched/ \
  && rm -f /opt/usnm-build/patch-server-apple-gpu.py \
  && ./_autosetup \

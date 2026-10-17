@@ -39,7 +39,8 @@ inline bool compatible(
     const std::string& platform,
     const std::string& version_xml,
     const nlohmann::json& bindings,
-    const std::function<std::string(const std::string&)>& download_path
+    const std::function<std::string(const std::string&)>& download_path,
+    const std::function<std::string(const std::string&)>& application_path
 ) {
     static const std::regex name("^usnm_gold_([0-9a-f]{64})$");
     std::smatch match;
@@ -70,7 +71,7 @@ inline bool compatible(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") != std::string::npos) {
         throw std::runtime_error("missing or invalid Gold Dockerfile reference");
     }
-    const std::string payload = read_file(download_path(dockerfile));
+    const std::string payload = read_file(application_path(dockerfile));
     const std::string expected = "FROM ghcr.io/tgoodyear/usnm-boinc-worker@" + image;
     if (payload != expected && payload != expected + "\n") {
         throw std::runtime_error("Gold job image differs from registered app Dockerfile");
