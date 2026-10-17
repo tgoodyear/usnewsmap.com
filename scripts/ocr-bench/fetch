@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Fetch and verify a usnm OCR benchmark release (#738, docs/ocr-bench.md).
+#   scripts/ocr-bench/fetch --version v1.0.0 --verify [--dest DIR] [--subset ID] [--index FILE]
+# Reads the release's archive name, sha256 and content digest from ocr/bench/releases.json
+# (this checkout's, or --index), downloads the archive from the repository's GitHub release,
+# checks its sha256, unpacks it into DEST (default: ./ocr-bench) and, with --verify, checks
+# every file against SHA256SUMS and SHA256SUMS against the content digest. --subset prints
+# the subset's image paths, one per line. Needs bash, curl, tar, jq and sha256sum or shasum.
+# USNM_OCR_BENCH_BASE_URL replaces the download base URL (tests, mirrors).
+set -euo pipefail
+die() { echo "fetch: $*" >&2; exit 1; }
+here=$(cd "$(dirname "$0")" && pwd)
+VERSION="" DEST=ocr-bench SUBSET="" VERIFY=false INDEX="$here/../../ocr/bench/releases.json"
+BASE=${USNM_OCR_BENCH_BASE_URL:-https://github.com/tgoodyear/usnewsmap.com/releases/download}
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) VERSION=${2:-}; shift 2 ;;
+    --dest) DEST=${2:-}; shift 2 ;;
+    --subset) SUBSET=${2:-}; shift 2 ;;
+    --index) INDEX=${2:-}; shift 2 ;;
+    --verify) VERIFY=true; shift ;;
+    -h | --help) sed -n '2,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    *) die "unknown option $1" ;;
+  esac
+done
+[[ $VERSION =~ ^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || die "--version must look like v1.0.0"
+[ -n "$DEST" ] || die "--dest must not be empty"
+for cmd in curl tar jq; do command -v "$cmd" > /dev/null || die "needs $cmd"; done
+if command -v sha256sum > /dev/null; then
+  sha() { sha256sum "$@"; }
+elif command -v shasum > /dev/null; then
+  sha() { shasum -a 256 "$@"; }
+else
+  die "needs sha256sum or shasum"
+fi
+[ -r "$INDEX" ] || die "no release index at $INDEX (pass --index)"
+
+entry=$(jq -ce --arg v "$VERSION" '.releases[] | select(.release == $v)' "$INDEX") ||
+  die "$VERSION is not in $INDEX"
+tag=$(jq -er .tag <<< "$entry")
+archive=$(jq -er .archive.name <<< "$entry")
+archive_sha=$(jq -er .archive.sha256 <<< "$entry")
+digest=$(jq -er .content_digest <<< "$entry")
+name="usnm-ocr-bench-$VERSION"
+[ "$archive" = "$name.tar" ] || die "the index names an unexpected archive $archive"
+
+mkdir -p "$DEST"
+dest=$(cd "$DEST" && pwd)
+release="$dest/$name"
+tarball="$dest/$archive"
+if [ -d "$release" ]; then
+  echo "fetch: $release already exists; verifying it" >&2
+else
+  if [ ! -f "$tarball" ] || [ "$(sha "$tarball" | cut -c1-64)" != "$archive_sha" ]; then
+    echo "fetch: downloading $BASE/$tag/$archive" >&2
+    curl -fL --retry 4 --retry-connrefused -o "$tarball.part" "$BASE/$tag/$archive" ||
+      die "download failed"
+    mv "$tarball.part" "$tarball"
+  fi
+  got=$(sha "$tarball" | cut -c1-64)
+  [ "$got" = "$archive_sha" ] || die "$archive has sha256 $got, the index says $archive_sha"
+  # Only the release's own top directory, regular files, no absolute or .. paths.
+  bad=$(tar -tvf "$tarball" | awk -v top="$name/" '
+    substr($1, 1, 1) != "-" { print; next }
+    { p = $NF; if (index(p, top) != 1 || p ~ /(^|\/)\.\.(\/|$)/) print }')
+  [ -z "$bad" ] || die "unexpected entries in $archive: $bad"
+  stage="$dest/.$name.part"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  tar -xf "$tarball" -C "$stage"
+  mv "$stage/$name" "$release"
+  rmdir "$stage"
+fi
+
+if $VERIFY; then
+  (cd "$release" && sha -c --quiet SHA256SUMS) > /dev/null || die "files differ from SHA256SUMS"
+  listed=$(cut -c67- "$release/SHA256SUMS" | LC_ALL=C sort)
+  present=$(cd "$release" && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort)
+  [ "$listed" = "$present" ] || die "the files present differ from SHA256SUMS"
+  got=$(sha "$release/SHA256SUMS" | cut -c1-64)
+  [ "$got" = "$digest" ] || die "content digest is $got, the index says $digest"
+  [ "$(jq -r .release "$release/manifest.json")" = "$VERSION" ] || die "manifest names another release"
+  echo "fetch: verified $name (content digest $digest)" >&2
+fi
+
+if [ -n "$SUBSET" ]; then
+  jq -e --arg s "$SUBSET" '.subsets | has($s)' "$release/manifest.json" > /dev/null ||
+    die "no subset $SUBSET; have: $(jq -r '.subsets | keys | join(", ")' "$release/manifest.json")"
+  jq -r --arg s "$SUBSET" --arg dir "$release" '
+    (.subsets[$s].members | map({key: ., value: true}) | from_entries) as $m
+    | .samples[] | select($m[.id]) | "\($dir)/\(.image.path)"' "$release/manifest.json"
+else
+  echo "$release"
+fi

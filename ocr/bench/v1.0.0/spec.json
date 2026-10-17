@@ -1,0 +1,164 @@
+{
+  "campaigns": [
+    {
+      "campaign_sha256": "4e8c2cd062b8426d89be64e514389f5a564182d6c41922a25243fa51998f1a14",
+      "path": "iris-pilot-100-f175f2c3",
+      "source": "overproof-ca",
+      "subset": "legacy/overproof-en-100"
+    },
+    {
+      "campaign_sha256": "00fe6089d1353fd42bca9e5cbd264a3b51e3a7aaed71c69067e0d3f14dee4393",
+      "path": "iris-paired-200-e984fcca/iris-paired-campaign100",
+      "source": "overproof-ca",
+      "subset": "legacy/overproof-en-paired-a-100"
+    },
+    {
+      "campaign_sha256": "3014f203520362c917565b3d844bdea4ca864296c6731af924366fc6109a86b1",
+      "path": "iris-paired-200-e984fcca/iris-paired-campaign200",
+      "source": "overproof-ca",
+      "subset": "legacy/overproof-en-paired-b-100"
+    },
+    {
+      "campaign_sha256": "111d981f78607a93bd361b118728b5c749a0a9d77ea4d8dedd0c67912ad1445b",
+      "path": "iris-reich-700-a379f5b0/campaign-000",
+      "source": "reichsanzeiger",
+      "subset": "legacy/reichsanzeiger-de-lines-000"
+    },
+    {
+      "campaign_sha256": "4fbeda3af930c3a61a76a1212e5bd1b865052e35857a41263cbec1ffb54ca488",
+      "path": "iris-reich-700-a379f5b0/campaign-100",
+      "source": "reichsanzeiger",
+      "subset": "legacy/reichsanzeiger-de-lines-100"
+    },
+    {
+      "campaign_sha256": "a65de3651febd294219e41d78765c88213deb19bc3e84089265455f09dc78e1d",
+      "path": "iris-reich-700-a379f5b0/campaign-200",
+      "source": "reichsanzeiger",
+      "subset": "legacy/reichsanzeiger-de-lines-200"
+    },
+    {
+      "campaign_sha256": "dbd71854afc852e1b158571c760cf357e89017249376e1aa5bab9dee061bb9e6",
+      "path": "iris-reich-700-a379f5b0/campaign-300",
+      "source": "reichsanzeiger",
+      "subset": "legacy/reichsanzeiger-de-lines-300"
+    },
+    {
+      "campaign_sha256": "b47a80a6292316eb9b5dd7c4532c21eda02f8351f0e568992719213ce514b2ad",
+      "path": "iris-reich-700-a379f5b0/campaign-400",
+      "source": "reichsanzeiger",
+      "subset": "legacy/reichsanzeiger-de-lines-400"
+    },
+    {
+      "campaign_sha256": "4c59a67e04e0bc1373f7123ef51f6027314544ed6d19286487e29fa0f9ee7d96",
+      "path": "iris-reich-700-a379f5b0/campaign-500",
+      "source": "reichsanzeiger",
+      "subset": "legacy/reichsanzeiger-de-lines-500"
+    },
+    {
+      "campaign_sha256": "2e195e9ce2c7435ceadaaa3bc2f31897e36ad40b34b5d37203a97f00d230db91",
+      "path": "iris-reich-700-a379f5b0/campaign-600",
+      "source": "reichsanzeiger",
+      "subset": "legacy/reichsanzeiger-de-lines-600"
+    }
+  ],
+  "derived": [
+    {
+      "description": "All English Overproof crops in this release: the pilot and both paired campaigns.",
+      "id": "overproof-en/all-300",
+      "union": [
+        "legacy/overproof-en-100",
+        "legacy/overproof-en-paired-a-100",
+        "legacy/overproof-en-paired-b-100"
+      ]
+    },
+    {
+      "description": "Ten crops of the legacy English acceptance set, for fast local checks.",
+      "from": "legacy/overproof-en-100",
+      "id": "overproof-en/smoke-10",
+      "seed": "usnm-ocr-bench-v1/overproof-en/smoke-10",
+      "take": 10
+    },
+    {
+      "description": "All German Reichsanzeiger line pairs in this release (seven 100-pair campaigns).",
+      "id": "reichsanzeiger-de/all-700",
+      "union": [
+        "legacy/reichsanzeiger-de-lines-000",
+        "legacy/reichsanzeiger-de-lines-100",
+        "legacy/reichsanzeiger-de-lines-200",
+        "legacy/reichsanzeiger-de-lines-300",
+        "legacy/reichsanzeiger-de-lines-400",
+        "legacy/reichsanzeiger-de-lines-500",
+        "legacy/reichsanzeiger-de-lines-600"
+      ]
+    },
+    {
+      "description": "One hundred German line pairs drawn from all seven campaigns.",
+      "from": "reichsanzeiger-de/all-700",
+      "id": "reichsanzeiger-de/acceptance-100",
+      "seed": "usnm-ocr-bench-v1/reichsanzeiger-de/acceptance-100",
+      "take": 100
+    },
+    {
+      "description": "Ten German line pairs from the German acceptance set, for fast local checks.",
+      "from": "reichsanzeiger-de/acceptance-100",
+      "id": "reichsanzeiger-de/smoke-10",
+      "seed": "usnm-ocr-bench-v1/reichsanzeiger-de/smoke-10",
+      "take": 10
+    },
+    {
+      "description": "Every sample in the release. Not a balanced set: report per-source results beside it.",
+      "id": "all-1000",
+      "union": [
+        "overproof-en/all-300",
+        "reichsanzeiger-de/all-700"
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "campaign": "iris-pilot-100-f175f2c3",
+      "description": "Iris Xe pilot outputs (Qwen3-VL-4B INT4, OpenVINO, BOINC host 9) as accepted in #703, for scorer parity.",
+      "expect_cer": 0.019751753912574204,
+      "name": "iris-pilot-100",
+      "report": "iris-pilot-100-f175f2c3/report.json",
+      "subset": "legacy/overproof-en-100"
+    }
+  ],
+  "format": "usnm-ocr-bench-spec",
+  "limitations": [
+    "Crops and line pairs only: no full pages, so no layout, reading-order or page-throughput evaluation.",
+    "Two sources and two languages (English, German). No mixed-language samples.",
+    "No image-damage annotations. Every sample is damage status unannotated.",
+    "German samples are not yet labelled Fraktur or Antiqua.",
+    "Every sample has been used in published comparisons (#703), so all are public evaluation data, not an unseen test set."
+  ],
+  "release": "v1.0.0",
+  "sources": {
+    "overproof-ca": {
+      "annotation_status": "human-verified",
+      "attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026; page images from the Library of Congress, Chronicling America.",
+      "image_license": "Public domain (Library of Congress, Chronicling America)",
+      "languages": [
+        "eng"
+      ],
+      "reference_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 structured copy), https://creativecommons.org/licenses/by-nc-sa/4.0/",
+      "scripts": [
+        "Latn"
+      ],
+      "unit": "crop"
+    },
+    "reichsanzeiger": {
+      "annotation_status": "human-verified",
+      "attribution": "Reichsanzeiger ground truth (UB-Mannheim/reichsanzeiger-gt) by Thomas Schmidt, Jan Kamlah, Stefan Weil and Renat Shigapov, Mannheim University Library.",
+      "image_license": "Public Domain Mark 1.0, https://creativecommons.org/publicdomain/mark/1.0/",
+      "languages": [
+        "deu"
+      ],
+      "reference_license": "CC BY 4.0 (Zenodo record 10.5281/zenodo.10144094), https://creativecommons.org/licenses/by/4.0/",
+      "scripts": [
+        "Latn"
+      ],
+      "unit": "line-pair"
+    }
+  }
+}
