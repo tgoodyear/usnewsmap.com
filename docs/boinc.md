@@ -561,7 +561,8 @@ it is not a multi-platform publisher. After exact-head Copilot GREEN review,
 zero threads, all CI and merge of #762, Linux, ARM and Intel were published
 separately and serially. Each execution has prefix
 `usnm-boinc-publish-caj-prod-` plus the suffix above and terminated Succeeded
-before the next started. Normal production mutex, all-six-idle preflight,
+before the next started. Normal production mutex, per-job idle preflight
+(historically recorded as all-six-idle before [#856](boinc-start-guard.md#scope-boundaries-and-per-resource-deploy-gates)),
 infinite controller lease and expected-previous-image guards protected each
 image-only update. Exact comparisons preserved every other template,
 configuration and identity property; no broad stack provision was run.

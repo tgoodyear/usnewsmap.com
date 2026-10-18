@@ -24,11 +24,15 @@ case "$*" in
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
   "stack group create"*) ;;
   "containerapp job execution list"*)
-    if [[ "$*" == *"--name bridge "* ]] && grep -q '^storage blob lease acquire' "$STUB_LOG"; then
+    if [[ "$*" == *"--name quality "* ]] || [[ "$*" == *"--name usnm-boinc-quality-caj-prod "* ]]; then
+      [ "${STUB_QUALITY_ACTIVE:-0}" != 1 ] || echo quality-existing-execution
+    elif [[ "$*" == *"--name bridge "* ]] && grep -q '^storage blob lease acquire' "$STUB_LOG"; then
       [ "${STUB_REGISTRATION_LIST_FAIL:-0}" != 1 ] || exit 1
       [ "${STUB_REGISTRATION_ACTIVE:-0}" != 1 ] || echo bridge-existing-execution
+    elif [[ "$*" == *"--name bridge "* ]]; then
+      [ "${STUB_BRIDGE_ACTIVE:-0}" != 1 ] || echo bridge-existing-execution
     fi ;;
-  "containerapp job show"*) echo '{"volumes":[{"name":"project","storageType":"AzureFile","storageName":"project"}],"containers":[{"name":"bridge","image":"fixture@sha256:unchanged","resources":{"cpu":0.5,"memory":"1Gi"},"volumeMounts":[{"volumeName":"project","mountPath":"/project"}],"env":[{"name":"BRIDGE_STEP","value":"iris-bundle-collect"},{"name":"IRIS_CAMPAIGN","value":"overproof-100-v12"},{"name":"PRIVATE_SETTING","secretRef":"runtime-secret"},{"name":"AZURE_CLIENT_ID","value":"client"},{"name":"KEY_VAULT_NAME","value":"vault"},{"name":"DB_HOST","value":"db.example.org"},{"name":"DB_NAME","value":"usnmocr"},{"name":"MASTER_HOST","value":"boinc.usnewsmap.com"},{"name":"PROJECT_DIR","value":"/project"},{"name":"HANDOFF_DIR","value":"/project/handoff"}]}]}' ;;
+  "containerapp job show"*) echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"project\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_BRIDGE_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":0.5,\"memory\":\"1Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_BRIDGE_STEP:-iris-bundle-collect}\"},{\"name\":\"IRIS_CAMPAIGN\",\"value\":\"overproof-100-v12\"},{\"name\":\"PRIVATE_SETTING\",\"secretRef\":\"runtime-secret\"},{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}" ;;
   "containerapp job update"*) ;;
   "containerapp job start"*)
     if [[ "$*" == *"--yaml"* ]] && [ "${STUB_REGISTRATION_START_FAIL:-0}" = 1 ]; then exit 1; fi
@@ -191,6 +195,51 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
             result = self.run_script(**{variable: "Failed"})
             self.assertNotEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("deployment ready", result.stdout)
+
+    def test_running_quality_job_does_not_block_appver_publish_or_server_rollout(self):
+        appver = "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:" + "a" * 64
+        for args in (
+            ("--publish-image", appver),
+            (),
+        ):
+            with self.subTest(args=args):
+                self.log.write_text("")
+                result = self.run_script(*args, STUB_QUALITY_ACTIVE="1")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                starts = [call.split("--name ")[1].split()[0]
+                          for call in self.calls() if call.startswith("containerapp job start")]
+                self.assertEqual(starts, ["secrets", "init", "bridge", "publish"])
+                self.assertFalse(any("quality" in call for call in self.calls()))
+
+    def test_running_bridge_job_blocks_only_bridge_template_update(self):
+        committed_bridge = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())["images"]["bridge"]
+        appver = "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:" + "a" * 64
+        for args in (
+            ("--publish-image", appver),
+            (),
+        ):
+            with self.subTest(non_conflicting=args):
+                self.log.write_text("")
+                result = self.run_script(*args, STUB_BRIDGE_ACTIVE="1",
+                                         STUB_DEPLOYED_BRIDGE_IMAGE=committed_bridge)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                starts = [call.split("--name ")[1].split()[0]
+                          for call in self.calls() if call.startswith("containerapp job start")]
+                self.assertEqual(starts, ["secrets", "init", "publish"])
+                self.assertIn("deferring bridge registration while bridge-existing-execution is running",
+                              result.stdout)
+
+        for env in (
+            {"STUB_DEPLOYED_BRIDGE_IMAGE": "fixture@sha256:stale"},
+            {"STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge, "STUB_DEPLOYED_BRIDGE_STEP": "submit"},
+        ):
+            with self.subTest(conflicting_env=env):
+                self.log.write_text("")
+                result = self.run_script(STUB_BRIDGE_ACTIVE="1", **env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("bridge already has an active execution", result.stderr)
+                self.assertFalse(any(call.startswith(("stack group create", "containerapp job start"))
+                                     for call in self.calls()))
 
     def test_rejects_placeholder_foreign_or_stopped_project(self):
         for health in [

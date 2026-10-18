@@ -210,10 +210,9 @@ version with no RSS history; `sched/sched_assign.cpp`'s targeted delivery does
 not bypass this client-side gate. No preference or admission bound was silently
 changed, and no Surya CPU work was submitted.
 
-The fresh all-six-idle check found quality execution
+The historical pre-[#856](../../boinc-start-guard.md#scope-boundaries-and-per-resource-deploy-gates) idle check found quality execution
 `usnm-boinc-quality-caj-prod-t8yp9m0` running since 16:43:04 UTC (24-hour timeout).
-The other five lifecycle jobs were idle. Scoped publication must wait for its
-natural completion; no job was stopped or queue changed to manufacture a window.
+The other five lifecycle jobs were idle. Under [#856](../../boinc-start-guard.md#scope-boundaries-and-per-resource-deploy-gates), a running quality execution does not block app-version publication on `usnm-boinc-publish-caj-prod`; no job was stopped or queue changed to manufacture a window.
 The #529 request is coordinated with the separately authorized #464 TLS work;
 neither request is evidence of a held controller lease. CT214's GPU was idle
 with an empty BOINC task list at preflight; no Surya GPU window was claimed while

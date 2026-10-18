@@ -163,12 +163,34 @@ if $WHAT_IF; then
   exit 0
 fi
 
+for lifecycle_output in secretsJobName initJobName ${PUBLISH_IMAGE:+publishJobName}; do
+  existing_job=$(boinc_output "$lifecycle_output")
+  if [ -n "$existing_job" ]; then
+    active_job=$(baz containerapp job execution list --name "$existing_job" --resource-group "$BOINC_RG" \
+      --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv 2>/dev/null || true)
+    [ -z "$active_job" ] ||
+      die "$existing_job already has an active execution (${active_job//$'\n'/ }); wait for it to finish before mutating $existing_job"
+  fi
+done
+active_bridge=""
 existing_bridge=$(boinc_output bridgeJobName)
 if [ -n "$existing_bridge" ]; then
   active_bridge=$(baz containerapp job execution list --name "$existing_bridge" --resource-group "$BOINC_RG" \
-    --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv 2>/dev/null || true)
-  [ -z "$active_bridge" ] ||
-    die "$existing_bridge already has an active execution ($(echo "$active_bridge" | tr '\n' ' ')); wait for it to finish before redeploying the stack"
+    --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv 2>/dev/null || true)
+  if [ -n "$active_bridge" ]; then
+    bridge_template=$(baz containerapp job show --name "$existing_bridge" --resource-group "$BOINC_RG" --query properties.template -o json 2>/dev/null) ||
+      die "could not read $existing_bridge template while active execution (${active_bridge//$'\n'/ }) is running"
+    if ! jq -e --arg img "$BRIDGE_IMAGE" --arg env "$ENV_NAME" '
+      (.containers | length) == 1 and
+      .containers[0].image == $img and
+      (if $env == "prod" then
+        ((.containers[0].env // []) | any(.name == "BRIDGE_STEP" and .value == "iris-bundle-collect")) and
+        ((.containers[0].env // []) | any(.name == "IRIS_CAMPAIGN" and .value == "overproof-100-v12"))
+      else true end)
+    ' <<< "$bridge_template" > /dev/null; then
+      die "$existing_bridge already has an active execution (${active_bridge//$'\n'/ }) and its template would change; wait for it to finish before updating the bridge template"
+    fi
+  fi
 fi
 
 echo "deploying stack $BOINC_STACK (custom domain stage $STAGE)"
@@ -243,7 +265,11 @@ register_apps() {
   run_job "$job" "$template"
   boinc_start_guard_release || die "cannot release the registration start lease"
 }
-register_apps
+if [ -n "$active_bridge" ]; then
+  echo "deferring $existing_bridge registration while ${active_bridge//$'\n'/ } is running; bridge template is unchanged"
+else
+  register_apps
+fi
 if [ -n "$PUBLISH_IMAGE" ]; then
   run_job "$(boinc_output publishJobName)"
 fi

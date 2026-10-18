@@ -38,11 +38,22 @@ the controller or passing lease credentials between processes.
 
 Different jobs have separate leases; the guard does not forbid a bridge and
 handoff execution from overlapping. It also cannot fence raw Azure CLI/API
-writers or provisioning scripts that do not acquire this lease. Production
-provisioning, template changes and multi-step runs still require the operator
-claim, all-lifecycle-idle checks and controller lease documented in
-[#529](https://github.com/tgoodyear/usnewsmap.com/issues/529). A start lease is
-not permission to deploy or interrupt another owner's work.
+writers or provisioning scripts that do not acquire this lease. Per
+[#856](https://github.com/tgoodyear/usnewsmap.com/issues/856), production
+deploys and job runs use **per-resource conflict checks** rather than a global
+`all-lifecycle-idle` or `all-six-idle` gate. A running long-lived job (such as
+`usnm-boinc-quality-caj-prod`) does not block app-version publication, a
+server/CGI/daemon image rollout, or starts of a different job. The deploy
+record (who deployed what, and when, from
+[#529](https://github.com/tgoodyear/usnewsmap.com/issues/529)) is unchanged. A
+start lease is not permission to deploy or interrupt another owner's work.
+
+| Change type | Required gate |
+| --- | --- |
+| Add-only DB/project changes (publish app versions, create campaigns or workunits, plan-class additions) | [#529](https://github.com/tgoodyear/usnewsmap.com/issues/529) claim plus the controller lease; no idle requirement |
+| Updating one job's template or image | That job's per-job start lease (`scripts/lib/boinc-start-guard.sh`) and no nonterminal execution **of that job**. Other jobs keep running. |
+| Server/CGI/daemon image rollout, config or TLS changes | Claim plus controller lease. Must not replace or alter the template of any job with a running execution: defer just that job's template update (or let the execution finish naturally), not the whole rollout. Executions already running keep their template, so a stack update must not stop or restart them. |
+| Full reprovision, DB migration or destructive operations | All-idle allowed only as a documented extenuating circumstance, with the reason recorded in [#529](https://github.com/tgoodyear/usnewsmap.com/issues/529) |
 
 ## Failure recovery
 
