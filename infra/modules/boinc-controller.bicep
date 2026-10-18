@@ -34,7 +34,6 @@ resource role 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
           'Microsoft.App/jobs/read'
           'Microsoft.App/jobs/write'
           'Microsoft.App/jobs/start/action'
-          'Microsoft.App/jobs/listsecrets/action'
           'Microsoft.App/jobs/executions/read'
           'Microsoft.App/jobs/execution/read'
           'Microsoft.App/managedEnvironments/read'
