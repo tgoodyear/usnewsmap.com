@@ -61,6 +61,17 @@ class SuryaBenchmarkTests(unittest.TestCase):
                 self.assertEqual((out / "cuda-whole-english.jsonl").read_bytes(), b"")
                 saved = json.loads((out / "receipt.json").read_text())
                 self.assertEqual(saved["records"][1]["outcome"], "timeout")
+            vk_result = {"job_id": "job", "engine": job["engine"], "runs": [
+                {"mode": "tiled", "device": "vulkan", "outcome": "ok", "engine_ms": 123}]}
+            (result_dir / "result.json").write_bytes(module.encode(vk_result))
+            with patch.object(module.subprocess, "run") as validator:
+                vk_out = Path(directory) / "out-vulkan"
+                receipt = module.collect(root, seen, vk_out, "usnm-boinc", "vulkan")
+                validator.assert_called_once()
+                self.assertEqual(receipt["returned"], 1)
+                exported = json.loads((vk_out / "vulkan-tiled-english.jsonl").read_text())
+                self.assertEqual(exported, {"id": "sample-1", "text": "text\r\nwith\rnewline"})
+            (result_dir / "result.json").write_bytes(module.encode(result))
             numeric = seen / "usnm_surya_job_host10_4321_1792340312_0_3"
             result_dir.rename(numeric)
             with patch.object(module.subprocess, "run") as validator:

@@ -57,6 +57,28 @@
         <gpu_ram_used_mb>2500</gpu_ram_used_mb>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
+    <!-- usnm_surya on an Intel Xe / Iris GPU through llama.cpp Vulkan (#842). BOINC detects
+         Intel GPUs through OpenCL (<gpu_type>intel</gpu_type> + <opencl/>); use_gpu is false in
+         ocr/boinc/surya/job-intel.toml because stock docker_wrapper's generic GPU switch is
+         NVIDIA-only, so job-intel.toml passes /dev/dri directly. The worker lists Vulkan devices
+         with llama-server, selects the BOINC-assigned Intel adapter by vendor ordinal, and ends
+         no_gpu when that device is not visible in the container, never falling back to the CPU or
+         another adapter. Closed by default (min_wu_id=2, max_wu_id=1) because the Vulkan worker
+         image bakes a distinct USNM_SURYA_LLAMA_IMAGE digest from the CUDA/CPU image and each
+         workunit's surya.json pins one llama_image digest. -->
+    <plan_class>
+        <name>docker_intel_vulkan</name>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <docker/>
+        <gpu_type>intel</gpu_type>
+        <opencl/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_gpu_ram_mb>4096</min_gpu_ram_mb>
+        <gpu_ram_used_mb>4096</gpu_ram_used_mb>
+        <ngpus>1</ngpus>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
     <!-- New classes keep legacy dual-model app versions out of split-payload work. -->
     <plan_class>
         <name>docker_mt_2b</name>

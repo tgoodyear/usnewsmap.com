@@ -83,15 +83,22 @@ class InstallTest(unittest.TestCase):
     def test_surya_versions_per_plan_class(self):
         cpu = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_surya", "docker_mt")
         gpu = module.install(self.project, self.wrapper, IMAGE, "1.1", "usnm_surya", "docker_nvidia_cuda")
+        intel = module.install(self.project, self.wrapper, IMAGE, "1.2", "usnm_surya", "docker_intel_vulkan")
         self.assertEqual(cpu.name, "x86_64-pc-linux-gnu__docker_mt")
         self.assertEqual(gpu.name, "x86_64-pc-linux-gnu__docker_nvidia_cuda")
+        self.assertEqual(intel.name, "x86_64-pc-linux-gnu__docker_intel_vulkan")
         self.assertIn("use_gpu = true", (gpu / "job_usnm_surya_1.1_x86_64-pc-linux-gnu_docker_nvidia_cuda.toml").read_text())
+        intel_job = (intel / "job_usnm_surya_1.2_x86_64-pc-linux-gnu_docker_intel_vulkan.toml").read_text()
+        self.assertIn("use_gpu = false", intel_job)
+        self.assertIn("--device=/dev/dri", intel_job)
         self.assertNotIn("use_gpu", (cpu / "job_usnm_surya_1.0_x86_64-pc-linux-gnu_docker_mt.toml").read_text())
         for name in ["usnm_surya_in", "usnm_surya_out"]:
             self.assertTrue((self.project / "templates" / name).is_file())
         # Each app only has the plan classes it was made for.
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_surya", "docker")
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_surya", "intel_vulkan_8b")
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_ocr", "docker_nvidia_cuda")
 

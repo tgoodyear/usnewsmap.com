@@ -88,7 +88,7 @@ case "$KIND" in
     [ -z "$BINARY$BINARY_SHA" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--binary and --extra-file are only valid with --kind native"
     case "$APP:$PLAN_CLASS" in
       usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker | usnm_quality:docker) ;;
-      usnm_ndlocr:docker | usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train | usnm_iris:docker_intel_opencl_4b)
+      usnm_ndlocr:docker | usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_surya:docker_intel_vulkan | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train | usnm_iris:docker_intel_opencl_4b)
         [ -n "$WORKER_OVERRIDE" ] || die "$APP has its own worker image: give --worker-image" ;;
       *) die "unsupported --app and --plan-class: Qwen uses docker_mt_2b (2B) or docker_nvidia_cuda_8b (8B); see scripts/boinc/install.py" ;;
     esac

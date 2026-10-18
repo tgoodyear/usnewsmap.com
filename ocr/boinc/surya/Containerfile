@@ -1,7 +1,10 @@
-# The usnm_surya worker image (#516): Surya 2 (surya-ocr 0.22.1) on llama.cpp's server, and
-# usnm-boinc, which runs one BOINC unit (docs/boinc-surya.md). One image serves both app versions:
-# llama.cpp's CUDA server image loads its CUDA backend when the container sees an NVIDIA GPU and
-# falls back to its CPU backends otherwise (GGML_BACKEND_DL, GGML_CPU_ALL_VARIANTS).
+# The usnm_surya worker image (#516, #842): Surya 2 (surya-ocr 0.22.1) on llama.cpp's server, and
+# usnm-boinc, which runs one BOINC unit (docs/boinc-surya.md).
+#   - LLAMA_VARIANT=cuda (default): llama.cpp's CUDA server image loads its CUDA backend when the
+#     container sees an NVIDIA GPU and falls back to its CPU backends otherwise (GGML_BACKEND_DL,
+#     GGML_CPU_ALL_VARIANTS), serving docker_mt and docker_nvidia_cuda.
+#   - LLAMA_VARIANT=vulkan: llama.cpp's Vulkan server image (same b11610 commit 091b6a7fc) serves
+#     Intel Xe / Iris GPUs on docker_intel_vulkan.
 #
 # Weights come from Hugging Face at pinned revisions and are checked against weights.lock; the
 # image carries Datalab's licence beside them, and NOTICE. torch is the CPU build: it only runs
@@ -9,7 +12,10 @@
 #
 # Build from the repository root:
 #   docker build -f ocr/boinc/surya/Containerfile -t usnm-boinc-surya .
+#   docker build -f ocr/boinc/surya/Containerfile --build-arg LLAMA_VARIANT=vulkan -t usnm-boinc-surya-vulkan .
+ARG LLAMA_VARIANT=cuda
 ARG LLAMA_DIGEST=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea
+ARG LLAMA_VULKAN_DIGEST=sha256:d64043576ad8fb29170563c769a997dbc1b9928f0d4a127fb9e4a9706ccb475b
 
 FROM rust:1-bookworm AS build
 ARG BUILD_JOBS=2
@@ -27,8 +33,15 @@ RUN set -eu; mkdir -p /models; cd /models; \
     done; \
     echo "sha256:$(grep -v '^#' /weights.lock | sha256sum | cut -d' ' -f1)" > /weights.digest
 
-FROM ghcr.io/ggml-org/llama.cpp:server-cuda@${LLAMA_DIGEST}
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda@${LLAMA_DIGEST} AS llama-cuda
 ARG LLAMA_DIGEST
+ENV USNM_SURYA_LLAMA_IMAGE=${LLAMA_DIGEST} USNM_SURYA_BACKEND=cuda
+
+FROM ghcr.io/ggml-org/llama.cpp:server-vulkan@${LLAMA_VULKAN_DIGEST} AS llama-vulkan
+ARG LLAMA_VULKAN_DIGEST
+ENV USNM_SURYA_LLAMA_IMAGE=${LLAMA_VULKAN_DIGEST} USNM_SURYA_BACKEND=vulkan
+
+FROM llama-${LLAMA_VARIANT}
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-venv \
       libgl1 libglib2.0-0 procps \
@@ -36,7 +49,18 @@ RUN apt-get update \
 RUN python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
       torch==2.12.1+cpu torchvision==0.27.1+cpu \
- && /opt/venv/bin/pip install --no-cache-dir surya-ocr==0.22.1 \
+ && if /opt/venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 14) else 1)'; then \
+      /opt/venv/bin/pip install --no-cache-dir \
+        "beautifulsoup4<5,>=4.12.0" "click<9,>=8.1.8" "filelock<4,>=3.16.0" \
+        "filetype<2,>=1.2.0" "httpx<1,>=0.27.0" "huggingface-hub<2,>=1.5.0" \
+        "openai<3,>=1.55.0" "opencv-python-headless==4.11.0.86" "pillow>=10.2.0" \
+        "platformdirs<5,>=4.3.6" "pydantic-settings<3,>=2.1.0" "pydantic<3,>=2.5.3" \
+        "pypdfium2<6,>=5.10.1" "python-dotenv<2,>=1.0.0" "requests<3,>=2.28.0" \
+        "transformers>=5.12.1" \
+      && /opt/venv/bin/pip install --no-cache-dir --no-deps surya-ocr==0.22.1; \
+    else \
+      /opt/venv/bin/pip install --no-cache-dir surya-ocr==0.22.1; \
+    fi \
  && mkdir -p /opt/surya && /opt/venv/bin/pip freeze > /opt/surya/pip-freeze.txt
 COPY --from=weights /models/ /opt/surya/models/
 COPY --from=weights /weights.digest /opt/surya/weights.digest
@@ -51,8 +75,9 @@ ENV PATH=/opt/venv/bin:/app:$PATH LLAMA_CPP_BINARY=/app/llama-server \
     SURYA_INFERENCE_BACKEND=llamacpp SURYA_INFERENCE_PARALLEL=1 SURYA_INFERENCE_TIMEOUT_SECONDS=3600 \
     FAST_LAYOUT_MODEL_CHECKPOINT=/opt/surya/models/layout2 \
     FAST_ORDER_MODEL_CHECKPOINT=/opt/surya/models/layout2/order \
+    TORCH_DEVICE=cpu \
     HF_HUB_OFFLINE=1 DISABLE_TQDM=true PYTHONDONTWRITEBYTECODE=1 HOME=/tmp \
-    USNM_SURYA_LLAMA_IMAGE=${LLAMA_DIGEST} USNM_SURYA_VERSION=0.22.1 USNM_SURYA_WEIGHTS=${SURYA_WEIGHTS}
+    USNM_SURYA_VERSION=0.22.1 USNM_SURYA_WEIGHTS=${SURYA_WEIGHTS}
 # The CUDA base asks the NVIDIA Container Toolkit's legacy hook (Docker) to refuse drivers older
 # than CUDA 12.8. CUDA 12's minor version compatibility runs this build on any CUDA 12 driver, so
 # the check is off; the plan class asks for CUDA 12.0 and the diagnostics record the driver.

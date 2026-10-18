@@ -935,6 +935,12 @@ class AppReleaseArgs(unittest.TestCase):
         for pc in ("docker_mt_2b", "docker_nvidia_cuda_8b"):
             r = self.run_release("--app", "usnm_qwen", "--plan-class", pc, "--worker-image", img)
             self.assertIn("--signing-host must be a host name", r.stderr)
+        for pc in ("docker_mt", "docker_nvidia_cuda", "docker_intel_vulkan"):
+            r = self.run_release("--app", "usnm_surya", "--plan-class", pc, "--worker-image", img)
+            self.assertIn("--signing-host must be a host name", r.stderr)
+        r = self.run_release("--app", "usnm_surya", "--plan-class", "intel_vulkan_8b", "--worker-image", img)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("unsupported --app and --plan-class", r.stderr)
         r = self.run_release("--app", "usnm_qwen_train", "--plan-class", "docker_nvidia_train", "--worker-image", img)
         self.assertIn("--signing-host must be a host name", r.stderr)
 
