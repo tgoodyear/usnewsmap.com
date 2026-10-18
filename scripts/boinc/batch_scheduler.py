@@ -26,8 +26,14 @@ MAX_JOBS = 10000
 MAX_GLOBAL_PENDING = 100000
 DEFAULT_MAX_GLOBAL_PENDING = 1000
 MAX_STATUS_BYTES = 1024 * 1024
+OCR_APP_NAME = "usnm_ocr"
+SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
 APP_NAME = re.compile(r"[A-Za-z0-9_-]{1,80}")
 ZERO_WORK_LINE = re.compile(r"(?:No tasks sent|Got 0 new tasks|Sending reply to \[HOST#\d+\]: 0 results)")
+
+
+class ConfigError(ValueError):
+    """Invalid scheduler or cohort configuration."""
 
 
 def require(ok, message):
@@ -61,13 +67,20 @@ def _validate_status_url(url):
     return url
 
 
+def normalize_cohort_apps(app):
+    if not isinstance(app, str) or app not in SUPPORTED_COHORT_APPS:
+        raise ConfigError(
+            f"unsupported cohort app; Transport.submit() only dispatches {OCR_APP_NAME} workunits"
+        )
+    return app
+
+
 def _validate_cohort_spec(spec):
     require(isinstance(spec, dict) and set(spec) <= {
         "app", "platform", "resource", "low_watermark", "high_watermark", "pages_per_host",
     }, "invalid cohort configuration")
     if "app" in spec:
-        require(isinstance(spec["app"], str) and re.fullmatch(r"usnm_[a-z0-9_]{1,64}", spec["app"]),
-                "invalid cohort app")
+        normalize_cohort_apps(spec["app"])
     if "platform" in spec:
         require(isinstance(spec["platform"], str) and
                 re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", spec["platform"]), "invalid cohort platform")
@@ -641,7 +654,7 @@ class QueueFeed:
 def resolve_watermarks(config, snapshot, status=None, *,
                        low_watermark=None, high_watermark=None, max_global_pending=None):
     cohorts = config.get("cohorts") or {}
-    app = config.get("app", "usnm_ocr")
+    app = normalize_cohort_apps(config.get("app", OCR_APP_NAME))
     platform = config.get("platform", "all")
     resource = config.get("resource", "cpu")
     cohort_name = config.get("cohort") or f"{app}:{resource}"
@@ -649,7 +662,7 @@ def resolve_watermarks(config, snapshot, status=None, *,
                   cohorts.get(resource) or (next(iter(cohorts.values())) if cohorts else {}))
     if cohort_cfg:
         _validate_cohort_spec(cohort_cfg)
-    app = cohort_cfg.get("app", app)
+    app = normalize_cohort_apps(cohort_cfg.get("app", app))
     platform = cohort_cfg.get("platform", platform)
     resource = cohort_cfg.get("resource", resource)
     cohort_name = config.get("cohort") or (
@@ -823,21 +836,24 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         app_counts = status["apps"].get(ocr_app, {"unsent": 0, "in_progress": 0, "runnable": 0})
         ocr_unsent = app_counts["unsent"]
         ocr_in_progress = app_counts["in_progress"]
-        ocr_status_active = app_counts["runnable"]
-        other_status_pending = sum(
+        ocr_status_results = app_counts["runnable"]
+        other_status_results = sum(
             item["runnable"] for name, item in status["apps"].items() if name != ocr_app
         )
     else:
         ocr_unsent = len(pending_jobs)
         ocr_in_progress = 0
-        ocr_status_active = len(pending_jobs)
-        other_status_pending = 0
+        ocr_status_results = len(pending_jobs)
+        other_status_results = max(0, snapshot["pending_workunits"] - len(pending_jobs))
 
-    ocr_in_flight = max(len(pending_jobs), ocr_status_active)
-    global_in_flight = max(snapshot["pending_workunits"], ocr_in_flight + other_status_pending)
-    other_pending = global_in_flight - ocr_in_flight
+    global_in_flight = max(snapshot["pending_workunits"], len(pending_jobs))
+    ocr_in_flight = min(global_in_flight, max(len(pending_jobs), ocr_status_results))
+    other_pending = max(0, global_in_flight - ocr_in_flight)
     cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
     global_pending = global_in_flight + uncollected_not_pending + len(missing)
+    cohort_pending_results = max(len(pending_jobs), ocr_status_results) + uncollected_not_pending + len(missing)
+    other_app_pending_results = other_status_results
+    global_pending_results = cohort_pending_results + other_app_pending_results
     pending = cohort_pending if cohort_mode else global_pending
 
     uncertain = any(job["stage"] == "submitting" for job in server.values())
@@ -954,6 +970,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         "low_watermark": low_target,
         "high_watermark": high_target,
         "other_app_pending": other_pending,
+        "other_app_pending_results": other_app_pending_results,
         "zero_work_requests": zero_work_requests,
         "refilled": submitted,
         "blocked_by": backpressure_reason,
@@ -982,6 +999,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         "cohort_pending": cohort_pending,
         "other_app_pending": other_pending,
         "global_pending": global_pending,
+        "cohort_pending_results": cohort_pending_results,
+        "other_app_pending_results": other_app_pending_results,
+        "global_pending_results": global_pending_results,
         "max_global_pending": global_cap,
         "cohort": {
             "name": cohort_info["cohort"],

@@ -128,16 +128,22 @@ pages rather than overwriting them, including for historical cohorts.
    hosts or a full queue. Never supply a host ID override or bypass `--trust`.
    Partial output sets wait; duplicate spool directories fail closed.
 4. Separate the runnable `usnm_ocr` cohort queue (`app` / `platform` / `resource`,
-   default `usnm_ocr` / `all` / `cpu`) from unrelated other-app queues (such as
-   `usnm_qwen`, `usnm_quality`, or `usnm_surya`), while enforcing an overall
-   global safety cap (`max_global_pending` / `--max-global-pending`, up to
-   100,000 across all apps and collection backlog). When `server_status.php?xml=1`
-   (or a structured status snapshot via `--server-status-url` /
-   `--server-status-file` or `inventory.json`) is supplied, `parse_server_status`
-   reads per-app `<unsent>` and `<in_progress>` counts so `usnm_ocr` admission
-   checks `usnm_ocr`'s own runnable queued/in-progress count against its cohort
-   low/high watermarks rather than letting unrelated GPU/other-app queues starve
-   CPU/native hosts.
+   default `usnm_ocr` / `all` / `cpu`; only `usnm_ocr` is accepted as a cohort
+   `app` because `Transport.submit()` only dispatches `usnm_ocr` workunits) from
+   unrelated other-app queues (such as `usnm_qwen`, `usnm_quality`, or
+   `usnm_surya`), while enforcing an overall global safety cap
+   (`max_global_pending` / `--max-global-pending`, up to 100,000 workunits across
+   all apps and collection backlog). When `server_status.php?xml=1` (or a
+   structured status snapshot via `--server-status-url` / `--server-status-file`
+   or `inventory.json`) is supplied, `parse_server_status` reads per-app
+   `<unsent>` and `<in_progress>` counts so `usnm_ocr` admission checks
+   `usnm_ocr`'s own runnable queued/in-progress work against its cohort low/high
+   watermarks rather than letting unrelated GPU/other-app queues starve
+   CPU/native hosts. Global and cohort headroom (`cohort_pending`,
+   `other_app_pending`, `global_pending`) are reconciled in SQL workunit units,
+   while result-replica counts (`cohort_pending_results`,
+   `other_app_pending_results`, `global_pending_results`) are retained separately
+   for queue diagnostics.
    Cohort watermarks (`low_watermark` / `--low-watermark` and `high_watermark` /
    `--high-watermark`, or nested under `cohorts.<cohort>` / `cohort`) implement
    hysteresis: when `cohort_pending <= low_watermark` (and `active_hosts > 0`),

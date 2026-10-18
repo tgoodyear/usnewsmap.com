@@ -1093,7 +1093,8 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
         self.assertEqual(alert["app"], "usnm_ocr")
         self.assertEqual(alert["active_hosts"], 2)
         self.assertEqual(alert["unsent"], 0)
-        self.assertEqual(alert["other_app_pending"], 513)
+        self.assertEqual(alert["other_app_pending"], 456)
+        self.assertEqual(alert["other_app_pending_results"], 513)
         self.assertEqual(alert["refilled"], 2)
 
         # Once usnm_ocr has > low_watermark runnable work and > 0 unsent work, starvation alert clears.
@@ -1254,6 +1255,41 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
         self.assertFalse(event["backpressure"])
         self.assertEqual(event["selected"], 1)
         self.assertEqual(len(self.fake.jobs), 1)
+
+    def test_228_qwen_workunits_with_456_unsent_replicas_do_not_block_cap_of_400(self):
+        # Regression for comment 4308954039: Qwen creates 2 result replicas per workunit,
+        # so 228 Qwen workunits in SQL (pending_workunits=228) have 456 unsent replicas in
+        # server_status. Workunit-level global_pending must be 228 (not 456) and must not
+        # block an empty usnm_ocr cohort under max_global_pending=400, while retaining
+        # replica counts separately for diagnostics.
+        self.fake.other = 228
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=400,
+                          server_status=xml)
+        self.assertFalse(event["backpressure"])
+        self.assertIsNone(event["backpressure_reason"])
+        self.assertEqual(event["cohort_pending"], 0)
+        self.assertEqual(event["other_app_pending"], 228)
+        self.assertEqual(event["global_pending"], 228)
+        self.assertEqual(event["cohort_pending_results"], 0)
+        self.assertEqual(event["other_app_pending_results"], 456)
+        self.assertEqual(event["global_pending_results"], 456)
+        self.assertEqual(event["selected"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_non_ocr_cohort_app_selectors_are_rejected(self):
+        # Regression for comment 4308954020: Transport.submit() only dispatches usnm_ocr
+        # workunits, so non-OCR cohort app selectors must be rejected with ConfigError.
+        for bad_app in ("usnm_qwen", "usnm_surya", "usnm_quality", "other"):
+            with self.subTest(app=bad_app):
+                with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
+                    batch.normalize_cohort_apps(bad_app)
+                with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
+                    batch._validate_cohort_spec({"app": bad_app})
+                with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
+                    batch.resolve_watermarks({**self.config, "app": bad_app},
+                                             self.fake.inventory())
 
 
 if __name__ == "__main__":
