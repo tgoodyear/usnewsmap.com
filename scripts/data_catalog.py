@@ -43,8 +43,9 @@ ENGINE_SHORT_RE = re.compile(
     r"([a-z0-9][a-z0-9_.+-]{0,63})/([0-9A-Za-z][0-9A-Za-z.+-]{0,63}) ([a-z0-9][a-z0-9_.+-]{0,63})\Z"
 )
 ENGINE_LEGACY_RE = re.compile(
-    r"([a-z0-9][a-z0-9_.+-]{0,63})-([0-9A-Za-z][0-9A-Za-z.+-]{0,63})/([a-z0-9][a-z0-9_.+-]{0,63})\Z"
+    r"([a-z0-9][a-z0-9_.+]{0,63})-([0-9A-Za-z][0-9A-Za-z.+-]{0,63})/([a-z0-9][a-z0-9_.+-]{0,63})\Z"
 )
+INDEXED_KEY_SCOPE_VERSION = 2
 
 # RunRecord v1 in crates/usnm-ocr-contract/src/runs.rs, not an engine-run replacement.
 RUN_STR = set("""run_id doc_id node worker_version ocr_engine engine_id family
@@ -159,23 +160,36 @@ def load_json(raw):
         raise CatalogError("invalid JSON") from exc
 
 
-def canonical_engine_key(value):
+def source_family(ocr_source):
+    if isinstance(ocr_source, str) and ocr_source and ocr_source != "loc":
+        return ocr_source[5:] if ocr_source.startswith("usnm-") else ocr_source
+    return None
+
+
+def canonical_engine_key(value, family=None):
     """Normalize a 13 §13.8.1 tag, short key, or legacy <family>-<ver>/<profile> tag to <family>/<ver> <profile>."""
     require(isinstance(value, str) and bool(value.strip()), "engine identity cannot be blank")
     short_text(value, 256)
     short_m = ENGINE_SHORT_RE.fullmatch(value)
     if short_m is not None:
-        family, version, profile = short_m.groups()
-        return f"{family}/{version} {profile}"
+        fam, version, profile = short_m.groups()
+        return f"{fam}/{version} {profile}"
+    if " " not in value and "/" in value and isinstance(family, str) and family:
+        engine, profile = value.split("/", 1)
+        if engine.startswith(family + "-"):
+            version = engine[len(family) + 1:].lstrip("-")
+            candidate = f"{family}/{version} {profile}"
+            if ENGINE_SHORT_RE.fullmatch(candidate) is not None:
+                return candidate
     legacy_m = ENGINE_LEGACY_RE.fullmatch(value)
     if legacy_m is not None:
-        family, version, profile = legacy_m.groups()
-        return f"{family}/{version} {profile}"
+        fam, version, profile = legacy_m.groups()
+        return f"{fam}/{version} {profile}"
     parts = value.split(" ")
     if len(parts) > 1 and any("=" in field for field in parts[1:]):
         head = parts[0]
         require("/" in head, "structured ocr_engine tag requires <family>/<version>")
-        family, version = head.split("/", 1)
+        fam, version = head.split("/", 1)
         seen = {}
         for field in parts[1:]:
             require("=" in field, "structured ocr_engine field must be key=value")
@@ -184,9 +198,9 @@ def canonical_engine_key(value):
             seen[k] = v
         require("profile" in seen, "structured ocr_engine tag requires profile")
         profile = seen["profile"]
-        require(ENGINE_SHORT_RE.fullmatch(f"{family}/{version} {profile}") is not None,
+        require(ENGINE_SHORT_RE.fullmatch(f"{fam}/{version} {profile}") is not None,
                 "invalid structured ocr_engine family/version/profile")
-        return f"{family}/{version} {profile}"
+        return f"{fam}/{version} {profile}"
     return value
 
 
@@ -239,7 +253,7 @@ def adapt_run(record, page_id):
     require(not record["selected"] or record["status"] == "ok", "selected read must be ok")
     selected_engine = f"{record['family']}/{record['engine_version']} {record['profile']}"
     if "/" in record["ocr_engine"] or " " in record["ocr_engine"]:
-        require(canonical_engine_key(record["ocr_engine"]) == selected_engine,
+        require(canonical_engine_key(record["ocr_engine"], family=record["family"]) == selected_engine,
                 "RunRecord ocr_engine does not match family/engine_version/profile")
     config = {key: record[key] for key in (
         "engine_id", "engine_version", "image_digest", "models_digest", "models_json",
@@ -492,6 +506,7 @@ def validate_event(event):
 DDL = """
 CREATE TABLE meta(version INTEGER NOT NULL);
 INSERT INTO meta VALUES(1);
+PRAGMA user_version=2;
 CREATE TABLE batches(batch_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, events INTEGER NOT NULL);
 CREATE TABLE events(source TEXT NOT NULL, event_id TEXT NOT NULL, sha256 TEXT NOT NULL,
                     batch_id TEXT NOT NULL, line_number INTEGER NOT NULL,
@@ -511,30 +526,23 @@ CREATE INDEX by_stage ON latest(kind,stage,state);
 """
 
 
-def migrate_indexed_keys(conn, writable):
-    """Collapse legacy run-scoped indexed keys in latest to page-scoped keys per (source, page_id)."""
-    found = conn.execute(
-        "SELECT * FROM latest WHERE kind='page_state' AND stage='indexed'"
-    ).fetchall()
-    if not found:
-        return
-    groups = {}
-    needs_migration = False
-    for row in found:
-        expected_key = digest([row["source"], "page_state", [row["page_id"], "indexed"]])
-        if row["key"] != expected_key:
-            needs_migration = True
-        groups.setdefault((row["source"], row["page_id"], expected_key), []).append(row)
-    if not needs_migration:
-        return
-    require(writable,
-            "catalog has legacy run-scoped indexed keys; reopen with init or ingest to migrate")
+def migrate_indexed_keys(conn):
+    """One-time writable upgrade: collapse legacy run-scoped indexed keys to page-scoped keys."""
     with conn:
         conn.execute("BEGIN IMMEDIATE")
+        found = conn.execute(
+            "SELECT key, source, page_id, observed_at, event_id FROM latest "
+            "WHERE kind='page_state' AND stage='indexed'"
+        ).fetchall()
+        groups = {}
+        for row in found:
+            expected_key = digest([row["source"], "page_state", [row["page_id"], "indexed"]])
+            groups.setdefault((row["source"], row["page_id"], expected_key), []).append(row)
         for (_source, _page_id, expected_key), group in groups.items():
             if len(group) == 1 and group[0]["key"] == expected_key:
                 continue
-            winner = max(group, key=lambda r: (r["observed_at"], r["event_id"]))
+            winner_ref = max(group, key=lambda r: (r["observed_at"], r["event_id"]))
+            winner = conn.execute("SELECT * FROM latest WHERE key=?", (winner_ref["key"],)).fetchone()
             for row in group:
                 conn.execute("DELETE FROM latest WHERE key=?", (row["key"],))
             conn.execute(
@@ -544,6 +552,7 @@ def migrate_indexed_keys(conn, writable):
                  winner["data"], winner["engine"], winner["status"],
                  winner["run_id"], winner["stage"], winner["state"]),
             )
+        conn.execute(f"PRAGMA user_version={INDEXED_KEY_SCOPE_VERSION}")
 
 
 def connect(path, writable=False):
@@ -553,6 +562,8 @@ def connect(path, writable=False):
     conn = sqlite3.connect(path.resolve().as_uri() + ("?mode=rwc" if writable else "?mode=ro"),
                            uri=True, timeout=2)
     conn.row_factory = sqlite3.Row
+    deadline = time.monotonic() + QUERY_SECONDS
+    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
     try:
         if writable:
             # The schema transaction also makes first creation recoverable.
@@ -563,16 +574,22 @@ def connect(path, writable=False):
         versions = conn.execute("SELECT version FROM meta LIMIT 2").fetchall()
         require(len(versions) == 1 and versions[0][0] == 1,
                 "unsupported catalog schema (rebuild from evidence)")
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        require(user_version in (0, INDEXED_KEY_SCOPE_VERSION),
+                "unsupported catalog schema (rebuild from evidence)")
         if writable:
             # Rollback journal permits truly read-only queries without WAL/SHM creation.
             conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=FULL")
-        if not writable:
+            if user_version != INDEXED_KEY_SCOPE_VERSION:
+                migrate_indexed_keys(conn)
+        else:
             require(conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete",
                     "catalog must use DELETE journaling; reopen with init to migrate")
-        migrate_indexed_keys(conn, writable)
-        if not writable:
+            require(user_version == INDEXED_KEY_SCOPE_VERSION,
+                    "catalog has legacy run-scoped indexed keys; reopen with init or ingest to migrate")
             conn.execute("PRAGMA query_only=ON")
+        conn.set_progress_handler(None, 0)
         return conn
     except Exception:
         conn.close()
@@ -1292,13 +1309,16 @@ def trace(db, page_id, run_id=None):
             if a["data"].get("state") in ("present", "verified") and
             isinstance(a["data"].get("sha256"), str)
         }
-        rel_engine = (canonical_engine_key(release_decision["selected_engine"])
+        rel_family = source_family(release_decision["selected_source"])
+        idx_family = source_family(search_provenance["selected_source"])
+        rec_family = source_family(receipt.get("ocr_source")) if isinstance(receipt, dict) else None
+        rel_engine = (canonical_engine_key(release_decision["selected_engine"], family=rel_family)
                       if isinstance(release_decision["selected_engine"], str) and
                       release_decision["selected_engine"].strip() else None)
-        idx_engine = (canonical_engine_key(search_provenance["selected_engine"])
+        idx_engine = (canonical_engine_key(search_provenance["selected_engine"], family=idx_family)
                       if isinstance(search_provenance["selected_engine"], str) and
                       search_provenance["selected_engine"].strip() else None)
-        rec_engine = (canonical_engine_key(receipt["ocr_engine"])
+        rec_engine = (canonical_engine_key(receipt["ocr_engine"], family=rec_family or idx_family)
                       if isinstance(receipt, dict) and isinstance(receipt.get("ocr_engine"), str) and
                       receipt.get("ocr_engine").strip() else None)
 
@@ -1319,11 +1339,12 @@ def trace(db, page_id, run_id=None):
                 for e in executions
             ):
                 return False
+            fam = r_data.get("family")
             r_engine_raw = r_data.get("selected_engine")
             if isinstance(r_engine_raw, str) and r_engine_raw.strip():
-                r_engine = canonical_engine_key(r_engine_raw)
+                r_engine = canonical_engine_key(r_engine_raw, family=fam)
             else:
-                fam, ver, prof = r_data.get("family"), r_data.get("engine_version"), r_data.get("profile")
+                ver, prof = r_data.get("engine_version"), r_data.get("profile")
                 if not all(isinstance(x, str) and x for x in (fam, ver, prof)):
                     return False
                 r_engine = f"{fam}/{ver} {prof}"

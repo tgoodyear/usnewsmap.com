@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1079,8 +1080,9 @@ class CatalogTests(unittest.TestCase):
         finally:
             conn.close()
 
-        # Upgrade regression: existing schema-v1 databases with legacy run-scoped indexed keys
-        # collapse and migrate on writable open (including batch replay) and are superseded by newer baseline rows.
+        # Upgrade regression: existing schema-v1 databases (user_version=0) with legacy run-scoped indexed keys
+        # collapse and migrate on writable open (including batch replay), persist the migration marker,
+        # skip enumeration on normal opens, and are superseded by newer baseline rows.
         conn = sqlite3.connect(self.db)
         try:
             cur_row = conn.execute(
@@ -1108,15 +1110,23 @@ class CatalogTests(unittest.TestCase):
                  row_dict["event_id"], "2026-10-18T02:05:00.000000000Z", c.canonical(newer_data),
                  None, "accepted", run_a, "indexed", "present"),
             )
+            conn.execute("PRAGMA user_version=0")
             conn.commit()
         finally:
             conn.close()
         # Read-only open refuses unmigrated legacy indexed keys rather than miscounting snapshot.
         with self.assertRaises(c.CatalogError):
             c.snapshot(self.db)
-        # Replaying a known batch into the existing database triggers migration and collapses the keys.
+        # Replaying a known batch into the existing database triggers migration, collapses the keys,
+        # and persists user_version=2 so subsequent opens skip scanning latest.
         self.assertTrue(c.ingest(self.db, search_ev)["replayed"])
-        self.assertEqual({s["id"]: s for s in c.snapshot(self.db)["stages"]}["indexed"]["count"], 1)
+        conn = sqlite3.connect(self.db)
+        try:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], c.INDEXED_KEY_SCOPE_VERSION)
+        finally:
+            conn.close()
+        with mock.patch.object(c, "migrate_indexed_keys", side_effect=AssertionError("unexpected scan")):
+            self.assertEqual({s["id"]: s for s in c.snapshot(self.db)["stages"]}["indexed"]["count"], 1)
         # Ingesting a newer baseline from the same source now replaces the migrated key in latest & snapshot.
         baseline_hits_2 = self.work / "hits-baseline-rollback-2.json"
         baseline_hits_2.write_text(baseline_hits_raw)
@@ -1551,6 +1561,82 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(after_base["published"])
         self.assertEqual(after_base["search_provenance"]["decision"], "unchanged_baseline")
         self.assertFalse(after_base["publication_proof_complete"])
+
+        # Hyphenated engine version regression (e.g. tesseract-5.5.1-rc1/deu_latf+deu):
+        # legacy ocr_engine tags preserve the hyphenated version instead of splitting at the last hyphen.
+        self.assertEqual(
+            c.canonical_engine_key("tesseract-5.5.1-rc1/deu_latf+deu", family="tesseract"),
+            "tesseract/5.5.1-rc1 deu_latf+deu",
+        )
+        self.assertEqual(
+            c.canonical_engine_key("tesseract-5.5.1-rc1/deu_latf+deu"),
+            "tesseract/5.5.1-rc1 deu_latf+deu",
+        )
+        run_rc = "usnm-ocr-node3.20261018T070000000000Z"
+        worker_rc_obj = json.loads(worker_fixture.read_text())
+        worker_rc_obj["run_id"] = run_rc
+        worker_rc_obj["started_at"] = "2026-10-18T07:00:00.000000000Z"
+        worker_rc_obj["finished_at"] = "2026-10-18T07:00:05.000000000Z"
+        worker_rc_obj["observations"][0]["ocr_engine"] = "tesseract-5.5.1-rc1/deu_latf+deu"
+        worker_rc_obj["run_record"]["run_id"] = run_rc
+        worker_rc_obj["run_record"]["ocr_engine"] = "tesseract-5.5.1-rc1/deu_latf+deu"
+        worker_rc_obj["run_record"]["engine_version"] = "5.5.1-rc1"
+        worker_rc_obj["run_record"]["node_finished_at"] = "2026-10-18T07:00:05.000000000Z"
+        worker_rc_file = self.work / "worker-rc1.json"
+        worker_rc_file.write_text(c.canonical(worker_rc_obj) + "\n")
+        c.ingest_worker(self.db, worker_rc_file, self.work / "worker-rc1.jsonl",
+                        "worker-rc1", "worker-capture")
+
+        import_rc = "20261018T070500000000Z-rc1-0000"
+        import_rc_file = self.work / "import-rc1.json"
+        import_rc_file.write_text(c.canonical({
+            "run": import_rc,
+            "at": "2026-10-18T07:05:00.000000000Z",
+            "index_version": "pages-v20261018-rc1",
+            "sources": [
+                {"path": f"pages/{issue_id}.{run_rc}.parquet", "etag": "\"rc1\"", "outcome": "imported"},
+                {"path": f"alto/{doc_id}.{run_rc}.xml", "etag": "\"rc2\"", "outcome": "imported"},
+            ],
+            "pages": [f"ocr-local/pages/sn83045462/{import_rc}.parquet"],
+            "outcomes": f"ocr-local/outcomes/2026-10-18/{import_rc}.parquet",
+        }) + "\n")
+        c.ingest_import(self.db, import_rc_file, self.work / "imp-rc1.jsonl", "imp-rc1", "ocr-sync")
+
+        release_rc_file = self.work / "release-rc1.json"
+        release_rc_file.write_text(c.canonical({
+            "schema": 1,
+            "release_id": "v20261018-rc1",
+            "decided_at": "2026-10-18T07:10:00.000000000Z",
+            "decisions": [{
+                "doc_id": doc_id,
+                "run_id": run_rc,
+                "import_id": import_rc,
+                "committed_at": "2026-10-18T07:05:00.000000000Z",
+                "decision": "accepted",
+                "decision_reason": "rule_v1",
+                "selected_source": "usnm-tesseract",
+                "selected_engine": "tesseract-5.5.1-rc1/deu_latf+deu",
+            }],
+        }) + "\n")
+        c.ingest_release(self.db, release_rc_file, self.work / "rel-rc1.jsonl",
+                         "rel-rc1", "release-builder")
+
+        hits_rc_file = self.work / "hits-rc1.json"
+        hits_rc_file.write_text(c.canonical({
+            "index_version": "pages-v20261018-rc1",
+            "items": [{
+                "doc_id": doc_id,
+                "ocr": {"source": "usnm-tesseract", "engine": "tesseract-5.5.1-rc1/deu_latf+deu"},
+            }],
+        }) + "\n")
+        c.ingest_search_provenance(
+            self.db, hits_rc_file, self.work / "search-rc1.jsonl", "search-rc1",
+            "public-hits", page_id, "2026-10-18T07:15:00Z",
+            run_id=run_rc, release_id="v20261018-rc1", import_id=import_rc)
+        trace_rc = c.trace(self.db, page_id, run_id=run_rc)
+        self.assertTrue(trace_rc["accepted"])
+        self.assertTrue(trace_rc["published"])
+        self.assertTrue(trace_rc["publication_proof_complete"])
 
 
 if __name__ == "__main__":
