@@ -319,8 +319,9 @@ pub enum Outcome {
     Timeout,
     /// llama-server did not start or answer, or died.
     Failed,
-    /// The GPU version ran, but no usable NVIDIA GPU was visible in the
-    /// container, so nothing was read.
+    /// The GPU version ran, but no usable GPU was visible (no NVIDIA GPU for
+    /// a CUDA class; no hardware Vulkan device, or too little free device
+    /// memory for the model, for a Vulkan class), so nothing was read.
     NoGpu,
     /// The unit could not run at all (bad input, an engine that differs
     /// from the job).
@@ -646,6 +647,20 @@ pub(crate) mod tests {
             readings,
             bytes,
         )
+    }
+
+    #[test]
+    fn longer_gpu_budget_is_valid_and_has_a_new_immutable_identity() {
+        let original = job();
+        let mut longer = original.clone();
+        longer.gpu_timeout_secs = 14_400;
+        longer.id = longer.identity().unwrap();
+        longer.validate().unwrap();
+        assert_ne!(longer.id, original.id);
+        assert_eq!(longer.crops, original.crops);
+        longer.gpu_timeout_secs = 14_401;
+        longer.id = longer.identity().unwrap();
+        assert!(longer.validate().is_err());
     }
 
     #[test]

@@ -133,6 +133,31 @@ We compared three full designs. This decision is the one with a container per en
 - **Contract changes are expensive.** A breaking change means rebuilding every image, so the worker supports versions N and N-1 while it happens.
 - **Two ALTO unit systems.** The stored ALTO is in pixels, while LoC's and the Japanese job's are in inch1200. Readers must check `MeasurementUnit`.
 
+## Runtime spike evidence (2026-10-18)
+
+[Issue #307's item-0 receipt](https://github.com/tgoodyear/usnewsmap.com/issues/307#issuecomment-6250783922)
+records a passing SELinux-enforcing run on a new, isolated RHEL 10.2 VM
+on pve-big (VM 104), not either production OCR node. It used kernel
+6.12.0-211.66.1, Podman 5.8.2, crun 1.27, container-selinux 2.248.0 and
+systemd 257. The worker unit's hardening remained intact. The checks cover
+the rootless API socket, delegated controllers, subordinate IDs, JSON-line
+attach streams with logging disabled, MCS/ACL isolation, effective limits,
+OOM state before removal, and memory charging for both scratch and
+container-local tmpfs writes. No SELinux policy changes were needed; the
+boot audit search found no `nnp_transition` denial. VM 104 was shut down
+and retained with automatic startup disabled.
+
+Podman's reported `State.CgroupPath` names the libpod scope on this stack,
+not the process's `/container` child. The child's no-swap limit is tighter
+than its parent's. The spike therefore reads `/proc/<State.Pid>/cgroup`
+and walks from that leaf through the scope when checking effective limits;
+the existing container memory/swap flags do not need changing.
+
+This accepts the runtime transport/isolation spike only. Its synthetic
+`{"type":"hello","contract":1}` round trip is not a real adapter hello or
+production `contract=1` OCR result. Real-image conformance, lock/registry,
+engine-host completion and production deployment remain separate gates.
+
 ## Optional BOINC batch transport (#438)
 
 The [BOINC pilot](../../boinc.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models and routing and the native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.

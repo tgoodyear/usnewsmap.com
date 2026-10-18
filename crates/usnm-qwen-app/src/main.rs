@@ -268,16 +268,133 @@ fn quick(program: &str, args: &[&str], deadline: Duration) -> Result<(bool, Stri
     Ok((out.status.success(), text))
 }
 
+/// One device from `llama-server --list-devices`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VulkanDevice {
+    index: u32,
+    name: String,
+    total_mib: u64,
+    free_mib: u64,
+}
+
+/// Software rasterizers Mesa and others expose as Vulkan devices; never a GPU class's device.
+const SOFTWARE_VULKAN: [&str; 3] = ["llvmpipe", "lavapipe", "swiftshader"];
+
+/// Parses `  Vulkan0: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)` lines
+/// and returns the device BOINC assigned. BOINC numbers a vendor's GPUs among themselves
+/// (`gpu_device_num` for `gpu_type intel` counts Intel GPUs only), so `wanted` is an ordinal
+/// among the listed hardware devices of `vendor`, not a `VulkanN` index. There is no fallback to
+/// another device: one BOINC did not assign may be running another task.
+fn vulkan_device(list: &str, vendor: &str, wanted: u32) -> Option<VulkanDevice> {
+    let devices: Vec<VulkanDevice> = list
+        .lines()
+        .filter_map(|l| {
+            let rest = l.trim().strip_prefix("Vulkan")?;
+            let (index, rest) = rest.split_once(": ")?;
+            let index: u32 = index.parse().ok()?;
+            let rest = rest.strip_suffix(" MiB free)")?;
+            let open = rest.rfind(" (")?;
+            let (name, mem) = (&rest[..open], &rest[open + 2..]);
+            let (total, free) = mem.split_once(" MiB, ")?;
+            Some(VulkanDevice {
+                index,
+                name: name.trim().to_string(),
+                total_mib: total.trim().parse().ok()?,
+                free_mib: free.trim().parse().ok()?,
+            })
+        })
+        .filter(|d| {
+            let n = d.name.to_ascii_lowercase();
+            !SOFTWARE_VULKAN.iter().any(|s| n.contains(s)) && n.contains(vendor)
+        })
+        .collect();
+    devices.into_iter().nth(usize::try_from(wanted).ok()?)
+}
+
+/// The library search variable and value that let a bundled `llama-server` find its libraries.
+fn library_env(server_bin: &Path) -> Option<(&'static str, std::ffi::OsString)> {
+    let bin_dir = server_bin.parent().filter(|p| !p.as_os_str().is_empty())?;
+    #[cfg(target_os = "linux")]
+    let lib_var = "LD_LIBRARY_PATH";
+    #[cfg(target_os = "macos")]
+    let lib_var = "DYLD_LIBRARY_PATH";
+    #[cfg(target_os = "windows")]
+    let lib_var = "PATH";
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let lib_var = "LD_LIBRARY_PATH";
+    let cur = std::env::var_os(lib_var).unwrap_or_default();
+    let mut paths = vec![bin_dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&cur));
+    std::env::join_paths(paths).ok().map(|j| (lib_var, j))
+}
+
+/// `llama-server --list-devices`, bounded to 30 seconds.
+fn list_devices(server_bin: &Path) -> Result<String, String> {
+    let mut cmd = Command::new(server_bin);
+    cmd.arg("--list-devices")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some((var, value)) = library_env(server_bin) {
+        cmd.env(var, value);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("{}: {e}", server_bin.display()))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() > Duration::from_secs(30) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("llama-server --list-devices: no answer in 30s".into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(text)
+}
+
+/// Why a Vulkan unit can't run on this host, if it can't: no hardware device, or less free
+/// device memory than the job's largest model needs (#786).
+fn vulkan_refusal(gpu: &GpuState, job: &Job) -> Option<String> {
+    gpu.vulkan_device
+        .is_none()
+        .then(|| {
+            "Vulkan plan class assigned, but llama-server lists no hardware Vulkan device"
+                .to_string()
+        })
+        .or_else(|| {
+            let need = job
+                .engine
+                .models
+                .iter()
+                .map(|m| u64::from(m.min_gpu_mb))
+                .max()?;
+            let free = gpu.free_mb?;
+            (free < need)
+                .then(|| format!("Vulkan device has {free} MiB free; the model needs {need} MiB"))
+        })
+}
+
 #[derive(Debug, Clone)]
 struct GpuState {
     cuda_device: Option<u32>,
+    /// The `VulkanN` ordinal of the assigned device, as `llama-server --list-devices` names it and
+    /// `--device` takes it (#786).
+    vulkan_device: Option<u32>,
     free_mb: Option<u64>,
     used_before_mb: Option<u64>,
     use_gpu: bool,
     device_label: String,
 }
 
-fn detect_gpu(host: &mut Host, diag: &mut Diag) -> GpuState {
+fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuState {
     let mut body = String::new();
     let plan = host.plan_class.as_deref().unwrap_or("");
     let gpu_type = host.gpu_type.as_deref().unwrap_or("");
@@ -287,6 +404,7 @@ fn detect_gpu(host: &mut Host, diag: &mut Diag) -> GpuState {
         diag.section("gpu", &body, 1024);
         return GpuState {
             cuda_device: None,
+            vulkan_device: None,
             free_mb: None,
             used_before_mb: None,
             use_gpu: false,
@@ -294,7 +412,53 @@ fn detect_gpu(host: &mut Host, diag: &mut Diag) -> GpuState {
         };
     }
 
-    // Check NVIDIA via nvidia-smi first.
+    if plan.contains("vulkan") {
+        // No CPU fallback inside a GPU class: without a hardware Vulkan device the GPU is
+        // `None` and the unit ends `no_gpu` (#786).
+        let devices = find_llama_server(work)
+            .map_err(|e| format!("{e:#}"))
+            .and_then(|bin| list_devices(&bin));
+        let wanted = u32::try_from(host.gpu_device_num.unwrap_or(0)).unwrap_or(0);
+        let (vulkan_device, free_mb) = match &devices {
+            Ok(text) => {
+                let _ = writeln!(body, "llama-server --list-devices:\n{}", text.trim());
+                let vendor = if plan.contains("intel") {
+                    "intel"
+                } else if plan.contains("nvidia") {
+                    "nvidia"
+                } else {
+                    "unsupported-vulkan-vendor"
+                };
+                match vulkan_device(text, vendor, wanted) {
+                    Some(d) => {
+                        host.gpu = Some(d.name.chars().take(64).collect());
+                        host.gpu_mem_total_mib = Some(d.total_mib);
+                        (Some(d.index), Some(d.free_mib))
+                    }
+                    None => {
+                        let _ = writeln!(body, "no hardware Vulkan device");
+                        (None, None)
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(body, "listing Vulkan devices failed: {e}");
+                (None, None)
+            }
+        };
+        let _ = writeln!(body, "Vulkan via plan_class, device {vulkan_device:?}");
+        diag.section("gpu", &body, 2048);
+        return GpuState {
+            cuda_device: None,
+            vulkan_device,
+            free_mb,
+            used_before_mb: None,
+            use_gpu: vulkan_device.is_some(),
+            device_label: "vulkan".into(),
+        };
+    }
+
+    // Check NVIDIA via nvidia-smi.
     if let Ok((true, out)) = quick(
         "nvidia-smi",
         &[
@@ -327,6 +491,7 @@ fn detect_gpu(host: &mut Host, diag: &mut Diag) -> GpuState {
                 diag.section("gpu", &body, 2048);
                 return GpuState {
                     cuda_device: Some(idx),
+                    vulkan_device: None,
                     free_mb,
                     used_before_mb,
                     use_gpu: true,
@@ -345,6 +510,7 @@ fn detect_gpu(host: &mut Host, diag: &mut Diag) -> GpuState {
         diag.section("gpu", &body, 1024);
         return GpuState {
             cuda_device: None,
+            vulkan_device: None,
             free_mb: None,
             used_before_mb: None,
             use_gpu: true,
@@ -352,22 +518,11 @@ fn detect_gpu(host: &mut Host, diag: &mut Diag) -> GpuState {
         };
     }
 
-    if plan.contains("vulkan") {
-        let _ = writeln!(body, "Vulkan active via plan_class");
-        diag.section("gpu", &body, 1024);
-        return GpuState {
-            cuda_device: None,
-            free_mb: None,
-            used_before_mb: None,
-            use_gpu: true,
-            device_label: "vulkan".into(),
-        };
-    }
-
     let _ = writeln!(body, "running on CPU");
     diag.section("gpu", &body, 1024);
     GpuState {
         cuda_device: None,
+        vulkan_device: None,
         free_mb: None,
         used_before_mb: None,
         use_gpu: false,
@@ -1047,22 +1202,17 @@ impl Server {
         if let Some(dev) = gpu.cuda_device {
             cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
         }
-        if let Some(bin_dir) = server_bin.parent().filter(|p| !p.as_os_str().is_empty()) {
-            #[cfg(target_os = "linux")]
-            let lib_var = "LD_LIBRARY_PATH";
-            #[cfg(target_os = "macos")]
-            let lib_var = "DYLD_LIBRARY_PATH";
-            #[cfg(target_os = "windows")]
-            let lib_var = "PATH";
-            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-            let lib_var = "LD_LIBRARY_PATH";
-
-            let cur = std::env::var_os(lib_var).unwrap_or_default();
-            let mut paths = vec![bin_dir.to_path_buf()];
-            paths.extend(std::env::split_paths(&cur));
-            if let Ok(joined) = std::env::join_paths(paths) {
-                cmd.env(lib_var, joined);
-            }
+        // --device takes the names --list-devices printed. GGML_VK_VISIBLE_DEVICES would index
+        // the unfiltered physical-device list instead, which can include llvmpipe.
+        // The vision projector picks its backend separately (MTMD_BACKEND_DEVICE, else a
+        // default GPU), so it is pinned to the same device.
+        if let Some(dev) = gpu.vulkan_device {
+            let name = format!("Vulkan{dev}");
+            cmd.args(["--device", &name]);
+            cmd.env("MTMD_BACKEND_DEVICE", &name);
+        }
+        if let Some((var, value)) = library_env(server_bin) {
+            cmd.env(var, value);
         }
         #[cfg(unix)]
         {
@@ -1188,7 +1338,7 @@ pub fn run_slot_with(
     let mut host = Host::default();
     boinc_info(work, &mut host, &mut diag);
     runtime_info(&mut host, &mut diag);
-    let gpu = detect_gpu(&mut host, &mut diag);
+    let gpu = detect_gpu(work, &mut host, &mut diag);
 
     if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
         diag.section(
@@ -1217,8 +1367,23 @@ pub fn run_slot_with(
             let want_cuda_only = host
                 .plan_class
                 .as_deref()
-                .is_some_and(|p| p.contains("nvidia") || p.contains("cuda"));
-            if want_cuda_only && gpu.cuda_device.is_none() {
+                .is_some_and(|p| p.contains("cuda"));
+            let vulkan_refused = host
+                .plan_class
+                .as_deref()
+                .is_some_and(|p| p.contains("vulkan"))
+                .then(|| vulkan_refusal(&gpu, &l.job))
+                .flatten();
+            if let Some(reason) = vulkan_refused {
+                diag.section("skipped", &reason, 256);
+                empty_result(
+                    l.job.id.clone(),
+                    l.job.engine.clone(),
+                    l.job.crops.len() as u32,
+                    Outcome::NoGpu,
+                    None,
+                )
+            } else if want_cuda_only && gpu.cuda_device.is_none() {
                 diag.section(
                     "skipped",
                     "CUDA plan class assigned, but nvidia-smi sees no GPU",
@@ -1851,9 +2016,82 @@ mod tests {
         let mut host = Host::default();
         let mut diag = Diag::new();
         boinc_info(&slot, &mut host, &mut diag);
-        let gpu = detect_gpu(&mut host, &mut diag);
+        let gpu = detect_gpu(&slot, &mut host, &mut diag);
         assert!(gpu.use_gpu);
         assert_eq!(gpu.device_label, "metal");
+    }
+
+    #[test]
+    fn vulkan_device_list_skips_software_devices() {
+        let list = "load_backend: loaded Vulkan backend\nAvailable devices:\n  Vulkan0: llvmpipe (LLVM 19.1.7, 256 bits) (15834 MiB, 15000 MiB free)\n  Vulkan1: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)\n";
+        let d = vulkan_device(list, "intel", 0).unwrap();
+        assert_eq!(d.index, 1);
+        assert_eq!(d.name, "Intel(R) Iris(R) Xe Graphics (TGL GT2)");
+        assert_eq!((d.total_mib, d.free_mib), (7917, 7125));
+        let soft = "  Vulkan0: llvmpipe (LLVM 19.1.7, 256 bits) (1 MiB, 1 MiB free)";
+        assert!(vulkan_device(soft, "", 0).is_none());
+        let two = "  Vulkan0: Intel(R) Arc(TM) A770 Graphics (16384 MiB, 16000 MiB free)\n  Vulkan1: Intel(R) UHD Graphics 770 (7000 MiB, 6500 MiB free)";
+        assert_eq!(vulkan_device(two, "intel", 1).unwrap().index, 1);
+        // No fallback to an unassigned device.
+        assert!(vulkan_device(two, "intel", 5).is_none());
+        // BOINC's Intel device 0 is the first Intel device, not Vulkan0.
+        let mixed = "  Vulkan0: NVIDIA GeForce RTX 3060 (12288 MiB, 11000 MiB free)\n  Vulkan1: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)";
+        assert_eq!(vulkan_device(mixed, "intel", 0).unwrap().index, 1);
+        assert!(vulkan_device(mixed, "intel", 1).is_none());
+        assert_eq!(vulkan_device(mixed, "nvidia", 0).unwrap().index, 0);
+        assert!(vulkan_device(mixed, "nvidia", 1).is_none());
+        assert!(vulkan_device("no devices", "intel", 0).is_none());
+    }
+
+    #[cfg(unix)]
+    fn fake_llama_server(slot: &Path, listing: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let bin = slot.join("llama-server");
+        std::fs::write(&bin, format!("#!/bin/sh\nprintf '%s\\n' '{listing}'\n")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vulkan_plan_class_uses_the_listed_device_and_refuses_too_little_memory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path().join("slot");
+        let job = write_qwen_unit(&slot);
+        std::fs::write(
+            slot.join("init_data.xml"),
+            "<app_init_data><plan_class>intel_vulkan_8b</plan_class><gpu_type>intel_gpu</gpu_type></app_init_data>",
+        )
+        .unwrap();
+        fake_llama_server(
+            &slot,
+            "  Vulkan0: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 6000 MiB free)",
+        );
+        let mut host = Host::default();
+        let mut diag = Diag::new();
+        boinc_info(&slot, &mut host, &mut diag);
+        let gpu = detect_gpu(&slot, &mut host, &mut diag);
+        assert!(gpu.use_gpu);
+        assert_eq!(gpu.device_label, "vulkan");
+        assert_eq!((gpu.vulkan_device, gpu.free_mb), (Some(0), Some(6000)));
+        assert_eq!(host.gpu_mem_total_mib, Some(7917));
+        let mut big = job.clone();
+        big.engine.models[0].min_gpu_mb = 7000;
+        assert!(vulkan_refusal(&gpu, &big)
+            .unwrap()
+            .contains("6000 MiB free"));
+        big.engine.models[0].min_gpu_mb = 5000;
+        assert!(vulkan_refusal(&gpu, &big).is_none());
+
+        // Only a software device: no GPU, and the unit is refused rather than run on the CPU.
+        fake_llama_server(
+            &slot,
+            "  Vulkan0: llvmpipe (LLVM 19.1.7, 256 bits) (15834 MiB, 15000 MiB free)",
+        );
+        let gpu = detect_gpu(&slot, &mut host, &mut diag);
+        assert!(!gpu.use_gpu);
+        assert!(vulkan_refusal(&gpu, &job)
+            .unwrap()
+            .contains("no hardware Vulkan device"));
     }
 
     #[test]
@@ -1869,7 +2107,7 @@ mod tests {
         let mut host = Host::default();
         let mut diag = Diag::new();
         boinc_info(&slot, &mut host, &mut diag);
-        let gpu = detect_gpu(&mut host, &mut diag);
+        let gpu = detect_gpu(&slot, &mut host, &mut diag);
         assert!(!gpu.use_gpu);
         assert_eq!(gpu.device_label, "cpu");
         assert!(gpu.cuda_device.is_none());

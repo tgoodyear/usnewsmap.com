@@ -1,0 +1,529 @@
+{
+  "identityClass": "az",
+  "workspace": "515f0cf5-5e3e-4fbc-967d-9f860a44dc9f",
+  "endpoint": "https://westus2.api.loganalytics.io",
+  "audience": "https://api.loganalytics.io",
+  "timespan": "P7D",
+  "panels": [
+    {
+      "name": "positive-control",
+      "querySha256": "f4cd86f35b7e670e0b6866f4383743009a749a876c8348bdd33b460ef8c8951f",
+      "startedUtc": "2026-10-18T01:50:02.925701+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-gl7q4",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "df3783d8-d53d-4754-8e8a-e39c1d220d4d"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-vdw6n",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "c0f96b93-59be-44ef-948a-e9f0508cf792"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-qhwjl",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "4b952387-3e0d-42c6-a252-46cf0dcb6cae"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-rd5b2",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "e16bd843-f03b-42f4-84a9-04b9d86df28c"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-nc7w8",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "89c3b8b6-909a-40b6-9317-ff2c973eb390"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-pmrr2",
+          "host": "api.loganalytics.io",
+          "requestId": "615bf890-7ce3-40bf-940d-9002bcaf741c"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:50:28.142029+00:00"
+    },
+    {
+      "name": "workvolume-states",
+      "querySha256": "00e46ae098ae44cede5c89a0834b58f4d7bb60e034bb1276e7f5d6ad766b262a",
+      "startedUtc": "2026-10-18T01:50:28.142077+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-b9trl",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "08f16a79-4f9f-4340-91fa-a42ebabc46cb"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-8p5mj",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "8eff6800-ac7b-4b47-ad6d-25345386c2df"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-mj7nz",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "54f66e67-7ed1-4bad-bdf2-383616d37431"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-hmgzw",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "368da5e8-fd80-4d31-9706-92ecbb23c944"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-rs9d6",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "67cca145-c24d-4b47-986b-a5d4da3d4299"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-5ct8c",
+          "host": "api.loganalytics.io",
+          "requestId": "933d5702-53ec-4cc5-b0ec-9db90d6a6ea5"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:50:57.938893+00:00"
+    },
+    {
+      "name": "workvolume-latest",
+      "querySha256": "9d8474cd140204e4d85909b024a614cfb2f0576b09e9db8dee7c98d3e94060a1",
+      "startedUtc": "2026-10-18T01:50:57.938986+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-7fbw6",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "b45fd63b-84d7-4136-8116-40df34bf31e6"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-5ksb8",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "94f62681-7c35-49d2-93ef-01cbfac57c40"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-9kl58",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "cfa6694e-b316-4d1e-a80b-7d080f5ea9b4"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-mxfcd",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "6fe7d9dc-a555-4422-8ba8-56dd335e52c1"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-cqbp9",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "f4125d65-192c-42f4-ad98-ff20fbf2092d"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-mk99n",
+          "host": "api.loganalytics.io",
+          "requestId": "85da1f5b-175e-47e9-8877-07e873540333"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:51:27.086810+00:00"
+    },
+    {
+      "name": "workvolume-chart",
+      "querySha256": "878f7276e4902dce3ae032188bc46ababa69c53788c563810a74c0e0da774fb7",
+      "startedUtc": "2026-10-18T01:51:27.086925+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-f82b6",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "d2492802-adf0-406d-9d5c-530cadb7d758"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-fqzp8",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "1f810bfc-4ef4-45bc-9fa1-d571b57c51b0"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-tvtxz",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "d4a82667-29c3-44b6-af99-27930e38c312"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-jzngn",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "871fa695-cfdb-4971-a3d0-5f8614df4248"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-hv6ps",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "9aeedae3-f96d-45fb-b440-018dc282c6d8"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-2k9x6",
+          "host": "api.loganalytics.io",
+          "requestId": "ec957e4a-7927-4661-9d24-312134e013a3"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:51:53.468027+00:00"
+    },
+    {
+      "name": "executions",
+      "querySha256": "e397818981a36aded7fbec43bee417d02f262164f08393e53fac4f40a550ac5e",
+      "startedUtc": "2026-10-18T01:51:53.468069+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-c74wl",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "aff49777-fbb5-4904-9217-4087e3332152"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-s898w",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "3a320a8f-80ce-4b0f-aa69-3f9d181f5412"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-569qz",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "5ce9316c-cbfe-472e-bb8e-0c1e14321ea2"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-xwrv4",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "99b063d8-451a-4b09-8e6f-513c263e5b76"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-zbfs5",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "21067d9a-92d9-442c-973d-a2733deceda5"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-5q2zf",
+          "host": "api.loganalytics.io",
+          "requestId": "5125a3cd-84fc-4f48-b165-76e5d67121d1"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:52:17.532532+00:00"
+    },
+    {
+      "name": "executionsbyday",
+      "querySha256": "8f8302d93091cd2f5fa97c17bff784c57da53e11b4c22449f32bf33446d22705",
+      "startedUtc": "2026-10-18T01:52:17.532575+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-l58jb",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "26e74439-fcb4-48b7-a17a-64b2be4289b7"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-tvksr",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "60ea39d3-7e6a-4677-b820-393ba804b623"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-m9b7w",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "b0422ea2-99b2-4361-81c8-2b4a15fd3ca7"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-tl9f4",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "cdf26371-05c8-4362-99d3-098e69d5eb59"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-qs8qh",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "bdd099c8-ee32-4769-b180-3c10b2882dc9"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-b9hxx",
+          "host": "api.loganalytics.io",
+          "requestId": "4e25617a-84a6-44b0-9e9e-c1b4b8dc9f37"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:52:38.706061+00:00"
+    },
+    {
+      "name": "revisions",
+      "querySha256": "e37aba2b9caac237d63defeb0d1196bfb65449e84fbc4870b4d53385983567a4",
+      "startedUtc": "2026-10-18T01:52:38.706160+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-dgknt",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "f8cb53ec-70e0-44fe-aafa-185ab7ba882c"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-x9278",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "f72ef4a6-9f7e-46fd-a626-3edb66c1132b"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-vlrll",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "f058b183-1579-4b86-ab7e-715db0de73c3"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-xr5bv",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "ac0ffe91-5f73-4f1c-9057-39d35c9d1a62"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-dstw5",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "edc21123-909a-4781-bb07-f91e023d7c05"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-nnp9x",
+          "host": "api.loganalytics.io",
+          "requestId": "4701328b-9ea3-4657-98aa-b7d7e349f04b"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:53:04.904036+00:00"
+    },
+    {
+      "name": "restarts",
+      "querySha256": "90cacb053777693609718d86088b91ab4022c9ea4382c07a51372d5b72afb46e",
+      "startedUtc": "2026-10-18T01:53:04.904109+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-c6h5r",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "1d3bc8a7-3c73-4b36-b239-0bdcf6f8b294"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-nmqpx",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "5f89426c-bff5-40b6-8261-b786804cf618"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-74x7r",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "d21f9583-634c-4ac4-8070-133d539204ed"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-fr6lc",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "af85e6f9-a0d1-4438-a1ff-02e428eff336"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-bj8jc",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "7ff8c427-d714-4a1d-b9f8-80be10913ef9"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-vrs22",
+          "host": "api.loganalytics.io",
+          "requestId": "c699f78c-8092-4916-b956-e40ea16cdbe5"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:53:29.926090+00:00"
+    },
+    {
+      "name": "warnings",
+      "querySha256": "32d008fc3e86d1a534641af74fac87a4531002a94a649ed2c5fdbf13d385832c",
+      "startedUtc": "2026-10-18T01:53:29.926167+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-7t9jh",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "7e89231b-27cc-4239-b33b-b97627c0514e"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-2qpnx",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "fa48b99a-1838-48aa-b65d-fadc4279841e"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-dp649",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "78b34ce0-8df2-4bac-9211-8203c2a9123e"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-kj8xx",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "8e196a5b-85fc-4b70-861e-eeba4aebd8c9"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-g2vvp",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "2d5e1308-270c-4ea6-b5b4-e05960918b34"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-6w8xd",
+          "host": "api.loganalytics.io",
+          "requestId": "7b7a2a27-3585-4115-b855-54a058c91a25"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:53:56.989849+00:00"
+    },
+    {
+      "name": "console",
+      "querySha256": "05f6d223e11d4eecfeaf3e9441ea12cc6d825a1a324e813235529f7f24dcbce1",
+      "startedUtc": "2026-10-18T01:53:56.989918+00:00",
+      "status": "failed",
+      "error": "Logs query exhausted bounded retry (6 attempts)",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-mk2wp",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "9905293d-e801-4110-9a8f-007a67fb4af1"
+        },
+        {
+          "attempt": 2,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-k5d6p",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "beec1943-ba23-4206-9a96-677fafc6c8a5"
+        },
+        {
+          "attempt": 3,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-vcnfp",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "e2fb806c-ce90-4b5e-8a38-d25908692cd1"
+        },
+        {
+          "attempt": 4,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-cgrtq",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "c8673915-3916-48c0-bc5e-6f98c61a58a0"
+        },
+        {
+          "attempt": 5,
+          "status": 403,
+          "via": "1.1 draft-oms-df8cbfb5-ldld2",
+          "host": "westus2.api.loganalytics.io",
+          "requestId": "63ba0a04-a982-4665-addf-8239628ee036"
+        },
+        {
+          "attempt": 6,
+          "status": 403,
+          "via": "1.1 draft-oms-6864894fcf-qqpx5",
+          "host": "api.loganalytics.io",
+          "requestId": "0661cb11-16e4-465c-a0f1-82ee9c0b0473"
+        }
+      ],
+      "endedUtc": "2026-10-18T01:54:23.849234+00:00"
+    }
+  ]
+}

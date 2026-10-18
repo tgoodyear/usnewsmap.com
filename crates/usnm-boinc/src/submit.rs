@@ -4,7 +4,20 @@ use anyhow::ensure;
 use std::path::Path;
 use tokio::process::Command;
 
+mod remote;
+pub use remote::{prepare_download, Download, PreparedDownload};
+
 pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()> {
+    submit_with_download(root, project, id, None).await
+}
+
+/// Native OCR pilot only; all other submitters retain their own staging policy.
+pub async fn submit_with_download(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    download: Option<&Download>,
+) -> anyhow::Result<()> {
     let _lock = Lock::take(root)?;
     let project = project.canonicalize()?;
     let mut record = load(root, id)?;
@@ -24,6 +37,11 @@ pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()>
             && usnm_ocr_contract::boinc::sha256(&scan) == job.scan.sha256,
         "staged scan changed"
     );
+    let remote = if let Some(download) = download {
+        Some(download.prepare(&scan, &job.scan.sha256).await?)
+    } else {
+        None
+    };
     record.stage = Stage::Submitting;
     save(root, &record)?;
     let result = async {
@@ -31,6 +49,9 @@ pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()>
             ("page", usnm_ocr_contract::boinc::MAX_SCAN),
             ("request.json", usnm_ocr_contract::boinc::MAX_JSON),
         ] {
+            if logical == "page" && remote.is_some() {
+                continue;
+            }
             let physical = format!("{}_{}", id, logical.replace('.', "_"));
             let output = Command::new(project.join("bin/dir_hier_path"))
                 .arg(&physical)
@@ -48,42 +69,45 @@ pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()>
             };
             atomic_download(&path, &read(&dir(root, id)?.join(logical), limit)?)?;
         }
-        let status = Command::new(project.join("bin/create_work"))
-            .current_dir(&project)
-            .args([
-                "--appname",
-                "usnm_ocr",
-                "--wu_name",
-                &record.job.workunit(),
-                "--wu_template",
-                "templates/usnm_ocr_in",
-                "--result_template",
-                "templates/usnm_ocr_out",
-                "--min_quorum",
-                "1",
-                "--target_nresults",
-                "1",
-                "--max_error_results",
-                "3",
-                "--max_total_results",
-                "5",
-                "--max_success_results",
-                "3",
-                "--rsc_fpops_est",
-                "1e12",
-                "--rsc_fpops_bound",
-                "1e14",
-                "--rsc_memory_bound",
-                "1610612736",
-                "--rsc_disk_bound",
-                "1073741824",
-                "--delay_bound",
-                "259200",
-                &format!("{id}_page"),
-                &format!("{id}_request_json"),
-            ])
-            .status()
-            .await?;
+        let mut command = Command::new(project.join("bin/create_work"));
+        command.current_dir(&project).args([
+            "--appname",
+            "usnm_ocr",
+            "--wu_name",
+            &record.job.workunit(),
+            "--wu_template",
+            "templates/usnm_ocr_in",
+            "--result_template",
+            "templates/usnm_ocr_out",
+            "--min_quorum",
+            "1",
+            "--target_nresults",
+            "1",
+            "--max_error_results",
+            "3",
+            "--max_total_results",
+            "5",
+            "--max_success_results",
+            "3",
+            "--rsc_fpops_est",
+            "1e12",
+            "--rsc_fpops_bound",
+            "1e14",
+            "--rsc_memory_bound",
+            "1610612736",
+            "--rsc_disk_bound",
+            "1073741824",
+            "--delay_bound",
+            "259200",
+        ]);
+        // Stock create_work inserts remote_file at this exact input position.
+        // Template file 0 opens as page, file 1 as request.json.
+        if let Some(remote) = &remote {
+            command.args(["--remote_file", &remote.url, &remote.bytes, &remote.md5]);
+        } else {
+            command.arg(format!("{id}_page"));
+        }
+        let status = command.arg(format!("{id}_request_json")).status().await?;
         ensure!(status.success(), "create_work failed");
         Ok::<_, anyhow::Error>(())
     }

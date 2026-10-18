@@ -1,0 +1,31 @@
+{
+  "engine": "Tesseract 5.5.1",
+  "leptonica": "1.87.0",
+  "language": "eng",
+  "traineddata_sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+  "command": ["tesseract", "IMAGE", "OUTPUT_BASE", "-l", "eng", "--oem", "1", "--psm", "3"],
+  "image_rendering": "Poppler pdftoppm 26.06.0, 200 dpi JPEG quality 92, full page",
+  "host": {"os": "macOS Darwin 27.0.0", "cpu": "Apple M1", "accelerator": "CPU"},
+  "model_state": "cold process per page; model initialized anew for each page",
+  "timing_method": "/usr/bin/time -lp; wall seconds include process/model startup",
+  "memory_method": "per-process maximum resident set size from /usr/bin/time -lp; cgroup memory unavailable on this macOS host",
+  "pages": [
+    {"id": "serialset/00033-009-0042-p03", "wall_seconds": 5.33, "peak_rss_bytes": 66240512, "scored": true},
+    {"id": "serialset/00033-020-0053-p04", "wall_seconds": 15.01, "peak_rss_bytes": 161792000, "scored": false},
+    {"id": "serialset/00033-020-0053-p05", "wall_seconds": 4.91, "peak_rss_bytes": 170033152, "scored": true},
+    {"id": "serialset/13993-021-0183-p03", "wall_seconds": 2.94, "peak_rss_bytes": 73138176, "scored": true}
+  ],
+  "summary": {
+    "pages": 4,
+    "total_wall_seconds": 28.19,
+    "throughput_pages_per_minute": 8.51,
+    "latency_p50_seconds": 5.12,
+    "latency_p95_seconds_nearest_rank": 15.01,
+    "peak_rss_bytes": 170033152
+  },
+  "limitations": [
+    "Single small sample on an Apple M1; not a production, container, or cgroup benchmark.",
+    "No warm-process throughput run was made.",
+    "Throughput includes per-page process and model startup; it is not directly comparable with newspaper crops/minute or full-page results from other machines."
+  ]
+}

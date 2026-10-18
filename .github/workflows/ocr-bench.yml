@@ -1,0 +1,78 @@
+name: ocr-bench
+# The OCR benchmark releases (#738, docs/ocr-bench.md). A pull request that touches them rebuilds
+# every unpublished release from its staged inputs and requires the bytes to match
+# ocr/bench/releases.json, and fetches every published release back with --verify. A push to
+# main publishes any release that builds to its entry and has no GitHub release yet. Published
+# releases are never rebuilt or replaced.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ocr-bench.yml"
+      - "ocr/bench/**"
+      - "scripts/ocr-bench/**"
+      - "crates/usnm-ocr-survey/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ocr-bench.yml"
+      - "ocr/bench/**"
+      - "scripts/ocr-bench/**"
+      - "crates/usnm-ocr-survey/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-bench-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Pull requests: rebuild and check with a read-only token.
+  check:
+    name: ocr benchmark releases (check)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: shellcheck -x -S warning scripts/ocr-bench/fetch scripts/ocr-bench/release-ci.sh
+      - run: python3 -m unittest discover -v -s scripts/ocr-bench -p 'test_*.py'
+      - run: cargo test -p usnm-ocr-survey --locked bench
+      - run: cargo build -p usnm-ocr-survey --release --locked
+      - name: Build and check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/ocr-bench/release-ci.sh --mode check \
+            --survey target/release/usnm-ocr-survey --work "$RUNNER_TEMP/ocr-bench"
+
+  # main: also publish releases that build to their entry and aren't published yet.
+  publish:
+    name: ocr benchmark releases (publish)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: shellcheck -x -S warning scripts/ocr-bench/fetch scripts/ocr-bench/release-ci.sh
+      - run: python3 -m unittest discover -v -s scripts/ocr-bench -p 'test_*.py'
+      - run: cargo test -p usnm-ocr-survey --locked bench
+      - run: cargo build -p usnm-ocr-survey --release --locked
+      - name: Build and check, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/ocr-bench/release-ci.sh --mode publish \
+            --survey target/release/usnm-ocr-survey --work "$RUNNER_TEMP/ocr-bench"

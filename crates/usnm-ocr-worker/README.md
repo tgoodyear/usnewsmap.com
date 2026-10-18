@@ -127,7 +127,7 @@ status and observations separately, especially failures with no complete record.
 
 ## Prefetching scans
 
-`prefetch` fetches the scans a manifest lists (`usnm-ingest ocr-prefetch-manifest`, #368) onto local disk with the same LoC client and pacing as `run`, so a node's engines can read them later without asking LoC again. It runs in the scan-fetch container on pve-big (`scripts/ocr-node/scanfetch-ct.sh`, 12 §12.2.4).
+`prefetch` fetches the scans a manifest lists (`usnm-ingest ocr-prefetch-manifest`, #368) onto local disk with the same LoC client and pacing as `run`, so a node's engines can read them later without asking LoC again. It runs in the scan-fetch container on pve-big (12 §12.2.4; deployment is managed outside this repository).
 
 ```sh
 # Fetch every page, German before the 1920s first, stopping at 2.5 TB on disk.

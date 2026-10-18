@@ -40,11 +40,12 @@
 # without deploying or starting the publish job.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--prepare-only] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--what-if]" >&2
   exit 2
 }
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false PREPARE_ONLY=false
 PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA=""
+ACCEPTANCE_CONFIG="" ACCEPTANCE_EVIDENCE="" COORDINATION_CLAIM=""
 EXTRA_FILES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -64,6 +65,9 @@ while [ $# -gt 0 ]; do
     --wrapper-source-pin) [ $# -ge 2 ] || usage; WRAPPER_PIN=$2; shift 2 ;;
     --signing-key-dir) [ $# -ge 2 ] || usage; KEY_DIR=$2; shift 2 ;;
     --signing-dataset) [ $# -ge 2 ] || usage; KEY_DATASET=$2; shift 2 ;;
+    --acceptance-config) [ $# -ge 2 ] || usage; ACCEPTANCE_CONFIG=$2; shift 2 ;;
+    --acceptance-evidence) [ $# -ge 2 ] || usage; ACCEPTANCE_EVIDENCE=$2; shift 2 ;;
+    --coordination-claim) [ $# -ge 2 ] || usage; COORDINATION_CLAIM=$2; shift 2 ;;
     --prepare-only) PREPARE_ONLY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
@@ -72,6 +76,12 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] && [ -n "$APP" ] && [ -n "$VERSION" ] && [ -n "$SIGNING_HOST" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
+if [ -n "$ACCEPTANCE_CONFIG$ACCEPTANCE_EVIDENCE" ]; then
+  [ -n "$ACCEPTANCE_CONFIG" ] && [ -n "$ACCEPTANCE_EVIDENCE" ] || die "acceptance requires both --acceptance-config and --acceptance-evidence"
+  ! $PREPARE_ONLY || die "--prepare-only cannot run acceptance of an unpublished candidate"
+  ACCEPTANCE_CONFIG=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$ACCEPTANCE_CONFIG")
+  ACCEPTANCE_EVIDENCE=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$ACCEPTANCE_EVIDENCE")
+fi
 case "$KIND" in
   container)
     $PLAN_CLASS_SET || PLAN_CLASS=docker
@@ -99,8 +109,8 @@ sys.exit(0 if hashlib.sha256(a.binary.read_bytes()).hexdigest() == a.sha256 else
 PY
     fi
     case "$APP:$PLAN_CLASS" in
-      usnm_quality: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b) ;;
-      *) die "--app and --plan-class for --kind native must be usnm_quality with empty --plan-class, or usnm_qwen with mt, apple_gpu_8b, nvidia_cuda_8b or nvidia_cuda_2b (scripts/boinc/install.py)" ;;
+      usnm_quality: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b | usnm_qwen:intel_vulkan_8b | usnm_qwen:nvidia_vulkan_8b) ;;
+      *) die "--app and --plan-class for --kind native must be usnm_quality with empty --plan-class, or a supported usnm_qwen native class (scripts/boinc/install.py)" ;;
     esac
     ;;
   *)
@@ -143,7 +153,7 @@ else
     *) die "unsupported --platform" ;;
   esac
   case "$PLAN_CLASS:$PLATFORM" in
-    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64) ;;
+    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu) ;;
     *) die "native --plan-class $PLAN_CLASS is not supported on $PLATFORM" ;;
   esac
   for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
@@ -168,8 +178,17 @@ else
     done
   fi
 fi
+if [ -n "$ACCEPTANCE_CONFIG" ]; then
+  acceptance_args=(--env "$ENV_NAME" --config "$ACCEPTANCE_CONFIG" --app "$APP" --version "$VERSION" --platform "$PLATFORM" --plan-class "$PLAN_CLASS" --evidence "$ACCEPTANCE_EVIDENCE")
+  python3 scripts/boinc/acceptance.py "${acceptance_args[@]}" --dry-run || die "invalid acceptance configuration"
+  if ! $WHAT_IF && [ "$ENV_NAME" = prod ]; then
+    [[ $COORDINATION_CLAIM =~ ^https://github\.com/tgoodyear/usnewsmap\.com/issues/529#issuecomment-[0-9]+$ ]] || die "production acceptance requires an active #529 --coordination-claim"
+  fi
+fi
 # shellcheck source=scripts/lib/boinc.sh disable=SC1091
 . scripts/lib/boinc.sh
+# shellcheck source=scripts/lib/acr-build.sh
+. scripts/lib/acr-build.sh
 boinc_load_settings
 boinc_az_check
 [ -z "$WORKER_OVERRIDE" ] || WORKER_IMAGE=$WORKER_OVERRIDE
@@ -239,16 +258,16 @@ build_worker_in_acr() {
     echo "usnm-boinc-tesseract:$engine_key is in $registry"
   else
     echo "building usnm-boinc-tesseract:$engine_key in $registry"
-    baz acr build --registry "$registry" --image "usnm-boinc-tesseract:$engine_key" --platform linux/amd64 \
-      --timeout 7200 --file ocr/engines/tesseract/Containerfile ocr/engines/tesseract || die "the engine image build failed"
+    acr_build_verified baz_build "$registry" "usnm-boinc-tesseract:$engine_key" 7200 --platform linux/amd64 \
+      --file ocr/engines/tesseract/Containerfile ocr/engines/tesseract || die "the engine image build failed"
   fi
   engine_ref="$registry.azurecr.io/usnm-boinc-tesseract@$(digest usnm-boinc-tesseract "$engine_key")"
   if have usnm-boinc-worker "$worker_key"; then
     echo "usnm-boinc-worker:$worker_key is in $registry"
   else
     echo "building usnm-boinc-worker:$worker_key in $registry (usnm-boinc release build: about 10 minutes)"
-    baz acr build --registry "$registry" --image "usnm-boinc-worker:$worker_key" --platform linux/amd64 \
-      --timeout 7200 --build-arg "TESSERACT_IMAGE=$engine_ref" --file ocr/boinc/Containerfile . ||
+    acr_build_verified baz_build "$registry" "usnm-boinc-worker:$worker_key" 7200 --platform linux/amd64 \
+      --build-arg "TESSERACT_IMAGE=$engine_ref" --file ocr/boinc/Containerfile . ||
       die "the worker image build failed"
   fi
   echo "worker image builds: $registry.azurecr.io/usnm-boinc-worker@$(digest usnm-boinc-worker "$worker_key") (ACR, not pullable by volunteers)"
@@ -359,7 +378,7 @@ if [ "$KIND" = native ]; then
   extra_mount=""
   extra_arg=""
   if [ -d "$work/extra" ]; then
-    tar -C "$work" -c extra | ssh_host "tar -x -C $remote" || die "can't copy extra files to the signing host"
+    COPYFILE_DISABLE=1 tar -C "$work" -c extra | ssh_host "tar -x -C $remote" || die "can't copy extra files to the signing host"
     extra_mount="-v $remote/extra:/extra:ro"
     extra_arg="--bundle-dir /extra"
   fi
@@ -425,8 +444,7 @@ elif [ -f "$work/wrapper" ]; then
   appver_wrapper_pin=/opt/usnm-appver-build/wrapper-candidate/wrapper.pin
 fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
-baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
-  --no-logs --query '{runId:runId,status:status}' -o json \
+acr_build_verified baz_build "$registry" "$APPVER_REPO:$APPVER_TAG" 1800 --platform linux/amd64 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
   --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \
   --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin" \
@@ -450,4 +468,10 @@ if $PREPARE_ONLY; then
   echo "after the release PR merges, run scripts/provision-boinc.sh --env $ENV_NAME from the merged checkout"
 else
   echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"
+fi
+
+if [ -n "${ACCEPTANCE_CONFIG:-}" ]; then
+  python3 scripts/boinc/acceptance.py "${acceptance_args[@]}" --coordination-claim "$COORDINATION_CLAIM" ||
+    die "published, but client acceptance failed: NOT release-ready (see private evidence)"
+  echo "release-ready: expected client execution and validated canonical output verified"
 fi

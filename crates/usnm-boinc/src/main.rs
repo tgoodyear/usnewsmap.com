@@ -54,6 +54,13 @@ enum Commands {
         #[arg(long, default_value = "/work")]
         dir: PathBuf,
     },
+    /// Publish a page on the local producer; this is NOT public readiness proof.
+    PrepareDownload {
+        #[arg(long)]
+        page: PathBuf,
+        #[arg(long)]
+        download_root: PathBuf,
+    },
     /// Stage and submit one reserved job with stock create_work.
     Submit {
         #[arg(long)]
@@ -62,6 +69,12 @@ enum Commands {
         project: PathBuf,
         #[arg(long)]
         job: String,
+        /// Public HTTPS prefix serving immutable content-addressed page bytes.
+        #[arg(long)]
+        download_base_url: Option<String>,
+        /// Existing local directory mapped to download-base-url (no symlinks).
+        #[arg(long, requires = "download_base_url")]
+        download_root: Option<PathBuf>,
     },
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile {
@@ -871,7 +884,8 @@ enum Qwen {
         /// Its USNM_QWEN_WEIGHTS.
         #[arg(long)]
         engine_weights: String,
-        #[arg(long, default_value_t = 1800)]
+        /// GPU runtime per page, including all crops; allow slower volunteer GPUs.
+        #[arg(long, default_value_t = 14_400)]
         gpu_timeout_secs: u32,
         #[arg(long, default_value_t = 7200)]
         cpu_timeout_secs: u32,
@@ -961,6 +975,54 @@ enum Qwen {
         #[arg(long)]
         pairs: PathBuf,
     },
+}
+
+#[cfg(test)]
+mod qwen_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn staged_gpu_jobs_allow_four_hours_unless_explicitly_bounded() {
+        let args = [
+            "usnm-boinc",
+            "qwen",
+            "stage",
+            "--quality-root",
+            "quality",
+            "--root",
+            "qwen",
+            "--engine-image",
+            "sha256:image",
+            "--engine-llama",
+            "sha256:llama",
+            "--engine-weights",
+            "sha256:weights",
+        ];
+        for override_secs in [None, Some("1800")] {
+            let mut command = args.to_vec();
+            if let Some(value) = override_secs {
+                command.extend(["--gpu-timeout-secs", value]);
+            }
+            let cli = Cli::try_parse_from(command).unwrap();
+            let Commands::Qwen(Qwen::Stage {
+                gpu_timeout_secs,
+                cpu_timeout_secs,
+                ..
+            }) = cli.command
+            else {
+                panic!("expected Qwen staging command");
+            };
+            assert_eq!(
+                gpu_timeout_secs,
+                if override_secs.is_some() {
+                    1800
+                } else {
+                    14_400
+                }
+            );
+            assert_eq!(cpu_timeout_secs, 7200);
+        }
+    }
 }
 #[derive(Clone, Copy, ValueEnum)]
 enum SuryaMode {
@@ -1077,8 +1139,33 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Work { dir } => usnm_boinc::worker::run(&dir).await?,
-        Commands::Submit { root, project, job } => {
-            usnm_boinc::submit::submit(&root, &project, &job).await?
+        Commands::PrepareDownload {
+            page,
+            download_root,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string(&usnm_boinc::submit::prepare_download(
+                    &page,
+                    &download_root
+                )?)?
+            );
+        }
+        Commands::Submit {
+            root,
+            project,
+            job,
+            download_base_url,
+            download_root,
+        } => {
+            let download = match (download_base_url, download_root) {
+                (Some(base), Some(root)) => Some(usnm_boinc::submit::Download::new(&base, &root)?),
+                (Some(base), None) => Some(usnm_boinc::submit::Download::remote(&base)?),
+                (None, None) => None,
+                (None, Some(_)) => anyhow::bail!("download-root requires download-base-url"),
+            };
+            usnm_boinc::submit::submit_with_download(&root, &project, &job, download.as_ref())
+                .await?
         }
         Commands::Reconcile { root, job, found } => {
             usnm_boinc::submit::reconcile(&root, &job, matches!(found, Found::Present))?

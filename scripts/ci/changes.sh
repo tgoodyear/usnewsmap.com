@@ -328,7 +328,7 @@ fail_open() {
 # files those crates embed (the gold set's embedded lock among them). Fails
 # open: when cargo or perl can't say, PART runs.
 _narrow() {
-  local kind=$1 part=$2 dirs= embeds listed=true; shift 2
+  local kind=$1 part=$2 dirs='' embeds listed=true; shift 2
   matches_built "${!part}" && return 0
   case $kind in
     test) dirs=$(closure_crates "$@") || listed=false ;;

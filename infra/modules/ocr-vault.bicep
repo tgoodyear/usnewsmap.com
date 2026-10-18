@@ -1,12 +1,8 @@
-// The OCR node fleet's Key Vault (#296, #295): secrets the operator holds
-// for setting up nodes, which aren't Azure credentials and have nowhere else
-// to live: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation
-// key and organization id that onboard.sh reads with the operator's az
-// sign-in and passes to node-setup.sh over ssh's stdin, and
-// `rhel-offline-token`, a Red Hat API offline token for fetching RHEL
-// images on the Proxmox hosts. The
-// maintainer sets them with az (docs/operations.md); the template never
-// writes a secret, so nothing secret is in the repository or a deployment.
+// Legacy operator vault (#296, #295). Lab setup and credential procedures
+// are maintained outside this application repository. Application onboarding
+// no longer reads OS subscription credentials. Retain this existing resource
+// until a separately reviewed stack ownership transfer; removing it here
+// could delete the live vault. The template never writes secret values.
 //
 // Access is Azure RBAC only (no access policies): the operators named in
 // USNM_OCR_KEYVAULT_ADMINS get Key Vault Secrets Officer. Nodes get nothing.

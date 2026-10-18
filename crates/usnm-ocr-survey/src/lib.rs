@@ -3,6 +3,8 @@
 //! truth that BOINC volunteers fetch, verify, materialize and score locally. docs/ocr-gold-set.md
 //! has the rules and the source policy.
 
+pub mod bench;
 pub mod bundle;
+pub mod qwen_bench;
 pub mod score;
 pub use usnm_ocr_quality::{distance, text};

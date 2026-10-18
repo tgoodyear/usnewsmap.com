@@ -15,6 +15,9 @@ case "$*" in
   "account show"*) echo "$STUB_SUB" ;;
   "group show"*) ;;
   "identity list"*) echo '[{"name":"usnm-boinc-id-prod","principalId":"11111111-1111-1111-1111-111111111111"},{"name":"usnm-boinc-secrets-id-prod","principalId":"22222222-2222-2222-2222-222222222222"}]' ;;
+  "stack sub show"*) echo '{"OCR_EXCHANGE_ACCOUNT":{"value":"exchangeprod"}}' ;;
+  "storage blob exists"*) echo true ;;
+  "storage blob lease acquire"* | "storage blob lease release"*) ;;
   "stack group show"*) echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"}}' ;;
   "containerapp env certificate list"*) echo Succeeded ;;
   "stack-whatif group create"*"--help"*) ;;
@@ -59,6 +62,7 @@ class Provision(unittest.TestCase):
         self.env = {
             **os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
             "STUB_LOG": str(self.log), "STUB_SUB": SUB,
+            "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
             "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
                            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
         }
@@ -87,6 +91,35 @@ class Provision(unittest.TestCase):
         result = self.run_script(STUB_PREVIEW_STATUS="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(call.startswith("stack group create") for call in self.calls()))
+
+    def test_workbook_smoke_serializes_hosts_and_preserves_operator_override(self):
+        script = (ROOT / "scripts/provision-boinc.sh").read_text()
+        smoke = script[script.index("workspace=$(baz monitor log-analytics workspace list"):]
+        setup = """
+set -eu
+BOINC_RG=fixture SUBSCRIPTION=fixture
+baz() { echo fixture; }
+boinc_workdir() { echo "$FIXTURE_DIR"; }
+boinc_output() {
+  if [ "$1" = logAnalyticsQueryHosts ]; then
+    echo '["westus.api.loganalytics.io","eastus.api.loganalytics.io"]'
+  else echo westus2.api.loganalytics.io; fi
+}
+python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; echo '{}'; }
+"""
+        for override in (None, "eastus.api.loganalytics.io", ""):
+            env = {**self.env, "FIXTURE_DIR": self.tmp.name}
+            env.pop("LOG_ANALYTICS_QUERY_HOSTS", None)
+            if override is not None:
+                env["LOG_ANALYTICS_QUERY_HOSTS"] = override
+            result = subprocess.run(["bash", "-c", setup + smoke], cwd=ROOT,
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((Path(self.tmp.name) / "hosts").read_text(),
+                             override if override is not None else
+                             "westus.api.loganalytics.io,eastus.api.loganalytics.io")
+        self.assertIn("output LOG_ANALYTICS_QUERY_HOSTS string = join(",
+                      (ROOT / "infra/main.bicep").read_text())
 
     def test_automates_lifecycle_in_order_and_checks_public_configuration(self):
         result = self.run_script()
@@ -162,6 +195,62 @@ class ProjectInitialization(unittest.TestCase):
         source = (ROOT / "contrib-compute/images/server/entrypoint.sh").read_text()
         self.assertNotIn("--drop_db_first", source)
         self.assertNotIn("--delete_prev_inst", source)
+
+
+class TlsSettings(unittest.TestCase):
+    def test_committed_boolean_and_legacy_default_are_preserved(self):
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        self.assertIs(settings["requireSecureTransport"], False)
+        for value in (None, False, True):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                candidate = dict(settings)
+                if value is None:
+                    candidate.pop("requireSecureTransport")
+                else:
+                    candidate["requireSecureTransport"] = value
+                path = Path(directory) / "settings.json"
+                path.write_text(json.dumps(candidate, sort_keys=True))
+                result = self.load(path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "true" if value is True else "false")
+
+    def test_explicit_null_strings_numbers_and_objects_are_rejected(self):
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        for value in (None, "true", "false", 0, 1, {}, []):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                path = Path(directory) / "settings.json"
+                path.write_text(json.dumps({**settings, "requireSecureTransport": value}, sort_keys=True))
+                result = self.load(path)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("requireSecureTransport must be true or false", result.stderr)
+
+    def load(self, path):
+        return subprocess.run(
+            ["bash", "-c", 'set -eu; ENV_NAME=prod; die() { echo "$*" >&2; exit 1; }; '
+             '. scripts/lib/boinc.sh; BOINC_SETTINGS="$1"; boinc_load_settings; '
+             'printf "%s\\n" "$REQUIRE_SECURE_TRANSPORT"', "fixture", str(path)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+
+    def test_parameter_writer_forwards_boolean_not_string(self):
+        source = (ROOT / "scripts/provision-boinc.sh").read_text()
+        writer = source[source.index("write_params() {"):source.index("STAGE=$(domain_stage)")]
+        for value in ("true", "false"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                setup = (
+                    'set -eu; runtime_principal=x; secrets_principal=y; ASSESSMENT=false; '
+                    'GOLD_BUNDLE=false; DNS_ZONE=example.org; REGISTRY_RG=rg; REGISTRY_NAME=registry; '
+                    'ENV_NAME=prod; LOCATION=westus2; SERVER_IMAGE=; BRIDGE_IMAGE=; PUBLISH_IMAGE=; '
+                    'MASTER_HOST=boinc.usnewsmap.com; OPERATOR_ID=x; '
+                    'BOINC_SETTINGS=contrib-compute/infra/boinc/env/prod.json; '
+                    'work="$1"; REQUIRE_SECURE_TRANSPORT="$2"; '
+                )
+                result = subprocess.run(["bash", "-c", setup + writer + '\nwrite_params 2',
+                                         "fixture", directory, value], cwd=ROOT,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parameters = json.loads((Path(directory) / "params.json").read_text())["parameters"]
+                self.assertIs(parameters["requireSecureTransport"]["value"], value == "true")
 
 
 if __name__ == "__main__":

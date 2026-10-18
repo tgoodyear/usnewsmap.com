@@ -1,0 +1,261 @@
+{
+  "coverage": {
+    "annotation_gap_pages": 1,
+    "human_verified_pages": 3,
+    "limitations": [
+      "Selection is purposive and very small; counts are not estimates of corpus prevalence.",
+      "One dense comparative table page has no reference and is excluded from accuracy scoring.",
+      "Observed scan features are not mapped to severity labels; no damage claim is made for clean text regions.",
+      "All 3 scored pages come from 2 distinct serial numbers and are public evaluation data."
+    ],
+    "page_disjoint": true,
+    "sample_pages": 4,
+    "source_documents": 3,
+    "strata": {
+      "comparative or multi-column tables": {
+        "human_verified": 1,
+        "needs_human_verification": 1,
+        "pages": 2
+      },
+      "pages with visible scan irregularities": {
+        "human_verified": 2,
+        "needs_human_verification": 1,
+        "pages": 3
+      },
+      "single-column prose": {
+        "human_verified": 2,
+        "needs_human_verification": 0,
+        "pages": 2
+      }
+    }
+  },
+  "examples": [],
+  "format": "usnm-ocr-bench",
+  "inputs_sha256": "316ec07a3c4bbb021da1500c5374f78ce85c44e3be8b9a581ba74c336efe4e9a",
+  "limitations": [
+    "A purposive four-page pilot, not a representative estimate of all GovInfo Serial Set OCR.",
+    "Only three pages have human-verified references; the fourth remains an explicit annotation gap.",
+    "No formal damage severity labels, scoring masks, or full-page reading-order adjudication beyond the pilot policy.",
+    "All scored pages are public evaluation data, not a held-out test set."
+  ],
+  "release": "v0.0.0",
+  "rules": [
+    "legacy-ws-v1",
+    "raw-v1"
+  ],
+  "samples": [
+    {
+      "damage": {
+        "observations": [
+          "light speckle and uneven scan tone; text remains legible"
+        ],
+        "status": "unannotated"
+      },
+      "id": "serialset/00033-009-0042-p03",
+      "image": {
+        "bytes": 543073,
+        "path": "images/doc42-p03.jpg",
+        "sha256": "8addb0adf4f6d751314f80e6fcf489fd5cb3538811e4429e6d9d76e0e9938eef"
+      },
+      "image_height": 1725,
+      "image_width": 1000,
+      "languages": [
+        "eng"
+      ],
+      "legacy": {
+        "selection": "selection.json",
+        "status": "new-serialset-pilot"
+      },
+      "mix": "monolingual",
+      "provenance": {
+        "alto_page_id": "0125",
+        "alto_sha256": "e1874c3b5e5620ef70b4d908634dc67f340bc4099fb3903318ae13a9e3d6c8b0",
+        "alto_url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-009-0042-0000/alto/SERIALSET-00033_00_00-009-0042-0000-0125.xml",
+        "date_issued": "1820-01-13",
+        "image_generation": "full-page Poppler pdftoppm 26.06.0 at 200 dpi, JPEG quality 92",
+        "layout": [
+          "single-column prose"
+        ],
+        "package_id": "SERIALSET-00033_00_00-009-0042-0000",
+        "page_url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-009-0042-0000/pdf/SERIALSET-00033_00_00-009-0042-0000.pdf",
+        "pdf_page": 3,
+        "pdf_sha256": "585f435788d808905bed4b4b8c75afbcf3e11b8bd2d0f81f4f57ab69da458126",
+        "retrieved_at": "2026-10-18",
+        "source_detail_url": "https://www.govinfo.gov/app/details/SERIALSET-00033_00_00-009-0042-0000",
+        "source_ocr_engine": "ABBYY FineReader Engine 11",
+        "source_scan_attribution": "GPO and Library of Congress digitization partnership",
+        "visual_features": [
+          "light speckle and uneven scan tone; text remains legible"
+        ]
+      },
+      "reference": {
+        "bytes": 1942,
+        "path": "references/doc42-p03.txt",
+        "sha256": "2ed817ced2f774e0a6cff00035589874278a9edecf28f6d87a300d77cb79f715"
+      },
+      "reference_status": "human-verified",
+      "scripts": [
+        "Latn"
+      ],
+      "source": "govinfo",
+      "source_page_id": "govinfo:SERIALSET-00033_00_00-009-0042-0000:pdf-page-3",
+      "split": "public-eval",
+      "typeface": "serif print; typeface subtype unclassified",
+      "unit": "full-page"
+    },
+    {
+      "damage": {
+        "observations": [
+          "visible central seam or gutter shadow and uneven tone; tabular text remains legible"
+        ],
+        "status": "unannotated"
+      },
+      "id": "serialset/00033-020-0053-p05",
+      "image": {
+        "bytes": 2431845,
+        "path": "images/doc53-p05.jpg",
+        "sha256": "723d7913b24391df001eb9e6818d34d0dee10e30cb52358028bb81aab7ff18bc"
+      },
+      "image_height": 2453,
+      "image_width": 3824,
+      "languages": [
+        "eng"
+      ],
+      "legacy": {
+        "selection": "selection.json",
+        "status": "new-serialset-pilot"
+      },
+      "mix": "monolingual",
+      "provenance": {
+        "alto_page_id": "0268",
+        "alto_sha256": "85734559744ed8decfae9dd8969f58f421826004254722b9fdfdd796b91915fa",
+        "alto_url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-020-0053-0000/alto/SERIALSET-00033_00_00-020-0053-0000-0268.xml",
+        "date_issued": "1820-01-20",
+        "image_generation": "full-page Poppler pdftoppm 26.06.0 at 200 dpi, JPEG quality 92",
+        "layout": [
+          "paired numeric tables",
+          "multi-column table"
+        ],
+        "package_id": "SERIALSET-00033_00_00-020-0053-0000",
+        "page_url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-020-0053-0000/pdf/SERIALSET-00033_00_00-020-0053-0000.pdf",
+        "pdf_page": 5,
+        "pdf_sha256": "31c17e5f6b2d6cf3242cc197c720339e2d28dc66fae609e2a7166c6d6b34fbc3",
+        "retrieved_at": "2026-10-18",
+        "source_detail_url": "https://www.govinfo.gov/app/details/SERIALSET-00033_00_00-020-0053-0000",
+        "source_ocr_engine": "ABBYY FineReader Engine 11",
+        "source_scan_attribution": "GPO and Library of Congress digitization partnership",
+        "visual_features": [
+          "visible central seam or gutter shadow and uneven tone; tabular text remains legible"
+        ]
+      },
+      "reference": {
+        "bytes": 1560,
+        "path": "references/doc53-p05.txt",
+        "sha256": "6d4de2d6a49e4217f3fc5c9dff079d50983018df3d006108db8f0f58cf529aa6"
+      },
+      "reference_status": "human-verified",
+      "scripts": [
+        "Latn"
+      ],
+      "source": "govinfo",
+      "source_page_id": "govinfo:SERIALSET-00033_00_00-020-0053-0000:pdf-page-5",
+      "split": "public-eval",
+      "typeface": "serif print; typeface subtype unclassified",
+      "unit": "full-page"
+    },
+    {
+      "damage": {
+        "observations": [
+          "no obvious text-obscuring scan defect in this page"
+        ],
+        "status": "unannotated"
+      },
+      "id": "serialset/13993-021-0183-p03",
+      "image": {
+        "bytes": 622463,
+        "path": "images/doc183-p03.jpg",
+        "sha256": "ab071ce2ede0f78639ae902a972bbb765ddb5438327a23166910554f8a4abb2f"
+      },
+      "image_height": 1776,
+      "image_width": 1077,
+      "languages": [
+        "eng"
+      ],
+      "legacy": {
+        "selection": "selection.json",
+        "status": "new-serialset-pilot"
+      },
+      "mix": "monolingual",
+      "provenance": {
+        "alto_page_id": "1029",
+        "alto_sha256": "f6cd7581f76aa9bc6e47321dba8da09d112ffd069e3daa92bfbb952fdd354229",
+        "alto_url": "https://www.govinfo.gov/content/pkg/SERIALSET-13993_00_00-021-0183-0000/alto/SERIALSET-13993_00_00-021-0183-0000-1029.xml",
+        "date_issued": "1990-05-01",
+        "image_generation": "full-page Poppler pdftoppm 26.06.0 at 200 dpi, JPEG quality 92",
+        "layout": [
+          "single-column numbered prose"
+        ],
+        "package_id": "SERIALSET-13993_00_00-021-0183-0000",
+        "page_url": "https://www.govinfo.gov/content/pkg/SERIALSET-13993_00_00-021-0183-0000/pdf/SERIALSET-13993_00_00-021-0183-0000.pdf",
+        "pdf_page": 3,
+        "pdf_sha256": "3a8741a0f6005c0efd403e9fa44d8919591b86b1b91c7feaf68e5f44a94d8760",
+        "retrieved_at": "2026-10-18",
+        "source_detail_url": "https://www.govinfo.gov/app/details/SERIALSET-13993_00_00-021-0183-0000",
+        "source_ocr_engine": "Tesseract 5.1.0",
+        "source_scan_attribution": "GPO and Library of Congress digitization partnership",
+        "visual_features": [
+          "no obvious text-obscuring scan defect in this page"
+        ]
+      },
+      "reference": {
+        "bytes": 2948,
+        "path": "references/doc183-p03.txt",
+        "sha256": "6ec5479ef0e307ba5681edbdfd54d52d46010703e82b88ecbd15739e3976b943"
+      },
+      "reference_status": "human-verified",
+      "scripts": [
+        "Latn"
+      ],
+      "source": "govinfo",
+      "source_page_id": "govinfo:SERIALSET-13993_00_00-021-0183-0000:pdf-page-3",
+      "split": "public-eval",
+      "typeface": "serif print; typeface subtype unclassified",
+      "unit": "full-page"
+    }
+  ],
+  "schema": 1,
+  "sources": {
+    "govinfo": {
+      "annotation_status": "human-verified",
+      "attribution": "U.S. Congressional Serial Set pages served by GovInfo; scanned by the Library of Congress and made available through the GPO partnership.",
+      "image_license": "U.S. federal government work; public domain in the United States.",
+      "languages": [
+        "eng"
+      ],
+      "reference_license": "Transcription of the same U.S. federal government public-domain pages; no third-party annotation set copied.",
+      "scripts": [
+        "Latn"
+      ],
+      "unit": "full-page"
+    }
+  },
+  "spec_sha256": "a1a170ba5c5a7543c83fa28c4ec7b37479fae21280c27298795d3a0584a9f236",
+  "subsets": {
+    "serialset/verified-3": {
+      "count": 3,
+      "description": "All and only the full-page samples whose references were checked against their page images.",
+      "digest": "a6cd647618f652b9cb1b563e8bfe6375ff4d86799bfca1e436e92884563bc2a9",
+      "members": [
+        "serialset/00033-009-0042-p03",
+        "serialset/00033-020-0053-p05",
+        "serialset/13993-021-0183-p03"
+      ],
+      "pages": 3,
+      "recipe": {
+        "deterministic": true,
+        "selection": "selection.json",
+        "status": "human-verified"
+      }
+    }
+  }
+}

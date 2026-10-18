@@ -1,5 +1,4 @@
-# The scan server (#368, ADR-0015 decision 9) in the scan-fetch container on
-# pve-big (scripts/ocr-node/scanfetch-ct.sh --serve installs it):
+# The scan server (#368, ADR-0015 decision 9), deployed by infrastructure tooling:
 # `usnm-ocr-worker serve-scans` gives the OCR nodes the prefetched scans over
 # HTTP, deletes buffer-set scans the nodes have read, and takes manifests
 # from them. Only the --allow hosts (the nodes, by name, resolved again

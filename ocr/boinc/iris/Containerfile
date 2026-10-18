@@ -64,14 +64,15 @@ RUN python3 -m venv /opt/iris/venv \
 COPY --from=fetch /out/model/ /opt/iris/model/
 COPY --from=fetch /out/LICENSE /opt/iris/LICENSE
 COPY ocr/boinc/iris/model.lock ocr/boinc/iris/runtime.lock ocr/boinc/iris/NOTICE /opt/iris/
-COPY ocr/boinc/iris/contract.py ocr/boinc/iris/worker.py /opt/iris/app/
+COPY ocr/boinc/iris/contract.py ocr/boinc/iris/bundle.py ocr/boinc/iris/cache.py ocr/boinc/iris/worker.py /opt/iris/app/
 # The image's model is the contract's: the manifest digest, every file's name and size, and the
 # pinned engine version, checked offline (there is no GPU at build time).
 RUN /opt/iris/venv/bin/python -I -c 'import sys; sys.path.insert(0, "/opt/iris/app"); \
 import contract as c, worker as w, openvino, openvino_genai, PIL; \
 assert openvino.__version__.startswith(c.OPENVINO_VERSION), openvino.__version__; \
 print(c.MODEL_MANIFEST_SHA256, w.check_model(w.Paths()), openvino.__version__, openvino_genai.__version__)' \
- && /opt/iris/venv/bin/python -m compileall -q /opt/iris/app
+ && /opt/iris/venv/bin/python -m compileall -q /opt/iris/app \
+ && install -d -m 0700 /cache
 # HOME and the OpenCL compiler cache stay off the read-only root (create_args mount /tmp as tmpfs).
 ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 NEO_CACHE_PERSISTENT=0 \
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 OPENVINO_TELEMETRY_DISABLED=1 \

@@ -1,5 +1,98 @@
 # OCR gold set
 
+## German Fraktur cutover diagnostic (18 October 2026)
+
+[#835](https://github.com/tgoodyear/usnewsmap.com/issues/835) blocks the German
+bulk-feed handoff in [#833](https://github.com/tgoodyear/usnewsmap.com/issues/833).
+The existing shared trust policy is **English-only**; the German experiments
+below neither replace it nor authorize German publication.
+
+The pinned `247c` worker described below contains Tesseract 5.5.0 and
+`frak2021.traineddata` with SHA-256
+`1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a`,
+matching the model lock. Native ARM64 Docker execution verified this identity;
+it is not canonical BOINC host evidence.
+
+The NewsEye/READ Austrian newspaper training and validation archives from
+[Zenodo 3387369](https://doi.org/10.5281/zenodo.3387369) converted successfully
+using the existing public-source tooling. Credit ONB, NewsEye and READ under
+CC BY 4.0. Among regions meeting the default 200-2,500-character window, the
+training archive covers eight newspaper/date issues, all also represented in
+validation. The combined eligible universe has only **nine issues**. The
+publisher's train/validation split is therefore not an issue-disjoint split
+for this experiment. A bounded repository/history search found no previous
+ONB outcome record; this does not establish absence of previous evaluation
+or model-training overlap.
+
+Before running OCR, SHA-ranked issue selection with seed
+`835:onb-diagnostic-v1` froze four calibration issues, three heldout issues
+and two reserve issues. Each issue contributes at most three pages, with one
+region per page. Selection receipt SHA-256:
+`e24325e6ad77df7f5345859b9dfb524b590cb6db728876aefabecdeea35c81cd`.
+The partitions have no shared newspaper/date issue. Reference text, images,
+source archives and executable experiment scripts remain local; issue comments
+retain counts, provenance and artifact hashes.
+
+| Partition   | Issues | Crops | Character edits / reference characters |          CER | Word edits / reference words |
+| ----------- | -----: | ----: | -------------------------------------: | -----------: | ---------------------------: |
+| Calibration |      4 |    12 |                            420 / 7,786 |     0.053943 |                  289 / 1,118 |
+| Heldout     |      3 |     9 |                            582 / 5,860 |     0.099317 |                    253 / 844 |
+| Reserve     |      2 |     4 |                           Not executed | Not measured |                 Not measured |
+
+These runs used the exact worker, `frak2021`, PSM 3 and 300 DPI, with no
+complete-loss crops. Calibration controls replaced one, two or four
+deterministically hash-ranked real-engine predictions with empty output and
+recomputed scores. These are **synthetic output-loss controls**, not separate
+faulty-engine or volunteer runs. Their calibration CERs were 0.081171,
+0.122656 and 0.235936.
+
+Before heldout execution, the diagnostic candidate fixed a maximum CER of
+`0.06755715386591318`, halfway between the calibration positive and nearest
+loss control, plus complete-scoring and no-complete-loss guards. Candidate
+SHA-256:
+`3bde526c319ea225c852f60a5b6b0fbce4995ba838bc0ec3b552e8d1dc610a1f`.
+**The candidate failed:** it refused the genuine heldout output. All three
+heldout output-loss controls were refused too, but that does not repair the
+false rejection. The threshold was not retuned against the spent heldout,
+and the difficult region was not removed.
+
+### Segmentation investigation on spent data
+
+PSM 6 was evaluated only as development diagnosis on the already-used
+calibration and heldout crops:
+
+| Segmentation | Calibration character edits / 7,786 | Spent heldout character edits / 5,860 |
+| ------------ | ----------------------------------: | ------------------------------------: |
+| PSM 3        |                                 420 |                                   582 |
+| PSM 6        |                                 445 |                                   404 |
+
+PSM 6 worsens calibration while improving the spent heldout. This is not a
+fresh acceptance result, a reason to reinterpret the frozen candidate as
+passing, or approval to change the production PSM.
+
+The largest heldout error is a 673-by-157-pixel advertisement region from
+`ONB_aze_18950706_8`: crop PSM 3 produced 354 character edits / 538 reference
+characters. A separate full-page PSM 3 TSV run selected words whose centers
+lie inside the original region, retaining engine reading order without
+text-dependent matching. It produced 316 edits / 538 characters. More page
+context did not eliminate the error; this observation does not establish
+whether recognition, segmentation, reference alignment or their interaction
+is responsible.
+
+The broader Reichsanzeiger-GT reference archive was retrieved, but its
+maintainer-documented Mannheim image endpoint returned HTTP 503 on the
+initial image request and a separate service check. The Zenodo archive
+contains PAGE XML, not the corresponding scans; the checked GitHub releases
+have no image assets. No missing image was replaced with an unmatched scan.
+Broader image-backed evidence remains unavailable through that path until
+the source service recovers or a verified alternate source is established.
+
+Do not promote a German host or replace the shared English policy from these
+diagnostics. Remaining requirements include broader reference coverage,
+revised criteria frozen before fresh evaluation, partial-omission/wrong-model
+controls, canonical exact-image BOINC Gold evidence and reviewed coexistence
+of language-scoped trust. The two reserve issues remain unexecuted.
+
 ## Issue-disjoint current-worker calibration (17 October 2026)
 
 For #527/#751, the original BLN600 archive's publication/date metadata excluded
@@ -350,7 +443,7 @@ cargo run --release -p usnm-ocr-survey -- score --crops OUT/reichsanzeiger/crops
 
 `--dataset` is `bln600`, `overproof-ca`, `reichsanzeiger`, `austrian`, `newseye-bnf`, `newseye-nlf-fi`, `newseye-nlf-sv` or `nzz` for scoring. The NewsEye sets take `--subset validation|training|all` (default `validation`, 16 to 122 MB; the Finnish training zip is 5.4 GB). `bln600` checks the zip's sha256 before opening it; the zip is AES-encrypted with the password `BLN600` printed on the dataset page, which Python's zipfile can't read, so it needs `bsdtar` or 7-Zip. `overproof-ca` fetches loc.gov's issue JSON, then each page's ALTO and full image, paced as `locfetch` does, and `public-convert` writes the line match rate to `match.json`. Its crop geometry comes from matched ALTO strings. String text is retained even when its coordinates are invalid. Implausible dimensions are repaired from page medians when the TextLine bounds do not confirm them. Plausible TextLine bounds constrain String origins and extents and provide a fallback. Conversion fails if a matched nonempty line has no usable geometry. Matched lines are kept in one crop only while consecutive in ALTO and spatially adjacent; distant lines remain in separate crops rather than producing a page-spanning union. `overproof-smh`, `enp-berlin`, `americanstories` and `ndl-pdm` fail the [source policy](#source-policy); `public-convert` refuses them unless `--not-for-scoring` is given, and their rows then carry `for_scoring: false`. Don't quote their numbers as accuracy. A crop is one transcribed region (a block of lines for the first three, one line for NDL), chosen by seed: regions inside a length window (200 to 2,500 normalized characters; 12 to 300 for NDL lines, overridable with `--min-chars` and `--max-chars`), at most `--per-page` (3) per page, taking one from each page before a second from any. Each crop row carries `source_dataset`, `source_url` and `source_license`, and `transcriber` reads "`<dataset>`: published ground truth" with `reviewer` "not applicable: published ground truth", which is what lets `validate` accept it. Nobody here reviewed those transcriptions; the dataset's authors did, by the process they describe.
 
-Three things were tested. Unit tests run on tiny synthetic inputs for every reader, the pick, and the end-to-end conversion (the last one needs Pillow, so it is skipped where Pillow is missing). A real run of `public-convert` on the American Stories JSON and one of its page images (0015.jpg, 1.7 MB) cut readable crops that line up with their text. The third is the set of real runs in the table below. The Reichsanzeiger conversion, the Austrian one and the NDL one have not run against real data yet. The Reichsanzeiger PAGE files were read, but its images were not downloaded. The NDL reader follows the README's example and expects `json/<dir>/<name>.json` beside `img/<dir>/<name>.jpg`, UNVERIFIED until it runs on the real files.
+Three things were tested initially. Unit tests run on tiny synthetic inputs for every reader, the pick, and the end-to-end conversion (the last one needs Pillow, so it is skipped where Pillow is missing). A real run of `public-convert` on the American Stories JSON and one of its page images (0015.jpg, 1.7 MB) cut readable crops that line up with their text. The third is the set of real runs in the table below. The [18 October German diagnostic](#german-fraktur-cutover-diagnostic-18-october-2026) subsequently verified real Austrian archive parsing and conversion; the earlier inventory table's unverified-layout note is historical. Reichsanzeiger image retrieval returned HTTP 503, so its conversion still lacks real image-backed coverage. The NDL reader follows the README's example and expects `json/<dir>/<name>.json` beside `img/<dir>/<name>.jpg`, UNVERIFIED until it runs on the real files.
 
 Real runs on 13 October 2026 (`public-fetch`, then `public-convert`, then `validate` with 0 errors):
 

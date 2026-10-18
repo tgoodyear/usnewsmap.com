@@ -13,6 +13,7 @@ import re
 import sqlite3
 import stat
 import sys
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -510,6 +511,12 @@ def protect_catalog_output(path, db):
 
 def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source, cache_set):
     """Bounded index adapter: local stat is presence evidence, never checksum verification."""
+    write_cached_scan_evidence(db, index, scan_root, evidence_out, batch_id, source, cache_set)
+    return ingest(db, evidence_out)
+
+
+def write_cached_scan_evidence(db, index, scan_root, evidence_out, batch_id, source, cache_set):
+    """Build one bounded evidence file without importing it."""
     token(batch_id)
     token(source)
     require(cache_set in ("keep", "buffer"), "explicit cache_set keep or buffer required")
@@ -590,7 +597,6 @@ def ingest_cached_scans(db, index, scan_root, evidence_out, batch_id, source, ca
         stream.write(encoded)
         stream.flush()
         os.fsync(stream.fileno())
-    return ingest(db, out)
 
 
 def ingest_worker(db, input_path, evidence_out, batch_id, source):
@@ -621,11 +627,18 @@ def ingest_worker(db, input_path, evidence_out, batch_id, source):
     out = Path(evidence_out)
     protect_catalog_output(out, db)
     require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
-    with out.open("xb") as stream:
-        os.chmod(out, 0o600)
+    with tempfile.NamedTemporaryFile(dir=out.parent, prefix="." + out.name + ".",
+                                     suffix=".pending") as stream:
+        os.chmod(stream.name, 0o600)
         stream.write("".join(events).encode())
         stream.flush()
         os.fsync(stream.fileno())
+        os.link(stream.name, out)
+        directory = os.open(out.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     return ingest(db, out)
 
 
@@ -937,7 +950,8 @@ fetched_at and byte length are retained; observed_at is adapter stat observation
 The condition field distinguishes absent, size_mismatch, non_regular and size_match;
 snapshot issues report size mismatches explicitly (not ordinary absent copies).
 Original loc_url/download timing are discarded. A fresh immutable --evidence-out is
-required for replay/rebuild. Split large indexes into <=10000-line/16MiB local batches.
+required for replay/rebuild. For larger indexes, scripts/scan_cache_inventory.py creates
+bounded durable slices/evidence with resumable checkpoints and partial coverage reports.
 Artifact payload optionally accepts fetched_at, bytes and condition for source provenance.
 Verified imports may supply observed_sha256: it must equal expected sha256 and state must
 be verified. Both checksums are retained; the catalog NEVER computes or invents them.

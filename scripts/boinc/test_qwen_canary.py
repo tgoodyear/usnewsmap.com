@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +18,97 @@ REFRESH_SPEC = importlib.util.spec_from_file_location(
 )
 REFRESH = importlib.util.module_from_spec(REFRESH_SPEC)
 REFRESH_SPEC.loader.exec_module(REFRESH)
+POLICY_SPEC = importlib.util.spec_from_file_location(
+    "refresh_plan_policy", ROOT / "contrib-compute/images/server/refresh-plan-policy.py"
+)
+POLICY = importlib.util.module_from_spec(POLICY_SPEC)
+POLICY_SPEC.loader.exec_module(POLICY)
+
+
+class PlanPolicyRefresh(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(prefix=".qwen-policy-", dir=ROOT)
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.source = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
+        self.target = self.root / "plan_class_spec.xml"
+        self.target.write_bytes(self.source.read_bytes())
+
+    def test_restart_preserves_shared_window_and_closed_container_with_reviewed_resources(self):
+        tree = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            nodes[name].find("min_wu_id").text = "16899"
+            nodes[name].find("max_wu_id").text = "16908"
+            nodes[name].find("min_core_client_version").text = "1"
+            nodes[name].find("min_gpu_ram_mb").text = "1"
+        for tag, value in (("min_wu_id", "2"), ("max_wu_id", "1")):
+            ET.SubElement(nodes["docker_nvidia_cuda_8b"], tag).text = value
+        tree.write(self.target)
+        self.assertTrue(POLICY.refresh(self.source, self.target))
+        updated = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in updated.findall("plan_class")}
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            self.assertEqual(nodes[name].findtext("min_wu_id"), "16899")
+            self.assertEqual(nodes[name].findtext("max_wu_id"), "16908")
+            self.assertEqual(nodes[name].findtext("min_core_client_version"), "80211")
+            self.assertEqual(nodes[name].findtext("min_gpu_ram_mb"), "7000")
+            self.assertEqual(nodes[name].findtext("min_batch"), "8")
+        self.assertEqual(nodes["docker_nvidia_cuda_8b"].findtext("min_wu_id"), "2")
+        self.assertEqual(nodes["docker_nvidia_cuda_8b"].findtext("max_wu_id"), "1")
+        self.assertEqual(nodes["docker_nvidia_cuda_8b"].findtext("min_batch"), "18")
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
+    def test_new_project_refresh_is_idempotent(self):
+        self.target.unlink()
+        self.assertTrue(POLICY.refresh(self.source, self.target))
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
+    def test_invalid_existing_windows_fail_without_replacing_policy(self):
+        original = self.source.read_bytes()
+        for low, high in (("0", "0"), ("5", "4"), ("10", "20"), ("bad", "20")):
+            with self.subTest(bounds=(low, high)):
+                tree = ET.fromstring(original)
+                node = next(node for node in tree.findall("plan_class") if node.findtext("name") == "nvidia_vulkan_8b")
+                node.find("min_wu_id").text = low
+                node.find("max_wu_id").text = high
+                payload = ET.tostring(tree)
+                self.target.write_bytes(payload)
+                with self.assertRaises(ValueError):
+                    POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), payload)
+
+    def test_failed_replace_retains_original_and_cleans_only_owned_staging(self):
+        before = self.target.read_bytes()
+        for operation in ("fsync", "replace"):
+            with self.subTest(operation=operation):
+                with patch.object(POLICY.os, operation, side_effect=OSError("operation rejected")):
+                    with self.assertRaises(OSError):
+                        POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), before)
+                self.assertEqual(list(self.root.glob(".usnm-plan-policy-*")), [])
+
+    def test_symlinked_policy_or_lock_is_rejected(self):
+        other = self.root / "other"
+        other.write_bytes(b"not ours")
+        self.target.unlink()
+        self.target.symlink_to(other)
+        with self.assertRaises(ValueError):
+            POLICY.refresh(self.source, self.target)
+        self.target.unlink()
+        self.target.write_bytes(self.source.read_bytes())
+        (self.root / ".native-qwen-cohort.lock").symlink_to(other)
+        with self.assertRaises(ValueError):
+            POLICY.refresh(self.source, self.target)
+        self.assertEqual(other.read_bytes(), b"not ours")
+
+    def test_startup_uses_policy_refresh_before_serving(self):
+        image = (ROOT / "contrib-compute/images/server/Containerfile").read_text()
+        entry = (ROOT / "contrib-compute/images/server/entrypoint.sh").read_text()
+        self.assertIn("images/server/refresh-plan-policy.py", image)
+        project_tree = entry[entry.index("project_tree() {"):entry.index("serve() {")]
+        self.assertIn('"$TEMPLATES/refresh-plan-policy.py"', project_tree)
+        self.assertNotIn('cp "$TEMPLATES/plan_class_spec.xml"', project_tree)
 
 
 class SchedulerRefresh(unittest.TestCase):
@@ -83,10 +175,41 @@ class SchedulerRefresh(unittest.TestCase):
         entry = (ROOT / "contrib-compute/images/server/entrypoint.sh").read_text()
         self.assertIn("images/server/refresh-scheduler.py", image)
         self.assertIn('"$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/cgi" --target "$PROJ/cgi-bin/cgi"', entry)
+        # The feeder computes have_apps_for_proc_type (the Intel GPU patch, #736).
+        self.assertIn('"$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/feeder" --target "$PROJ/bin/feeder" ||', entry)
         self.assertLess(entry.index("  project_tree\n"), entry.index("exec /usr/bin/supervisord"))
 
 
 class CanaryPreferences(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("php"), "PHP required")
+    def test_operator_db_context_can_stay_off_the_shared_project(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        plans = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
+        with tempfile.TemporaryDirectory(prefix=".qwen-db-context-", dir=ROOT) as folder:
+            shared = Path(folder, "shared")
+            private = Path(folder, "private")
+            shared.mkdir()
+            private.mkdir()
+            (private / "config.xml").write_text("<boinc/>")
+            original = plans.read_text().replace("<min_wu_id>2</min_wu_id>",
+                                                 "<min_wu_id>100</min_wu_id>")
+            policy = shared / "plan_class_spec.xml"
+            policy.write_text(original)
+            args = ["php", str(helper), "--project", str(shared), "--stop", "--apply"]
+            missing = subprocess.run(args, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertEqual(policy.read_text(), original)
+            result = subprocess.run(args + ["--db-project", str(private)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotEqual(policy.read_text(), original)
+            self.assertFalse((shared / "config.xml").exists())
+            self.assertFalse((private / "plan_class_spec.xml").exists())
+            self.assertEqual(len(list((shared / "ops-issue-559/native-cohort").glob("*.json"))), 1)
+            (shared / "config.xml").write_text("<boinc/>")
+            legacy = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(legacy.returncode, 0, legacy.stderr)
+
     def test_all_shipped_user_surfaces_describe_one_project_participation_policy(self):
         for name in (
             "scripts/boinc/setup_windows_volunteer.ps1",
@@ -127,7 +250,7 @@ foreach ($updated->plan_class as $node) {
     $name = (string)$node->name;
     if ($name === "nvidia_cuda_2b") {
         assert((string)$node->min_wu_id === "100" && (string)$node->max_wu_id === "100");
-    } elseif ($name === "nvidia_cuda_8b") {
+    } elseif (in_array($name, ["nvidia_cuda_8b", "intel_vulkan_8b"], true)) {
         assert((string)$node->min_wu_id === "2" && (string)$node->max_wu_id === "1");
     } else {
         $matching = $original->xpath("plan_class[name='$name']");
@@ -135,14 +258,53 @@ foreach ($updated->plan_class as $node) {
     }
 }
 native_qwen_cohort_write($project, "nvidia_cuda_8b", 101, true);
+$vulkan = native_qwen_cohort_write($project, "intel_vulkan_8b", 102, true);
+$opened = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($opened->plan_class as $node) {
+    $name = (string)$node->name;
+    if ($name === "intel_vulkan_8b") {
+        assert((string)$node->min_wu_id === "102" && (string)$node->max_wu_id === "102");
+    } elseif (in_array($name, ["nvidia_cuda_2b", "nvidia_cuda_8b"], true)) {
+        assert((int)$node->min_wu_id > (int)$node->max_wu_id);
+    }
+}
 native_qwen_cohort_write($project, "nvidia_cuda_2b", 0, true);
 $closed = simplexml_load_file("$project/plan_class_spec.xml");
 foreach ($closed->plan_class as $node) {
-    if (in_array((string)$node->name, ["nvidia_cuda_2b","nvidia_cuda_8b"], true)) {
+    if (in_array((string)$node->name, ["nvidia_cuda_2b","nvidia_cuda_8b","intel_vulkan_8b"], true)) {
         assert((int)$node->min_wu_id > (int)$node->max_wu_id);
     }
 }
 assert(count(glob("$project/.native-qwen-cohort-*")) === 0);
+$shared = native_qwen_cohort_write($project, "shared_8b", 200, true, 209);
+$opened = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($opened->plan_class as $node) {
+    $name = (string)$node->name;
+    if (in_array($name, SHARED_QWEN_CLASSES, true)) {
+        assert((int)$node->min_wu_id === 200 && (int)$node->max_wu_id === 209);
+    } elseif (in_array($name, NATIVE_QWEN_CLASSES, true) || $name === "docker_nvidia_cuda_8b") {
+        assert((int)$node->min_wu_id > (int)$node->max_wu_id);
+        if ($name === "docker_nvidia_cuda_8b") {
+            assert((int)$node->min_batch === 18 && (int)$node->max_batch === 18);
+        }
+    } else {
+        $matching = $original->xpath("plan_class[name='$name']");
+        assert($node->asXML() === $matching[0]->asXML());
+    }
+}
+foreach ([["shared_8b",200,210],["shared_8b",200,199],["nvidia_cuda_8b",200,201]] as $bad) {
+    $refused = false;
+    try { native_qwen_cohort_xml($xml, ...$bad); }
+    catch (RuntimeException $e) { $refused = true; }
+    assert($refused);
+}
+native_qwen_cohort_write($project, "shared_8b", 0, true);
+$closed = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($closed->plan_class as $node) {
+    if (in_array((string)$node->name, NATIVE_QWEN_CLASSES, true)) {
+        assert((int)$node->min_wu_id > (int)$node->max_wu_id);
+    }
+}
 $wu = (object)["batch"=>2,"rsc_disk_bound"=>12884901888,"min_quorum"=>2,
     "target_nresults"=>2,"canonical_resultid"=>0,"error_mask"=>0];
 $results = [(object)["server_state"=>2,"sent_time"=>0],(object)["server_state"=>2,"sent_time"=>0]];
@@ -161,6 +323,8 @@ catch (RuntimeException $e) { $refused = true; }
 assert($refused);
 $wu->batch = 8; $wu->rsc_disk_bound = 19327352832; $results[0]->server_state = 2;
 native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b");
+native_qwen_cohort_validate($wu, $results, "intel_vulkan_8b");
+native_qwen_cohort_validate($wu, $results, "nvidia_vulkan_8b");
 foreach ($results as $row) $row->sent_time = 1;
 $refused = false;
 try { native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b"); }

@@ -212,6 +212,24 @@ class Observer(unittest.TestCase):
                 observer.add_catalog(value, path, NOW)
         self.assertEqual(json.dumps(value), original)
 
+    def test_explicit_import_proof_is_joined_without_inventing_acceptance_or_indexing(self):
+        catalog = observer.snapshot([], [], NOW)
+        catalog["stages"] = [
+            {"id": "imported", "state": "observed", "count": 1,
+             "observed_at": "2026-10-15T12:00:00Z",
+             "detail": "One independently traced committed import; partial coverage."}
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps(catalog))
+            value = observer.add_catalog(observer.snapshot([], [], NOW), path, NOW)
+        stages = {item["id"]: item for item in value["stages"]}
+        self.assertEqual(stages["imported"]["count"], 1)
+        self.assertEqual(stages["imported"]["observed_at"], "2026-10-15T12:00:00Z")
+        self.assertIn("partial", stages["imported"]["detail"])
+        self.assertIsNone(stages["accepted"]["count"])
+        self.assertIsNone(stages["indexed"]["count"])
+
     def test_join_caps_coverage_and_issues_with_explicit_omission(self):
         catalog = observer.snapshot([], [], NOW)
         catalog["coverage"] = [f"Coverage {index}" for index in range(32)]

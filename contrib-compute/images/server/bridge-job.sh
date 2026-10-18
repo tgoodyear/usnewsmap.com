@@ -87,6 +87,14 @@
 #                               submits prepared trials with write-ahead markers
 #   BRIDGE_STEP=train-collect TRAIN_CAMPAIGN=<name>
 #                               reports quarantined candidates; never promotes an adapter
+#   BRIDGE_STEP=iris-bundle-stage IRIS_CAMPAIGN=<name> IRIS_WORKER_IMAGE=<public digest>
+#                               IRIS_ARCHIVE_URL=<release tar> IRIS_ARCHIVE_SHA256=<hex>
+#                               [IRIS_SUBSET=legacy/overproof-en-100] [IRIS_BUNDLE_SIZE=16]
+#                               bundles the benchmark subset for host 9 (usnm_iris 1.1); no database
+#   BRIDGE_STEP=iris-bundle-submit IRIS_CAMPAIGN=<name>   [IRIS_APPLY=1] (else a dry run)
+#   BRIDGE_STEP=iris-bundle-collect IRIS_CAMPAIGN=<name>  per-crop CER and drift from 1.0 results
+#   BRIDGE_STEP=iris-bundle-cancel IRIS_CAMPAIGN=<name>   [IRIS_APPLY=1] cancels the workunits of a
+#                               batch-105 campaign, which the scheduler can never send (dry run without)
 #
 # The remote hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache), through the
 # hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
@@ -145,6 +153,11 @@ if [[ "$step" == qwen-* ]]; then
   [[ "${QWEN_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "QWEN_CAMPAIGN must be 1-41 of [a-z0-9-]"
   QWEN="$SHARE_DIR/qwen/$QWEN_CAMPAIGN"
 fi
+IRIS=""
+if [[ "$step" == iris-bundle-* ]]; then
+  [[ "${IRIS_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "IRIS_CAMPAIGN must be 1-41 of [a-z0-9-]"
+  IRIS="$SHARE_DIR/iris-bundle/$IRIS_CAMPAIGN"
+fi
 GOLD=""
 if [[ "$step" == gold-* ]]; then
   [[ "${GOLD_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "GOLD_CAMPAIGN must be 1-41 of [a-z0-9-]"
@@ -160,6 +173,18 @@ case "$step" in
       --worker-image "${TRAIN_WORKER_IMAGE:?set TRAIN_WORKER_IMAGE}" ;;
   train-collect)
     exec python3 "$TEMPLATES/train/campaign.py" collect --root "$TRAIN" --seen "$PROJ/qwen-train/seen" ;;
+  iris-bundle-stage)
+    # No database or secrets: downloads the pinned public benchmark release and writes the share.
+    [[ "${IRIS_SUBSET:-legacy/overproof-en-100}" =~ ^[A-Za-z0-9/_.-]+$ ]] || fail "bad IRIS_SUBSET"
+    exec python3 "$TEMPLATES/iris/iris-bundle-campaign.py" stage --out "$IRIS" \
+      --archive-url "${IRIS_ARCHIVE_URL:?set IRIS_ARCHIVE_URL}" \
+      --archive-sha256 "${IRIS_ARCHIVE_SHA256:?set IRIS_ARCHIVE_SHA256}" \
+      --subset "${IRIS_SUBSET:-legacy/overproof-en-100}" \
+      --worker-image "${IRIS_WORKER_IMAGE:?set IRIS_WORKER_IMAGE}" \
+      --bundle-size "${IRIS_BUNDLE_SIZE:-16}" ;;
+  iris-bundle-collect)
+    exec python3 "$TEMPLATES/iris/iris-bundle-campaign.py" collect --root "$IRIS" --seen "$PROJ/iris/seen" \
+      --v1-seen "$PROJ/iris/seen" ;;
   assess-stage)
     # No database or secrets: this step only reads the scan archive and LoC and writes the share.
     assess_mode
@@ -314,7 +339,7 @@ esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
   [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
-  [ "$step" != gold-onboard ]; then
+  [ "$step" != gold-onboard ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -402,6 +427,25 @@ fetch_secrets
 render_config
 umask 0002
 case "$step" in
+  iris-bundle-cancel)
+    apply=()
+    [ "${IRIS_APPLY:-}" = 1 ] && apply=(--apply)
+    exec python3 "$TEMPLATES/iris/iris-bundle-campaign.py" cancel-stranded --root "$IRIS" --project "$PROJ" \
+      ${apply[@]+"${apply[@]}"} ;;
+  iris-bundle-submit)
+    for template in usnm_iris_bundle_in usnm_iris_bundle_out; do
+      cp "$TEMPLATES/$template" "$PROJ/templates/$template"
+      chmod 0664 "$PROJ/templates/$template"
+    done
+    apply=()
+    [ "${IRIS_APPLY:-}" = 1 ] && apply=(--apply)
+    stamp="$(mktemp)"
+    rc=0
+    python3 "$TEMPLATES/iris/iris-bundle-campaign.py" submit --root "$IRIS" --project "$PROJ" \
+      ${apply[@]+"${apply[@]}"} || rc=$?
+    share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/iris"
+    rm -f "$stamp"
+    exit "$rc" ;;
   train-submit)
     for template in usnm_qwen_train_in usnm_qwen_train_out; do
       cp "$TEMPLATES/$template" "$PROJ/templates/$template"
@@ -500,5 +544,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
 esac

@@ -475,6 +475,11 @@ pub fn join_texts(exported: Texts, loc_text: &str, order: &[String], w: u32, h: 
         text: loc_text.to_owned(),
     }];
     all.extend(exported.readers.into_iter().map(|mut r| {
+        if (r.name == LOC_READER || r.name == "loc-hist")
+            && (r.text.trim().is_empty() || r.text.trim().eq_ignore_ascii_case("none"))
+        {
+            r.text = loc_text.to_owned();
+        }
         r.source = usnm_ocr_contract::quality::normalize_source(&r.source);
         r.regions
             .retain(|g| g.rect[0] < g.rect[2] && g.rect[1] < g.rect[3]);
@@ -486,6 +491,15 @@ pub fn join_texts(exported: Texts, loc_text: &str, order: &[String], w: u32, h: 
         }
         r
     }));
+    if !all.iter().any(|r| r.name == "loc-hist") {
+        all.push(TextReader {
+            alto: false,
+            name: "loc-hist".into(),
+            regions: vec![],
+            source: LOC_SOURCE.into(),
+            text: loc_text.to_owned(),
+        });
+    }
     let readers = order
         .iter()
         .filter_map(|name| all.iter().find(|r| &r.name == name).cloned())

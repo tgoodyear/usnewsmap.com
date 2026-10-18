@@ -36,14 +36,14 @@ python3 -m unittest scripts/test_env_scripts.py
 scripts/lib/env_settings.py --check
 scripts/ci/check-names.py --base origin/main
 python3 -m unittest scripts/ci/test_check_names.py
-bicep build infra/main.bicep --stdout > /dev/null
-bicep build infra/guardrails.bicep --stdout > /dev/null
+scripts/ci/lint-bicep.sh
+scripts/ci/build-bicep.sh
 AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
 `scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included.
 
-`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
+Use Bicep CLI v0.48.1, the single version pinned in `scripts/ci/bicep-version`; CI installs that release. The lint and build helpers above verify the pinned compiler and cover every tracked `.bicep` template. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
 Local nightly fuzz targets for untrusted OCR Parquet, ALTO and dead letters live
 in [`fuzz/`](fuzz/README.md), outside the production workspace. Its README covers
