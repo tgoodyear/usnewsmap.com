@@ -113,8 +113,12 @@ neither 202 `EXIT_ABORTED_BY_PROJECT` nor 203 `EXIT_ABORTED_VIA_GUI`) and have a
 nonzero server host ID and server receive time revoke eligibility, and only in the
 same image/challenge/language/profile/PSM/DPI scope. Previously captured bounded
 evidence is retained across recollection so BOINC's result purge cannot erase a
-terminal event; a marker with any unresolved native result fails collection. This
-records an execution failure, not measured OCR quality.
+terminal event. Collection records results only after the workunit's server-side
+assimilation is done (`assimilate_state=2`), stores the authoritative result count,
+and requires every counted result to be present and over; trust rebuild validates
+the saved count again. An earlier non-final snapshot cannot be upgraded after
+retries may have been issued and purged. A marker with unresolved native results
+fails collection. This records an execution failure, not measured OCR quality.
 Server cancellation, send failure, no reply, validator error, a missing spool
 artifact or a result without authoritative host/time does not automatically
 revoke. See [the Gold trust policy](boinc.md#host-trust-for-usnm_ocr).

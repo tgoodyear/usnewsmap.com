@@ -12,6 +12,8 @@
 //!
 //! In native mode, BOINC's result-table host ID is authoritative and is checked against the
 //! host claimed by the uploaded report. It remains a BOINC quality signal, not an identity check.
+//! Native outcome snapshots are accepted only when every result of an assimilated workunit is
+//! present.
 use crate::{atomic, load, Stage};
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
@@ -166,7 +168,10 @@ impl Trust {
                 let row: crate::gold::collect::NativeResult = serde_json::from_str(line)
                     .with_context(|| format!("{}:{}", path.display(), n + 1))?;
                 anyhow::ensure!(
-                    row.schema_version == 2
+                    row.schema_version == 3
+                        && row.workunit_assimilate_state
+                            == crate::gold::collect::BOINC_ASSIMILATE_STATE_DONE
+                        && row.workunit_result_count > 0
                         && row.app == "usnm_gold"
                         && row.workunit.strip_prefix("usnm_gold_").is_some_and(
                             |id| id.len() == 64 && usnm_ocr_contract::boinc::is_sha256(id)
@@ -192,6 +197,11 @@ impl Trust {
                     "duplicate native Gold result"
                 );
             }
+        }
+        if require_native {
+            crate::gold::collect::validate_complete_result_sets(
+                &native_results.values().cloned().collect::<Vec<_>>(),
+            )?;
         }
         for path in reports {
             let bytes = crate::read(path, MAX_REPORTS as usize)

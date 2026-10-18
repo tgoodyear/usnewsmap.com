@@ -1177,8 +1177,13 @@ trusted hosts so it can issue new challenges. Recollect each campaign with the
 read-only native result query and explicit `GOLD_LANGUAGE` / `GOLD_PROFILE`, then
 rebuild from its validated `reports.jsonl` and `native-outcomes.jsonl`; old
 reports without native result IDs and server timestamps are insufficient for
-v5. Do not edit or relabel legacy lists. Deploying this guard neither chooses
-a threshold nor promotes hosts.
+v5. Native collection records outcomes only from workunits whose server-side
+assimilation is done (`assimilate_state=2`), with the database's total result-row
+count; it rejects a snapshot unless every result row is present and over. Trust
+rebuild repeats this completeness check on the saved metadata. A previously saved
+pre-final snapshot is not upgraded from a later partial view, because a purged
+retry cannot otherwise be ruled out. Do not edit or relabel legacy lists.
+Deploying this guard neither chooses a threshold nor promotes hosts.
 
 A terminal attempt revokes the matching host's **quality eligibility** only
 when the authoritative BOINC row is over (`server_state=5`), reports

@@ -8,7 +8,8 @@
 //!   engine identity, with scoped quality counts and (when native collection is enabled) the
 //!   matching server result ID, host and receive time;
 //! - `crops.jsonl`: one line per scored crop with counts only;
-//! - `native-outcomes.jsonl`: a bounded BOINC result-table snapshot with no OCR text or stderr.
+//! - `native-outcomes.jsonl`: bounded BOINC result metadata with no OCR text or stderr, including
+//!   the finalized workunit's assimilation state and complete result-row count.
 //!
 //! No page text or transcription is written to these files.
 use super::{submit, validate};
@@ -40,6 +41,7 @@ const MAX_NATIVE_JOBS: usize = 1_000;
 const MAX_NATIVE_RESULTS: usize = 10_000;
 const MAX_NATIVE_BYTES: usize = 16 << 20;
 pub const BOINC_SERVER_STATE_OVER: i64 = 5;
+pub const BOINC_ASSIMILATE_STATE_DONE: i64 = 2;
 pub const BOINC_OUTCOME_SUCCESS: i64 = 1;
 pub const BOINC_OUTCOME_CLIENT_ERROR: i64 = 3;
 pub const BOINC_EXIT_ABORTED_BY_PROJECT: i64 = 202;
@@ -68,6 +70,8 @@ pub struct NativeResult {
     pub sent_at: Option<i64>,
     pub server_state: i64,
     pub workunit: String,
+    pub workunit_assimilate_state: i64,
+    pub workunit_result_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -152,7 +156,7 @@ pub async fn native_results(
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "SELECT a.name,w.name,r.id,r.hostid,r.server_state,r.outcome,r.exit_status,r.sent_time,r.received_time,r.app_version_id,COALESCE(w.canonical_resultid,0) FROM workunit w JOIN app a ON a.id=w.appid JOIN result r ON r.workunitid=w.id WHERE w.name IN ({names}) AND r.app_version_id>0 ORDER BY r.id LIMIT {}",
+        "SELECT a.name,w.name,r.id,r.hostid,r.server_state,r.outcome,r.exit_status,r.sent_time,r.received_time,r.app_version_id,COALESCE(w.canonical_resultid,0),w.assimilate_state,(SELECT COUNT(*) FROM result all_results WHERE all_results.workunitid=w.id) FROM workunit w JOIN app a ON a.id=w.appid JOIN result r ON r.workunitid=w.id WHERE w.name IN ({names}) AND w.assimilate_state=2 AND r.app_version_id>0 ORDER BY r.id LIMIT {}",
         MAX_NATIVE_RESULTS + 1
     );
     let mut command = Command::new("mysql");
@@ -194,7 +198,7 @@ fn parse_native_rows(
     let mut rows = Vec::new();
     for line in text.lines() {
         let fields: Vec<_> = line.split('\t').collect();
-        anyhow::ensure!(fields.len() == 11, "invalid Gold native result row");
+        anyhow::ensure!(fields.len() == 13, "invalid Gold native result row");
         let number = |s: &str| s.parse::<i64>().context("invalid Gold native result field");
         let result_id: u64 = fields[2].parse().context("invalid Gold result id")?;
         let canonical_id: u64 = match fields[10] {
@@ -224,7 +228,7 @@ fn parse_native_rows(
             "native result belongs to another BOINC app"
         );
         rows.push(NativeResult {
-            schema_version: 2,
+            schema_version: 3,
             app: fields[0].to_owned(),
             app_version_id: number(fields[9])?
                 .try_into()
@@ -245,13 +249,50 @@ fn parse_native_rows(
             sent_at: timestamp(fields[7])?,
             server_state: number(fields[4])?,
             workunit,
+            workunit_assimilate_state: number(fields[11])?,
+            workunit_result_count: number(fields[12])?
+                .try_into()
+                .context("invalid workunit result count")?,
         });
         anyhow::ensure!(
             rows.len() <= MAX_NATIVE_RESULTS,
             "too many Gold native results"
         );
     }
+    validate_complete_result_sets(&rows)?;
     Ok(rows)
+}
+
+pub(crate) fn validate_complete_result_sets(rows: &[NativeResult]) -> anyhow::Result<()> {
+    let mut observed = BTreeMap::<&str, (i64, u32, usize)>::new();
+    for row in rows {
+        anyhow::ensure!(
+            row.schema_version == 3
+                && row.workunit_assimilate_state == BOINC_ASSIMILATE_STATE_DONE
+                && row.server_state == BOINC_SERVER_STATE_OVER
+                && row.workunit_result_count > 0,
+            "{}: native result snapshot is not finalized",
+            row.workunit
+        );
+        let entry = observed.entry(&row.workunit).or_insert((
+            row.workunit_assimilate_state,
+            row.workunit_result_count,
+            0,
+        ));
+        anyhow::ensure!(
+            entry.0 == row.workunit_assimilate_state && entry.1 == row.workunit_result_count,
+            "{}: inconsistent finalized workunit snapshot",
+            row.workunit
+        );
+        entry.2 += 1;
+    }
+    for (workunit, (state, expected, observed)) in observed {
+        anyhow::ensure!(
+            state == BOINC_ASSIMILATE_STATE_DONE && observed == expected as usize,
+            "{workunit}: captured {observed} of {expected} finalized BOINC results"
+        );
+    }
+    Ok(())
 }
 
 pub fn run(opts: &Options) -> anyhow::Result<Summary> {
@@ -310,10 +351,19 @@ fn run_inner(
                 );
             }
         }
+        validate_complete_result_sets(&by_result.values().cloned().collect::<Vec<_>>())?;
         let mut fresh = BTreeSet::new();
         for row in rows {
             let key = (row.workunit.clone(), row.result_id);
             anyhow::ensure!(fresh.insert(key.clone()), "duplicate native BOINC result");
+            if let Some(saved) = by_result.get(&key) {
+                anyhow::ensure!(
+                    saved.workunit_assimilate_state == row.workunit_assimilate_state
+                        && saved.workunit_result_count == row.workunit_result_count,
+                    "{}: finalized native workunit snapshot changed",
+                    row.workunit
+                );
+            }
             by_result.insert(key, row.clone());
         }
         let mut ordered: Vec<_> = by_result.into_values().collect();
@@ -324,7 +374,9 @@ fn run_inner(
                 format!("unknown Gold workunit {} in native results", row.workunit)
             })?;
             anyhow::ensure!(
-                row.schema_version == 2
+                row.schema_version == 3
+                    && row.workunit_assimilate_state == BOINC_ASSIMILATE_STATE_DONE
+                    && row.workunit_result_count > 0
                     && row.app == submit::APP
                     && row.bundle_version == job.bundle_version
                     && row.engine_image == job.engine.image
@@ -359,6 +411,13 @@ fn run_inner(
             outcomes.len() <= MAX_NATIVE_BYTES,
             "Gold native outcome metadata exceeds its size limit"
         );
+        validate_complete_result_sets(
+            &native_by_workunit
+                .values()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )?;
     }
     let expected_dir = validate::expected_dir(&opts.project);
     for unit in units {
@@ -486,7 +545,7 @@ mod tests {
             profile: "eng".into(),
         };
         let line = format!(
-            "usnm_gold\t{}\t101\t7\t5\t3\t1\t100\t200\t11\t0",
+            "usnm_gold\t{}\t101\t7\t5\t3\t1\t100\t200\t11\t0\t2\t1",
             job.workunit()
         );
         let parsed = parse_native_rows(&line, &jobs, &config).unwrap();
@@ -497,7 +556,14 @@ mod tests {
         assert_eq!(parsed[0].engine_image, job.engine.image);
         assert_eq!(parsed[0].received_at, Some(200));
         assert_eq!(parsed[0].outcome, BOINC_OUTCOME_CLIENT_ERROR);
+        assert_eq!(
+            parsed[0].workunit_assimilate_state,
+            BOINC_ASSIMILATE_STATE_DONE
+        );
+        assert_eq!(parsed[0].workunit_result_count, 1);
         assert!(!parsed[0].canonical);
+        assert!(parse_native_rows(&line.replace("\t2\t1", "\t2\t2"), &jobs, &config).is_err());
+        assert!(parse_native_rows(&line.replace("\t2\t1", "\t1\t1"), &jobs, &config).is_err());
         assert!(parse_native_rows(&line.replace("usnm_gold", "usnm_ocr"), &jobs, &config).is_err());
         assert!(
             parse_native_rows(&line.replace("\t200\t", "\t0\t"), &jobs, &config).unwrap()[0]
@@ -656,7 +722,7 @@ mod tests {
         scope: (&str, &str),
     ) -> NativeResult {
         NativeResult {
-            schema_version: 2,
+            schema_version: 3,
             app: submit::APP.into(),
             app_version_id: 100,
             bundle_version: job.bundle_version,
@@ -679,6 +745,8 @@ mod tests {
             sent_at: Some(received_at - 60),
             server_state: 5,
             workunit: job.workunit(),
+            workunit_assimilate_state: BOINC_ASSIMILATE_STATE_DONE,
+            workunit_result_count: 1,
         }
     }
 
@@ -803,13 +871,40 @@ mod tests {
             !lost_out.exists(),
             "incomplete evidence must not be written"
         );
+        let retry_out = tmp.path().join("purged-retry-out");
+        std::fs::create_dir_all(&retry_out).unwrap();
+        let mut pre_retry_snapshot = native(&jobs[1], 102, 7, 2, 190, false, ("eng", "eng"));
+        pre_retry_snapshot.workunit_assimilate_state = 1;
+        let pre_retry_path = retry_out.join("native-outcomes.jsonl");
+        std::fs::write(
+            &pre_retry_path,
+            format!("{}\n", serde_json::to_string(&pre_retry_snapshot).unwrap()),
+        )
+        .unwrap();
+        assert!(
+            run_with_native(
+                &options(eng_root.clone(), eng_spool.clone(), retry_out.clone()),
+                &missing_old_row,
+                &eng_config,
+            )
+            .is_err(),
+            "an earlier non-final result snapshot cannot be upgraded after a retry is purged"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&pre_retry_path).unwrap(),
+            format!("{}\n", serde_json::to_string(&pre_retry_snapshot).unwrap()),
+            "uncertified prior evidence must not be replaced"
+        );
         let stale_out = tmp.path().join("stale-terminal-out");
         std::fs::create_dir_all(&stale_out).unwrap();
         let mut stale_snapshot = eng_native.clone();
         stale_snapshot[1].server_state = 4;
         stale_snapshot[1].outcome = 0;
         stale_snapshot[1].received_at = None;
-        stale_snapshot.push(native(&jobs[1], 106, 8, 2, 210, false, ("eng", "eng")));
+        stale_snapshot[1].workunit_result_count = 2;
+        let mut sibling = native(&jobs[1], 106, 8, 2, 210, false, ("eng", "eng"));
+        sibling.workunit_result_count = 2;
+        stale_snapshot.push(sibling);
         let stale_contents = stale_snapshot
             .iter()
             .map(|row| serde_json::to_string(row).unwrap())
@@ -886,6 +981,33 @@ mod tests {
             },
         )
         .unwrap();
+        let incomplete_outcomes = tmp.path().join("incomplete-outcomes.jsonl");
+        let malformed = std::fs::read_to_string(eng_out.join("native-outcomes.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+                if row["result_id"] == 101 {
+                    row["workunit_result_count"] = json!(2);
+                }
+                row.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&incomplete_outcomes, format!("{malformed}\n")).unwrap();
+        assert!(crate::trust::Trust::build_with_outcomes(
+            &reports,
+            &[incomplete_outcomes],
+            1.0,
+            &expected.manifest_sha256,
+            crate::trust::Scope {
+                language: "eng".into(),
+                profile: "eng".into(),
+                psm: 3,
+                dpi: 300,
+            },
+        )
+        .is_err());
         let image_a = &jobs[0].engine.image;
         let image_b = &jobs[3].engine.image;
         assert!(eng_trust.refuse(image_a, Some(7)).is_some());
