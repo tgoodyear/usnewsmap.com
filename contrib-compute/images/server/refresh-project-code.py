@@ -33,7 +33,7 @@ def inventory(project, source, templates):
                 target = os.readlink(path)
                 allowed = (tree == "bin" and
                            ((path.name in ("stop", "status") and path.resolve() == (project / "bin/start").resolve()) or
-                            (path.name.startswith("usnm_") and target.startswith(str(templates) + "/") and path.is_file())))
+                            (path.name.startswith("usnm_") and path.resolve().is_relative_to(templates.resolve()) and path.is_file())))
                 if not allowed:
                     raise ValueError(f"unrecognized runtime link: {rel}")
                 row.update(kind="symlink", target=target)
@@ -102,6 +102,8 @@ def rollback(project, backup):
         if digest(saved) != row["before"]:
             raise ValueError("backup hash mismatch")
     for row in reversed(rows):
+        if digest(project / row["path"]) == row["before"]:
+            continue
         replace(backup / "files" / row["path"], project / row["path"], row["mode"], row["uid"], row["gid"])
     if any(digest(project / row["path"]) != row["before"] for row in rows):
         raise ValueError("rollback verification failed")

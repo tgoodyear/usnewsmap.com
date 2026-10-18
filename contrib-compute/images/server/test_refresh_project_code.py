@@ -91,3 +91,22 @@ class RefreshProjectCode(unittest.TestCase):
         p.write_text(json.dumps(m))
         with self.assertRaises(ValueError):
             code.rollback(self.project, self.backup)
+
+    def test_validator_link_with_parent_traversal_rejected(self):
+        outside = self.root / "outside"
+        outside.write_text("not a validator")
+        (self.project / "bin/usnm_escape").symlink_to(str(self.templates) + "/../outside")
+        with self.assertRaises(ValueError):
+            code.apply(self.project, self.source, self.templates, self.backup)
+
+    def test_persistent_busy_target_does_not_prevent_restoring_written_files(self):
+        original = code.replace
+        def busy(source, target, mode, *owner):
+            if str(target).endswith("cgi-bin/cgi"):
+                raise OSError("fixture persistent SMB busy target")
+            return original(source, target, mode, *owner)
+        with patch.object(code, "replace", side_effect=busy):
+            with self.assertRaises(OSError):
+                code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "old cgi-bin/cgi")
