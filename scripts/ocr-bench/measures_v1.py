@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 import json
 import math
 from pathlib import Path
+from fractions import Fraction
 import random
 import re
 import sys
@@ -552,15 +553,21 @@ def quality_cost_decision(baseline, candidate, *, baseline_cost, candidate_cost,
         raise ValueError("quality/cost decision requires nonempty paired sample sets")
     if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in (base["cer"], cand["cer"])):
         raise ValueError("quality/cost decision requires defined baseline and candidate CER")
-    base_missing = (base["missing"] + base["errors"]) / base["samples"]
-    cand_missing = (cand["missing"] + cand["errors"]) / cand["samples"]
-    cer_delta = cand["cer"] - base["cer"]
+    if base["reference_characters"] < 1 or cand["reference_characters"] < 1:
+        raise ValueError("quality/cost decision requires nonempty reference text")
+    base_cer = Fraction(base["character_errors"], base["reference_characters"])
+    cand_cer = Fraction(cand["character_errors"], cand["reference_characters"])
+    base_missing_exact = Fraction(base["missing"] + base["errors"], base["samples"])
+    cand_missing_exact = Fraction(cand["missing"] + cand["errors"], cand["samples"])
+    base_missing, cand_missing = float(base_missing_exact), float(cand_missing_exact)
+    cer_delta = float(cand_cer - base_cer)
     regression = candidate.get("good_page_regression_rate")
     values = (baseline_cost, candidate_cost, max_cer_delta, max_missing_rate_delta, max_good_page_regression_rate)
     if any(not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0 for x in values):
         raise ValueError("costs and preregistered quality margins must be finite nonnegative numbers")
-    gates = {"cer_within_margin": cer_delta <= max_cer_delta,
-             "missing_error_rate_within_margin": cand_missing - base_missing <= max_missing_rate_delta,
+    cer_margin, missing_margin = Fraction(str(max_cer_delta)), Fraction(str(max_missing_rate_delta))
+    gates = {"cer_within_margin": cand_cer - base_cer <= cer_margin,
+             "missing_error_rate_within_margin": cand_missing_exact - base_missing_exact <= missing_margin,
              "good_page_regressions_within_margin": regression is not None and regression <= max_good_page_regression_rate}
     return {"eligible": all(gates.values()), "quality_gates": gates, "cer_delta": cer_delta,
             "baseline_missing_error_rate": base_missing, "candidate_missing_error_rate": cand_missing,

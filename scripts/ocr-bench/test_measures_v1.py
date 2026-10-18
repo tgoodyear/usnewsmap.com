@@ -187,8 +187,10 @@ class MeasuresV1Tests(unittest.TestCase):
         self.assertEqual(len(first), 2)
 
     def test_quality_cost_gate_blocks_quality_regression(self):
-        baseline = {"transcription": {"cer": 0.01, "missing": 0, "errors": 0, "samples": 10}}
-        candidate = {"transcription": {"cer": 0.04, "missing": 0, "errors": 0, "samples": 10},
+        baseline = {"transcription": {"cer": 0.01, "character_errors": 1, "reference_characters": 100,
+                                       "missing": 0, "errors": 0, "samples": 10}}
+        candidate = {"transcription": {"cer": 0.04, "character_errors": 4, "reference_characters": 100,
+                                       "missing": 0, "errors": 0, "samples": 10},
                      "good_page_regression_rate": 0}
         decision = measures.quality_cost_decision(baseline, candidate, baseline_cost=2, candidate_cost=1,
             max_cer_delta=0.01, max_missing_rate_delta=0, max_good_page_regression_rate=0.1)
@@ -205,6 +207,18 @@ class MeasuresV1Tests(unittest.TestCase):
             max_good_page_regression_rate=0)
         self.assertTrue(decision["eligible"])
         self.assertTrue(decision["cost_better_after_quality_gates"])
+
+    def test_quality_cost_gate_accepts_exact_fraction_margin_boundaries(self):
+        baseline = {"transcription": {"cer": 0.03, "character_errors": 3, "reference_characters": 100,
+                                       "missing": 0, "errors": 3, "samples": 100}}
+        candidate = {"transcription": {"cer": 0.04, "character_errors": 4, "reference_characters": 100,
+                                       "missing": 0, "errors": 4, "samples": 100},
+                     "good_page_regression_rate": 0}
+        result = measures.quality_cost_decision(baseline, candidate, baseline_cost=2, candidate_cost=1,
+            max_cer_delta=0.01, max_missing_rate_delta=0.01, max_good_page_regression_rate=0)
+        self.assertTrue(result["eligible"])
+        self.assertTrue(result["quality_gates"]["cer_within_margin"])
+        self.assertTrue(result["quality_gates"]["missing_error_rate_within_margin"])
 
     def test_quality_cost_gate_rejects_undefined_cer(self):
         refs = [{"id": "empty", "reference": ""}]

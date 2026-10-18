@@ -110,7 +110,8 @@ assign published OCR zero cost or substitute GPU utilization for quality. Before
 non-inferiority margins for CER, missing/error rate and regression rate on already-good pages.
 `compare_transcriptions` places each candidate's good-page regression rate in its system record.
 Pass the baseline and candidate system records to `quality_cost_decision(...)`; it requires defined
-CER, applies the declared margins, and calls a candidate cost-better only if it passes every gate
+CER and compares edit/missing counts as exact rational rates against margins parsed from their
+written decimal values. It calls a candidate cost-better only if it passes every gate
 and has lower measured cost per usable page. Compare like units, hardware
 scope and page definitions, and also inspect strata, truncation and retrieval results before
 selecting an engine. The margins are project policy, not universal defaults.
