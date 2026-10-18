@@ -1092,12 +1092,22 @@ prepare` computed from the transcription (a host that read other text fails);
 This does not prove which engine ran. As for the other apps, volunteers are
 trusted friends.
 
-**Where reports go.** `usnm-boinc gold collect` reads the canonical results
-from the `batch_collect_assimilator` spool, checks each again, and writes
-`reports.jsonl` (one row per result) and `crops.jsonl` (one row per scored
-crop), keyed by bundle version, manifest sha256, engine version, image and
-base, workunit and host id, under `<share>/gold/<campaign>/out/`. Nothing new
-in Azure: they live on the existing project share.
+**Where reports go.** `usnm-boinc gold collect` reads canonical results from
+the `batch_collect_assimilator` spool and validates them again. The bridge also
+queries the read-only BOINC database for the campaign's submitted workunits and
+writes `native-outcomes.jsonl` beside `reports.jsonl` and `crops.jsonl` under
+`<share>/gold/<campaign>/out/`. The native table is capped at 10,000 results and
+16 MiB; it contains only app/workunit/result/version IDs, host ID, immutable job
+image and challenge identity, explicit calibration scope, BOINC state/outcome/exit
+status, and server send/receive epoch timestamps. It contains no OCR text, stderr or
+filesystem times. Canonical report rows bind their result ID, host and ordering
+timestamp to the matching native server row. An absent/ambiguous DB result or
+host mismatch fails closed for calibrated trust; no zero-crop report is
+synthesized. The files remain on the existing project share. Recollection merges the bounded
+previous native snapshot before refreshing it, preserving captured terminal
+history after BOINC purges result rows. A terminal assimilator marker with any
+unresolved native result (including a stale in-progress row) makes collection fail
+before replacing reports or outcome evidence.
 
 **Models.** The worker image's model lock decides which crops a host can score;
 crops in a language with no locked model are listed as skipped.
@@ -1117,9 +1127,11 @@ scripts/start-boinc-bridge.sh --env prod --step gold-prepare --var GOLD_CAMPAIGN
 # Make the units (default 20). Re-running skips units already submitted.
 scripts/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_ENGINE_IMAGE=sha256:... --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE> --var GOLD_UNITS=20
-# When results are assimilated:
+# When results are assimilated, use the calibration's explicit scope. This
+# reads the BOINC result table with the bridge's read-only DB account:
 scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
-  --var GOLD_SPOOL=/project/usnmocr/results/<batch>
+  --var GOLD_SPOOL=/project/usnmocr/results/0 \
+  --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile>
 # Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
 scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_MAX_CER=<calibrated-threshold> \
@@ -1182,20 +1194,46 @@ observing an English model profile alone does not establish an English source.
 One artifact covers one language/profile/configuration, not every language
 supported by its image.
 
-An earlier MVP's 0.10 was not calibrated. Trust format v4 deliberately rejects
-old unscoped v1/v2/v3 lists for publication. Gold onboarding logs those legacy
-policies and treats every host as untrusted, so it can issue new challenges.
-Rerun the updated normal `gold collect` against the original validated canonical
-reports to derive counts-only crop-loss and scope metadata, then rebuild trust
-with the calibrated manifest and scope; do not edit or relabel legacy lists.
-Old tables without those fields and mixed-challenge tables fail explicitly.
+An earlier MVP's 0.10 was not calibrated. Trust format v5 rejects old v1-v4
+lists for publication. Gold onboarding treats a missing or legacy list as no
+trusted hosts so it can issue new challenges. Recollect each campaign with the
+read-only native result query and explicit `GOLD_LANGUAGE` / `GOLD_PROFILE`, then
+rebuild from its validated `reports.jsonl` and `native-outcomes.jsonl`; old
+reports without native result IDs and server timestamps are insufficient for
+v5. Native collection records outcomes only from workunits whose server-side
+assimilation is done (`assimilate_state=2`), with the database's total result-row
+count; it rejects a snapshot unless every result row is present and over. Trust
+rebuild repeats this completeness check on the saved metadata. A previously saved
+pre-final snapshot is not upgraded from a later partial view, because a purged
+retry cannot otherwise be ruled out. Do not edit or relabel legacy lists.
 Deploying this guard neither chooses a threshold nor promotes hosts.
-Only validated canonical quality reports establish or revoke eligibility.
-Terminal attempts, including an engine failing every crop without producing
-a valid report, are counted separately by the collector; their spool markers
-do not carry authoritative host/time attribution and do not automatically revoke
-an earlier passing host. Do not infer that attribution from file timestamps or
-claim that this quality signal detects terminal failures or malicious hosts.
+
+A terminal attempt revokes the matching host's **quality eligibility** only
+when the authoritative BOINC row is over (`server_state=5`), reports
+`CLIENT_ERROR` (`outcome=3`), is not a cancellation (`exit_status` is neither
+202 `EXIT_ABORTED_BY_PROJECT` nor 203 `EXIT_ABORTED_VIA_GUI`), identifies a
+nonzero host, and has a server `received_time`. This narrowly treats a returned client execution error (such
+as the all-skipped Gold worker exiting without a report) as a conservative
+eligibility failure; it is not a measured CER/WER result and must not be
+reported as OCR quality. Project and user cancellations (`exit_status=202` or `203`,
+`EXIT_ABORTED_BY_PROJECT` or `EXIT_ABORTED_VIA_GUI`) are excluded even though
+BOINC may record them as `CLIENT_ERROR`. Other outcomes—including server-side
+inability to send, no reply, validator/server errors, missing output artifacts,
+or rows without an attributable host/receive timestamp—do not revoke trust. They
+remain separately visible as native metadata or collection failures and require
+operator review if needed. No inference comes from spool or filesystem times,
+and no canonical report is fabricated for zero scored crops.
+
+The native app/result/host identity and server timestamps come from the BOINC
+database; the immutable worker-image digest and challenge/configuration are
+bound by the digest-derived workunit name and validated submitted job. Language
+and profile are explicit calibration scope, never guessed from a missing
+report. Eligibility events are ordered by server receive time per image, host,
+challenge, language, profile, PSM and DPI; the newest event wins and any tie
+fails closed. A negative event in one declared scope cannot revoke another
+image or language/profile/configuration scope. The host ID remains a BOINC
+quality signal, not proof of volunteer identity or protection against malicious
+hosts.
 The handoff spool shares one global `gold/trust.json`; passing a separate local
 file does not isolate its policy to one job. Both native and handoff publication,
 and independent-host spot replay/comparison, enforce the job scope. English-only
@@ -1203,9 +1241,10 @@ evidence never implicitly authorizes French, Japanese, another model profile or
 another page segmentation/DPI configuration.
 
 ```sh
-# Build the trust list from one or more campaigns' reports.
+# Build trust from canonical reports plus native server outcome snapshots.
 usnm-boinc gold trust --reports <share>/gold/v1-tess550/out/reports.jsonl \
-  [--reports ...] --max-cer CALIBRATED_THRESHOLD \
+  --outcomes <share>/gold/v1-tess550/out/native-outcomes.jsonl \
+  [--reports ...] [--outcomes ...] --max-cer CALIBRATED_THRESHOLD \
   --manifest-sha256 CALIBRATED_MANIFEST_SHA256 \
   --language CALIBRATED_LANGUAGE --profile CALIBRATED_PROFILE --out <share>/gold/trust.json
 # The canonical result's host, from the project database:
