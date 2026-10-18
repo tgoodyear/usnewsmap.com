@@ -292,3 +292,16 @@ active unrelated tasks to force a refresh. If safe CPU eligibility cannot be
 established, restore the original memory and report CPU measurements unavailable
 rather than fabricate cross-device acceptance. Any subsequent change needs its
 own authorization and rollback receipt.
+
+Scoped app-version publication does not recursively change ownership of the live
+`download/` tree. Stock registration creates the new public, readable downloads;
+walking unrelated historical downloads on Azure Files can outlast the publisher
+timeout after successful registration. Scoped ownership normalization covers only
+the released payload and templates; ordinary full publication retains its prior
+ownership behavior. Always reconcile exact DB registration and downloaded signed
+payloads before retrying an execution that times out after registration.
+
+Actual validator-kept directories include BOINC's optional output-template
+random token, for example `HOST_SUFFIX_r2014260292_3`. Collection accepts that
+numeric `r` token after the exact host/job and PID/timestamp/sequence prefix;
+it does not broaden matching to another host or arbitrary suffix text.

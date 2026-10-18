@@ -80,6 +80,22 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(calls[0].endswith('update_versions'))
         self.assertFalse((self.project / 'project.xml').exists())
 
+    def test_scoped_ownership_does_not_walk_live_download_tree(self):
+        (self.project / 'html/inc/boinc_db.inc').write_text('existing configuration')
+        chown = self.root / 'chown'
+        chown.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$PROJ/ownership-args"\n')
+        chown.chmod(0o755)
+        with unittest.mock.patch.dict(os.environ, {'APPVER_REUSE_PROJECT': '1'}):
+            result = self.publish('x86_64-pc-linux-gnu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = (self.project / 'ownership-args').read_text().splitlines()
+        self.assertIn(str(self.project / 'templates'), args)
+        self.assertNotIn(str(self.project / 'download'), args)
+        result = self.publish('x86_64-pc-linux-gnu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(self.project / 'download'),
+                      (self.project / 'ownership-args').read_text().splitlines())
+
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_all_container_classes_publish_and_pass_actual_php_verification(self):
         # Execute the production PHP allowlist/lookup, not the usual no-op PHP stub.
