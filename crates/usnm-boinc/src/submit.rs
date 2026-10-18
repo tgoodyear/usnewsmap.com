@@ -3,9 +3,21 @@ use crate::{atomic_download, dir, load, read, save, Lock, Stage};
 use anyhow::ensure;
 use std::path::Path;
 use tokio::process::Command;
+use usnm_ocr_contract::message::Reason;
 
 mod remote;
 pub use remote::{prepare_download, Download, PreparedDownload};
+
+/// A page someone was shown (`ocr-priority`, #866) gets a one-day deadline, so a host that
+/// doesn't return it hands it on within a day rather than three. Its workunit priority
+/// takes effect once the feeder orders by priority. The claim's lease must outlast the
+/// deadline plus a collect.
+fn schedule(reason: Reason) -> (&'static str, &'static str) {
+    match reason {
+        Reason::User => ("86400", "10"),
+        Reason::Bulk => ("259200", "0"),
+    }
+}
 
 pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()> {
     submit_with_download(root, project, id, None).await
@@ -69,6 +81,7 @@ pub async fn submit_with_download(
             };
             atomic_download(&path, &read(&dir(root, id)?.join(logical), limit)?)?;
         }
+        let (delay_bound, priority) = schedule(job.message.reason);
         let mut command = Command::new(project.join("bin/create_work"));
         command.current_dir(&project).args([
             "--appname",
@@ -98,7 +111,9 @@ pub async fn submit_with_download(
             "--rsc_disk_bound",
             "1073741824",
             "--delay_bound",
-            "259200",
+            delay_bound,
+            "--priority",
+            priority,
         ]);
         // Stock create_work inserts remote_file at this exact input position.
         // Template file 0 opens as page, file 1 as request.json.
@@ -140,4 +155,15 @@ pub fn reconcile(root: &Path, id: &str, present: bool) -> anyhow::Result<()> {
     };
     record.error = None;
     save(root, &record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_pages_get_a_shorter_deadline_and_a_higher_priority() {
+        assert_eq!(schedule(Reason::User), ("86400", "10"));
+        assert_eq!(schedule(Reason::Bulk), ("259200", "0"));
+    }
 }
