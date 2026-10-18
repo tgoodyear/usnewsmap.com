@@ -72,15 +72,15 @@ DOUBLE_COLS = [
     "damage_rate", "function_share", "garbage_share",
     "hat_residual", "legibility_ceiling",
     "skew_deg", "blur", "contrast", "noise", "bleed_through", "ink_density",
-    "sauvola_contrast", "stroke_width_px", "stroke_width_cv",
-    "pepper_noise_rate", "ghost_ink_contrast", "line_spacing_cv",
-    "char_fragmentation", "broken_char_rate", "hyphen_wrap_rate", "alnum_ersatz_rate",
+    "otsu_local_diff", "bg_tile_std", "est_line_height_px",
+    "vertical_stroke_ratio", "fraktur_score", "gutter_clarity",
+    "ink_word_coverage", "numeric_share", "short_line_share",
     "line_height_px", "mean_word_conf",
 ]
 
 BIGINT_COLS = [
     "head_words", "near_words", "known_words", "consensus_words",
-    "width", "height", "blocks", "lines", "line_words", "columns",
+    "width", "height", "blocks", "lines", "line_words", "columns", "img_columns",
 ]
 
 BOOL_COLS = ["hat_determined"]
@@ -646,11 +646,12 @@ def collect_and_purge(force=False):
                     ROUND(AVG(garbage_share), 4) AS mean_garbage_share,
                     ROUND(AVG(blur), 2) AS mean_blur,
                     ROUND(AVG(contrast), 2) AS mean_contrast,
-                    ROUND(AVG(sauvola_contrast), 4) AS mean_sauvola_contrast,
-                    ROUND(AVG(stroke_width_px), 3) AS mean_stroke_width_px,
-                    ROUND(AVG(pepper_noise_rate), 5) AS mean_pepper_noise_rate,
-                    ROUND(AVG(broken_char_rate), 4) AS mean_broken_char_rate,
-                    ROUND(AVG(alnum_ersatz_rate), 4) AS mean_alnum_ersatz_rate,
+                    ROUND(AVG(otsu_local_diff), 4) AS mean_otsu_local_diff,
+                    ROUND(AVG(bg_tile_std), 2) AS mean_bg_tile_std,
+                    ROUND(AVG(bleed_through), 4) AS mean_bleed_through,
+                    ROUND(AVG(est_line_height_px), 2) AS mean_est_line_height_px,
+                    ROUND(AVG(vertical_stroke_ratio), 4) AS mean_vertical_stroke_ratio,
+                    ROUND(AVG(fraktur_score), 4) AS mean_fraktur_score,
                     ROUND(AVG(skew_deg), 3) AS mean_skew_deg,
                     ROUND(AVG(ink_density), 4) AS mean_ink_density,
                     ROUND(AVG(total_ms), 1) AS mean_total_ms
@@ -662,8 +663,8 @@ def collect_and_purge(force=False):
                 "reader", "rows", "pages", "batches", "mean_est_cer", "mean_completeness",
                 "mean_precision", "mean_damage_rate", "mean_function_share",
                 "mean_garbage_share", "mean_blur", "mean_contrast",
-                "mean_sauvola_contrast", "mean_stroke_width_px", "mean_pepper_noise_rate",
-                "mean_broken_char_rate", "mean_alnum_ersatz_rate",
+                "mean_otsu_local_diff", "mean_bg_tile_std", "mean_bleed_through",
+                "mean_est_line_height_px", "mean_vertical_stroke_ratio", "mean_fraktur_score",
                 "mean_skew_deg", "mean_ink_density", "mean_total_ms",
             ]
             merged_stats["by_reader"] = [dict(zip(cols, r)) for r in stats_rows]
@@ -675,7 +676,8 @@ def collect_and_purge(force=False):
                     COUNT(DISTINCT job_id) AS distinct_bundles,
                     COUNT(CASE WHEN damage_rate IS NOT NULL THEN 1 END) AS rows_with_damage_rate,
                     COUNT(CASE WHEN blur IS NOT NULL THEN 1 END) AS rows_with_image_stats,
-                    COUNT(CASE WHEN sauvola_contrast IS NOT NULL THEN 1 END) AS rows_with_v13_metrics
+                    COUNT(CASE WHEN otsu_local_diff IS NOT NULL THEN 1 END) AS rows_with_v13_metrics,
+                    COUNT(DISTINCT CASE WHEN otsu_local_diff IS NOT NULL THEN doc_id END) AS pages_with_v13_metrics
                 FROM read_parquet('{merged_pq}')
             """).fetchone()
             merged_stats["totals"] = {
@@ -686,6 +688,7 @@ def collect_and_purge(force=False):
                 "rows_with_damage_rate": totals[4],
                 "rows_with_image_stats": totals[5],
                 "rows_with_v13_metrics": totals[6],
+                "pages_with_v13_metrics": totals[7],
                 "parquet_bytes": len(merged_bytes),
             }
             os.remove(merged_pq)
