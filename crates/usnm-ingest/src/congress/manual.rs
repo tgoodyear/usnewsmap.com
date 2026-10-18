@@ -756,6 +756,89 @@ mod tests {
         assert_eq!(house.chamber, Some(parse::Chamber::House));
     }
 
+    #[cfg(unix)]
+    fn executable_script(root: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = root.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tesseract_pdf_reader_runs_only_needed_page_ocr_and_checks_failures() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-work/congress-manual-pdf-reader");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let pdf = root.join("fixture.pdf");
+        std::fs::write(&pdf, b"controlled PDF input").unwrap();
+        let rendered = root.join("rendered-pages.log");
+        let rendered_quoted = format!("'{}'", rendered.display());
+        let pdfinfo = executable_script(&root, "pdfinfo", "printf 'Pages: 2\\n'");
+        let pdftotext = executable_script(
+            &root,
+            "pdftotext",
+            "printf 'Selectable text layer with enough characters to be usable.\\fshort\\f'",
+        );
+        let pdftoppm = executable_script(
+            &root,
+            "pdftoppm",
+            &format!(
+                "page=\nprevious=\nfor arg do\n  if [ \"$previous\" = -f ]; then page=$arg; fi\n  previous=$arg\n  stem=$arg\ndone\nprintf '%s\\n' \"$page\" >> {rendered_quoted}\nprintf image > \"$stem.png\""
+            ),
+        );
+        let tesseract = executable_script(
+            &root,
+            "tesseract",
+            "if [ \"$1\" = --version ]; then printf 'tesseract 5.4.0\\n'; exit 0; fi\nprintf 'OCR text for the rendered second page is sufficiently long.\\n'",
+        );
+        let reader = TesseractPdf::new(
+            pdftotext.clone(),
+            pdfinfo.clone(),
+            pdftoppm.clone(),
+            tesseract,
+        )
+        .await
+        .unwrap();
+        let pages = reader.read(&pdf, &root.join("scratch"), 2).await.unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(pages[0].text.starts_with("Selectable text layer"));
+        assert_eq!(pages[0].ocr_engine, None);
+        assert!(pages[1]
+            .text
+            .starts_with("OCR text for the rendered second page"));
+        assert_eq!(
+            pages[1].ocr_engine.as_deref(),
+            Some("tesseract/5.4.0 lang=eng psm=3 dpi=300")
+        );
+        assert_eq!(std::fs::read_to_string(&rendered).unwrap(), "2\n");
+
+        let mismatch = reader
+            .read(&pdf, &root.join("mismatch"), 3)
+            .await
+            .unwrap_err();
+        assert!(mismatch.to_string().contains("manifest says 3"));
+        assert_eq!(std::fs::read_to_string(&rendered).unwrap(), "2\n");
+
+        let failing_tesseract = executable_script(
+            &root,
+            "tesseract-failing",
+            "if [ \"$1\" = --version ]; then printf 'tesseract 5.4.0\\n'; exit 0; fi\nprintf 'controlled OCR failure\\n' >&2\nexit 1",
+        );
+        let failing_reader = TesseractPdf::new(pdftotext, pdfinfo, pdftoppm, failing_tesseract)
+            .await
+            .unwrap();
+        let failure = failing_reader
+            .read(&pdf, &root.join("failure"), 2)
+            .await
+            .unwrap_err();
+        assert!(format!("{failure:#}").contains("controlled OCR failure"));
+        assert_eq!(std::fs::read_to_string(&rendered).unwrap(), "2\n2\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     struct FixturePdf;
 
     #[async_trait]
