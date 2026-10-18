@@ -28,5 +28,6 @@ pub mod features;
 pub mod findability;
 pub mod hat;
 pub mod report;
+pub mod router;
 pub mod slot;
 pub mod text;

@@ -101,6 +101,7 @@ class DaemonConfig(unittest.TestCase):
     def test_high_throughput_scheduler_dispatch_limits(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         self.assertEqual(root.findtext("./config/min_sendwork_interval"), "2")
+        self.assertEqual(root.findtext("./config/next_rpc_delay"), "3600")
         self.assertEqual(root.findtext("./config/max_wus_in_progress"), "32")
         self.assertEqual(root.findtext("./config/daily_result_quota"), "50000")
         self.assertEqual(root.findtext("./config/max_wus_to_send"), "64")

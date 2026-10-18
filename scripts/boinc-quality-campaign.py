@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tarfile
@@ -122,8 +124,8 @@ def fetch_campaign_status(
             continue
         active_shards += 1
         state = str(data.get("state", "unknown"))
-        staged = int(data.get("staged", 0))
-        submitted = int(data.get("submitted", 0))
+        staged = int(data.get("staged", data.get("staged_pages", 0)))
+        submitted = int(data.get("submitted", data.get("bundles_submitted", 0)))
         errs = len(data.get("skipped_errors", []))
         elapsed = float(data.get("elapsed_s", 0.0))
         if state in ("done", "completed"):
@@ -146,6 +148,19 @@ def cmd_status(args: argparse.Namespace) -> int:
             campaign, args.shards, args.handoff_account, args.handoff_container, token
         )
         counts = fetch_server_counts(args.server_status_url)
+        collector = None
+        try:
+            collector = json.loads(
+                fetch_blob_bytes(
+                    args.handoff_account,
+                    args.handoff_container,
+                    f"quality/{campaign}/status/collector.json",
+                    token,
+                    timeout=5,
+                )
+            )
+        except Exception:
+            pass
         if not args.wait or done_shards >= args.shards:
             break
         print(
@@ -167,6 +182,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                     "total_staged": total_staged,
                     "total_submitted": total_submitted,
                     "total_errors": total_errors,
+                    "collector": collector,
                     "server": counts,
                     "shards": [
                         {
@@ -187,11 +203,19 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     print(f"=== Campaign: {campaign} ({done_shards}/{args.shards} shards done, {active_shards} active) ===")
     for i, st, stg, sub, err, el in rows:
-        print(f"  shard-{i:02d}: state={st:15s} staged={stg:4d} submitted={sub:4d} err={err:2d} ({el:6.1f}s)")
+        print(f"  shard-{i:02d}: state={st:22s} staged={stg:6d} submitted={sub:4d} err={err:2d} ({el:6.1f}s)")
     print(
         f"Totals: staged={total_staged} | submitted={total_submitted} "
         f"({total_submitted * 2} replica tasks) | errors={total_errors}"
     )
+    if collector:
+        totals = (collector.get("merged_stats") or {}).get("totals") or {}
+        print(
+            f"Collector: collected_bundles={collector.get('total_collected_bundles', 0)} | "
+            f"pending_in_flight={collector.get('pending_uncollected_bundles', 0)} | "
+            f"parquet_pages={totals.get('distinct_pages', 0)} ({totals.get('total_rows', 0)} reader rows, "
+            f"v1.3_rows={totals.get('rows_with_v13_metrics', 0)})"
+        )
     if counts:
         print(
             "Server queue: "
@@ -762,6 +786,233 @@ def cmd_refresh_db(args: argparse.Namespace) -> int:
     return 0
 
 
+def poke_local_boinc_client(project_url: str = "https://boinc.usnewsmap.com/") -> bool:
+    """If a local BOINC client is running on 127.0.0.1:31416, trigger project_update to clear work-fetch backoff."""
+    auth_candidates = [
+        Path("/Library/Application Support/BOINC Data/gui_rpc_auth.cfg"),
+        Path("/var/lib/boinc-client/gui_rpc_auth.cfg"),
+        Path("/var/lib/boinc/gui_rpc_auth.cfg"),
+    ]
+    pw = ""
+    for p in auth_candidates:
+        try:
+            if p.is_file():
+                pw = p.read_text().strip()
+                break
+        except OSError:
+            continue
+    try:
+        with socket.create_connection(("127.0.0.1", 31416), timeout=2.0) as sock:
+            def rpc(xml_body: str) -> str:
+                sock.sendall(f"<boinc_gui_rpc_request>\n{xml_body}\n</boinc_gui_rpc_request>\n\x03".encode())
+                buf = b""
+                while b"\x03" not in buf:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                return buf.decode("utf-8", "replace")
+
+            if pw:
+                r1 = rpc("<auth1/>")
+                m = re.search(r"<nonce>([^<]+)</nonce>", r1)
+                if m:
+                    nonce_hash = hashlib.md5((m.group(1) + pw).encode()).hexdigest()
+                    rpc(f"<auth2>\n<nonce_hash>{nonce_hash}</nonce_hash>\n</auth2>")
+            reply = rpc(f"<project_update>\n<project_url>{project_url}</project_url>\n</project_update>")
+            local_ok = "<success/>" in reply
+    except OSError:
+        local_ok = False
+
+    remote_host = os.environ.get("USNM_BOINC_REMOTE_POKE_HOST")
+    if remote_host:
+        try:
+            subprocess.run(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=3",
+                    remote_host,
+                    f"for ct in 100 101 214; do pct exec $ct -- boinccmd --project {project_url} update >/dev/null 2>&1 || true; done",
+                ],
+                check=False,
+                timeout=8,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+    return local_ok
+
+
+def cmd_launch_corpus(args: argparse.Namespace) -> int:
+    runner_path = ROOT / "scripts" / "boinc" / "quality_corpus_runner.py"
+    if not runner_path.is_file():
+        print(f"error: runner script not found at {runner_path}", file=sys.stderr)
+        return 1
+
+    env_settings_path = ROOT / "contrib-compute" / "infra" / "boinc" / "env" / f"{args.env}.json"
+    bridge_image = args.bridge_image
+    if not bridge_image and env_settings_path.is_file():
+        env_doc = json.loads(env_settings_path.read_text())
+        bridge_image = (env_doc.get("images") or {}).get("bridge")
+    if not bridge_image:
+        print("error: could not determine bridge image from env settings", file=sys.stderr)
+        return 1
+
+    token = get_storage_token()
+    blob_path = f"quality/{args.campaign}/run_wave9.py"
+    upload_blob_bytes(
+        args.handoff_account,
+        args.handoff_container,
+        blob_path,
+        token,
+        runner_path.read_bytes(),
+        "text/x-python",
+    )
+    print(f"Uploaded {runner_path.name} -> {args.handoff_account}/{args.handoff_container}/{blob_path}")
+
+    running = run_az(
+        [
+            "containerapp",
+            "job",
+            "execution",
+            "list",
+            "-g",
+            args.resource_group,
+            "-n",
+            args.job_name,
+            "--query",
+            "[?properties.status=='Running' || properties.status=='Processing'].name",
+            "-o",
+            "json",
+        ]
+    )
+    for ex in running or []:
+        print(f"Stopping prior execution {ex}...")
+        run_az(
+            [
+                "containerapp",
+                "job",
+                "stop",
+                "-g",
+                args.resource_group,
+                "-n",
+                args.job_name,
+                "--job-execution-name",
+                ex,
+                "-o",
+                "none",
+            ],
+            capture_json=False,
+        )
+
+    job_doc = run_az(
+        [
+            "containerapp",
+            "job",
+            "show",
+            "-g",
+            args.resource_group,
+            "-n",
+            args.job_name,
+            "-o",
+            "json",
+        ]
+    )
+    handoff_url = f"https://{args.handoff_account}.blob.core.windows.net/{args.handoff_container}/{blob_path}"
+    shard_list = " ".join(str(i) for i in range(args.shards))
+    cmd_script = (
+        "set -euo pipefail; "
+        'st_tok="$(curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" '
+        '"$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$AZURE_CLIENT_ID" '
+        '| jq -er .access_token)"; '
+        f'curl -fsSL -H "Authorization: Bearer $st_tok" -H "x-ms-version: 2021-08-06" "{handoff_url}" -o /tmp/run_wave9.py; '
+        f"export NUM_SHARDS={args.shards} BUNDLE_SIZE={args.bundle_size} "
+        f"MAX_IN_FLIGHT_BUNDLES={args.max_in_flight} MIN_FREE_GB={args.min_free_gb}; "
+        f"for s in {shard_list}; do SHARD_ENV=$s python3 /tmp/run_wave9.py & sleep 3; done; wait"
+    )
+    base_names = {
+        "AZURE_CLIENT_ID",
+        "KEY_VAULT_NAME",
+        "DB_HOST",
+        "DB_NAME",
+        "MASTER_HOST",
+        "PROJECT_DIR",
+        "HANDOFF_DIR",
+    }
+    container = job_doc["properties"]["template"]["containers"][0]
+    container["image"] = bridge_image
+    container["command"] = ["/bin/bash", "-c", cmd_script]
+    container.pop("args", None)
+    container.pop("imageType", None)
+    env_list = [e for e in container.get("env", []) if e.get("name") in base_names]
+    env_list.append({"name": "STORAGE_BEARER_TOKEN", "value": token})
+    container["env"] = env_list
+    cfg = job_doc["properties"]["configuration"]
+    cfg.pop("identitySettings", None)
+    cfg.pop("replicaCompletionCount", None)
+    cfg.pop("parallelism", None)
+    if "manualTriggerConfig" in cfg and isinstance(cfg["manualTriggerConfig"], dict):
+        cfg["manualTriggerConfig"]["replicaCompletionCount"] = 1
+        cfg["manualTriggerConfig"]["parallelism"] = 1
+
+    tmp_spec = Path("/tmp/boinc_quality_launch_spec.json")
+    tmp_spec.write_text(
+        json.dumps(
+            {
+                "location": job_doc["location"],
+                "identity": job_doc["identity"],
+                "properties": {
+                    "environmentId": job_doc["properties"]["environmentId"],
+                    "configuration": cfg,
+                    "template": job_doc["properties"]["template"],
+                },
+            }
+        )
+    )
+    try:
+        run_az(
+            [
+                "rest",
+                "--method",
+                "PATCH",
+                "--uri",
+                f"{job_doc['id']}?api-version=2024-03-01",
+                "--body",
+                f"@{tmp_spec}",
+                "-o",
+                "none",
+            ],
+            capture_json=False,
+        )
+    finally:
+        tmp_spec.unlink(missing_ok=True)
+
+    ex_name = run_az(
+        [
+            "containerapp",
+            "job",
+            "start",
+            "-g",
+            args.resource_group,
+            "-n",
+            args.job_name,
+            "--query",
+            "name",
+            "-o",
+            "tsv",
+        ],
+        capture_json=False,
+    )
+    print(f"Started full-corpus rolling job {args.job_name} execution: {ex_name} (image={bridge_image}, shards={args.shards})")
+    if poke_local_boinc_client():
+        print("Triggered local BOINC client project_update to clear any work-fetch backoff.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="subcommand", required=True)
@@ -808,6 +1059,23 @@ def build_parser() -> argparse.ArgumentParser:
     rd.add_argument("--download", action="store_true", help="Force re-download of manifest.parquet")
     rd.add_argument("--upload", action="store_true", default=True, help="Upload consolidated artifacts to Azure")
     rd.set_defaults(func=cmd_refresh_db)
+
+    lc = sub.add_parser(
+        "launch-corpus",
+        help="Upload scripts/boinc/quality_corpus_runner.py, configure usnm-boinc-quality-caj-prod with pinned bridge image, and start rolling full-corpus job",
+    )
+    lc.add_argument("--env", default="prod", help="Environment name (default: prod)")
+    lc.add_argument("--campaign", default="v1-wave9", help="Campaign name (default: v1-wave9)")
+    lc.add_argument("--resource-group", default=DEFAULT_BOINC_RG)
+    lc.add_argument("--job-name", default="usnm-boinc-quality-caj-prod")
+    lc.add_argument("--bridge-image", default="", help="Override bridge image (defaults to contrib-compute/infra/boinc/env/<env>.json)")
+    lc.add_argument("--shards", type=int, default=8, help="Number of rolling stager shards (default: 8)")
+    lc.add_argument("--bundle-size", type=int, default=200, help="Pages per BOINC workunit bundle (default: 200)")
+    lc.add_argument("--max-in-flight", type=int, default=45, help="Max uncollected bundles in flight (default: 45)")
+    lc.add_argument("--min-free-gb", type=float, default=35.0, help="Minimum free GB on /project before backpressure (default: 35.0)")
+    lc.add_argument("--handoff-account", default=DEFAULT_HANDOFF_ACCOUNT)
+    lc.add_argument("--handoff-container", default=DEFAULT_HANDOFF_CONTAINER)
+    lc.set_defaults(func=cmd_launch_corpus)
 
     return p
 
