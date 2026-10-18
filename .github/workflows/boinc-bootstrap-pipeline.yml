@@ -5,12 +5,16 @@ on:
       - scripts/boinc/bootstrap_pipeline.py
       - scripts/boinc/test_bootstrap_pipeline.py
       - .github/workflows/boinc-bootstrap-pipeline.yml
+      - .github/workflows/boinc-worker.yml
+      - .github/workflows/boinc-qwen.yml
   push:
     branches: [main]
     paths:
       - scripts/boinc/bootstrap_pipeline.py
       - scripts/boinc/test_bootstrap_pipeline.py
       - .github/workflows/boinc-bootstrap-pipeline.yml
+      - .github/workflows/boinc-worker.yml
+      - .github/workflows/boinc-qwen.yml
 permissions:
   contents: read
 jobs:

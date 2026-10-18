@@ -28,22 +28,36 @@ class Blocked(PipelineError):
     pass
 
 
-def run(argv, cwd=ROOT, timeout=14400):
+def run(argv, cwd=ROOT, timeout=14400, cleanup_timeout=30):
     process = subprocess.Popen([str(x) for x in argv], cwd=cwd, text=True,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)
     try:
         out, _ = process.communicate(timeout=timeout)
     except BaseException:
+        # Repeated operator signals must not interrupt the child's bounded teardown.
+        handlers = {sig: signal.signal(sig, signal.SIG_IGN)
+                    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            process.communicate(timeout=1)
-        except subprocess.TimeoutExpired:
-            for stream in (process.stdout, process.stderr):
-                stream.close()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=cleanup_timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    for stream in (process.stdout, process.stderr):
+                        stream.close()
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
         raise
     if process.returncode:
         raise PipelineError(f"{Path(argv[0]).name} failed (exit {process.returncode}); output suppressed")
@@ -165,7 +179,8 @@ class Pipeline:
             raise PipelineError("workspace identity mismatch")
         self.git("merge-base", "--is-ancestor", entry["commit"], "HEAD", cwd=path)
         changed = self.git("diff", "--name-only", entry["commit"], "HEAD", cwd=path).splitlines()
-        if any(name != self.settings for name in changed):
+        dirty = self.git("status", "--porcelain", "--untracked-files=all", cwd=path).splitlines()
+        if any(name != self.settings for name in changed) or any(line[3:] != self.settings for line in dirty):
             raise PipelineError("workspace code differs from its reviewed main source")
         return path
 
@@ -179,14 +194,15 @@ class Pipeline:
 
     def acceptance(self, work, dry_run=False):
         argv = [sys.executable, str(work / "scripts/boinc/acceptance.py"), "--env", self.config["env"],
-                "--config", self.config["acceptance_config"], "--evidence", str(self.directory / "acceptance.json")]
+                "--config", self.config["acceptance_config"], "--evidence", str(self.directory / "acceptance.json"),
+                "--cleanup-timeout", "600"]
         for key in ("app", "version", "platform", "plan_class"):
             argv.extend(["--" + key.replace("_", "-"), self.config[key]])
         if dry_run:
             argv.append("--dry-run")
         elif self.args.coordination_claim:
             argv.extend(["--coordination-claim", self.args.coordination_claim])
-        self.run(argv, cwd=work)
+        self.run(argv, cwd=work, cleanup_timeout=660 if not dry_run else 30)
         if not dry_run:
             self.state["acceptance_sha256"] = self.receipt()
             self.save()
@@ -234,10 +250,7 @@ class Pipeline:
             raise Blocked("worker build is still running")
         if build["conclusion"] != "success":
             raise PipelineError("worker publication workflow failed")
-        prefix = ""
-        if self.config["app"] == "usnm_qwen":
-            prefix = "qwen-2b-" if self.config["plan_class"] == "docker_mt_2b" else "qwen-8b-"
-        image = public_worker(prefix + build["headSha"])
+        image = self.worker_image(build)
         settings = self.read_settings(work)
         settings["images"]["worker"] = image
         check_images(settings["images"], ("server", "bridge", "worker"))
@@ -245,6 +258,36 @@ class Pipeline:
         self.state["worker_build"] = build["databaseId"]
         self.state["worker_commit"] = build["headSha"]
         self.save()
+
+    def worker_image(self, build):
+        detail = json.loads(self.gh("run", "view", str(build["databaseId"]), "--json",
+                                    "databaseId,headSha,attempt,status,conclusion"))
+        if detail["databaseId"] != build["databaseId"] or detail["headSha"] != build["headSha"]:
+            raise PipelineError("worker run identity changed")
+        if detail["status"] != "completed" or detail["conclusion"] != "success":
+            raise Blocked("worker run attempt is not terminal successful")
+        model = "worker" if self.config["app"] == "usnm_ocr" else (
+            "qwen-2b" if self.config["plan_class"] == "docker_mt_2b" else "qwen-8b")
+        attempt = detail["attempt"]
+        directory = self.directory / f"worker-receipt-{build['databaseId']}-{attempt}"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        receipt = directory / "final.json"
+        if not receipt.exists():
+            self.gh("run", "download", str(build["databaseId"]), "--name",
+                    f"boinc-bootstrap-{model}-{attempt}", "--dir", str(directory))
+        value = json.loads(receipt.read_text())
+        expected = {"schema": 1, "run_id": str(build["databaseId"]), "run_attempt": str(attempt),
+                    "commit": build["headSha"], "model": model, "image": value.get("image")}
+        if value != expected:
+            raise PipelineError("worker receipt does not match successful run/attempt/model/source")
+        check_images({"worker": value["image"]}, ("worker",))
+        image = public_worker(value["image"].split("@", 1)[1])
+        if image != value["image"]:
+            raise PipelineError("public worker digest differs from run-specific receipt")
+        self.state["worker_receipt_sha256"] = fingerprint(value)
+        self.state["worker_attempt"] = attempt
+        self.save()
+        return image
 
     def review(self, label, work, keys):
         settings = self.read_settings(work)
@@ -384,17 +427,19 @@ class Pipeline:
         return {"complete": True, "evidence": str(self.directory / "acceptance.json")}
 
 
-def public_worker(tag):
+def public_worker(expected_digest):
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest):
+        raise PipelineError("public worker lookup requires an immutable digest")
     repository = "tgoodyear/usnm-boinc-worker"
     with urllib.request.urlopen("https://ghcr.io/token?scope=repository:" + repository + ":pull", timeout=30) as response:
         token = json.load(response)["token"]
-    request = urllib.request.Request("https://ghcr.io/v2/" + repository + "/manifests/" + tag,
+    request = urllib.request.Request("https://ghcr.io/v2/" + repository + "/manifests/" + expected_digest,
                                      headers={"Authorization": "Bearer " + token, "Accept":
                                               "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"})
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = response.read()
         digest = "sha256:" + hashlib.sha256(payload).hexdigest()
-        if response.headers.get("Docker-Content-Digest") != digest:
+        if response.headers.get("Docker-Content-Digest") != digest or digest != expected_digest:
             raise PipelineError("public worker registry checksum mismatch")
     return "ghcr.io/" + repository + "@" + digest
 

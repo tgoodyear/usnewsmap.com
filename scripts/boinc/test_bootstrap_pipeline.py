@@ -4,7 +4,10 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import signal
 import subprocess
+import sys
+import time
 import unittest
 from unittest.mock import Mock, patch
 import uuid
@@ -188,9 +191,9 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(pipeline.PipelineError, "ambiguous"):
                 self.p.worker(self.work)
         image = settings()["images"]["worker"]
-        with patch.object(self.p, "gh", return_value=json.dumps([build])), patch.object(pipeline, "public_worker", return_value=image) as public:
+        with patch.object(self.p, "gh", return_value=json.dumps([build])), patch.object(self.p, "worker_image", return_value=image) as public:
             self.p.worker(self.work)
-        public.assert_called_once_with("a" * 40)
+        public.assert_called_once_with(build)
         self.assertEqual(self.p.state["worker_build"], 123)
 
     def test_worker_resume_uses_persisted_run_id_not_truncated_listing(self):
@@ -331,6 +334,12 @@ if '--dry-run' not in args:
             nonlocal dispatched
             if argv[:2] == ("run", "list"):
                 return json.dumps([dict(databaseId=123, displayTitle="boinc-worker (bootstrap-" + self.p.state["id"] + ")", headSha=git("rev-parse", "main"), status="completed", conclusion="success")] if dispatched else [])
+            if argv[:2] == ("run", "view"):
+                return json.dumps(dict(databaseId=123, headSha=git("rev-parse", "main"), attempt=1, status="completed", conclusion="success"))
+            if argv[:2] == ("run", "download"):
+                directory = Path(argv[argv.index("--dir") + 1])
+                (directory / "final.json").write_text(json.dumps(dict(schema=1, run_id="123", run_attempt="1", commit=git("rev-parse", "main"), model="worker", image="ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "c" * 64)))
+                return ""
             if argv[:2] == ("workflow", "run"):
                 dispatched = True
                 return ""
@@ -374,6 +383,115 @@ if '--dry-run' not in args:
             with self.assertRaisesRegex(pipeline.PipelineError, "missing or unreadable"):
                 self.p.execute()
 
+    def test_workspace_rejects_staged_unstaged_and_untracked_code(self):
+        self.p.state["workspaces"]["runtime"] = {"path": str(self.work), "commit": "a" * 40}
+        for status in (" M infrastructure.bicep", "M  infrastructure.bicep", "?? injected.py"):
+            def git(*argv, **_):
+                if argv[0] == "rev-parse":
+                    return str(self.work)
+                if argv[0] == "status":
+                    return status
+                return ""
+            with patch.object(self.p, "git", side_effect=git):
+                with self.assertRaisesRegex(pipeline.PipelineError, "workspace code differs"):
+                    self.p.workspace("runtime")
+
+    def test_run_bound_worker_receipt_rejects_wrong_model_attempt_and_source(self):
+        build = dict(databaseId=123, headSha="a" * 40)
+        detail = {**build, "attempt": 2, "status": "completed", "conclusion": "success"}
+        directory = self.directory / "worker-receipt-123-2"
+        directory.mkdir()
+        image = settings()["images"]["worker"]
+        receipt = dict(schema=1, run_id="123", run_attempt="2", commit=build["headSha"], model="worker", image=image)
+        for changes in ({"model": "qwen-2b"}, {"run_id": "456"}, {"run_attempt": "1"}, {"commit": "b" * 40}, {"image": image.replace("@sha256:", ":mutable-")}):
+            (directory / "final.json").write_text(json.dumps({**receipt, **changes}))
+            with patch.object(self.p, "gh", return_value=json.dumps(detail)), patch.object(pipeline, "public_worker") as public:
+                with self.assertRaises(pipeline.PipelineError):
+                    self.p.worker_image(build)
+                public.assert_not_called()
+        (directory / "final.json").write_text(json.dumps(receipt))
+        with patch.object(self.p, "gh", return_value=json.dumps(detail)), patch.object(pipeline, "public_worker", return_value=image) as public:
+            self.assertEqual(self.p.worker_image(build), image)
+        public.assert_called_once_with("sha256:" + "a" * 64)
+        self.assertEqual(self.p.state["worker_attempt"], 2)
+
+    def test_old_workflow_without_final_receipt_fails_closed(self):
+        build = dict(databaseId=123, headSha="a" * 40)
+        detail = {**build, "attempt": 1, "status": "completed", "conclusion": "success"}
+        with patch.object(self.p, "gh", side_effect=[json.dumps(detail), pipeline.PipelineError("artifact missing")]), patch.object(pipeline, "public_worker") as public:
+            with self.assertRaisesRegex(pipeline.PipelineError, "artifact missing"):
+                self.p.worker_image(build)
+        public.assert_not_called()
+
+    def test_workflow_receipts_are_after_validation_and_attempt_scoped(self):
+        for name in ("boinc-worker.yml", "boinc-qwen.yml"):
+            text = (pipeline.ROOT / ".github/workflows" / name).read_text()
+            self.assertIn("github.run_attempt", text)
+            self.assertIn("run_id:$run,run_attempt:$attempt,commit:$commit", text)
+            self.assertIn("if-no-files-found: error", text)
+            if name == "boinc-qwen.yml":
+                self.assertLess(text.index("qwen_disk.py --image"), text.index("> release/final.json"))
+
+    def test_forced_kill_only_after_cleanup_budget_expires(self):
+        process = Mock(pid=123)
+        process.communicate.side_effect = [subprocess.TimeoutExpired("fake", 1), subprocess.TimeoutExpired("fake", 2), ("", "")]
+        with patch.object(pipeline.subprocess, "Popen", return_value=process), patch.object(pipeline.os, "killpg") as kill:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                pipeline.run(["fake"], timeout=1, cleanup_timeout=2)
+        self.assertEqual([call.args[1] for call in kill.call_args_list], [signal.SIGTERM, signal.SIGKILL])
+        self.assertEqual([call.kwargs["timeout"] for call in process.communicate.call_args_list], [1, 2, 1])
+
+    def test_interruption_during_execution_and_repeated_signal_during_teardown(self):
+        child = self.directory / "fake_acceptance.py"
+        child.write_text("""from pathlib import Path
+import signal
+import sys
+import time
+def finish(*_):
+    Path('tearing-down').write_text('yes')
+    time.sleep(.4)
+    Path('cleaned').write_text('yes')
+    sys.exit(0)
+signal.signal(signal.SIGTERM, finish)
+Path('ready').write_text('yes')
+while True:
+    time.sleep(.01)
+""")
+        wrapper = self.directory / "wrapper.py"
+        wrapper.write_text(f"""import importlib.util
+import signal
+import sys
+spec = importlib.util.spec_from_file_location('pipeline', {str(Path(pipeline.__file__))!r})
+p = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(p)
+def interrupted(*_):
+    raise p.PipelineError('interrupted')
+signal.signal(signal.SIGTERM, interrupted)
+try:
+    p.run([sys.executable, {str(child)!r}], cwd={str(self.directory)!r}, cleanup_timeout=2)
+except p.PipelineError:
+    sys.exit(0)
+""")
+        process = subprocess.Popen([sys.executable, str(wrapper)], cwd=self.directory,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            def wait_file(name):
+                deadline = time.monotonic() + 5
+                while not (self.directory / name).exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue((self.directory / name).exists(), name)
+            wait_file("ready")
+            process.send_signal(signal.SIGTERM)
+            wait_file("tearing-down")
+            process.send_signal(signal.SIGTERM)
+            process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 0)
+            self.assertTrue((self.directory / "cleaned").exists())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=3)
+
     def test_subprocess_preserves_git_porcelain_leading_columns(self):
         process = Mock(returncode=0)
         process.communicate.return_value = (" M settings.json\n", "")
@@ -388,13 +506,14 @@ if '--dry-run' not in args:
                 pipeline.run(["fake"])
         self.assertNotIn("SECRET", str(error.exception))
 
-    def test_timeout_kills_process_group(self):
+    def test_timeout_allows_graceful_process_group_cleanup(self):
         process = Mock(pid=123)
         process.communicate.side_effect = [subprocess.TimeoutExpired("fake", 1), ("", "")]
         with patch.object(pipeline.subprocess, "Popen", return_value=process), patch.object(pipeline.os, "killpg") as kill:
             with self.assertRaises(subprocess.TimeoutExpired):
                 pipeline.run(["fake"], timeout=1)
-        kill.assert_called_once_with(123, pipeline.signal.SIGKILL)
+        kill.assert_called_once_with(123, pipeline.signal.SIGTERM)
+        self.assertEqual(process.communicate.call_args.kwargs["timeout"], 30)
 
 
 if __name__ == "__main__":
