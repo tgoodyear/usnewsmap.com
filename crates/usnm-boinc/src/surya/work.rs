@@ -748,6 +748,14 @@ fn surya_llama_device(log: &str) -> (String, Option<String>, String) {
     (device.into(), offload, lines)
 }
 
+fn surya_llama_args(threads: u32, gpu: Option<GpuDevice>) -> String {
+    match gpu {
+        Some(GpuDevice::Vulkan(i)) => format!("--threads {threads} --device Vulkan{i}"),
+        // b11610 maps llama-library INFO (including offload counts) to trace level 4.
+        _ => format!("--threads {threads} -lv 4"),
+    }
+}
+
 struct ModeRun {
     run: Run,
     text: Vec<u8>,
@@ -775,17 +783,12 @@ fn run_mode(
     };
     let gpu_before = cuda_gpu.and_then(gpu_mem_used);
     let mut cmd = Command::new("python3");
-    let extra_args = match gpu {
-        Some(GpuDevice::Cuda(i)) => {
-            // Only BOINC's GPU, as nvidia-smi numbers them (llama.cpp's CUDA
-            // order is the same with CUDA_DEVICE_ORDER=PCI_BUS_ID).
-            cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-                .env("CUDA_VISIBLE_DEVICES", i.to_string());
-            format!("--threads {threads}")
-        }
-        Some(GpuDevice::Vulkan(i)) => format!("--threads {threads} --device Vulkan{i}"),
-        None => format!("--threads {threads}"),
-    };
+    if let Some(GpuDevice::Cuda(i)) = gpu {
+        // Keep BOINC's assigned CUDA device selection unchanged.
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+            .env("CUDA_VISIBLE_DEVICES", i.to_string());
+    }
+    let extra_args = surya_llama_args(threads, gpu);
     let mut child = cmd
         .arg(RUNNER)
         .args(["--image", &work.join(PAGE_FILE).to_string_lossy()])
@@ -1130,6 +1133,19 @@ pub(crate) mod tests {
         assert_eq!(host.plan_class.as_deref(), Some("docker_nvidia_cuda"));
         assert_eq!(host.gpu_device_num, Some(0));
         assert_eq!(host.ncpus, Some(1.0));
+    }
+
+    #[test]
+    fn surya_cuda_logs_include_library_offload_evidence() {
+        assert_eq!(
+            surya_llama_args(2, Some(GpuDevice::Cuda(0))),
+            "--threads 2 -lv 4"
+        );
+        assert_eq!(surya_llama_args(8, None), "--threads 8 -lv 4");
+        assert_eq!(
+            surya_llama_args(2, Some(GpuDevice::Vulkan(1))),
+            "--threads 2 --device Vulkan1"
+        );
     }
 
     #[test]
