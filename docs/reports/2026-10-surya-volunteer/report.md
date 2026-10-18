@@ -103,3 +103,33 @@ recovery preserving old signed artifacts), followed by normal signing and scoped
 publication. This receipt does not authorize removal/re-signing of old versions,
 a full-stack production redeploy, or use of the older worker as the requested
 engine. No production campaign ID or per-mode inference measurements exist.
+
+### Authorized unused-version continuation
+
+The maintainer's continuation explicitly authorizes an unused pair, preserving
+retired/unregistered 1.0/1.1. Fresh read-only DB and share checks found **1.2 and
+1.3 unused**. Normal `boinc-app-release.sh --prepare-only` successfully staged,
+signed on the isolated unlocked signing host, and built signature-verified ACR
+artifacts under the #529 artifact-only claim:
+
+| Version | Plan class | ACR build | Prepared signed app-version digest |
+|---|---|---|---|
+| 1.2 | `docker_mt` | ch96 | `sha256:0376b394a0b37833dabc6d8a1d57065bd1a96235ed1dda618e10bb6080342b3b` |
+| 1.3 | `docker_nvidia_cuda` | ch97 | `sha256:7f36f808cb5d9bb680e5040cb499540a1bdc2927c6bf7f00cd6603941844d032` |
+
+Both embed the requested public worker `e326a2a5…`; these are **prepared**, not
+published/registered or client-accepted. The last replay pin selects 1.3;
+publication must use the reviewed execution-only scoped path, not provision a
+main-based stack over the divergent live runtime. #829 explicitly released its
+GPU reservation at 15:54:37 UTC; no Surya GPU slot is held pending review.
+
+CPU inventory found CT100/host2 has 8 GiB RAM, below the 12 GiB CPU contract;
+CT214/host10 has two CPUs, below the CPU plan's four-core minimum. Neither will
+be forced into CPU eligibility by changing limits/preferences. Exact-host
+NVIDIA-only probing pins 1.3 and its existing 8 GiB GPU bound instead.
+
+Local full-page staging respectfully fetched one Serbian page and its ALTO.
+The subsequent Russian JPEG body could not be decoded, so the existing stager
+wrote HOLD and stopped without retries; the hold is retained. The full-page
+sample will remain explicitly partial unless an existing verified archive copy
+can satisfy the blocked input. The 20 immutable smoke inputs are unaffected.
