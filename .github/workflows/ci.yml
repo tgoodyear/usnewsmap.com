@@ -177,6 +177,7 @@ jobs:
         with:
           persist-credentials: false
       - run: find contrib-compute/boinc/html -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: python3 -m unittest -v contrib-compute/images/server/test_work_summary.py
 
   boinc-db-tls:
     name: BOINC actual database TLS (private disposable fixture)

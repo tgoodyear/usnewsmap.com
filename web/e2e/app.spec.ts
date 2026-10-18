@@ -34,6 +34,19 @@ const STYLE = {
 };
 
 test.beforeEach(async ({ page }) => {
+  await page.route("https://boinc.usnewsmap.com/work_summary.php", (route) =>
+    route.fulfill({
+      headers: { "access-control-allow-origin": "*" },
+      json: {
+        schema: 1,
+        updated_at: new Date().toISOString(),
+        apps: [
+          { name: "usnm_qwen", ready: 469, in_progress: 2, validated: 17 },
+          { name: "usnm_gold", ready: 0, in_progress: 9, validated: 3 },
+        ],
+      },
+    }),
+  );
   await page.route("https://tiles.openfreemap.org/**", (route) =>
     route.request().url().includes("/styles/") ? route.fulfill({ json: STYLE }) : route.fulfill({ status: 404 }),
   );
@@ -322,6 +335,7 @@ test("the dataset details show the published version without the pipeline state"
     "What's in the index",
     "The datasets",
     "Pages we read ourselves",
+    "Volunteer computing with BOINC",
     "Languages",
     "Places",
     "In progress",
@@ -332,6 +346,15 @@ test("the dataset details show the published version without the pipeline state"
   await expect(page.getByRole("img", { name: "Pages by decade: all 1,872 are from the 1890s." })).toBeVisible();
   // The fixtures search the Library of Congress text alone.
   await expect(page.getByText("Not yet: the search index the site uses now doesn't have its text.")).toBeVisible();
+  await expect(page.getByText("469 ready to send", { exact: true })).toBeVisible();
+  await expect(page.getByText("11 in progress", { exact: true })).toBeVisible();
+  await expect(page.getByText("20 completed and validated", { exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "BOINC tasks by application" })).toBeVisible();
+  const sourceDetails = page.getByRole("region", { name: "The datasets", exact: true }).locator("details").first();
+  await expect(sourceDetails).not.toHaveAttribute("open", "");
+  await sourceDetails.locator("summary").click();
+  await expect(sourceDetails.getByText("Rights", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   // CI's API serves the fixtures with no Cosmos: the reference sections
   // work and the pipeline sections say so.
   await expect(page.getByRole("heading", { level: 3, name: "Right now" })).toBeVisible();

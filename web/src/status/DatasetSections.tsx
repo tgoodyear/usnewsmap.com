@@ -118,15 +118,28 @@ function Coverage({ years }: { years: YearPages[] }) {
 
 /** What one dataset is, where it's from, and how it's searched. */
 function Facts({ items }: { items: [string, ReactNode][] }) {
+  const overview = items.filter(([key]) => key === "What it is" || key === "In the index");
+  const details = items.filter(([key]) => key !== "What it is" && key !== "In the index");
   return (
-    <dl className="dataset-facts">
-      {items.map(([k, v]) => (
-        <div key={k}>
-          <dt>{k}</dt>
-          <dd>{v}</dd>
-        </div>
+    <>
+      {overview.map(([key, value]) => (
+        <p key={key}>
+          {key === "In the index" && <strong>Search index: </strong>}
+          {value}
+        </p>
       ))}
-    </dl>
+      <details>
+        <summary>Sources, rights and search behavior</summary>
+        <dl className="dataset-facts">
+          {details.map(([key, value]) => (
+            <div key={key}>
+              <dt>{key}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </details>
+    </>
   );
 }
 
@@ -137,9 +150,8 @@ export function TheDatasets({ s, now }: { s: Status; now: number }) {
     <section aria-labelledby="datasets" className="status-section">
       <h2 id="datasets">The datasets</h2>
       <p>
-        Every page on the map is a page of Chronicling America. Searches read its text from up to three sources: the
-        Library of Congress&apos;s own text, American Stories&apos; reading of the same pages, and our own reading of
-        pages whose text is missing or badly read.
+        Newspaper scans come from Chronicling America. Search combines the Library of Congress text, American Stories
+        where enabled, and selected replacement OCR described below.
       </p>
       <ChroniclingAmerica s={s} />
       <AmericanStories as={sources?.american_stories ?? null} known={sources !== undefined} />
@@ -166,9 +178,8 @@ function ChroniclingAmerica({ s }: { s: Status }) {
           [
             "What it is",
             <>
-              Historic American newspapers digitized by the National Digital Newspaper Program, a partnership of the
-              National Endowment for the Humanities and the Library of Congress. Each page comes with text the Library
-              of Congress made from its scan by optical character recognition (OCR).
+              Historic American newspapers digitized through the National Digital Newspaper Program (NEH and Library of
+              Congress), with machine-readable text produced by optical character recognition (OCR).
             </>,
           ],
           [
@@ -397,10 +408,8 @@ export function OurOcr({ s, now }: { s: Status; now: number }) {
         <a href="/credits">OCR engine and model credits</a>, with their sources and licences.
       </p>
       <p>
-        A search finds a page only through its text, so a page whose Library of Congress text is missing or badly read
-        can&apos;t be found. We read such a page again from its image: on the Japanese-language newspapers, when the
-        Library of Congress has no text for it, or its text is empty, too short, garbled or only partly readable; on the
-        others, when its text misreads many common words.
+        Missing or garbled text hides search matches. We reprocess selected scans and use replacement text only after
+        quality checks. The counts below include replacements in the published index, not work still being processed.
       </p>
       {sources === undefined ? (
         <p className="status-empty">This server doesn&apos;t say how many pages that is.</p>

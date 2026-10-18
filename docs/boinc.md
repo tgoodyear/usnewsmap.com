@@ -25,6 +25,26 @@ cached pages with bounded queue backpressure; operators activate it separately.
 The [post-training pilot](boinc-transcription.md) evaluates public-gold
 baselines and adapted models with `usnm_qwen`.
 
+## Public dataset-page counts
+
+The public `/datasets` page reads `https://boinc.usnewsmap.com/work_summary.php`.
+This credential-free, CORS-enabled endpoint caches an aggregate database query
+for two minutes and exposes only application names and task counts: ready to
+send, in progress, and completed successfully with BOINC validation. Errors
+return HTTP 503, not zero counts; the page marks reports older than ten minutes
+or failed refreshes as out of date.
+
+These are **retained task records**, not lifetime totals, unique pages, or the
+full backlog not yet submitted to BOINC. Eligible completed records are purged
+after 30 days. Replicas and retries are separate tasks. BOINC validation does
+not imply trusted collection, accepted OCR, or publication in the search index.
+Application rows with no tasks in any displayed category are omitted.
+
+The endpoint is installed with the other project PHP pages by the server
+entrypoint. Roll out the reviewed server/bridge image before the frontend;
+without the endpoint the page explicitly reports unavailable counts. No
+scheduler, feeder, trust policy, work submission or collection is changed.
+
 ## Workbook query validation
 
 Run `python3 scripts/validate-boinc-workbook.py --workspace <customer-GUID>`

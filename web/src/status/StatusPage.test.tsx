@@ -54,9 +54,18 @@ function serve(status: unknown, versions: unknown = noVersions) {
     "fetch",
     vi.fn(
       async (url: string) =>
-        new Response(JSON.stringify(url.startsWith("/v1/versions") ? versions : status), {
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify(
+            url.includes("/work_summary.php")
+              ? { schema: 1, updated_at: new Date().toISOString(), apps: [] }
+              : url.startsWith("/v1/versions")
+                ? versions
+                : status,
+          ),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        ),
     ),
   );
 }
@@ -97,6 +106,7 @@ describe("DatasetsPage", () => {
       "What's in the index",
       "The datasets",
       "Pages we read ourselves",
+      "Volunteer computing with BOINC",
       "Languages",
       "Places",
       "In progress",
