@@ -1,0 +1,47 @@
+# The quality wave's page JPEG cache (#850), in the scan-fetch container (CT 211):
+# quality-jpeg-cache.py converts the listed masters with the runner's recipe and puts
+# them in the BOINC hand-off container as quality-jpeg/<recipe>/<blob name>.jpg, as
+# the container's Arc machine identity. It reads /tank/ocr/scans and asks LoC for
+# nothing. Its settings are in /etc/usnm/quality-jpeg-cache.env (ACCOUNT, LIST,
+# WORKERS); docs/boinc.md#the-quality-waves-page-jpeg-cache has the runbook. It ends
+# when the list is done; a restart skips the pages in its done.txt.
+[Unit]
+Description=usnewsmap quality wave page JPEG cache
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/usr/local/lib/usnm-quality-jpeg-cache/py/PIL
+RequiresMountsFor=/tank/ocr/scans
+# A blob there with another size stops a run; don't retry that all day.
+StartLimitIntervalSec=1d
+StartLimitBurst=5
+
+[Service]
+Type=simple
+DynamicUser=yes
+# The Arc agent's token challenge key file is readable by himds.
+SupplementaryGroups=himds
+EnvironmentFile=/etc/usnm/quality-jpeg-cache.env
+Environment=PYTHONPATH=/usr/local/lib/usnm-quality-jpeg-cache/py
+ExecStart=/usr/bin/python3 /usr/local/lib/usnm-quality-jpeg-cache/quality-jpeg-cache.py \
+  --account ${ACCOUNT} --list ${LIST} --workers ${WORKERS} --state ${STATE_DIRECTORY}
+StateDirectory=usnm-quality-jpeg-cache
+Restart=on-failure
+RestartSec=5min
+SyslogIdentifier=usnm-quality-jpeg-cache
+# The prefetcher and the scan server come first.
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryMax=2G
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/tank/ocr/scans
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
