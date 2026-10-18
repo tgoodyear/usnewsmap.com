@@ -30,8 +30,13 @@ class WorkSummaryTests(unittest.TestCase):
             '<?php function get_path($params, $script) { return "../cache.json"; }'
         )
         (inc / "boinc_db.inc").write_text("""<?php
+function web_stopped() { return file_exists("../stop_web"); }
 class BoincDb {
-    static function get() { return new self(); }
+    static $instance;
+    static function get() { die("<xml>Unexpected exiting connection path</xml>"); }
+    static function get_aux($number) {
+        self::$instance = file_exists("../connection_failure") ? null : new self();
+    }
     function do_query($query) {
         if (file_exists("../fail")) { throw new RuntimeException("private SQL failure"); }
         if (strpos($query, "server_state = 5 AND r.outcome = 1 AND r.validate_state = 1") === false) {
@@ -91,6 +96,26 @@ class SummaryRows {
                 self.assertEqual(len(data["apps"]), 2)
                 self.assertIn("invalid cache; refreshing from database", errors)
                 self.assertNotIn("HTTP:503", errors)
+
+    def test_connection_failure_and_maintenance_return_json_errors(self):
+        for marker in ("connection_failure", "stop_web"):
+            with self.subTest(marker=marker):
+                path = self.user.parent / marker
+                path.touch()
+                try:
+                    data, errors = self.run_endpoint()
+                    self.assertEqual(data, {"error": "BOINC task counts are temporarily unavailable."})
+                    self.assertIn("HTTP:503", errors)
+                    self.assertFalse((self.user.parent / "queries").exists())
+                finally:
+                    path.unlink()
+
+    def test_maintenance_does_not_serve_a_fresh_cached_success(self):
+        self.run_endpoint()
+        (self.user.parent / "stop_web").touch()
+        data, errors = self.run_endpoint()
+        self.assertIn("error", data)
+        self.assertIn("HTTP:503", errors)
 
     def test_concurrent_refresh_is_unavailable_not_a_second_query(self):
         import fcntl

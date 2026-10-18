@@ -15,6 +15,9 @@ set_error_handler(function ($severity, $message, $filename, $line) {
 try {
     require_once("../inc/boinc_db.inc");
     require_once("../inc/cache.inc");
+    if (web_stopped()) {
+        throw new RuntimeException("Project down for maintenance");
+    }
     $path = get_path("aggregate-v1", "work_summary.php");
     $file = fopen($path, "c+");
     if (!$file || !flock($file, LOCK_EX | LOCK_NB)) {
@@ -30,7 +33,9 @@ try {
         $data = null;
     }
     if (!$data || time() - $timestamp >= 120) {
-        $db = BoincDb::get();
+        // get() exits with cacheable XML on failure; get_aux() leaves a null instance.
+        BoincDb::get_aux(0);
+        $db = BoincDb::$instance;
         if (!$db) {
             throw new RuntimeException("Summary database unavailable");
         }
