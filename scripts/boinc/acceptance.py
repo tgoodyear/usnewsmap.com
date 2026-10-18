@@ -29,13 +29,18 @@ def run(argv, seconds, payload=None):
     try:
         stdout, _ = process.communicate(payload, timeout=max(.01, seconds))
     except BaseException:
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                # The child can exit concurrently with a signal/timeout handler.
-                process.kill()
-        process.communicate()
+        try:
+            # Descendants may retain pipes after the group leader has exited.
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            # Even a descendant that escaped the group cannot block teardown.
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
         raise
     if process.returncode:
         # Command output can contain account keys, URLs with SAS, and RPC passwords.

@@ -417,6 +417,10 @@ are **effective preference-limited CPUs**, not physical cores; memory/disk, clie
 version, GPU vendor/VRAM, platform, and container runtime must meet the fixture
 and current server plan class. Closed cohorts/batch mismatches are rejected;
 acceptance never opens experimental cohorts or changes production trust policy.
+Because stock workunit routing binds a numeric version rather than an exact
+app-version ID, reservation rejects another active platform/plan at the same app
+and numeric version. Use distinct candidate version numbers per platform/plan;
+the runner never globally deprecates other versions to force routing.
 
 #### Pre-staging an acceptance fixture
 
@@ -480,8 +484,10 @@ host/resource preflight, canonical result ID, output hashes/sizes, and cleanup
 outcome. Raw RPC state, authenticators, DB errors, output transcription, and
 subprocess stdout/stderr are never logged or persisted. Canonical bytes are
 retrieved only to check their hashes/lengths and the server-side output contract.
-Missing/deleted upload files, registration alone, and a successful upload without
-independent validation cannot pass. Evidence paths must be new for each run.
+Canonical bytes can be read from the upload hierarchy or, after completed
+assimilation, the exact workunit/batch collected-output path. Moves during
+collection are retried safely. Missing files in both locations, registration
+alone, and a successful upload without independent validation cannot pass. Evidence paths must be new for each run.
 
 Offline tests (mock Azure/BOINC; no Docker or resources needed):
 

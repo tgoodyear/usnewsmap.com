@@ -301,6 +301,14 @@ else: print(json.dumps(dict(released=True,dispatched=True)))
                 process.kill()
                 process.communicate()
 
+    def test_timeout_kills_descendants_even_after_group_leader_exits(self):
+        source = ('import subprocess,sys; subprocess.Popen([sys.executable, "-c", '
+                  '"import time; time.sleep(3)"])')
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            A.run([sys.executable, '-c', source], .1)
+        self.assertLess(time.monotonic() - started, 1)
+
     def test_cli_dry_run_is_offline_and_leaves_no_evidence(self):
         config = self.root / 'config.json'
         config.write_text(json.dumps(CONFIG))
@@ -418,6 +426,38 @@ class Server(Workspace):
                     inputs=[dict(name='page.jpg', sha256='a' * 64)],
                     outputs=[dict(name='result.json', kind='json', equals={'unit_error': None}, nonempty=['transcription'])])
 
+    def test_connector_uses_shipped_verified_tls_options_and_rejects_plaintext(self):
+        (self.root / 'config.xml').write_text('<boinc><config><db_host>test.invalid</db_host>'
+             '<db_user>fixture</db_user><db_passwd>fixture-only</db_passwd><db_name>fixture</db_name></config></boinc>')
+        driver = MagicMock()
+        db = driver.connect.return_value
+        db.cursor.return_value.fetchone.return_value = ('Ssl_cipher', 'TLS_AES_256_GCM_SHA384')
+        with patch.dict(sys.modules, MySQLdb=driver), patch.object(S.Path, 'is_file', return_value=True):
+            self.assertIs(S.db_connect(self.root), db)
+            options = driver.connect.call_args.kwargs
+            self.assertEqual(options['read_default_file'], '/usr/local/share/usnm/mysql-tls.cnf')
+            self.assertEqual(options['read_default_group'], 'client')
+            self.assertNotIn('ssl_mode', options)
+            db.cursor.return_value.fetchone.return_value = ('Ssl_cipher', '')
+            with self.assertRaises(ValueError):
+                S.db_connect(self.root)
+            db.close.assert_called_once()
+        driver.connect.reset_mock()
+        with patch.dict(sys.modules, MySQLdb=driver), patch.object(S.Path, 'is_file', return_value=False):
+            with self.assertRaises(ValueError):
+                S.db_connect(self.root)
+        driver.connect.assert_not_called()
+
+    def test_reservation_rejects_ambiguous_plan_or_platform_before_provisioning(self):
+        manifest = self.manifest()
+        request = dict(fixture='fixture', run_id='a' * 32, release=RELEASE, action='reserve')
+        with patch.object(S, 'fixture_load', return_value=manifest), \
+                patch.object(S, 'scheduler_profile', return_value=PROFILE), \
+                patch.object(S, 'query', side_effect=[[{'id': 7}], [{'id': 7}, {'id': 8}]]):
+            with self.assertRaisesRegex(ValueError, 'ambiguous'):
+                S.handle(request, self.root, self.root, MagicMock())
+        self.assertFalse((self.root / 'fixture.reservation.json').exists())
+
     def test_fixture_requires_exact_quorum_peers_and_app_native_identity(self):
         path = self.root / 'fixture.json'
         manifest = self.manifest()
@@ -475,15 +515,27 @@ class Server(Workspace):
         (self.root / 'config.xml').write_text('<boinc><config><enable_assignment>1</enable_assignment></config></boinc>')
         request = dict(action='dispatch', fixture='fixture', run_id='a' * 32, release=RELEASE, host_id=2)
         db = MagicMock()
+        visibility = {'snapshot': False, 'created': False}
+        def commit():
+            visibility['snapshot'] = False
+        def query(_db, sql, _args):
+            if 'FROM host' in sql:
+                visibility['snapshot'] = True
+                return [{'id': 2}]
+            return [{'id': 11}] if visibility['created'] and not visibility['snapshot'] else []
+        def create(*_args, **_kwargs):
+            self.assertFalse(visibility['snapshot'], 'host lookup transaction must end before external create_work')
+            visibility['created'] = True
+        db.commit.side_effect = commit
         with patch.object(S, 'fixture_load', return_value=manifest), \
-                patch.object(S, 'query', return_value=[{'id': 11}]), patch.object(S.subprocess, 'run'):
+                patch.object(S, 'query', side_effect=query), patch.object(S.subprocess, 'run', side_effect=create):
             result = S.handle(request, self.root, self.root, db)
         self.assertTrue(result['dispatched'])
         sql, values = db.cursor.return_value.execute.call_args.args
         self.assertIn('assignment', sql)
         self.assertIn('1, 0', sql)
         self.assertEqual(values, (3, 11))
-        db.commit.assert_called_once()
+        self.assertEqual(db.commit.call_count, 2)
         self.assertTrue(json.loads((self.root / 'fixture.reservation.json').read_text())['dispatched'])
 
     def test_release_of_another_runs_uncertain_reservation_is_non_destructive(self):
@@ -516,7 +568,7 @@ class Server(Workspace):
             run.side_effect = subprocess.TimeoutExpired('create_work', 60)
             request.update(action='dispatch', host_id=2)
             with self.assertRaises(subprocess.TimeoutExpired):
-                S.handle(request, self.root, self.root, None)
+                S.handle(request, self.root, self.root, MagicMock())
             journal = self.root / 'fixture.reservation.json'
             self.assertTrue(json.loads(journal.read_text())['dispatch_intent'])
             with self.assertRaises(ValueError):
@@ -538,12 +590,33 @@ class Server(Workspace):
         upload.mkdir()
         output = upload / 'output.json'
         output.write_bytes(DATA)
-        rows = [[dict(id=1, canonical_resultid=88, error_mask=0)], [client], [canonical]]
+        rows = [[dict(id=1, canonical_resultid=88, error_mask=0, batch=12, assimilate_state=0)], [client], [canonical]]
         with patch.object(S, 'query', side_effect=rows), patch.object(S.subprocess, 'run') as run:
             run.return_value.stdout = str(self.root / 'download' / output.name)
             receipt = S.status(None, self.root, record, self.manifest())
         self.assertEqual(receipt['state'], 'validated')
         self.assertEqual(A.check_evidence(receipt, RELEASE, 2, 'a' * 32)['canonical_result_id'], 88)
+        collected = self.root / 'results/12' / (record['workunit'] + '__file_result.json')
+        collected.parent.mkdir(parents=True)
+        for move_during_open in (False, True):
+            output.write_bytes(DATA)
+            if collected.exists():
+                collected.unlink()
+            if not move_during_open:
+                output.rename(collected)
+            original = Path.read_bytes
+            def read(path):
+                if path == output and move_during_open:
+                    output.rename(collected)
+                    raise FileNotFoundError(path)
+                return original(path)
+            settled = [[{**rows[0][0], 'assimilate_state': 2}], [client], [canonical]]
+            with patch.object(S, 'query', side_effect=settled), patch.object(S.subprocess, 'run') as run, \
+                    patch.object(Path, 'read_bytes', read):
+                run.return_value.stdout = str(self.root / 'download' / output.name)
+                receipt = S.status(None, self.root, record, self.manifest())
+                self.assertEqual(receipt['state'], 'validated')
+                self.assertEqual(receipt['outputs'][0]['sha256'], hashlib.sha256(DATA).hexdigest())
         for field, value in [('app_version_id', 9), ('validate_state', 2), ('outcome', 3)]:
             with patch.object(S, 'query', side_effect=[rows[0], [{**client, field: value}]]):
                 self.assertEqual(S.status(None, self.root, record, self.manifest())['state'], 'failed')
