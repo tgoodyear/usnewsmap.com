@@ -1032,7 +1032,8 @@ valid run ID was returned; no run ID, a failed/canceled run, an unreadable run a
 the deadline, or a missing/mismatched digest fails closed. An existing tag cannot
 prove that a new build succeeded. Polling defaults to every 10 seconds, bounded
 by the build timeout plus 600 seconds (`ACR_POLL_INTERVAL` / `ACR_WAIT_SECONDS`
-override these in seconds). A local timeout does not cancel the remote run; use
+override these in seconds). Each status and digest read is also bounded by the
+remaining budget, including its CLI child processes. A local timeout does not cancel the remote run; use
 the printed registry/run ID to inspect it before deciding whether to rebuild.
 These checks do not deploy images. For manual builds, source the helper in Bash
 and call `acr_build_verified az REGISTRY REPOSITORY:TAG TIMEOUT [build arguments]`

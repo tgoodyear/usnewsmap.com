@@ -115,7 +115,7 @@ class AcrBuildVerification(unittest.TestCase):
 
     DIGEST = "sha256:" + "a" * 64
     STUB = r"""#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, sys, time
 args = sys.argv[1:]
 log = pathlib.Path(os.environ["STUB_LOG"])
 with log.open("a") as out:
@@ -124,6 +124,7 @@ if args[:2] == ["acr", "build"]:
     print(os.environ["STUB_RUN_ID"])
     sys.exit(int(os.environ.get("STUB_SUBMIT_EXIT", "0")))
 if args[:3] == ["acr", "task", "show-run"]:
+    time.sleep(float(os.environ.get("STUB_RUN_DELAY", "0")))
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     count = sum(call[:3] == ["acr", "task", "show-run"] for call in calls)
     runs = json.loads(os.environ["STUB_RUNS"])
@@ -133,6 +134,7 @@ if args[:3] == ["acr", "task", "show-run"]:
     print(run if isinstance(run, str) else json.dumps(run))
     sys.exit(0)
 if args[:3] == ["acr", "repository", "show"]:
+    time.sleep(float(os.environ.get("STUB_DIGEST_DELAY", "0")))
     print(os.environ["STUB_DIGEST"])
     sys.exit(int(os.environ.get("STUB_DIGEST_EXIT", "0")))
 sys.exit("unexpected az command: " + repr(args))
@@ -217,7 +219,21 @@ echo verified
             with self.subTest(run=run):
                 result, calls = self.assert_failed([run], ACR_WAIT_SECONDS="0")
                 self.assertIn("timed out", result.stderr)
+                self.assertEqual(len(calls), 1)
+
+    def test_slow_successful_and_failed_status_requests_are_bounded(self):
+        for run in (self.succeeded(), {"status": "Failed"}, "error"):
+            with self.subTest(run=run):
+                start = time.monotonic()
+                result, calls = self.assert_failed([run], ACR_WAIT_SECONDS="1", STUB_RUN_DELAY="30")
+                self.assertLess(time.monotonic() - start, 4)
+                self.assertIn("timed out", result.stderr)
                 self.assertEqual(len(calls), 2)
+
+    def test_slow_digest_verification_is_bounded(self):
+        start = time.monotonic()
+        self.assert_failed(ACR_WAIT_SECONDS="1", STUB_DIGEST_DELAY="30")
+        self.assertLess(time.monotonic() - start, 4)
 
     def test_success_requires_valid_matching_run_output_and_registry_digest(self):
         invalid_runs = [
