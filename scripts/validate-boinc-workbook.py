@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--identity", choices=["az", "arc"], default="az")
     parser.add_argument("--subscription")
     parser.add_argument("--host")
+    parser.add_argument("--hosts")
     parser.add_argument("--location")
     parser.add_argument("--workbook", type=pathlib.Path,
                         default=pathlib.Path(__file__).resolve().parents[1]
@@ -28,10 +29,10 @@ def main():
     if len(panels) != 9:
         raise log_analytics.QueryError("Expected exactly nine workbook query panels")
     token = log_analytics.access_token(args.identity, args.subscription)
-    host = log_analytics.query_host(args.workspace, host=args.host, location=args.location,
+    hosts = log_analytics.query_hosts(args.workspace, host=args.host, hosts=args.hosts, location=args.location,
                                     identity=args.identity, subscription=args.subscription)
     receipt = {"identityClass": args.identity, "workspace": args.workspace,
-               "endpoint": f"https://{host}", "audience": log_analytics.AUDIENCE,
+               "endpoints": [f"https://{host}" for host in hosts], "audience": log_analytics.AUDIENCE,
                "timespan": args.timespan, "panels": []}
     for panel in [{"name": "positive-control", "content": {"query": "print QueryRouteControl=1"}},
                   *panels]:
@@ -40,7 +41,7 @@ def main():
                "startedUtc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         try:
             body, history = log_analytics.query(args.workspace, kql, args.timespan,
-                                                token=token, host=host)
+                                                token=token, hosts=hosts)
             if (panel["name"] == "positive-control"
                     and body["tables"][0].get("rows") != [[1]]):
                 raise log_analytics.QueryError("Positive control did not return [[1]]", history)

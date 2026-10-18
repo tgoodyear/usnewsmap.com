@@ -317,7 +317,7 @@ class LogsFrontendRetry(unittest.TestCase):
             {"attempt": 1, "status": 403, "via": "frontend", "requestId": "request",
              "host": "westus2.api.loganalytics.io"},
             {"attempt": 2, "status": 200, "via": "frontend", "requestId": "request",
-             "host": "westus2.api.loganalytics.io"}], 2, 1))
+             "host": "westus.api.loganalytics.io"}], 2, 0))
         self.assertNotIn("not-a-real-token", result[4])
 
     def test_partial_response_is_not_success(self):
@@ -330,19 +330,19 @@ class LogsFrontendRetry(unittest.TestCase):
             {"via": "frontend"}, io.BytesIO(b'{"error":{"code":"InsufficientAccessError"}}'))
         result = self.run_query([error, self.response(
             200, {"tables": [{"columns": [], "rows": []}]})])
-        self.assertEqual(result[2:4], (2, 1))
+        self.assertEqual(result[2:4], (2, 0))
 
     def test_transport_error_preserves_attempts_without_secret(self):
         error = self.client.urllib.error.URLError("sensitive transport payload")
         opener = mock.Mock()
         opener.open.side_effect = [self.response(
-            403, {"error": {"code": "InsufficientAccessError"}}), error]
+            403, {"error": {"code": "InsufficientAccessError"}})] + [error] * 11
         with mock.patch.object(self.client.urllib.request, "build_opener", return_value=opener), \
                 mock.patch.object(self.client.time, "sleep"), \
                 mock.patch("sys.stderr", new_callable=io.StringIO), \
                 self.assertRaises(self.client.QueryError) as caught:
             self.client.query(SUB, "print 1", token="fake")
-        self.assertEqual(len(caught.exception.history), 2)
+        self.assertEqual(len(caught.exception.history), 12)
         self.assertEqual(caught.exception.history[-1]["status"], "transport-error")
         self.assertNotIn("sensitive", str(caught.exception))
 
@@ -371,11 +371,33 @@ class LogsFrontendRetry(unittest.TestCase):
             opener.return_value.open.return_value = response
             self.client.query(SUB, "print 1", token="fake", budget=0.1)
         self.assertLess(time.monotonic() - started, 2)
-        self.assertEqual(caught.exception.history[0]["error"], "response-read-failed")
+        self.assertEqual(caught.exception.history[0]["error"], "deadline-expired")
 
     def test_retry_cap(self):
-        with self.assertRaisesRegex(self.client.QueryError, "6 attempts"):
-            self.run_query([self.response(403, {"error": {"code": "InsufficientAccessError"}})] * 6)
+        with self.assertRaisesRegex(self.client.QueryError, "12 attempts"):
+            self.run_query([self.response(403, {"error": {"code": "InsufficientAccessError"}})] * 12)
+
+    def test_absolute_deadline_is_not_retried_as_connect_timeout(self):
+        dumps = self.client.json.dumps
+        def delayed_dump(*args, **kwargs):
+            time.sleep(0.08)
+            return dumps(*args, **kwargs)
+        def slow_connect(*args, **kwargs):
+            time.sleep(0.2)
+            return self.response(200, {"tables": [{"columns": [], "rows": []}]})
+        started = time.monotonic()
+        with mock.patch.object(self.client.json, "dumps", side_effect=delayed_dump), \
+                mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                self.assertRaisesRegex(self.client.QueryError, "absolute deadline"):
+            opener.return_value.open.side_effect = slow_connect
+            self.client.query(SUB, "print 1", token="fake", budget=0.12)
+        self.assertLess(time.monotonic() - started, 0.25)
+        self.assertEqual(opener.return_value.open.call_count, 1)
+
+    def test_socket_timeout_still_fails_over(self):
+        result = self.run_query([TimeoutError("socket inactivity"),
+                                 self.response(200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual(result[1][1]["host"], "westus.api.loganalytics.io")
 
     def test_nonretryable_http_error_stops_once(self):
         for status in (400, 401, 403):
@@ -383,7 +405,7 @@ class LogsFrontendRetry(unittest.TestCase):
                 self.run_query([self.response(status, {"error": {"code": "OtherError"}})])
 
     def test_time_budget_stops_before_backoff(self):
-        with mock.patch.object(self.client.time, "monotonic", side_effect=[0, 0, 59]), \
+        with mock.patch.object(self.client.time, "monotonic", side_effect=[0] + [0] * 6 + [89]), \
                 mock.patch.object(self.client.time, "sleep") as sleep, \
                 mock.patch.object(self.client.random, "uniform", return_value=3), \
                 mock.patch.object(self.client.urllib.request, "build_opener") as opener:
@@ -416,21 +438,44 @@ class LogsFrontendRetry(unittest.TestCase):
                 self.client.query_host(SUB, identity="arc")
             run.assert_not_called()
 
-    def test_regional_exhaustion_falls_back_within_six_attempts(self):
+    def test_ordered_hosts_then_global_and_one_extra_pass(self):
         failure = self.response(403, {"error": {"code": "InsufficientAccessError"}})
-        result = self.run_query([failure] * 5 + [
+        result = self.run_query([failure] * 6 + [
             self.response(200, {"tables": [{"columns": [], "rows": []}]})])
         self.assertEqual([x["host"] for x in result[1]],
-                         ["westus2.api.loganalytics.io"] * 5 + ["api.loganalytics.io"])
-        self.assertEqual(result[2], 6)
+                         [f"{x}.api.loganalytics.io" for x in
+                          ("westus2", "westus", "eastus", "northcentralus", "westcentralus")]
+                         + ["api.loganalytics.io", "westus2.api.loganalytics.io"])
+        self.assertEqual(result[2:4], (7, 1))
 
     def test_regional_dns_failure_falls_back_immediately(self):
-        error = self.client.urllib.error.URLError(self.client.socket.gaierror("no DNS"))
+        error = self.client.urllib.error.URLError("connect failed")
         result = self.run_query([error, self.response(
             200, {"tables": [{"columns": [], "rows": []}]})])
         self.assertEqual([x["host"] for x in result[1]],
-                         ["westus2.api.loganalytics.io", "api.loganalytics.io"])
+                         ["westus2.api.loganalytics.io", "westus.api.loganalytics.io"])
         self.assertEqual(result[3], 0)
+
+    def test_configured_host_order_deduplicated_and_validated(self):
+        hosts = "eastus.api.loganalytics.io, westus.api.loganalytics.io,eastus.api.loganalytics.io"
+        with mock.patch.dict(os.environ, {"LOG_ANALYTICS_QUERY_HOSTS": hosts}):
+            self.assertEqual(self.client.query_hosts(SUB),
+                             ["eastus.api.loganalytics.io", "westus.api.loganalytics.io"])
+            self.assertEqual(self.client.query_hosts(SUB, hosts="api.loganalytics.io"),
+                             ["api.loganalytics.io"])
+        for hosts in ("", "westus.api.loganalytics.io,", "evil.example"):
+            with self.assertRaises(self.client.QueryError):
+                self.client.query_hosts(SUB, hosts=hosts)
+
+    def test_all_retryable_statuses_move_to_next_host(self):
+        for status in (403, 429, 500, 503):
+            with self.subTest(status=status):
+                result = self.run_query([
+                    self.response(status, {"error": {"code": "InsufficientAccessError"}}),
+                    self.response(200, {"tables": [{"columns": [], "rows": []}]})])
+                self.assertEqual([x["host"] for x in result[1]],
+                                 ["westus2.api.loganalytics.io", "westus.api.loganalytics.io"])
+                self.assertEqual(result[3], 0)
 
 
 class WorkbookValidation(unittest.TestCase):
