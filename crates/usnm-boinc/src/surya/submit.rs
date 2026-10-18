@@ -185,11 +185,11 @@ async fn submit_units(
         atomic(&unit.join("submitting"), work_name.as_bytes())?;
         for (physical, file) in physical_names(&job) {
             let limit = if file == JOB_FILE { MAX_JSON } else { MAX_SCAN };
-            crate::assess::submit::stage_file(&project, &physical, &read(&unit.join(file), limit)?)
+            crate::assess::submit::stage_file(project, &physical, &read(&unit.join(file), limit)?)
                 .await?;
         }
         let status = Command::new(project.join("bin/create_work"))
-            .current_dir(&project)
+            .current_dir(project)
             .args(work_args(&job, opts.target_host))
             .status()
             .await?;
