@@ -86,6 +86,12 @@ def _linear_space_edit_counts(reference, hypothesis):
         return Counter(insertions=len(hypothesis))
     if not hypothesis:
         return Counter(deletions=len(reference))
+    if len(reference) == 1:
+        return Counter(substitutions=0 if reference[0] in hypothesis else 1,
+                       insertions=len(hypothesis) - 1)
+    if len(hypothesis) == 1:
+        return Counter(substitutions=0 if hypothesis[0] in reference else 1,
+                       deletions=len(reference) - 1)
     if len(reference) * len(hypothesis) <= 4096:
         return _small_edit_counts(reference, hypothesis)
     middle = len(reference) // 2
@@ -170,6 +176,8 @@ def _boxes(regions):
         raise ValueError("regions must be an array")
     result, orders = [], set()
     for region in regions:
+        if not isinstance(region, dict):
+            raise ValueError("each region must be an object")
         box, order, text = region.get("box"), region.get("order"), region.get("text", "")
         if (not isinstance(box, list) or len(box) != 4 or
                 not all(isinstance(v, (int, float)) and math.isfinite(v) for v in box) or

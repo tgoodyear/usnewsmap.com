@@ -26,6 +26,10 @@ class MeasuresV1Tests(unittest.TestCase):
         counts = measures.edit_counts("a" * 100 + "b" * 100, "a" * 99 + "x" + "b" * 100 + "z")
         self.assertEqual(counts, {"substitutions": 1, "insertions": 1, "deletions": 0})
 
+    def test_very_long_single_character_alignment_is_bounded(self):
+        self.assertEqual(measures.edit_counts("a", "x" * 5000),
+                         {"substitutions": 1, "insertions": 4999, "deletions": 0})
+
     def test_legacy_rule_matches_existing_survey_scorer_fixtures(self):
         refs = [{"id": "control", "reference": " a\x1fb\u3000c\n\n"},
                 {"id": "zero-width", "reference": "a\u200bb"}]
