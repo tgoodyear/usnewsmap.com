@@ -311,6 +311,8 @@ async fn ndlocr(command: Ndlocr) -> anyhow::Result<()> {
 }
 
 #[derive(Subcommand)]
+// Parsed once per run; boxing the arguments would only add noise.
+#[allow(clippy::large_enum_variant)]
 enum ClaimCmd {
     /// Hand-off job: take usable pages off the work queues, writing one claim file each
     /// and a summary. Messages that can't be used here go back for the nodes.
@@ -339,6 +341,11 @@ enum ClaimCmd {
         /// Hours a claimed message stays hidden.
         #[arg(long, default_value_t = 96)]
         lease_hours: u64,
+        /// A source language to take (`eng`); repeat for more. Pages in other languages go
+        /// back for the nodes. Give the trust calibration's language, so no claimed page is
+        /// held back at collect. Default: any language the worker image can read.
+        #[arg(long = "language")]
+        languages: Vec<String>,
         /// Where the claim files go.
         #[arg(long)]
         out: PathBuf,
@@ -1385,6 +1392,7 @@ async fn claim(c: ClaimCmd) -> anyhow::Result<()> {
             max,
             max_receives,
             lease_hours,
+            languages,
             out,
             summary,
             nonce,
@@ -1395,6 +1403,13 @@ async fn claim(c: ClaimCmd) -> anyhow::Result<()> {
                 usnm_store::is_safe_segment(&manifest_version),
                 "invalid --manifest-version"
             );
+            anyhow::ensure!(
+                languages
+                    .iter()
+                    .all(|l| l.len() == 3 && l.bytes().all(|b| b.is_ascii_lowercase())),
+                "--language is a three-letter lower-case code"
+            );
+            let languages: std::collections::BTreeSet<String> = languages.into_iter().collect();
             let docs: Arc<dyn DocStore> = if let Some(endpoint) = cosmos {
                 Arc::new(CosmosDocs::new(
                     &endpoint,
@@ -1432,6 +1447,7 @@ async fn claim(c: ClaimCmd) -> anyhow::Result<()> {
                         ledger: &ledger,
                         fetched: &fetched,
                         installed: &installed,
+                        languages: (!languages.is_empty()).then_some(&languages),
                     },
                     &x::Options {
                         queues,
