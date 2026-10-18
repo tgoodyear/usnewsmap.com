@@ -83,6 +83,8 @@ class SchedulerRefresh(unittest.TestCase):
         entry = (ROOT / "contrib-compute/images/server/entrypoint.sh").read_text()
         self.assertIn("images/server/refresh-scheduler.py", image)
         self.assertIn('"$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/cgi" --target "$PROJ/cgi-bin/cgi"', entry)
+        # The feeder computes have_apps_for_proc_type (the Intel GPU patch, #736).
+        self.assertIn('"$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/feeder" --target "$PROJ/bin/feeder"', entry)
         self.assertLess(entry.index("  project_tree\n"), entry.index("exec /usr/bin/supervisord"))
 
 
