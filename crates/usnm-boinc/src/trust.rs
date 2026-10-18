@@ -3,15 +3,15 @@
 //! below a threshold on one pinned challenge, without skips or complete crop loss, and the
 //! page's source language, model profile and scoring configuration match that calibration.
 //!
-//! - `usnm-boinc gold trust` reads one or more `reports.jsonl` files (from `gold collect`) and
-//!   writes `trust.json`: per engine image, the host ids that passed.
+//! - `usnm-boinc gold trust` requires validated canonical `reports.jsonl` and bounded native
+//!   `native-outcomes.jsonl` evidence; it writes scoped `trust.json` host eligibility.
 //! - `usnm-boinc collect --trust trust.json --host-id N` checks the result's host before it
 //!   publishes. An untrusted or unknown host's result is held back: its spool files and a reason
 //!   go to `<root>/quarantine/<job>/`, nothing is published, and the job stays as it was, so a
 //!   later collect (after the host passes a gold unit) can publish it.
 //!
-//! The host id is the client's own claim, so this is a quality signal for trusted volunteers,
-//! not an identity check.
+//! In native mode, BOINC's result-table host ID is authoritative and is checked against the
+//! host claimed by the uploaded report. It remains a BOINC quality signal, not an identity check.
 use crate::{atomic, load, Stage};
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use usnm_store::ObjectStore;
 
-pub const TRUST_VERSION: u32 = 4;
+pub const TRUST_VERSION: u32 = 5;
 const MAX_REPORTS: u64 = 64 << 20;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,6 +72,16 @@ struct Row {
     engine_image: String,
     host_id: Option<u64>,
     manifest_sha256: String,
+    #[serde(default)]
+    workunit: Option<String>,
+    #[serde(default)]
+    native_result_id: Option<u64>,
+    #[serde(default)]
+    server_received_at: Option<i64>,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
     crops: usize,
     skipped: usize,
     complete_loss_crops: usize,
@@ -90,11 +100,39 @@ impl Trust {
     /// Builds the list from `gold collect`'s `reports.jsonl` files. Every row there is a valid
     /// canonical result (collect checked it again); rows with no host id or no overall CER are
     /// skipped.
-    pub fn build(
+    #[cfg(test)]
+    pub(crate) fn build_without_native(
         reports: &[PathBuf],
         max_cer: f64,
         manifest_sha256: &str,
         scope: Scope,
+    ) -> anyhow::Result<Self> {
+        Self::build_inner(reports, &[], max_cer, manifest_sha256, scope, false)
+    }
+
+    /// Builds trust from canonical quality reports and native BOINC attempt metadata. Unlike
+    /// [`Self::build`], this requires server-bound result IDs and timestamps for every report.
+    pub fn build_with_outcomes(
+        reports: &[PathBuf],
+        outcomes: &[PathBuf],
+        max_cer: f64,
+        manifest_sha256: &str,
+        scope: Scope,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !outcomes.is_empty(),
+            "native Gold outcome files are required"
+        );
+        Self::build_inner(reports, outcomes, max_cer, manifest_sha256, scope, true)
+    }
+
+    fn build_inner(
+        reports: &[PathBuf],
+        outcome_paths: &[PathBuf],
+        max_cer: f64,
+        manifest_sha256: &str,
+        scope: Scope,
+        require_native: bool,
     ) -> anyhow::Result<Self> {
         scope.validate()?;
         anyhow::ensure!(
@@ -106,6 +144,52 @@ impl Trust {
             "challenge manifest must be a lower-case SHA-256"
         );
         let mut latest = BTreeMap::new();
+        let mut native_results = BTreeMap::new();
+        let mut native_count = 0usize;
+        let mut native_bytes = 0usize;
+        for path in outcome_paths {
+            let bytes = crate::read(path, MAX_REPORTS as usize)
+                .with_context(|| format!("reading {}", path.display()))?;
+            native_bytes = native_bytes.saturating_add(bytes.len());
+            anyhow::ensure!(
+                native_bytes <= 16 << 20,
+                "native Gold outcome evidence exceeds its size limit"
+            );
+            for (n, line) in std::str::from_utf8(&bytes)?.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                native_count += 1;
+                anyhow::ensure!(native_count <= 10_000, "too many native Gold result rows");
+                let row: crate::gold::collect::NativeResult = serde_json::from_str(line)
+                    .with_context(|| format!("{}:{}", path.display(), n + 1))?;
+                anyhow::ensure!(
+                    row.schema_version == 1
+                        && row.app == "usnm_gold"
+                        && row.workunit.strip_prefix("usnm_gold_").is_some_and(
+                            |id| id.len() == 64 && usnm_ocr_contract::boinc::is_sha256(id)
+                        )
+                        && row.result_id > 0
+                        && row.app_version_id > 0
+                        && immutable_image(&row.engine_image)
+                        && usnm_ocr_contract::boinc::is_sha256(&row.manifest_sha256)
+                        && row.host_id.is_none_or(|host| host > 0)
+                        && (0..=16).contains(&row.server_state)
+                        && (0..=16).contains(&row.outcome)
+                        && row.sent_at.is_none_or(|time| time > 0)
+                        && row.received_at.is_none_or(|time| time > 0)
+                        && row.bundle_version > 0
+                        && row.psm == 3
+                        && row.dpi == 300,
+                    "invalid native Gold result metadata"
+                );
+                let key = (row.workunit.clone(), row.result_id);
+                anyhow::ensure!(
+                    native_results.insert(key, row).is_none(),
+                    "duplicate native Gold result"
+                );
+            }
+        }
         for path in reports {
             let bytes = crate::read(path, MAX_REPORTS as usize)
                 .with_context(|| format!("reading {}", path.display()))?;
@@ -123,6 +207,14 @@ impl Trust {
                     row.manifest_sha256 == manifest_sha256,
                     "gold report challenge does not match the calibrated manifest"
                 );
+                if require_native
+                    && (row.language.as_deref() != Some(scope.language.as_str())
+                        || row.profile.as_deref() != Some(scope.profile.as_str())
+                        || row.psm != scope.psm
+                        || row.dpi != u32::from(scope.dpi))
+                {
+                    continue;
+                }
                 anyhow::ensure!(
                     row.complete_loss_crops <= row.crops,
                     "gold report complete-loss count exceeds scored crops"
@@ -131,6 +223,47 @@ impl Trust {
                     row.psm == scope.psm && row.dpi == u32::from(scope.dpi),
                     "gold report does not cover the calibrated scoring configuration"
                 );
+                let event_at = if require_native {
+                    anyhow::ensure!(
+                        row.language.as_deref() == Some(scope.language.as_str())
+                            && row.profile.as_deref() == Some(scope.profile.as_str())
+                            && row.psm == scope.psm
+                            && row.dpi == u32::from(scope.dpi),
+                        "canonical Gold report does not match the declared native scope"
+                    );
+                    let workunit = row
+                        .workunit
+                        .as_deref()
+                        .context("canonical report lacks its workunit")?;
+                    let result_id = row
+                        .native_result_id
+                        .context("canonical report lacks native result id")?;
+                    let native = native_results
+                        .get(&(workunit.to_owned(), result_id))
+                        .context("canonical report has no matching native BOINC result")?;
+                    let received_at = row
+                        .server_received_at
+                        .context("canonical report lacks server receive timestamp")?;
+                    anyhow::ensure!(
+                        native.canonical
+                            && native.app == "usnm_gold"
+                            && native.host_id == row.host_id
+                            && native.engine_image == row.engine_image
+                            && native.manifest_sha256 == row.manifest_sha256
+                            && native.language == scope.language
+                            && native.profile == scope.profile
+                            && native.psm == scope.psm
+                            && u32::from(native.dpi) == row.dpi
+                            && native.received_at == Some(received_at)
+                            && native.server_state == crate::gold::collect::BOINC_SERVER_STATE_OVER
+                            && native.outcome == crate::gold::collect::BOINC_OUTCOME_SUCCESS,
+                        "canonical report disagrees with its native BOINC result"
+                    );
+                    chrono::DateTime::from_timestamp(received_at, 0)
+                        .context("invalid server receive timestamp")?
+                } else {
+                    row.completed_at
+                };
                 let overall = row.summary.iter().find(|s| s.source == "all");
                 if let Some(host) = row.host_id.filter(|h| *h > 0) {
                     let passed = row.crops > 0
@@ -143,12 +276,39 @@ impl Trust {
                             .is_some_and(|cer| cer.is_finite() && cer >= 0.0 && cer <= max_cer);
                     let value = latest
                         .entry((row.engine_image, host))
-                        .or_insert((row.completed_at, passed));
-                    if row.completed_at > value.0 {
-                        *value = (row.completed_at, passed);
-                    } else if row.completed_at == value.0 {
+                        .or_insert((event_at, passed));
+                    if event_at > value.0 {
+                        *value = (event_at, passed);
+                    } else if event_at == value.0 {
                         value.1 &= passed;
                     }
+                }
+            }
+        }
+        if require_native {
+            for event in native_results.values() {
+                if event.manifest_sha256 != manifest_sha256
+                    || event.language != scope.language
+                    || event.profile != scope.profile
+                    || event.psm != scope.psm
+                    || u32::from(event.dpi) != u32::from(scope.dpi)
+                    || event.server_state != crate::gold::collect::BOINC_SERVER_STATE_OVER
+                    || event.outcome != crate::gold::collect::BOINC_OUTCOME_CLIENT_ERROR
+                {
+                    continue;
+                }
+                let (Some(host), Some(received_at)) = (event.host_id, event.received_at) else {
+                    continue;
+                };
+                let event_at = chrono::DateTime::from_timestamp(received_at, 0)
+                    .context("invalid terminal result receive timestamp")?;
+                let value = latest
+                    .entry((event.engine_image.clone(), host))
+                    .or_insert((event_at, false));
+                if event_at > value.0 {
+                    *value = (event_at, false);
+                } else if event_at == value.0 {
+                    value.1 = false;
                 }
             }
         }
@@ -191,8 +351,8 @@ impl Trust {
         Ok(t)
     }
 
-    /// For issuing gold only: a missing list, or an unscoped v1-v3 list that v4 deliberately
-    /// rejects, trusts no host, so every host is offered gold (which is how a threshold gets
+    /// For issuing gold only: a missing list or legacy v1-v4 list trusts no host, so every
+    /// host is offered gold (which is how a threshold gets
     /// calibrated in the first place). Anything else must load as [`Trust::load`] would.
     pub fn load_or_none_trusted(path: &Path) -> anyhow::Result<Self> {
         let none = || Self {
@@ -211,7 +371,7 @@ impl Trust {
                 .with_context(|| format!("reading {}", path.display()))?;
         if matches!(
             raw.get("v").and_then(serde_json::Value::as_u64),
-            Some(1..=3)
+            Some(1..=4)
         ) {
             eprintln!(
                 "{} uses an uncalibrated legacy trust policy; no host is trusted",
@@ -377,7 +537,7 @@ mod tests {
         let image_a = format!("sha256:{}", "a".repeat(64));
         let image_b = format!("sha256:{}", "b".repeat(64));
         std::fs::write(&b, row(&image_b, Some(2), Some(0.10))).unwrap();
-        let t = Trust::build(&[a, b], 0.10, MANIFEST, scope()).unwrap();
+        let t = Trust::build_without_native(&[a, b], 0.10, MANIFEST, scope()).unwrap();
         assert_eq!(t.manifest_sha256.as_deref(), Some(MANIFEST));
         assert_eq!(t.hosts[&image_a], BTreeSet::from([1]));
         assert_eq!(t.hosts[&image_b], BTreeSet::from([2]));
@@ -389,8 +549,8 @@ mod tests {
         let p = tmp.path().join("trust.json");
         std::fs::write(&p, serde_json::to_vec(&t).unwrap()).unwrap();
         assert_eq!(Trust::load(&p).unwrap(), t);
-        assert!(Trust::build(&[], 2.0, MANIFEST, scope()).is_err());
-        assert!(Trust::build(&[], 0.1, "not-a-manifest", scope()).is_err());
+        assert!(Trust::build_without_native(&[], 2.0, MANIFEST, scope()).is_err());
+        assert!(Trust::build_without_native(&[], 0.1, "not-a-manifest", scope()).is_err());
     }
 
     #[test]
@@ -406,18 +566,20 @@ mod tests {
         )
         .unwrap();
         for paths in [vec![a.clone(), b.clone()], vec![b.clone(), a.clone()]] {
-            assert!(Trust::build(&paths, 0.1, MANIFEST, scope())
+            assert!(Trust::build_without_native(&paths, 0.1, MANIFEST, scope())
                 .unwrap()
                 .refuse(&image, Some(42))
                 .is_some());
         }
         std::fs::write(&b, row(&image, Some(42), None)).unwrap();
-        assert!(Trust::build(&[a, b.clone()], 0.1, MANIFEST, scope())
-            .unwrap()
-            .hosts
-            .is_empty());
+        assert!(
+            Trust::build_without_native(&[a, b.clone()], 0.1, MANIFEST, scope())
+                .unwrap()
+                .hosts
+                .is_empty()
+        );
         std::fs::write(&b, row("mutable:latest", Some(42), Some(0.0))).unwrap();
-        assert!(Trust::build(&[b], 0.1, MANIFEST, scope()).is_err());
+        assert!(Trust::build_without_native(&[b], 0.1, MANIFEST, scope()).is_err());
     }
 
     #[test]
@@ -426,7 +588,7 @@ mod tests {
         let p = tmp.path().join("trust.json");
         let image = format!("sha256:{}", "a".repeat(64));
         assert!(Trust::load_or_none_trusted(&p).unwrap().hosts.is_empty());
-        for version in [1, 2, 3] {
+        for version in [1, 2, 3, 4] {
             let legacy =
                 serde_json::json!({"v": version, "max_cer": 0.1, "hosts": {image.clone(): [42]}});
             std::fs::write(&p, legacy.to_string()).unwrap();
@@ -438,7 +600,7 @@ mod tests {
         assert!(Trust::load_or_none_trusted(&p).is_err());
         std::fs::write(&p, "not json").unwrap();
         assert!(Trust::load_or_none_trusted(&p).is_err());
-        let current = Trust::build(&[], 0.1, MANIFEST, scope()).unwrap();
+        let current = Trust::build_without_native(&[], 0.1, MANIFEST, scope()).unwrap();
         std::fs::write(&p, serde_json::to_vec(&current).unwrap()).unwrap();
         assert_eq!(Trust::load_or_none_trusted(&p).unwrap(), current);
     }
@@ -456,7 +618,7 @@ mod tests {
             failed["completed_at"] = serde_json::json!("2026-10-16T00:00:00Z");
             std::fs::write(&path, format!("{good}\n{failed}\n")).unwrap();
             assert!(
-                Trust::build(
+                Trust::build_without_native(
                     std::slice::from_ref(&path),
                     0.08734328574534386,
                     MANIFEST,
@@ -480,18 +642,24 @@ mod tests {
         let mut wrong = good.clone();
         wrong["manifest_sha256"] = serde_json::json!("c".repeat(64));
         std::fs::write(&path, wrong.to_string()).unwrap();
-        assert!(Trust::build(std::slice::from_ref(&path), 0.1, MANIFEST, scope()).is_err());
+        assert!(
+            Trust::build_without_native(std::slice::from_ref(&path), 0.1, MANIFEST, scope())
+                .is_err()
+        );
         let mut absent = good.clone();
         absent
             .as_object_mut()
             .unwrap()
             .remove("complete_loss_crops");
         std::fs::write(&path, absent.to_string()).unwrap();
-        assert!(Trust::build(std::slice::from_ref(&path), 0.1, MANIFEST, scope()).is_err());
+        assert!(
+            Trust::build_without_native(std::slice::from_ref(&path), 0.1, MANIFEST, scope())
+                .is_err()
+        );
         let mut impossible = good;
         impossible["complete_loss_crops"] = serde_json::json!(3);
         std::fs::write(&path, impossible.to_string()).unwrap();
-        assert!(Trust::build(&[path], 0.1, MANIFEST, scope()).is_err());
+        assert!(Trust::build_without_native(&[path], 0.1, MANIFEST, scope()).is_err());
     }
 
     #[test]
@@ -509,20 +677,22 @@ mod tests {
             wrong[field] = value;
             std::fs::write(&path, wrong.to_string()).unwrap();
             assert!(
-                Trust::build(std::slice::from_ref(&path), 0.1, MANIFEST, scope()).is_err(),
+                Trust::build_without_native(std::slice::from_ref(&path), 0.1, MANIFEST, scope())
+                    .is_err(),
                 "{field}"
             );
             wrong.as_object_mut().unwrap().remove(field);
             std::fs::write(&path, wrong.to_string()).unwrap();
             assert!(
-                Trust::build(std::slice::from_ref(&path), 0.1, MANIFEST, scope()).is_err(),
+                Trust::build_without_native(std::slice::from_ref(&path), 0.1, MANIFEST, scope())
+                    .is_err(),
                 "missing {field}"
             );
         }
         let mut missing = good;
         missing.as_object_mut().unwrap().remove("profiles");
         std::fs::write(&path, missing.to_string()).unwrap();
-        assert!(Trust::build(&[path], 0.1, MANIFEST, scope()).is_err());
+        assert!(Trust::build_without_native(&[path], 0.1, MANIFEST, scope()).is_err());
     }
 
     #[test]
@@ -539,12 +709,15 @@ mod tests {
                 failed["profiles"] = serde_json::json!(["eng", "fra"]);
             }
             std::fs::write(&path, format!("{good}\n{failed}\n")).unwrap();
-            assert!(
-                Trust::build(std::slice::from_ref(&path), 0.1, MANIFEST, scope())
-                    .unwrap()
-                    .hosts
-                    .is_empty()
-            );
+            assert!(Trust::build_without_native(
+                std::slice::from_ref(&path),
+                0.1,
+                MANIFEST,
+                scope()
+            )
+            .unwrap()
+            .hosts
+            .is_empty());
         }
     }
 
@@ -552,7 +725,7 @@ mod tests {
     fn rejects_missing_or_invalid_policy_scope() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("trust.json");
-        let valid = Trust::build(&[], 0.1, MANIFEST, scope()).unwrap();
+        let valid = Trust::build_without_native(&[], 0.1, MANIFEST, scope()).unwrap();
         let mut missing = valid.clone();
         missing.scope = None;
         std::fs::write(&path, serde_json::to_vec(&missing).unwrap()).unwrap();
@@ -569,7 +742,7 @@ mod tests {
             assert!(Trust::load(&path).is_err(), "{field}");
             let invalid: Trust = serde_json::from_value(invalid).unwrap();
             assert!(
-                Trust::build(&[], 0.1, MANIFEST, invalid.scope.unwrap()).is_err(),
+                Trust::build_without_native(&[], 0.1, MANIFEST, invalid.scope.unwrap()).is_err(),
                 "{field}"
             );
         }

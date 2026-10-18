@@ -516,11 +516,25 @@ enum Gold {
         spool: PathBuf,
         #[arg(long)]
         out: PathBuf,
+        /// Read authoritative result metadata from this private MySQL option file.
+        #[arg(long, requires_all = ["mysql_ca_file", "database", "language", "profile"])]
+        mysql_defaults_file: Option<PathBuf>,
+        #[arg(long, requires_all = ["mysql_defaults_file", "database", "language", "profile"])]
+        mysql_ca_file: Option<PathBuf>,
+        #[arg(long, requires_all = ["mysql_defaults_file", "mysql_ca_file", "language", "profile"])]
+        database: Option<String>,
+        /// Explicit trust scope recorded with server-authoritative outcome evidence.
+        #[arg(long, requires_all = ["mysql_defaults_file", "mysql_ca_file", "database", "profile"])]
+        language: Option<String>,
+        #[arg(long, requires_all = ["mysql_defaults_file", "mysql_ca_file", "database", "language"])]
+        profile: Option<String>,
     },
-    /// Build trust.json for `collect --trust` from one or more reports.jsonl files.
+    /// Build trust.json from validated canonical reports and native server outcome evidence.
     Trust {
         #[arg(long, required = true)]
         reports: Vec<PathBuf>,
+        #[arg(long, required = true)]
+        outcomes: Vec<PathBuf>,
         /// The highest overall CER that passes.
         #[arg(long)]
         max_cer: f64,
@@ -1379,25 +1393,61 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
             project,
             spool,
             out,
+            mysql_defaults_file,
+            mysql_ca_file,
+            database,
+            language,
+            profile,
         } => {
-            let s = x::collect::run(&x::collect::Options {
+            let options = x::collect::Options {
                 root,
                 project,
                 spool,
                 out,
-            })?;
-            eprintln!("{s:?}");
+            };
+            let summary = match (
+                mysql_defaults_file,
+                mysql_ca_file,
+                database,
+                language,
+                profile,
+            ) {
+                (
+                    Some(mysql_defaults_file),
+                    Some(mysql_ca_file),
+                    Some(database),
+                    Some(language),
+                    Some(profile),
+                ) => {
+                    let config = x::collect::NativeConfig {
+                        mysql_defaults_file,
+                        mysql_ca_file,
+                        database,
+                        language,
+                        profile,
+                    };
+                    let rows = x::collect::native_results(&options.root, &config).await?;
+                    x::collect::run_with_native(&options, &rows, &config)?
+                }
+                (None, None, None, None, None) => x::collect::run(&options)?,
+                _ => {
+                    anyhow::bail!("native Gold collection requires all database and scope options")
+                }
+            };
+            eprintln!("{summary:?}");
         }
         Gold::Trust {
             reports,
+            outcomes,
             max_cer,
             manifest_sha256,
             language,
             profile,
             out,
         } => {
-            let t = usnm_boinc::trust::Trust::build(
+            let t = usnm_boinc::trust::Trust::build_with_outcomes(
                 &reports,
+                &outcomes,
                 max_cer,
                 &manifest_sha256,
                 usnm_boinc::trust::Scope {
