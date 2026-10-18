@@ -912,5 +912,563 @@ class QueueTransportTests(unittest.TestCase):
         self.assertIn("HANDOFF_DOCS=a_b,c_d", argv)
 
 
+def status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456, quality_unsent=24,
+               quality_in_progress=31, train_unsent=2, zero_work=None):
+    ready = ocr_unsent + qwen_unsent + quality_unsent + train_unsent
+    in_prog = ocr_in_progress + quality_in_progress
+    extra = f"<zero_work_requests>{zero_work}</zero_work_requests>" if zero_work is not None else ""
+    return f"""<server_status>
+  <database_file_states>
+    <results_ready_to_send>{ready}</results_ready_to_send>
+    <results_in_progress>{in_prog}</results_in_progress>
+    {extra}
+    <tasks_by_app>
+      <app><name>usnm_iris</name><unsent>0</unsent><in_progress>0</in_progress></app>
+      <app><name>usnm_ocr</name><unsent>{ocr_unsent}</unsent><in_progress>{ocr_in_progress}</in_progress></app>
+      <app><name>usnm_assess</name><unsent>0</unsent><in_progress>0</in_progress></app>
+      <app><name>usnm_surya</name><unsent>0</unsent><in_progress>0</in_progress></app>
+      <app><name>usnm_ndlocr</name><unsent>0</unsent><in_progress>0</in_progress></app>
+      <app><name>usnm_qwen</name><unsent>{qwen_unsent}</unsent><in_progress>0</in_progress></app>
+      <app><name>usnm_quality</name><unsent>{quality_unsent}</unsent><in_progress>{quality_in_progress}</in_progress></app>
+      <app><name>usnm_qwen_train</name><unsent>{train_unsent}</unsent><in_progress>0</in_progress></app>
+    </tasks_by_app>
+  </database_file_states>
+</server_status>"""
+
+
+class CohortWatermarksAndStarvationTests(unittest.TestCase):
+    def setUp(self):
+        self.config = config()
+        self.config["pages"] = [
+            {
+                "page": f"sn12345678/1900-01-01/ed-1/seq-{number}",
+                "scan": f"/tank/ocr/scans/keep/test_batch/sn12345678/1900-01-01/ed-1/seq-{number}.jp2",
+            }
+            for number in range(1, 9)
+        ]
+        self.state = {}
+        self.fake = Fake()
+        self.saved = []
+
+    def tick(self, **kwargs):
+        return batch.tick(
+            self.config, self.state, self.fake,
+            lambda: self.saved.append(copy.deepcopy(self.state)), NOW, **kwargs,
+        )
+
+    def test_456_unsent_qwen_tasks_do_not_block_ocr_refill_below_low_watermark(self):
+        # Reproduce the 2026-10-17 live starvation state: 456 unsent usnm_qwen tasks (plus
+        # quality/training) in aggregate pending_workunits, while usnm_ocr has 0 unsent / 0 in_progress.
+        self.fake.other = 513
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                          server_status=xml)
+        self.assertFalse(event["backpressure"])
+        self.assertIsNone(event["backpressure_reason"])
+        self.assertEqual(event["cohort_pending"], 0)
+        self.assertEqual(event["other_app_pending"], 513)
+        self.assertEqual(event["global_pending"], 513)
+        self.assertEqual(event["max_global_pending"], 1000)
+        self.assertEqual(event["selected"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+        self.assertEqual(
+            [action[0] for action in self.fake.actions],
+            ["export", "submit", "submit"],
+        )
+
+    def test_456_unsent_qwen_tasks_do_not_block_queue_fed_ocr_claim_and_refill(self):
+        qcfg = queue_config()
+        qfake = QueueFake([message(number) for number in range(1, 6)])
+        qfake.assertions = []
+        qfake.other = 456
+        state = {}
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        event = batch.tick(qcfg, state, qfake, lambda: None, NOW,
+                           low_watermark=1, high_watermark=4, max_global_pending=1000,
+                           server_status=xml)
+        self.assertFalse(event["backpressure"])
+        self.assertEqual(qfake.actions[0], ("claim", 2))
+        self.assertEqual(len(qfake.jobs), 2)
+
+    def test_global_safety_cap_halts_refill_with_explicit_diagnostic_reason(self):
+        # 456 unsent usnm_qwen tasks exceed max_global_pending=400 even though usnm_ocr is 0/0.
+        self.fake.other = 456
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        blocked = self.tick(low_watermark=1, high_watermark=4, max_global_pending=400,
+                            server_status=xml)
+        self.assertTrue(blocked["backpressure"])
+        self.assertEqual(blocked["backpressure_reason"], "global_safety_cap")
+        self.assertEqual(blocked["selected"], 0)
+        self.assertEqual(self.fake.actions, [])
+        self.assertTrue(blocked["starvation_alert"])
+        self.assertEqual(blocked["alerts"][0]["blocked_by"], "global_safety_cap")
+        self.assertEqual(blocked["alerts"][0]["refilled"], 0)
+
+        # Raising max_global_pending above 456 allows usnm_ocr to refill up to its cohort high watermark,
+        # after which backpressure_reason explicitly reports cohort_high_watermark rather than global_safety_cap.
+        first = self.tick(low_watermark=1, high_watermark=4, max_global_pending=600,
+                          server_status=xml)
+        self.assertFalse(first["backpressure"])
+        self.assertIsNone(first["backpressure_reason"])
+        second = self.tick(low_watermark=1, high_watermark=4, max_global_pending=600,
+                           server_status=xml)
+        self.assertFalse(second["backpressure"])
+        self.assertEqual(len(self.fake.jobs), 4)
+        at_high = self.tick(low_watermark=1, high_watermark=4, max_global_pending=600,
+                            server_status=xml)
+        self.assertTrue(at_high["backpressure"])
+        self.assertEqual(at_high["backpressure_reason"], "cohort_high_watermark")
+        self.assertNotEqual(at_high["backpressure_reason"], blocked["backpressure_reason"])
+
+    def test_low_high_watermark_hysteresis_works_cleanly_across_ticks(self):
+        self.fake.other = 456
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        # Tick 1: at 0 (<= low_watermark 1), enters refill mode and dispatches batch_size=2.
+        t1 = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                       server_status=xml)
+        self.assertFalse(t1["backpressure"])
+        self.assertTrue(t1["cohort"]["refilling"])
+        self.assertEqual(len(self.fake.jobs), 2)
+
+        # Tick 2: at 2 (> low_watermark 1, < high_watermark 4), continues in-progress refill wave up to 4.
+        t2 = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                       server_status=xml)
+        self.assertFalse(t2["backpressure"])
+        self.assertFalse(t2["cohort"]["refilling"])
+        self.assertEqual(len(self.fake.jobs), 4)
+
+        # Tick 3: at high_watermark (4), stops refilling with cohort_high_watermark.
+        t3 = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                       server_status=xml)
+        self.assertTrue(t3["backpressure"])
+        self.assertEqual(t3["backpressure_reason"], "cohort_high_watermark")
+        self.assertEqual(t3["selected"], 4)
+
+        # Tick 4: 2 of the 4 jobs finish and are collected; 2 remain in flight (> low_watermark 1).
+        # Hysteresis holds back refill while draining between high_watermark (4) and low_watermark (1).
+        job_ids = sorted(self.fake.jobs)
+        for job_id in job_ids[:2]:
+            self.fake.jobs[job_id]["spool"] = "/project/usnmocr/results/batch1"
+        t4 = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                       server_status=xml)
+        self.assertEqual(t4["newly_published"], 2)
+        self.assertEqual(t4["cohort_pending"], 2)
+        self.assertTrue(t4["backpressure"])
+        self.assertEqual(t4["backpressure_reason"], "cohort_hysteresis")
+        self.assertEqual(t4["selected"], 4)
+        self.assertEqual(len(self.fake.jobs), 4)
+
+        # Tick 5: 1 more job finishes and is collected; now only 1 job remains in flight (<= low_watermark 1).
+        # Hysteresis triggers refill back toward high_watermark (4).
+        self.fake.jobs[job_ids[2]]["spool"] = "/project/usnmocr/results/batch1"
+        t5 = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                       server_status=xml)
+        self.assertEqual(t5["newly_published"], 1)
+        self.assertEqual(t5["cohort_pending"], 1)
+        self.assertFalse(t5["backpressure"])
+        self.assertIsNone(t5["backpressure_reason"])
+        self.assertEqual(t5["selected"], 6)
+        self.assertEqual(len(self.fake.jobs), 6)
+
+        # Tick 6: completes the refill wave from 3 up to high_watermark (4).
+        t6 = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                       server_status=xml)
+        self.assertFalse(t6["backpressure"])
+        self.assertEqual(t6["selected"], 7)
+        self.assertEqual(len(self.fake.jobs), 7)
+        self.assertFalse(t6["cohort"]["refilling"])
+
+    def test_starvation_alert_triggers_when_active_ocr_hosts_face_zero_unsent_work(self):
+        self.fake.other = 456
+        xml_starved = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                          server_status=xml_starved)
+        self.assertTrue(event["starvation_alert"])
+        self.assertEqual(len(event["alerts"]), 1)
+        alert = event["alerts"][0]
+        self.assertEqual(alert["code"], "cohort_starvation")
+        self.assertEqual(alert["app"], "usnm_ocr")
+        self.assertEqual(alert["active_hosts"], 2)
+        self.assertEqual(alert["unsent"], 0)
+        self.assertEqual(alert["other_app_pending"], 456)
+        self.assertEqual(alert["other_app_pending_results"], 513)
+        self.assertEqual(alert["refilled"], 2)
+
+        # Once usnm_ocr has > low_watermark runnable work and > 0 unsent work, starvation alert clears.
+        xml_healthy = status_xml(ocr_unsent=3, ocr_in_progress=1, qwen_unsent=456)
+        healthy = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                            server_status=xml_healthy)
+        self.assertFalse(healthy["starvation_alert"])
+        self.assertEqual(healthy["alerts"], [])
+
+        # Repeated zero-work ('No tasks sent') scheduler replies trigger zero_work_starvation.
+        self.fake.scheduler_log = (
+            "2026-10-17 19:09:01 [PID=12] Sending reply to [HOST#8]: 0 results\n"
+            "2026-10-17 19:09:01 [PID=12] No tasks sent\n"
+            "2026-10-17 19:09:15 [PID=14] Got 0 new tasks\n"
+        )
+        zero_reply = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                               server_status=status_xml(ocr_unsent=0, ocr_in_progress=1, qwen_unsent=456))
+        self.assertTrue(zero_reply["starvation_alert"])
+        self.assertEqual(zero_reply["zero_work_requests"], 3)
+        self.assertEqual(zero_reply["alerts"][0]["code"], "zero_work_starvation")
+
+        # With 0 active hosts and 0 zero-work requests, no starvation alert is emitted.
+        self.fake.hosts = 0
+        self.fake.scheduler_log = None
+        idle = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                         server_status=xml_starved)
+        self.assertFalse(idle["starvation_alert"])
+        self.assertEqual(idle["alerts"], [])
+
+    def test_parse_server_status_and_config_cohort_validation(self):
+        parsed = batch.parse_server_status(status_xml(ocr_unsent=2, ocr_in_progress=3, qwen_unsent=456).encode())
+        self.assertEqual(parsed["apps"]["usnm_ocr"], {"unsent": 2, "in_progress": 3, "runnable": 5})
+        self.assertEqual(parsed["apps"]["usnm_qwen"], {"unsent": 456, "in_progress": 0, "runnable": 456})
+
+        from_dict = batch.parse_server_status({
+            "tasks_by_app": [{"name": "usnm_ocr", "unsent": 1, "in_progress": 2}],
+            "zero_work_hosts": ["host8", "host9"],
+        })
+        self.assertEqual(from_dict["apps"]["usnm_ocr"]["runnable"], 3)
+        self.assertEqual(from_dict["zero_work_requests"], 2)
+
+        for bad in (
+            b"<!DOCTYPE html><server_status/>",
+            b"<server_status><database_file_states><tasks_by_app><app><name>usnm_ocr</name><unsent>-1</unsent><in_progress>0</in_progress></app></tasks_by_app></database_file_states></server_status>",
+            b"<not_status/>",
+            b"x" * (batch.MAX_STATUS_BYTES + 1),
+        ):
+            with self.subTest(bad=bad[:24]), self.assertRaises(ValueError):
+                batch.parse_server_status(bad)
+
+        directory = Path(__file__).parent.resolve() / (".watermark-config-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            cfg = {
+                **self.config,
+                "low_watermark": 1,
+                "high_watermark": 4,
+                "max_global_pending": 1000,
+                "cohorts": {
+                    "usnm_ocr:cpu": {
+                        "app": "usnm_ocr", "platform": "all", "resource": "cpu",
+                        "low_watermark": 1, "high_watermark": 4, "pages_per_host": 2,
+                    }
+                },
+            }
+            cfg_path = directory / "config.json"
+            cfg_path.write_text(json.dumps(cfg))
+            loaded = batch.load_config(cfg_path)
+            self.assertEqual(loaded["max_global_pending"], 1000)
+
+            status_path = directory / "server_status.xml"
+            status_path.write_text(status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456))
+            out = io.StringIO()
+            with patch.object(batch.subprocess, "run", side_effect=AssertionError("offline")), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(batch.main([
+                    "--config", str(cfg_path), "--state-dir", str(directory),
+                    "--low-watermark", "1", "--high-watermark", "4", "--max-global-pending", "800",
+                ]), 0)
+            plan = json.loads(out.getvalue())
+            self.assertEqual((plan["low_watermark"], plan["high_watermark"], plan["max_global_pending"]),
+                             (1, 4, 800))
+
+            with patch.object(batch.Transport, "lock", return_value=contextlib.nullcontext()), \
+                    patch.object(batch, "tick", return_value={"event": "boinc_batch_tick"}) as mock_tick, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(batch.main([
+                    "--config", str(cfg_path), "--state-dir", str(directory), "--apply",
+                    "--low-watermark", "1", "--high-watermark", "4", "--max-global-pending", "800",
+                    "--server-status-file", str(status_path),
+                ]), 0)
+            self.assertEqual(mock_tick.call_args.kwargs["max_global_pending"], 800)
+            transport_arg = mock_tick.call_args.args[2]
+            self.assertEqual(transport_arg.server_status()["apps"]["usnm_qwen"]["unsent"], 456)
+        finally:
+            for item in directory.iterdir():
+                item.unlink()
+            directory.rmdir()
+
+    def test_interrupted_export_recovers_at_global_safety_cap(self):
+        # Regression for comment 4308880789: with batch_size=2, high_watermark=2, and
+        # max_global_pending=2, an interruption after persisting two selections leaves
+        # global_pending=2 (via missing) and global_free=0 on retry; existing allocations
+        # must still export and submit so work reaches BOINC.
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        self.fake.crash_export = True
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            self.tick(low_watermark=1, high_watermark=2, max_global_pending=2, server_status=xml)
+        self.assertEqual(len(self.state["selected"]), 2)
+        self.assertNotIn("refilling", self.state)
+        self.assertEqual(self.fake.jobs, {})
+
+        recovered = self.tick(low_watermark=1, high_watermark=2, max_global_pending=2,
+                              server_status=xml)
+        self.assertEqual(recovered["selected"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+        self.assertEqual(
+            [action[0] for action in self.fake.actions],
+            ["export", "submit", "submit"],
+        )
+
+    def test_interrupted_first_refill_resumes_under_hysteresis(self):
+        # Regression for comment 4308880809: with low=1, high=4 and batch_size=2, interruption
+        # after persisting selections but before completing export leaves two allocated pages
+        # and no saved refilling flag; retry enters hysteresis (pending=2) for fresh allocation
+        # but must still export and submit the recovered reservations.
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        self.fake.crash_export = True
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            self.tick(low_watermark=1, high_watermark=4, max_global_pending=10, server_status=xml)
+        self.assertEqual(len(self.state["selected"]), 2)
+        self.assertNotIn("refilling", self.state)
+        self.assertEqual(self.fake.jobs, {})
+
+        recovered = self.tick(low_watermark=1, high_watermark=4, max_global_pending=10,
+                              server_status=xml)
+        self.assertEqual(recovered["selected"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+        self.assertEqual(
+            [action[0] for action in self.fake.actions],
+            ["export", "submit", "submit"],
+        )
+
+    def test_non_canonical_ocr_workunits_are_not_double_counted_in_global_pending(self):
+        # Regression for comment 4308880830: batch-inventory counts all unassimilated workunits
+        # in pending_workunits, but pending_jobs only lists usnm_[0-9a-f]{64}. Three OCR workunits
+        # with other names (pending_workunits=3, pending_jobs=[], ocr_unsent=3) must report
+        # global_pending=3 (not 6) and allow 1 page to refill under a cap of 4.
+        self.fake.other = 3
+        xml = status_xml(ocr_unsent=3, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=3, high_watermark=4, max_global_pending=4,
+                          server_status=xml)
+        self.assertEqual(event["cohort_pending"], 3)
+        self.assertEqual(event["other_app_pending"], 0)
+        self.assertEqual(event["global_pending"], 3)
+        self.assertFalse(event["backpressure"])
+        self.assertEqual(event["selected"], 1)
+        self.assertEqual(len(self.fake.jobs), 1)
+
+    def test_228_qwen_workunits_with_456_unsent_replicas_do_not_block_cap_of_400(self):
+        # Regression for comment 4308954039: Qwen creates 2 result replicas per workunit,
+        # so 228 Qwen workunits in SQL (pending_workunits=228) have 456 unsent replicas in
+        # server_status. Workunit-level global_pending must be 228 (not 456) and must not
+        # block an empty usnm_ocr cohort under max_global_pending=400, while retaining
+        # replica counts separately for diagnostics.
+        self.fake.other = 228
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=400,
+                          server_status=xml)
+        self.assertFalse(event["backpressure"])
+        self.assertIsNone(event["backpressure_reason"])
+        self.assertEqual(event["cohort_pending"], 0)
+        self.assertEqual(event["other_app_pending"], 228)
+        self.assertEqual(event["global_pending"], 228)
+        self.assertEqual(event["cohort_pending_results"], 0)
+        self.assertEqual(event["other_app_pending_results"], 456)
+        self.assertEqual(event["global_pending_results"], 456)
+        self.assertEqual(event["selected"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_non_ocr_cohort_app_selectors_are_rejected(self):
+        # Regression for comment 4308954020 and Round-4 selector validation:
+        # Transport.submit() and BOINC status/inventory accounting only support
+        # application-wide CPU usnm_ocr workunits (app="usnm_ocr", platform="all", resource="cpu").
+        for bad_app in ("usnm_qwen", "usnm_surya", "usnm_quality", "other"):
+            with self.subTest(app=bad_app):
+                with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
+                    batch.normalize_cohort_apps(bad_app)
+                with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
+                    batch._validate_cohort_spec({"app": bad_app})
+                with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
+                    batch.resolve_watermarks({**self.config, "app": bad_app},
+                                             self.fake.inventory())
+        for bad_platform in ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "linux"):
+            with self.subTest(platform=bad_platform):
+                with self.assertRaisesRegex(batch.ConfigError, "application-scoped across all platforms"):
+                    batch.normalize_cohort_platform(bad_platform)
+                with self.assertRaisesRegex(batch.ConfigError, "application-scoped across all platforms"):
+                    batch._validate_cohort_spec({"platform": bad_platform})
+                with self.assertRaisesRegex(batch.ConfigError, "application-scoped across all platforms"):
+                    batch.resolve_watermarks({**self.config, "platform": bad_platform},
+                                             self.fake.inventory())
+        for bad_resource in ("gpu", "cuda", "mps"):
+            with self.subTest(resource=bad_resource):
+                with self.assertRaisesRegex(batch.ConfigError, "CPU-only"):
+                    batch.normalize_cohort_resource(bad_resource)
+                with self.assertRaisesRegex(batch.ConfigError, "CPU-only"):
+                    batch._validate_cohort_spec({"resource": bad_resource})
+                with self.assertRaisesRegex(batch.ConfigError, "CPU-only"):
+                    batch.resolve_watermarks({**self.config, "resource": bad_resource},
+                                             self.fake.inventory())
+
+    def test_empty_matched_cohort_retains_inherited_defaults(self):
+        # An explicitly matched empty cohort entry ("small": {}) must retain inherited
+        # defaults rather than falling through to another cohort ("large": {"high_watermark": 100}).
+        cfg = {
+            **self.config,
+            "cohort": "small",
+            "cohorts": {
+                "large": {"high_watermark": 100},
+                "small": {},
+            },
+        }
+        resolved = batch.resolve_watermarks(cfg, self.fake.inventory())
+        self.assertEqual(resolved["cohort"], "small")
+        self.assertEqual(resolved["high_watermark"], 4)
+        self.assertEqual(resolved["low_watermark"], 2)
+
+    def test_incomplete_structured_status_counters_are_rejected(self):
+        # Structured status entries must provide both unsent and in_progress counters
+        # rather than defaulting missing counters to 0 and bypassing the SQL fallback.
+        for bad_status in (
+            {"apps": {"usnm_ocr": {}}},
+            {"apps": {"usnm_ocr": {"unsent": 0}}},
+            {"apps": {"usnm_ocr": {"in_progress": 0}}},
+            {"tasks_by_app": [{"name": "usnm_ocr"}]},
+            {"tasks_by_app": [{"name": "usnm_ocr", "unsent": 1}]},
+        ):
+            with self.subTest(status=bad_status):
+                with self.assertRaisesRegex(ValueError, "missing BOINC app queue counters"):
+                    batch.parse_server_status(bad_status)
+                with self.assertRaisesRegex(ValueError, "missing BOINC app queue counters"):
+                    self.tick(low_watermark=1, high_watermark=4, max_global_pending=10,
+                              server_status=bad_status)
+
+    def test_refill_calculation_includes_existing_uncollected_backlog(self):
+        # With low=1, high=4, batch_size=3, and 1 foreign reservation in backlog,
+        # refilling 3 jobs reaches 4 total pending workunits and must clear refilling=False.
+        self.config["batch_size"] = 3
+        foreign = record("sn99999999/1900-01-01/ed-1/seq-1", 99)
+        foreign["plan"] = "other-plan"
+        self.fake.rows.append(foreign)
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=10,
+                          server_status=xml)
+        self.assertEqual(event["selected"], 3)
+        self.assertEqual(len(self.fake.jobs), 3)
+        self.assertFalse(event["cohort"]["refilling"])
+        self.assertFalse(self.state["refilling"])
+
+    def test_missing_or_aggregate_only_status_conservatively_uses_sql_backlog(self):
+        # Regression for comment 4309021102: when explicit watermarks enable cohort_mode without
+        # per-app status (or with aggregate-only status / status omitting usnm_ocr), unattributed
+        # SQL workunits in pending_workunits must be counted conservatively toward cohort_pending.
+        aggregate_only_xml = (
+            "<server_status><database_file_states>"
+            "<results_ready_to_send>3</results_ready_to_send>"
+            "<results_in_progress>0</results_in_progress>"
+            "</database_file_states></server_status>"
+        )
+        omitting_ocr_xml = (
+            "<server_status><database_file_states>"
+            "<results_ready_to_send>3</results_ready_to_send>"
+            "<results_in_progress>0</results_in_progress>"
+            "<tasks_by_app><app><name>usnm_qwen</name><unsent>0</unsent><in_progress>0</in_progress></app></tasks_by_app>"
+            "</database_file_states></server_status>"
+        )
+        for label, status_input in (
+            ("missing_status", None),
+            ("aggregate_only_xml", aggregate_only_xml),
+            ("omitting_ocr_xml", omitting_ocr_xml),
+        ):
+            with self.subTest(case=label):
+                self.setUp()
+                self.fake.other = 3
+                # With low=1, high=4 and 3 unattributed workunits in SQL, cohort_pending=3 enters
+                # hysteresis and admits 0 pages (not 2).
+                held_by_hysteresis = self.tick(
+                    low_watermark=1, high_watermark=4, max_global_pending=10,
+                    server_status=status_input,
+                )
+                self.assertEqual(held_by_hysteresis["cohort_pending"], 3)
+                self.assertEqual(held_by_hysteresis["other_app_pending"], 0)
+                self.assertEqual(held_by_hysteresis["selected"], 0)
+                self.assertEqual(len(self.fake.jobs), 0)
+
+                # With low=3, high=4 and 3 unattributed workunits in SQL, cohort_pending=3 admits
+                # only 1 page (not batch_size=2) to reach high=4.
+                refilled_one = self.tick(
+                    low_watermark=3, high_watermark=4, max_global_pending=10,
+                    server_status=status_input,
+                )
+                self.assertEqual(refilled_one["cohort_pending"], 3)
+                self.assertEqual(refilled_one["selected"], 1)
+                self.assertEqual(len(self.fake.jobs), 1)
+
+    def test_healthy_ocr_queue_with_zero_work_replies_does_not_alert(self):
+        # Regression for comment 4309021122: when usnm_ocr has a healthy queue (unsent=3,
+        # in_progress=1, low_watermark=1), zero-work scheduler replies (e.g. from earlier or
+        # another app/incompatible host) must not trigger zero_work_starvation.
+        self.fake.other = 228
+        self.fake.scheduler_log = (
+            "2026-10-17 19:09:01 [PID=12] Sending reply to [HOST#8]: 0 results\n"
+            "2026-10-17 19:09:01 [PID=12] No tasks sent\n"
+            "2026-10-17 19:09:15 [PID=14] Got 0 new tasks\n"
+        )
+        healthy_xml = status_xml(ocr_unsent=3, ocr_in_progress=1, qwen_unsent=456)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                          server_status=healthy_xml)
+        self.assertEqual(event["zero_work_requests"], 3)
+        self.assertFalse(event["starvation_alert"])
+        self.assertEqual(event["alerts"], [])
+
+    def test_status_failure_does_not_prevent_drain_collection(self):
+        # Regression for comment 4309021131: --apply --drain with an unavailable or malformed
+        # server status file/endpoint must still collect available results and succeed.
+        self.tick(low_watermark=1, high_watermark=4, max_global_pending=10)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+
+        directory = Path(__file__).parent.resolve() / (".drain-status-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            cfg_path = directory / "config.json"
+            cfg_path.write_text(json.dumps(self.config))
+            bad_status = directory / "corrupt_status.xml"
+            bad_status.write_text("<!DOCTYPE html><broken")
+            batch.save(directory / "state.json", {
+                "config_sha256": batch.digest(self.config),
+                **self.state,
+            })
+
+            real_transport = batch.Transport
+
+            def fake_transport(cfg, state_dir, *, status_url=None, status_file=None):
+                self.fake.lock = lambda: contextlib.nullcontext()
+                self.fake.server_status = lambda: real_transport(
+                    cfg, state_dir, status_url=status_url, status_file=status_file,
+                ).server_status()
+                return self.fake
+
+            out = io.StringIO()
+            with patch.object(batch, "Transport", side_effect=fake_transport), \
+                    patch.object(batch.time, "time", return_value=NOW), \
+                    contextlib.redirect_stdout(out):
+                rc = batch.main([
+                    "--config", str(cfg_path), "--state-dir", str(directory),
+                    "--apply", "--drain", "--server-status-file", str(bad_status),
+                ])
+            self.assertEqual(rc, 0)
+            drained = json.loads(out.getvalue())
+            self.assertTrue(drained["draining"])
+            self.assertEqual(drained["published"], 2)
+            self.assertEqual(drained["newly_published"], 2)
+        finally:
+            for item in directory.iterdir():
+                item.unlink()
+            directory.rmdir()
+
+
 if __name__ == "__main__":
     unittest.main()

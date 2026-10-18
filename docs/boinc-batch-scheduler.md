@@ -127,21 +127,44 @@ pages rather than overwriting them, including for historical cohorts.
 3. Collect up to `batch_size` previously allocated results, even with no active
    hosts or a full queue. Never supply a host ID override or bypass `--trust`.
    Partial output sets wait; duplicate spool directories fail closed.
-4. Count **all apps' unassimilated workunits**, plus unfinished dispatch entries
-   not already in that SQL set and durable allocations not yet exported. This
-   includes assimilated jobs with missing or partial outputs, not just
-   reservations; a stalled collector cannot create unbounded result backlog.
-   Target `min(max_pending, active_hosts * pages_per_host)` page workunits. Here
-   `active_hosts` means hosts that made a scheduler RPC in the last 24 hours,
-   not a promise that they can run this app. The existing scheduler and plan
-   classes decide actual compatibility. Tune the bounded multiplier after
-   measuring that pool; 0 recent hosts pauses feeding. Other apps' work consumes
-   capacity, and an uncertain submission blocks allocation until explicit
+4. Separate the runnable `usnm_ocr` cohort queue (`app` / `platform` / `resource`,
+   default `usnm_ocr` / `all` / `cpu`; only `usnm_ocr`, `all`, and `cpu` are
+   accepted as cohort selectors because `Transport.submit()` and
+   `server_status` / `batch-inventory` queue accounting are application-scoped
+   CPU workunits across all platforms) from unrelated other-app queues (such as
+   `usnm_qwen`, `usnm_quality`, or `usnm_surya`), while enforcing an overall
+   global safety cap (`max_global_pending` / `--max-global-pending`, up to
+   100,000 workunits across all apps and collection backlog). When
+   `server_status.php?xml=1` (or a
+   structured status snapshot via `--server-status-url` / `--server-status-file`
+   or `inventory.json`) is supplied, `parse_server_status` reads per-app
+   `<unsent>` and `<in_progress>` counts so `usnm_ocr` admission checks
+   `usnm_ocr`'s own runnable queued/in-progress work against its cohort low/high
+   watermarks rather than letting unrelated GPU/other-app queues starve
+   CPU/native hosts. Global and cohort headroom (`cohort_pending`,
+   `other_app_pending`, `global_pending`) are reconciled in SQL workunit units,
+   while result-replica counts (`cohort_pending_results`,
+   `other_app_pending_results`, `global_pending_results`) are retained separately
+   for queue diagnostics.
+   Cohort watermarks (`low_watermark` / `--low-watermark` and `high_watermark` /
+   `--high-watermark`, or nested under `cohorts.<cohort>` / `cohort`) implement
+   hysteresis: when `cohort_pending <= low_watermark` (and `active_hosts > 0`),
+   the controller enters refilling mode (`refilling: true`) and refills up to
+   `high_watermark` (capped by `min(max_pending, active_hosts * pages_per_host)`
+   when `high_watermark` is not explicitly configured), then holds above
+   `low_watermark` (`backpressure_reason: "cohort_hysteresis"`) until the runnable
+   queue drains back to `low_watermark`. When the global backlog reaches
+   `max_global_pending`, refilling halts with `backpressure_reason:
+"global_safety_cap"` (distinct from `"cohort_high_watermark"`,
+   `"cohort_hysteresis"`, `"collection_backlog"`, `"no_active_hosts"`, and
+   `"draining"`). Assimilated jobs with missing or partial outputs still count
+   toward `collection_backlog`; a stalled collector cannot create unbounded
+   result backlog, and an uncertain submission blocks allocation until explicit
    reconciliation.
 5. Persist selected pages **before** pushing or exporting. Push and export at
    most `batch_size` cached pages, then submit at most `batch_size`
-   reservations. Submissions, including recovered reservations, also respect the
-   remaining observed all-app queue capacity. Export transfers only the selected
+   reservations. Submissions, including recovered reservations, respect both the
+   cohort high watermark and `max_global_pending`. Export transfers only the selected
    scans and sidecars, their existing journal entries and the single manifest
    snapshot; collection transfers only one journal, its optional `accepted/`
    publication recovery snapshot and result and trust files. Accepted bytes
@@ -155,11 +178,17 @@ pages rather than overwriting them, including for historical cohorts.
    available. Submission headroom includes other plans' assimilated, uncollected
    backlog; converting this cohort's reservations does not ignore that backlog.
 6. Emit a structured `boinc_batch_tick` JSON event: selected and published
-   counts, new publications, cumulative pages/hour, host and queue counts,
-   oldest pending age, collection backlog and backpressure. Errors emit
-   `boinc_batch_failure` and exit nonzero without dumping command output or
-   credentials. Route stdout/stderr to the controller's existing log sink;
-   this is controller telemetry, not a claim of live workbook ingestion.
+   counts, new publications, cumulative pages/hour, host and queue counts
+   (`cohort_pending`, `other_app_pending`, `global_pending`, `low_watermark`,
+   `high_watermark`, `max_global_pending`, `refilling`, `app_queues`), oldest
+   pending age, collection backlog, `backpressure` and `backpressure_reason`,
+   plus `starvation_alert` and structured `alerts` (`cohort_starvation` when
+   active hosts face `0` unsent or `<= low_watermark` runnable `usnm_ocr` work,
+   and `zero_work_starvation` when scheduler logs or status report hosts
+   receiving zero tasks). Errors emit `boinc_batch_failure` and exit nonzero
+   without dumping command output or credentials. Route stdout/stderr to the
+   controller's existing log sink; this is controller telemetry, not a claim of
+   live workbook ingestion.
 
 Collection backlog consumes the next ticks before new allocation. A terminal
 failure or a failed or held collection stops that tick, leaves state intact and
