@@ -534,7 +534,19 @@ The input template marks all of these `<sticky/>` and `<no_delete/>` (written by
 
 `gold-result.json` holds, per crop: reference characters, character edits, reference words, word edits, the model profile and the time; then a summary per source, the crops it skipped and why, the engine version, the bundle version and manifest checksum, the job id and your BOINC host id. It holds no page text and no transcription. Counts are enough to compare engines across hosts, and the licences (BLN600's No-Derivatives terms in particular) rule out sending anything else. Crops in a language the worker image has no model for are listed as skipped.
 
-**How gold results will be used.** The OCR app's validator accepts any well-formed result. It doesn't compare text between hosts yet ([boinc.md](boinc.md#connect-a-stock-boinc-project)). A gold result shows how a host's engine does on known text, and the plan is to use it to decide whether to trust that host's OCR. That is a tracked follow-up and is not built yet.
+**How gold results are used.** The OCR app's stock validator accepts any
+well-formed result; it does not establish text agreement. The central
+[host-trust collector](boinc.md#host-trust-for-usnm_ocr) gates production OCR
+publication on a calibrated Gold policy for the host's exact worker image,
+source language, model profile, PSM and DPI. Unsupported jobs are held in
+quarantine rather than inheriting another language's calibration. Main's v5
+policy also binds reports to native BOINC host/result identities and server
+timestamps, and accounts for attributable terminal client errors. Source
+implementation is not rollout: the recorded English-only v4 pilot does not
+establish v5 live acceptance or authorize other languages. Automatic first-Gold
+and independent-host spot-check commands exist, but their scheduling and live
+acceptance remain operator-controlled (#468). This is a quality signal for
+trusted volunteers, not identity verification or malicious-host protection.
 
 ## 4. Resources, network and privacy
 
