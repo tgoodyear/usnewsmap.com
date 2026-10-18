@@ -27,18 +27,36 @@ pub fn round6_opt(x: Option<f64>) -> Option<f64> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImageFeatures {
+    /// Standard deviation of 90th-percentile background grey across an 8x8 tile grid.
+    #[serde(default)]
+    pub bg_tile_std: Option<f64>,
     pub bleed_through: f64,
     pub blur: f64,
     pub contrast: f64,
+    /// Estimated text line pitch/height in original page pixels from horizontal ink projection.
+    #[serde(default)]
+    pub est_line_height_px: Option<f64>,
+    /// Mean normalized depth of inter-column vertical gutters in 0..=1.
+    #[serde(default)]
+    pub gutter_clarity: Option<f64>,
     /// Pixels of the page.
     pub height: u32,
+    /// Estimated number of text columns from deskewed vertical ink projection.
+    #[serde(default)]
+    pub img_columns: Option<usize>,
     pub ink_density: f64,
     pub noise: f64,
+    /// Share of pixels where global Otsu disagrees with local 8x8 tile Otsu thresholding.
+    #[serde(default)]
+    pub otsu_local_diff: Option<f64>,
     /// The integer factor the page was downscaled by.
     pub scale: u32,
     pub skew_deg: f64,
     /// The Otsu threshold on the grey copy.
     pub threshold: u8,
+    /// Ratio of vertical projection variance to total (vertical + horizontal) projection variance.
+    #[serde(default)]
+    pub vertical_stroke_ratio: Option<f64>,
     pub width: u32,
 }
 

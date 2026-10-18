@@ -55,9 +55,12 @@ boinc_load_settings() {
       (if (.codeSignPublicKey | type) != "string" then "codeSignPublicKey must be a string" else empty end),
       (if (.goldBundle | type) != "boolean" then "goldBundle must be true or false" else empty end),
       (if has("requireSecureTransport") and (.requireSecureTransport | type) != "boolean" then "requireSecureTransport must be true or false" else empty end),
-      (if (.images | type) != "object" or (.images | keys) != ["appver", "bridge", "server", "worker"] then "images must have exactly appver, bridge, server and worker" else empty end),
+      (if (.images | type) != "object" or ((.images | keys) - ["web"]) != ["appver", "bridge", "server", "worker"] then "images must have appver, bridge, server and worker, with optional web" else empty end),
+      (if has("images") and (.images | has("web")) and (.images.web | type) != "string" then "images.web must be a string" else empty end),
+      (if (.images.web // "" | acr) then empty else "images.web must be empty or an immutable ACR image" end),
       (if (.images.server // "" | acr) and (.images.bridge // "" | acr) then empty else "images.server and images.bridge must be empty or <registry>.azurecr.io/<name>@sha256:<64 hex>" end),
       (if (.images.appver // "") | test("^$|^[a-z0-9.-]+\\.azurecr\\.io/usnm-boinc-appver@sha256:[0-9a-f]{64}$") then empty else "images.appver must be empty or <registry>.azurecr.io/usnm-boinc-appver@sha256:<64 hex>" end),
+      (if (.images.web // "" | length > 0) and (.images.server // "" | length == 0) then "images.web needs images.server" else empty end),
       (if (.images.appver // "" | length > 0) and (.images.server // "" | length == 0) then "images.appver needs images.server (the publish job runs in the app environment)" else empty end),
       (if (.images.worker // "") | test("^$|^ghcr\\.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64}$") then empty else "images.worker must be empty or ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>" end),
       (if (.images.server // "" | length > 0) != (.images.bridge // "" | length > 0) then "images.server and images.bridge are set together (the bridge image is built on the server image)" else empty end),
@@ -76,6 +79,7 @@ boinc_load_settings() {
   PROJECT_URL=$(jq -r .projectUrl "$BOINC_SETTINGS")
   OPERATOR_ID=$(jq -r .operator.objectId "$BOINC_SETTINGS")
   OPERATOR_LOGIN=$(jq -r .operator.login "$BOINC_SETTINGS")
+  WEB_IMAGE=$(jq -r '.images.web // ""' "$BOINC_SETTINGS")
   SERVER_IMAGE=$(jq -r .images.server "$BOINC_SETTINGS")
   BRIDGE_IMAGE=$(jq -r .images.bridge "$BOINC_SETTINGS")
   WORKER_IMAGE=$(jq -r .images.worker "$BOINC_SETTINGS")

@@ -270,6 +270,10 @@ pub struct PageRow {
     pub damage_rate: Option<f64>,
     pub function_share: Option<f64>,
     pub garbage_share: Option<f64>,
+    pub numeric_share: Option<f64>,
+    pub short_line_share: Option<f64>,
+    pub fraktur_score: Option<f64>,
+    pub ink_word_coverage: Option<f64>,
     pub head_words: Option<u64>,
     pub near_words: Option<u64>,
     pub known_words: Option<u64>,
@@ -288,6 +292,12 @@ pub struct PageRow {
     pub noise: Option<f64>,
     pub bleed_through: Option<f64>,
     pub ink_density: Option<f64>,
+    pub bg_tile_std: Option<f64>,
+    pub otsu_local_diff: Option<f64>,
+    pub img_columns: Option<usize>,
+    pub gutter_clarity: Option<f64>,
+    pub est_line_height_px: Option<f64>,
+    pub vertical_stroke_ratio: Option<f64>,
     pub blocks: Option<usize>,
     pub lines: Option<usize>,
     pub line_words: Option<usize>,
@@ -297,6 +307,24 @@ pub struct PageRow {
     pub total_ms: u64,
     pub plan_class: Option<String>,
     pub with_readings: bool,
+}
+
+fn compute_ink_word_coverage(
+    words: usize,
+    img: Option<&usnm_ocr_contract::quality::ImageFeatures>,
+    lay: Option<&usnm_ocr_contract::quality::LayoutFeatures>,
+) -> Option<f64> {
+    let i = img?;
+    if i.width == 0 || i.height == 0 || i.ink_density <= 0.0 {
+        return None;
+    }
+    let lh = i
+        .est_line_height_px
+        .or_else(|| lay.and_then(|l| l.line_height_px))?
+        .max(6.0);
+    let ink_area = f64::from(i.width) * f64::from(i.height) * i.ink_density;
+    let expected_words = (ink_area / (lh * lh)).max(1.0);
+    Some(round6(words as f64 / expected_words))
 }
 
 fn loc_pair_metrics(
@@ -350,6 +378,12 @@ pub fn enrich_rows_with_damage(rows: &mut [PageRow], texts: &Texts, loc_fallback
             .or(scored.function_share)
             .map(round6);
         row.garbage_share = scored.garbage_share.map(round6);
+        row.numeric_share = scored.numeric_share.map(round6);
+        row.short_line_share = scored.short_line_share.map(round6);
+        row.fraktur_score = forced
+            .and_then(|f| f.fraktur_score)
+            .or(scored.fraktur_score)
+            .map(round6);
         row.head_words = forced
             .map(|f| f.damage.head)
             .or_else(|| scored.damage.map(|d| d.head));
@@ -370,6 +404,7 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
         .iter()
         .map(|x| {
             let (cer_vs_loc, wer_vs_loc, dice_vs_loc, word_ratio_vs_loc) = loc_pair_metrics(x);
+            let ink_word_coverage = compute_ink_word_coverage(x.words, img, lay);
             PageRow {
                 doc_id: job.doc_id.clone(),
                 group: job.group.clone(),
@@ -397,6 +432,10 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
                 damage_rate: None,
                 function_share: None,
                 garbage_share: None,
+                numeric_share: None,
+                short_line_share: None,
+                fraktur_score: None,
+                ink_word_coverage,
                 head_words: None,
                 near_words: None,
                 known_words: None,
@@ -415,6 +454,12 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
                 noise: img.map(|i| i.noise),
                 bleed_through: img.map(|i| i.bleed_through),
                 ink_density: img.map(|i| i.ink_density),
+                bg_tile_std: img.and_then(|i| i.bg_tile_std),
+                otsu_local_diff: img.and_then(|i| i.otsu_local_diff),
+                img_columns: img.and_then(|i| i.img_columns),
+                gutter_clarity: img.and_then(|i| i.gutter_clarity),
+                est_line_height_px: img.and_then(|i| i.est_line_height_px),
+                vertical_stroke_ratio: img.and_then(|i| i.vertical_stroke_ratio),
                 blocks: lay.map(|l| l.blocks),
                 lines: lay.map(|l| l.lines),
                 line_words: lay.map(|l| l.words),
@@ -443,6 +488,7 @@ pub fn bundle_page_rows(
         .iter()
         .map(|x| {
             let (cer_vs_loc, wer_vs_loc, dice_vs_loc, word_ratio_vs_loc) = loc_pair_metrics(x);
+            let ink_word_coverage = compute_ink_word_coverage(x.words, img, lay);
             PageRow {
                 doc_id: bp.doc_id.clone(),
                 group: bp.group.clone(),
@@ -470,6 +516,10 @@ pub fn bundle_page_rows(
                 damage_rate: None,
                 function_share: None,
                 garbage_share: None,
+                numeric_share: None,
+                short_line_share: None,
+                fraktur_score: None,
+                ink_word_coverage,
                 head_words: None,
                 near_words: None,
                 known_words: None,
@@ -488,6 +538,12 @@ pub fn bundle_page_rows(
                 noise: img.map(|i| i.noise),
                 bleed_through: img.map(|i| i.bleed_through),
                 ink_density: img.map(|i| i.ink_density),
+                bg_tile_std: img.and_then(|i| i.bg_tile_std),
+                otsu_local_diff: img.and_then(|i| i.otsu_local_diff),
+                img_columns: img.and_then(|i| i.img_columns),
+                gutter_clarity: img.and_then(|i| i.gutter_clarity),
+                est_line_height_px: img.and_then(|i| i.est_line_height_px),
+                vertical_stroke_ratio: img.and_then(|i| i.vertical_stroke_ratio),
                 blocks: lay.map(|l| l.blocks),
                 lines: lay.map(|l| l.lines),
                 line_words: lay.map(|l| l.words),
@@ -1092,6 +1148,82 @@ mod tests {
     }
 
     #[test]
+    fn old_results_preserve_unmeasured_metrics_in_both_collector_paths() {
+        use usnm_ocr_contract::quality::{BundlePageInputs, BundleSlice};
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::quality::work::tests::unit(tmp.path());
+        let l = crate::quality::work::prepare(tmp.path()).unwrap();
+        let c = crate::quality::work::compute(&crate::quality::work::Inputs {
+            job: &job,
+            page: &l.page,
+            alto: &l.alto,
+            texts: &l.texts,
+            places: &l.places,
+        })
+        .unwrap();
+        let mut legacy = serde_json::to_value(&c.result).unwrap();
+        let image = legacy["page"]["image"].as_object_mut().unwrap();
+        for key in [
+            "bg_tile_std",
+            "otsu_local_diff",
+            "img_columns",
+            "gutter_clarity",
+            "est_line_height_px",
+            "vertical_stroke_ratio",
+        ] {
+            image.remove(key);
+        }
+        let result: ResultManifest = serde_json::from_value(legacy).unwrap();
+        let bp = BundlePage {
+            crop_seed: job.crop_seed,
+            doc_id: job.doc_id.clone(),
+            function_words: vec![],
+            group: job.group.clone(),
+            k_crops: job.k_crops,
+            language: job.language.clone(),
+            readers: job.readers.clone(),
+            inputs: BundlePageInputs {
+                page: BundleSlice::of(0, b"", "fixture"),
+                alto: BundleSlice::of(0, b"", "fixture"),
+                texts: BundleSlice::of(0, b"", "fixture"),
+            },
+        };
+        let pr = PageResult {
+            doc_id: job.doc_id.clone(),
+            hat: result.hat.clone(),
+            legibility: result.legibility.clone(),
+            outcome: result.outcome,
+            page: result.page.clone(),
+            readers: result.readers.clone(),
+            timings: result.timings.clone(),
+            unit_error: None,
+        };
+        for rows in [
+            page_rows(&job, &result, false),
+            bundle_page_rows(&job, &bp, &pr, None, false),
+        ] {
+            assert!(!rows.is_empty());
+            for row in rows {
+                assert!(row.bg_tile_std.is_none());
+                assert!(row.otsu_local_diff.is_none());
+                assert!(row.img_columns.is_none());
+                assert!(row.gutter_clarity.is_none());
+                assert!(row.est_line_height_px.is_none());
+                assert!(row.vertical_stroke_ratio.is_none());
+            }
+        }
+        let mut measured = result.clone();
+        measured
+            .page
+            .as_mut()
+            .unwrap()
+            .image
+            .as_mut()
+            .unwrap()
+            .bg_tile_std = Some(0.0);
+        assert_eq!(page_rows(&job, &measured, false)[0].bg_tile_std, Some(0.0));
+    }
+    #[test]
     fn page_rows_enrich_lexical_damage_and_loc_pairwise_metrics() {
         let tmp = tempfile::tempdir().unwrap();
         let mut job = crate::quality::work::tests::unit(tmp.path());
@@ -1120,5 +1252,24 @@ mod tests {
         assert!(ours_row.word_ratio_vs_loc.is_some());
         assert!(ours_row.function_share.is_some());
         assert!(ours_row.known_words.is_some());
+        assert!(ours_row.numeric_share.is_some());
+        assert!(ours_row.short_line_share.is_some());
+        assert!(ours_row.fraktur_score.is_some());
+        assert!(ours_row.ink_word_coverage.is_some());
+        assert!(ours_row.bg_tile_std.is_some());
+        assert!(ours_row.otsu_local_diff.is_some());
+        assert!(ours_row.img_columns.is_some());
+        assert!(ours_row.gutter_clarity.is_some());
+        assert!(ours_row.est_line_height_px.is_some());
+        assert!(ours_row.vertical_stroke_ratio.is_some());
+
+        // Analytic cross-reader coverage ratio identity:
+        // ink_word_coverage(A) / ink_word_coverage(loc) == word_ratio_vs_loc(A).
+        let cov_ratio = ours_row.ink_word_coverage.unwrap() / loc_row.ink_word_coverage.unwrap();
+        assert!(
+            (cov_ratio - ours_row.word_ratio_vs_loc.unwrap()).abs() <= 1e-4,
+            "cov_ratio {cov_ratio} != word_ratio_vs_loc {:?}",
+            ours_row.word_ratio_vs_loc
+        );
     }
 }

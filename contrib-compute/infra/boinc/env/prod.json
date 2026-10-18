@@ -5,8 +5,9 @@
   "goldBundle": true,
   "images": {
     "appver": "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:8db09402135495f1c9384c87e344586842632053fc01c57f72050f0168ebd2e2",
-    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:a30e65777cd396c12c991bbdd270a1bc367617455343399dd8c058d99f9882cd",
-    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:c19eae5e0d4d393c7e8bd8f3024450fa8b97d5331e3a6165c7b2575354555210",
+    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:b8fb643e8485fd1941bd2b7d9768ad99ff0d67136f1a20cbd14f3ba09e22258a",
+    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:9323a0d2e31fd0394e4833eb47412b8a4c1182a2898e81e84d9e6ebab292ad35",
+    "web": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:508a9256c4d7c507f64114657f54214b9b23a5c5e05b7b1059b4b152a480b32b",
     "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa"
   },
   "location": "westus2",

@@ -222,7 +222,7 @@ mod tests {
         let canonical_bytes = serde_json::to_vec(&result.canonical()).unwrap();
         assert_eq!(
             sha256(&canonical_bytes),
-            "7eaca929fe05fcd39d6423dfb269e6cbec6ccdd8d80b4d385946e8898c99215a"
+            "b3a2db38da07f0720894a784157dae033e1a1f427a4df58175d6bd2650f0e029"
         );
         assert_eq!(
             sha256(&confusions_bytes),
