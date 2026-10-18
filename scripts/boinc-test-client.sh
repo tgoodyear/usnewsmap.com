@@ -24,6 +24,7 @@ usage: scripts/boinc-test-client.sh --env <prod|dev> (--create | --delete) [opti
   --spot                           Deploy as an Azure Spot VM (default)
   --paygo                          Deploy as a regular pay-as-you-go VM
   --authenticator-file <PATH>      Optional file holding an existing BOINC authenticator (default: create a disposable account on the server)
+  --resource-suffix <32 hex>        Isolate an acceptance run in a unique resource group
   --what-if                        Check settings and print the plan without creating or deleting resources
   -h, --help                       Show this help
 EOF
@@ -41,6 +42,7 @@ SKU="Standard_NC4as_T4_v3"
 SPOT=true
 AUTH_FILE=""
 WHAT_IF=false
+RESOURCE_SUFFIX=""
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -51,6 +53,7 @@ while [ $# -gt 0 ]; do
     --spot) SPOT=true; shift ;;
     --paygo) SPOT=false; shift ;;
     --authenticator-file) [ $# -ge 2 ] || usage; AUTH_FILE=$2; shift 2 ;;
+    --resource-suffix) [ $# -ge 2 ] || usage; RESOURCE_SUFFIX=$2; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
@@ -59,6 +62,8 @@ done
 
 [ -n "$ENV_NAME" ] && [ -n "$MODE" ] || usage
 [[ $SKU =~ ^[A-Za-z0-9_]+$ ]] || die "--sku must be an Azure VM size name"
+
+[ -z "$RESOURCE_SUFFIX" ] || [[ $RESOURCE_SUFFIX =~ ^[0-9a-f]{32}$ ]] || die "--resource-suffix must be 32 hex digits"
 
 auth_val=""
 if [ -n "$AUTH_FILE" ]; then
@@ -74,7 +79,7 @@ cd "$(dirname "$0")/.."
 boinc_load_settings
 boinc_az_check
 
-TEST_RG="usnm-boinc-test-rg-$ENV_NAME"
+TEST_RG="usnm-boinc-test-rg-$ENV_NAME${RESOURCE_SUFFIX:+-$RESOURCE_SUFFIX}"
 
 if [ "$MODE" = delete ]; then
   if $WHAT_IF; then
@@ -95,13 +100,15 @@ vault=$(boinc_output keyVaultName)
 
 master_url="${PROJECT_URL}usnmocr/"
 
-params=$(umask 077 && mktemp)
-trap 'rm -f "$params"' EXIT
+work=$(boinc_workdir)
+params="$work/params.json"
+trap 'rm -rf "$work"' EXIT
 printf '%s' "$auth_val" | jq -Rs \
   --arg env "$ENV_NAME" \
   --arg location "$LOCATION" \
   --arg vmSize "$SKU" \
   --argjson spot "$SPOT" \
+  --argjson acceptanceMode "$( [ -z "$RESOURCE_SUFFIX" ] && echo false || echo true )" \
   --arg projectUrl "$master_url" \
   '{
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
@@ -111,6 +118,7 @@ printf '%s' "$auth_val" | jq -Rs \
       location: { value: $location },
       vmSize: { value: $vmSize },
       spot: { value: $spot },
+      acceptanceMode: { value: $acceptanceMode },
       projectUrl: { value: $projectUrl },
       projectAuthenticator: { value: . }
     }

@@ -40,11 +40,12 @@
 # without deploying or starting the publish job.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--prepare-only] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--what-if]" >&2
   exit 2
 }
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false PREPARE_ONLY=false
 PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA=""
+ACCEPTANCE_CONFIG="" ACCEPTANCE_EVIDENCE="" COORDINATION_CLAIM=""
 EXTRA_FILES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -64,6 +65,9 @@ while [ $# -gt 0 ]; do
     --wrapper-source-pin) [ $# -ge 2 ] || usage; WRAPPER_PIN=$2; shift 2 ;;
     --signing-key-dir) [ $# -ge 2 ] || usage; KEY_DIR=$2; shift 2 ;;
     --signing-dataset) [ $# -ge 2 ] || usage; KEY_DATASET=$2; shift 2 ;;
+    --acceptance-config) [ $# -ge 2 ] || usage; ACCEPTANCE_CONFIG=$2; shift 2 ;;
+    --acceptance-evidence) [ $# -ge 2 ] || usage; ACCEPTANCE_EVIDENCE=$2; shift 2 ;;
+    --coordination-claim) [ $# -ge 2 ] || usage; COORDINATION_CLAIM=$2; shift 2 ;;
     --prepare-only) PREPARE_ONLY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
@@ -72,6 +76,12 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] && [ -n "$APP" ] && [ -n "$VERSION" ] && [ -n "$SIGNING_HOST" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
+if [ -n "$ACCEPTANCE_CONFIG$ACCEPTANCE_EVIDENCE" ]; then
+  [ -n "$ACCEPTANCE_CONFIG" ] && [ -n "$ACCEPTANCE_EVIDENCE" ] || die "acceptance requires both --acceptance-config and --acceptance-evidence"
+  ! $PREPARE_ONLY || die "--prepare-only cannot run acceptance of an unpublished candidate"
+  ACCEPTANCE_CONFIG=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$ACCEPTANCE_CONFIG")
+  ACCEPTANCE_EVIDENCE=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$ACCEPTANCE_EVIDENCE")
+fi
 case "$KIND" in
   container)
     $PLAN_CLASS_SET || PLAN_CLASS=docker
@@ -166,6 +176,13 @@ else
       done
       $found_extra || die "native usnm_qwen on $PLATFORM requires --extra-file $req_extra=PATH"
     done
+  fi
+fi
+if [ -n "$ACCEPTANCE_CONFIG" ]; then
+  acceptance_args=(--env "$ENV_NAME" --config "$ACCEPTANCE_CONFIG" --app "$APP" --version "$VERSION" --platform "$PLATFORM" --plan-class "$PLAN_CLASS" --evidence "$ACCEPTANCE_EVIDENCE")
+  python3 scripts/boinc/acceptance.py "${acceptance_args[@]}" --dry-run || die "invalid acceptance configuration"
+  if ! $WHAT_IF && [ "$ENV_NAME" = prod ]; then
+    [[ $COORDINATION_CLAIM =~ ^https://github\.com/tgoodyear/usnewsmap\.com/issues/529#issuecomment-[0-9]+$ ]] || die "production acceptance requires an active #529 --coordination-claim"
   fi
 fi
 # shellcheck source=scripts/lib/boinc.sh disable=SC1091
@@ -451,4 +468,10 @@ if $PREPARE_ONLY; then
   echo "after the release PR merges, run scripts/provision-boinc.sh --env $ENV_NAME from the merged checkout"
 else
   echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"
+fi
+
+if [ -n "${ACCEPTANCE_CONFIG:-}" ]; then
+  python3 scripts/boinc/acceptance.py "${acceptance_args[@]}" --coordination-claim "$COORDINATION_CLAIM" ||
+    die "published, but client acceptance failed: NOT release-ready (see private evidence)"
+  echo "release-ready: expected client execution and validated canonical output verified"
 fi
