@@ -44,6 +44,9 @@ The endpoint is installed with the other project PHP pages by the server
 entrypoint. Roll out the reviewed server/bridge image before the frontend;
 without the endpoint the page explicitly reports unavailable counts. No
 scheduler, feeder, trust policy, work submission or collection is changed.
+Before rollout, compare the live image's source revision and deployment preview
+with main. Do not replace unmerged production code or apply unrelated resource,
+signed-app or campaign-setting drift merely to publish these counts.
 
 ## Workbook query validation
 
