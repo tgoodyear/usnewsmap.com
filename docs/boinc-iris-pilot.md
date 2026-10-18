@@ -252,3 +252,10 @@ container flags, the same 16 crops each run, all 16/16 ok with identical text:
 No run hit the memory limit (`memory.events` max 0, no OOM). Generation also got about 5-10% faster
 warm (81-85 s against 89-93 s for 16 crops), since kernels compiled during generation are cached too.
 Rollback: deprecate version 1.2; 1.1 is unchanged and never mounts the volume.
+
+Result, campaign `overproof-100-v12` (2026-10-18; version 1.2, app_version 49, the same 100 crops in 7
+bundles on host 9): 100/100 ok, normalized CER 0.02000 and drift from the 1.0 text 0.047%, both the same as
+1.1. The first bundle filled the cache (load 23.7 s, bundle 137 s); the five other 16-crop bundles loaded in
+2.3-3.2 s and took 104-113 s, against 136-146 s on 1.1: about 9.0 crops/min, up from 6.8 (+32%).
+1.2 was published by running only the publish job with its appver image, and the campaign steps ran on
+main's bridge image, so that a stack deploy would not roll back the separately deployed #777 images.
