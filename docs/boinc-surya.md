@@ -255,10 +255,13 @@ container image to the approved signed appver digest, and add
 other environment, identity/secret references, resources and volume definitions.
 Start the existing publish job with `az containerapp job start --yaml FILE`;
 **never update its persisted template** or deploy the stack. The reviewed scoped
-publisher leaves project config, credentials and `project.xml`/other app
-registration untouched, while preserving signature checks, immutable-directory
+publisher fetches credentials into its own execution-local memory and creates a
+minimal registration-only config there. It leaves shared project config/key
+symlinks, scheduler configuration and `project.xml`/other app registration untouched, while preserving signature checks, immutable-directory
 checks, stock `update_versions` and exact app-version DB verification. The app
-must already exist; this mode does not create it.
+must already exist; this mode does not create it. This handles the deployed
+layout where shared config/key symlinks point into each container’s private
+`/dev/shm/boinc`, not the web replica’s memory.
 
 Check the actual execution's image, environment and volumes match the intended
 full template, wait for success, then independently verify DB registration,

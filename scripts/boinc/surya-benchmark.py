@@ -103,6 +103,13 @@ def collect(root, seen, out, binary, intended_device):
         jobs[job["id"]] = (row, job)
     if intended_device not in ("cpu", "cuda"):
         raise ValueError("intended device must be cpu or cuda")
+    target = json.loads((root / "target-host.json").read_bytes())
+    if (not isinstance(target, list) or len(target) != 2 or type(target[0]) is not int
+            or target[0] <= 0 or type(target[1]) is not bool):
+        raise ValueError("targeted collection requires the persisted target policy")
+    target_host, gpu_probe = target
+    if gpu_probe and intended_device != "cuda":
+        raise ValueError("GPU-only target policy requires intended CUDA device")
     outputs = {(intended_device, mode, row["group"]): {}
                for row, job in jobs.values()
                for mode in job["gpu_modes" if intended_device == "cuda" else "cpu_modes"]}
@@ -115,6 +122,11 @@ def collect(root, seen, out, binary, intended_device):
         if result.get("job_id") not in jobs:
             continue
         row, job = jobs[result["job_id"]]
+        prefix = f"usnm_surya_{job['id']}_host{target_host}_"
+        suffix = directory.name.removeprefix(prefix)
+        if (not directory.name.startswith(prefix) or not suffix.endswith("_3")
+                or not suffix.removesuffix("_3").isdigit()):
+            continue
         files = [directory / f"text-{mode}.txt" for mode in MODES] + [path, directory / "diag.txt"]
         subprocess.run([binary, "surya", "check", "--files", *map(str, files)], check=True)
         if result["engine"] != job["engine"]:

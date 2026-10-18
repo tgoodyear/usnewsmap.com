@@ -119,8 +119,28 @@ case "${APPVER_REUSE_PROJECT:-0}" in
     ;;
   1)
     # Scoped replay uses the live project's existing credentials/configuration and app rows.
-    [ -s "$PROJ/config.xml" ] && [ -s "$PROJ/html/inc/boinc_db.inc" ] ||
-      fail "scoped publication requires an already configured project"
+    [ -s "$PROJ/html/inc/boinc_db.inc" ] || fail "scoped publication requires an existing project"
+    fetch_secrets
+    # A shared config symlink points into each container's own tmpfs, not the web replica's.
+    # Registration needs DB/download settings only; never re-render the live scheduler config.
+    python3 - "$SECRETS/appver-config.xml" "$SECRETS/db-runtime" "$PROJ" <<'PYCONFIG'
+import os, sys
+import xml.etree.ElementTree as ET
+root = ET.Element("boinc")
+config = ET.SubElement(root, "config")
+for key, value in {
+    "db_host": os.environ["DB_HOST"], "db_name": os.environ["DB_NAME"],
+    "db_user": os.environ["DB_RUNTIME_USER"],
+    "db_passwd": open(sys.argv[2]).read().rstrip("\n"),
+    "project_dir": sys.argv[3], "download_dir": sys.argv[3] + "/download",
+    "download_url": "https://" + os.environ["MASTER_HOST"] + "/download",
+    "key_dir": os.path.dirname(sys.argv[1]) + "/keys",
+}.items():
+    ET.SubElement(config, key).text = value
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "wb") as stream:
+    ET.ElementTree(root).write(stream, encoding="utf-8")
+PYCONFIG
     ;;
   *) fail "APPVER_REUSE_PROJECT must be 0 or 1" ;;
 esac
@@ -129,7 +149,12 @@ esac
 registration=$(mktemp -d)
 mkdir -p "$registration/html" "$registration/apps/$APPVER_APP/$APPVER_VERSION"
 cp -LR "$PROJ/html/inc" "$registration/html/inc"
-ln -s "$PROJ/config.xml" "$registration/config.xml"
+if [ "${APPVER_REUSE_PROJECT:-0}" = 1 ]; then
+  ln -s "$SECRETS/appver-config.xml" "$registration/config.xml"
+  ln -s "$SECRETS/keys" "$registration/keys"
+else
+  ln -s "$PROJ/config.xml" "$registration/config.xml"
+fi
 ln -s "$dst" "$registration/apps/$APPVER_APP/$APPVER_VERSION/$subdir"
 (cd "$registration" && "$PROJ/bin/update_versions" --noconfirm)
 # PHP die(string) exits zero; the job status alone is not evidence of registration.

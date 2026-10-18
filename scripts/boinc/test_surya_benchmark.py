@@ -30,6 +30,7 @@ class SuryaBenchmarkTests(unittest.TestCase):
             unit.mkdir(parents=True)
             row = {"sample_id": "sample-1", "group": "english", "image_sha256": module.digest(b"image"),
                    "reference_sha256": module.digest(b"reference")}
+            (root / "target-host.json").write_bytes(module.encode([10, True]))
             raw = module.encode([row])
             (root / "benchmark-inputs.json").write_bytes(raw)
             for name in ("benchmark-inputs.sha256", "benchmark-ready"):
@@ -40,13 +41,16 @@ class SuryaBenchmarkTests(unittest.TestCase):
                    "input": {"sha256": row["image_sha256"]}, "cpu_modes": ["tiled"], "gpu_modes": list(module.MODES)}
             (unit / "surya.json").write_bytes(module.encode(job))
             seen = Path(directory) / "seen"
-            result_dir = seen / "result"
+            result_dir = seen / "usnm_surya_job_host10_0_3"
             result_dir.mkdir(parents=True)
             result = {"job_id": "job", "engine": job["engine"], "runs": [
                 {"mode": "tiled", "device": "cuda", "outcome": "ok", "engine_ms": 123},
                 {"mode": "whole", "device": "cuda", "outcome": "timeout"}]}
             (result_dir / "result.json").write_bytes(module.encode(result))
             (result_dir / "text-tiled.txt").write_bytes(b"text\r\nwith\rnewline")
+            other = seen / "usnm_surya_job_host11_0_3"
+            other.mkdir()
+            (other / "result.json").write_bytes(module.encode(result))
             with patch.object(module.subprocess, "run") as validator:
                 out = Path(directory) / "out"
                 receipt = module.collect(root, seen, out, "usnm-boinc", "cuda")
