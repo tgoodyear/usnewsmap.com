@@ -63,6 +63,7 @@ pub fn worker_threads() -> usize {
 /// A grey copy with its long side at most [`MAX_SIDE`], each pixel the
 /// mean of a `scale` by `scale` block (truncated to the pixels inside the
 /// image). Returns the copy and the factor.
+#[allow(unsafe_code)]
 pub fn downscale(img: &GrayImage) -> (GrayImage, u32) {
     let (w, h) = img.dimensions();
     let scale = w.max(h).div_ceil(MAX_SIDE).max(1);
@@ -284,6 +285,7 @@ fn skew(img: &GrayImage, threshold: u8) -> f64 {
     f64::from(best.1) / 10.0
 }
 
+#[allow(unsafe_code)]
 fn laplacian_variance(img: &GrayImage) -> f64 {
     let (w, h) = img.dimensions();
     if w < 3 || h < 3 {
@@ -380,6 +382,7 @@ fn median9_u8(a0: u8, a1: u8, a2: u8, b0: u8, b1: u8, b2: u8, c0: u8, c1: u8, c2
     median3_u8(max_lo, med_mid, min_hi)
 }
 
+#[allow(unsafe_code)]
 fn median_residual(img: &GrayImage) -> f64 {
     let (w, h) = img.dimensions();
     if w < 3 || h < 3 {
