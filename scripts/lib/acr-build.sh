@@ -27,15 +27,21 @@ acr_before_deadline() (
 acr_build_verified() (
   local cli=$1 registry=$2 image=$3 build_timeout=$4
   shift 4
-  local run_id submit_status=0 run status expected actual
+  local run_id submit_status=0 run status expected actual output
   local wait_seconds=${ACR_WAIT_SECONDS:-$((build_timeout + 600))}
   local interval=${ACR_POLL_INTERVAL:-10} deadline remaining
   [[ $wait_seconds =~ ^[0-9]+$ && $interval =~ ^[0-9]+$ ]] || {
     echo "error: ACR_WAIT_SECONDS and ACR_POLL_INTERVAL must be nonnegative seconds" >&2
     return 1
   }
-  run_id=$("$cli" acr build --registry "$registry" --image "$image" --timeout "$build_timeout" \
-    --no-wait --query runId -o tsv "$@") || submit_status=$?
+  output=$("$cli" acr build --registry "$registry" --image "$image" --timeout "$build_timeout" \
+    --no-wait --query runId -o tsv "$@" 2>&1) || submit_status=$?
+  printf '%s\n' "$output" | grep -vE '^[A-Za-z0-9]+$' >&2 || true
+  # Azure CLI 2.90 prints nothing for --query runId with --no-wait; the run is acknowledged
+  # only as "Queued a build with ID: <id>" on stderr. Accept either, but only one distinct id.
+  run_id=$(printf '%s\n' "$output" | awk '
+    /^[A-Za-z0-9]+$/ && $0 != "null" && $0 != "None" { print; next }
+    match($0, /^(WARNING: )?Queued a build with ID: [A-Za-z0-9]+$/) { print $NF }' | sort -u)
   # A nonzero client exit with an acknowledged run is not a remote build failure (#549).
   # Never guess a run from the latest registry run or an old tag when submission is ambiguous.
   [[ $run_id =~ ^[A-Za-z0-9]+$ && $run_id != null && $run_id != None ]] || {
