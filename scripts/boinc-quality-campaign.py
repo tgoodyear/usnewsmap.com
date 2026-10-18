@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tarfile
@@ -813,6 +815,45 @@ def generate_container_sas(account: str, container: str, permissions: str = "rl"
     )
 
 
+def poke_local_boinc_client(project_url: str = "https://boinc.usnewsmap.com/") -> bool:
+    """If a local BOINC client is running on 127.0.0.1:31416, trigger project_update to clear work-fetch backoff."""
+    auth_candidates = [
+        Path("/Library/Application Support/BOINC Data/gui_rpc_auth.cfg"),
+        Path("/var/lib/boinc-client/gui_rpc_auth.cfg"),
+        Path("/var/lib/boinc/gui_rpc_auth.cfg"),
+    ]
+    pw = ""
+    for p in auth_candidates:
+        try:
+            if p.is_file():
+                pw = p.read_text().strip()
+                break
+        except OSError:
+            continue
+    try:
+        with socket.create_connection(("127.0.0.1", 31416), timeout=2.0) as sock:
+            def rpc(xml_body: str) -> str:
+                sock.sendall(f"<boinc_gui_rpc_request>\n{xml_body}\n</boinc_gui_rpc_request>\n\x03".encode())
+                buf = b""
+                while b"\x03" not in buf:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                return buf.decode("utf-8", "replace")
+
+            if pw:
+                r1 = rpc("<auth1/>")
+                m = re.search(r"<nonce>([^<]+)</nonce>", r1)
+                if m:
+                    nonce_hash = hashlib.md5((m.group(1) + pw).encode()).hexdigest()
+                    rpc(f"<auth2>\n<nonce_hash>{nonce_hash}</nonce_hash>\n</auth2>")
+            reply = rpc(f"<project_update>\n<project_url>{project_url}</project_url>\n</project_update>")
+            return "<success/>" in reply
+    except OSError:
+        return False
+
+
 def cmd_launch_corpus(args: argparse.Namespace) -> int:
     runner_path = ROOT / "scripts" / "boinc" / "quality_corpus_runner.py"
     if not runner_path.is_file():
@@ -984,6 +1025,8 @@ def cmd_launch_corpus(args: argparse.Namespace) -> int:
         capture_json=False,
     )
     print(f"Started full-corpus rolling job {args.job_name} execution: {ex_name} (image={bridge_image}, shards={args.shards})")
+    if poke_local_boinc_client():
+        print("Triggered local BOINC client project_update to clear any work-fetch backoff.")
     return 0
 
 
