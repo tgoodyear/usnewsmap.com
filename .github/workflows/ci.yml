@@ -103,8 +103,6 @@ jobs:
         options: >-
           --health-cmd="mysqladmin ping --silent"
           --health-interval=5s --health-timeout=5s --health-retries=30
-    env:
-      BICEP_VERSION: v0.47.16
     defaults:
       run:
         working-directory: contrib-compute
@@ -165,10 +163,8 @@ jobs:
         working-directory: .
         run: scripts/ci/install-bicep.sh
       - name: Bicep builds
-        run: |
-          for f in $(git ls-files 'infra/*.bicep'); do
-            bicep build "$f" --stdout > /dev/null
-          done
+        working-directory: .
+        run: scripts/ci/build-bicep.sh
 
   # The BOINC project's web pages: a PHP syntax check, no image build.
   boinc-pages:
@@ -613,8 +609,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    env:
-      BICEP_VERSION: v0.47.16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -697,10 +691,8 @@ jobs:
           scripts/ci/check-workbooks.py
           scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
           python3 -m unittest -v scripts/ci/test_check_workbooks.py
-      - run: bicep build infra/main.bicep --stdout > /dev/null
-      - run: bicep build infra/guardrails.bicep --stdout > /dev/null
-      - run: bicep build infra/archive/main.bicep --stdout > /dev/null
-      - run: bicep build infra/settings/main.bicep --stdout > /dev/null
+      - name: Build every Bicep template
+        run: scripts/ci/build-bicep.sh
       # The parameters bootstrap deploys the stack with (settings from the
       # environment; unset ones take their defaults). The VNet block has no
       # default; this sample is from RFC 5737's documentation range.

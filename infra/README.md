@@ -173,7 +173,7 @@ same rules.
 
    It was not stack-managed; removing a Bicep declaration cannot delete it.
 
-3. Use CI's Bicep 0.47.16 or newer compatible tooling. Pause CI deploys
+3. Use Bicep CLI v0.48.1, the repository pin in `scripts/ci/bicep-version`. Pause CI deploys
    while provision and bootstrap run (serving is unaffected). Reset
    `USNM_BUDGET_START` to the first of the current month, commit that
    public setting through a PR, and provision from the approved main:
@@ -455,4 +455,6 @@ Running the ingest jobs (the backfill, weekly releases and full rebuilds), the s
 
 ## Checks
 
-CI runs `bicep lint` on every module and treats any warning as a failure, then `bicep build`, and `scripts/ci/check-names.py` checks the resource names (ADR-0017). PSRule needs Azure credentials (an OIDC federated identity for this repo), so it comes with the deploy pipeline. There's no `what-if` preview: deployment stacks don't support it yet (ADR-0011).
+CI pins Bicep CLI v0.48.1 in `scripts/ci/bicep-version`, lints every tracked `.bicep` file (any warning fails), and builds every tracked template; `scripts/ci/check-names.py` checks resource names (ADR-0017). PSRule needs Azure credentials (an OIDC federated identity for this repo), so it comes with the deploy pipeline. `scripts/provision.sh --env <env> --what-if` uses GA `az stack-whatif sub create`; the BOINC provisioner uses the resource-group variant. Microsoft documents result retention of `PT1H`–`PT3H`; the stack preview scripts request `PT3H`.
+
+Known remaining What-If provider noise includes Static Web Apps provider-generated properties, diagnostic-setting destination defaults, and Azure Files soft-delete retention defaults. Treat these as provider normalization only after comparing with the live resource and intended template; do not suppress real delete or deny-setting diagnostics to make a preview appear clean. See [Microsoft's deployment-stacks What-If documentation](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-stacks-what-if).

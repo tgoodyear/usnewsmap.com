@@ -101,6 +101,9 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
       set|delete) ;;
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
+  "stack-whatif sub")
+    if [ -n "${STUB_STACK_WHATIF_ERROR:-}" ]; then echo "$STUB_STACK_WHATIF_ERROR" >&2; exit 1; fi
+    echo "stack what-if: no changes" ;;
   "deployment sub")
     if [ -n "${STUB_CAPTURE_PARAMS:-}" ]; then
       printf '%s\t%s\t%s\t%s\n' "${USNM_ARCHIVE_ACCOUNT:-}" "${USNM_SEARCH_CLUSTER:-}" \
@@ -1963,8 +1966,11 @@ class CommittedSettings(Stubbed):
         validate = next(c for c in calls if c.startswith("stack sub validate"))
         self.assertIn("--name usnm-dev", validate)
         self.assertIn("--deny-settings-mode denyDelete", validate)
-        self.assertLess(calls.index(validate), next(i for i, c in enumerate(calls)
-                                                    if c.startswith("deployment sub what-if")))
+        preview = next(c for c in calls if c.startswith("stack-whatif sub create"))
+        self.assertLess(calls.index(validate), calls.index(preview))
+        self.assertIn("--retention-interval PT3H", preview)
+        self.assertIn("--action-on-unmanage deleteResources", preview)
+        self.assertIn("--deny-settings-mode denyDelete", preview)
         self.assertFalse(any(c.startswith("stack sub create") for c in calls))
 
     def test_a_policy_denial_fails_the_what_if(self):

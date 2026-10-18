@@ -214,7 +214,7 @@ func names(env string, sfx string, pinned bool) object => {
 - Each prod rename PR deletes one ternary.
 - Pinning is in code, not in a settings file, so a lost or edited settings file can't rename the data lake, which the stack would then delete.
 
-A prototype of these functions compiles with the Bicep version CI pins (0.47.16), and `bicep build-params` evaluates them offline, `uniqueString` included: `names('prod', 'ffapzy', true)` gives `stusnmdffapzy` and `caj-usnm-ingest-prod`. Older Bicep builds reject `func` (BCP343, an experimental feature there), so local scripts call `az bicep` or the binary `scripts/ci/install-bicep.sh` installs, not whatever `bicep` is on `PATH`.
+A prototype of these functions compiles with the Bicep version CI pins (0.48.1), and `bicep build-params` evaluates them offline, `uniqueString` included: `names('prod', 'ffapzy', true)` gives `stusnmdffapzy` and `caj-usnm-ingest-prod`. Older Bicep builds reject `func` (BCP343, an experimental feature there); install the repository-pinned version from `scripts/ci/bicep-version` for local builds.
 
 New Container Apps environments set `infrastructureResourceGroup` and new private endpoints set `customNetworkInterfaceName`, because both can only be set at creation ([custom VNet][cvnet], [private endpoints][pe]). The existing prod endpoints (`pe-usnm-blob`, `pe-usnm-cosmos`) and `cae-usnm-prod` are declared by the same modules as dev's, so these values go through `names()` too: a NIC-name or infrastructure-group key returns `''` when pinned, and the module sets the property only when the value is not empty. Otherwise the next prod provision would try to change a create-only property and fail.
 

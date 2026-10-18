@@ -27,10 +27,11 @@
 # After deployment, ensure the secrets and project, register the applications, replay the
 # configured signed app version and check the public project configuration.
 #
-# --what-if changes no managed resources: Azure's stack-aware preview is retained for three
-# hours, including deletion, detachment and deny-setting changes. Needs az with stack-whatif
-# support and jq, signed in to the settings' subscription with Owner on the
-# BOINC group and on the shared registry and DNS zone's group (infra/names/<env>.json rg): the
+# --what-if changes no managed resources: Azure's stack-aware preview is retained for up to
+# three hours (the documented range is PT1H–PT3H), including deletion, detachment and
+# deny-setting changes. Needs GA `az stack-whatif` and jq, signed in to the settings'
+# subscription with Owner on the BOINC group and the shared registry and DNS zone's
+# group (infra/names/<env>.json rg): the
 # stack writes role assignments in both, and the custom domain's records in the zone.
 set -euo pipefail
 usage() { echo "usage: scripts/provision-boinc.sh --env <prod|dev> [--publish-image REF] [--allow-dirty] [--what-if]" >&2; exit 2; }
@@ -139,12 +140,13 @@ stack_settings=(--resource-group "$BOINC_RG"
 stack_args=(--name "$BOINC_STACK" "${stack_settings[@]}")
 
 az stack-whatif group create --help > /dev/null ||
-  die "this Azure CLI lacks stack-whatif; update Azure CLI before deploying"
+  die "this Azure CLI lacks GA stack-whatif; update Azure CLI before deploying"
 preview="$BOINC_STACK-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 stack_id="/subscriptions/$SUBSCRIPTION/resourceGroups/$BOINC_RG/providers/Microsoft.Resources/deploymentStacks/$BOINC_STACK"
 echo "previewing stack $BOINC_STACK (includes unmanaged resources and deny settings)"
-baz stack-whatif group create --name "$preview" --stack-id "$stack_id" \
-  "${stack_settings[@]}" --retention-interval PT3H --no-color ||
+az stack-whatif group create --subscription "$SUBSCRIPTION" \
+  --name "$preview" --stack-id "$stack_id" "${stack_settings[@]}" \
+  --retention-interval PT3H --no-color ||
   die "the stack-aware what-if of $BOINC_STACK failed; no deployment applied"
 echo "preview retained for three hours: /subscriptions/$SUBSCRIPTION/resourceGroups/$BOINC_RG/providers/Microsoft.Resources/deploymentStacksWhatIfResults/$preview"
 if $WHAT_IF; then
