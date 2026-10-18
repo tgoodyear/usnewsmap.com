@@ -27,6 +27,12 @@ authorization):
   "database": "usnmocr",
   "trust": "/approved/gold/trust.json",
   "prepared": "/approved/gold/prepared-campaign",
+  "scope": {
+    "language": "eng",
+    "profile": "eng",
+    "psm": 3,
+    "dpi": 300
+  },
   "engine": {
     "base": "docker.io/example/tesseract@sha256:REPLACE_WITH_64_HEX",
     "dpi": 300,
@@ -70,7 +76,8 @@ usnm-boinc host-trust onboard --config controller.json --execute
 ```
 
 Each pass reads BOINC's `host.id` inventory and skips hosts already trusted for
-this exact immutable image. It issues one targeted gold unit per remaining host,
+this prepared campaign's exact `(language, profile, psm, dpi)` scope, calibrated
+`manifest_sha256`, and immutable worker image. It issues one targeted gold unit per remaining host,
 up to `max_hosts` (1–100). Repeated invocations discover later hosts without an
 operator supplying host IDs. Inventory is bounded to 100,000 hosts; larger
 projects fail closed instead of silently skipping hosts.
@@ -129,6 +136,7 @@ own database credentials, the campaign's prepared inputs and
 
 ```sh
 scripts/start-boinc-bridge.sh --env prod --step gold-onboard --var GOLD_CAMPAIGN=v1-tess550 \
+  --var GOLD_LANGUAGE=eng --var GOLD_PROFILE=eng \
   --var GOLD_ENGINE_IMAGE=sha256:<worker> --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
 ```
 

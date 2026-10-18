@@ -21,6 +21,8 @@ pub struct Config {
     pub database: String,
     pub trust: PathBuf,
     pub prepared: PathBuf,
+    #[serde(default)]
+    pub scope: Option<crate::trust::Scope>,
     pub engine: gold::job::Engine,
     pub max_hosts: usize,
     pub max_spots: usize,
@@ -67,6 +69,13 @@ impl Config {
                 .is_some_and(boinc::is_sha256),
             "immutable worker image required"
         );
+        if let Some(scope) = &c.scope {
+            scope.validate()?;
+            ensure!(
+                scope.psm == c.engine.psm && scope.dpi == c.engine.dpi,
+                "campaign scope scoring configuration must match engine"
+            );
+        }
         let defaults = std::fs::symlink_metadata(&c.mysql_defaults)?;
         ensure!(defaults.is_file(), "mysql defaults must be a regular file");
         #[cfg(unix)]
@@ -301,11 +310,16 @@ async fn next_attempt(
     }
 }
 
-/// Discover hosts centrally, skip same-image trusted hosts, and keep one gold unit
-/// outstanding per untrusted host and campaign: a host whose attempt failed gets a new one.
-/// Native gold submission journals handle uncertain dispatch.
+/// Discover hosts centrally, skip hosts already trusted for this prepared campaign's exact
+/// `(language, profile, psm, dpi)`, `manifest_sha256`, and immutable worker image, and keep one
+/// gold unit outstanding per untrusted host and campaign: a host whose attempt failed gets a new
+/// one. Native gold submission journals handle uncertain dispatch.
 pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     c.validate()?;
+    let scope = c
+        .scope
+        .as_ref()
+        .context("prepared campaign scope is required for onboarding")?;
     let trust = Trust::load_or_none_trusted(&c.trust)?;
     let prepared = gold::prepare::read(&c.prepared)?;
     gold::submit::job(&prepared, &c.engine, 0)?;
@@ -317,9 +331,13 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     );
     let pending: Vec<_> = inventory
         .into_iter()
-        .filter(|h| trust.refuse(&c.engine.image, Some(*h)).is_some())
+        .filter(|h| {
+            trust
+                .refuse_campaign(&c.engine.image, &prepared.manifest_sha256, scope, Some(*h))
+                .is_some()
+        })
         .collect();
-    let campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &c.engine))?);
+    let campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &c.engine, scope))?);
     let campaign_root = c.root.join("onboard").join(&campaign);
     // Hosts are visited in id order and the pass stops at max_hosts, so hosts with an
     // outstanding unit never starve newly discovered ones.

@@ -34,7 +34,7 @@ pub struct Scope {
 }
 
 impl Scope {
-    fn validate(&self) -> anyhow::Result<()> {
+    pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.language.len() == 3 && self.language.bytes().all(|b| b.is_ascii_lowercase()),
             "calibrated source language must be a three-letter lower-case code"
@@ -515,21 +515,24 @@ impl Trust {
         Ok(merged)
     }
 
-    /// Atomically writes `self` to `out`, merging into `merge_from` (or an existing `out`) so
-    /// promoting a new `(language, profile)` scope preserves existing calibrated scopes.
+    /// Atomically writes `self` to `out`, holding a destination-directory lock across the entire
+    /// read–merge–write sequence and merging existing `out` + `merge_from` + `self` (with explicit
+    /// conflict precedence `out < merge_from < self`) so promoting a new `(language, profile)`
+    /// scope preserves existing calibrated scopes.
     pub fn promote_to(&self, out: &Path, merge_from: Option<&Path>) -> anyhow::Result<Self> {
         self.validate()?;
-        let merged = if let Some(path) = merge_from {
-            Self::load(path)?.merge(self)?
-        } else if out.exists() {
-            Self::load(out)?.merge(self)?
-        } else {
-            self.clone()
-        };
         let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
             Path::new(".").join(out)
         } else {
             out.to_path_buf()
+        };
+        let parent = out.parent().context("no parent directory")?;
+        let _lock = crate::Lock::take(parent)?;
+        let merged = match (out.exists(), merge_from) {
+            (true, Some(path)) => Self::load(&out)?.merge(&Self::load(path)?)?.merge(self)?,
+            (false, Some(path)) => Self::load(path)?.merge(self)?,
+            (true, None) => Self::load(&out)?.merge(self)?,
+            (false, None) => self.clone(),
         };
         atomic(&out, &serde_json::to_vec_pretty(&merged)?)?;
         Ok(merged)
@@ -574,31 +577,69 @@ impl Trust {
         Self::load(path)
     }
 
-    /// Image-level eligibility for Gold onboarding only, not permission to publish a page.
-    pub fn refuse(&self, engine_image: &str, host_id: Option<u64>) -> Option<String> {
-        if !immutable_image(engine_image) || host_id == Some(0) {
-            return Some("invalid immutable engine image or host id".into());
+    /// Campaign-scoped eligibility for Gold onboarding: a host is skipped only when it is already
+    /// trusted for this prepared campaign's exact `(language, profile, psm, dpi)`, calibrated
+    /// `manifest_sha256`, and immutable worker `engine_image`.
+    pub fn refuse_campaign(
+        &self,
+        engine_image: &str,
+        manifest_sha256: &str,
+        scope: &Scope,
+        host_id: Option<u64>,
+    ) -> Option<String> {
+        if !immutable_image(engine_image)
+            || !usnm_ocr_contract::boinc::is_sha256(manifest_sha256)
+            || scope.validate().is_err()
+            || host_id == Some(0)
+        {
+            return Some("invalid immutable engine image, manifest, scope or host id".into());
         }
         let Some(host) = host_id else {
             return Some("no host id for this result".into());
         };
-        let trusted = if self.policies.is_empty() {
-            self.hosts
-                .get(engine_image)
-                .is_some_and(|h| h.contains(&host))
-        } else {
-            self.policies
-                .iter()
-                .all(|p| p.hosts.get(engine_image).is_some_and(|h| h.contains(&host)))
+        if self.scope.is_none() && self.policies.is_empty() {
+            return Some("no calibrated job scope".into());
+        }
+        if let Err(err) = self.validate() {
+            return Some(format!("invalid calibrated trust policy: {err}"));
+        }
+        let Some(policy) = self.policy_for(&scope.language, &scope.profile) else {
+            return Some(
+                "campaign language, model profile or scoring configuration is outside calibrated trust"
+                    .into(),
+            );
         };
-        if trusted {
+        if policy.scope != *scope || policy.manifest_sha256 != manifest_sha256 {
+            return Some(
+                "campaign manifest, model profile or scoring configuration is outside calibrated trust"
+                    .into(),
+            );
+        }
+        if policy
+            .hosts
+            .get(engine_image)
+            .is_some_and(|h| h.contains(&host))
+        {
             None
         } else {
             Some(format!(
                 "host {host} has no gold report for {engine_image} with CER <= {}",
-                self.max_cer
+                policy.max_cer
             ))
         }
+    }
+
+    /// Single-scope eligibility helper for Gold onboarding; multi-scope policies must use
+    /// [`Trust::refuse_campaign`].
+    pub fn refuse(&self, engine_image: &str, host_id: Option<u64>) -> Option<String> {
+        if !self.policies.is_empty() {
+            return Some("multi-scope trust policy requires explicit campaign scope".into());
+        }
+        let (Some(manifest), Some(scope)) = (self.manifest_sha256.as_deref(), self.scope.as_ref())
+        else {
+            return Some("no calibrated job scope".into());
+        };
+        self.refuse_campaign(engine_image, manifest, scope, host_id)
     }
 
     /// Returns the hosts trusted for `job`'s exact `(language, profile, psm, dpi)` and image.
@@ -1120,12 +1161,39 @@ mod tests {
 
         let eng_job = job(image, "eng", "eng");
         let deu_job = job(image, "deu", "frak2021");
+        let deu_scope = Scope {
+            language: "deu".into(),
+            profile: "frak2021".into(),
+            psm: 3,
+            dpi: 300,
+        };
+        let deu_manifest = "e24325e6ad77df7f5345859b9dfb524b590cb6db728876aefabecdeea35c81cd";
         assert!(loaded.refuse_job(&eng_job, Some(1)).is_none());
         assert!(loaded.refuse_job(&eng_job, Some(8)).is_none());
         assert!(loaded.refuse_job(&eng_job, Some(2)).is_some());
         assert!(loaded
             .refuse_job(&deu_job, Some(1))
             .is_some_and(|r| r.contains("outside calibrated trust")));
+        assert!(loaded
+            .refuse_campaign(image, eng_manifest, &scope(), Some(1))
+            .is_none());
+        assert!(loaded
+            .refuse_campaign(image, eng_manifest, &scope(), Some(8))
+            .is_none());
+        assert!(loaded
+            .refuse_campaign(image, eng_manifest, &scope(), Some(9))
+            .is_some());
+        // Loading an English-only v4 policy must NOT skip hosts 1 and 8 for a German campaign or
+        // an uncalibrated manifest.
+        assert!(loaded
+            .refuse_campaign(image, deu_manifest, &deu_scope, Some(1))
+            .is_some());
+        assert!(loaded
+            .refuse_campaign(image, deu_manifest, &deu_scope, Some(8))
+            .is_some());
+        assert!(loaded
+            .refuse_campaign(image, deu_manifest, &scope(), Some(1))
+            .is_some());
 
         // A v4 artifact with multi-scope `policies` is rejected.
         let mut invalid_v4 = v4_json;
@@ -1262,6 +1330,28 @@ mod tests {
             .refuse_job(&job(&other_image, "deu", "frak2021"), Some(1))
             .is_some());
 
+        // Campaign-scoped onboarding eligibility: English skips {1, 8} and offers Gold to {9};
+        // German skips {1, 9} and offers Gold to {8}; unscoped `refuse` fails closed on multi-scope.
+        assert!(reloaded
+            .refuse_campaign(image, eng_manifest, &scope(), Some(1))
+            .is_none());
+        assert!(reloaded
+            .refuse_campaign(image, eng_manifest, &scope(), Some(8))
+            .is_none());
+        assert!(reloaded
+            .refuse_campaign(image, eng_manifest, &scope(), Some(9))
+            .is_some());
+        assert!(reloaded
+            .refuse_campaign(image, deu_manifest, &deu_scope, Some(1))
+            .is_none());
+        assert!(reloaded
+            .refuse_campaign(image, deu_manifest, &deu_scope, Some(9))
+            .is_none());
+        assert!(reloaded
+            .refuse_campaign(image, deu_manifest, &deu_scope, Some(8))
+            .is_some());
+        assert!(reloaded.refuse(image, Some(1)).is_some());
+
         // A later terminal client error in deu/frak2021 revokes Host 9 in deu/frak2021 without touching eng/eng.
         let revoke_outcome = serde_json::json!({
             "schema_version": 3,
@@ -1321,5 +1411,191 @@ mod tests {
             .push(dup_entry);
         std::fs::write(&trust_path, duplicate.to_string()).unwrap();
         assert!(Trust::load(&trust_path).is_err());
+    }
+
+    #[test]
+    fn promote_to_preserves_distinct_destination_policies_and_locks_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out_dir = tmp.path().join("shared");
+        let stage_dir = tmp.path().join("stage");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::create_dir_all(&stage_dir).unwrap();
+        let out_path = out_dir.join("trust.json");
+        let merge_path = stage_dir.join("merge-source.json");
+        let image = "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa";
+        let eng_manifest = "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f";
+        let deu_manifest = "e24325e6ad77df7f5345859b9dfb524b590cb6db728876aefabecdeea35c81cd";
+        let fra_manifest = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+        // Existing destination `--out` holds `eng/eng` (hosts {1, 8}) and an older `deu/frak2021` (host {9}).
+        let (eng_r1, eng_o1) = native_report_and_outcome(
+            '1',
+            1,
+            image,
+            1,
+            eng_manifest,
+            "eng",
+            "eng",
+            0.04,
+            1_700_000_100,
+        );
+        let (eng_r8, eng_o8) = native_report_and_outcome(
+            '2',
+            2,
+            image,
+            8,
+            eng_manifest,
+            "eng",
+            "eng",
+            0.05,
+            1_700_000_200,
+        );
+        let eng_reports = stage_dir.join("eng-reports.jsonl");
+        let eng_outcomes = stage_dir.join("eng-outcomes.jsonl");
+        std::fs::write(&eng_reports, [eng_r1, eng_r8].join("\n")).unwrap();
+        std::fs::write(&eng_outcomes, [eng_o1, eng_o8].join("\n")).unwrap();
+        let eng_trust = Trust::build_with_outcomes(
+            std::slice::from_ref(&eng_reports),
+            std::slice::from_ref(&eng_outcomes),
+            0.08734328574534386,
+            eng_manifest,
+            scope(),
+        )
+        .unwrap();
+
+        let deu_scope = Scope {
+            language: "deu".into(),
+            profile: "frak2021".into(),
+            psm: 3,
+            dpi: 300,
+        };
+        let (deu_r9, deu_o9) = native_report_and_outcome(
+            '3',
+            3,
+            image,
+            9,
+            deu_manifest,
+            "deu",
+            "frak2021",
+            0.05,
+            1_700_000_300,
+        );
+        let deu_old_reports = stage_dir.join("deu-old-reports.jsonl");
+        let deu_old_outcomes = stage_dir.join("deu-old-outcomes.jsonl");
+        std::fs::write(&deu_old_reports, &deu_r9).unwrap();
+        std::fs::write(&deu_old_outcomes, &deu_o9).unwrap();
+        let deu_old = Trust::build_with_outcomes(
+            std::slice::from_ref(&deu_old_reports),
+            std::slice::from_ref(&deu_old_outcomes),
+            0.06755715386591318,
+            deu_manifest,
+            deu_scope.clone(),
+        )
+        .unwrap();
+        eng_trust.promote_to(&out_path, None).unwrap();
+        deu_old.promote_to(&out_path, None).unwrap();
+
+        // Distinct `--merge` file has `fra/fra` (host {7}) and `deu/frak2021` (hosts {1, 9}),
+        // but does NOT contain `eng/eng`.
+        let fra_scope = Scope {
+            language: "fra".into(),
+            profile: "fra".into(),
+            psm: 3,
+            dpi: 300,
+        };
+        let (fra_r7, fra_o7) = native_report_and_outcome(
+            '4',
+            4,
+            image,
+            7,
+            fra_manifest,
+            "fra",
+            "fra",
+            0.03,
+            1_700_000_400,
+        );
+        let fra_reports = stage_dir.join("fra-reports.jsonl");
+        let fra_outcomes = stage_dir.join("fra-outcomes.jsonl");
+        std::fs::write(&fra_reports, &fra_r7).unwrap();
+        std::fs::write(&fra_outcomes, &fra_o7).unwrap();
+        let fra_trust = Trust::build_with_outcomes(
+            std::slice::from_ref(&fra_reports),
+            std::slice::from_ref(&fra_outcomes),
+            0.07,
+            fra_manifest,
+            fra_scope,
+        )
+        .unwrap();
+        let (deu_r1, deu_o1) = native_report_and_outcome(
+            '5',
+            5,
+            image,
+            1,
+            deu_manifest,
+            "deu",
+            "frak2021",
+            0.05,
+            1_700_000_500,
+        );
+        let deu_mid_reports = stage_dir.join("deu-mid-reports.jsonl");
+        let deu_mid_outcomes = stage_dir.join("deu-mid-outcomes.jsonl");
+        std::fs::write(&deu_mid_reports, [deu_r1.clone(), deu_r9].join("\n")).unwrap();
+        std::fs::write(&deu_mid_outcomes, [deu_o1.clone(), deu_o9].join("\n")).unwrap();
+        let deu_mid = Trust::build_with_outcomes(
+            std::slice::from_ref(&deu_mid_reports),
+            std::slice::from_ref(&deu_mid_outcomes),
+            0.06755715386591318,
+            deu_manifest,
+            deu_scope.clone(),
+        )
+        .unwrap();
+        fra_trust.promote_to(&merge_path, None).unwrap();
+        deu_mid.promote_to(&merge_path, None).unwrap();
+
+        // Newly promoted `self` updates `deu/frak2021` to host {1} only (host 9 revoked).
+        let deu_new_reports = stage_dir.join("deu-new-reports.jsonl");
+        let deu_new_outcomes = stage_dir.join("deu-new-outcomes.jsonl");
+        std::fs::write(&deu_new_reports, &deu_r1).unwrap();
+        std::fs::write(&deu_new_outcomes, &deu_o1).unwrap();
+        let deu_new = Trust::build_with_outcomes(
+            std::slice::from_ref(&deu_new_reports),
+            std::slice::from_ref(&deu_new_outcomes),
+            0.06755715386591318,
+            deu_manifest,
+            deu_scope,
+        )
+        .unwrap();
+
+        // Promoting `deu_new` with `--merge merge_path --out out_path` must preserve destination-only
+        // `eng/eng` ({1, 8}), merge `fra/fra` ({7}) from `merge_path`, and apply `deu_new` ({1}) with
+        // precedence `out < merge_from < self`.
+        let promoted = deu_new.promote_to(&out_path, Some(&merge_path)).unwrap();
+        assert_eq!(promoted.scope, Some(scope()));
+        assert_eq!(
+            promoted.policy_for("eng", "eng").unwrap().hosts[image],
+            BTreeSet::from([1, 8])
+        );
+        assert_eq!(
+            promoted.policy_for("fra", "fra").unwrap().hosts[image],
+            BTreeSet::from([7])
+        );
+        assert_eq!(
+            promoted.policy_for("deu", "frak2021").unwrap().hosts[image],
+            BTreeSet::from([1])
+        );
+
+        // Holding the destination directory lock blocks/refuses a competing `promote_to` across the
+        // entire read–merge–write operation without overwriting `out_path`.
+        let held_lock = crate::Lock::take(&out_dir).unwrap();
+        assert!(deu_old.promote_to(&out_path, None).is_err());
+        drop(held_lock);
+        assert_eq!(
+            Trust::load(&out_path)
+                .unwrap()
+                .policy_for("deu", "frak2021")
+                .unwrap()
+                .hosts[image],
+            BTreeSet::from([1])
+        );
     }
 }
