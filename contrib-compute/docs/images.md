@@ -72,8 +72,11 @@ upload secrets only when absent, without routing their values through the mainta
 
 The VNet includes the private Key Vault DNS zone `privatelink.vaultcore.azure.net` and its link.
 The Azure Files share mounts over SMB with `mfsymlinks` plus explicit uid/gid, mode and cache
-options. The MySQL server's `require_secure_transport` is OFF: BOINC's clients do not request TLS,
-and #464 tracks the gated migration to required TLS. The database is private to the VNet.
+options. The MySQL server's `require_secure_transport` remains OFF pending #464's
+Azure-chain and copied-project migration/rollback gates. New images require verified TLS,
+but persisted project files need separate acceptance. The BOINC template's explicit
+`requireSecureTransport` parameter defaults to `false`; do not opt in until those gates
+pass and deployment is coordinated under #529. The database is private to the VNet.
 
 To record a work-volume sample, run
 `scripts/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record

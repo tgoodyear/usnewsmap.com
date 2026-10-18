@@ -81,6 +81,49 @@ CI runs this exact disposable matrix in its own bounded job when BOINC changes.
 `python3 -m unittest scripts/boinc/test_db_tls_fixture.py` tests evidence
 fail-closed behavior; it is not a substitute for the Docker integration run.
 
+The checked-in patch stays image-specific because it hardcodes our CA and MariaDB
+Connector/C API. Offer the fail-closed connection behavior and connector tests
+upstream once generalized to configurable CA paths and supported client libraries;
+do not submit Azure-specific paths as an upstream BOINC default.
+
+## MySQL 8.4 connector parity
+
+```sh
+scripts/boinc/check-mysql84-db-tls.sh
+```
+
+This separate CI job reuses the same pinned MySQL 8.4 image as the existing SQL
+query tests, plus the actual patched Bookworm BOINC consumers above. No production
+source patch or replacement connector is substituted. It requires five nonempty
+session ciphers for a trusted synthetic CA, five TLS-related hostname rejections,
+five wrong-CA rejections, five encrypted recoveries, and five encrypted sessions
+after restarting the same persisted database. An unpatched plaintext control must
+fail with MySQL error **3159**, not an unrelated authentication or network error.
+The observer checks `VERSION()` is 8.4 and `@@require_secure_transport` is 1 before
+each application phase. The normal `caching_sha2_password` runtime account also
+checks connector compatibility with MySQL's default authentication plugin.
+
+Both database and client containers are network-disabled (clients share the
+DB's loopback namespace), with no published ports, host files or Docker socket
+mounts. The server runs as fixture-only root without capabilities or privilege
+escalation on a read-only root, with one CPU, 768 MiB and 128 processes. Clients
+are bounded to one CPU, 256 MiB and 32 processes. Unique disposable volumes hold
+only synthetic keys and the test database and are removed by the exit trap;
+image/build caches remain. Database initialization bypasses the official
+entrypoint so no random admin password is emitted. Root has no TCP grant; the
+observer uses the same known-good synthetic runtime account as the consumers.
+The TLS-disabled-peer rejection remains covered by the MariaDB matrix.
+
+This is **not** the Azure MySQL certificate chain, a full MySQL project lifecycle,
+or a copied-project migration/rollback test. `requireSecureTransport` in the
+BOINC root template and MySQL module deliberately defaults to **false**; `true`
+selects ON only after the remaining gates below. The normal provisioner does not
+supply this parameter, so this change cannot enable production enforcement.
+Any future activation needs a reviewed, persisted configuration path and the
+#529 lock/claim protocol, followed by the normal main-triggered release workflow
+and live daemon/scheduler/PHP/bridge and TLS-policy checks. Do not manually toggle
+production or dispatch a branch release to bypass those requirements.
+
 ## Full project on an existing server image
 
 With an already reviewed, pulled immutable server image:
@@ -163,8 +206,8 @@ entrypoint.
 ## Remaining release gates
 
 The fixtures verify local MariaDB TLS, project creation, PHP, CGI, four daemons
-and persistent restart. Remaining gates are Azure MySQL 8.4 and rotating
-certificate-chain acceptance, a public remote dev service, authenticated task
+and persistent restart, plus MySQL 8.4 connector parity. Remaining gates are the
+actual Azure MySQL 8.4 rotating certificate chain and full-project acceptance, a public remote dev service, authenticated task
 dispatch through validation and assimilation, and the bridge's extra validators.
 Starting an empty-queue validator does not test returned results.
 
