@@ -170,8 +170,9 @@ job was preserved, not stopped to manufacture an idle publication window.
 The maintainer approved continuation at 14:10 EDT; PR #848 merged as
 `ff795cb4`, followed by the independent CHURRO report PR #838. This supersedes
 the earlier review-disposition gate, not the production serialization protocol.
-The post-merge CI runs are `39153022399` (CI) and `39153022490` (CodeQL);
-pre-merge CI success is not substituted for their outcomes.
+The actual post-merge runs **both completed successfully**: `39153022399`
+(CI, verified at 18:21 UTC) and `39153022490` (CodeQL, verified at 18:22 UTC).
+Pre-merge CI success was not substituted for these outcomes.
 
 The corrected, normally signed app-version candidates ch98/ch99 above remain
 the intended 1.2/1.3 artifacts. A fresh normal release preflight verified the
@@ -188,6 +189,9 @@ three CPU repeats (the first two pinned English smoke members and first German
 member), 23 units total if host eligibility and publication pass. The CPU-only
 manifest SHA256 is
 `03d80fc7cc9229bb6cfb143ab6d98a7249db219c113afbdd7e2ef1bdcc760396`.
+The reviewed staging CLI successfully staged all three repeats locally; original
+image/reference hashes and the completion marker were independently rechecked.
+This is not production staging or inference.
 The full-page LoC HOLD remains in place; no retries or subsequent full-page
 fetches were made. The maintainer permits the pinned benchmark subset alone.
 
