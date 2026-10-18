@@ -442,6 +442,23 @@ fn validate_annotations(sample: &Sample, reference: &str) -> anyhow::Result<()> 
             "{}: damage severity/labels disagree",
             sample.id
         );
+    } else {
+        let object = sample
+            .damage
+            .as_object()
+            .context("damage must be an object")?;
+        ensure!(
+            object
+                .keys()
+                .all(|key| matches!(key.as_str(), "status" | "observations")),
+            "{}: unannotated damage may only contain status and observations",
+            sample.id
+        );
+        if let Some(observations) = object.get("observations") {
+            serde_json::from_value::<Vec<String>>(observations.clone()).with_context(|| {
+                format!("{}: damage observations must be a string array", sample.id)
+            })?;
+        }
     }
     Ok(())
 }
@@ -2097,6 +2114,9 @@ pub(crate) mod tests {
         sample.damage = json!({"status":"unannotated", "observations":["existing pilot narrative; not a severity label"]});
         assert!(validate_annotations(&sample, "abc").is_ok());
         for damage in [
+            json!({"status":"unannotated", "labels":[], "severity":"none", "evidence":""}),
+            json!({"status":"unannotated", "observations":"not an array"}),
+            json!({"status":"unannotated", "observations":[1]}),
             json!({"status":"reviewed", "labels":[], "severity":"severe", "evidence":"test"}),
             json!({"status":"reviewed", "labels":["invented"], "severity":"mild", "evidence":"test"}),
             json!({"status":"reviewed", "labels":["blur"], "severity":"mild", "evidence":""}),

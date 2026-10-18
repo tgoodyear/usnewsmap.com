@@ -27,8 +27,25 @@ def audit(data: bytes) -> dict:
         status = damage['status']
         if status not in ('unannotated', 'reviewed'):
             raise ValueError(f'unknown damage status {status}')
-        labels = tuple(sorted(damage.get('labels', [])))
-        severity = damage.get('severity', 'unknown')
+        if status == 'unannotated':
+            if set(damage) - {'status', 'observations'}:
+                raise ValueError('unannotated damage may only contain status and observations')
+            observations = damage.get('observations', [])
+            if not isinstance(observations, list) or not all(isinstance(x, str) for x in observations):
+                raise ValueError('damage observations must be a string array')
+            labels, severity = (), 'unknown'
+        else:
+            if set(damage) != {'status', 'labels', 'severity', 'evidence'}:
+                raise ValueError('reviewed damage requires status, labels, severity and evidence')
+            labels_list, severity, evidence = damage['labels'], damage['severity'], damage['evidence']
+            allowed = {'bleed-through', 'faded-ink', 'blur', 'stain', 'tear', 'occlusion', 'warping', 'clipping'}
+            if (not isinstance(labels_list, list) or not all(isinstance(x, str) for x in labels_list)
+                    or len(set(labels_list)) != len(labels_list) or not set(labels_list) <= allowed
+                    or severity not in ('none', 'mild', 'moderate', 'severe')
+                    or (severity == 'none') != (not labels_list)
+                    or not isinstance(evidence, str) or not evidence.strip()):
+                raise ValueError('invalid reviewed damage annotation')
+            labels = tuple(sorted(labels_list))
         key = (langs, status, labels, severity, sample['unit'], sample['reference_status'])
         page = (sample['source'], sample['source_page_id'])
         pages.add(page)
