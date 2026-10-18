@@ -142,7 +142,15 @@ if [ "$INNER" = true ]; then
     done
     CG_EFFECTIVE=$best
   }
-  cgroup_of() { pod container inspect --format '{{.State.CgroupPath}}' "$1" 2> /dev/null; }
+  cgroup_of() {
+    local pid
+    pid=$(pod container inspect --format '{{.State.Pid}}' "$1" 2> /dev/null) || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+    # Podman can report the libpod scope, while crun puts the process and
+    # tighter limits in its child /container cgroup. Start at the process.
+    awk -F: '$1 == "0" && $2 == "" && $3 ~ "^/" { print $3; found = 1 }
+      END { if (!found) exit 1 }' "/proc/$pid/cgroup"
+  }
   # memory.current of the container's scope (its whole cgroup tree).
   scope_current() {
     local dir=/sys/fs/cgroup$1
@@ -251,6 +259,7 @@ if [ "$INNER" = true ]; then
   pod container rm --force --ignore "$NAME-json" > /dev/null 2>&1 || true
   if [ "$ok" = true ] && [ "$status" -eq 0 ]; then
     pass "JSON lines both ways over run --interactive, log driver off, --init" "3 round trips, exit 0 on EOF"
+    info "transport test messages:${got}"
   else
     fail "JSON lines both ways over run --interactive" "got [${got# }], exit $status, $(tail -c 300 "$errf")"
   fi
