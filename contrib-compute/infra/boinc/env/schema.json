@@ -57,6 +57,11 @@
       "enum": ["https://boinc.usnewsmap.com/", "https://boinc-dev.usnewsmap.com/"],
       "description": "The BOINC master URL. Permanent once volunteers attach."
     },
+    "requireSecureTransport": {
+      "type": "boolean",
+      "default": false,
+      "description": "Require verified MySQL TLS. Defaults OFF when absent. Set true only after #464 actual Azure-chain, complete copied-project migration/rollback and all-client acceptance, under #529 coordination. Forwarded by normal provisioning; no portal-only toggle."
+    },
     "subscriptionId": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"

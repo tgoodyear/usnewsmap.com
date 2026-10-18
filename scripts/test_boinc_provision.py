@@ -197,5 +197,61 @@ class ProjectInitialization(unittest.TestCase):
         self.assertNotIn("--delete_prev_inst", source)
 
 
+class TlsSettings(unittest.TestCase):
+    def test_committed_boolean_and_legacy_default_are_preserved(self):
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        self.assertIs(settings["requireSecureTransport"], False)
+        for value in (None, False, True):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                candidate = dict(settings)
+                if value is None:
+                    candidate.pop("requireSecureTransport")
+                else:
+                    candidate["requireSecureTransport"] = value
+                path = Path(directory) / "settings.json"
+                path.write_text(json.dumps(candidate, sort_keys=True))
+                result = self.load(path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "true" if value is True else "false")
+
+    def test_explicit_null_strings_numbers_and_objects_are_rejected(self):
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        for value in (None, "true", "false", 0, 1, {}, []):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                path = Path(directory) / "settings.json"
+                path.write_text(json.dumps({**settings, "requireSecureTransport": value}, sort_keys=True))
+                result = self.load(path)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("requireSecureTransport must be true or false", result.stderr)
+
+    def load(self, path):
+        return subprocess.run(
+            ["bash", "-c", 'set -eu; ENV_NAME=prod; die() { echo "$*" >&2; exit 1; }; '
+             '. scripts/lib/boinc.sh; BOINC_SETTINGS="$1"; boinc_load_settings; '
+             'printf "%s\\n" "$REQUIRE_SECURE_TRANSPORT"', "fixture", str(path)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+
+    def test_parameter_writer_forwards_boolean_not_string(self):
+        source = (ROOT / "scripts/provision-boinc.sh").read_text()
+        writer = source[source.index("write_params() {"):source.index("STAGE=$(domain_stage)")]
+        for value in ("true", "false"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                setup = (
+                    'set -eu; runtime_principal=x; secrets_principal=y; ASSESSMENT=false; '
+                    'GOLD_BUNDLE=false; DNS_ZONE=example.org; REGISTRY_RG=rg; REGISTRY_NAME=registry; '
+                    'ENV_NAME=prod; LOCATION=westus2; SERVER_IMAGE=; BRIDGE_IMAGE=; PUBLISH_IMAGE=; '
+                    'MASTER_HOST=boinc.usnewsmap.com; OPERATOR_ID=x; '
+                    'BOINC_SETTINGS=contrib-compute/infra/boinc/env/prod.json; '
+                    'work="$1"; REQUIRE_SECURE_TRANSPORT="$2"; '
+                )
+                result = subprocess.run(["bash", "-c", setup + writer + '\nwrite_params 2',
+                                         "fixture", directory, value], cwd=ROOT,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parameters = json.loads((Path(directory) / "params.json").read_text())["parameters"]
+                self.assertIs(parameters["requireSecureTransport"]["value"], value == "true")
+
+
 if __name__ == "__main__":
     unittest.main()
