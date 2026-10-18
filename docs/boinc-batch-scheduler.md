@@ -219,7 +219,18 @@ message only when all of these hold, and otherwise puts it back:
 - the batch is published at the version the row names, the title isn't Japanese
   and the language routes to an installed Tesseract model;
 - the page is on the newest fetched-scans list for the controller's manifest
-  version, because volunteers never fetch from LoC.
+  version, because volunteers never fetch from LoC;
+- with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), the page's source
+  language is one of them (#866).
+
+Set `claim_languages` to the trust calibration's language (`["eng"]` today:
+`trust.json` has one `scope.language`, and German failed its gate in #835).
+Without it the claim takes any language the worker image can read, and
+`collect --trust` holds back a result outside the calibrated scope, so that
+page's message would stay hidden for the whole lease instead of going back to
+a node. The key is optional and changes nothing when absent. Deploy a hand-off
+image that knows `CLAIM_LANGUAGES` before setting it: an older image ignores
+the variable and claims every language.
 
 A page whose ledger row is already answered is **deleted** from the queue. Any
 other message it can't use is **sent back** (a copy is sent, then the original is

@@ -38,7 +38,8 @@ PAGE_KEY = re.compile(r"[A-Za-z0-9_-]+/\d{4}-\d{2}-\d{2}/ed-\d+/seq-\d+")
 def load_config(path):
     config = json.loads(path.read_text())
     queue = config.get("source") == "queue"
-    require(set(config) == (QUEUE_FIELDS if queue else PAGES_FIELDS) and config["schema_version"] == 1,
+    fields = set(config) - ({"claim_languages"} if queue else set())
+    require(fields == (QUEUE_FIELDS if queue else PAGES_FIELDS) and config["schema_version"] == 1,
             "invalid config fields/version")
     for key, pattern in (
         ("env", r"[a-z][a-z0-9-]{0,30}"), ("account", r"[a-z0-9]{3,24}"),
@@ -66,6 +67,12 @@ def load_config(path):
                 and all(q in QUEUES for q in queues), "claim_queues is ocr-bulk and/or ocr-priority")
         require(type(config["lease_hours"]) is int and 1 <= config["lease_hours"] <= 168,
                 "lease_hours is 1 to 168")
+        # Optional: only pages in these source languages, the trust calibration's scope (#866).
+        languages = config.get("claim_languages")
+        require(languages is None or (
+            isinstance(languages, list) and languages and len(set(languages)) == len(languages)
+            and all(isinstance(l, str) and re.fullmatch(r"[a-z]{3}", l) for l in languages)),
+            "claim_languages is a non-empty list of three-letter codes")
         config["pages"] = []
         return config
     for key, pattern in (("batch", r"[a-z]{2,10}_[A-Za-z0-9_]+"),):
@@ -240,7 +247,9 @@ class Transport:
         try:
             self.step("handoff", "claim", HANDOFF_MANIFEST=self.config["manifest"], CLAIM_NONCE=nonce,
                       CLAIM_MAX=count, CLAIM_QUEUES=",".join(self.config["claim_queues"]),
-                      CLAIM_LEASE_HOURS=self.config["lease_hours"])
+                      CLAIM_LEASE_HOURS=self.config["lease_hours"],
+                      **({"CLAIM_LANGUAGES": ",".join(self.config["claim_languages"])}
+                         if self.config.get("claim_languages") else {}))
         except RuntimeError as error:
             # Messages taken before the failure are hidden now and their claims are written:
             # record them if the job got as far as its summary, then stop the tick.

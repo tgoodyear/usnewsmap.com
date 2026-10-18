@@ -1082,6 +1082,7 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
             CLAIM_NONCE="abcdefgh12",
             CLAIM_MAX="7",
             CLAIM_QUEUES="ocr-bulk,ocr-priority",
+            CLAIM_LANGUAGES="eng,fra",
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = self.calls()
@@ -1089,7 +1090,8 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertTrue(calls[0].startswith("claim pull --queue-url https://usnmst.queue.core.windows.net "))
         self.assertIn("--manifest-version pages-v1", calls[0])
         self.assertIn("--max 7 --lease-hours 96", calls[0])
-        self.assertIn("--nonce abcdefgh12 --queue ocr-bulk --queue ocr-priority", calls[0])
+        self.assertIn("--nonce abcdefgh12 --queue ocr-bulk --queue ocr-priority "
+                      "--language eng --language fra", calls[0])
         # The pop receipts exist only in the claim files: they go up first.
         self.assertIn("handoff put", calls[1])
         self.assertIn("--prefix claims", calls[1])
@@ -1100,7 +1102,9 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                     HANDOFF_MANIFEST="pages-v1/manifest.parquet", CLAIM_NONCE="abcdefgh12")
         for bad in (dict(QUEUE_URL="http://x"), dict(CLAIM_MAX="101"), dict(CLAIM_MAX="0"),
                     dict(CLAIM_QUEUES="ocr-deadletter"), dict(CLAIM_NONCE="short"),
-                    dict(CLAIM_LEASE_HOURS="169"), dict(HANDOFF_MANIFEST="../manifest.parquet")):
+                    dict(CLAIM_LEASE_HOURS="169"), dict(HANDOFF_MANIFEST="../manifest.parquet"),
+                    dict(CLAIM_LANGUAGES="en"), dict(CLAIM_LANGUAGES="eng,ENG"),
+                    dict(CLAIM_LANGUAGES="eng;x")):
             r = self.handoff("claim", **{**base, **bad})
             self.assertNotEqual(r.returncode, 0, bad)
         self.assertEqual(self.calls(), [])
