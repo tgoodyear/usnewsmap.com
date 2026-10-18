@@ -341,7 +341,7 @@ mod command_tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn executable_fixtures_launch_under_parallel_forks() {
         let mut tasks = tokio::task::JoinSet::new();
         for _ in 0..8 {
