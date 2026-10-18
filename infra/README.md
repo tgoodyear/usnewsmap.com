@@ -81,7 +81,7 @@ ADR-0017's stateless Phase 1 changes and Phase 2 are declared in the
 templates; that declaration is **not evidence that Azure has been
 migrated**. Existing prod keeps its data lake, Cosmos, skeleton, OCR
 exchange and Phase 3 ingest resources pinned. The reviewed target names
-are in `names/prod.json`; the remaining 22 pins are in
+are in `names/prod.json`; the remaining 21 pins are in
 `names/exceptions.json`.
 
 ### Protected-resource gate
@@ -152,7 +152,9 @@ same rules.
    its diff to the current target map. Compare actual resource IDs; account
    for optional resources, GUID children and display properties separately.
    `prod.json` is compiler-derived, not an authenticated live inventory.
-   Confirm the `archiveEndpoint` deployment state before removing its pin.
+   The 15 October read-only inventory found no production archive endpoint,
+   so `archiveEndpoint` now uses the conventional name; recheck before
+   provisioning if production begins using `USNM_ARCHIVE_ACCOUNT`.
 2. Remove the unmanaged `Failure Anomalies - appi-usnm-prod` smart-detector
    rule **before** provisioning. Azure allows only one
    `FailureAnomaliesDetector` rule per Application Insights component, so

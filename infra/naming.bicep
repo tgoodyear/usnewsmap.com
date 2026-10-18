@@ -336,8 +336,8 @@ func names(env string, sfx string, pinned bool) Names => {
   apiServerErrorsAlert: usnmName('api-server-errors', 'alert', env)
   apiWorkbookTitle: 'usnm API (${env})'
   appInsights: pinned ? 'appi-usnm-${env}' : usnmName('core', 'appi', env)
-  archiveEndpoint: pinned ? 'pe-usnm-archive-blob' : usnmName('archive-blob', 'pep', env)
-  archiveEndpointNic: pinned ? '' : usnmName('archive-blob', 'nic', env)
+  archiveEndpoint: usnmName('archive-blob', 'pep', env)
+  archiveEndpointNic: usnmName('archive-blob', 'nic', env)
   archiveWriterRole: usnmName('archive-writer', 'role', env)
   archiveWriterRoleScopeEnv: ''
   backfillJob: pinned ? 'caj-usnm-backfill-${env}' : usnmName('backfill', 'caj', env)
