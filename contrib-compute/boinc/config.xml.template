@@ -41,6 +41,7 @@
         <enable_assignment>1</enable_assignment>
         <one_result_per_host_per_wu/>
         <min_sendwork_interval>2</min_sendwork_interval>
+        <next_rpc_delay>3600</next_rpc_delay>
         <max_wus_in_progress>32</max_wus_in_progress>
         <daily_result_quota>50000</daily_result_quota>
         <max_wus_to_send>64</max_wus_to_send>

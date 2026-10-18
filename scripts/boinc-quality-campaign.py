@@ -849,9 +849,30 @@ def poke_local_boinc_client(project_url: str = "https://boinc.usnewsmap.com/") -
                     nonce_hash = hashlib.md5((m.group(1) + pw).encode()).hexdigest()
                     rpc(f"<auth2>\n<nonce_hash>{nonce_hash}</nonce_hash>\n</auth2>")
             reply = rpc(f"<project_update>\n<project_url>{project_url}</project_url>\n</project_update>")
-            return "<success/>" in reply
+            local_ok = "<success/>" in reply
     except OSError:
-        return False
+        local_ok = False
+
+    # Best-effort: also poke local Proxmox BOINC containers on pve-big.tjg.fyi if reachable via SSH
+    try:
+        subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=3",
+                "root@pve-big.tjg.fyi",
+                f"for ct in 100 101 214; do pct exec $ct -- boinccmd --project {project_url} update >/dev/null 2>&1 || true; done",
+            ],
+            check=False,
+            timeout=8,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+    return local_ok
 
 
 def cmd_launch_corpus(args: argparse.Namespace) -> int:
@@ -1086,9 +1107,9 @@ def build_parser() -> argparse.ArgumentParser:
     lc.add_argument("--resource-group", default=DEFAULT_BOINC_RG)
     lc.add_argument("--job-name", default="usnm-boinc-quality-caj-prod")
     lc.add_argument("--bridge-image", default="", help="Override bridge image (defaults to contrib-compute/infra/boinc/env/<env>.json)")
-    lc.add_argument("--shards", type=int, default=4, help="Number of rolling stager shards (default: 4)")
-    lc.add_argument("--bundle-size", type=int, default=500, help="Pages per BOINC workunit bundle (default: 500)")
-    lc.add_argument("--max-in-flight", type=int, default=30, help="Max uncollected bundles in flight (default: 30)")
+    lc.add_argument("--shards", type=int, default=8, help="Number of rolling stager shards (default: 8)")
+    lc.add_argument("--bundle-size", type=int, default=200, help="Pages per BOINC workunit bundle (default: 200)")
+    lc.add_argument("--max-in-flight", type=int, default=45, help="Max uncollected bundles in flight (default: 45)")
     lc.add_argument("--min-free-gb", type=float, default=35.0, help="Minimum free GB on /project before backpressure (default: 35.0)")
     lc.add_argument("--handoff-account", default=DEFAULT_HANDOFF_ACCOUNT)
     lc.add_argument("--handoff-container", default=DEFAULT_HANDOFF_CONTAINER)

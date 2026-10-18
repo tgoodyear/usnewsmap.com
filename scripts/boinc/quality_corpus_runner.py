@@ -53,9 +53,9 @@ SHARED_MANIFEST = f"{WAVE9_ROOT}/wave9_manifest.parquet"
 
 ENGINE_IMAGE = "sha256:3f599aefa49334ef6d12cf9d4a3b294fe7638877d587526b94bba0048741a402"
 READERS = "loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract"
-BUNDLE_SIZE = int(os.environ.get("BUNDLE_SIZE", "500"))
-NUM_SHARDS = int(os.environ.get("NUM_SHARDS", "4"))
-MAX_IN_FLIGHT_BUNDLES = int(os.environ.get("MAX_IN_FLIGHT_BUNDLES", "35"))
+BUNDLE_SIZE = int(os.environ.get("BUNDLE_SIZE", "200"))
+NUM_SHARDS = int(os.environ.get("NUM_SHARDS", "8"))
+MAX_IN_FLIGHT_BUNDLES = int(os.environ.get("MAX_IN_FLIGHT_BUNDLES", "45"))
 MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "35.0"))
 LOC_GAP_SECS = 5.0
 
@@ -331,12 +331,18 @@ def query_mysql_workunits():
 
 
 def repair_and_reclaim_download_space():
+    try:
+        if os.path.exists(SPOOL_DIR):
+            os.listdir(SPOOL_DIR)
+    except Exception:
+        pass
     reclaimed_bytes, reclaimed_files = free_assimilated_downloads()
     os.makedirs(UNITS_DIR, exist_ok=True)
     os.makedirs(COLLECTED_DIR, exist_ok=True)
     mysql_wus = query_mysql_workunits()
 
     removed_ghosts = []
+    recovered_terminal = 0
     known_jids = {}
     for bdir in sorted(glob.glob(f"{UNITS_DIR}/bundle-*")):
         udir = Path(bdir)
@@ -349,8 +355,13 @@ def repair_and_reclaim_download_space():
             jid = job["id"]
             wu = f"usnm_quality_{jid}"
             if (udir / "collected").exists():
-                known_jids[jid] = udir
-                continue
+                col_txt = (udir / "collected").read_text().strip()
+                if col_txt.startswith("mysql_terminal_2_0") and spool_ready(wu):
+                    (udir / "collected").unlink(missing_ok=True)
+                    recovered_terminal += 1
+                else:
+                    known_jids[jid] = udir
+                    continue
             # If unit was never submitted to MySQL and has no spool files, remove the ghost unit dir
             # so its pages are cleanly re-staged and submitted under usnm_quality 1.3.
             if not (udir / "submitted").exists() or (
@@ -382,6 +393,7 @@ def repair_and_reclaim_download_space():
         "reclaimed_mb": round(reclaimed_bytes / (1024 * 1024), 1),
         "reclaimed_files": reclaimed_files,
         "removed_ghost_bundles": len(removed_ghosts),
+        "recovered_terminal_bundles": recovered_terminal,
         "known_bundles": len(known_jids),
     }
 
@@ -414,7 +426,12 @@ def collect_and_purge(force=False):
 
     try:
         Path(ts_marker).write_text(str(time.time()))
-        rep_marker = f"{LOCAL_LOCKS_DIR}/repaired_v4.done"
+        try:
+            if os.path.exists(SPOOL_DIR):
+                os.listdir(SPOOL_DIR)
+        except Exception:
+            pass
+        rep_marker = f"{LOCAL_LOCKS_DIR}/repaired_v5.done"
         if not os.path.exists(rep_marker):
             repair_info = repair_and_reclaim_download_space()
             Path(rep_marker).write_text(json.dumps(repair_info))
@@ -448,8 +465,11 @@ def collect_and_purge(force=False):
                 # Ghost unit that was never created in BOINC MySQL; remove so pages get re-staged
                 purge_unit_downloads(jid)
                 shutil.rmtree(udir, ignore_errors=True)
-            elif wu in mysql_wus and (mysql_wus[wu][1] != 0 or mysql_wus[wu][0] == 2):
-                # Workunit errored or assimilated in MySQL without spool files
+            elif wu in mysql_wus and (
+                mysql_wus[wu][1] != 0
+                or (mysql_wus[wu][0] == 2 and (time.time() - udir.stat().st_mtime > 7200))
+            ):
+                # Workunit errored or assimilated >2h ago in MySQL without spool files
                 assim_st, err_m = mysql_wus[wu]
                 (udir / "collected").write_text(f"mysql_terminal_{assim_st}_{err_m}\n")
                 purge_unit_downloads(jid)
