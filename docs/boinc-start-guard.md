@@ -47,14 +47,14 @@ not permission to deploy or interrupt another owner's work.
 ## Failure recovery
 
 Normal exits release the transaction lease and private local staging directory.
-An uncertain start response, mismatched/unreadable execution settings, or failed
+An uncertain template update or start response, mismatched/unreadable execution settings, or failed
 visibility check deliberately **retains the infinite lease**, even though the
 host-local mutex is released. A crashed process or failed lease release can
 also leave it held. There is no expiry, automatic takeover or forced stop.
 
 Before explicitly breaking that one blob lease, coordinate in #529, confirm the
 former launcher is stopped, inspect the job's full execution list and settings,
-and reconcile every possibly started execution. Preserve live jobs and their
+and reconcile every possibly started execution and in-flight template mutation. Preserve live jobs and their
 journals. Only after the outcome is known and the prior owner cannot write may
 the operator break the stale lease using the normal Azure blob lease tooling.
 Do not delete marker blobs, break a live lease, or retry blindly. The next

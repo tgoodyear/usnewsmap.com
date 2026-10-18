@@ -69,7 +69,7 @@ boinc_start_guard_release() {
       boinc_start_blob lease release --blob-name "$BOINC_START_BLOB" --lease-id "$BOINC_START_LEASE" -o none || failed=1
       [ "$failed" -eq 0 ] || echo "error: cross-host start lease release failed for $job; reconcile it before another launch" >&2
     else
-      echo "error: start outcome uncertain; cross-host lease retained for operator reconciliation ($BOINC_START_BLOB)" >&2
+      echo "error: template update/start outcome uncertain; cross-host lease retained for operator reconciliation ($BOINC_START_BLOB)" >&2
       failed=1
     fi
     BOINC_START_LEASE=""

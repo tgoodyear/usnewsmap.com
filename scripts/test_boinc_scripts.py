@@ -1267,6 +1267,8 @@ case "$*" in
     rmdir "$STUB_REMOTE_STATE/held"; exit ;;
   "stack sub show"*)
     [ -z "${STUB_NO_EXCHANGE:-}" ] || { echo '{}'; exit; } ;;
+  "containerapp job update"*)
+    [ -z "${STUB_UPDATE_FAILURE:-}" ] || exit 9 ;;
   "containerapp job execution list"*)
     if [ -n "${STUB_ACTIVE_VISIBLE:-}" ] && [ -f "$STUB_REMOTE_STATE/started" ]; then
       printf '%s\n' "$*" >> "$STUB_LOG"
@@ -1347,8 +1349,9 @@ esac
         self.assertNotIn("status=='Running'", query)
         self.assertFalse((self.remote / "held").exists())
 
-    def test_ambiguous_start_and_failed_readback_retain_remote_lease(self):
-        for failure in ({"STUB_START_FAILURE": "1"}, {"STUB_STATUS_FAILURE": "1"},
+    def test_ambiguous_update_start_and_failed_readback_retain_remote_lease(self):
+        for failure in ({"STUB_UPDATE_FAILURE": "1"}, {"STUB_START_FAILURE": "1"},
+                        {"STUB_STATUS_FAILURE": "1"},
                         {"STUB_EXEC_ENV": '[{"name":"BRIDGE_STEP","value":"wrong"}]'}):
             with self.subTest(failure=failure):
                 result = self.run_script("--step", "register-apps", **failure)
