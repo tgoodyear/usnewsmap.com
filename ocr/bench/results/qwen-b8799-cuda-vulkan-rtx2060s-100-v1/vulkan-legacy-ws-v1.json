@@ -1,0 +1,530 @@
+{
+  "by_source": {
+    "overproof-ca": {
+      "cer": 0.022414103255981293,
+      "cer_missing_as_empty": 0.022414103255981293,
+      "edits": 623,
+      "missing": 0,
+      "missing_chars": 0,
+      "reference_chars": 27795,
+      "samples": 100,
+      "scored": 100
+    }
+  },
+  "release": "v1.0.0",
+  "rows": [
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-001",
+      "reference_chars": 293
+    },
+    {
+      "edits": 7,
+      "id": "pub-overproof-ca-002",
+      "reference_chars": 303
+    },
+    {
+      "edits": 26,
+      "id": "pub-overproof-ca-004",
+      "reference_chars": 207
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-005",
+      "reference_chars": 268
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-006",
+      "reference_chars": 316
+    },
+    {
+      "edits": 39,
+      "id": "pub-overproof-ca-007",
+      "reference_chars": 260
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-008",
+      "reference_chars": 308
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-009",
+      "reference_chars": 323
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-010",
+      "reference_chars": 286
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-011",
+      "reference_chars": 311
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-012",
+      "reference_chars": 271
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-013",
+      "reference_chars": 326
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-014",
+      "reference_chars": 247
+    },
+    {
+      "edits": 22,
+      "id": "pub-overproof-ca-015",
+      "reference_chars": 290
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-016",
+      "reference_chars": 276
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-017",
+      "reference_chars": 240
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-018",
+      "reference_chars": 251
+    },
+    {
+      "edits": 6,
+      "id": "pub-overproof-ca-019",
+      "reference_chars": 273
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-020",
+      "reference_chars": 324
+    },
+    {
+      "edits": 37,
+      "id": "pub-overproof-ca-021",
+      "reference_chars": 269
+    },
+    {
+      "edits": 5,
+      "id": "pub-overproof-ca-022",
+      "reference_chars": 252
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-023",
+      "reference_chars": 277
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-024",
+      "reference_chars": 335
+    },
+    {
+      "edits": 29,
+      "id": "pub-overproof-ca-025",
+      "reference_chars": 277
+    },
+    {
+      "edits": 5,
+      "id": "pub-overproof-ca-026",
+      "reference_chars": 301
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-027",
+      "reference_chars": 282
+    },
+    {
+      "edits": 8,
+      "id": "pub-overproof-ca-028",
+      "reference_chars": 296
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-029",
+      "reference_chars": 280
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-030",
+      "reference_chars": 244
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-031",
+      "reference_chars": 233
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-032",
+      "reference_chars": 268
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-033",
+      "reference_chars": 281
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-034",
+      "reference_chars": 243
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-035",
+      "reference_chars": 272
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-036",
+      "reference_chars": 294
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-037",
+      "reference_chars": 295
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-039",
+      "reference_chars": 255
+    },
+    {
+      "edits": 6,
+      "id": "pub-overproof-ca-040",
+      "reference_chars": 284
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-041",
+      "reference_chars": 225
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-042",
+      "reference_chars": 306
+    },
+    {
+      "edits": 5,
+      "id": "pub-overproof-ca-043",
+      "reference_chars": 294
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-044",
+      "reference_chars": 239
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-045",
+      "reference_chars": 317
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-046",
+      "reference_chars": 310
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-047",
+      "reference_chars": 319
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-048",
+      "reference_chars": 258
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-049",
+      "reference_chars": 323
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-050",
+      "reference_chars": 247
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-051",
+      "reference_chars": 323
+    },
+    {
+      "edits": 5,
+      "id": "pub-overproof-ca-052",
+      "reference_chars": 283
+    },
+    {
+      "edits": 31,
+      "id": "pub-overproof-ca-053",
+      "reference_chars": 235
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-054",
+      "reference_chars": 304
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-055",
+      "reference_chars": 321
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-056",
+      "reference_chars": 272
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-057",
+      "reference_chars": 255
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-058",
+      "reference_chars": 275
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-059",
+      "reference_chars": 332
+    },
+    {
+      "edits": 33,
+      "id": "pub-overproof-ca-060",
+      "reference_chars": 256
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-061",
+      "reference_chars": 307
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-062",
+      "reference_chars": 308
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-063",
+      "reference_chars": 304
+    },
+    {
+      "edits": 5,
+      "id": "pub-overproof-ca-064",
+      "reference_chars": 248
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-065",
+      "reference_chars": 269
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-066",
+      "reference_chars": 319
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-067",
+      "reference_chars": 223
+    },
+    {
+      "edits": 38,
+      "id": "pub-overproof-ca-068",
+      "reference_chars": 269
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-069",
+      "reference_chars": 304
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-070",
+      "reference_chars": 235
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-071",
+      "reference_chars": 297
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-072",
+      "reference_chars": 321
+    },
+    {
+      "edits": 5,
+      "id": "pub-overproof-ca-073",
+      "reference_chars": 213
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-074",
+      "reference_chars": 219
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-075",
+      "reference_chars": 279
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-076",
+      "reference_chars": 323
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-077",
+      "reference_chars": 269
+    },
+    {
+      "edits": 25,
+      "id": "pub-overproof-ca-079",
+      "reference_chars": 276
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-080",
+      "reference_chars": 218
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-081",
+      "reference_chars": 270
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-082",
+      "reference_chars": 248
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-083",
+      "reference_chars": 251
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-084",
+      "reference_chars": 244
+    },
+    {
+      "edits": 43,
+      "id": "pub-overproof-ca-085",
+      "reference_chars": 317
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-086",
+      "reference_chars": 317
+    },
+    {
+      "edits": 72,
+      "id": "pub-overproof-ca-087",
+      "reference_chars": 203
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-088",
+      "reference_chars": 258
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-090",
+      "reference_chars": 270
+    },
+    {
+      "edits": 6,
+      "id": "pub-overproof-ca-091",
+      "reference_chars": 266
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-092",
+      "reference_chars": 280
+    },
+    {
+      "edits": 15,
+      "id": "pub-overproof-ca-093",
+      "reference_chars": 226
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-094",
+      "reference_chars": 248
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-095",
+      "reference_chars": 303
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-096",
+      "reference_chars": 322
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-097",
+      "reference_chars": 291
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-099",
+      "reference_chars": 267
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-100",
+      "reference_chars": 317
+    },
+    {
+      "edits": 4,
+      "id": "pub-overproof-ca-101",
+      "reference_chars": 247
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-102",
+      "reference_chars": 316
+    },
+    {
+      "edits": 36,
+      "id": "pub-overproof-ca-104",
+      "reference_chars": 252
+    },
+    {
+      "edits": 5,
+      "id": "pub-overproof-ca-105",
+      "reference_chars": 289
+    },
+    {
+      "edits": 2,
+      "id": "pub-overproof-ca-106",
+      "reference_chars": 287
+    }
+  ],
+  "rule": "legacy-ws-v1",
+  "subset": "legacy/overproof-en-100",
+  "subset_digest": "e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04",
+  "total": {
+    "cer": 0.022414103255981293,
+    "cer_missing_as_empty": 0.022414103255981293,
+    "edits": 623,
+    "missing": 0,
+    "missing_chars": 0,
+    "reference_chars": 27795,
+    "samples": 100,
+    "scored": 100
+  }
+}
