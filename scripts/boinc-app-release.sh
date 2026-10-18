@@ -361,7 +361,7 @@ if [ "$KIND" = native ]; then
   extra_mount=""
   extra_arg=""
   if [ -d "$work/extra" ]; then
-    tar -C "$work" -c extra | ssh_host "tar -x -C $remote" || die "can't copy extra files to the signing host"
+    COPYFILE_DISABLE=1 tar -C "$work" -c extra | ssh_host "tar -x -C $remote" || die "can't copy extra files to the signing host"
     extra_mount="-v $remote/extra:/extra:ro"
     extra_arg="--bundle-dir /extra"
   fi
