@@ -100,9 +100,10 @@ def init_project():
 def start_apache(database_failure=False):
     config = ET.parse(PROJECT / "config.xml")
     logdir = Path(config.findtext("./config/log_dir"))
-    logdir.mkdir(exist_ok=True)
-    shutil.chown(logdir, user="boincadm", group="boincadm")
-    logdir.chmod(0o775)
+    for directory in {logdir, PROJECT / logdir.name}:
+        directory.mkdir(exist_ok=True)
+        shutil.chown(directory, user="boincadm", group="boincadm")
+        directory.chmod(0o775)
     for folder in ("apache/run", "apache/lock", "apache/log", "apache/sessions", "php"):
         (ROOT / folder).mkdir(parents=True, exist_ok=True)
     (ROOT / "apache/lock").chmod(0o1777)
