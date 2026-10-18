@@ -31,7 +31,7 @@
   },
   "examples": [],
   "format": "usnm-ocr-bench",
-  "inputs_sha256": "5e85025b7bebc538028bbac0f6dd070c83449012c3ac3a395ae826c667b8f897",
+  "inputs_sha256": "316ec07a3c4bbb021da1500c5374f78ce85c44e3be8b9a581ba74c336efe4e9a",
   "limitations": [
     "A purposive four-page pilot, not a representative estimate of all GovInfo Serial Set OCR.",
     "Only three pages have human-verified references; the fourth remains an explicit annotation gap.",
@@ -208,9 +208,9 @@
         ]
       },
       "reference": {
-        "bytes": 2946,
+        "bytes": 2948,
         "path": "references/doc183-p03.txt",
-        "sha256": "f61bb8ccf311b52e26a8fe3843b5a29ed9c2415c3036a43f2dc3a3f2e0e4ef6a"
+        "sha256": "6ec5479ef0e307ba5681edbdfd54d52d46010703e82b88ecbd15739e3976b943"
       },
       "reference_status": "human-verified",
       "scripts": [
@@ -239,12 +239,12 @@
       "unit": "full-page"
     }
   },
-  "spec_sha256": "f3d9f07d4e56e28abc2c197f16cb9d5f9707d80524177bc21595886bc7744f74",
+  "spec_sha256": "a1a170ba5c5a7543c83fa28c4ec7b37479fae21280c27298795d3a0584a9f236",
   "subsets": {
     "serialset/verified-3": {
       "count": 3,
       "description": "All and only the full-page samples whose references were checked against their page images.",
-      "digest": "8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382",
+      "digest": "a6cd647618f652b9cb1b563e8bfe6375ff4d86799bfca1e436e92884563bc2a9",
       "members": [
         "serialset/00033-009-0042-p03",
         "serialset/00033-020-0053-p05",

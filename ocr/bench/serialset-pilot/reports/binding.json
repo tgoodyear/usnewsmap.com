@@ -1,6 +1,6 @@
 {
   "format": "usnm-serialset-ocr-pilot-score-binding/1",
-  "manifest_inputs_sha256": "5e85025b7bebc538028bbac0f6dd070c83449012c3ac3a395ae826c667b8f897",
+  "manifest_inputs_sha256": "316ec07a3c4bbb021da1500c5374f78ce85c44e3be8b9a581ba74c336efe4e9a",
   "outputs_sha256": {
     "source-ocr": "df6195dc10d6e5125e9481be96385742ba4f2a415326efbd4fccf80fe2abeafd",
     "tesseract-5.5.1": "fe9051a1ddbdea8fed8130c60f34fb62ce6924e931a9a75baad13240d6ff29b8"
@@ -9,25 +9,25 @@
     "source-ocr-legacy-ws-v1.json": {
       "engine": "source-ocr",
       "rule": "legacy-ws-v1",
-      "sha256": "118c55d1db123e4edcda92e8c5e1129a5b5073a7c42c44a0ef80c3e6c0f1487f"
+      "sha256": "e76a91672e1dc1c88ea85332a8108fcda6719e047926178509fbb5b83a60bbdf"
     },
     "source-ocr-raw-v1.json": {
       "engine": "source-ocr",
       "rule": "raw-v1",
-      "sha256": "9a1e37323c81456e8e86292e8cd5d5e1e68318594d291b662c3020784c9b6097"
+      "sha256": "4a41647f8dfa31293596795db43bf3b1d2f54ac85a873fd2668d2c5ec5e031fd"
     },
     "tesseract-5.5.1-legacy-ws-v1.json": {
       "engine": "tesseract-5.5.1",
       "rule": "legacy-ws-v1",
-      "sha256": "77cab1d143083cfc48784e64ccb0ed857aac1310ffb2cf10883875edd320bd0e"
+      "sha256": "d1830c8124564d5f2a1af6fd1d3edc030481c1550b62cf4e14782f9c73022f62"
     },
     "tesseract-5.5.1-raw-v1.json": {
       "engine": "tesseract-5.5.1",
       "rule": "raw-v1",
-      "sha256": "869563e6951a81d738fa5d8ce5d43004aa2b7faf983b92feab5df6bee0b208f8"
+      "sha256": "8501ebca89b85dd7ee057708b14212463c88342b1b6705fc4e9699e23949a854"
     }
   },
   "score_implementation_sha256": "449357ff1c17ba2c06a3cd2cc88421a9ba495fca0de48d0c6b643d50c0deaa29",
   "subset": "serialset/verified-3",
-  "subset_digest": "8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382"
+  "subset_digest": "a6cd647618f652b9cb1b563e8bfe6375ff4d86799bfca1e436e92884563bc2a9"
 }

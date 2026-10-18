@@ -122,9 +122,9 @@
       "package_id": "SERIALSET-13993_00_00-021-0183-0000",
       "pdf_page": 3,
       "reference": {
-        "bytes": 2946,
+        "bytes": 2948,
         "path": "references/doc183-p03.txt",
-        "sha256": "f61bb8ccf311b52e26a8fe3843b5a29ed9c2415c3036a43f2dc3a3f2e0e4ef6a"
+        "sha256": "6ec5479ef0e307ba5681edbdfd54d52d46010703e82b88ecbd15739e3976b943"
       },
       "source_page_id": "govinfo:SERIALSET-13993_00_00-021-0183-0000:pdf-page-3"
     }

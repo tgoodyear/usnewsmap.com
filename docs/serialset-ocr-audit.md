@@ -56,7 +56,7 @@ Sources checked (2026-10-18):
   [`outputs/annotation-gap.json`](../ocr/bench/serialset-pilot/outputs/annotation-gap.json).
 - Reference transcriptions were written from the full-page images, not copied from PDF text or
   ALTO. The explicit `serialset-full-page-v1` policy preserves print capitalization, punctuation,
-  historic spelling, and line-end hyphens; reads tables by region and then row; and omits blank
+  historic spelling, and line-end hyphens with their line breaks; reads tables by region and then row; and omits blank
   cells and decorative leader dashes. Each of the three scored references was checked against its
   committed page image. The table reading-order convention is part of the pilot, not a
   geometry-level layout annotation schema. No third-party reference data is included.
@@ -68,15 +68,15 @@ Sources checked (2026-10-18):
 
 The comparison uses the existing #738 `bench-score` implementation and its two rules on the same
 three verified full pages. Both systems produced all three outputs. The human reference subset
-has digest `8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382`; the complete
-pilot file-set digest is `aaeb190faebadc563e5350cb5319ff727239527910e8db73f1906cfeb09c2181`.
+has digest `a6cd647618f652b9cb1b563e8bfe6375ff4d86799bfca1e436e92884563bc2a9`; the complete
+pilot file-set digest is `0f744a8fb83958fdf7eaf1d766ce9bf92e35a4621aa11fe1caa490f743580e19`.
 
 | OCR output             | Rule           | Edits / reference chars |    CER | Missing |
 | ---------------------- | -------------- | ----------------------: | -----: | ------: |
-| GovInfo PDF text layer | `legacy-ws-v1` |             611 / 6,405 |  9.54% |   0 / 3 |
-| GovInfo PDF text layer | `raw-v1`       |             766 / 6,429 | 11.91% |   0 / 3 |
-| Local Tesseract 5.5.1  | `legacy-ws-v1` |             785 / 6,405 | 12.26% |   0 / 3 |
-| Local Tesseract 5.5.1  | `raw-v1`       |             836 / 6,429 | 13.00% |   0 / 3 |
+| GovInfo PDF text layer | `legacy-ws-v1` |             613 / 6,407 |  9.57% |   0 / 3 |
+| GovInfo PDF text layer | `raw-v1`       |             767 / 6,431 | 11.93% |   0 / 3 |
+| Local Tesseract 5.5.1  | `legacy-ws-v1` |             783 / 6,407 | 12.22% |   0 / 3 |
+| Local Tesseract 5.5.1  | `raw-v1`       |             833 / 6,431 | 12.95% |   0 / 3 |
 
 Per-page `legacy-ws-v1` results show why the aggregate is not a re-OCR decision:
 
@@ -84,7 +84,7 @@ Per-page `legacy-ws-v1` results show why the aggregate is not a re-OCR decision:
 | ---------------------------------- | ---------------------: | -------------------: | -------------------------------------------------------------- |
 | H. Doc. 16-42, p. 3 (1820 prose)   |     12 / 1,928 (0.62%) |   20 / 1,928 (1.04%) | Existing text layer has fewer edits.                           |
 | H. Doc. 16-53, p. 5 (1820 tables)  |   455 / 1,550 (29.35%) | 755 / 1,550 (48.71%) | Both struggle with dense table layout/order; dominates errors. |
-| H. Doc. 101-183, p. 3 (1990 prose) |    144 / 2,927 (4.92%) |   10 / 2,927 (0.34%) | Local Tesseract has fewer edits.                               |
+| H. Doc. 101-183, p. 3 (1990 prose) |    146 / 2,929 (4.98%) |    8 / 2,929 (0.27%) | Local Tesseract has fewer edits.                               |
 
 The 1820 page's top table is transcribed left region then right region, and its lower table row by
 row; scorer CER is character-level and reading-order-sensitive. The high p. 5 scores therefore

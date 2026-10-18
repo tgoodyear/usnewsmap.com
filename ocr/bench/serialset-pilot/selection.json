@@ -16,7 +16,7 @@
     "status": "pilot policy; needs review before expanding",
     "rules": [
       "Transcribe only visible print from the page image; never copy the PDF text layer or ALTO into a reference.",
-      "Preserve capitalization, punctuation, historical spelling, diacritics, numerals, and printed line-end hyphens.",
+      "Preserve capitalization, punctuation, historical spelling, diacritics, numerals, and printed line-end hyphens with their following line breaks.",
       "Include legible page identifiers and headings.",
       "For tables, read the left table region top-to-bottom, then the right table region top-to-bottom; within a table, read each row left-to-right.",
       "Represent a printed half fraction as the Unicode character ½.",
