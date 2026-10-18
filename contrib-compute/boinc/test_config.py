@@ -1,6 +1,7 @@
 """Regression checks for the server's daemon configuration."""
 
 from pathlib import Path
+import math
 import os
 import shlex
 import subprocess
@@ -35,6 +36,28 @@ class DaemonConfig(unittest.TestCase):
             [["feeder", "-d", "2", "--allapps"]],
         )
         self.assertEqual(root.findtext("./config/shmem_work_items"), "1000")
+
+    def test_feeder_query_covers_weighted_cache_and_qwen_backlog_with_headroom(self):
+        root = Path(__file__).parent
+        config = ET.parse(root / "config.xml.template")
+        query_size = int(config.findtext("./config/feeder_query_size", "0"))
+        cache_size = int(config.findtext("./config/shmem_work_items"))
+        apps = ET.parse(root / "project.xml").findall("app")
+        weights = {app.findtext("name"): float(app.findtext("weight")) for app in apps}
+        total_weight = sum(weights.values())
+        self.assertGreater(total_weight, 0)
+        budgets = {}
+        for name, weight in weights.items():
+            self.assertGreaterEqual(weight, 0)
+            # Pinned feeder.cpp: floor(0.5 + enum_limit * weight / app_weight_sum).
+            budgets[name] = math.floor(0.5 + query_size * weight / total_weight)
+            if weight > 0:
+                with self.subTest(app=name):
+                    self.assertGreaterEqual(budgets[name], 2 * cache_size)
+        # Synthetic sizing baseline: all Qwen batches combined, not just container8B.
+        # Cover the whole 455-result prefix with 4x headroom, including blocked replicas.
+        qwen_ready_results = 455
+        self.assertGreaterEqual(budgets["usnm_qwen"], 4 * qwen_ready_results)
 
     def test_replicas_need_different_hosts_not_different_accounts(self):
         # The project's hosts share one account; a per-account rule starves them on quorum-2 work.
@@ -81,5 +104,4 @@ class DaemonConfig(unittest.TestCase):
         self.assertEqual(root.findtext("./config/max_wus_in_progress"), "32")
         self.assertEqual(root.findtext("./config/daily_result_quota"), "50000")
         self.assertEqual(root.findtext("./config/max_wus_to_send"), "64")
-
 

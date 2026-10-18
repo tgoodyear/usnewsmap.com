@@ -64,6 +64,28 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertTrue(POLICY.refresh(self.source, self.target))
         self.assertFalse(POLICY.refresh(self.source, self.target))
 
+    def test_upgrade_restores_missing_vulkan_classes_without_resetting_admission(self):
+        tree = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            tree.getroot().remove(nodes[name])
+        nodes["nvidia_cuda_2b"].find("min_wu_id").text = "100"
+        nodes["nvidia_cuda_2b"].find("max_wu_id").text = "100"
+        for tag, value in (("min_wu_id", "2"), ("max_wu_id", "1")):
+            ET.SubElement(nodes["docker_nvidia_cuda_8b"], tag).text = value
+        tree.write(self.target)
+        self.assertTrue(POLICY.refresh(self.source, self.target))
+        updated = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in updated.findall("plan_class")}
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b",
+                     "nvidia_cuda_8b", "docker_nvidia_cuda_8b"):
+            with self.subTest(plan_class=name):
+                self.assertEqual(nodes[name].findtext("min_wu_id"), "2")
+                self.assertEqual(nodes[name].findtext("max_wu_id"), "1")
+        self.assertEqual(nodes["nvidia_cuda_2b"].findtext("min_wu_id"), "100")
+        self.assertEqual(nodes["nvidia_cuda_2b"].findtext("max_wu_id"), "100")
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
     def test_invalid_existing_windows_fail_without_replacing_policy(self):
         original = self.source.read_bytes()
         for low, high in (("0", "0"), ("5", "4"), ("10", "20"), ("bad", "20")):
