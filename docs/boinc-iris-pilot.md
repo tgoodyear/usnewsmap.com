@@ -241,13 +241,13 @@ A new worker image or driver changes the key and replaces it. To remove it: `doc
 Verification on Computer 9 (2026-10-18), the 1.2 worker code in the 1.1 image with production
 container flags, the same 16 crops each run, all 16/16 ok with identical text:
 
-| Run | Cache | Load | Bundle | Crops/min | Peak cgroup |
-| --- | --- | --- | --- | --- | --- |
-| No cache | none | 14.3 s | 104.1 s | 9.2 | not sampled |
-| First run | cold, writes 3.19 GB | 17.0 s | 108.5 s | 8.9 | not sampled |
-| Second run | warm | 2.9 s | 88.1 s | 10.9 | 5.90 GiB |
-| After a killed warm run | warm, 0 dropped | 1.7 s | 83.1 s | 11.6 | 3.79 GiB |
-| After a run killed at 10 s | cold, 30 partial files dropped | 14.7 s | 108.2 s | 8.9 | 7.30 GiB |
+| Run                        | Cache                          | Load   | Bundle  | Crops/min | Peak cgroup |
+| -------------------------- | ------------------------------ | ------ | ------- | --------- | ----------- |
+| No cache                   | none                           | 14.3 s | 104.1 s | 9.2       | not sampled |
+| First run                  | cold, writes 3.19 GB           | 17.0 s | 108.5 s | 8.9       | not sampled |
+| Second run                 | warm                           | 2.9 s  | 88.1 s  | 10.9      | 5.90 GiB    |
+| After a killed warm run    | warm, 0 dropped                | 1.7 s  | 83.1 s  | 11.6      | 3.79 GiB    |
+| After a run killed at 10 s | cold, 30 partial files dropped | 14.7 s | 108.2 s | 8.9       | 7.30 GiB    |
 
 No run hit the memory limit (`memory.events` max 0, no OOM). Generation also got about 5-10% faster
 warm (81-85 s against 89-93 s for 16 crops), since kernels compiled during generation are cached too.
