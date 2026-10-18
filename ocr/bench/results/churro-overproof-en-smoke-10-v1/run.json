@@ -174,7 +174,7 @@
   "missing_outputs": 0,
   "blank_outputs": 0,
   "xml_extraction_status_counts": {
-    "xml-page-text-metadata-excluded-lines-v2": 10
+    "xml-page-text-metadata-excluded-lines-v3": 10
   },
   "generation_tokens": [
     {
@@ -235,7 +235,7 @@
   "peak_gpu_reserved_bytes": 6455033856,
   "process_peak_rss_kib": 9285700,
   "resource_note": "No cgroup limit was set for this isolated trial; PyTorch peak is this process' CUDA allocation. CPU peak RSS is process max RSS.",
-  "scores_text_transform": "Parse exact model XML, exclude the non-OCR Metadata subtree, ignore formatting-only XML indentation, normalize whitespace between inline OCR elements to one space, preserve OCR line breaks, unescape text, and insert one newline after block elements. Invalid XML uses the unmodified trimmed response. No OCR post-correction.",
+  "scores_text_transform": "Parse model XML, exclude the non-OCR Metadata subtree, preserve text-bearing XML nodes exactly (including leading/trailing, repeated, and nonbreaking spaces), normalize each whitespace-only XML separator node to one space, discard separator-only line-edge padding, and insert line breaks after block elements. Keep exact generated XML in raw-outputs.jsonl. Invalid XML uses the unmodified trimmed response. No OCR post-correction.",
   "benchmark_source_licenses": "As recorded in the verified v1.0.0 manifest.",
   "ocr_loop_wall_seconds": 926.04,
   "runtime_code_revision_verified": false,

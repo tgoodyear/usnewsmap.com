@@ -10,7 +10,6 @@ import json
 import math
 import os
 import platform
-import re
 import resource
 import statistics
 import subprocess
@@ -67,20 +66,30 @@ def score_text(raw: str) -> tuple[str, str]:
             chunks.append("\n")
 
     def line_text(node: ET.Element) -> str:
-        parts: list[str] = []
+        parts: list[tuple[str, bool]] = []
 
         def collect(element: ET.Element) -> None:
             if element.tag.rsplit("}", 1)[-1].lower() == "metadata":
                 return
             if element.text:
-                parts.append(element.text)
+                parts.append((element.text, element.text.isspace()))
             for child in element:
                 collect(child)
                 if child.tail:
-                    parts.append(child.tail)
+                    parts.append((child.tail, child.tail.isspace()))
 
         collect(node)
-        return re.sub(r"\s+", " ", "".join(parts)).strip()
+        text: list[str] = []
+        pending_separator = False
+        for value, is_separator in parts:
+            if is_separator:
+                pending_separator = bool(text)
+                continue
+            if pending_separator:
+                text.append(" ")
+                pending_separator = False
+            text.append(value)
+        return "".join(text)
 
     def walk(node: ET.Element) -> None:
         local_name = node.tag.rsplit("}", 1)[-1].lower()
@@ -99,7 +108,11 @@ def score_text(raw: str) -> tuple[str, str]:
             append_text(child.tail)
 
     walk(root)
-    return "".join(chunks).strip(), "xml-page-text-metadata-excluded-lines-v2"
+    while chunks and chunks[0] == "\n":
+        chunks.pop(0)
+    while chunks and chunks[-1] == "\n":
+        chunks.pop()
+    return "".join(chunks), "xml-page-text-metadata-excluded-lines-v3"
 
 
 def collect_samples(

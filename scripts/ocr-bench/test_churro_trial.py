@@ -20,7 +20,7 @@ class ChurroScoreTextTests(unittest.TestCase):
 
         self.assertEqual(
             score_text(raw),
-            ("Tom & Jerry\nSecond line\nand friends\n8", "xml-page-text-metadata-excluded-lines-v2"),
+            ("Tom & Jerry\nSecond line\nand friends\n8", "xml-page-text-metadata-excluded-lines-v3"),
         )
 
     def test_preserves_whitespace_between_inline_xml_elements(self) -> None:
@@ -28,7 +28,7 @@ class ChurroScoreTextTests(unittest.TestCase):
 
         self.assertEqual(
             score_text(raw),
-            ("Tom Jerry", "xml-page-text-metadata-excluded-lines-v2"),
+            ("Tom Jerry", "xml-page-text-metadata-excluded-lines-v3"),
         )
 
     def test_normalizes_multiline_whitespace_between_inline_xml_elements(self) -> None:
@@ -36,21 +36,37 @@ class ChurroScoreTextTests(unittest.TestCase):
 
         self.assertEqual(
             score_text(raw),
-            ("Tom Jerry", "xml-page-text-metadata-excluded-lines-v2"),
+            ("Tom Jerry", "xml-page-text-metadata-excluded-lines-v3"),
         )
 
+
+    def test_preserves_boundary_whitespace_in_text_bearing_nodes(self) -> None:
+        raw = "<Document><Page><Line>  A  B\u00a0C </Line></Page></Document>"
+
+        self.assertEqual(
+            score_text(raw),
+            ("  A  B\u00a0C ", "xml-page-text-metadata-excluded-lines-v3"),
+        )
+
+    def test_preserves_repeated_spaces_and_nonbreaking_spaces_in_text_nodes(self) -> None:
+        raw = "<Document><Page><Line>A  B\u00a0C</Line></Page></Document>"
+
+        self.assertEqual(
+            score_text(raw),
+            ("A  B\u00a0C", "xml-page-text-metadata-excluded-lines-v3"),
+        )
 
     def test_trims_line_boundary_indentation_but_keeps_inline_spaces(self) -> None:
         raw = (
             "<Document><Page>\n"
             "  <Line>\n  <Word>Tom</Word>   <Word>Jerry</Word>\n</Line>\n"
-            "  <Line>\n    and friends  \n</Line>\n"
+            "  <Line>\n    <Word>and friends</Word>  \n</Line>\n"
             "</Page></Document>"
         )
 
         self.assertEqual(
             score_text(raw),
-            ("Tom Jerry\nand friends", "xml-page-text-metadata-excluded-lines-v2"),
+            ("Tom Jerry\nand friends", "xml-page-text-metadata-excluded-lines-v3"),
         )
 
     def test_preserves_completed_outputs_when_later_sample_fails(self) -> None:

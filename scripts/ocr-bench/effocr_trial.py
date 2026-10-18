@@ -10,12 +10,13 @@ import inspect
 import json
 import os
 import platform
+import re
 import resource
 import statistics
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 MODEL_KEY = "effocr_en"
 
@@ -42,6 +43,87 @@ def command_output(argv: list[str]) -> str | None:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def stage_model_files(model_files: list[dict[str, Any]], model_dir: Path, runtime_model_dir: Path) -> None:
+    expected = {"line.onnx", "localizer.onnx"}
+    expected.update(
+        f"{kind}_recognizer/{filename}"
+        for kind in ("word", "char")
+        for filename in ("enc_best.onnx", "ref.index", "ref.txt")
+    )
+    if {item["path"] for item in model_files} != expected:
+        raise SystemExit("EffOCR model lock does not contain exactly the expected pinned runtime files")
+    destinations = {"line.onnx": "line/line.onnx", "localizer.onnx": "localizer/localizer.onnx"}
+    for item in model_files:
+        relative = destinations.get(item["path"], item["path"])
+        source = model_dir / item["path"]
+        target = runtime_model_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(source)
+
+
+def safe_error_message(error: Exception) -> str:
+    message = re.sub(r"(?:/Users|/home)/[^\s:'\"`]+|[A-Za-z]:\\[^\s:'\"`]+", "<local-path>", str(error))
+    return message[:500]
+
+
+def collect_samples(
+    samples: list[dict[str, Any]], infer_one: Callable[[dict[str, Any]], str]
+) -> tuple[list[dict[str, str]], list[float], list[dict[str, str | float]], float]:
+    outputs: list[dict[str, str]] = []
+    timings: list[float] = []
+    failures: list[dict[str, str | float]] = []
+    started_wall = time.monotonic()
+    for index, sample in enumerate(samples):
+        started = time.monotonic()
+        try:
+            text = infer_one(sample)
+            if not isinstance(text, str):
+                raise RuntimeError("EffOCR returned non-text output")
+        except Exception as error:
+            elapsed = time.monotonic() - started
+            failures.append({
+                "id": sample["id"],
+                "error_type": type(error).__name__,
+                "error_message": safe_error_message(error),
+                "elapsed_seconds": round(elapsed, 3),
+            })
+            print(
+                f"{index + 1}/{len(samples)} {sample['id']} failed ({type(error).__name__}); preserving completed outputs",
+                flush=True,
+            )
+            break
+        elapsed = time.monotonic() - started
+        outputs.append({"id": sample["id"], "text": text})
+        timings.append(elapsed)
+        print(f"{index + 1}/{len(samples)} {sample['id']} {elapsed:.3f}s", flush=True)
+    return outputs, timings, failures, time.monotonic() - started_wall
+
+
+def save_trial_outputs(
+    out_dir: Path,
+    outputs: list[dict[str, str]],
+    receipt: dict[str, Any],
+    expected_samples: int,
+    failures: list[dict[str, str | float]],
+) -> Path:
+    output_path = out_dir / "outputs.jsonl"
+    output_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in outputs),
+        encoding="utf-8",
+    )
+    receipt.update({
+        "samples": len(outputs),
+        "missing_outputs": expected_samples - len(outputs),
+        "complete": not failures,
+        "sample_failures": failures,
+        "output_sha256": sha256(output_path),
+    })
+    write_json(out_dir / "run.json", receipt)
+    if failures:
+        raise SystemExit(f"partial run saved for {len(outputs)} completed samples; see run.json for the failed sample")
+    return output_path
 
 
 def parse_args() -> argparse.Namespace:
@@ -144,12 +226,9 @@ def run() -> None:
     if sha256(license_path) != lock["effocr_source"]["license_sha256"]:
         raise SystemExit("EffOCR source license file hash differs from adapter lock")
 
+    stage_model_files(model_files, model_dir, runtime_model_dir)
     line_dir = runtime_model_dir / "line"
     localizer_dir = runtime_model_dir / "localizer"
-    line_dir.mkdir()
-    localizer_dir.mkdir()
-    (line_dir / "line.onnx").symlink_to(model_dir / "line.onnx")
-    (localizer_dir / "localizer.onnx").symlink_to(model_dir / "localizer.onnx")
 
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -237,7 +316,7 @@ def run() -> None:
         config[section]["num_cores"] = args.threads
     for kind in ("word", "char"):
         config["Recognizer"][kind]["model_backend"] = "onnx"
-        config["Recognizer"][kind]["model_dir"] = str(model_dir / f"{kind}_recognizer")
+        config["Recognizer"][kind]["model_dir"] = str(runtime_model_dir / f"{kind}_recognizer")
         config["Recognizer"][kind]["hf_repo_id"] = None
         config["Recognizer"][kind]["providers"] = None
         config["Recognizer"][kind]["num_cores"] = args.threads
@@ -257,29 +336,15 @@ def run() -> None:
     if tracked_path != imported_relative:
         raise SystemExit("EffOCR runtime import is not a tracked file in the pinned checkout")
 
-    outputs: list[dict[str, str]] = []
-    timings: list[float] = []
-    started_wall = time.monotonic()
-    for index, sample in enumerate(locked):
+    def infer_sample(sample: dict[str, Any]) -> str:
         image_path = release / sample["image"]
-        started = time.monotonic()
         pages = engine.infer(str(image_path))
-        elapsed = time.monotonic() - started
         if len(pages) > 1:
-            raise SystemExit(f"EffOCR returned multiple outputs for one input: {sample['id']}")
-        text = pages[0].text if pages and pages[0] is not None else ""
-        if not isinstance(text, str):
-            raise SystemExit(f"EffOCR returned non-text output for {sample['id']}")
-        outputs.append({"id": sample["id"], "text": text})
-        timings.append(elapsed)
-        print(f"{index + 1}/{len(locked)} {sample['id']} {elapsed:.3f}s", flush=True)
-    wall_seconds = time.monotonic() - started_wall
+            raise RuntimeError(f"EffOCR returned multiple outputs for one input: {sample['id']}")
+        return pages[0].text if pages and pages[0] is not None else ""
 
-    output_path = out_dir / "outputs.jsonl"
-    output_path.write_text(
-        "".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in outputs),
-        encoding="utf-8",
-    )
+    outputs, timings, sample_failures, wall_seconds = collect_samples(locked, infer_sample)
+
     rss_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if platform.system() == "Darwin":
         rss_kib //= 1024
@@ -335,16 +400,13 @@ def run() -> None:
         "warm_p50_seconds": round(statistics.median(timings[1:]), 3) if len(timings) > 1 else None,
         "warm_p95_seconds": round(sorted(timings[1:])[int(len(timings[1:]) * 0.95)], 3) if len(timings) > 1 else None,
         "ocr_loop_wall_seconds": round(wall_seconds, 3),
-        "samples": len(outputs),
-        "missing_outputs": len(locked) - len(outputs),
         "blank_outputs": sum(not row["text"].strip() for row in outputs),
-        "output_sha256": sha256(output_path),
         "process_peak_rss_kib": rss_kib,
         "resource_note": "Isolated local process without a cgroup cap; process peak RSS from getrusage.",
         "benchmark_source_licenses": "As recorded in the verified v1.0.0 manifest.",
         "output_redistribution_note": lock["rights"]["output_redistribution"],
     }
-    write_json(out_dir / "run.json", receipt)
+    output_path = save_trial_outputs(out_dir, outputs, receipt, len(locked), sample_failures)
     print(f"completed {len(outputs)} samples in {wall_seconds:.3f}s; outputs={output_path}", flush=True)
 
 
