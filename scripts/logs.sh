@@ -67,6 +67,7 @@ workspace=$(aget "$ws_key")
   die "$ws_key isn't set for $ENV_NAME; run scripts/provision.sh --env $ENV_NAME to save the stack outputs"
 
 result=$(python3 scripts/log_analytics.py --workspace "$workspace" \
+  --subscription "$(aget AZURE_SUBSCRIPTION_ID)" \
   --query "$(cat "ops/queries/$NAME.kql")" --timespan "$SPAN") ||
   die "the query failed; see the bounded Logs attempts above"
 

@@ -50,5 +50,6 @@ query="ContainerAppConsoleLogs
 | where tostring(j.message) in (\"ocr quality\", \"ocr quality finished\", \"mixed pages\", \"mixed pages finished\", \"american stories\", \"american stories finished\", \"american stories year written\", \"american stories write finished\")
 | project TimeGenerated, Log
 | order by TimeGenerated asc"
-python3 scripts/log_analytics.py --workspace "$workspace" --query "$query" --timespan "$iso" |
+python3 scripts/log_analytics.py --workspace "$workspace" --subscription "$(aget AZURE_SUBSCRIPTION_ID)" \
+  --query "$query" --timespan "$iso" |
   jq -c '.tables[0].rows[] | .[1] | fromjson | del(.ts)'

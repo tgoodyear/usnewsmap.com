@@ -324,6 +324,48 @@ class WorkbookValidation(unittest.TestCase):
                             for row in receipt["panels"]))
 
 
+class LogsCallerSubscriptions(unittest.TestCase):
+    def test_environment_shell_callers_forward_subscription(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("scripts/lib", "scripts/ja-ocr", "ops/queries", "bin"):
+                (root / name).mkdir(parents=True)
+            (root / "settings.env").write_text("fixture\n")
+            (root / "ops/queries/fixture.kql").write_text("print 1")
+            (root / "scripts/lib/env.sh").write_text(
+                'ENV_FILE=settings.env\n'
+                'aget() { case "$1" in AZURE_SUBSCRIPTION_ID) echo selected-subscription ;; '
+                '*) echo workspace-guid ;; esac; }\n')
+            stub = root / "bin/python3"
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CALLER_LOG"\n'
+                            'echo \'{"tables":[{"columns":[],"rows":[]}]}\'\n')
+            stub.chmod(0o755)
+            for script, args in (
+                ("logs.sh", ["--env", "prod", "--query-name", "fixture"]),
+                ("ja-ocr/quality-rows.sh", ["--env", "prod", "--execution",
+                                          "usnm-jaocr-caj-prod-fixture"])):
+                target = root / "scripts" / script
+                shutil.copy(Path(HERE, script), target)
+                log = root / "arguments"
+                result = subprocess.run(
+                    ["bash", str(target), *args], cwd=root, text=True, capture_output=True,
+                    env={**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
+                         "CALLER_LOG": str(log), "AZURE_SUBSCRIPTION_ID": "wrong-default"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                values = log.read_text().splitlines()
+                self.assertEqual(values[values.index("--subscription") + 1], "selected-subscription")
+
+    def test_cluster_report_forwards_selected_subscription(self):
+        spec = importlib.util.spec_from_file_location("cluster_report", Path(HERE, "qwcluster-report.py"))
+        report = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(report)
+        with mock.patch.object(report.subprocess, "run") as run:
+            run.return_value = mock.Mock(stdout='{"tables":[{"columns":[],"rows":[]}]}', stderr="")
+            report.log_query(SUB, "print 1", "P1D", "selected-subscription")
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("--subscription") + 1], "selected-subscription")
+
+
 class StartBridge(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

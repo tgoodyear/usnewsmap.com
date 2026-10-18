@@ -95,10 +95,11 @@ def az_json(args):
     return json.loads(out.stdout or "null")
 
 
-def log_query(workspace, query, span):
+def log_query(workspace, query, span, subscription):
     result = subprocess.run(
         ["python3", os.path.join(ROOT, "scripts/log_analytics.py"),
-         "--workspace", workspace, "--query", query, "--timespan", span],
+         "--workspace", workspace, "--query", query, "--timespan", span,
+         "--subscription", subscription],
         capture_output=True, text=True)
     if result.stderr:
         print(result.stderr, file=sys.stderr, end="")
@@ -689,8 +690,8 @@ def report(env, since, out, from_file=None):
         release = []
     else:
         try:
-            reports = assemble(parse_reports(log_query(workspace, QUERY_REPORTS, span)))
-            release = log_query(workspace, QUERY_RELEASE, span)
+            reports = assemble(parse_reports(log_query(workspace, QUERY_REPORTS, span, sub)))
+            release = log_query(workspace, QUERY_RELEASE, span, sub)
         except subprocess.CalledProcessError as e:
             print(f"warning: Log Analytics query failed ({e.stderr.strip()[:200]}); "
                   "use --from-file with a dump", file=sys.stderr)
