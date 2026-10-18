@@ -108,7 +108,10 @@ queue. Publish signed Linux versions with the same locked Vulkan bundle first. T
 shared dispatch window, use `scripts/boinc/native-qwen-cohort.php --project PATH
 --plan-class shared_8b --workunit FIRST --workunit-end LAST` (preview, then `--apply`).
 The helper requires at most ten contiguous Qwen native-8B workunits, each unaccepted with
-two unsent replicas and quorum two; it closes the other native classes. `--stop --apply`
+two unsent replicas and quorum two; it closes the other native classes and pauses the
+separate NVIDIA container batch-18 queue, without changing its input format or aborting
+already assigned work. This keeps NVIDIA fetching from the same bounded native pool as
+Intel, rather than selecting the older container app version. `--stop --apply`
 closes all native classes. This changes eligibility only, not distinct-host validation.
 When DB credentials are rendered into a separate tmpfs project, pass `--db-project PATH`
 with its `config.xml` and private `html/inc` copy. The policy and journal stay under

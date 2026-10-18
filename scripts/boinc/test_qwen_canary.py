@@ -190,8 +190,11 @@ foreach ($opened->plan_class as $node) {
     $name = (string)$node->name;
     if (in_array($name, SHARED_QWEN_CLASSES, true)) {
         assert((int)$node->min_wu_id === 200 && (int)$node->max_wu_id === 209);
-    } elseif (in_array($name, NATIVE_QWEN_CLASSES, true)) {
+    } elseif (in_array($name, NATIVE_QWEN_CLASSES, true) || $name === "docker_nvidia_cuda_8b") {
         assert((int)$node->min_wu_id > (int)$node->max_wu_id);
+        if ($name === "docker_nvidia_cuda_8b") {
+            assert((int)$node->min_batch === 18 && (int)$node->max_batch === 18);
+        }
     } else {
         $matching = $original->xpath("plan_class[name='$name']");
         assert($node->asXML() === $matching[0]->asXML());
