@@ -174,17 +174,17 @@ pub fn round_pair(p: PairMetrics) -> PairMetrics {
 
 pub fn round_image(f: ImageFeatures) -> ImageFeatures {
     ImageFeatures {
-        bg_tile_std: round6(f.bg_tile_std),
+        bg_tile_std: round6_opt(f.bg_tile_std),
         bleed_through: round6(f.bleed_through),
         blur: round6(f.blur),
         contrast: round6(f.contrast),
         est_line_height_px: round6_opt(f.est_line_height_px),
-        gutter_clarity: round6(f.gutter_clarity),
+        gutter_clarity: round6_opt(f.gutter_clarity),
         ink_density: round6(f.ink_density),
         noise: round6(f.noise),
-        otsu_local_diff: round6(f.otsu_local_diff),
+        otsu_local_diff: round6_opt(f.otsu_local_diff),
         skew_deg: round6(f.skew_deg),
-        vertical_stroke_ratio: round6(f.vertical_stroke_ratio),
+        vertical_stroke_ratio: round6_opt(f.vertical_stroke_ratio),
         ..f
     }
 }

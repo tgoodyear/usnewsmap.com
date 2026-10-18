@@ -461,3 +461,9 @@ template. Defer only busy job templates, not the entire rollout. Complete copied
 project backup/migration/rollback and every-consumer TLS gates still apply;
 stock tools/upgrade also invokes database upgrade, so never run it blindly on
 production or mistake an image rollout for migration of copied files.
+
+Normal provisioning registers applications with an execution-only override of the
+complete bridge template, protected by the existing per-job start lease. Only that
+execution receives `BRIDGE_STEP=register-apps`; persisted Iris defaults, secret
+references, resources, and project mounts remain unchanged. Legacy quality results
+that lack the added image measurements export null, not fabricated numeric zero.

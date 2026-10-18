@@ -53,6 +53,8 @@ die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/boinc.sh
 . scripts/lib/boinc.sh
+# shellcheck source=scripts/lib/boinc-start-guard.sh
+. scripts/lib/boinc-start-guard.sh
 boinc_clean_check
 boinc_load_settings
 boinc_az_check
@@ -63,7 +65,14 @@ work=$(boinc_workdir)
 if ! $WHAT_IF; then
   boinc_acquire_lock "provision-boinc.sh --env $ENV_NAME"
 fi
-trap 'rm -rf "$work"; boinc_release_lock' EXIT
+cleanup() {
+  local result=$?
+  boinc_start_guard_release || result=1
+  rm -rf "$work"
+  boinc_release_lock
+  exit "$result"
+}
+trap cleanup EXIT
 # No secret goes in the parameters: the template makes the admin password itself.
 names_file="$(dirname "$0")/../infra/names/$ENV_NAME.json"
 REGISTRY_NAME=$(jq -er .registry "$names_file") || die "no registry in $names_file"
@@ -189,15 +198,20 @@ if [ -z "$SERVER_IMAGE" ]; then
 fi
 
 run_job() {
-  local job=$1 running execution status=""
+  local job=$1 template=${2:-} running execution status=""
+  local start_args=()
+  [ -z "$template" ] || start_args+=(--yaml "$template")
   [ -n "$job" ] || die "the stack is missing a required lifecycle job output"
   running=$(baz containerapp job execution list --name "$job" --resource-group "$BOINC_RG" \
-    --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv) ||
+    --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv) ||
     die "could not list the executions of $job"
   [ -z "$running" ] || die "$job already has an active execution ($running); refusing concurrent lifecycle changes"
-  execution=$(baz containerapp job start --name "$job" --resource-group "$BOINC_RG" --query name -o tsv) ||
+  execution=$(baz containerapp job start --name "$job" --resource-group "$BOINC_RG" ${start_args[@]+"${start_args[@]}"} --query name -o tsv) ||
     die "could not start $job"
   [ -n "$execution" ] || die "$job returned no execution"
+  if [ -n "$template" ]; then
+    boinc_start_guard_confirm || die "could not confirm registration execution visibility"
+  fi
   echo "waiting for $job ($execution)"
   for _ in $(seq 1 90); do
     status=$(baz containerapp job execution show --name "$job" --resource-group "$BOINC_RG" \
@@ -214,7 +228,22 @@ run_job() {
 
 run_job "$(boinc_output secretsJobName)"
 run_job "$(boinc_output initJobName)"
-scripts/start-boinc-bridge.sh --env "$ENV_NAME" --step register-apps --wait-mins 15
+register_apps() {
+  local job JOB_RG="$BOINC_RG" template="$work/register-apps.json"
+  job=$(boinc_output bridgeJobName)
+  [ -n "$job" ] || die "missing bridge job for registration"
+  boinc_start_guard_acquire
+  baz containerapp job show --name "$job" --resource-group "$JOB_RG" --query properties.template -o json |
+    jq -e '
+      if (.containers | length) != 1 then error("expected one registration container") else . end |
+      .containers[0].env = ((.containers[0].env // [] | map(select(.name != "BRIDGE_STEP"))) +
+        [{name: "BRIDGE_STEP", value: "register-apps"}])' > "$template" ||
+    die "cannot prepare the complete registration execution template"
+  BOINC_START_SAFE_TO_RELEASE=false
+  run_job "$job" "$template"
+  boinc_start_guard_release || die "cannot release the registration start lease"
+}
+register_apps
 if [ -n "$PUBLISH_IMAGE" ]; then
   run_job "$(boinc_output publishJobName)"
 fi

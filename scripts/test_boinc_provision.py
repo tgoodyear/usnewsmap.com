@@ -24,9 +24,16 @@ case "$*" in
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
   "stack group create"*) ;;
   "containerapp job execution list"*) ;;
-  "containerapp job show"*) echo '{"containers":[{"name":"bridge","env":[{"name":"AZURE_CLIENT_ID","value":"client"},{"name":"KEY_VAULT_NAME","value":"vault"},{"name":"DB_HOST","value":"db.example.org"},{"name":"DB_NAME","value":"usnmocr"},{"name":"MASTER_HOST","value":"boinc.usnewsmap.com"},{"name":"PROJECT_DIR","value":"/project"},{"name":"HANDOFF_DIR","value":"/project/handoff"}]}]}' ;;
+  "containerapp job show"*) echo '{"volumes":[{"name":"project","storageType":"AzureFile","storageName":"project"}],"containers":[{"name":"bridge","image":"fixture@sha256:unchanged","resources":{"cpu":0.5,"memory":"1Gi"},"volumeMounts":[{"volumeName":"project","mountPath":"/project"}],"env":[{"name":"BRIDGE_STEP","value":"iris-bundle-collect"},{"name":"IRIS_CAMPAIGN","value":"overproof-100-v12"},{"name":"PRIVATE_SETTING","secretRef":"runtime-secret"},{"name":"AZURE_CLIENT_ID","value":"client"},{"name":"KEY_VAULT_NAME","value":"vault"},{"name":"DB_HOST","value":"db.example.org"},{"name":"DB_NAME","value":"usnmocr"},{"name":"MASTER_HOST","value":"boinc.usnewsmap.com"},{"name":"PROJECT_DIR","value":"/project"},{"name":"HANDOFF_DIR","value":"/project/handoff"}]}]}' ;;
   "containerapp job update"*) ;;
   "containerapp job start"*)
+    if [[ "$*" == *"--yaml"* ]]; then
+      for ((i=1; i<=$#; i++)); do
+        if [ "${!i}" = --yaml ]; then
+          j=$((i+1)); cp "${!j}" "$STUB_LOG.registration.json"; break
+        fi
+      done
+    fi
     while [ $# -gt 0 ]; do
       if [ "$1" = --name ]; then echo "$2-execution"; break; fi
       shift
@@ -130,6 +137,29 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
         self.assertIn("deployment ready", result.stdout)
         self.assertNotIn("by hand", result.stdout)
         self.assertNotIn("Directory Readers", result.stdout)
+
+
+    def test_registration_uses_complete_execution_override_without_replacing_iris_defaults(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call.startswith("containerapp job update") for call in self.calls()))
+        template = json.loads(Path(str(self.log) + ".registration.json").read_text())
+        [container] = template["containers"]
+        env = {v["name"]: v.get("value") for v in container["env"]}
+        self.assertEqual(env["BRIDGE_STEP"], "register-apps")
+        self.assertEqual(env["IRIS_CAMPAIGN"], "overproof-100-v12")
+        self.assertIn({"name": "PRIVATE_SETTING", "secretRef": "runtime-secret"}, container["env"])
+        self.assertEqual(container["image"], "fixture@sha256:unchanged")
+        self.assertEqual(container["resources"], {"cpu": 0.5, "memory": "1Gi"})
+        self.assertEqual(container["volumeMounts"], [{"volumeName": "project", "mountPath": "/project"}])
+        self.assertEqual(template["volumes"][0]["name"], "project")
+        acquires = [i for i, c in enumerate(self.calls()) if c.startswith("storage blob lease acquire")]
+        starts = [i for i, c in enumerate(self.calls()) if c.startswith("containerapp job start") and "--yaml" in c]
+        releases = [i for i, c in enumerate(self.calls()) if c.startswith("storage blob lease release")]
+        self.assertEqual(len(acquires), 1)
+        self.assertEqual(len(releases), 1)
+        self.assertLess(acquires[0], starts[0])
+        self.assertLess(starts[0], releases[0])
 
     def test_failed_init_or_publish_never_reports_readiness(self):
         for variable in ["STUB_INIT_STATUS", "STUB_PUBLISH_STATUS"]:

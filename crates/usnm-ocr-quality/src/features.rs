@@ -576,25 +576,25 @@ pub fn image_features(img: &GrayImage) -> ImageFeatures {
     let est_line_height_px = estimate_line_height_px(img, threshold);
     let vsr = vertical_stroke_ratio(&small, threshold);
     ImageFeatures {
-        bg_tile_std,
+        bg_tile_std: Some(bg_tile_std),
         bleed_through: bleed_through(&hist, threshold),
         blur: laplacian_variance(&small),
         contrast: f64::from(percentile(&hist, 0.95)) - f64::from(percentile(&hist, 0.05)),
         est_line_height_px,
-        gutter_clarity,
+        gutter_clarity: Some(gutter_clarity),
         height,
-        img_columns,
+        img_columns: Some(img_columns),
         ink_density: if total == 0 {
             0.0
         } else {
             ink as f64 / total as f64
         },
         noise: median_residual(&small),
-        otsu_local_diff,
+        otsu_local_diff: Some(otsu_local_diff),
         scale,
         skew_deg,
         threshold,
-        vertical_stroke_ratio: vsr,
+        vertical_stroke_ratio: Some(vsr),
         width,
     }
 }
@@ -883,8 +883,8 @@ pub(crate) mod tests {
             }
         }
         let fu = image_features(&uniform_tiled);
-        assert_eq!(fu.bg_tile_std, 0.0);
-        assert_eq!(fu.otsu_local_diff, 0.0);
+        assert_eq!(fu.bg_tile_std.unwrap(), 0.0);
+        assert_eq!(fu.otsu_local_diff.unwrap(), 0.0);
 
         // Apply a heavy spine shadow across the left columns (where shadowed paper < unshadowed ink)
         // -> both bg_tile_std and otsu_local_diff become strictly positive.
@@ -896,11 +896,15 @@ pub(crate) mod tests {
             }
         }
         let fs = image_features(&shadowed);
-        assert!(fs.bg_tile_std > 15.0, "bg_tile_std {}", fs.bg_tile_std);
         assert!(
-            fs.otsu_local_diff > 0.05,
+            fs.bg_tile_std.unwrap() > 15.0,
+            "bg_tile_std {}",
+            fs.bg_tile_std.unwrap()
+        );
+        assert!(
+            fs.otsu_local_diff.unwrap() > 0.05,
             "otsu_local_diff {}",
-            fs.otsu_local_diff
+            fs.otsu_local_diff.unwrap()
         );
 
         // 2. Transpose orientation identity: vsr(I) + vsr(I^T) == 1.0.
@@ -908,26 +912,34 @@ pub(crate) mod tests {
         let vert = transpose_image(&horiz);
         let fh = image_features(&horiz);
         let fv = image_features(&vert);
-        let sum_vsr = fh.vertical_stroke_ratio + fv.vertical_stroke_ratio;
+        let sum_vsr = fh.vertical_stroke_ratio.unwrap() + fv.vertical_stroke_ratio.unwrap();
         assert!(
             (sum_vsr - 1.0).abs() < 1e-12,
             "transpose sum {} ({} + {})",
             sum_vsr,
-            fh.vertical_stroke_ratio,
-            fv.vertical_stroke_ratio
+            fh.vertical_stroke_ratio.unwrap(),
+            fv.vertical_stroke_ratio.unwrap()
         );
-        assert!(fh.vertical_stroke_ratio < 0.45);
-        assert!(fv.vertical_stroke_ratio > 0.55);
+        assert!(fh.vertical_stroke_ratio.unwrap() < 0.45);
+        assert!(fv.vertical_stroke_ratio.unwrap() > 0.55);
 
         // 3. Projection column count, gutter clarity, and line height scaling.
         let c1 = image_features(&synthetic_page(800, 1000, 0.0, 235, 30));
-        assert_eq!(c1.img_columns, 1);
-        assert_eq!(c1.gutter_clarity, 0.0);
-        assert_eq!(fh.img_columns, 4);
-        assert!(fh.gutter_clarity > 0.85, "clarity {}", fh.gutter_clarity);
+        assert_eq!(c1.img_columns.unwrap(), 1);
+        assert_eq!(c1.gutter_clarity.unwrap(), 0.0);
+        assert_eq!(fh.img_columns.unwrap(), 4);
+        assert!(
+            fh.gutter_clarity.unwrap() > 0.85,
+            "clarity {}",
+            fh.gutter_clarity.unwrap()
+        );
         let c7 = image_features(&synthetic_multicol_page(840, 1000, 7, 40, 235, 30));
-        assert_eq!(c7.img_columns, 7);
-        assert!(c7.gutter_clarity > 0.85, "clarity {}", c7.gutter_clarity);
+        assert_eq!(c7.img_columns.unwrap(), 7);
+        assert!(
+            c7.gutter_clarity.unwrap() > 0.85,
+            "clarity {}",
+            c7.gutter_clarity.unwrap()
+        );
         let lh24 = fh.est_line_height_px.unwrap();
         let lh40 = c7.est_line_height_px.unwrap();
         assert!((lh24 - 24.0).abs() <= 1.5, "lh24 {}", lh24);

@@ -320,8 +320,7 @@ fn compute_ink_word_coverage(
     }
     let lh = i
         .est_line_height_px
-        .or_else(|| lay.and_then(|l| l.line_height_px))
-        .unwrap_or(34.0)
+        .or_else(|| lay.and_then(|l| l.line_height_px))?
         .max(6.0);
     let ink_area = f64::from(i.width) * f64::from(i.height) * i.ink_density;
     let expected_words = (ink_area / (lh * lh)).max(1.0);
@@ -455,12 +454,12 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
                 noise: img.map(|i| i.noise),
                 bleed_through: img.map(|i| i.bleed_through),
                 ink_density: img.map(|i| i.ink_density),
-                bg_tile_std: img.map(|i| i.bg_tile_std),
-                otsu_local_diff: img.map(|i| i.otsu_local_diff),
-                img_columns: img.map(|i| i.img_columns),
-                gutter_clarity: img.map(|i| i.gutter_clarity),
+                bg_tile_std: img.and_then(|i| i.bg_tile_std),
+                otsu_local_diff: img.and_then(|i| i.otsu_local_diff),
+                img_columns: img.and_then(|i| i.img_columns),
+                gutter_clarity: img.and_then(|i| i.gutter_clarity),
                 est_line_height_px: img.and_then(|i| i.est_line_height_px),
-                vertical_stroke_ratio: img.map(|i| i.vertical_stroke_ratio),
+                vertical_stroke_ratio: img.and_then(|i| i.vertical_stroke_ratio),
                 blocks: lay.map(|l| l.blocks),
                 lines: lay.map(|l| l.lines),
                 line_words: lay.map(|l| l.words),
@@ -539,12 +538,12 @@ pub fn bundle_page_rows(
                 noise: img.map(|i| i.noise),
                 bleed_through: img.map(|i| i.bleed_through),
                 ink_density: img.map(|i| i.ink_density),
-                bg_tile_std: img.map(|i| i.bg_tile_std),
-                otsu_local_diff: img.map(|i| i.otsu_local_diff),
-                img_columns: img.map(|i| i.img_columns),
-                gutter_clarity: img.map(|i| i.gutter_clarity),
+                bg_tile_std: img.and_then(|i| i.bg_tile_std),
+                otsu_local_diff: img.and_then(|i| i.otsu_local_diff),
+                img_columns: img.and_then(|i| i.img_columns),
+                gutter_clarity: img.and_then(|i| i.gutter_clarity),
                 est_line_height_px: img.and_then(|i| i.est_line_height_px),
-                vertical_stroke_ratio: img.map(|i| i.vertical_stroke_ratio),
+                vertical_stroke_ratio: img.and_then(|i| i.vertical_stroke_ratio),
                 blocks: lay.map(|l| l.blocks),
                 lines: lay.map(|l| l.lines),
                 line_words: lay.map(|l| l.words),
@@ -1148,6 +1147,82 @@ mod tests {
         assert!(!overlaps([0, 0, 10, 10], [10, 0, 20, 20]));
     }
 
+    #[test]
+    fn old_results_preserve_unmeasured_metrics_in_both_collector_paths() {
+        use usnm_ocr_contract::quality::{BundlePageInputs, BundleSlice};
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::quality::work::tests::unit(tmp.path());
+        let l = crate::quality::work::prepare(tmp.path()).unwrap();
+        let c = crate::quality::work::compute(&crate::quality::work::Inputs {
+            job: &job,
+            page: &l.page,
+            alto: &l.alto,
+            texts: &l.texts,
+            places: &l.places,
+        })
+        .unwrap();
+        let mut legacy = serde_json::to_value(&c.result).unwrap();
+        let image = legacy["page"]["image"].as_object_mut().unwrap();
+        for key in [
+            "bg_tile_std",
+            "otsu_local_diff",
+            "img_columns",
+            "gutter_clarity",
+            "est_line_height_px",
+            "vertical_stroke_ratio",
+        ] {
+            image.remove(key);
+        }
+        let result: ResultManifest = serde_json::from_value(legacy).unwrap();
+        let bp = BundlePage {
+            crop_seed: job.crop_seed,
+            doc_id: job.doc_id.clone(),
+            function_words: vec![],
+            group: job.group.clone(),
+            k_crops: job.k_crops,
+            language: job.language.clone(),
+            readers: job.readers.clone(),
+            inputs: BundlePageInputs {
+                page: BundleSlice::of(0, b"", "fixture"),
+                alto: BundleSlice::of(0, b"", "fixture"),
+                texts: BundleSlice::of(0, b"", "fixture"),
+            },
+        };
+        let pr = PageResult {
+            doc_id: job.doc_id.clone(),
+            hat: result.hat.clone(),
+            legibility: result.legibility.clone(),
+            outcome: result.outcome,
+            page: result.page.clone(),
+            readers: result.readers.clone(),
+            timings: result.timings.clone(),
+            unit_error: None,
+        };
+        for rows in [
+            page_rows(&job, &result, false),
+            bundle_page_rows(&job, &bp, &pr, None, false),
+        ] {
+            assert!(!rows.is_empty());
+            for row in rows {
+                assert!(row.bg_tile_std.is_none());
+                assert!(row.otsu_local_diff.is_none());
+                assert!(row.img_columns.is_none());
+                assert!(row.gutter_clarity.is_none());
+                assert!(row.est_line_height_px.is_none());
+                assert!(row.vertical_stroke_ratio.is_none());
+            }
+        }
+        let mut measured = result.clone();
+        measured
+            .page
+            .as_mut()
+            .unwrap()
+            .image
+            .as_mut()
+            .unwrap()
+            .bg_tile_std = Some(0.0);
+        assert_eq!(page_rows(&job, &measured, false)[0].bg_tile_std, Some(0.0));
+    }
     #[test]
     fn page_rows_enrich_lexical_damage_and_loc_pairwise_metrics() {
         let tmp = tempfile::tempdir().unwrap();
