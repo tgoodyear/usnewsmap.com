@@ -133,3 +133,13 @@ The subsequent Russian JPEG body could not be decoded, so the existing stager
 wrote HOLD and stopped without retries; the hold is retained. The full-page
 sample will remain explicitly partial unless an existing verified archive copy
 can satisfy the blocked input. The 20 immutable smoke inputs are unaffected.
+
+The round-two review caught the deployed config/key symlink layout. Scoped
+publication now initializes execution-local credentials and a minimal
+registration-only config without replacing live links or scheduler settings.
+The corresponding replacement signature-verified artifacts are **ch98 / 1.2**
+`sha256:7bd422a344d792d9fc48fcc2e887a6a482399195340471bbe4171ebd7c3a8ae0`
+and **ch99 / 1.3**
+`sha256:8db09402135495f1c9384c87e344586842632053fc01c57f72050f0168ebd2e2`.
+These supersede ch96/ch97 as publication candidates; old artifacts are retained.
+No version has yet been registered or dispatched by this continuation.
