@@ -425,3 +425,37 @@ report and preserve any queued results rather than claiming none were assigned.
 Resume only this owned project and restore the recorded computation modes when
 the bounded workload, CPU and memory comparison permits real work. Do not apply
 this empty-client operational hold blindly to a client running other projects.
+
+## Production drift reconciliation (2026-10-18, #464)
+
+The source of the live lifecycle server/bridge (`9323a0d2…` / `b8fb643e…`)
+was `09987e4732d631292031a4b82b82be8a194b72a7`, outside main. Its quality
+metrics and streaming/vectorized prerequisites are now reconciled into main;
+this does not adopt the separately proposed damage router (#777).
+The additive web image `508a9256…` adds only the already-merged
+`contrib-compute/boinc/html/user/work_summary.php`. Optional `images.web`
+preserves this web/daemon binding independently of lifecycle `server`/`bridge`.
+A normal image build replaces an existing web override with the new bridge image,
+which includes that endpoint and the reconciled metrics. Thus the override cannot
+silently strand production on the old additive image after a rebuild.
+
+The existing production bridge default is `BRIDGE_STEP=iris-bundle-collect`,
+`IRIS_CAMPAIGN=overproof-100-v12`; root Bicep preserves these values and the actual
+200-GiB project-share quota. Signed app-version and worker pins are not changed.
+The independently operated quality job is **not managed by this root stack**.
+Its observed configuration is 2 CPU / 4 GiB, 86400-second timeout, zero retries,
+manual parallelism/completion count 1, live lifecycle bridge image, and the
+managed-identity-fetched `quality/v1-wave9/run_wave9.py` runner. Its runtime shard
+settings are NUM_SHARDS=8, BUNDLE_SIZE=200, MAX_IN_FLIGHT_BUNDLES=45,
+MIN_FREE_GB=35.0. Its storage credentials remain private, never committed here.
+Provisioning this stack neither starts nor adopts that job. An active quality
+execution and its template must remain unchanged; record its deferred image
+update in #529 and reconcile it separately after that execution ends naturally.
+
+Per maintainer policy #856, do not impose a global all-idle gate for a scoped
+server/TLS rollout. Take the #529 claim and controller lease; take the per-job
+start lease and verify that job has no nonterminal execution before updating its
+template. Defer only busy job templates, not the entire rollout. Complete copied
+project backup/migration/rollback and every-consumer TLS gates still apply;
+stock tools/upgrade also invokes database upgrade, so never run it blindly on
+production or mistake an image rollout for migration of copied files.

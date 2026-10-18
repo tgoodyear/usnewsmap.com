@@ -27,18 +27,36 @@ pub fn round6_opt(x: Option<f64>) -> Option<f64> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImageFeatures {
+    /// Standard deviation of 90th-percentile background grey across an 8x8 tile grid.
+    #[serde(default)]
+    pub bg_tile_std: f64,
     pub bleed_through: f64,
     pub blur: f64,
     pub contrast: f64,
+    /// Estimated text line pitch/height in original page pixels from horizontal ink projection.
+    #[serde(default)]
+    pub est_line_height_px: Option<f64>,
+    /// Mean normalized depth of inter-column vertical gutters in 0..=1.
+    #[serde(default)]
+    pub gutter_clarity: f64,
     /// Pixels of the page.
     pub height: u32,
+    /// Estimated number of text columns from deskewed vertical ink projection.
+    #[serde(default)]
+    pub img_columns: usize,
     pub ink_density: f64,
     pub noise: f64,
+    /// Share of pixels where global Otsu disagrees with local 8x8 tile Otsu thresholding.
+    #[serde(default)]
+    pub otsu_local_diff: f64,
     /// The integer factor the page was downscaled by.
     pub scale: u32,
     pub skew_deg: f64,
     /// The Otsu threshold on the grey copy.
     pub threshold: u8,
+    /// Ratio of vertical projection variance to total (vertical + horizontal) projection variance.
+    #[serde(default)]
+    pub vertical_stroke_ratio: f64,
     pub width: u32,
 }
 
@@ -184,11 +202,11 @@ pub struct ConfusionPair {
 
 pub const VERSION: u32 = 1;
 /// `quality.json`: the job holds the function-word list and optional bundle pages.
-pub const MAX_JOB_JSON: usize = 2 * 1024 * 1024;
+pub const MAX_JOB_JSON: usize = 16 * 1024 * 1024;
 /// `result.json`.
-pub const MAX_RESULT_JSON: usize = 8 * 1024 * 1024;
+pub const MAX_RESULT_JSON: usize = 64 * 1024 * 1024;
 /// `confusions.json`.
-pub const MAX_CONFUSIONS: usize = 8 * 1024 * 1024;
+pub const MAX_CONFUSIONS: usize = 64 * 1024 * 1024;
 /// `diag.txt`.
 pub const MAX_DIAG: usize = 64 * 1024;
 /// `texts.json`: every text we hold of the page, with regions.
@@ -198,11 +216,11 @@ pub const MAX_PLACES: usize = 8 * 1024 * 1024;
 pub const MAX_ALTO: usize = crate::boinc::MAX_ALTO;
 pub const MAX_SCAN: usize = crate::boinc::MAX_SCAN;
 /// Maximum size of a bundled multi-page `page.jpg`, `loc.xml`, and `texts.json`.
-pub const MAX_BUNDLE_SCAN: usize = 1024 * 1024 * 1024;
-pub const MAX_BUNDLE_ALTO: usize = 512 * 1024 * 1024;
-pub const MAX_BUNDLE_TEXTS: usize = 128 * 1024 * 1024;
-/// Maximum number of pages in a single `usnm_quality` workunit bundle (~10–15 min runtime).
-pub const MAX_BUNDLE_PAGES: usize = 500;
+pub const MAX_BUNDLE_SCAN: usize = 16 * 1024 * 1024 * 1024;
+pub const MAX_BUNDLE_ALTO: usize = 4 * 1024 * 1024 * 1024;
+pub const MAX_BUNDLE_TEXTS: usize = 1024 * 1024 * 1024;
+/// Maximum number of pages in a single `usnm_quality` workunit bundle (~30–60 min runtime).
+pub const MAX_BUNDLE_PAGES: usize = 4096;
 /// Longest error text kept in a result.
 pub const MAX_ERROR: usize = 1024;
 pub const MAX_READERS: usize = 8;
@@ -247,6 +265,78 @@ impl Input {
     }
     pub fn matches(&self, bytes: &[u8]) -> bool {
         bytes.len() as u64 == self.bytes && sha256(bytes) == self.sha256
+    }
+    /// Verifies both the whole-file checksum and every contiguous [`BundleSlice`] checksum
+    /// in a single sequential streaming pass without buffering the full container in memory.
+    pub fn verify_stream_and_slices(
+        &self,
+        path: &std::path::Path,
+        max: usize,
+        slices: &[&BundleSlice],
+        what: &str,
+    ) -> anyhow::Result<()> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read as _;
+
+        let meta =
+            std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+        ensure!(meta.is_file(), "{} is not a regular file", path.display());
+        ensure!(
+            meta.len() <= max as u64,
+            "{} is over size limit",
+            path.display()
+        );
+        ensure!(
+            meta.len() == self.bytes,
+            "input {what} size mismatch ({} != {})",
+            meta.len(),
+            self.bytes
+        );
+        let mut f =
+            std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut whole_hasher = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        let mut pos = 0u64;
+        for s in slices {
+            ensure!(
+                s.offset == pos,
+                "{what} slice offset mismatch at {pos} (expected {})",
+                s.offset
+            );
+            let mut slice_hasher = Sha256::new();
+            let mut rem = s.bytes;
+            while rem > 0 {
+                let want = (rem as usize).min(buf.len());
+                let n = f.read(&mut buf[..want])?;
+                ensure!(n > 0, "unexpected EOF in {what} at offset {pos}");
+                whole_hasher.update(&buf[..n]);
+                slice_hasher.update(&buf[..n]);
+                rem -= n as u64;
+                pos += n as u64;
+            }
+            let got: String = slice_hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            ensure!(
+                got == s.sha256,
+                "{what} slice checksum mismatch at offset {}",
+                s.offset
+            );
+        }
+        ensure!(
+            pos == self.bytes,
+            "{what} slices covered {pos} bytes, expected {}",
+            self.bytes
+        );
+        let whole_got: String = whole_hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        ensure!(whole_got == self.sha256, "input {what} checksum mismatch");
+        Ok(())
     }
 }
 
@@ -334,6 +424,22 @@ impl BundleSlice {
             "{what} slice checksum mismatch at offset {start}"
         );
         Ok(slice)
+    }
+    /// Reads and verifies this slice directly from an open container file via `Seek` + `read_exact`.
+    pub fn read_from_file(&self, file: &mut std::fs::File, what: &str) -> anyhow::Result<Vec<u8>> {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        let len = usize::try_from(self.bytes).context("slice length overflow")?;
+        file.seek(SeekFrom::Start(self.offset))
+            .with_context(|| format!("seeking {what} to {}", self.offset))?;
+        let mut buf = vec![0u8; len];
+        file.read_exact(&mut buf)
+            .with_context(|| format!("reading {what} slice at {}", self.offset))?;
+        ensure!(
+            sha256(&buf) == self.sha256,
+            "{what} slice checksum mismatch at offset {}",
+            self.offset
+        );
+        Ok(buf)
     }
 }
 

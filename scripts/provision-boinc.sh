@@ -103,11 +103,11 @@ domain_stage() {
 # write_params STAGE: the deployment parameters, with the custom domain stage.
 write_params() {
 jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --argjson tls "$REQUIRE_SECURE_TRANSPORT" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
-  --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
+  --arg web "${WEB_IMAGE:-}" --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   contentVersion: "1.0.0.0",
   parameters: {
-    env: {value: $env}, requireSecureTransport: {value: $tls}, assessment: {value: $assess}, goldBundle: {value: $gold}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b}, publishImage: {value: $p},
+    env: {value: $env}, webImage: {value: $web}, requireSecureTransport: {value: $tls}, assessment: {value: $assess}, goldBundle: {value: $gold}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b}, publishImage: {value: $p},
     runtimePrincipalId: {value: $runtime}, keyWriterPrincipalId: {value: $secrets},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
@@ -124,7 +124,7 @@ registry="$REGISTRY_NAME.azurecr.io"
 [ -z "$PUBLISH_IMAGE" ] || [[ $PUBLISH_IMAGE =~ ^[a-z0-9.-]+\.azurecr\.io/usnm-boinc-appver@sha256:[0-9a-f]{64}$ ]] ||
   die "the publish image must be <registry>.azurecr.io/usnm-boinc-appver@sha256:<64 hex>"
 if [ -n "$SERVER_IMAGE" ]; then
-  for img in "$SERVER_IMAGE" "$BRIDGE_IMAGE" ${PUBLISH_IMAGE:+"$PUBLISH_IMAGE"}; do
+  for img in "$SERVER_IMAGE" "$BRIDGE_IMAGE" ${WEB_IMAGE:+"$WEB_IMAGE"} ${PUBLISH_IMAGE:+"$PUBLISH_IMAGE"}; do
     [ "${img%%/*}" = "$registry" ] || die "$img is not in the shared registry $registry"
   done
 fi

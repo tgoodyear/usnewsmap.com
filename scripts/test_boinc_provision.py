@@ -241,7 +241,7 @@ class TlsSettings(unittest.TestCase):
                     'set -eu; runtime_principal=x; secrets_principal=y; ASSESSMENT=false; '
                     'GOLD_BUNDLE=false; DNS_ZONE=example.org; REGISTRY_RG=rg; REGISTRY_NAME=registry; '
                     'ENV_NAME=prod; LOCATION=westus2; SERVER_IMAGE=; BRIDGE_IMAGE=; PUBLISH_IMAGE=; '
-                    'MASTER_HOST=boinc.usnewsmap.com; OPERATOR_ID=x; '
+                    'MASTER_HOST=boinc.usnewsmap.com; OPERATOR_ID=x; WEB_IMAGE=immutable-web; '
                     'BOINC_SETTINGS=contrib-compute/infra/boinc/env/prod.json; '
                     'work="$1"; REQUIRE_SECURE_TRANSPORT="$2"; '
                 )
@@ -251,6 +251,59 @@ class TlsSettings(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 parameters = json.loads((Path(directory) / "params.json").read_text())["parameters"]
                 self.assertIs(parameters["requireSecureTransport"]["value"], value == "true")
+                self.assertEqual(parameters["webImage"]["value"], "immutable-web")
+
+
+class ProductionReconciliation(unittest.TestCase):
+    def test_optional_web_image_is_validated_and_loaded_without_changing_lifecycle_images(self):
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        web = settings["images"]["web"]
+        for value in ("absent", "", web, None, False, 42, "mutable:latest"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                candidate = json.loads(json.dumps(settings))
+                if value == "absent":
+                    candidate["images"].pop("web")
+                else:
+                    candidate["images"]["web"] = value
+                path = Path(directory) / "settings.json"
+                path.write_text(json.dumps(candidate, sort_keys=True))
+                result = subprocess.run([
+                    "bash", "-c", 'ENV_NAME=prod; die() { echo "$*" >&2; exit 1; }; '
+                    '. scripts/lib/boinc.sh; BOINC_SETTINGS="$1"; boinc_load_settings; '
+                    'printf "%s\\n%s\\n%s" "$WEB_IMAGE" "$SERVER_IMAGE" "$BRIDGE_IMAGE"',
+                    "fixture", str(path)], cwd=ROOT, text=True, capture_output=True)
+                if value in ("absent", "", web):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(), [
+                        "" if value == "absent" else value,
+                        settings["images"]["server"], settings["images"]["bridge"]])
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_build_replaces_additive_web_pin_with_rebuilt_bridge_containing_endpoint(self):
+        source = (ROOT / "scripts/build-boinc-images.sh").read_text()
+        expression = source.split('--arg b "$bridge_image" ')[1].split("'", 2)[1]
+        for images in ({"server": "old", "bridge": "old"},
+                       {"server": "old", "bridge": "old", "web": "additive"}):
+            result = subprocess.run(["jq", "--arg", "s", "new-server", "--arg", "b", "new-bridge",
+                                     expression], input=json.dumps({"images": images}),
+                                    text=True, capture_output=True, check=True)
+            actual = json.loads(result.stdout)["images"]
+            self.assertEqual(actual["server"], "new-server")
+            self.assertEqual(actual["bridge"], "new-bridge")
+            self.assertEqual(actual.get("web"), "new-bridge" if "web" in images else None)
+
+    def test_live_iris_settings_quota_and_additive_endpoint_are_preserved(self):
+        source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()
+        bridge = source.split("module bridgeJob ")[1].split("module initJob ")[0]
+        self.assertIn("value: 'iris-bundle-collect'", bridge)
+        self.assertIn("value: 'overproof-100-v12'", bridge)
+        self.assertIn("shareQuotaGb: 200", source)
+        self.assertIn("!empty(webImage) ? webImage", source)
+        self.assertIn("command: assessment || !empty(webImage)", source)
+        self.assertTrue((ROOT / "contrib-compute/boinc/html/user/work_summary.php").is_file())
+        # The separately operated quality runner is not adopted, restarted or rewritten by this stack.
+        self.assertNotIn("usnm-boinc-quality", source)
 
 
 if __name__ == "__main__":

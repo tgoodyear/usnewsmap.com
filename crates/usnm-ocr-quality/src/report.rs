@@ -62,20 +62,80 @@ pub struct Analysis {
 /// The whole computation for one page.
 pub fn analyse(inputs: &PageInputs) -> Analysis {
     let n = inputs.readers.len();
-    let texts: Vec<&str> = inputs.readers.iter().map(|r| r.text.as_str()).collect();
-    let mut pair_table: BTreeMap<(usize, usize), PairMetrics> = BTreeMap::new();
-    let mut hat_pairs = Vec::new();
+    let normalized_texts: Vec<String> = inputs
+        .readers
+        .iter()
+        .map(|r| crate::text::normalize(&r.text, false))
+        .collect();
+    let norm_readers: Vec<align::NormalizedReader<'_>> = normalized_texts
+        .iter()
+        .map(|na| align::NormalizedReader::from_normalized(na))
+        .collect();
+    let mut pair_indices = Vec::new();
     for i in 0..n {
         for j in i + 1..n {
-            let p = align::pair(texts[i], texts[j]);
-            if p.chars_a + p.chars_b > 0 {
-                hat_pairs.push((i, j, p.cer_sym));
-            }
-            pair_table.insert((i, j), p);
+            pair_indices.push((i, j));
         }
     }
+    let threads = crate::features::worker_threads();
+    let pair_results: Vec<((usize, usize), PairMetrics)> =
+        if threads <= 1 || pair_indices.len() <= 1 {
+            pair_indices
+                .iter()
+                .map(|&(i, j)| {
+                    (
+                        (i, j),
+                        align::pair_precomputed(&norm_readers[i], &norm_readers[j]),
+                    )
+                })
+                .collect()
+        } else {
+            let chunk_size = pair_indices.len().div_ceil(threads);
+            std::thread::scope(|s| {
+                let handles: Vec<_> = pair_indices
+                    .chunks(chunk_size)
+                    .map(|chunk| {
+                        let norm_ref = &norm_readers;
+                        s.spawn(move || {
+                            chunk
+                                .iter()
+                                .map(|&(i, j)| {
+                                    ((i, j), align::pair_precomputed(&norm_ref[i], &norm_ref[j]))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                let mut out = Vec::with_capacity(pair_indices.len());
+                for h in handles {
+                    if let Ok(mut part) = h.join() {
+                        out.append(&mut part);
+                    }
+                }
+                out
+            })
+        };
+    let mut pair_table: BTreeMap<(usize, usize), PairMetrics> = BTreeMap::new();
+    let mut hat_pairs = Vec::new();
+    for ((i, j), p) in pair_results {
+        if p.chars_a + p.chars_b > 0 {
+            hat_pairs.push((i, j, p.cer_sym));
+        }
+        pair_table.insert((i, j), p);
+    }
     let h = hat::solve(n, &hat_pairs);
-    let tokens: Vec<Vec<String>> = texts.iter().map(|t| consensus::tokens(t)).collect();
+    let tokens: Vec<Vec<String>> = norm_readers
+        .iter()
+        .map(|nr| {
+            use unicode_normalization::UnicodeNormalization;
+            nr.words
+                .iter()
+                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+                .filter(|w| !w.is_empty())
+                .map(|w| w.nfc().collect())
+                .collect()
+        })
+        .collect();
     let cons = consensus::build(&tokens);
     let folded: Vec<Vec<String>> = tokens
         .iter()
@@ -86,14 +146,12 @@ pub fn analyse(inputs: &PageInputs) -> Analysis {
     for (r, reference, reader) in &cons.disagreements {
         per_reader[*r].add(reference, reader);
     }
+    let want_content = findability::content_words(&cons.sequence, &inputs.function_words);
+    let want_places = inputs.places.found(&cons.sequence);
     let mut readers = Vec::new();
     for (i, r) in inputs.readers.iter().enumerate() {
-        let f: Findability = findability::of(
-            &cons.sequence,
-            &folded[i],
-            &inputs.function_words,
-            inputs.places,
-        );
+        let f: Findability =
+            findability::of_precomputed(&want_content, &want_places, &folded[i], inputs.places);
         let mut pairs = BTreeMap::new();
         for (j, other) in inputs.readers.iter().enumerate() {
             if i == j {
@@ -108,7 +166,7 @@ pub fn analyse(inputs: &PageInputs) -> Analysis {
         }
         let cov = &cons.coverage[i];
         readers.push(ReaderReport {
-            chars: crate::text::normalize(&r.text, false).chars().count(),
+            chars: norm_readers[i].chars.len(),
             completeness: round6_opt(cov.completeness),
             content_found: f.content_found,
             content_total: f.content_total,
@@ -174,12 +232,17 @@ pub fn round_pair(p: PairMetrics) -> PairMetrics {
 
 pub fn round_image(f: ImageFeatures) -> ImageFeatures {
     ImageFeatures {
+        bg_tile_std: round6(f.bg_tile_std),
         bleed_through: round6(f.bleed_through),
         blur: round6(f.blur),
         contrast: round6(f.contrast),
+        est_line_height_px: round6_opt(f.est_line_height_px),
+        gutter_clarity: round6(f.gutter_clarity),
         ink_density: round6(f.ink_density),
         noise: round6(f.noise),
+        otsu_local_diff: round6(f.otsu_local_diff),
         skew_deg: round6(f.skew_deg),
+        vertical_stroke_ratio: round6(f.vertical_stroke_ratio),
         ..f
     }
 }

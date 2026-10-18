@@ -38,6 +38,9 @@ param image string = ''
 @description('Bridge job image (images/bridge), by digest, in the same registry. Required with image: the server image has no usnm-boinc binary.')
 param bridgeImage string = ''
 
+@description('Optional web/daemon image override, independent of lifecycle pins. Empty uses assessment selection. Preserves additive production releases.')
+param webImage string = ''
+
 @description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc-app-release.sh; empty: no publish job.')
 param publishImage string = ''
 
@@ -167,7 +170,7 @@ module storage 'modules/storage.bicep' = {
     filesAccountName: names.files
     endpointName: names.filesEndpoint
     location: location
-    shareQuotaGb: env == 'prod' ? 250 : 200
+    shareQuotaGb: 200
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.filesDnsZoneId
   }
@@ -213,9 +216,9 @@ module app 'modules/app.bicep' = if (withApp) {
     logAnalyticsSharedKey: workspace.listKeys().primarySharedKey
     identityId: identity.id
     identityClientId: identity.properties.clientId
-    image: assessment ? bridgeImage : image
+    image: !empty(webImage) ? webImage : (assessment ? bridgeImage : image)
     // The bridge image's entry point is bridge-job; the server keeps its own.
-    command: assessment ? [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--serve' ] : []
+    command: assessment || !empty(webImage) ? [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--serve' ] : []
     registryServer: registryServer
     keyVaultName: vault.outputs.name
     filesAccountName: storage.outputs.filesAccountName
@@ -257,6 +260,10 @@ module bridgeJob 'modules/bridge-job.bicep' = if (withApp) {
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     timeoutSeconds: bridgeTimeoutSeconds
+    extraEnv: env == 'prod' ? [
+      { name: 'BRIDGE_STEP', value: 'iris-bundle-collect' }
+      { name: 'IRIS_CAMPAIGN', value: 'overproof-100-v12' }
+    ] : []
   }
 }
 

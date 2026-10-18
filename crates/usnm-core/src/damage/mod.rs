@@ -65,6 +65,51 @@ pub struct Damage {
     pub head: u64,
     /// Near-misses of the head words.
     pub near: u64,
+    /// Near-misses whose single edit from the target head word is a canonical Fraktur confusion.
+    pub fraktur_near: u64,
+}
+
+fn is_fraktur_near_edit(near_word: &str, head_word: &str) -> bool {
+    let mut na = near_word.chars();
+    let mut hb = head_word.chars();
+    let mut diff_pair: Option<(char, char)> = None;
+    loop {
+        match (na.next(), hb.next()) {
+            (Some(a), Some(b)) => {
+                if a != b {
+                    if diff_pair.is_some() {
+                        return false;
+                    }
+                    diff_pair = Some((a, b));
+                }
+            }
+            (None, None) => break,
+            _ => return false,
+        }
+    }
+    matches!(
+        diff_pair,
+        Some(
+            ('f', 's')
+                | ('s', 'f')
+                | ('u', 'n')
+                | ('n', 'u')
+                | ('c', 'e')
+                | ('e', 'c')
+                | ('d', 'o')
+                | ('o', 'd')
+                | ('r', 't')
+                | ('t', 'r')
+                | ('k', 't')
+                | ('t', 'k')
+                | ('b', 'v')
+                | ('v', 'b')
+                | ('b', 'd')
+                | ('d', 'b')
+                | ('i', 'j')
+                | ('j', 'i')
+        )
+    )
 }
 
 impl Damage {
@@ -83,8 +128,13 @@ impl Damage {
                 if model.is_head(w) {
                     self.head += 1;
                 }
-            } else if model.near.contains_key(w) && !others.iter().any(|o| o.real.contains(w)) {
-                self.near += 1;
+            } else if let Some(target) = model.near.get(w) {
+                if !others.iter().any(|o| o.real.contains(w)) {
+                    self.near += 1;
+                    if is_fraktur_near_edit(w, target) {
+                        self.fraktur_near += 1;
+                    }
+                }
             }
         }
     }
@@ -94,6 +144,7 @@ impl Damage {
         self.function += other.function;
         self.head += other.head;
         self.near += other.near;
+        self.fraktur_near += other.fraktur_near;
     }
 
     /// The share of the words that are function words.
@@ -444,6 +495,12 @@ pub struct PageScore {
     pub function_share: Option<f64>,
     pub damage_rate: Option<f64>,
     pub garbage_share: Option<f64>,
+    /// Share of whitespace tokens that are non-word numeric tokens (`numeric_tokens / tokens`).
+    pub numeric_share: Option<f64>,
+    /// Share of non-empty lines that contain `1..=4` whitespace tokens (`short_lines / non_empty_lines`).
+    pub short_line_share: Option<f64>,
+    /// Fraktur-attributable damage/glyph rate `(fraktur_near + long_s) / (near + head + long_s)`.
+    pub fraktur_score: Option<f64>,
     /// Characters (code points) of the text.
     pub chars: usize,
     /// Whitespace tokens.
@@ -470,10 +527,22 @@ pub fn score(text: &str, languages: &[&str]) -> PageScore {
     } else {
         tw.garbage
     };
+    let long_s = tw.long_s_tokens as u64;
+    let fraktur_score = match lang.damage {
+        Some(d) => {
+            let denom = d.near + d.head + long_s;
+            (denom > 0).then(|| (d.fraktur_near + long_s) as f64 / denom as f64)
+        }
+        None => (tw.tokens > 0 && long_s > 0).then(|| long_s as f64 / tw.tokens as f64),
+    };
     PageScore {
         function_share: lang.damage.and_then(|d| d.function_share()),
         damage_rate: lang.damage.and_then(|d| d.damage_rate()),
         garbage_share: (tw.tokens > 0).then(|| g as f64 / tw.tokens as f64),
+        numeric_share: (tw.tokens > 0).then(|| tw.numeric_tokens as f64 / tw.tokens as f64),
+        short_line_share: (tw.non_empty_lines > 0)
+            .then(|| tw.short_lines as f64 / tw.non_empty_lines as f64),
+        fraktur_score,
         chars: text.chars().count(),
         tokens: tw.tokens,
         words: tw.words.len(),
@@ -493,6 +562,7 @@ pub struct ForcedScore {
     pub damage: Damage,
     pub function_share: Option<f64>,
     pub damage_rate: Option<f64>,
+    pub fraktur_score: Option<f64>,
     /// Word tokens in the language's top 5,000.
     pub known_words: u64,
 }
@@ -517,11 +587,15 @@ pub fn score_forced(text: &str, iso3: &str) -> Option<ForcedScore> {
         model(ENGLISH).into_iter().collect()
     };
     let d = damage(m, words.iter().map(String::as_str), &others);
+    let long_s = tw.long_s_tokens as u64;
+    let denom = d.near + d.head + long_s;
+    let fraktur_score = (denom > 0).then(|| (d.fraktur_near + long_s) as f64 / denom as f64);
     Some(ForcedScore {
         tokens: tw.tokens,
         damage: d,
         function_share: d.function_share(),
         damage_rate: d.damage_rate(),
+        fraktur_score,
         known_words: words.iter().filter(|w| m.real.contains(w.as_str())).count() as u64,
     })
 }

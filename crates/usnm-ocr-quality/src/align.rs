@@ -42,9 +42,48 @@ pub fn align<T: PartialEq>(a: &[T], b: &[T]) -> Vec<Op> {
     out
 }
 
+/// The edit script from `a` to `b` over dense `u32` symbol IDs in `0..vocab_size`,
+/// using Myers' bit-parallel `last_row` for Hirschberg splits and `u32` base cases.
+pub fn align_u32(a: &[u32], b: &[u32], vocab_size: usize) -> Vec<Op> {
+    let mut out = Vec::with_capacity(a.len().max(b.len()));
+    rec_u32(a, b, vocab_size, &mut out);
+    out
+}
+
 /// The non-match steps of a script: the edit distance.
 pub fn edits(ops: &[Op]) -> usize {
     ops.iter().filter(|o| **o != Op::Match).count()
+}
+
+fn rec_u32(a: &[u32], b: &[u32], vocab_size: usize, out: &mut Vec<Op>) {
+    if a.is_empty() {
+        out.extend(std::iter::repeat_n(Op::Ins, b.len()));
+        return;
+    }
+    if b.is_empty() {
+        out.extend(std::iter::repeat_n(Op::Del, a.len()));
+        return;
+    }
+    if a.len() == 1 || b.len() == 1 || a.len().saturating_mul(b.len()) <= SMALL {
+        full(a, b, out);
+        return;
+    }
+    let mid = a.len() / 2;
+    let split = {
+        let left = distance::last_row_u32_dense(&a[..mid], b, false, vocab_size);
+        let right = distance::last_row_u32_dense(&a[mid..], b, true, vocab_size);
+        let n = b.len();
+        let mut best = (u32::MAX, 0);
+        for (j, l) in left.iter().enumerate() {
+            let c = l + right[n - j];
+            if c < best.0 {
+                best = (c, j);
+            }
+        }
+        best.1
+    };
+    rec_u32(&a[..mid], &b[..split], vocab_size, out);
+    rec_u32(&a[mid..], &b[split..], vocab_size, out);
 }
 
 fn rec<T: PartialEq>(a: &[T], b: &[T], out: &mut Vec<Op>) {
@@ -105,6 +144,22 @@ fn last_row<T: PartialEq>(a: &[T], b: &[T], rev: bool) -> Vec<u32> {
 
 /// The full table and its backtrace, for small inputs.
 fn full<T: PartialEq>(a: &[T], b: &[T], out: &mut Vec<Op>) {
+    let mut prefix = 0usize;
+    let limit = a.len().min(b.len());
+    while prefix < limit && a[prefix] == b[prefix] {
+        out.push(Op::Match);
+        prefix += 1;
+    }
+    let a = &a[prefix..];
+    let b = &b[prefix..];
+    if a.is_empty() {
+        out.extend(std::iter::repeat_n(Op::Ins, b.len()));
+        return;
+    }
+    if b.is_empty() {
+        out.extend(std::iter::repeat_n(Op::Del, a.len()));
+        return;
+    }
     let (m, n) = (a.len(), b.len());
     let w = n + 1;
     let mut cost = vec![0u32; (m + 1) * w];
@@ -112,12 +167,18 @@ fn full<T: PartialEq>(a: &[T], b: &[T], out: &mut Vec<Op>) {
         cost[m * w + j] = (n - j) as u32;
     }
     for i in (0..m).rev() {
-        cost[i * w + n] = (m - i) as u32;
+        let ai = &a[i];
+        let (head, tail) = cost.split_at_mut((i + 1) * w);
+        let cur_row = &mut head[i * w..(i + 1) * w];
+        let next_row = &tail[..w];
+        let mut right = (m - i) as u32;
+        cur_row[n] = right;
         for j in (0..n).rev() {
-            let sub = cost[(i + 1) * w + j + 1] + u32::from(a[i] != b[j]);
-            let del = cost[(i + 1) * w + j] + 1;
-            let ins = cost[i * w + j + 1] + 1;
-            cost[i * w + j] = sub.min(del).min(ins);
+            let sub = next_row[j + 1] + u32::from(ai != &b[j]);
+            let del = next_row[j] + 1;
+            let ins = right + 1;
+            right = sub.min(del).min(ins);
+            cur_row[j] = right;
         }
     }
     let (mut i, mut j) = (0, 0);
@@ -167,19 +228,36 @@ pub fn bag(text: &str) -> BTreeMap<String, usize> {
     out
 }
 
+/// Word-bag Dice from precomputed bags.
+pub fn dice_bags(
+    wa: &BTreeMap<String, usize>,
+    total_a: usize,
+    wb: &BTreeMap<String, usize>,
+    total_b: usize,
+) -> f64 {
+    let total = total_a + total_b;
+    if total == 0 {
+        return 1.0;
+    }
+    let (smaller, larger) = if wa.len() <= wb.len() {
+        (wa, wb)
+    } else {
+        (wb, wa)
+    };
+    let shared: usize = smaller
+        .iter()
+        .map(|(w, n)| (*n).min(*larger.get(w).unwrap_or(&0)))
+        .sum();
+    2.0 * shared as f64 / total as f64
+}
+
 /// Word-bag Dice: 2 * shared words / (words of both), 1.0 for two empty
 /// texts.
 pub fn dice(a: &str, b: &str) -> f64 {
     let (wa, wb) = (bag(a), bag(b));
-    let total: usize = wa.values().sum::<usize>() + wb.values().sum::<usize>();
-    if total == 0 {
-        return 1.0;
-    }
-    let shared: usize = wa
-        .iter()
-        .map(|(w, n)| (*n).min(*wb.get(w).unwrap_or(&0)))
-        .sum();
-    2.0 * shared as f64 / total as f64
+    let total_a: usize = wa.values().sum();
+    let total_b: usize = wb.values().sum();
+    dice_bags(&wa, total_a, &wb, total_b)
 }
 
 /// A rate `edits / reference`; 0 when both are empty, 1 when only the
@@ -198,13 +276,35 @@ pub fn rate(edits: usize, reference: usize, hypothesis: usize) -> f64 {
 
 pub use usnm_ocr_contract::quality::PairMetrics;
 
-/// The pairwise metrics of two texts, after normalisation.
-pub fn pair(a: &str, b: &str) -> PairMetrics {
-    let (na, nb) = (text::normalize(a, false), text::normalize(b, false));
-    let (chars_a, chars_b) = (na.chars().count(), nb.chars().count());
-    let char_edits = distance::chars(&na, &nb);
-    let (wa, wb) = (text::py_split(&na), text::py_split(&nb));
-    let word_edits = distance::words(&wa, &wb);
+/// Pre-normalised reader representation to avoid redundant NFC, splitting, and bag construction
+/// across all `n * (n - 1) / 2` pairs.
+pub struct NormalizedReader<'a> {
+    pub chars: Vec<char>,
+    pub words: Vec<&'a str>,
+    pub bag: BTreeMap<String, usize>,
+    pub bag_total: usize,
+}
+
+impl<'a> NormalizedReader<'a> {
+    pub fn from_normalized(na: &'a str) -> Self {
+        let chars: Vec<char> = na.chars().collect();
+        let words = text::py_split(na);
+        let bag = bag(na);
+        let bag_total = bag.values().sum();
+        Self {
+            chars,
+            words,
+            bag,
+            bag_total,
+        }
+    }
+}
+
+/// Pairwise metrics from two pre-normalised readers.
+pub fn pair_precomputed(a: &NormalizedReader<'_>, b: &NormalizedReader<'_>) -> PairMetrics {
+    let (chars_a, chars_b) = (a.chars.len(), b.chars.len());
+    let char_edits = distance::chars_slice(&a.chars, &b.chars);
+    let word_edits = distance::words(&a.words, &b.words);
     let mean = (chars_a + chars_b) as f64 / 2.0;
     PairMetrics {
         cer_a: rate(char_edits, chars_b, chars_a),
@@ -217,13 +317,21 @@ pub fn pair(a: &str, b: &str) -> PairMetrics {
         char_edits,
         chars_a,
         chars_b,
-        dice: dice(&na, &nb),
-        wer_a: rate(word_edits, wb.len(), wa.len()),
-        wer_b: rate(word_edits, wa.len(), wb.len()),
+        dice: dice_bags(&a.bag, a.bag_total, &b.bag, b.bag_total),
+        wer_a: rate(word_edits, b.words.len(), a.words.len()),
+        wer_b: rate(word_edits, a.words.len(), b.words.len()),
         word_edits,
-        words_a: wa.len(),
-        words_b: wb.len(),
+        words_a: a.words.len(),
+        words_b: b.words.len(),
     }
+}
+
+/// The pairwise metrics of two texts, after normalisation.
+pub fn pair(a: &str, b: &str) -> PairMetrics {
+    let (na, nb) = (text::normalize(a, false), text::normalize(b, false));
+    let ra = NormalizedReader::from_normalized(&na);
+    let rb = NormalizedReader::from_normalized(&nb);
+    pair_precomputed(&ra, &rb)
 }
 
 #[cfg(test)]
@@ -333,6 +441,9 @@ mod tests {
             let ops = align(&a, &b);
             assert_eq!(edits(&ops), distance::levenshtein(&a, &b), "{a:?} {b:?}");
             assert!(replay(&a, &b, &ops), "{a:?} {b:?} {ops:?}");
+            let a32: Vec<u32> = a.iter().map(|&x| x as u32).collect();
+            let b32: Vec<u32> = b.iter().map(|&x| x as u32).collect();
+            assert_eq!(align_u32(&a32, &b32, k as usize + 1), ops);
         }
     }
 
@@ -345,6 +456,9 @@ mod tests {
         let ops = align(&a, &b);
         assert_eq!(edits(&ops), distance::levenshtein(&a, &b));
         assert!(replay(&a, &b, &ops));
+        let a32: Vec<u32> = a.iter().map(|&x| x as u32).collect();
+        let b32: Vec<u32> = b.iter().map(|&x| x as u32).collect();
+        assert_eq!(align_u32(&a32, &b32, 8), ops);
     }
 
     #[test]
