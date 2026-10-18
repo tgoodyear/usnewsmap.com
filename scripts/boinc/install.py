@@ -36,6 +36,7 @@ QWEN_NATIVE_MODEL_TEMPLATES = {
     "apple_gpu_8b": "usnm_qwen_8b_in",
     "nvidia_cuda_8b": "usnm_qwen_8b_in",
     "intel_vulkan_8b": "usnm_qwen_8b_in",
+    "nvidia_vulkan_8b": "usnm_qwen_8b_in",
     "nvidia_cuda_2b": "usnm_qwen_2b_in",
     "mt": "usnm_qwen_2b_in",
 }
@@ -73,8 +74,9 @@ NATIVE_PLAN_CLASSES = {
     ("usnm_qwen", "nvidia_cuda_2b"): ("x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "windows_x86_64"),
     # Intel GPUs through llama.cpp Vulkan (#786); llama.lock pins only x86_64 Vulkan builds.
     ("usnm_qwen", "intel_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
+    ("usnm_qwen", "nvidia_vulkan_8b"): ("x86_64-pc-linux-gnu",),
 }
-GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b"})
+GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b"})
 NATIVE_API_VERSION = "8.3.0"
 LOGICAL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
 

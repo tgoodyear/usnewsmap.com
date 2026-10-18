@@ -422,8 +422,13 @@ fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuState {
         let (vulkan_device, free_mb) = match &devices {
             Ok(text) => {
                 let _ = writeln!(body, "llama-server --list-devices:\n{}", text.trim());
-                // Only Intel Vulkan classes exist (#786); the vendor follows the plan class.
-                let vendor = if plan.contains("intel") { "intel" } else { "" };
+                let vendor = if plan.contains("intel") {
+                    "intel"
+                } else if plan.contains("nvidia") {
+                    "nvidia"
+                } else {
+                    "unsupported-vulkan-vendor"
+                };
                 match vulkan_device(text, vendor, wanted) {
                     Some(d) => {
                         host.gpu = Some(d.name.chars().take(64).collect());
@@ -1362,7 +1367,7 @@ pub fn run_slot_with(
             let want_cuda_only = host
                 .plan_class
                 .as_deref()
-                .is_some_and(|p| p.contains("nvidia") || p.contains("cuda"));
+                .is_some_and(|p| p.contains("cuda"));
             let vulkan_refused = host
                 .plan_class
                 .as_deref()
@@ -2033,6 +2038,8 @@ mod tests {
         let mixed = "  Vulkan0: NVIDIA GeForce RTX 3060 (12288 MiB, 11000 MiB free)\n  Vulkan1: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)";
         assert_eq!(vulkan_device(mixed, "intel", 0).unwrap().index, 1);
         assert!(vulkan_device(mixed, "intel", 1).is_none());
+        assert_eq!(vulkan_device(mixed, "nvidia", 0).unwrap().index, 0);
+        assert!(vulkan_device(mixed, "nvidia", 1).is_none());
         assert!(vulkan_device("no devices", "intel", 0).is_none());
     }
 
