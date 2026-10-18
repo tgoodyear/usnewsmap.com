@@ -180,6 +180,18 @@ class LogsFrontendRetry(unittest.TestCase):
         self.assertEqual(caught.exception.history[-1]["status"], "transport-error")
         self.assertNotIn("sensitive", str(caught.exception))
 
+    def test_response_read_failure_preserves_request_metadata(self):
+        response = self.response(200, {})
+        response.read.side_effect = self.client.http.client.IncompleteRead(b"sensitive")
+        with mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            opener.return_value.open.return_value = response
+            self.client.query(SUB, "print 1", token="fake")
+        self.assertEqual(caught.exception.history[0]["requestId"], "request")
+        self.assertEqual(caught.exception.history[0]["error"], "response-read-failed")
+        self.assertNotIn("sensitive", str(caught.exception))
+
     def test_retry_cap(self):
         with self.assertRaisesRegex(self.client.QueryError, "6 attempts"):
             self.run_query([self.response(403, {"error": {"code": "InsufficientAccessError"}})] * 6)

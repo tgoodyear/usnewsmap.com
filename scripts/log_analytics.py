@@ -2,6 +2,7 @@
 """Read-only Logs API client with bounded, DNS-refreshing frontend retries."""
 
 import argparse
+import http.client
 import json
 import pathlib
 import random
@@ -90,23 +91,28 @@ def query(workspace, kql, timespan="P1D", *, token=None, identity="az",
             response = opener.open(request, timeout=min(20, remaining))
         except urllib.error.HTTPError as error:
             response = error
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, OSError, http.client.HTTPException):
             history.append({"attempt": attempt, "status": "transport-error",
                             "via": "", "requestId": None})
             raise QueryError("Logs query transport failed", history) from None
-        with response:
-            status = response.status
-            raw = response.read()
+        status = response.status
+        via = re.sub(r"[\r\n]", " ", response.headers.get("via", ""))[:240]
+        record = {"attempt": attempt, "status": status, "via": via,
+                  "requestId": response.headers.get("x-ms-request-id")}
+        history.append(record)
+        print(f"Logs attempt {attempt}/{attempts}: HTTP {status}; via={via or '-'}",
+              file=sys.stderr)
+        try:
+            with response:
+                raw = response.read()
+        except (OSError, http.client.HTTPException):
+            record["error"] = "response-read-failed"
+            raise QueryError("Logs response read failed", history) from None
+        else:
             try:
                 body = json.loads(raw)
             except (ValueError, UnicodeDecodeError):
                 body = None
-            via = re.sub(r"[\r\n]", " ", response.headers.get("via", ""))[:240]
-            record = {"attempt": attempt, "status": status, "via": via,
-                      "requestId": response.headers.get("x-ms-request-id")}
-            history.append(record)
-        print(f"Logs attempt {attempt}/{attempts}: HTTP {status}; via={via or '-'}",
-              file=sys.stderr)
         if 200 <= status < 300:
             if (not isinstance(body, dict) or "error" in body
                     or not isinstance(body.get("tables"), list) or not body["tables"]):

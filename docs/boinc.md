@@ -59,6 +59,9 @@ are excluded. A failed/partial response is never represented as zero rows.
 Empty successful panels do not establish actual status/filter coverage or fresh
 work-volume telemetry. The normal BOINC post-deploy health step runs validation
 as a warning-level check; it does not redeploy resources to query them.
+Its receipt is retained in a separate private `.boinc-work-*` directory beneath
+the checkout (path printed to stderr), outside the deployment scratch cleanup.
+Remove that directory manually after inspecting the receipt.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">
