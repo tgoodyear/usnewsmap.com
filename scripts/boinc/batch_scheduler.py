@@ -28,6 +28,8 @@ DEFAULT_MAX_GLOBAL_PENDING = 1000
 MAX_STATUS_BYTES = 1024 * 1024
 OCR_APP_NAME = "usnm_ocr"
 SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
+SUPPORTED_COHORT_PLATFORMS = ("all",)
+SUPPORTED_COHORT_RESOURCES = ("cpu",)
 APP_NAME = re.compile(r"[A-Za-z0-9_-]{1,80}")
 ZERO_WORK_LINE = re.compile(r"(?:No tasks sent|Got 0 new tasks|Sending reply to \[HOST#\d+\]: 0 results)")
 
@@ -75,6 +77,22 @@ def normalize_cohort_apps(app):
     return app
 
 
+def normalize_cohort_platform(platform):
+    if not isinstance(platform, str) or platform not in SUPPORTED_COHORT_PLATFORMS:
+        raise ConfigError(
+            f"unsupported cohort platform; {OCR_APP_NAME} queue accounting is application-scoped across all platforms"
+        )
+    return platform
+
+
+def normalize_cohort_resource(resource):
+    if not isinstance(resource, str) or resource not in SUPPORTED_COHORT_RESOURCES:
+        raise ConfigError(
+            f"unsupported cohort resource; {OCR_APP_NAME} queue accounting is CPU-only"
+        )
+    return resource
+
+
 def _validate_cohort_spec(spec):
     require(isinstance(spec, dict) and set(spec) <= {
         "app", "platform", "resource", "low_watermark", "high_watermark", "pages_per_host",
@@ -82,11 +100,9 @@ def _validate_cohort_spec(spec):
     if "app" in spec:
         normalize_cohort_apps(spec["app"])
     if "platform" in spec:
-        require(isinstance(spec["platform"], str) and
-                re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", spec["platform"]), "invalid cohort platform")
+        normalize_cohort_platform(spec["platform"])
     if "resource" in spec:
-        require(isinstance(spec["resource"], str) and
-                re.fullmatch(r"[a-z0-9_-]{1,32}", spec["resource"]), "invalid cohort resource")
+        normalize_cohort_resource(spec["resource"])
     if "pages_per_host" in spec:
         require(type(spec["pages_per_host"]) is int and 1 <= spec["pages_per_host"] <= 100,
                 "invalid cohort pages_per_host")
@@ -192,17 +208,19 @@ def parse_server_status(raw):
             require(isinstance(item, dict) and isinstance(item.get("name"), str), "invalid BOINC app item")
             name = item["name"]
             require(APP_NAME.fullmatch(name) and name not in apps, "invalid/duplicate BOINC app")
-            unsent = _nonneg_int(item.get("unsent", 0), MAX_GLOBAL_PENDING, "invalid app unsent count")
-            in_progress = _nonneg_int(item.get("in_progress", 0), MAX_GLOBAL_PENDING,
+            require("unsent" in item and "in_progress" in item, "missing BOINC app queue counters")
+            unsent = _nonneg_int(item["unsent"], MAX_GLOBAL_PENDING, "invalid app unsent count")
+            in_progress = _nonneg_int(item["in_progress"], MAX_GLOBAL_PENDING,
                                       "invalid app in_progress count")
             apps[name] = {"unsent": unsent, "in_progress": in_progress, "runnable": unsent + in_progress}
     elif isinstance(raw_apps, dict):
         require(len(raw_apps) <= 100, "oversized BOINC app inventory")
         for name, item in raw_apps.items():
-            require( isinstance(name, str) and APP_NAME.fullmatch(name) and isinstance(item, dict),
-                     "invalid BOINC app entry")
-            unsent = _nonneg_int(item.get("unsent", 0), MAX_GLOBAL_PENDING, "invalid app unsent count")
-            in_progress = _nonneg_int(item.get("in_progress", 0), MAX_GLOBAL_PENDING,
+            require(isinstance(name, str) and APP_NAME.fullmatch(name) and isinstance(item, dict),
+                    "invalid BOINC app entry")
+            require("unsent" in item and "in_progress" in item, "missing BOINC app queue counters")
+            unsent = _nonneg_int(item["unsent"], MAX_GLOBAL_PENDING, "invalid app unsent count")
+            in_progress = _nonneg_int(item["in_progress"], MAX_GLOBAL_PENDING,
                                       "invalid app in_progress count")
             apps[name] = {"unsent": unsent, "in_progress": in_progress, "runnable": unsent + in_progress}
     else:
@@ -657,27 +675,40 @@ class QueueFeed:
             self.persist()
 
 
+def _select_cohort_entry(mapping, keys, *, allow_single_default=False):
+    for key in keys:
+        if key in mapping:
+            return key, mapping[key]
+    if allow_single_default and len(mapping) == 1:
+        return next(iter(mapping.items()))
+    return None, {}
+
+
 def resolve_watermarks(config, snapshot, status=None, *,
                        low_watermark=None, high_watermark=None, max_global_pending=None):
     cohorts = config.get("cohorts") or {}
     app = normalize_cohort_apps(config.get("app", OCR_APP_NAME))
-    platform = config.get("platform", "all")
-    resource = config.get("resource", "cpu")
-    cohort_name = config.get("cohort") or f"{app}:{resource}"
-    cohort_cfg = (cohorts.get(cohort_name) or cohorts.get(app) or
-                  cohorts.get(resource) or (next(iter(cohorts.values())) if cohorts else {}))
-    if cohort_cfg:
-        _validate_cohort_spec(cohort_cfg)
-    app = normalize_cohort_apps(cohort_cfg.get("app", app))
-    platform = cohort_cfg.get("platform", platform)
-    resource = cohort_cfg.get("resource", resource)
-    cohort_name = config.get("cohort") or (
-        next(iter(cohorts)) if len(cohorts) == 1 else f"{app}:{resource}"
+    platform = normalize_cohort_platform(config.get("platform", "all"))
+    resource = normalize_cohort_resource(config.get("resource", "cpu"))
+    explicit_cohort = config.get("cohort")
+    cohort_name = explicit_cohort or f"{app}:{resource}"
+    matched_key, cohort_cfg = _select_cohort_entry(
+        cohorts,
+        (cohort_name,) if explicit_cohort is not None else (cohort_name, app, resource),
+        allow_single_default=(explicit_cohort is None),
     )
+    _validate_cohort_spec(cohort_cfg)
+    app = normalize_cohort_apps(cohort_cfg.get("app", app))
+    platform = normalize_cohort_platform(cohort_cfg.get("platform", platform))
+    resource = normalize_cohort_resource(cohort_cfg.get("resource", resource))
+    cohort_name = explicit_cohort or matched_key or f"{app}:{resource}"
     pages_per_host = cohort_cfg.get("pages_per_host", config["pages_per_host"])
     status_cohorts = (status or {}).get("cohorts") or {}
-    status_cohort = (status_cohorts.get(cohort_name) or status_cohorts.get(app) or
-                     status_cohorts.get(resource) or {})
+    _, status_cohort = _select_cohort_entry(
+        status_cohorts,
+        (cohort_name,) if explicit_cohort is not None else (cohort_name, app, resource),
+    )
+    require(isinstance(status_cohort, dict), "invalid status cohort entry")
     active_hosts = snapshot.get("cohort_active_hosts",
                                 status_cohort.get("active_hosts", snapshot["active_hosts"]))
     _nonneg_int(active_hosts, MAX_GLOBAL_PENDING, "invalid cohort active_hosts")
@@ -929,7 +960,12 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
                 transport.submit(job_id)
                 submitted += 1
 
-    post_cohort_pending = max(cohort_pending, ocr_in_flight + submitted)
+    post_uncollected_not_pending = sum(
+        record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
+        for record in records
+    )
+    post_missing = sum(page not in owned for page in selected)
+    post_cohort_pending = ocr_in_flight + post_uncollected_not_pending + post_missing
     if high_target == 0 or post_cohort_pending >= high_target:
         state["refilling"] = False
     else:

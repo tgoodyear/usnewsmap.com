@@ -128,12 +128,14 @@ pages rather than overwriting them, including for historical cohorts.
    hosts or a full queue. Never supply a host ID override or bypass `--trust`.
    Partial output sets wait; duplicate spool directories fail closed.
 4. Separate the runnable `usnm_ocr` cohort queue (`app` / `platform` / `resource`,
-   default `usnm_ocr` / `all` / `cpu`; only `usnm_ocr` is accepted as a cohort
-   `app` because `Transport.submit()` only dispatches `usnm_ocr` workunits) from
-   unrelated other-app queues (such as `usnm_qwen`, `usnm_quality`, or
-   `usnm_surya`), while enforcing an overall global safety cap
-   (`max_global_pending` / `--max-global-pending`, up to 100,000 workunits across
-   all apps and collection backlog). When `server_status.php?xml=1` (or a
+   default `usnm_ocr` / `all` / `cpu`; only `usnm_ocr`, `all`, and `cpu` are
+   accepted as cohort selectors because `Transport.submit()` and
+   `server_status` / `batch-inventory` queue accounting are application-scoped
+   CPU workunits across all platforms) from unrelated other-app queues (such as
+   `usnm_qwen`, `usnm_quality`, or `usnm_surya`), while enforcing an overall
+   global safety cap (`max_global_pending` / `--max-global-pending`, up to
+   100,000 workunits across all apps and collection backlog). When
+   `server_status.php?xml=1` (or a
    structured status snapshot via `--server-status-url` / `--server-status-file`
    or `inventory.json`) is supplied, `parse_server_status` reads per-app
    `<unsent>` and `<in_progress>` counts so `usnm_ocr` admission checks

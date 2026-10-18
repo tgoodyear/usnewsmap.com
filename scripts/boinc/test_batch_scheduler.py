@@ -1280,8 +1280,9 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
         self.assertEqual(len(self.fake.jobs), 2)
 
     def test_non_ocr_cohort_app_selectors_are_rejected(self):
-        # Regression for comment 4308954020: Transport.submit() only dispatches usnm_ocr
-        # workunits, so non-OCR cohort app selectors must be rejected with ConfigError.
+        # Regression for comment 4308954020 and Round-4 selector validation:
+        # Transport.submit() and BOINC status/inventory accounting only support
+        # application-wide CPU usnm_ocr workunits (app="usnm_ocr", platform="all", resource="cpu").
         for bad_app in ("usnm_qwen", "usnm_surya", "usnm_quality", "other"):
             with self.subTest(app=bad_app):
                 with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
@@ -1291,6 +1292,73 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
                 with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
                     batch.resolve_watermarks({**self.config, "app": bad_app},
                                              self.fake.inventory())
+        for bad_platform in ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "linux"):
+            with self.subTest(platform=bad_platform):
+                with self.assertRaisesRegex(batch.ConfigError, "application-scoped across all platforms"):
+                    batch.normalize_cohort_platform(bad_platform)
+                with self.assertRaisesRegex(batch.ConfigError, "application-scoped across all platforms"):
+                    batch._validate_cohort_spec({"platform": bad_platform})
+                with self.assertRaisesRegex(batch.ConfigError, "application-scoped across all platforms"):
+                    batch.resolve_watermarks({**self.config, "platform": bad_platform},
+                                             self.fake.inventory())
+        for bad_resource in ("gpu", "cuda", "mps"):
+            with self.subTest(resource=bad_resource):
+                with self.assertRaisesRegex(batch.ConfigError, "CPU-only"):
+                    batch.normalize_cohort_resource(bad_resource)
+                with self.assertRaisesRegex(batch.ConfigError, "CPU-only"):
+                    batch._validate_cohort_spec({"resource": bad_resource})
+                with self.assertRaisesRegex(batch.ConfigError, "CPU-only"):
+                    batch.resolve_watermarks({**self.config, "resource": bad_resource},
+                                             self.fake.inventory())
+
+    def test_empty_matched_cohort_retains_inherited_defaults(self):
+        # An explicitly matched empty cohort entry ("small": {}) must retain inherited
+        # defaults rather than falling through to another cohort ("large": {"high_watermark": 100}).
+        cfg = {
+            **self.config,
+            "cohort": "small",
+            "cohorts": {
+                "large": {"high_watermark": 100},
+                "small": {},
+            },
+        }
+        resolved = batch.resolve_watermarks(cfg, self.fake.inventory())
+        self.assertEqual(resolved["cohort"], "small")
+        self.assertEqual(resolved["high_watermark"], 4)
+        self.assertEqual(resolved["low_watermark"], 2)
+
+    def test_incomplete_structured_status_counters_are_rejected(self):
+        # Structured status entries must provide both unsent and in_progress counters
+        # rather than defaulting missing counters to 0 and bypassing the SQL fallback.
+        for bad_status in (
+            {"apps": {"usnm_ocr": {}}},
+            {"apps": {"usnm_ocr": {"unsent": 0}}},
+            {"apps": {"usnm_ocr": {"in_progress": 0}}},
+            {"tasks_by_app": [{"name": "usnm_ocr"}]},
+            {"tasks_by_app": [{"name": "usnm_ocr", "unsent": 1}]},
+        ):
+            with self.subTest(status=bad_status):
+                with self.assertRaisesRegex(ValueError, "missing BOINC app queue counters"):
+                    batch.parse_server_status(bad_status)
+                with self.assertRaisesRegex(ValueError, "missing BOINC app queue counters"):
+                    self.tick(low_watermark=1, high_watermark=4, max_global_pending=10,
+                              server_status=bad_status)
+
+    def test_refill_calculation_includes_existing_uncollected_backlog(self):
+        # With low=1, high=4, batch_size=3, and 1 foreign reservation in backlog,
+        # refilling 3 jobs reaches 4 total pending workunits and must clear refilling=False.
+        self.config["batch_size"] = 3
+        foreign = record("sn99999999/1900-01-01/ed-1/seq-1", 99)
+        foreign["plan"] = "other-plan"
+        self.fake.rows.append(foreign)
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=10,
+                          server_status=xml)
+        self.assertEqual(event["selected"], 3)
+        self.assertEqual(len(self.fake.jobs), 3)
+        self.assertFalse(event["cohort"]["refilling"])
+        self.assertFalse(self.state["refilling"])
 
     def test_missing_or_aggregate_only_status_conservatively_uses_sql_backlog(self):
         # Regression for comment 4309021102: when explicit watermarks enable cohort_mode without
@@ -1374,9 +1442,11 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
                 **self.state,
             })
 
+            real_transport = batch.Transport
+
             def fake_transport(cfg, state_dir, *, status_url=None, status_file=None):
                 self.fake.lock = lambda: contextlib.nullcontext()
-                self.fake.server_status = lambda: batch.Transport(
+                self.fake.server_status = lambda: real_transport(
                     cfg, state_dir, status_url=status_url, status_file=status_file,
                 ).server_status()
                 return self.fake
