@@ -626,17 +626,22 @@ deploy_stack() (
       # checks the template alone; the validation above checked the rest.
       what_if_args=(--validation-level Template)
     fi
-    local preview stack_id
+    local preview stack_id subscription_id
     preview="${STACK}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    stack_id="/subscriptions/$SUBSCRIPTION/providers/Microsoft.Resources/deploymentStacks/$STACK"
-    local preview_args=(--subscription "$SUBSCRIPTION" --name "$preview" --stack-id "$stack_id"
+    subscription_id=$(az account show --query id -o tsv) || {
+      echo "error: can't read the current subscription id" >&2
+      exit 1
+    }
+    [ -n "$subscription_id" ] || { echo "error: current subscription id is empty" >&2; exit 1; }
+    stack_id="/subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacks/$STACK"
+    local preview_args=(--subscription "$subscription_id" --name "$preview" --stack-id "$stack_id"
       --location "$location" --parameters infra/main.bicepparam
       --action-on-unmanage deleteResources --deny-settings-mode denyDelete
       --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)"
       --retention-interval PT3H --no-color)
     echo "stack $STACK passes preflight; previewing its stack changes, including unmanage and deny settings:"
     az stack-whatif sub create "${preview_args[@]}" ${what_if_args[@]+"${what_if_args[@]}"} || exit 1
-    echo "preview retained for up to three hours: /subscriptions/$SUBSCRIPTION/providers/Microsoft.Resources/deploymentStacksWhatIfResults/$preview"
+    echo "preview retained for up to three hours: /subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacksWhatIfResults/$preview"
     guard_stack_renames "$location" ${what_if_args[@]+"${what_if_args[@]}"} || exit 42
     exit
   fi

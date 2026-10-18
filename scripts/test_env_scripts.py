@@ -1968,6 +1968,8 @@ class CommittedSettings(Stubbed):
         self.assertIn("--deny-settings-mode denyDelete", validate)
         preview = next(c for c in calls if c.startswith("stack-whatif sub create"))
         self.assertLess(calls.index(validate), calls.index(preview))
+        self.assertIn("--subscription sub-1", preview)
+        self.assertIn("/subscriptions/sub-1/providers/Microsoft.Resources/deploymentStacks/usnm-dev", preview)
         self.assertIn("--retention-interval PT3H", preview)
         self.assertIn("--action-on-unmanage deleteResources", preview)
         self.assertIn("--deny-settings-mode denyDelete", preview)
