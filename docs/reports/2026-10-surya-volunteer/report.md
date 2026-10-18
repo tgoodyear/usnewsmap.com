@@ -200,8 +200,11 @@ Memory was promptly restored with `pct set 100 --memory 8192`; cgroup and
 configuration verification confirmed 8192 MiB, swap 1024 MiB and 12 cores.
 **CT100 reverted: yes.** Even after refreshing the client cache, its unchanged
 90% BOINC memory preferences leave only 10.8 GiB usable at a 12 GiB host limit,
-below the unchanged 12 GiB Surya CPU workunit bound. No preference or admission
-bound was silently changed, and no Surya CPU work was submitted.
+below the unchanged 12 GiB Surya CPU workunit bound. Pinned upstream
+`client/cpu_sched.cpp` uses that bound as the initial estimated RSS for a new app
+version with no RSS history; `sched/sched_assign.cpp`'s targeted delivery does
+not bypass this client-side gate. No preference or admission bound was silently
+changed, and no Surya CPU work was submitted.
 
 The fresh all-six-idle check found quality execution
 `usnm-boinc-quality-caj-prod-t8yp9m0` running since 16:43:04 UTC (24-hour timeout).

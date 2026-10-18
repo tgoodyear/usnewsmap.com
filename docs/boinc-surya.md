@@ -283,7 +283,10 @@ Record the original configuration and verify both the cgroup and BOINC client's
 reported memory before dispatch. This authorization does not lower the CPU
 workunit bound or change BOINC memory preferences. CT100 currently allows BOINC
 90% of RAM, so even 12 GiB physical memory provides only 10.8 GiB for admission,
-below the unchanged 12 GiB bound. A running client may also retain its original
+below the unchanged 12 GiB bound. Stock targeted delivery skips ordinary server
+feasibility checks, but does not bypass the client's memory gate: for a new app
+version with no RSS history, `cpu_sched.cpp` uses the workunit memory bound as
+its initial estimated RSS. A running client may also retain its original
 8 GiB host-info cache after a live cgroup increase. Never restart a client with
 active unrelated tasks to force a refresh. If safe CPU eligibility cannot be
 established, restore the original memory and report CPU measurements unavailable
