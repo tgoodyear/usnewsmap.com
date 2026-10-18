@@ -592,6 +592,30 @@ class BuildInputs(unittest.TestCase):
         self.assertFalse(on & (BOINC_IMAGES | {"ocr_worker"}), on)
 
     @unittest.skipUnless(CARGO, "no cargo")
+    def test_a_release_feature_hidden_by_dev_dependencies_runs_worker_checks(self):
+        def tree(edges):
+            return subprocess.run(
+                [CARGO, "tree", "--locked", "--target", "all", "-p", "usnm-ocr-worker",
+                 "-e", edges, "--prefix", "none", "-f", "{p} {f}"],
+                cwd=self.repo, check=True, capture_output=True, text=True,
+            ).stdout
+
+        tests_before = tree("normal,build,dev")
+        release_before = tree("normal,build")
+        manifest = self.repo / "Cargo.toml"
+        original = manifest.read_text()
+        updated = original.replace(
+            'tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }',
+            'tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "test-util"] }',
+        )
+        self.assertNotEqual(original, updated)
+        manifest.write_text(updated)
+        self.assertEqual(tree("normal,build,dev"), tests_before)
+        self.assertNotEqual(tree("normal,build"), release_before)
+        self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.toml")
+        self.assertIn("ocr_worker", self.select())
+
+    @unittest.skipUnless(CARGO, "no cargo")
     def test_a_windows_only_lockfile_bump_runs_the_native_matrix(self):
         def host_tree():
             return subprocess.run(

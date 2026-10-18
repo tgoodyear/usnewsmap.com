@@ -270,13 +270,15 @@ closure_embeds() {
       print join("/", @p), "\n";
     }' {} + | sort -u | sed -e 's/[][\.*^$()+?{|]/\\&/g' -e 's/^/^/' -e 's/$/$/'
 }
-# closure_tree DIR ROOT...: every package (with its features) Cargo builds for
-# the roots' tests, in the checkout at DIR, without the workspace crates' local
-# paths (a git source keeps its revision).
+# closure_tree KIND DIR ROOT...: packages and features across all targets,
+# without local workspace paths (a git source keeps its revision). Release
+# builds exclude dev dependencies so their unified features cannot mask a
+# release-only feature change. Tests and examples include the roots' dev deps.
 closure_tree() {
-  local dir=$1 p args=(); shift
+  local kind=$1 dir=$2 edges=normal,build p args=(); shift 2
+  [ "$kind" = release ] || edges=normal,build,dev
   for p in "$@"; do args+=(-p "$p"); done
-  (cd "$dir" && cargo tree --locked --target all "${args[@]}" -e normal,build,dev --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
+  (cd "$dir" && cargo tree --locked --target all "${args[@]}" -e "$edges" --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
 }
 # root_settings: the workspace manifest at revision $1 without its member list
 # and [workspace.dependencies], whose effect on these crates the package tree
@@ -287,7 +289,7 @@ root_settings() {
     /^members = \[/ { skip = 1 } skip { if (/^\]/) skip = 0; next }
     /^\[/ { deps = ($0 == "[workspace.dependencies]") } !deps'
 }
-# lock_changed ROOT...: whether the packages resolved for the roots differ
+# lock_changed KIND ROOT...: whether the packages resolved for the roots differ
 # between the base and this revision (a crate added outside them changes
 # neither). True if that can't be worked out.
 lock_cache=
@@ -302,14 +304,14 @@ lock_changed() {
   [ "$result" = true ]
 }
 lock_changed_uncached() {
-  local base dir before after
+  local kind=$1 base dir before after; shift
   case "$range" in *...*) base=$(git merge-base "${range%%...*}" "${range##*...}") ;; *) base=${range%%..*} ;; esac || return 0
   [ "$(root_settings "$base")" = "$(root_settings HEAD)" ] || return 0
   dir=$(mktemp -d)
   git worktree add -q --detach "$dir" "$base" || { rm -rf "$dir"; return 0; }
-  before=$(closure_tree "$dir" "$@") || before=
+  before=$(closure_tree "$kind" "$dir" "$@") || before=
   git worktree remove --force "$dir"
-  after=$(closure_tree . "$@") || after=
+  after=$(closure_tree "$kind" . "$@") || after=
   [ -z "$before" ] || [ -z "$after" ] || [ "$before" != "$after" ]
 }
 # fail_open KIND PART: run PART because what it builds can't be worked out. The
@@ -354,7 +356,7 @@ _narrow() {
       return 0
     fi
   fi
-  if matches_built '^Cargo\.(toml|lock)$' && lock_changed "$@"; then
+  if matches_built '^Cargo\.(toml|lock)$' && lock_changed "$kind" "$@"; then
     echo "the packages resolved for $* changed: running $part"; printf -v "$part" '.'
   fi
 }
