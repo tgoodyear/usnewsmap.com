@@ -119,9 +119,12 @@ or a copied-project migration/rollback test. `requireSecureTransport` in the
 BOINC root template and MySQL module deliberately defaults to **false**; `true`
 selects ON only after the remaining gates below. The normal provisioner forwards
 the committed environment setting of the same name, defaulting to false when
-absent. Production explicitly selects true after the #464 live migration,
-every-client TLS acceptance and tested code-only rollback. The module/legacy
-default remains false; production activation uses a separate reviewed PR.
+absent. Production remains explicitly false after the #464 activation attempt:
+CLI Python and both PHP APIs negotiated TLS and plaintext was rejected (3159),
+but the public PHP endpoint returned HTTP 500. The operator immediately restored
+OFF, rolled back copied code and restored the prior image; public pages and RPC
+passed again. A new reviewed activation requires resolving this web-specific
+acceptance failure and repeating all gates. The module/legacy default is false.
 Any future activation needs a reviewed, persisted configuration path and the
 #529 lock/claim protocol, followed by the normal main-triggered release workflow
 and live daemon/scheduler/PHP/bridge and TLS-policy checks. Do not manually toggle
