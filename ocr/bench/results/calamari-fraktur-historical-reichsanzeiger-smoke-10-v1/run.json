@@ -1,0 +1,503 @@
+{
+  "format": "usnm-ocr-bench-calamari-trial-v1",
+  "release": "v1.0.0",
+  "release_content_digest": "c5e38736b6e60610ef0dbe6d8296c3dc58f8a945d6e1cfea5aa47b03fb163800",
+  "subset": "reichsanzeiger-de/smoke-10",
+  "subset_digest": "0aa2c383e04e0d2709ec11faedd8a6d2bdc1850430ca3e8ea6efc68e2239b695",
+  "segmentation_lock_sha256": "81c937fd08627f71002e5c63cd9621adf8bcb7c70573388a64775033a3bafca2",
+  "model": "Calamari-OCR/calamari_models/fraktur_historical",
+  "model_commit": "308697f2fe2f0143d687107e6157688ea4116157",
+  "model_license": "MIT",
+  "model_training_data": "GT4HistOCR",
+  "model_training_data_license": "CC BY 4.0",
+  "engine_license": "GPL-3.0",
+  "model_tree_sha256": "c8d3b6e7819f8300e308016bf4e959fdaefd71836ee3b9d7d2f164ca9412d628",
+  "model_files": [
+    {
+      "path": "0.ckpt/saved_model.pb",
+      "sha256": "32fc993db89e74f852954c33132e12d7e65669f0b05f25e90530236a519d13bb"
+    },
+    {
+      "path": "0.ckpt/variables/variables.data-00000-of-00001",
+      "sha256": "56c770ac0048e8602d48d25b70b228a056ef5f6035566bcb98f9a8436c22ee16"
+    },
+    {
+      "path": "0.ckpt/variables/variables.index",
+      "sha256": "5cee8985d19fb73631930bc044b9bed0d25905385f4bc2348c94d46df0ca1316"
+    },
+    {
+      "path": "0.ckpt.json",
+      "sha256": "9521cf5ec28df22b0ca747bad21410ed84b96688d235abdff768512617672559"
+    },
+    {
+      "path": "1.ckpt/saved_model.pb",
+      "sha256": "1ebdadf62c91094043ce20bf924010733ce19bcb40ad71ba20cf9d36fd3f4511"
+    },
+    {
+      "path": "1.ckpt/variables/variables.data-00000-of-00001",
+      "sha256": "bb12035e3261501d9258abb74b637d30b9120b19c6eff5a1300edf2fae8a589c"
+    },
+    {
+      "path": "1.ckpt/variables/variables.index",
+      "sha256": "9827a8ea5c3c5470202af4f11f9cdfad8aade896705197dd0d3c389cf4cf11e0"
+    },
+    {
+      "path": "1.ckpt.json",
+      "sha256": "9521cf5ec28df22b0ca747bad21410ed84b96688d235abdff768512617672559"
+    },
+    {
+      "path": "2.ckpt/saved_model.pb",
+      "sha256": "35e2bd0bce2f5272fbd85105c3e753d1c6160ff98b48439375be6ca4bacd02ae"
+    },
+    {
+      "path": "2.ckpt/variables/variables.data-00000-of-00001",
+      "sha256": "78670d933892a1ed18a492e80bdcd790f7c8d1c7694aa6040d9ae694bde64345"
+    },
+    {
+      "path": "2.ckpt/variables/variables.index",
+      "sha256": "343fdce5809e8ca32f4b9a2d3ee988f09fc4ee516c1961991180367a0c10cf04"
+    },
+    {
+      "path": "2.ckpt.json",
+      "sha256": "9521cf5ec28df22b0ca747bad21410ed84b96688d235abdff768512617672559"
+    },
+    {
+      "path": "3.ckpt/saved_model.pb",
+      "sha256": "7f4b00e3b5646008cd598f3009c069ee604c93ac26fc5ac987f598fc61ae6aa3"
+    },
+    {
+      "path": "3.ckpt/variables/variables.data-00000-of-00001",
+      "sha256": "4c4a8cdd8899e98b255a00d59f6a0335f1abdbc240bb2ebe5be9a637fa037882"
+    },
+    {
+      "path": "3.ckpt/variables/variables.index",
+      "sha256": "ba226b5ba7088a219c129be6f5557ed6923a2e8b3a7aeabb01a563b6a846d15b"
+    },
+    {
+      "path": "3.ckpt.json",
+      "sha256": "9521cf5ec28df22b0ca747bad21410ed84b96688d235abdff768512617672559"
+    },
+    {
+      "path": "4.ckpt/saved_model.pb",
+      "sha256": "9fdf868066159eefc773f4bac4cee8494a06cd380152daaff0a98cf01b7a71f1"
+    },
+    {
+      "path": "4.ckpt/variables/variables.data-00000-of-00001",
+      "sha256": "a12a4863830e2faa3750becafdde00bb1f53867c8c28562ae9b8f1947912072a"
+    },
+    {
+      "path": "4.ckpt/variables/variables.index",
+      "sha256": "981ee05d40a8612dee143e679fa197e4960b17c5ab3c8daa86d9f58d62bd86c1"
+    },
+    {
+      "path": "4.ckpt.json",
+      "sha256": "9521cf5ec28df22b0ca747bad21410ed84b96688d235abdff768512617672559"
+    }
+  ],
+  "benchmark_source_licenses": {
+    "annotation_status": "human-verified",
+    "attribution": "Reichsanzeiger ground truth (UB-Mannheim/reichsanzeiger-gt) by Thomas Schmidt, Jan Kamlah, Stefan Weil and Renat Shigapov, Mannheim University Library.",
+    "image_license": "Public Domain Mark 1.0, https://creativecommons.org/publicdomain/mark/1.0/",
+    "languages": [
+      "deu"
+    ],
+    "reference_license": "CC BY 4.0 (Zenodo record 10.5281/zenodo.10144094), https://creativecommons.org/licenses/by/4.0/",
+    "scripts": [
+      "Latn"
+    ],
+    "unit": "line-pair"
+  },
+  "preprocessor": "jahtz/nlbin",
+  "preprocessor_version": "1.0.0",
+  "preprocessor_commit": "940773e0810bb166155c0d5cc47a8027a25d9531",
+  "preprocessor_license": "Apache-2.0",
+  "preprocessing_wall_seconds": 1.192,
+  "segmentation_wall_seconds": 0.111,
+  "calamari_version": "2.3.1",
+  "python": "3.11.8",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "inference_device": "CPU (CUDA_VISIBLE_DEVICES empty)",
+  "inference_wall_seconds": 20.466,
+  "end_to_end_wall_seconds": 21.769,
+  "inference_line_count": 22,
+  "sample_count": 10,
+  "missing_outputs": 0,
+  "blank_outputs": 0,
+  "output_sha256": "240e1504b4e7ab74ca63e1b2fd4a4550a4c0fbd3d4dd610e9d658d22860845e1",
+  "segments": [
+    {
+      "id": "pub-reichsanzeiger-lines-028",
+      "image_sha256": "97cc9f34f63104b2b1c6c755f454faf4d8d88c7affd43000d990c623e6be76e4",
+      "image_size": [
+        1042,
+        104
+      ],
+      "cuts_y": [
+        53
+      ],
+      "reference_sha256": "d9de747bcd5887de93c5273bbddf25aa50c29a2f6eae42fa78065e4073e7c071",
+      "image_width": 1042,
+      "image_height": 104,
+      "line_count": 2
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-064",
+      "image_sha256": "e2e2ec96260c4632571ad66838d7c5396efce450bb418eb8f7bd9bea3c386438",
+      "image_size": [
+        1890,
+        144
+      ],
+      "cuts_y": [
+        81
+      ],
+      "reference_sha256": "8dd0bfa32f5d3b8e6fbc3c0d96b203e7f4d4c1c9f8c69a2eb3ca01777b42c538",
+      "image_width": 1890,
+      "image_height": 144,
+      "line_count": 2
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-183",
+      "image_sha256": "9faf2f847d001add4114e07b4f2d4d0ae93f0d8de272facf19467621597d9450",
+      "image_size": [
+        1927,
+        145
+      ],
+      "cuts_y": [
+        68
+      ],
+      "reference_sha256": "e0d6a7739afad56830f9f7b72fe88f0b3115330d9209a68543ef4583b735bcd5",
+      "image_width": 1927,
+      "image_height": 145,
+      "line_count": 2
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-450",
+      "image_sha256": "932d6eaf94bdab827113047f75b1b788a27e3fc6eebccd9fae5b1abe29ef0b1f",
+      "image_size": [
+        1402,
+        113
+      ],
+      "cuts_y": [
+        59
+      ],
+      "reference_sha256": "994e392568f983e4374546db11ec3c7287eb8a786bd48b58264bcca0dcf87a28",
+      "image_width": 1402,
+      "image_height": 113,
+      "line_count": 2
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-482",
+      "image_sha256": "92202770f426e3c55aed773597a3240007b9f4f5960af73a09d0554e532e0ae2",
+      "image_size": [
+        1900,
+        159
+      ],
+      "cuts_y": [
+        79
+      ],
+      "reference_sha256": "21ce949bd7875b87940fd39b57e0fd40f79fd22d2d8b6caced9ca67e5f5b57c7",
+      "image_width": 1900,
+      "image_height": 159,
+      "line_count": 2
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-487",
+      "image_sha256": "91ee9ad9e15568b1eff4da2a32958ebb190741472e54d0f4c096ab564c8b49ac",
+      "image_size": [
+        1046,
+        117
+      ],
+      "cuts_y": [
+        29,
+        60,
+        89
+      ],
+      "reference_sha256": "28758d3e60f93561cc82fc7dd734a87aedaa1c3d2022cfb9c30c0d3a8e9001af",
+      "image_width": 1046,
+      "image_height": 117,
+      "line_count": 4
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-499",
+      "image_sha256": "ee78a40800839c860f81e67ff638c8b9d171f39e15a2429b467310fe28b5107d",
+      "image_size": [
+        1376,
+        107
+      ],
+      "cuts_y": [
+        50
+      ],
+      "reference_sha256": "071b5ac1fbbbebf05e6bfb60afbe9e383be0d5c7c57f2c36f49c445bbe3b9341",
+      "image_width": 1376,
+      "image_height": 107,
+      "line_count": 2
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-527",
+      "image_sha256": "0aa1e38ed0f2caa08d17d0111011965c52af8e23fea09757bdcb9dcb645d4fc2",
+      "image_size": [
+        744,
+        101
+      ],
+      "cuts_y": [
+        52
+      ],
+      "reference_sha256": "13f124dbff461778b818802f413f0023f8aed3e36db35d1eb9169dc7b5d93231",
+      "image_width": 744,
+      "image_height": 101,
+      "line_count": 2
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-602",
+      "image_sha256": "9d44215a5aefcb88d4ce182ffd0e9214f10ff601e6c125ddf60a094189b43b01",
+      "image_size": [
+        1931,
+        135
+      ],
+      "cuts_y": [
+        61
+      ],
+      "reference_sha256": "f6779a64b55761520166cd23a6f715b453a960c700826535c105a96f7bbada4d",
+      "image_width": 1931,
+      "image_height": 135,
+      "line_count": 2
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-613",
+      "image_sha256": "bc9d6051be0c66c079e0a581ceec8749f2c2b6e78916f4554281e0c9035cd50f",
+      "image_size": [
+        1070,
+        92
+      ],
+      "cuts_y": [
+        48
+      ],
+      "reference_sha256": "20d1e9cb095409d96fe0942736b071aa376599ffb446e2086f4faedc2b785ec4",
+      "image_width": 1070,
+      "image_height": 92,
+      "line_count": 2
+    }
+  ],
+  "line_inputs": [
+    {
+      "sample_id": "pub-reichsanzeiger-lines-028",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 53,
+      "image_sha256": "1c772f5c385dac4d99abeae5265e3db37b41d881368a58e719a3520ec3ee756c",
+      "image": "pub-reichsanzeiger-lines-028-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-028-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "bf054328c4c2ab2d4d0c83d4c5eb6acf08674b71cb41c7adac1a5b29c587f7ad"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-028",
+      "line_index": 1,
+      "y_start": 53,
+      "y_end_exclusive": 104,
+      "image_sha256": "d04e7f2895d421e9f12e313b7b8b535cc820d92964fa0f7c76c7ceec0145fab4",
+      "image": "pub-reichsanzeiger-lines-028-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-028-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "e7b8fe92f456b9b94a57db795c16f50e5d61c643e64e074b5e8d448ea30025d9"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-064",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 81,
+      "image_sha256": "0fc7d8a907782706c37602e7f1212f988c451fa3610eca1c1f99b19e0441b732",
+      "image": "pub-reichsanzeiger-lines-064-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-064-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "8d96bf4659e766930836ae39be8ea1ab95e9f32709109205ef6ce220df7d4332"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-064",
+      "line_index": 1,
+      "y_start": 81,
+      "y_end_exclusive": 144,
+      "image_sha256": "38934b310ad0cc622dfa4017d7ce9c827671cafa5dde095d951e7dfeec8fa678",
+      "image": "pub-reichsanzeiger-lines-064-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-064-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "8fde2c06f4c50d979d472f3db9b2c39b0a62a4aa4f1b3d8b08564fa30155b2a8"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-183",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 68,
+      "image_sha256": "eb56ed6fa568cead2adb3f311ad2c85bb50313b5bc3a68c29342b73a5c763dea",
+      "image": "pub-reichsanzeiger-lines-183-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-183-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "42ef33efe8da7807b4ae05c861aab6c3c1bd6ffb43bee7e320c7e1f37015f566"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-183",
+      "line_index": 1,
+      "y_start": 68,
+      "y_end_exclusive": 145,
+      "image_sha256": "fcf9b55905c40694ee7e02e1684580ed39852e5ecabab5b43980fbc840b2f640",
+      "image": "pub-reichsanzeiger-lines-183-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-183-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "e86b4cf83dc10bd4586ea9b87d17cc7f6f6745da7d3e497b5fee40457edc6086"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-450",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 59,
+      "image_sha256": "1619a659dcad946f293cab90360ff649c13297c7f8c48a49fee5557fe5c47617",
+      "image": "pub-reichsanzeiger-lines-450-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-450-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "96fbbeee0b8b1b0c4233822605380e88d09ee5127555918da3dd7f54d9a2eff2"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-450",
+      "line_index": 1,
+      "y_start": 59,
+      "y_end_exclusive": 113,
+      "image_sha256": "1780f8af6242ab309997fc53313b7f93f0ef7dd6d124906f963f8e71c025183e",
+      "image": "pub-reichsanzeiger-lines-450-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-450-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "ad3f7ffc6e2dee30fc083b546db4051979948870a0cce16a6521ae23ead12884"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-482",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 79,
+      "image_sha256": "ee6d48e1aa9126ef6ea9167e6b409be79972191935e4377141becd38d5b5f053",
+      "image": "pub-reichsanzeiger-lines-482-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-482-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "fe6ff1f3857a21807c98a405d230fc27931b0964e5f541a0214ce35da09d782c"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-482",
+      "line_index": 1,
+      "y_start": 79,
+      "y_end_exclusive": 159,
+      "image_sha256": "9502561e7328877dfb8b05ddb239f09ef6fcc4ed63f0fc473b1a2d667436739f",
+      "image": "pub-reichsanzeiger-lines-482-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-482-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "044050a05ea0bcef8e548f10e504d4ebe6d3e9c6e51ecfd545cb0221b2c94c39"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-487",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 29,
+      "image_sha256": "09330b51b44907d6953da74bb2304ea80eb2a6ece9ab87c3c7368257a9288761",
+      "image": "pub-reichsanzeiger-lines-487-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-487-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "77fdc090e6b92ac8a1261bbccd91cc77cbc41ef87e7ef9d7131449a8005e568f"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-487",
+      "line_index": 1,
+      "y_start": 29,
+      "y_end_exclusive": 60,
+      "image_sha256": "a9dda1252e391ec5747934b0e6fd77d0f5d125eb0031b1dbeee53ca2ad3ff744",
+      "image": "pub-reichsanzeiger-lines-487-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-487-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "4f410d13340ea09ece2b2ff46ac2afb568a5e9638726614bd6a9b84573e48b03"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-487",
+      "line_index": 2,
+      "y_start": 60,
+      "y_end_exclusive": 89,
+      "image_sha256": "7fbade47840ed37642d14745d75d0b042fe574888785099c35e02b3adfae5b45",
+      "image": "pub-reichsanzeiger-lines-487-line-02.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-487-line-02.ocropus.bin.png",
+      "preprocessed_image_sha256": "6e5221d62cbf0b9facfd3d96ceca6b8452d465401812aa7cde7da000f3f121e2"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-487",
+      "line_index": 3,
+      "y_start": 89,
+      "y_end_exclusive": 117,
+      "image_sha256": "02cf43f4c47a79c3692c6bae01b45993bf91e1cc319d00606a66cc5784ea0602",
+      "image": "pub-reichsanzeiger-lines-487-line-03.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-487-line-03.ocropus.bin.png",
+      "preprocessed_image_sha256": "abff10840253c0d272d8c02b68562c58d80d5e4a5697f680be0dd9c4fc3a2951"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-499",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 50,
+      "image_sha256": "3955b9c08e7b877e22de834e87aea67f11bd61a6cc608dc11271f70e0472a3af",
+      "image": "pub-reichsanzeiger-lines-499-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-499-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "6e3c52a1e3ac962c605e7b2b968af96940db0849d23687a7760be9b14e0358a8"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-499",
+      "line_index": 1,
+      "y_start": 50,
+      "y_end_exclusive": 107,
+      "image_sha256": "c9b73907f7126078320b0fc82dfa119043e52fae429ba634a75d10f0e95465a2",
+      "image": "pub-reichsanzeiger-lines-499-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-499-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "2d621eea30e50ed58565b75eea184ead14116fa13a0e4c4c9316e56f2768818a"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-527",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 52,
+      "image_sha256": "73faf4acd290d19a75b482b32a8edd2d5fb089e5782d318bdb3b5c5f6d0a3191",
+      "image": "pub-reichsanzeiger-lines-527-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-527-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "4e5030ee1ae40b639f513d4bd43143f475bf4cac13369125cf80ca5adf3684ef"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-527",
+      "line_index": 1,
+      "y_start": 52,
+      "y_end_exclusive": 101,
+      "image_sha256": "5b2d7bf07c5294fe8db675f797377836257efe13b492493f32235b6cdbf64e35",
+      "image": "pub-reichsanzeiger-lines-527-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-527-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "6ce3919d29d078eb6a9fe590cccbafcf9b3edd7168ca0946dac0931f95310f5a"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-602",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 61,
+      "image_sha256": "e27a51b8e57ef3b2cf559ad633fd30a2ae1bca6b55d9c19e72b277711e9f6fa1",
+      "image": "pub-reichsanzeiger-lines-602-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-602-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "99b63a84b1ee8145b34cf483aa6c45f4c2b63b33ea32650ea84ef650b4119c67"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-602",
+      "line_index": 1,
+      "y_start": 61,
+      "y_end_exclusive": 135,
+      "image_sha256": "f3a93faf2d1cf8b97c8cdf55f46a343799b347da3df9216829ad70fff480dba7",
+      "image": "pub-reichsanzeiger-lines-602-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-602-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "67268597cc63567d6be60a126ca673389c29a52258f0a19d270776d4d634c82f"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-613",
+      "line_index": 0,
+      "y_start": 0,
+      "y_end_exclusive": 48,
+      "image_sha256": "b6d91fef0a4565fd7842dfd06bf391371c24e354de0f76461859b4de7d272e1f",
+      "image": "pub-reichsanzeiger-lines-613-line-00.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-613-line-00.ocropus.bin.png",
+      "preprocessed_image_sha256": "01673dec85a4e973bcbd65ea21c761eae1b4a0e6829d2b882df04ad9e281a839"
+    },
+    {
+      "sample_id": "pub-reichsanzeiger-lines-613",
+      "line_index": 1,
+      "y_start": 48,
+      "y_end_exclusive": 92,
+      "image_sha256": "50a836e2e9de9859a755b66aa93016067eb5393381ab5f5417028700fe3b1c19",
+      "image": "pub-reichsanzeiger-lines-613-line-01.png",
+      "preprocessed_image": "pub-reichsanzeiger-lines-613-line-01.ocropus.bin.png",
+      "preprocessed_image_sha256": "bb68443ff55f0ac4e06f09637ec2a7fe476cab61710ec0824ea666799ae89b60"
+    }
+  ]
+}
