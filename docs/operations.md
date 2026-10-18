@@ -756,9 +756,9 @@ Historic federal publications are generally public domain, but age alone does no
 3. **Import, without publishing.** The ingest image includes Poppler and English Tesseract. From the environment with `USNM_RAW_URL` configured, run one series at a time; this explicit command writes curated attempts but does not build or publish an index:
 
    ```sh
-   scripts/start-job.sh --env prod --job INGEST_JOB -- congress-manual \
+   scripts/start-job.sh --env prod --job INGEST_JOB -- --work-dir /work congress-manual \
      --series annals --max-runtime-secs 79200
-   scripts/start-job.sh --env prod --job INGEST_JOB -- congress-manual \
+   scripts/start-job.sh --env prod --job INGEST_JOB -- --work-dir /work congress-manual \
      --series register --max-runtime-secs 79200
    ```
 

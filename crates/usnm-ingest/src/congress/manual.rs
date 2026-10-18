@@ -13,8 +13,10 @@ use std::time::Duration;
 use anyhow::{bail, ensure, Context};
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use usnm_store::ObjectStore;
 
 use super::curated::{self, CuratedPage};
@@ -315,7 +317,6 @@ impl PdfPages for TesseractPdf {
             &[
                 std::ffi::OsStr::new("-enc"),
                 std::ffi::OsStr::new("UTF-8"),
-                std::ffi::OsStr::new("-layout"),
                 pdf.as_os_str(),
                 std::ffi::OsStr::new("-"),
             ],
@@ -386,6 +387,49 @@ fn ordinal(n: u16) -> String {
         _ => "th",
     };
     format!("{n}{suffix}")
+}
+
+async fn stage_pdf(
+    raw: &dyn ObjectStore,
+    path: &str,
+    destination: &Path,
+    expected_bytes: u64,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
+    let mut chunks = raw
+        .get_stream(path)
+        .await?
+        .with_context(|| format!("missing manually downloaded PDF `{path}`"))?;
+    let mut file = tokio::fs::File::create(destination)
+        .await
+        .with_context(|| format!("creating {}", destination.display()))?;
+    let mut digest = Sha256::new();
+    let mut bytes = 0_u64;
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk?;
+        bytes = bytes
+            .checked_add(u64::try_from(chunk.len())?)
+            .context("PDF byte count overflow")?;
+        ensure!(
+            bytes <= expected_bytes,
+            "`{path}` is larger than its manifest byte count ({expected_bytes})"
+        );
+        digest.update(&chunk);
+        file.write_all(&chunk)
+            .await
+            .with_context(|| format!("writing {}", destination.display()))?;
+    }
+    file.flush().await?;
+    drop(file);
+    ensure!(
+        bytes == expected_bytes,
+        "`{path}` has {bytes} bytes, manifest says {expected_bytes}"
+    );
+    ensure!(
+        hex(&digest.finalize()) == expected_sha256.to_ascii_lowercase(),
+        "`{path}` does not match its manifest SHA-256"
+    );
+    Ok(())
 }
 
 fn page_row(
@@ -500,26 +544,20 @@ pub async fn run(
             }
         }
         let pdf_path = format!("{RAW_PREFIX}/{series}/{}.pdf", volume.unit);
-        let bytes = raw
-            .get(&pdf_path)
-            .await?
-            .with_context(|| format!("missing manually downloaded PDF `{pdf_path}`"))?;
-        ensure!(
-            bytes.len() as u64 == volume.pdf_bytes,
-            "`{pdf_path}` has {} bytes, manifest says {}",
-            bytes.len(),
-            volume.pdf_bytes
-        );
-        ensure!(
-            hex(&Sha256::digest(&bytes)) == volume.pdf_sha256.to_ascii_lowercase(),
-            "`{pdf_path}` does not match its manifest SHA-256"
-        );
         tokio::fs::create_dir_all(&opts.work_dir).await?;
         let local_pdf = opts.work_dir.join(format!("{}.pdf", volume.unit));
-        tokio::fs::write(&local_pdf, &bytes)
-            .await
-            .with_context(|| local_pdf.display().to_string())?;
-        drop(bytes);
+        if let Err(error) = stage_pdf(
+            raw,
+            &pdf_path,
+            &local_pdf,
+            volume.pdf_bytes,
+            &volume.pdf_sha256,
+        )
+        .await
+        {
+            let _ = tokio::fs::remove_file(&local_pdf).await;
+            return Err(error).with_context(|| format!("staging `{pdf_path}`"));
+        }
         let page_scratch = opts.work_dir.join(&volume.unit);
         let got = pdf.read(&local_pdf, &page_scratch, volume.pages).await;
         let _ = tokio::fs::remove_file(&local_pdf).await;
@@ -564,6 +602,11 @@ pub async fn run(
             .iter()
             .filter(|r| r.ocr_source == "usnm-tesseract")
             .count() as u64;
+        ensure!(
+            !lost.load(Ordering::SeqCst),
+            "lost the `{LOCK}` lock; not writing `{}`",
+            volume.unit
+        );
         let counts = curated::write_attempt_from(
             curated_store,
             series,
@@ -637,6 +680,25 @@ mod tests {
             Ok(vec![PageText {
                 text: "MONDAY, November 2, 1789\nMr. CLAY of Alabama introduced the bill".into(),
                 ocr_engine: Some("tesseract/5.3.0 lang=eng psm=3 dpi=300".into()),
+            }])
+        }
+    }
+
+    struct LostLockPdf(Arc<AtomicBool>);
+
+    #[async_trait]
+    impl PdfPages for LostLockPdf {
+        async fn read(
+            &self,
+            _pdf: &Path,
+            _scratch: &Path,
+            expected_pages: u32,
+        ) -> anyhow::Result<Vec<PageText>> {
+            self.0.store(true, Ordering::SeqCst);
+            ensure!(expected_pages == 1, "unexpected fixture page count");
+            Ok(vec![PageText {
+                text: "MONDAY, November 2, 1789\nMr. CLAY of Alabama introduced the bill".into(),
+                ocr_engine: None,
             }])
         }
     }
@@ -729,6 +791,27 @@ mod tests {
         .unwrap();
         assert_eq!(second.already, 1);
         assert_eq!(second.written.len(), 0);
+        let lost = Arc::new(AtomicBool::new(false));
+        let refetch = Options {
+            refetch: true,
+            ..opts.clone()
+        };
+        assert!(run(
+            &raw,
+            &curated_store,
+            &LostLockPdf(lost.clone()),
+            &refetch,
+            lost.as_ref(),
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            curated::next_attempt(&curated_store, "annals", &volume.unit)
+                .await
+                .unwrap(),
+            2,
+            "a process that lost its lock must not start a curated attempt"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
