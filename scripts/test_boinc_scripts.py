@@ -121,6 +121,8 @@ log = pathlib.Path(os.environ["STUB_LOG"])
 with log.open("a") as out:
     out.write(json.dumps(args) + "\n")
 if args[:2] == ["acr", "build"]:
+    if os.environ.get("STUB_STDERR"):
+        print(os.environ["STUB_STDERR"], file=sys.stderr)
     print(os.environ["STUB_RUN_ID"])
     sys.exit(int(os.environ.get("STUB_SUBMIT_EXIT", "0")))
 if args[:3] == ["acr", "task", "show-run"]:
@@ -213,6 +215,25 @@ echo verified
                                                 STUB_RUNS=json.dumps([{"status": "Failed"}]))
                     self.assertNotEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(len(calls), 1)
+
+    def test_run_id_acknowledged_only_on_stderr_is_polled(self):
+        # Azure CLI 2.90: --no-wait --query runId prints nothing; stderr names the queued run.
+        result, calls = self.invoke(STUB_RUN_ID="", STUB_STDERR="WARNING: Queued a build with ID: ch80")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Queued a build with ID: ch80", result.stderr)
+        self.assertEqual(calls[1][calls[1].index("--run-id") + 1], "ch80")
+        result, calls = self.invoke(STUB_RUN_ID="ch80", STUB_STDERR="WARNING: Queued a build with ID: ch80")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_disagreeing_or_malformed_acknowledgements_are_rejected(self):
+        for run_id, stderr in (("ch2c", "WARNING: Queued a build with ID: ch80"),
+                               ("", "WARNING: Queued a build with ID: ../ch80"),
+                               ("", "WARNING: Queued a build with ID: ch80 and ch81"),
+                               ("", "Queued a build with ID: ch80\nQueued a build with ID: ch81")):
+            with self.subTest(run_id=run_id, stderr=stderr):
+                result, calls = self.invoke(STUB_RUN_ID=run_id, STUB_STDERR=stderr)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(calls), 1)
 
     def test_polling_timeout_never_reads_an_old_tag(self):
         for run in ({"status": "Running"}, "error", "invalid json", {}, {"status": None}):
