@@ -1376,23 +1376,28 @@ async fn a_searcher_restart_during_a_publish_warms_the_new_version_after_it() {
 async fn a_publish_during_a_restart_warm_up_waits_its_turn() {
     // Never dropped: the publish runs after the restart's warm-up, and a
     // restart seen meanwhile runs after the publish.
+    async fn stage(signal: &tokio::sync::Notify) {
+        tokio::time::timeout(Duration::from_secs(10), signal.notified())
+            .await
+            .expect("warm-up stage did not arrive");
+    }
     let backend = Counting::new(Duration::ZERO, false);
     let (dir, state, run) = cold_state("publish-at-restart", backend.clone()).await;
     // Consume the notification from loading fixture-v1.
-    backend.prepared.notified().await;
+    stage(&backend.prepared).await;
     publish_v2(&dir);
 
     let before = backend.calls();
     backend.block_at(before);
     let first = spawn_searcher_warm_up(state.clone()).expect("a restart's warm-up");
-    backend.entered.notified().await;
+    stage(&backend.entered).await;
     let publish = tokio::spawn({
         let state = state.clone();
         async move { reload_if_changed(&state).await }
     });
     // prepare returns without yielding; on this single-thread runtime the
     // publish therefore reaches the warm-up queue before this task resumes.
-    backend.prepared.notified().await;
+    stage(&backend.prepared).await;
     assert_eq!(
         backend.calls(),
         before + 1,
@@ -1404,7 +1409,7 @@ async fn a_publish_during_a_restart_warm_up_waits_its_turn() {
     backend.block_at(before + run);
     backend.release.notify_one();
     first.await.unwrap();
-    backend.entered.notified().await;
+    stage(&backend.entered).await;
     assert_eq!(
         backend.calls() - before,
         run + 1,
@@ -1415,7 +1420,7 @@ async fn a_publish_during_a_restart_warm_up_waits_its_turn() {
     backend.block_at(before + 2 * run);
     backend.release.notify_one();
     assert_eq!(publish.await.unwrap(), Ok(true));
-    backend.entered.notified().await;
+    stage(&backend.entered).await;
     assert_eq!(
         backend.calls() - before,
         2 * run + 1,

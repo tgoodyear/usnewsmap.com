@@ -38,6 +38,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
+rustix = { workspace = true, features = ["event"] }
 tokio = { workspace = true, features = ["test-util"] }
 async-trait.workspace = true
 axum.workspace = true
