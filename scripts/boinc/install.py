@@ -52,7 +52,6 @@ JOB_TOML = {
     ("usnm_surya", "docker_mt"): "ocr/boinc/surya/job-cpu.toml",
     ("usnm_surya", "docker_nvidia_cuda"): "ocr/boinc/surya/job-gpu.toml",
     ("usnm_surya", "docker_intel_vulkan"): "ocr/boinc/surya/job-intel.toml",
-    ("usnm_surya", "intel_vulkan_8b"): "ocr/boinc/surya/job-intel.toml",
     ("usnm_quality", "docker"): "ocr/boinc/job.toml",
     ("usnm_qwen", "docker_mt_2b"): "ocr/boinc/qwen/job-cpu.toml",
     ("usnm_qwen", "docker_nvidia_cuda_8b"): "ocr/boinc/qwen/job-gpu.toml",

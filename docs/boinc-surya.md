@@ -21,8 +21,9 @@ Every result has five files: `text-tiled.txt`, `text-whole.txt`, `text-capped.tx
 ## The image
 
 `ocr/boinc/surya/Containerfile` builds two variants from the same pinned `llama.cpp` revision (`b11610`, commit `091b6a7fc561b78da90a0ed2d524ec995458c657`):
+
 - `LLAMA_VARIANT=cuda` (default): on `ghcr.io/ggml-org/llama.cpp:server-cuda`, which loads its CUDA backend when the container can see an NVIDIA GPU and its CPU backends otherwise (`docker_mt` and `docker_nvidia_cuda`).
-- `LLAMA_VARIANT=vulkan` (#842): on `ghcr.io/ggml-org/llama.cpp:server-vulkan`, which runs the OCR model on Intel Xe / Iris GPUs via Vulkan (`docker_intel_vulkan` / `intel_vulkan_8b`).
+- `LLAMA_VARIANT=vulkan` (#842): on `ghcr.io/ggml-org/llama.cpp:server-vulkan`, which runs the OCR model on Intel Xe / Iris GPUs via Vulkan (`docker_intel_vulkan`).
 
 On top of the base image are surya-ocr 0.22.1 in a Python virtual environment, with the CPU build of torch (`TORCH_DEVICE=cpu`; torch only runs Surya's layout fallback, while the OCR model runs in llama-server), and `usnm-boinc`, which runs the unit.
 
@@ -32,11 +33,11 @@ The image is several GB (the weights alone are 1.6 GB), which a volunteer downlo
 
 ## App versions and plan classes
 
-| Version | Plan class            | Sent to                                                                                                                                        | Container                                                                                                 |
-| ------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| 1.0     | `docker_mt`           | hosts with Docker or Podman and at least 4 usable CPUs; 4 to 8 threads                                                                         | `--cpus` from the thread count, 12 GiB, no swap (`ocr/boinc/surya/job-cpu.toml`)                          |
-| 1.1     | `docker_nvidia_cuda`  | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory | `--gpus all`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-gpu.toml`)                                     |
-| 1.x     | `docker_intel_vulkan` | hosts with Docker or Podman whose client reports an Intel OpenCL GPU with at least 4,096 MB of memory (#842)                                   | `use_gpu = false`, `--device=/dev/dri/renderD128`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-intel.toml`) |
+| Version | Plan class            | Sent to                                                                                                                                                                      | Container                                                                                         |
+| ------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| 1.0     | `docker_mt`           | hosts with Docker or Podman and at least 4 usable CPUs; 4 to 8 threads                                                                                                       | `--cpus` from the thread count, 12 GiB, no swap (`ocr/boinc/surya/job-cpu.toml`)                  |
+| 1.1     | `docker_nvidia_cuda`  | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory                               | `--gpus all`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-gpu.toml`)                             |
+| 1.x     | `docker_intel_vulkan` | hosts with Docker or Podman whose client reports an Intel OpenCL GPU with at least 4,096 MB of memory (#842; closed by default with `min_wu_id=2, max_wu_id=1` until staged) | `use_gpu = false`, `--device=/dev/dri`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-intel.toml`) |
 
 Both classes need client 8.2.13 or later and are in `contrib-compute/boinc/plan_class_spec.xml`. The scheduler sends a host the version it expects to be fastest, so a host with a qualifying GPU gets the GPU version.
 

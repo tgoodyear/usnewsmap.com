@@ -36,6 +36,8 @@ class DaemonConfig(unittest.TestCase):
         self.assertIsNone(surya_plan.find("cuda"))
         self.assertEqual(surya_plan.findtext("min_gpu_ram_mb"), "4096")
         self.assertEqual(surya_plan.findtext("gpu_ram_used_mb"), "4096")
+        self.assertEqual(surya_plan.findtext("min_wu_id"), "2")
+        self.assertEqual(surya_plan.findtext("max_wu_id"), "1")
 
     def test_feeder_interleaves_all_apps_with_expanded_shmem(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
@@ -114,7 +116,7 @@ class DaemonConfig(unittest.TestCase):
         plans = {p.findtext("name"): p for p in ET.parse(root / "plan_class_spec.xml").findall("plan_class")}
         for name in ("mt", "apple_gpu_8b"):
             self.assertEqual(plans[name].findtext("min_core_client_version"), "80211")
-        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
+        for name in ("docker_intel_vulkan", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
             with self.subTest(plan=name):
                 self.assertEqual(plans[name].findtext("min_wu_id"), "2")
                 self.assertEqual(plans[name].findtext("max_wu_id"), "1")

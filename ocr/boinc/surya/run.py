@@ -32,23 +32,44 @@ import time
 
 TILE, OVERLAP = 1280, 256
 CAPPED_LONG_SIDE = 2048
+CUDA_DEVICE_LINE = re.compile(r"^\s*(CUDA[0-9]+):\s*(.+?)\s*$")
 VULKAN_DEVICE_LINE = re.compile(r"^\s*(Vulkan[0-9]+):\s*(.+?)\s*$")
 SOFTWARE_VULKAN = ("llvmpipe", "lavapipe", "swiftshader", "software")
+
+
+def _run_list_devices(llama_binary: str | None = None) -> str:
+    binary = llama_binary or os.environ.get("LLAMA_CPP_BINARY", "/app/llama-server")
+    try:
+        res = subprocess.run([binary, "--list-devices"], capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if res.returncode != 0:
+        return ""
+    return res.stdout + "\n" + res.stderr
+
+
+def list_cuda_devices(llama_binary: str | None = None) -> list[tuple[str, str]]:
+    """Return `(CUDAN, description)` pairs from `llama-server --list-devices`."""
+    out = _run_list_devices(llama_binary)
+    if not out:
+        return []
+    devices: list[tuple[str, str]] = []
+    for line in out.splitlines():
+        m = CUDA_DEVICE_LINE.match(line)
+        if m:
+            devices.append((m.group(1), m.group(2)))
+    return devices
 
 
 def list_vulkan_devices(llama_binary: str | None = None, dri_root: str = "/dev/dri") -> list[tuple[str, str]]:
     """Return hardware `(VulkanN, description)` pairs from `llama-server --list-devices` when `/dev/dri/renderD*` exists."""
     if not glob.glob(os.path.join(dri_root, "renderD*")):
         return []
-    binary = llama_binary or os.environ.get("LLAMA_CPP_BINARY", "/app/llama-server")
-    try:
-        res = subprocess.run([binary, "--list-devices"], capture_output=True, text=True, timeout=15, check=False)
-    except OSError, subprocess.SubprocessError:
-        return []
-    if res.returncode != 0:
+    out = _run_list_devices(llama_binary)
+    if not out:
         return []
     devices: list[tuple[str, str]] = []
-    for line in (res.stdout + "\n" + res.stderr).splitlines():
+    for line in out.splitlines():
         m = VULKAN_DEVICE_LINE.match(line)
         if not m:
             continue
@@ -76,6 +97,8 @@ def detect_device(
         if list_vulkan_devices(llama_binary=llama_binary, dri_root=dri_root):
             return "vulkan"
         return "cpu"
+    if list_cuda_devices(llama_binary=llama_binary):
+        return "cuda"
     try:
         import torch
 
@@ -114,9 +137,11 @@ def inside(core, cx: float, cy: float) -> bool:
 
 def probe() -> int:
     backend = os.environ.get("USNM_SURYA_BACKEND", "cuda")
+    cuda_devs = list_cuda_devices()
     vulkan_devs = list_vulkan_devices()
     info = {
         "backend": backend,
+        "cuda_devices": [f"{name}: {desc}" for name, desc in cuda_devs],
         "device": detect_device(backend),
         "python": sys.version.split()[0],
         "vulkan_devices": [f"{name}: {desc}" for name, desc in vulkan_devs],

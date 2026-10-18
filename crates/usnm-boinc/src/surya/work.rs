@@ -406,6 +406,43 @@ pub(crate) fn parse_vulkan_devices(out: &str) -> Vec<VulkanDevice> {
     devs
 }
 
+/// Selects the BOINC-assigned Vulkan device. BOINC numbers a vendor's GPUs among
+/// themselves (`gpu_device_num` for `gpu_type intel` counts Intel GPUs only), so
+/// `wanted` is an ordinal among hardware devices matching `vendor`, not a global
+/// `VulkanN` index. Never falls back to another adapter when `wanted` is out of
+/// range or no adapter matches `vendor`.
+pub(crate) fn select_vulkan_device(
+    out: &str,
+    vendor: Option<&str>,
+    wanted: u32,
+) -> Option<VulkanDevice> {
+    let want_vendor = vendor.map(str::to_ascii_lowercase);
+    parse_vulkan_devices(out)
+        .into_iter()
+        .filter(|d| {
+            want_vendor
+                .as_deref()
+                .is_none_or(|v| d.name.to_ascii_lowercase().contains(v))
+        })
+        .nth(usize::try_from(wanted).ok()?)
+}
+
+fn vulkan_vendor(host: &Host, is_vulkan_backend: bool) -> Option<&'static str> {
+    let plan = host.plan_class.as_deref().unwrap_or("");
+    let gpu_type = host.gpu_type.as_deref().unwrap_or("");
+    if plan.contains("intel") || gpu_type == "intel" {
+        Some("intel")
+    } else if plan.contains("nvidia") || gpu_type == "nvidia" {
+        Some("nvidia")
+    } else if plan.contains("amd") || plan.contains("ati") || matches!(gpu_type, "amd" | "ati") {
+        Some("amd")
+    } else if is_vulkan_backend {
+        Some("intel")
+    } else {
+        None
+    }
+}
+
 fn vulkan_info(host: &mut Host, diag: &mut Diag) -> Option<u32> {
     let mut render_nodes: Vec<String> = std::fs::read_dir("/dev/dri")
         .map(|d| {
@@ -440,29 +477,37 @@ fn vulkan_info(host: &mut Host, diag: &mut Diag) -> Option<u32> {
     if !has_render_node {
         return None;
     }
+    let wanted = match host.gpu_device_num {
+        Some(n) => u32::try_from(n).ok()?,
+        None => 0,
+    };
+    let vendor = vulkan_vendor(host, is_vulkan_backend);
     let llama_bin =
         std::env::var("LLAMA_CPP_BINARY").unwrap_or_else(|_| "/app/llama-server".into());
     match quick(&llama_bin, &["--list-devices"], Duration::from_secs(30)) {
         Ok((true, out)) => {
             diag.section("llama-server --list-devices", &out, 2048);
-            let devs = parse_vulkan_devices(&out);
-            let wanted = host.gpu_device_num.and_then(|n| u32::try_from(n).ok());
-            let chosen = wanted
-                .and_then(|idx| devs.iter().find(|d| d.index == idx))
-                .or_else(|| devs.first());
-            if let Some(dev) = chosen {
+            if let Some(dev) = select_vulkan_device(&out, vendor, wanted) {
                 host.gpu = Some(dev.name.clone());
                 host.gpu_mem_total_mib = dev.total_mib;
                 diag.section(
                     "gpu used",
                     &format!(
-                        "Vulkan{} ({}) from llama-server --list-devices (BOINC's gpu_device_num {:?})",
-                        dev.index, dev.name, host.gpu_device_num
+                        "Vulkan{} ({}) from llama-server --list-devices (vendor {:?}, BOINC's gpu_device_num {:?})",
+                        dev.index, dev.name, vendor, host.gpu_device_num
                     ),
                     256,
                 );
                 return Some(dev.index);
             }
+            diag.section(
+                "gpu used",
+                &format!(
+                    "no matching hardware Vulkan device for vendor {:?} and gpu_device_num {:?}",
+                    vendor, host.gpu_device_num
+                ),
+                256,
+            );
         }
         Ok((false, out)) => diag.section("llama-server --list-devices (failed)", &out, 2048),
         Err(e) => diag.section("llama-server --list-devices (did not run)", &e, 1024),
@@ -1084,17 +1129,38 @@ pub(crate) mod tests {
 
     #[test]
     fn vulkan_list_devices_parses_and_filters_software() {
-        let out = "ggml_vulkan: Found 2 Vulkan devices:\nAvailable devices:\n  Vulkan0: Intel(R) Iris(R) Xe Graphics (TGL GT2) (23950 MiB, 23950 MiB free)\n  Vulkan1: llvmpipe (LLVM 19.1.7, 256 bits) (32000 MiB, 32000 MiB free)\n";
+        let out = "ggml_vulkan: Found 3 Vulkan devices:\nAvailable devices:\n  Vulkan0: NVIDIA GeForce RTX 3060 (12044 MiB, 11850 MiB free)\n  Vulkan1: Intel(R) Iris(R) Xe Graphics (TGL GT2) (23950 MiB, 23950 MiB free)\n  Vulkan2: llvmpipe (LLVM 19.1.7, 256 bits) (32000 MiB, 32000 MiB free)\n";
         let devs = parse_vulkan_devices(out);
         assert_eq!(
             devs,
-            vec![VulkanDevice {
-                index: 0,
+            vec![
+                VulkanDevice {
+                    index: 0,
+                    name: "NVIDIA GeForce RTX 3060".into(),
+                    total_mib: Some(12044),
+                    free_mib: Some(11850),
+                },
+                VulkanDevice {
+                    index: 1,
+                    name: "Intel(R) Iris(R) Xe Graphics (TGL GT2)".into(),
+                    total_mib: Some(23950),
+                    free_mib: Some(23950),
+                },
+            ]
+        );
+        // Vendor-local ordinal: Intel gpu_device_num 0 selects Vulkan1 even when NVIDIA is Vulkan0.
+        assert_eq!(
+            select_vulkan_device(out, Some("intel"), 0),
+            Some(VulkanDevice {
+                index: 1,
                 name: "Intel(R) Iris(R) Xe Graphics (TGL GT2)".into(),
                 total_mib: Some(23950),
                 free_mib: Some(23950),
-            }]
+            })
         );
+        // Out-of-range gpu_device_num returns None rather than falling back to the first adapter.
+        assert_eq!(select_vulkan_device(out, Some("intel"), 1), None);
+        assert_eq!(select_vulkan_device(out, Some("amd"), 0), None);
     }
 
     #[test]

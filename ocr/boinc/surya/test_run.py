@@ -65,6 +65,27 @@ class SuryaVulkanDetectionTest(unittest.TestCase):
                 "cpu",
             )
 
+    def test_detect_device_reports_cuda_via_llama_server_even_when_torch_is_cpu_only(self):
+        fake_out = (
+            "ggml_cuda_init: found 1 CUDA devices:\n"
+            "Available devices:\n"
+            "  CUDA0: NVIDIA GeForce RTX 3060 (12044 MiB, 11850 MiB free)\n"
+        )
+        cp = mock.Mock(returncode=0, stdout=fake_out, stderr="")
+        with mock.patch.object(run_mod.subprocess, "run", return_value=cp):
+            devs = run_mod.list_cuda_devices(llama_binary="/app/llama-server")
+            self.assertEqual(devs, [("CUDA0", "NVIDIA GeForce RTX 3060 (12044 MiB, 11850 MiB free)")])
+            self.assertEqual(
+                run_mod.detect_device("cuda", llama_binary="/app/llama-server", dri_root=str(self.dri)),
+                "cuda",
+            )
+        no_gpu_cp = mock.Mock(returncode=0, stdout="Available devices:\n", stderr="")
+        with mock.patch.object(run_mod.subprocess, "run", return_value=no_gpu_cp):
+            self.assertEqual(
+                run_mod.detect_device("cuda", llama_binary="/app/llama-server", dri_root=str(self.dri)),
+                "cpu",
+            )
+
     def test_containerfile_pins_same_surya_weights_and_llama_vulkan_digest(self):
         containerfile = (HERE / "Containerfile").read_text()
         self.assertIn("ARG LLAMA_VARIANT=cuda", containerfile)
@@ -82,7 +103,7 @@ class SuryaVulkanDetectionTest(unittest.TestCase):
         self.assertIn("TORCH_DEVICE=cpu", containerfile)
         job_intel = (HERE / "job-intel.toml").read_text()
         self.assertIn("use_gpu = false", job_intel)
-        self.assertIn("--device=/dev/dri/renderD128", job_intel)
+        self.assertIn("--device=/dev/dri", job_intel)
 
 
 if __name__ == "__main__":

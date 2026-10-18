@@ -1,7 +1,8 @@
 # BOINC docker_wrapper configuration for the usnm_surya Intel GPU version
-# (#842, plan class docker_intel_vulkan / intel_vulkan_8b). Stock
-# docker_wrapper maps use_gpu = true to `--gpus all` (NVIDIA); Intel hosts
-# expose the DRI render node directly via create_args without `--gpus all`.
+# (#842, plan class docker_intel_vulkan). Stock docker_wrapper maps
+# use_gpu = true to `--gpus all` (NVIDIA); Intel hosts expose /dev/dri
+# directly via create_args without `--gpus all`, and the worker selects the
+# BOINC-assigned Intel adapter by vendor ordinal.
 workdir = "/work"
 use_gpu = false
-create_args = "--device=/dev/dri/renderD128 --network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=8g --memory-swap=8g --pids-limit=1024 --tmpfs=/tmp:rw,size=1g"
+create_args = "--device=/dev/dri --network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=8g --memory-swap=8g --pids-limit=1024 --tmpfs=/tmp:rw,size=1g"
