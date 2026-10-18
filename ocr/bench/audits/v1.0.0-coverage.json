@@ -1,0 +1,53 @@
+{
+  "absent_target_languages": [
+    "ces",
+    "dan",
+    "fin",
+    "fra",
+    "heb",
+    "ita",
+    "jpn",
+    "lit",
+    "rus",
+    "spa",
+    "srp",
+    "yid"
+  ],
+  "damage_status_counts": {
+    "unannotated": 1000
+  },
+  "manifest_sha256": "ffd1d54147966c562d1f6e13c0fe2c2badb12c726406cbd50d61d8f8a395fe29",
+  "matrix": [
+    {
+      "damage_labels": [],
+      "damage_status": "unannotated",
+      "languages": [
+        "deu"
+      ],
+      "pages": 20,
+      "reference_status": "human-verified",
+      "samples": 700,
+      "severity": "unknown",
+      "unit": "line-pair"
+    },
+    {
+      "damage_labels": [],
+      "damage_status": "unannotated",
+      "languages": [
+        "eng"
+      ],
+      "pages": 18,
+      "reference_status": "human-verified",
+      "samples": 300,
+      "severity": "unknown",
+      "unit": "crop"
+    }
+  ],
+  "mix_counts": {
+    "monolingual": 1000
+  },
+  "note": "Unique manifest samples; pages overlap across matrix rows. Unknown damage is not clean. Language presence does not imply mixed-language text or a completed per-track tier.",
+  "pages": 38,
+  "release": "v1.0.0",
+  "samples": 1000
+}

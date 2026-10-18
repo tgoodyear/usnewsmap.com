@@ -23,7 +23,7 @@ use std::path::{Component, Path, PathBuf};
 /// The manifest's `format`.
 pub const FORMAT: &str = "usnm-ocr-bench";
 /// The manifest schema version this code reads and writes.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 pub const MANIFEST: &str = "manifest.json";
 pub const SUMS: &str = "SHA256SUMS";
 /// The largest release a client unpacks.
@@ -41,6 +41,11 @@ pub const RULES: [&str; 2] = ["legacy-ws-v1", "raw-v1"];
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
+    #[serde(default)]
+    pub annotations: BTreeMap<String, Annotation>,
+    #[serde(default)]
+    pub imports: Vec<SpecImport>,
+    pub inputs_url: Option<String>,
     pub campaigns: Vec<SpecCampaign>,
     pub derived: Vec<SpecDerived>,
     pub examples: Vec<SpecExample>,
@@ -57,6 +62,25 @@ pub struct SpecCampaign {
     pub path: String,
     pub source: String,
     pub subset: String,
+}
+
+/// Inventory-pinned, already-curated image/reference pairs, not historical campaigns.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpecImport {
+    pub path: String,
+    pub source: String,
+    pub subset: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportSample {
+    pub id: String,
+    pub image: String,
+    pub reference: String,
+    pub source_page_id: String,
+    pub provenance: Value,
 }
 
 /// A subset made from others: `take` samples of `from`, ranked by sha256 of `seed`, a newline and
@@ -97,6 +121,41 @@ pub struct SpecSource {
     pub unit: String,
 }
 
+/// Reviewed sample annotations; absent annotations preserve historical release bytes.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Annotation {
+    pub damage: Option<Damage>,
+    pub transcription: Option<Transcription>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Damage {
+    pub status: String,
+    pub labels: Vec<String>,
+    pub severity: String,
+    pub evidence: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Transcription {
+    pub policy: String,
+    pub evidence: String,
+    pub reviewed_by: String,
+    pub illegible_spans: Vec<IllegibleSpan>,
+}
+
+/// Half-open Unicode code-point offsets into the unchanged reference file.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct IllegibleSpan {
+    pub start: usize,
+    pub end: usize,
+    pub reason: String,
+}
+
 // ------------------------------------------------------------------ manifest
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -128,6 +187,8 @@ pub struct Sample {
     pub source: String,
     pub source_page_id: String,
     pub split: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcription: Option<Transcription>,
     pub typeface: String,
     pub unit: String,
 }
@@ -277,8 +338,11 @@ pub fn normalize(rule: &str, text: &str) -> anyhow::Result<String> {
             .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
             .join(" ")),
-        "raw-v1" => Ok(text.to_string()),
-        _ => bail!("unknown score rule {rule:?}; known: {}", RULES.join(", ")),
+        "raw-v1" | "raw-masked-v1" => Ok(text.to_string()),
+        _ => bail!(
+            "unknown score rule {rule:?}; known: {}, raw-masked-v1",
+            RULES.join(", ")
+        ),
     }
 }
 
@@ -318,6 +382,114 @@ impl Tally {
     }
 }
 
+fn validate_annotations(sample: &Sample, reference: &str) -> anyhow::Result<()> {
+    if let Some(t) = &sample.transcription {
+        ensure!(
+            t.policy == "diplomatic-v1",
+            "{}: unknown transcription policy",
+            sample.id
+        );
+        ensure!(
+            !t.evidence.trim().is_empty() && !t.reviewed_by.trim().is_empty(),
+            "{}: missing transcription review",
+            sample.id
+        );
+        let mut end = 0;
+        let len = reference.chars().count();
+        for span in &t.illegible_spans {
+            ensure!(
+                span.start >= end
+                    && span.start < span.end
+                    && span.end <= len
+                    && !span.reason.trim().is_empty(),
+                "{}: invalid illegible span",
+                sample.id
+            );
+            end = span.end;
+        }
+    }
+    if sample.damage["status"] != "unannotated" {
+        let d: Damage = serde_json::from_value(sample.damage.clone())?;
+        ensure!(
+            d.status == "reviewed" && !d.evidence.trim().is_empty(),
+            "{}: missing damage review",
+            sample.id
+        );
+        ensure!(
+            ["none", "mild", "moderate", "severe"].contains(&d.severity.as_str()),
+            "{}: unknown severity",
+            sample.id
+        );
+        let allowed = [
+            "bleed-through",
+            "faded-ink",
+            "blur",
+            "stain",
+            "tear",
+            "occlusion",
+            "warping",
+            "clipping",
+        ];
+        let unique: BTreeSet<_> = d.labels.iter().collect();
+        ensure!(
+            unique.len() == d.labels.len()
+                && d.labels.iter().all(|x| allowed.contains(&x.as_str())),
+            "{}: invalid damage labels",
+            sample.id
+        );
+        ensure!(
+            (d.severity == "none") == d.labels.is_empty(),
+            "{}: damage severity/labels disagree",
+            sample.id
+        );
+    } else {
+        let object = sample
+            .damage
+            .as_object()
+            .context("damage must be an object")?;
+        ensure!(
+            object
+                .keys()
+                .all(|key| matches!(key.as_str(), "status" | "observations")),
+            "{}: unannotated damage may only contain status and observations",
+            sample.id
+        );
+        if let Some(observations) = object.get("observations") {
+            serde_json::from_value::<Vec<String>>(observations.clone()).with_context(|| {
+                format!("{}: damage observations must be a string array", sample.id)
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// A frozen reference mask is a wildcard matching zero or more hypothesis code points.
+/// Only visible reference characters enter the denominator. No hypothesis-side masks exist.
+fn masked_distance(reference: &[char], hyp: &[char], spans: &[IllegibleSpan]) -> usize {
+    let mut row: Vec<usize> = (0..=hyp.len()).collect();
+    let mut i = 0;
+    let mut span = 0;
+    while i < reference.len() {
+        if span < spans.len() && i == spans[span].start {
+            for j in 1..row.len() {
+                row[j] = row[j].min(row[j - 1]);
+            }
+            i = spans[span].end;
+            span += 1;
+        } else {
+            let mut next = vec![row[0] + 1; hyp.len() + 1];
+            for j in 1..=hyp.len() {
+                next[j] = (row[j - 1] + usize::from(reference[i] != hyp[j - 1]))
+                    .min(row[j] + 1)
+                    .min(next[j - 1] + 1);
+            }
+            row = next;
+            i += 1;
+        }
+    }
+    row[hyp.len()]
+}
+
 /// Scores outputs `{id: text}` on a subset. Missing outputs are counted, never silently left out:
 /// `cer` is over the samples with an output and `cer_missing_as_empty` counts the rest as empty.
 /// Outputs for ids outside the subset are an error.
@@ -343,7 +515,20 @@ pub fn score(
     for id in &s.members {
         let x = by_id[id.as_str()];
         let reference = std::fs::read_to_string(dir.join(&x.reference.path))?;
+        validate_annotations(x, &reference)?;
         let truth: Vec<char> = normalize(rule, &reference)?.chars().collect();
+        let spans = x
+            .transcription
+            .as_ref()
+            .map(|t| t.illegible_spans.as_slice())
+            .unwrap_or(&[]);
+        let masked = rule == "raw-masked-v1";
+        let excluded = if masked {
+            spans.iter().map(|s| s.end - s.start).sum()
+        } else {
+            0
+        };
+        let reference_chars = truth.len() - excluded;
         let t = by_source.entry(x.source.clone()).or_default();
         for t in [&mut total, t] {
             t.samples += 1;
@@ -351,24 +536,39 @@ pub fn score(
         match outputs.get(id) {
             Some(text) => {
                 let hyp: Vec<char> = normalize(rule, text)?.chars().collect();
-                let e = crate::distance::levenshtein(&truth, &hyp) as u64;
+                let e = if masked {
+                    masked_distance(&truth, &hyp, spans)
+                } else {
+                    crate::distance::levenshtein(&truth, &hyp)
+                } as u64;
                 for t in [&mut total, by_source.get_mut(&x.source).unwrap()] {
                     t.scored += 1;
                     t.edits += e;
-                    t.reference_chars += truth.len() as u64;
+                    t.reference_chars += reference_chars as u64;
                 }
-                rows.push(json!({"edits": e, "id": id, "reference_chars": truth.len()}));
+                rows.push(json!({"edits": e, "id": id, "reference_chars": reference_chars}));
             }
             None => {
                 for t in [&mut total, by_source.get_mut(&x.source).unwrap()] {
                     t.missing += 1;
-                    t.missing_chars += truth.len() as u64;
+                    t.missing_chars += reference_chars as u64;
                 }
-                rows.push(json!({"id": id, "missing": true, "reference_chars": truth.len()}));
+                rows.push(json!({"id": id, "missing": true, "reference_chars": reference_chars}));
             }
         }
     }
-    let report = json!({
+    if rule == "raw-masked-v1" {
+        for (row, id) in rows.iter_mut().zip(&s.members) {
+            let x = by_id[id.as_str()];
+            let excluded: usize = x
+                .transcription
+                .as_ref()
+                .map(|t| t.illegible_spans.iter().map(|s| s.end - s.start).sum())
+                .unwrap_or(0);
+            row["masked_reference_chars"] = json!(excluded);
+        }
+    }
+    let mut report = json!({
         "by_source": by_source.iter().map(|(k, v)| (k.clone(), v.json())).collect::<serde_json::Map<_, _>>(),
         "release": m.release,
         "rows": rows,
@@ -377,6 +577,9 @@ pub fn score(
         "subset_digest": s.digest,
         "total": total.json(),
     });
+    if rule == "raw-masked-v1" {
+        report["mask_policy"] = json!("reference-wildcard-v1");
+    }
     Ok((total, report))
 }
 
@@ -464,6 +667,20 @@ fn spec_check(spec: &Spec) -> anyhow::Result<()> {
             "{}: unknown source {}",
             c.path,
             c.source
+        );
+    }
+    if let Some(url) = &spec.inputs_url {
+        ensure!(url.starts_with("https://"), "inputs_url must be HTTPS");
+    }
+    for i in &spec.imports {
+        ensure!(
+            safe_path(&i.path) && valid_id(&i.subset),
+            "invalid import path/subset"
+        );
+        ensure!(
+            spec.sources.contains_key(&i.source),
+            "unknown import source {}",
+            i.source
         );
     }
     for s in spec.sources.keys() {
@@ -581,7 +798,10 @@ pub fn build(o: &BuildOptions) -> anyhow::Result<Built> {
             let image_path = format!("images/{id}.jpg");
             let ref_path = format!("references/{id}.txt");
             let s = Sample {
-                damage: json!({"status": "unannotated"}),
+                damage: match spec.annotations.get(&id).and_then(|a| a.damage.as_ref()) {
+                    Some(d) => serde_json::to_value(d)?,
+                    None => json!({"status": "unannotated"}),
+                },
                 id: id.clone(),
                 image: FileRef {
                     bytes: image.len() as u64,
@@ -609,6 +829,10 @@ pub fn build(o: &BuildOptions) -> anyhow::Result<Built> {
                 source: c.source.clone(),
                 source_page_id: page_id,
                 split: "public-eval".into(),
+                transcription: spec
+                    .annotations
+                    .get(&id)
+                    .and_then(|a| a.transcription.clone()),
                 typeface: "unlabelled".into(),
                 unit: src.unit.clone(),
             };
@@ -667,6 +891,123 @@ pub fn build(o: &BuildOptions) -> anyhow::Result<Built> {
         }
     }
 
+    for import in &spec.imports {
+        let src = &spec.sources[&import.source];
+        let bytes = inputs.read(&format!("{}/samples.json", import.path))?;
+        let imported: Vec<ImportSample> = serde_json::from_slice(&bytes)?;
+        let mut members = Vec::new();
+        for row in imported {
+            ensure!(
+                valid_id(&row.id) && !row.source_page_id.trim().is_empty(),
+                "invalid imported sample id/page"
+            );
+            ensure!(
+                safe_path(&row.image) && safe_path(&row.reference),
+                "unsafe imported path"
+            );
+            ensure!(
+                row.provenance["for_scoring"] == json!(true)
+                    && row.provenance["source_dataset"] == json!(import.source),
+                "{}: invalid source provenance",
+                row.id
+            );
+            let image = inputs.read(&format!("{}/{}", import.path, row.image))?;
+            let reference = inputs.read(&format!("{}/{}", import.path, row.reference))?;
+            let text = std::str::from_utf8(&reference)?;
+            ensure!(!text.trim().is_empty(), "{}: empty reference", row.id);
+            let hash = sha256_hex(&image);
+            ensure!(
+                images_seen.insert(hash.clone(), row.id.clone()).is_none(),
+                "{}: duplicate image",
+                row.id
+            );
+            let (width, height) = image::ImageReader::new(std::io::Cursor::new(&image))
+                .with_guessed_format()?
+                .into_dimensions()?;
+            let image_path = format!("images/{}.jpg", row.id);
+            let ref_path = format!("references/{}.txt", row.id);
+            let annotation = spec.annotations.get(&row.id);
+            let sample = Sample {
+                damage: match annotation.and_then(|a| a.damage.as_ref()) {
+                    Some(d) => serde_json::to_value(d)?,
+                    None => json!({"status":"unannotated"}),
+                },
+                id: row.id.clone(),
+                image: FileRef {
+                    bytes: image.len() as u64,
+                    path: image_path.clone(),
+                    sha256: hash,
+                },
+                image_height: height,
+                image_width: width,
+                languages: src.languages.clone(),
+                legacy: Value::Null,
+                mix: "unannotated".into(),
+                provenance: row.provenance,
+                reference: FileRef {
+                    bytes: reference.len() as u64,
+                    path: ref_path.clone(),
+                    sha256: sha256_hex(&reference),
+                },
+                reference_status: src.annotation_status.clone(),
+                scripts: src.scripts.clone(),
+                source: import.source.clone(),
+                source_page_id: row.source_page_id,
+                split: "public-eval".into(),
+                transcription: annotation.and_then(|a| a.transcription.clone()),
+                typeface: "unlabelled".into(),
+                unit: src.unit.clone(),
+            };
+            validate_annotations(&sample, text)?;
+            ensure!(
+                samples.insert(row.id.clone(), sample).is_none(),
+                "duplicate imported id {}",
+                row.id
+            );
+            members.push(row.id);
+            files.insert(image_path, image);
+            files.insert(ref_path, reference);
+        }
+        members.sort();
+        ensure!(!members.is_empty(), "empty import {}", import.path);
+        let subset = Subset {
+            count: members.len(),
+            description: format!("Published ground truth from {}.", import.source),
+            digest: String::new(),
+            members,
+            pages: 0,
+            recipe: json!({"import":import.path}),
+        };
+        ensure!(
+            subsets.insert(import.subset.clone(), subset).is_none(),
+            "duplicate import subset"
+        );
+        let prefix = format!("{}/LICENSES/", import.path);
+        let names: Vec<_> = inputs
+            .sums
+            .keys()
+            .filter(|p| p.starts_with(&prefix))
+            .cloned()
+            .collect();
+        ensure!(!names.is_empty(), "{}: no licence materials", import.path);
+        for path in names {
+            let name = path.strip_prefix(&prefix).unwrap();
+            ensure!(!name.contains('/'), "nested import licence");
+            let data = inputs.read(&path)?;
+            let key = format!("LICENSES/{}/{name}", import.source);
+            if let Some(prev) = files.get(&key) {
+                ensure!(prev == &data, "different import licence bytes");
+            }
+            files.insert(key, data);
+        }
+    }
+
+    for id in spec.annotations.keys() {
+        ensure!(
+            samples.contains_key(id),
+            "annotation for unknown sample {id}"
+        );
+    }
     for d in &spec.derived {
         ensure!(valid_id(&d.id), "bad subset id {:?}", d.id);
         ensure!(!subsets.contains_key(&d.id), "subset {} named twice", d.id);
@@ -777,11 +1118,14 @@ pub fn build(o: &BuildOptions) -> anyhow::Result<Built> {
     );
 
     for (name, src) in &spec.sources {
+        let changes = if spec.imports.iter().any(|i| &i.source == name) {
+            "Images are crops of the credited source pages; references preserve the published ground truth of those regions. Import provenance records the conversion and source archive hashes."
+        } else {
+            "images are the exact crops and line pairs the usnewsmap Iris campaigns (#703) were scored on, cut from the source pages; references are the published transcriptions of those regions, unchanged."
+        };
         let notice = format!(
             "Source: {name}\n\nAttribution: {}\n\nImages: {}\n\nReference transcriptions: {}\n\n\
-             Changes: images are the exact crops and line pairs the usnewsmap Iris campaigns (#703) \
-             were scored on, cut from the source pages; references are the published transcriptions \
-             of those regions, unchanged.\n",
+             Changes: {changes}\n",
             src.attribution, src.image_license, src.reference_license
         );
         files.insert(format!("LICENSES/{name}/NOTICE.txt"), notice.into_bytes());
@@ -790,12 +1134,19 @@ pub fn build(o: &BuildOptions) -> anyhow::Result<Built> {
     let mut coverage = BTreeMap::new();
     for s in samples.values() {
         let key = format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             s.source,
             s.languages.join("+"),
             s.scripts.join("+"),
             s.typeface,
-            s.unit
+            s.unit,
+            if s.damage["status"] == "unannotated" {
+                "unannotated".to_string()
+            } else {
+                serde_json::to_string(
+                    &json!({"status": s.damage["status"], "labels": s.damage["labels"], "severity": s.damage["severity"]}),
+                )?
+            }
         );
         let e = coverage.entry(key).or_insert((0usize, BTreeSet::new()));
         e.0 += 1;
@@ -806,7 +1157,7 @@ pub fn build(o: &BuildOptions) -> anyhow::Result<Built> {
         .map(|(k, (n, pages))| {
             let p: Vec<&str> = k.split('|').collect();
             json!({
-                "damage": "unannotated", "languages": p[1], "pages": pages.len(), "samples": n,
+                "damage": p[5], "languages": p[1], "pages": pages.len(), "samples": n,
                 "scripts": p[2], "source": p[0], "typeface": p[3], "unit": p[4],
             })
         })
@@ -819,9 +1170,21 @@ pub fn build(o: &BuildOptions) -> anyhow::Result<Built> {
         inputs_sha256: sha256_hex(inventory.as_bytes()),
         limitations: spec.limitations.clone(),
         release: spec.release.clone(),
-        rules: RULES.iter().map(|r| r.to_string()).collect(),
+        rules: RULES
+            .iter()
+            .copied()
+            .chain(
+                (!spec.imports.is_empty() || !spec.annotations.is_empty())
+                    .then_some("raw-masked-v1"),
+            )
+            .map(str::to_string)
+            .collect(),
         samples: samples.values().cloned().collect(),
-        schema: SCHEMA,
+        schema: if spec.imports.is_empty() && spec.annotations.is_empty() {
+            1
+        } else {
+            SCHEMA
+        },
         sources: spec.sources.clone(),
         spec_sha256: sha256_hex(&spec_bytes),
         subsets,
@@ -1068,11 +1431,19 @@ pub fn verify(dir: &Path) -> anyhow::Result<Verified> {
 fn check_manifest(dir: &Path, m: &Manifest, sums: &BTreeMap<String, String>) -> anyhow::Result<()> {
     ensure!(m.format == FORMAT, "not a {FORMAT} manifest");
     ensure!(
-        m.schema == SCHEMA,
+        (1..=SCHEMA).contains(&m.schema),
         "manifest schema {} (this reads {SCHEMA})",
         m.schema
     );
     ensure!(valid_release(&m.release), "bad release {:?}", m.release);
+    if m.schema == 1 {
+        ensure!(
+            m.samples
+                .iter()
+                .all(|s| s.transcription.is_none() && s.damage["status"] != "reviewed"),
+            "reviewed annotations require manifest schema 2"
+        );
+    }
     ensure!(
         dir.file_name().and_then(|n| n.to_str()) == Some(release_name(&m.release).as_str()),
         "the directory is not named {}",
@@ -1103,6 +1474,7 @@ fn check_manifest(dir: &Path, m: &Manifest, sums: &BTreeMap<String, String>) -> 
             );
         }
         ensure!(images.insert(&s.image.sha256), "{}: duplicate image", s.id);
+        validate_annotations(s, &std::fs::read_to_string(dir.join(&s.reference.path))?)?;
         ensure!(
             !std::fs::read_to_string(dir.join(&s.reference.path))
                 .with_context(|| format!("{}: reference is not UTF-8", s.id))?
@@ -1541,6 +1913,251 @@ pub(crate) mod tests {
         let sums = read_sums(&std::fs::read_to_string(a.dir.join(SUMS)).unwrap()).unwrap();
         let e = check_manifest(&a.dir, &m, &sums).unwrap_err().to_string();
         assert!(e.contains("is not in SHA256SUMS"), "{e}");
+    }
+
+    #[test]
+    fn bench_imports_build_verify_and_repeat_without_claiming_legacy_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("inputs");
+        std::fs::create_dir_all(root.join("corpus/LICENSES")).unwrap();
+        std::fs::write(
+            root.join("corpus/LICENSES/SOURCE.json"),
+            "synthetic fixture",
+        )
+        .unwrap();
+        std::fs::write(root.join("corpus/image.jpg"), jpeg(3)).unwrap();
+        std::fs::write(root.join("corpus/reference.txt"), "日?本").unwrap();
+        let rows = json!([{"id":"example-1", "image":"image.jpg", "reference":"reference.txt",
+            "source_page_id":"source-page", "provenance":{"for_scoring":true, "source_dataset":"test"}}]);
+        std::fs::write(root.join("corpus/samples.json"), pretty(&rows).unwrap()).unwrap();
+        let mut spec = json!({"campaigns":[], "imports":[{"path":"corpus", "source":"test", "subset":"test/all-1"}],
+            "annotations":{"example-1":{"transcription":{"policy":"diplomatic-v1", "evidence":"synthetic review", "reviewed_by":"fixture",
+                "illegible_spans":[{"start":1,"end":2,"reason":"unknown glyph"}]},
+                "damage":{"status":"reviewed", "labels":["blur"], "severity":"moderate", "evidence":"synthetic fixture"}}},
+            "derived":[], "examples":[], "format":"usnm-ocr-bench-spec", "limitations":["synthetic"], "release":"v1.1.0",
+            "sources":{"test":{"annotation_status":"human-verified", "attribution":"synthetic test", "image_license":"CC0",
+                "reference_license":"CC0", "languages":["jpn"], "scripts":["Jpan"], "unit":"crop"}}});
+        let spec_path = tmp.path().join("spec.json");
+        std::fs::write(&spec_path, pretty(&spec).unwrap()).unwrap();
+        let inv = tmp.path().join("inputs.sha256");
+        std::fs::write(&inv, inventory(&root)).unwrap();
+        let mut opts = BuildOptions {
+            spec: spec_path.clone(),
+            inventory: inv,
+            inputs: root.clone(),
+            out: tmp.path().join("first"),
+        };
+        let first = build(&opts).unwrap();
+        verify(&first.dir).unwrap();
+        let m = load(&first.dir).unwrap();
+        assert_eq!(m.schema, 2);
+        assert!(m.samples[0].legacy.is_null());
+        assert_eq!(m.samples[0].mix, "unannotated");
+        assert_ne!(m.coverage[0]["damage"], "unannotated");
+        opts.out = tmp.path().join("second");
+        let second = build(&opts).unwrap();
+        assert_eq!(
+            std::fs::read(first.archive).unwrap(),
+            std::fs::read(second.archive).unwrap()
+        );
+        spec["annotations"]["unknown"] = json!({});
+        std::fs::write(&spec_path, pretty(&spec).unwrap()).unwrap();
+        opts.out = tmp.path().join("unknown");
+        assert!(build(&opts)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown sample"));
+        spec["annotations"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unknown");
+        spec["imports"][0]["subset"] = json!("../escape");
+        std::fs::write(&spec_path, pretty(&spec).unwrap()).unwrap();
+        opts.out = tmp.path().join("unsafe");
+        assert!(build(&opts).is_err());
+    }
+
+    #[test]
+    fn bench_per_script_code_point_rules() {
+        // Synthetic scorer fixtures, never benchmark ground truth.
+        for (reference, hyp, edits, chars) in [
+            ("ſtraße", "straße", 1, 6),
+            ("日本語", "日本", 1, 3),
+            ("かなカナ漢字", "かなカナ漢字", 0, 6),
+            ("Русский", "русский", 1, 7),
+            ("עברית", "עברית", 0, 5),
+            ("ייִדיש", "ייִדיש", 0, 6),
+            ("العربية", "العربية", 0, 7),
+            ("é", "e\u{301}", 2, 1),
+            ("日本 English עברית", "日本 English עברית", 0, 16),
+        ] {
+            for rule in RULES {
+                let r: Vec<_> = normalize(rule, reference).unwrap().chars().collect();
+                let h: Vec<_> = normalize(rule, hyp).unwrap().chars().collect();
+                assert_eq!(r.len(), chars, "{reference}");
+                assert_eq!(crate::distance::levenshtein(&r, &h), edits, "{reference}");
+            }
+        }
+        assert_eq!(
+            normalize("legacy-ws-v1", "日\u{3000}本\n語").unwrap(),
+            "日 本 語"
+        );
+        assert_eq!(
+            normalize("raw-v1", "日\u{3000}本\n語").unwrap(),
+            "日\u{3000}本\n語"
+        );
+    }
+
+    #[test]
+    fn bench_masks_preserve_visible_errors_and_missing_denominators() {
+        let f = fixture(None);
+        let built = build(&f.opts).unwrap();
+        let mut m = load(&built.dir).unwrap();
+        let id = m.subsets["legacy/en-3"].members[0].clone();
+        let sample = m.samples.iter_mut().find(|s| s.id == id).unwrap();
+        std::fs::write(built.dir.join(&sample.reference.path), "日?本").unwrap();
+        sample.transcription = Some(Transcription {
+            policy: "diplomatic-v1".into(),
+            evidence: "synthetic test".into(),
+            reviewed_by: "fixture".into(),
+            illegible_spans: vec![IllegibleSpan {
+                start: 1,
+                end: 2,
+                reason: "occlusion".into(),
+            }],
+        });
+        m.subsets.get_mut("legacy/en-3").unwrap().members = vec![id.clone()];
+        for (text, expected) in [
+            ("日本", 0),
+            ("日不明本", 0),
+            ("日不明木", 1),
+            ("", 2),
+            ("余日本外", 2),
+        ] {
+            let outputs = BTreeMap::from([(id.clone(), text.into())]);
+            let (t, report) =
+                score(&built.dir, &m, "legacy/en-3", &outputs, "raw-masked-v1").unwrap();
+            assert_eq!((t.edits, t.reference_chars), (expected, 2), "{text}");
+            assert_eq!(report["rows"][0]["masked_reference_chars"], 1);
+        }
+        let (missing, _) = score(
+            &built.dir,
+            &m,
+            "legacy/en-3",
+            &BTreeMap::new(),
+            "raw-masked-v1",
+        )
+        .unwrap();
+        assert_eq!((missing.missing, missing.missing_chars), (1, 2));
+        let (raw, _) = score(
+            &built.dir,
+            &m,
+            "legacy/en-3",
+            &BTreeMap::from([(id, "日本".into())]),
+            "raw-v1",
+        )
+        .unwrap();
+        assert_eq!((raw.edits, raw.reference_chars), (1, 3));
+        m.samples
+            .iter_mut()
+            .find(|s| s.id == m.subsets["legacy/en-3"].members[0])
+            .unwrap()
+            .transcription
+            .as_mut()
+            .unwrap()
+            .illegible_spans = vec![IllegibleSpan {
+            start: 0,
+            end: 3,
+            reason: "entire sample unreadable (synthetic)".into(),
+        }];
+        let (all_masked, report) = score(
+            &built.dir,
+            &m,
+            "legacy/en-3",
+            &BTreeMap::new(),
+            "raw-masked-v1",
+        )
+        .unwrap();
+        assert_eq!(all_masked.missing_chars, 0);
+        assert!(report["total"]["cer_missing_as_empty"].is_null());
+    }
+
+    #[test]
+    fn bench_annotations_reject_invalid_spans_and_damage() {
+        let f = fixture(None);
+        let built = build(&f.opts).unwrap();
+        let m = load(&built.dir).unwrap();
+        let mut sample = m.samples[0].clone();
+        for spans in [
+            vec![(0, 0)],
+            vec![(2, 1)],
+            vec![(0, 4)],
+            vec![(1, 2), (0, 1)],
+            vec![(0, 2), (1, 3)],
+        ] {
+            sample.transcription = Some(Transcription {
+                policy: "diplomatic-v1".into(),
+                evidence: "fixture".into(),
+                reviewed_by: "test".into(),
+                illegible_spans: spans
+                    .into_iter()
+                    .map(|(start, end)| IllegibleSpan {
+                        start,
+                        end,
+                        reason: "test".into(),
+                    })
+                    .collect(),
+            });
+            assert!(validate_annotations(&sample, "日?本").is_err());
+        }
+        sample.transcription = None;
+        sample.damage = json!({"status":"unannotated", "observations":["existing pilot narrative; not a severity label"]});
+        assert!(validate_annotations(&sample, "abc").is_ok());
+        for damage in [
+            json!({"status":"unannotated", "labels":[], "severity":"none", "evidence":""}),
+            json!({"status":"unannotated", "observations":"not an array"}),
+            json!({"status":"unannotated", "observations":[1]}),
+            json!({"status":"reviewed", "labels":[], "severity":"severe", "evidence":"test"}),
+            json!({"status":"reviewed", "labels":["invented"], "severity":"mild", "evidence":"test"}),
+            json!({"status":"reviewed", "labels":["blur"], "severity":"mild", "evidence":""}),
+        ] {
+            sample.damage = damage;
+            assert!(validate_annotations(&sample, "abc").is_err());
+        }
+        sample.damage =
+            json!({"status":"reviewed", "labels":["blur"], "severity":"mild", "evidence":"test"});
+        assert!(validate_annotations(&sample, "abc").is_ok());
+        assert_eq!(
+            masked_distance(
+                &['?', '?'],
+                &['x', 'y'],
+                &[IllegibleSpan {
+                    start: 0,
+                    end: 2,
+                    reason: "test".into()
+                }]
+            ),
+            0
+        );
+        assert_eq!(
+            masked_distance(
+                &['a', '?', 'b', '?'],
+                &['a', 'x', 'b', 'y'],
+                &[
+                    IllegibleSpan {
+                        start: 1,
+                        end: 2,
+                        reason: "test".into()
+                    },
+                    IllegibleSpan {
+                        start: 3,
+                        end: 4,
+                        reason: "test".into()
+                    },
+                ]
+            ),
+            0
+        );
     }
 
     #[test]
