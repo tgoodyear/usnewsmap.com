@@ -310,6 +310,60 @@ async fn next_attempt(
     }
 }
 
+async fn legacy_blocks_attempt(
+    c: &Config,
+    legacy_host_root: &Path,
+    active_host_root: &Path,
+    execute: bool,
+) -> anyhow::Result<bool> {
+    if legacy_host_root == active_host_root || std::fs::symlink_metadata(legacy_host_root).is_err()
+    {
+        return Ok(false);
+    }
+    let mut attempt = 0;
+    while attempt_root(legacy_host_root, attempt + 1)
+        .join("units/0000")
+        .is_dir()
+    {
+        attempt += 1;
+        ensure!(attempt < MAX_ATTEMPTS, "too many gold attempts");
+    }
+    let root = attempt_root(legacy_host_root, attempt);
+    let unit = gold::submit::units_dir(&root).join("0000");
+    ensure!(
+        unit.join("submitted").is_file(),
+        "uncertain gold submission in {}; reconcile native campaign markers",
+        unit.display()
+    );
+    if std::fs::symlink_metadata(active_host_root).is_ok() {
+        return Ok(false);
+    }
+    let job: gold::job::Job =
+        serde_json::from_slice(&read(&unit.join(gold::job::JOB_FILE), gold::job::MAX_JSON)?)?;
+    let workunit = job.workunit();
+    match query_gold_status(c, &workunit).await? {
+        GoldStatus::Failed(results) => {
+            if execute {
+                let failure = serde_json::json!({ "workunit": workunit, "results": results });
+                atomic(
+                    &root.join("failure.json"),
+                    &serde_json::to_vec_pretty(&failure)?,
+                )?;
+                eprintln!(
+                    "legacy gold attempt {attempt} ({workunit}) failed; diagnostics in {}; issuing another",
+                    root.join("failure.json").display()
+                );
+            }
+            Ok(false)
+        }
+        GoldStatus::Unknown => {
+            eprintln!("{workunit} is not in the database; not reissuing");
+            Ok(true)
+        }
+        GoldStatus::Pending | GoldStatus::Succeeded => Ok(true),
+    }
+}
+
 /// Discover hosts centrally, skip hosts already trusted for this prepared campaign's exact
 /// `(language, profile, psm, dpi)`, `manifest_sha256`, and immutable worker image, and keep one
 /// gold unit outstanding per untrusted host and campaign: a host whose attempt failed gets a new
@@ -329,21 +383,28 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
         inventory.len() <= 100000,
         "host inventory exceeds safety bound"
     );
+    let trusted_hosts =
+        trust.campaign_trusted_hosts(&c.engine.image, &prepared.manifest_sha256, scope);
     let pending: Vec<_> = inventory
         .into_iter()
-        .filter(|h| {
-            trust
-                .refuse_campaign(&c.engine.image, &prepared.manifest_sha256, scope, Some(*h))
-                .is_some()
-        })
+        .filter(|h| !trusted_hosts.is_some_and(|hosts| hosts.contains(h)))
         .collect();
+    let legacy_campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &c.engine))?);
+    let legacy_root = c.root.join("onboard").join(&legacy_campaign);
     let campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &c.engine, scope))?);
     let campaign_root = c.root.join("onboard").join(&campaign);
     // Hosts are visited in id order and the pass stops at max_hosts, so hosts with an
     // outstanding unit never starve newly discovered ones.
     let mut plans = Vec::new();
     for host in pending {
-        if let Some(root) = next_attempt(c, &campaign_root.join(host.to_string()), execute).await? {
+        let host_str = host.to_string();
+        let active_host_root = campaign_root.join(&host_str);
+        if legacy_blocks_attempt(c, &legacy_root.join(&host_str), &active_host_root, execute)
+            .await?
+        {
+            continue;
+        }
+        if let Some(root) = next_attempt(c, &active_host_root, execute).await? {
             plans.push((host, root));
             if plans.len() == c.max_hosts {
                 break;

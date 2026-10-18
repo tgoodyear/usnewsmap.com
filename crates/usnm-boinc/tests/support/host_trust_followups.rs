@@ -654,3 +654,70 @@ async fn onboarding_checks_only_prepared_campaign_scope_and_manifest() {
         .status
         .success());
 }
+
+#[tokio::test]
+async fn onboarding_upgrade_respects_legacy_pending_and_uncertain_attempts() {
+    let c = Controller::new().await;
+    let base = c.fx.tmp.path();
+    let prepared = usnm_boinc::gold::prepare::read(&base.join("prepared")).unwrap();
+    let cfg: usnm_boinc::host_trust::Config =
+        serde_json::from_slice(&std::fs::read(&c.config).unwrap()).unwrap();
+    let legacy_campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &cfg.engine)).unwrap());
+    let legacy_host3 = c.root.join("onboard").join(&legacy_campaign).join("3");
+    let legacy_unit = legacy_host3.join("units/0000");
+
+    // 1. An uncertain `submitting` marker in the pre-upgrade legacy campaign root refuses
+    // both planning and execution instead of creating a fresh workunit in the scoped root.
+    write(&legacy_unit.join("submitting"), b"");
+    assert!(!c.command("onboard").output().unwrap().status.success());
+    assert!(!c
+        .command("onboard")
+        .arg("--execute")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(c.calls().is_empty());
+
+    // 2. Reconciling the legacy marker to `submitted` with a pending unit skips host 3 and
+    // plans/dispatches host 4 instead of re-submitting host 3.
+    let job = usnm_boinc::gold::submit::job(&prepared, &cfg.engine, 0).unwrap();
+    write(
+        &legacy_unit.join(usnm_boinc::gold::job::JOB_FILE),
+        serde_json::to_vec_pretty(&job).unwrap(),
+    );
+    std::fs::remove_file(legacy_unit.join("submitting")).unwrap();
+    write(&legacy_unit.join("submitted"), b"");
+
+    let pending_status = "NULL\\tNULL\\tNULL\\tNULL\\tNULL\\tNULL\\n";
+    let out = c
+        .command("onboard")
+        .env("GOLD_STATUS", pending_status)
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[4]");
+
+    // 3. If the legacy attempt failed terminally, `onboard --execute` records `failure.json`
+    // in the legacy root and issues a retry for host 3 in the scoped campaign root.
+    let failed_status = "11\\t5\\t3\\t5\\t255\\t4572726F72202D31\\n";
+    let out = c
+        .command("onboard")
+        .env("GOLD_STATUS", failed_status)
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[3]");
+    assert!(!legacy_host3.join("failure.json").exists());
+
+    success(
+        &c.command("onboard")
+            .arg("--execute")
+            .env("GOLD_STATUS", failed_status)
+            .output()
+            .unwrap(),
+    );
+    assert!(legacy_host3.join("failure.json").is_file());
+    assert_eq!(c.calls().lines().count(), 1);
+    assert!(c.calls().contains("--target_host 3"));
+}

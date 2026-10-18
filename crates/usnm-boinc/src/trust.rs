@@ -69,23 +69,39 @@ pub struct ScopedPolicy {
 
 impl ScopedPolicy {
     fn validate(&self) -> anyhow::Result<()> {
-        self.scope.validate()?;
-        anyhow::ensure!(
-            usnm_ocr_contract::boinc::is_sha256(&self.manifest_sha256),
-            "invalid calibrated challenge manifest"
-        );
-        anyhow::ensure!(
-            self.max_cer.is_finite() && (0.0..=1.0).contains(&self.max_cer),
-            "invalid trust threshold"
-        );
-        anyhow::ensure!(
-            self.hosts
-                .iter()
-                .all(|(image, hosts)| immutable_image(image) && !hosts.contains(&0)),
-            "invalid trust image or host"
-        );
-        Ok(())
+        Trust::validate_policy_fields(
+            &self.hosts,
+            &self.manifest_sha256,
+            &self.scope,
+            self.max_cer,
+        )
     }
+}
+
+/// Borrowed view of a calibrated `(language, profile)` policy within [`Trust`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PolicyView<'a> {
+    pub hosts: &'a BTreeMap<String, BTreeSet<u64>>,
+    pub manifest_sha256: &'a str,
+    pub scope: &'a Scope,
+    pub max_cer: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyTrust {
+    #[allow(dead_code)]
+    hosts: BTreeMap<String, BTreeSet<u64>>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    manifest_sha256: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    scope: Option<serde_json::Value>,
+    #[allow(dead_code)]
+    max_cer: f64,
+    #[allow(dead_code)]
+    v: u32,
 }
 
 /// `trust.json`.
@@ -396,6 +412,30 @@ impl Trust {
         })
     }
 
+    fn validate_policy_fields(
+        hosts: &BTreeMap<String, BTreeSet<u64>>,
+        manifest_sha256: &str,
+        scope: &Scope,
+        max_cer: f64,
+    ) -> anyhow::Result<()> {
+        scope.validate()?;
+        anyhow::ensure!(
+            usnm_ocr_contract::boinc::is_sha256(manifest_sha256),
+            "invalid calibrated challenge manifest"
+        );
+        anyhow::ensure!(
+            max_cer.is_finite() && (0.0..=1.0).contains(&max_cer),
+            "invalid trust threshold"
+        );
+        anyhow::ensure!(
+            hosts
+                .iter()
+                .all(|(image, hosts)| immutable_image(image) && !hosts.contains(&0)),
+            "invalid trust image or host"
+        );
+        Ok(())
+    }
+
     fn primary_policy(&self) -> anyhow::Result<ScopedPolicy> {
         let scope = self.scope.clone().context("missing calibrated job scope")?;
         let manifest_sha256 = self
@@ -419,8 +459,15 @@ impl Trust {
             self.v == TRUST_VERSION || self.policies.is_empty(),
             "v4 trust list cannot contain multiple scoped policies"
         );
-        let primary = self.primary_policy()?;
-        primary.validate()?;
+        let scope = self
+            .scope
+            .as_ref()
+            .context("missing calibrated job scope")?;
+        let manifest_sha256 = self
+            .manifest_sha256
+            .as_deref()
+            .context("invalid calibrated challenge manifest")?;
+        Self::validate_policy_fields(&self.hosts, manifest_sha256, scope, self.max_cer)?;
         if !self.policies.is_empty() {
             anyhow::ensure!(
                 self.policies.len() <= 64,
@@ -430,13 +477,18 @@ impl Trust {
             let mut primary_matched = false;
             for policy in &self.policies {
                 policy.validate()?;
-                let key = (policy.scope.language.clone(), policy.scope.profile.clone());
+                let key = (
+                    policy.scope.language.as_str(),
+                    policy.scope.profile.as_str(),
+                );
                 anyhow::ensure!(seen.insert(key), "duplicate calibrated scope in trust list");
-                if policy.scope.language == primary.scope.language
-                    && policy.scope.profile == primary.scope.profile
+                if policy.scope.language == scope.language && policy.scope.profile == scope.profile
                 {
                     anyhow::ensure!(
-                        *policy == primary,
+                        policy.hosts == self.hosts
+                            && policy.manifest_sha256 == manifest_sha256
+                            && &policy.scope == scope
+                            && policy.max_cer == self.max_cer,
                         "top-level trust scope disagrees with its scoped policy entry"
                     );
                     primary_matched = true;
@@ -460,18 +512,39 @@ impl Trust {
         }
     }
 
-    /// Looks up the calibrated policy for `(language, profile)`, if any.
-    pub fn policy_for(&self, language: &str, profile: &str) -> Option<ScopedPolicy> {
+    /// Borrows the calibrated policy for `(language, profile)` without cloning host maps.
+    pub fn policy_view(&self, language: &str, profile: &str) -> Option<PolicyView<'_>> {
         if !self.policies.is_empty() {
             self.policies
                 .iter()
                 .find(|p| p.scope.language == language && p.scope.profile == profile)
-                .cloned()
+                .map(|p| PolicyView {
+                    hosts: &p.hosts,
+                    manifest_sha256: &p.manifest_sha256,
+                    scope: &p.scope,
+                    max_cer: p.max_cer,
+                })
         } else {
-            let primary = self.primary_policy().ok()?;
-            (primary.scope.language == language && primary.scope.profile == profile)
-                .then_some(primary)
+            let scope = self.scope.as_ref()?;
+            let manifest_sha256 = self.manifest_sha256.as_deref()?;
+            (scope.language == language && scope.profile == profile).then_some(PolicyView {
+                hosts: &self.hosts,
+                manifest_sha256,
+                scope,
+                max_cer: self.max_cer,
+            })
         }
+    }
+
+    /// Looks up the calibrated policy for `(language, profile)`, if any.
+    pub fn policy_for(&self, language: &str, profile: &str) -> Option<ScopedPolicy> {
+        let view = self.policy_view(language, profile)?;
+        Some(ScopedPolicy {
+            hosts: view.hosts.clone(),
+            manifest_sha256: view.manifest_sha256.to_owned(),
+            scope: view.scope.clone(),
+            max_cer: view.max_cer,
+        })
     }
 
     /// Merges `incoming` calibrated scope(s) into `self` without clobbering unrelated scopes.
@@ -518,7 +591,8 @@ impl Trust {
     /// Atomically writes `self` to `out`, holding a destination-directory lock across the entire
     /// read–merge–write sequence and merging existing `out` + `merge_from` + `self` (with explicit
     /// conflict precedence `out < merge_from < self`) so promoting a new `(language, profile)`
-    /// scope preserves existing calibrated scopes.
+    /// scope preserves existing calibrated scopes while discarding any uncalibrated legacy
+    /// v1–v3 or unscoped v4 eligibility at `out` or `merge_from`.
     pub fn promote_to(&self, out: &Path, merge_from: Option<&Path>) -> anyhow::Result<Self> {
         self.validate()?;
         let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
@@ -528,21 +602,64 @@ impl Trust {
         };
         let parent = out.parent().context("no parent directory")?;
         let _lock = crate::Lock::take(parent)?;
-        let merged = match (out.exists(), merge_from) {
-            (true, Some(path)) => Self::load(&out)?.merge(&Self::load(path)?)?.merge(self)?,
-            (false, Some(path)) => Self::load(path)?.merge(self)?,
-            (true, None) => Self::load(&out)?.merge(self)?,
-            (false, None) => self.clone(),
+        let existing_out = if out.exists() {
+            Self::load_for_promotion(&out)?
+        } else {
+            None
+        };
+        let existing_merge = match merge_from {
+            Some(path) => Self::load_for_promotion(path)?,
+            None => None,
+        };
+        let merged = match (existing_out, existing_merge) {
+            (Some(out_policy), Some(merge_policy)) => {
+                out_policy.merge(&merge_policy)?.merge(self)?
+            }
+            (Some(base), None) | (None, Some(base)) => base.merge(self)?,
+            (None, None) => self.clone(),
         };
         atomic(&out, &serde_json::to_vec_pretty(&merged)?)?;
         Ok(merged)
     }
 
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let t: Self = serde_json::from_slice(&crate::read(path, MAX_REPORTS as usize)?)
-            .with_context(|| format!("reading {}", path.display()))?;
+    fn from_bytes(bytes: &[u8], path: &Path) -> anyhow::Result<Self> {
+        let t: Self =
+            serde_json::from_slice(bytes).with_context(|| format!("reading {}", path.display()))?;
         t.validate()?;
         Ok(t)
+    }
+
+    fn is_legacy_uncalibrated(bytes: &[u8], path: &Path) -> anyhow::Result<bool> {
+        let raw: serde_json::Value =
+            serde_json::from_slice(bytes).with_context(|| format!("reading {}", path.display()))?;
+        let version = raw.get("v").and_then(serde_json::Value::as_u64);
+        if matches!(version, Some(1..=3))
+            || (version == Some(4) && raw.get("scope").is_none_or(serde_json::Value::is_null))
+        {
+            let _: LegacyTrust = serde_json::from_value(raw)
+                .with_context(|| format!("reading legacy trust policy {}", path.display()))?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn load_for_promotion(path: &Path) -> anyhow::Result<Option<Self>> {
+        let bytes = crate::read(path, MAX_REPORTS as usize)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if Self::is_legacy_uncalibrated(&bytes, path)? {
+            eprintln!(
+                "{} uses an uncalibrated legacy trust policy; discarding legacy eligibility during promotion",
+                path.display()
+            );
+            return Ok(None);
+        }
+        Self::from_bytes(&bytes, path).map(Some)
+    }
+
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let bytes = crate::read(path, MAX_REPORTS as usize)
+            .with_context(|| format!("reading {}", path.display()))?;
+        Self::from_bytes(&bytes, path)
     }
 
     /// For issuing gold only: a missing list or legacy uncalibrated list trusts no host, so every
@@ -561,20 +678,38 @@ impl Trust {
             eprintln!("no trust list at {}; no host is trusted", path.display());
             return Ok(none());
         }
-        let raw: serde_json::Value =
-            serde_json::from_slice(&crate::read(path, MAX_REPORTS as usize)?)
-                .with_context(|| format!("reading {}", path.display()))?;
-        let version = raw.get("v").and_then(serde_json::Value::as_u64);
-        if matches!(version, Some(1..=3))
-            || (version == Some(4) && raw.get("scope").is_none_or(serde_json::Value::is_null))
-        {
+        let bytes = crate::read(path, MAX_REPORTS as usize)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if Self::is_legacy_uncalibrated(&bytes, path)? {
             eprintln!(
                 "{} uses an uncalibrated legacy trust policy; no host is trusted",
                 path.display()
             );
             return Ok(none());
         }
-        Self::load(path)
+        Self::from_bytes(&bytes, path)
+    }
+
+    /// Borrows the set of hosts already trusted for a prepared Gold campaign's exact
+    /// `(language, profile, psm, dpi)`, calibrated `manifest_sha256`, and immutable worker
+    /// `engine_image` without cloning host sets.
+    pub fn campaign_trusted_hosts<'a>(
+        &'a self,
+        engine_image: &str,
+        manifest_sha256: &str,
+        scope: &Scope,
+    ) -> Option<&'a BTreeSet<u64>> {
+        if !immutable_image(engine_image)
+            || !usnm_ocr_contract::boinc::is_sha256(manifest_sha256)
+            || scope.validate().is_err()
+        {
+            return None;
+        }
+        let policy = self.policy_view(&scope.language, &scope.profile)?;
+        if policy.scope != scope || policy.manifest_sha256 != manifest_sha256 {
+            return None;
+        }
+        policy.hosts.get(engine_image)
     }
 
     /// Campaign-scoped eligibility for Gold onboarding: a host is skipped only when it is already
@@ -603,13 +738,13 @@ impl Trust {
         if let Err(err) = self.validate() {
             return Some(format!("invalid calibrated trust policy: {err}"));
         }
-        let Some(policy) = self.policy_for(&scope.language, &scope.profile) else {
+        let Some(policy) = self.policy_view(&scope.language, &scope.profile) else {
             return Some(
                 "campaign language, model profile or scoring configuration is outside calibrated trust"
                     .into(),
             );
         };
-        if policy.scope != *scope || policy.manifest_sha256 != manifest_sha256 {
+        if policy.scope != scope || policy.manifest_sha256 != manifest_sha256 {
             return Some(
                 "campaign manifest, model profile or scoring configuration is outside calibrated trust"
                     .into(),
@@ -650,7 +785,7 @@ impl Trust {
         {
             return BTreeSet::new();
         }
-        let Some(policy) = self.policy_for(&job.message.language, &job.engine.profile) else {
+        let Some(policy) = self.policy_view(&job.message.language, &job.engine.profile) else {
             return BTreeSet::new();
         };
         if policy.scope.psm != job.engine.psm || policy.scope.dpi != job.engine.dpi {
@@ -686,7 +821,7 @@ impl Trust {
                     .into(),
             );
         }
-        let Some(policy) = self.policy_for(&job.message.language, &job.engine.profile) else {
+        let Some(policy) = self.policy_view(&job.message.language, &job.engine.profile) else {
             return Some(
                 "source language, model profile or scoring configuration is outside calibrated trust"
                     .into(),
@@ -1597,5 +1732,28 @@ mod tests {
                 .hosts[image],
             BTreeSet::from([1])
         );
+
+        // `promote_to` cleanly upgrades a legacy v1–v3 or unscoped v4 `--out` file by discarding
+        // uncalibrated legacy eligibility while keeping `Trust::load` strict for collection.
+        for version in [1, 2, 3, 4] {
+            let legacy = serde_json::json!({
+                "v": version,
+                "max_cer": 0.1,
+                "hosts": { image: [42, 99] }
+            });
+            std::fs::write(&out_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+            assert!(Trust::load(&out_path).is_err());
+            let upgraded = eng_trust.promote_to(&out_path, None).unwrap();
+            assert_eq!(upgraded, eng_trust);
+            assert_eq!(Trust::load(&out_path).unwrap(), eng_trust);
+            assert_eq!(
+                upgraded.campaign_trusted_hosts(image, eng_manifest, &scope()),
+                Some(&BTreeSet::from([1, 8]))
+            );
+        }
+
+        // Corrupt or unsupported-version `--out` files still fail closed during promotion.
+        std::fs::write(&out_path, r#"{"v": 99, "max_cer": 0.1, "hosts": {}}"#).unwrap();
+        assert!(eng_trust.promote_to(&out_path, None).is_err());
     }
 }
