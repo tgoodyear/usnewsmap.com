@@ -50,10 +50,5 @@ query="ContainerAppConsoleLogs
 | where tostring(j.message) in (\"ocr quality\", \"ocr quality finished\", \"mixed pages\", \"mixed pages finished\", \"american stories\", \"american stories finished\", \"american stories year written\", \"american stories write finished\")
 | project TimeGenerated, Log
 | order by TimeGenerated asc"
-body=$(mktemp)
-trap 'rm -f "$body"' EXIT
-jq -n --arg q "$query" --arg t "$iso" '{query: $q, timespan: $t}' > "$body"
-az rest --method post --resource https://api.loganalytics.io \
-  --url "https://api.loganalytics.io/v1/workspaces/$workspace/query" \
-  --headers Content-Type=application/json --body "@$body" -o json |
+python3 scripts/log_analytics.py --workspace "$workspace" --query "$query" --timespan "$iso" |
   jq -c '.tables[0].rows[] | .[1] | fromjson | del(.ts)'

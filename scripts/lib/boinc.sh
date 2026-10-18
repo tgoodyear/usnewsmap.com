@@ -171,9 +171,9 @@ boinc_execution_log() {
   deadline=$(($(date +%s) + wait))
   echo "reading $execution's log from Log Analytics (up to ${wait}s for ingestion)" >&2
   while :; do
-    rows=$(baz monitor log-analytics query --workspace "$workspace" --timespan P1D --analytics-query \
+    rows=$(python3 scripts/log_analytics.py --subscription "$SUBSCRIPTION" --workspace "$workspace" --timespan P1D --query \
       "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '$execution-' | order by TimeGenerated desc | take 50 | order by TimeGenerated asc | project TimeGenerated, Log_s" \
-      -o json 2> /dev/null | jq -r '.[] | "\(.TimeGenerated)  \(.Log_s)"' 2> /dev/null) || rows=""
+      | jq -r '.tables[0].rows[] | "\(.[0])  \(.[1])"' 2> /dev/null) || rows=""
     [ -z "$rows" ] || break
     if [ "$(date +%s)" -ge "$deadline" ]; then
       echo "(no log lines for $execution yet; query ContainerAppConsoleLogs_CL in workspace $workspace later)" >&2

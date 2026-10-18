@@ -11,7 +11,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
+import importlib.util
+import io
+from unittest import mock
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -79,8 +83,10 @@ class OperatorWorkspace(unittest.TestCase):
 az() {
   case "$*" in
     *"workspace list"*) echo ws-id ;;
-    *"log-analytics query"*) [[ "$*" == *"'bad-exec-'"* ]] && echo '[{"TimeGenerated":"t1","Log_s":"Error: boom"}]' || echo '[]' ;;
   esac
+}
+python3() {
+  [[ "$*" == *"'bad-exec-'"* ]] && echo '{"tables":[{"rows":[["t1","Error: boom"]]}]}' || echo '{"tables":[{"rows":[]}]}'
 }
 """
         command = (stub + "set -euo pipefail; ENV_NAME=prod; SUBSCRIPTION=s; die() { exit 1; }; "
@@ -102,6 +108,174 @@ az() {
             text = Path(ROOT, "scripts", name).read_text()
             self.assertNotIn("mktemp", text)
             self.assertNotIn("/var/tmp", text)
+
+
+class LogsFrontendRetry(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("logs_client", Path(HERE, "log_analytics.py"))
+        cls.client = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.client)
+
+    def test_retry_classification(self):
+        error = {"error": {"code": "InsufficientAccessError"}}
+        for status in (403, 429, 500, 502, 503):
+            self.assertTrue(self.client.retryable(status, error))
+        for status, body in [(401, error), (400, error), (403, {}),
+                             (403, {"error": {"code": "AuthorizationFailedError"}}),
+                             (403, {"error": "InsufficientAccessError"}), (200, error)]:
+            self.assertFalse(self.client.retryable(status, body))
+
+    @staticmethod
+    def response(status, body):
+        response = mock.MagicMock()
+        response.status = status
+        response.headers = {"via": "frontend", "x-ms-request-id": "request"}
+        response.read.return_value = json.dumps(body).encode()
+        response.__enter__.return_value = response
+        return response
+
+    def run_query(self, responses):
+        opener = mock.Mock()
+        opener.open.side_effect = responses
+        with mock.patch.object(self.client.urllib.request, "build_opener", return_value=opener) as fresh, \
+                mock.patch.object(self.client.time, "sleep") as sleep, \
+                mock.patch.object(self.client.random, "uniform", return_value=3), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            body, history = self.client.query(SUB, "print 1", token="not-a-real-token")
+        return body, history, fresh.call_count, sleep.call_count, stderr.getvalue()
+
+    def test_fresh_connection_then_success(self):
+        success = {"tables": [{"columns": [], "rows": []}]}
+        result = self.run_query([
+            self.response(403, {"error": {"code": "InsufficientAccessError"}}),
+            self.response(200, success)])
+        self.assertEqual(result[:4], (success, [
+            {"attempt": 1, "status": 403, "via": "frontend", "requestId": "request"},
+            {"attempt": 2, "status": 200, "via": "frontend", "requestId": "request"}], 2, 1))
+        self.assertNotIn("not-a-real-token", result[4])
+
+    def test_partial_response_is_not_success(self):
+        with self.assertRaises(self.client.QueryError):
+            self.run_query([self.response(200, {"tables": [], "error": {"code": "PartialError"}})])
+
+    def test_real_http_error_is_classified(self):
+        error = self.client.urllib.error.HTTPError(
+            "https://api.loganalytics.io/query", 403, "Forbidden",
+            {"via": "frontend"}, io.BytesIO(b'{"error":{"code":"InsufficientAccessError"}}'))
+        result = self.run_query([error, self.response(
+            200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual(result[2:4], (2, 1))
+
+    def test_transport_error_preserves_attempts_without_secret(self):
+        error = self.client.urllib.error.URLError("sensitive transport payload")
+        opener = mock.Mock()
+        opener.open.side_effect = [self.response(
+            403, {"error": {"code": "InsufficientAccessError"}}), error]
+        with mock.patch.object(self.client.urllib.request, "build_opener", return_value=opener), \
+                mock.patch.object(self.client.time, "sleep"), \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            self.client.query(SUB, "print 1", token="fake")
+        self.assertEqual(len(caught.exception.history), 2)
+        self.assertEqual(caught.exception.history[-1]["status"], "transport-error")
+        self.assertNotIn("sensitive", str(caught.exception))
+
+    def test_response_read_failure_preserves_request_metadata(self):
+        response = self.response(200, {})
+        response.read.side_effect = self.client.http.client.IncompleteRead(b"sensitive")
+        with mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            opener.return_value.open.return_value = response
+            self.client.query(SUB, "print 1", token="fake")
+        self.assertEqual(caught.exception.history[0]["requestId"], "request")
+        self.assertEqual(caught.exception.history[0]["error"], "response-read-failed")
+        self.assertNotIn("sensitive", str(caught.exception))
+
+    def test_absolute_deadline_interrupts_continuously_slow_read(self):
+        response = self.response(200, {})
+        def slow_read():
+            while True:
+                time.sleep(0.01)
+        response.read.side_effect = slow_read
+        started = time.monotonic()
+        with mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            opener.return_value.open.return_value = response
+            self.client.query(SUB, "print 1", token="fake", budget=0.1)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(caught.exception.history[0]["error"], "response-read-failed")
+
+    def test_retry_cap(self):
+        with self.assertRaisesRegex(self.client.QueryError, "6 attempts"):
+            self.run_query([self.response(403, {"error": {"code": "InsufficientAccessError"}})] * 6)
+
+    def test_nonretryable_http_error_stops_once(self):
+        for status in (400, 401, 403):
+            with self.subTest(status=status), self.assertRaisesRegex(self.client.QueryError, "non-retryable"):
+                self.run_query([self.response(status, {"error": {"code": "OtherError"}})])
+
+    def test_time_budget_stops_before_backoff(self):
+        with mock.patch.object(self.client.time, "monotonic", side_effect=[0, 0, 59]), \
+                mock.patch.object(self.client.time, "sleep") as sleep, \
+                mock.patch.object(self.client.random, "uniform", return_value=3), \
+                mock.patch.object(self.client.urllib.request, "build_opener") as opener:
+            opener.return_value.open.return_value = self.response(
+                403, {"error": {"code": "InsufficientAccessError"}})
+            with self.assertRaises(self.client.QueryError):
+                self.client.query(SUB, "print 1", token="fake")
+            sleep.assert_not_called()
+
+
+class WorkbookValidation(unittest.TestCase):
+    def load_validator(self):
+        client_spec = importlib.util.spec_from_file_location(
+            "log_analytics", Path(HERE, "log_analytics.py"))
+        client = importlib.util.module_from_spec(client_spec)
+        client_spec.loader.exec_module(client)
+        spec = importlib.util.spec_from_file_location(
+            "workbook_validation", Path(HERE, "validate-boinc-workbook.py"))
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict("sys.modules", {"log_analytics": client}):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_exact_nine_queries_are_extracted_and_raw_messages_excluded(self):
+        validator = self.load_validator()
+        result = {"tables": [{"columns": [{"name": "Log_s"}, {"name": "Count"}],
+                              "rows": [["private log contents", 7]]}]}
+        positive = {"tables": [{"columns": [{"name": "QueryRouteControl"}], "rows": [[1]]}]}
+        with mock.patch("sys.argv", ["validator", "--workspace", SUB]), \
+                mock.patch.object(validator.log_analytics, "access_token", return_value="fake"), \
+                mock.patch.object(validator.log_analytics, "query",
+                                  side_effect=[(positive, [])] + [(result, [])] * 9) as query, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(validator.main(), 0)
+        receipt = json.loads(out.getvalue())
+        self.assertEqual(len(receipt["panels"]), 10)
+        self.assertEqual(query.call_count, 10)
+        self.assertNotIn("private log contents", out.getvalue())
+        self.assertEqual(receipt["panels"][1]["tables"][0]["rowCount"], 1)
+        source = json.loads(Path(ROOT, "infra/workbooks/boinc.json").read_text())
+        expected = [x["content"]["query"].replace("{TimeRange:grain}", "1h")
+                    for x in source["items"] if x["type"] == 3]
+        self.assertEqual([call.args[1] for call in query.call_args_list[1:]], expected)
+
+    def test_failure_is_not_zero_rows(self):
+        validator = self.load_validator()
+        with mock.patch("sys.argv", ["validator", "--workspace", SUB]), \
+                mock.patch.object(validator.log_analytics, "access_token", return_value="fake"), \
+                mock.patch.object(validator.log_analytics, "query",
+                                  side_effect=validator.log_analytics.QueryError("denied")), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(validator.main(), 1)
+        receipt = json.loads(out.getvalue())
+        self.assertTrue(all(row["status"] == "failed" and "tables" not in row
+                            for row in receipt["panels"]))
 
 
 class StartBridge(unittest.TestCase):

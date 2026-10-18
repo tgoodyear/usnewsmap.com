@@ -96,10 +96,14 @@ def az_json(args):
 
 
 def log_query(workspace, query, span):
-    body = json.dumps({"query": query, "timespan": span})
-    v = az_json(["rest", "--method", "post", "--resource", "https://api.loganalytics.io",
-                 "--url", f"https://api.loganalytics.io/v1/workspaces/{workspace}/query",
-                 "--headers", "Content-Type=application/json", "--body", body])
+    result = subprocess.run(
+        ["python3", os.path.join(ROOT, "scripts/log_analytics.py"),
+         "--workspace", workspace, "--query", query, "--timespan", span],
+        capture_output=True, text=True)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="")
+    result.check_returncode()
+    v = json.loads(result.stdout)
     return rows_of(v)
 
 
