@@ -68,6 +68,19 @@ class MeasuresV1Tests(unittest.TestCase):
         self.assertEqual(region["transcription"]["reference_characters"], 11)
         self.assertEqual(region["transcription"]["deletions"], 6)
 
+    def test_geometry_assignment_maximizes_overlap_and_order(self):
+        refs = [{"id": "p", "reference": "alpha beta", "regions": [
+            {"box": [0, 0, 10, 10], "order": 0, "text": "alpha"},
+            {"box": [1, 0, 10, 10], "order": 1, "text": "beta"}]}]
+        outs = {"engine": [{"id": "p", "text": "alpha beta", "regions": [
+            {"box": [0, 0, 10, 10], "order": 0, "text": "alpha"},
+            {"box": [3, 0, 10, 10], "order": 1, "text": "beta"}]}]}
+        result = measures.compare_transcriptions(refs, outs, bootstrap_samples=5)
+        page = result["systems"]["engine"]["page_regions"]
+        self.assertEqual(page["transcription"]["cer"], 0)
+        self.assertEqual(page["reconstruction"]["reading_order_pairwise_accuracy"], 1)
+        self.assertEqual(page["reconstruction"]["cross_region_contamination_count"], 0)
+
     def test_region_metrics_are_invariant_to_json_array_order(self):
         references = [{"id": "p", "reference": "alpha beta", "regions": [
             {"box": [0, 0, 10, 10], "order": 1, "text": "beta"},
@@ -169,7 +182,7 @@ class MeasuresV1Tests(unittest.TestCase):
         self.assertEqual(score["reciprocal_rank"], 0.5)
 
     def test_review_sample_is_stable_and_independent_of_order(self):
-        first = measures.deterministic_review_sample(["c", "a", "b"], 2, "fixed-run")
+        first = measures.deterministic_review_sample((identity for identity in ["c", "a", "b"]), 2, "fixed-run")
         self.assertEqual(first, measures.deterministic_review_sample(["b", "c", "a"], 2, "fixed-run"))
         self.assertEqual(len(first), 2)
 
@@ -181,6 +194,17 @@ class MeasuresV1Tests(unittest.TestCase):
             max_cer_delta=0.01, max_missing_rate_delta=0, max_good_page_regression_rate=0.1)
         self.assertFalse(decision["eligible"])
         self.assertFalse(decision["cost_better_after_quality_gates"])
+
+    def test_quality_cost_gate_accepts_cheaper_quality_compliant_candidate(self):
+        refs = [{"id": "x", "reference": "same", "page_id": "p"}]
+        outputs = {"baseline": [{"id": "x", "text": "same"}],
+                   "candidate": [{"id": "x", "text": "same"}]}
+        result = measures.compare_transcriptions(refs, outputs, bootstrap_samples=5)
+        decision = measures.quality_cost_decision(result["systems"]["baseline"], result["systems"]["candidate"],
+            baseline_cost=2, candidate_cost=1, max_cer_delta=0, max_missing_rate_delta=0,
+            max_good_page_regression_rate=0)
+        self.assertTrue(decision["eligible"])
+        self.assertTrue(decision["cost_better_after_quality_gates"])
 
     def test_quality_cost_gate_rejects_undefined_cer(self):
         refs = [{"id": "empty", "reference": ""}]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 from collections import Counter, defaultdict
 import json
 import math
@@ -215,31 +216,88 @@ def _iou(a, b):
 
 
 def _region_matches(reference, hypothesis, threshold):
-    candidates = defaultdict(list)
+    """Maximum-cardinality assignment; among those, prefer total IoU then canonical order."""
+    ref_count, hyp_count = len(reference), len(hypothesis)
+    if not ref_count or not hyp_count:
+        return []
+    source, ref_start = 0, 1
+    hyp_start, sink = ref_start + ref_count, ref_start + ref_count + hyp_count
+    graph = [[] for _ in range(sink + 1)]
+
+    def add_edge(origin, target, capacity, cost):
+        forward = [target, capacity, cost, len(graph[target])]
+        reverse = [origin, 0, -cost, len(graph[origin])]
+        graph[origin].append(forward)
+        graph[target].append(reverse)
+        return len(graph[origin]) - 1
+
+    for i in range(ref_count):
+        add_edge(source, ref_start + i, 1, 0)
+    for j in range(hyp_count):
+        add_edge(hyp_start + j, sink, 1, 0)
+    max_pairs = min(ref_count, hyp_count)
+    max_displacement = max(ref_count, hyp_count)
+    max_tie_total = max_pairs * hyp_count
+    displacement_scale = max_tie_total + 1
+    overlap_scale = max_pairs * max_displacement * displacement_scale + max_tie_total + 1
+    assignment_edges = {}
+    incoming_costs = [[] for _ in range(hyp_count)]
     for i, ref in enumerate(reference):
         for j, hyp in enumerate(hypothesis):
             overlap = _iou(ref["box"], hyp["box"])
-            if overlap >= threshold:
-                candidates[i].append((overlap, j))
-    for i, edges in candidates.items():
-        edges.sort(key=lambda item: (-item[0],
-                                     abs(reference[i]["order"] - hypothesis[item[1]]["order"]),
-                                     hypothesis[item[1]]["order"]))
-    hypothesis_to_reference = {}
-
-    def augment(i, seen):
-        for _, j in candidates[i]:
-            if j in seen:
+            if overlap < threshold:
                 continue
-            seen.add(j)
-            if j not in hypothesis_to_reference or augment(hypothesis_to_reference[j], seen):
-                hypothesis_to_reference[j] = i
-                return True
-        return False
+            overlap_units = round(overlap * 1_000_000)
+            displacement = abs(i - j)
+            tie_preference = hyp_count - j
+            weight = overlap_units * overlap_scale - displacement * displacement_scale + tie_preference
+            cost = -weight
+            edge_index = add_edge(ref_start + i, hyp_start + j, 1, cost)
+            assignment_edges[(i, j)] = edge_index
+            incoming_costs[j].append(cost)
 
-    for i in range(len(reference)):
-        augment(i, set())
-    return sorted((i, j) for j, i in hypothesis_to_reference.items())
+    if not assignment_edges:
+        return []
+    potential = [0] * len(graph)
+    for j, costs in enumerate(incoming_costs):
+        if costs:
+            potential[hyp_start + j] = min(costs)
+    reachable_sink_costs = [potential[hyp_start + j] for j, costs in enumerate(incoming_costs) if costs]
+    potential[sink] = min(reachable_sink_costs)
+
+    while True:
+        distances = [None] * len(graph)
+        previous = [None] * len(graph)
+        distances[source] = 0
+        pending = [(0, source)]
+        while pending:
+            distance, origin = heapq.heappop(pending)
+            if distance != distances[origin]:
+                continue
+            for edge_index, edge in enumerate(graph[origin]):
+                target, capacity, cost, _ = edge
+                if not capacity:
+                    continue
+                candidate = distance + cost + potential[origin] - potential[target]
+                if distances[target] is None or candidate < distances[target]:
+                    distances[target] = candidate
+                    previous[target] = (origin, edge_index)
+                    heapq.heappush(pending, (candidate, target))
+        if distances[sink] is None:
+            break
+        for node, distance in enumerate(distances):
+            if distance is not None:
+                potential[node] += distance
+        node = sink
+        while node != source:
+            origin, edge_index = previous[node]
+            edge = graph[origin][edge_index]
+            edge[1] -= 1
+            graph[node][edge[3]][1] += 1
+            node = origin
+
+    return sorted((i, j) for (i, j), edge_index in assignment_edges.items()
+                  if graph[ref_start + i][edge_index][1] == 0)
 
 
 def _region_metrics(refs, hyps, ids, rule, threshold=0.5):
@@ -406,6 +464,7 @@ def compare_transcriptions(references, systems, *, rule="diplomatic-v1", adjudic
             "good_page_regression_rate": _ratio(len(regressions), len(good_pages)),
             "paired_uncertainty_by_page": _cluster_uncertainty(refs, base_items, candidate_items, "page_id", seed, bootstrap_samples),
             "paired_uncertainty_by_title": _cluster_uncertainty(refs, base_items, candidate_items, "title_id", seed, bootstrap_samples)}
+        scored[name]["good_page_regression_rate"] = comparisons[name]["good_page_regression_rate"]
     review_results = {name: _reviews(adjudications, ids, list(details[name].values()), name, set(systems))
                       for name in systems} if adjudications else {}
     return {"format": FORMAT, "measure_version": "1.0.0", "transcription_rule": rule,
@@ -415,9 +474,9 @@ def compare_transcriptions(references, systems, *, rule="diplomatic-v1", adjudic
 def deterministic_review_sample(reference_ids, count, seed):
     """Select a fixed review sample by ID hash, before viewing any system output."""
     import hashlib
-    if count < 0 or count > len(set(reference_ids)):
-        raise ValueError("review sample count must fit the unique reference IDs")
     ids = sorted(set(reference_ids))
+    if count < 0 or count > len(ids):
+        raise ValueError("review sample count must fit the unique reference IDs")
     return sorted(sorted(ids, key=lambda identity: (hashlib.sha256(f"{seed}\0{identity}".encode()).digest(), identity))[:count])
 
 
@@ -489,10 +548,12 @@ def quality_cost_decision(baseline, candidate, *, baseline_cost, candidate_cost,
                           max_cer_delta, max_missing_rate_delta, max_good_page_regression_rate):
     """Apply predeclared quality margins before comparing measured cost per usable page."""
     base, cand = baseline["transcription"], candidate["transcription"]
-    base_missing = (base["missing"] + base["errors"]) / base["samples"]
-    cand_missing = (cand["missing"] + cand["errors"]) / cand["samples"]
+    if base["samples"] < 1 or cand["samples"] < 1:
+        raise ValueError("quality/cost decision requires nonempty paired sample sets")
     if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in (base["cer"], cand["cer"])):
         raise ValueError("quality/cost decision requires defined baseline and candidate CER")
+    base_missing = (base["missing"] + base["errors"]) / base["samples"]
+    cand_missing = (cand["missing"] + cand["errors"]) / cand["samples"]
     cer_delta = cand["cer"] - base["cer"]
     regression = candidate.get("good_page_regression_rate")
     values = (baseline_cost, candidate_cost, max_cer_delta, max_missing_rate_delta, max_good_page_regression_rate)

@@ -59,8 +59,9 @@ as immutable inputs alongside the report; the scorer never rewrites them.
   accuracy over reference regions (unmatched reference regions count as omissions); `segmentation`
   reports region recall/coverage, precision and F1; `reconstruction` reports pairwise reading-order
   accuracy plus a cross-region contamination indicator. Geometry matching is deterministic
-  maximum-cardinality one-to-one matching at IoU >= 0.5, with overlap and validated order values
-  as stable tie-breaks after canonicalizing regions by order.
+  maximum-cardinality one-to-one matching at IoU >= 0.5; among maximum-cardinality assignments,
+  it maximizes total IoU quantized to 1e-6 and then minimizes displacement between canonical order
+  positions.
   The contamination indicator counts a geometrically matched region only when another reference
   region has strictly smaller normalized edit distance than its assigned region (equal-distance
   ties do not count). It is a screening measure, not ground truth; inspect and human-adjudicate a
@@ -94,8 +95,9 @@ python3 scripts/ocr-bench/measures_v1.py \
 
 `search-v1` pins one analyzer (`NFKC`, case-fold, Unicode `\\w+` tokenization; no stemming or
 query expansion) and BM25 (`k1=1.2`, `b=0.75`), with document-ID tie-breaking. It reports
-macro query recall@k, reciprocal rank and graded nDCG@k, overall and by query kind, plus per-query
-results. The same relevance judgments, document IDs/fields, analyzer, ranking parameters and `k`
+macro query recall@k, mean reciprocal rank over the full positive-score ranking and graded
+nDCG@k, overall and by query kind, plus per-query results. Zero-score documents are not ranked.
+The same relevance judgments, document IDs/fields, analyzer, ranking parameters and `k`
 are used for every text source. A production search engine's tokenizer, filters, boosts, metadata,
 and ranker may differ; evaluate it only through a separately pinned adapter and do not silently
 compare differing index settings. Search relevance measures retrieval usefulness, not faithful
@@ -106,9 +108,10 @@ historical transcription. Retain the adjudication protocol and query set version
 Measure cost (e.g. actual dollars, joules, or wall time per **usable page**) independently; never
 assign published OCR zero cost or substitute GPU utilization for quality. Before a run, declare
 non-inferiority margins for CER, missing/error rate and regression rate on already-good pages.
-`quality_cost_decision(...)` requires defined CER for both systems, applies those margins first and
-calls a candidate cost-better only if it passes every quality gate and has lower measured cost per
-usable page. Compare like units, hardware
+`compare_transcriptions` places each candidate's good-page regression rate in its system record.
+Pass the baseline and candidate system records to `quality_cost_decision(...)`; it requires defined
+CER, applies the declared margins, and calls a candidate cost-better only if it passes every gate
+and has lower measured cost per usable page. Compare like units, hardware
 scope and page definitions, and also inspect strata, truncation and retrieval results before
 selecting an engine. The margins are project policy, not universal defaults.
 
