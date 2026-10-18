@@ -253,6 +253,7 @@ class InstallTest(unittest.TestCase):
             ("nvidia_cuda_2b", "windows_x86_64", True, "usnm_qwen_2b_in"),
             ("intel_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("intel_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
+            ("nvidia_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
         ):
             bin_for_plat = bin_win if platform == "windows_x86_64" else bin_unix
             ext = ".exe" if platform == "windows_x86_64" else ""

@@ -155,6 +155,32 @@ foreach ($closed->plan_class as $node) {
     }
 }
 assert(count(glob("$project/.native-qwen-cohort-*")) === 0);
+$shared = native_qwen_cohort_write($project, "shared_8b", 200, true, 209);
+$opened = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($opened->plan_class as $node) {
+    $name = (string)$node->name;
+    if (in_array($name, SHARED_QWEN_CLASSES, true)) {
+        assert((int)$node->min_wu_id === 200 && (int)$node->max_wu_id === 209);
+    } elseif (in_array($name, NATIVE_QWEN_CLASSES, true)) {
+        assert((int)$node->min_wu_id > (int)$node->max_wu_id);
+    } else {
+        $matching = $original->xpath("plan_class[name='$name']");
+        assert($node->asXML() === $matching[0]->asXML());
+    }
+}
+foreach ([["shared_8b",200,210],["shared_8b",200,199],["nvidia_cuda_8b",200,201]] as $bad) {
+    $refused = false;
+    try { native_qwen_cohort_xml($xml, ...$bad); }
+    catch (RuntimeException $e) { $refused = true; }
+    assert($refused);
+}
+native_qwen_cohort_write($project, "shared_8b", 0, true);
+$closed = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($closed->plan_class as $node) {
+    if (in_array((string)$node->name, NATIVE_QWEN_CLASSES, true)) {
+        assert((int)$node->min_wu_id > (int)$node->max_wu_id);
+    }
+}
 $wu = (object)["batch"=>2,"rsc_disk_bound"=>12884901888,"min_quorum"=>2,
     "target_nresults"=>2,"canonical_resultid"=>0,"error_mask"=>0];
 $results = [(object)["server_state"=>2,"sent_time"=>0],(object)["server_state"=>2,"sent_time"=>0]];
@@ -174,6 +200,7 @@ assert($refused);
 $wu->batch = 8; $wu->rsc_disk_bound = 19327352832; $results[0]->server_state = 2;
 native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b");
 native_qwen_cohort_validate($wu, $results, "intel_vulkan_8b");
+native_qwen_cohort_validate($wu, $results, "nvidia_vulkan_8b");
 foreach ($results as $row) $row->sent_time = 1;
 $refused = false;
 try { native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b"); }
