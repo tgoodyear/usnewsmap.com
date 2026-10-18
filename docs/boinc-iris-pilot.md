@@ -202,8 +202,13 @@ truncation). Real worker image on Computer 9, 16 distinct crops, production cont
 cache: 16/16 ok in 98 s (load 14.5 s), text identical to the benchmark's N=16 run. Templates:
 `usnm_iris_bundle_in` / `usnm_iris_bundle_out` (result up to 2 MiB). The compile cache is not part of 1.1.
 
-Evaluation re-run of the accepted 100 crops, host 9 only (batch 105, version 1.1):
-`iris-bundle-campaign.py prepare --source <v1 campaign> --out <dir> --worker-image <digest> --bundle-size 16`,
-then `submit` (dry run unless `--apply`) and `collect --seen <dir> --v1-seen <1.0 seen>` for per-crop CER and
-drift from the 1.0 results. Rollback: deprecate version 1.1 (1.0 is untouched).
+Evaluation re-run of the accepted 100 crops, host 9 only (version 1.1, `version_num` 101). Bundles use
+batch 104: the patched scheduler sends `docker_intel_opencl_4b` work only from that batch, so the first
+submission at batch 105 was never sent. Workunits are `usnm_iris_<id>_b104` with inputs
+`iris_<id>_{pack,job}_b104`, distinct from v1 names. From the bridge (`scripts/start-boinc-bridge.sh --env prod`):
+`--step iris-bundle-stage` (`IRIS_CAMPAIGN`, `IRIS_WORKER_IMAGE`, `IRIS_ARCHIVE_URL`, `IRIS_ARCHIVE_SHA256`; the
+ocr-bench `legacy/overproof-en-100` subset by default), then `iris-bundle-submit` (dry run unless
+`IRIS_APPLY=1`), then `iris-bundle-collect` for per-crop CER and drift from the 1.0 results.
+`iris-bundle-cancel` (dry run unless `IRIS_APPLY=1`) cancels a stranded batch-105 campaign.
+Rollback: deprecate version 1.1 (1.0 is untouched).
 The 20,000-page set stays gated by its own `campaign.json`; this release does not dispatch it.

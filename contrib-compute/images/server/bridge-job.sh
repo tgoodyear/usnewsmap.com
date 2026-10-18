@@ -93,6 +93,8 @@
 #                               bundles the benchmark subset for host 9 (usnm_iris 1.1); no database
 #   BRIDGE_STEP=iris-bundle-submit IRIS_CAMPAIGN=<name>   [IRIS_APPLY=1] (else a dry run)
 #   BRIDGE_STEP=iris-bundle-collect IRIS_CAMPAIGN=<name>  per-crop CER and drift from 1.0 results
+#   BRIDGE_STEP=iris-bundle-cancel IRIS_CAMPAIGN=<name>   [IRIS_APPLY=1] cancels the workunits of a
+#                               batch-105 campaign, which the scheduler can never send (dry run without)
 #
 # The remote hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache), through the
 # hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
@@ -337,7 +339,7 @@ esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
   [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
-  [ "$step" != gold-onboard ] && [ "$step" != iris-bundle-submit ]; then
+  [ "$step" != gold-onboard ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -425,6 +427,11 @@ fetch_secrets
 render_config
 umask 0002
 case "$step" in
+  iris-bundle-cancel)
+    apply=()
+    [ "${IRIS_APPLY:-}" = 1 ] && apply=(--apply)
+    exec python3 "$TEMPLATES/iris/iris-bundle-campaign.py" cancel-stranded --root "$IRIS" --project "$PROJ" \
+      ${apply[@]+"${apply[@]}"} ;;
   iris-bundle-submit)
     for template in usnm_iris_bundle_in usnm_iris_bundle_out; do
       cp "$TEMPLATES/$template" "$PROJ/templates/$template"
@@ -537,5 +544,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit or iris-bundle-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
 esac

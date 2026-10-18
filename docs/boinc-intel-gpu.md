@@ -17,6 +17,11 @@ classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win
 
 - **Scheduler.** BOINC finds Intel GPUs through OpenCL, so the class needs `gpu_type intel` and
   an OpenCL device with at least 7,000 MB.
+- **Resource type.** Stock BOINC infers an app version's resource from its plan-class name and
+  knows Intel only by `intel_gpu`, so it would tell clients this project has no Intel GPU apps
+  (`no_rsc_apps intel_gpu`), and they would stop asking for Intel GPU work.
+  `scripts/boinc/patch-server-intel-proc-type.py` maps every plan class naming `intel` to the
+  Intel GPU. Each such class must therefore have `gpu_type intel` (#736).
 - **App.** The app lists the Vulkan devices with its own `llama-server --list-devices` and takes
   the Intel device BOINC assigned. BOINC numbers Intel GPUs among themselves, so device 0 is the
   first Intel device in the list, whatever its `VulkanN` name. The app never takes a software

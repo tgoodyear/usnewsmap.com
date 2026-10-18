@@ -24,7 +24,11 @@ spec.loader.exec_module(base)
 import bundle as b  # noqa: E402  (path set up by iris-campaign)
 import contract as c  # noqa: E402
 
-BATCH = 105
+# The patched scheduler (scripts/boinc/patch-server-apple-gpu.py) sends docker_intel_opencl_4b work
+# only from batch 104, so bundles share the pilot's batch. Their names carry a suffix so they never
+# collide with a v1 workunit or with the unsendable batch-105 units of the first submission.
+BATCH = 104
+SUFFIX = f"b{BATCH}"
 VERSION_NUM = 101  # publish-appver.sh: 100 * major + minor
 DEFAULT_SIZE = 16
 
@@ -130,14 +134,18 @@ def create_work_args(identity: str, crops: int):
     if not base.IDENTITY.fullmatch(identity):
         raise ValueError("invalid workunit identity")
     return [
-        "--appname", base.APP, "--wu_name", f"usnm_iris_{identity}", "--app_version_num", str(VERSION_NUM),
+        "--appname", base.APP, "--wu_name", wu_name(identity), "--app_version_num", str(VERSION_NUM),
         "--wu_template", "templates/usnm_iris_bundle_in", "--result_template", "templates/usnm_iris_bundle_out",
         "--target_host", str(base.HOST_ID), "--batch", str(BATCH),
         "--min_quorum", "1", "--target_nresults", "1", "--max_error_results", "1", "--max_total_results", "1",
         "--max_success_results", "1", "--rsc_fpops_est", str(crops * 10 ** 12), "--rsc_fpops_bound", "1e17",
         "--rsc_memory_bound", "9663676416", "--rsc_disk_bound", "17179869184", "--delay_bound", "259200",
-        f"iris_{identity}_pack", f"iris_{identity}_job",
+        f"iris_{identity}_pack_{SUFFIX}", f"iris_{identity}_job_{SUFFIX}",
     ]
+
+
+def wu_name(identity: str):
+    return f"usnm_iris_{identity}_{SUFFIX}"
 
 
 def submit(root: Path, project: Path, apply: bool = False):
@@ -173,7 +181,8 @@ def submit(root: Path, project: Path, apply: bool = False):
             else:
                 base.durable(registered, job_data)
                 registered.chmod(0o664)
-            for filename, physical in (("pages.pack", f"iris_{identity}_pack"), ("iris.json", f"iris_{identity}_job")):
+            for filename, physical in (("pages.pack", f"iris_{identity}_pack_{SUFFIX}"),
+                                       ("iris.json", f"iris_{identity}_job_{SUFFIX}")):
                 output = subprocess.run([str(project / "bin/dir_hier_path"), physical], cwd=project, check=True,
                                         capture_output=True, text=True).stdout.strip()
                 target = Path(output)
@@ -188,7 +197,7 @@ def submit(root: Path, project: Path, apply: bool = False):
                 else:
                     base.durable(target, raw)
                     target.chmod(0o664)
-            base.durable(unit / "submitting", base.encoded({"workunit": f"usnm_iris_{identity}", "host_id": base.HOST_ID}))
+            base.durable(unit / "submitting", base.encoded({"workunit": wu_name(identity), "host_id": base.HOST_ID}))
             subprocess.run([str(project / "bin/create_work"), *create_work_args(identity, len(row["crops"]))],
                            cwd=project, check=True)
             (unit / "submitting").rename(unit / "submitted")
@@ -196,6 +205,32 @@ def submit(root: Path, project: Path, apply: bool = False):
     finally:
         lock.rmdir()
     return {"submitted": submitted, "previously_submitted": skipped, "host_id": base.HOST_ID}
+
+
+STRANDED = re.compile(r"usnm_iris_[0-9a-f]{64}")
+
+
+def cancel_stranded(root: Path, project: Path, apply: bool = False):
+    """Cancel the workunits of a batch-105 campaign: the scheduler can never send them."""
+    campaign = json.loads((root / "campaign.json").read_text())
+    if campaign.get("v") != 2 or campaign.get("batch") != 105 or campaign.get("host_id") != base.HOST_ID:
+        raise ValueError("only the stranded batch-105 bundle campaign can be cancelled")
+    project = project.resolve(strict=True)
+    names = []
+    for row in campaign["bundles"]:
+        unit = root / "units" / row["id"]
+        if (unit / "cancelled").exists() or not (unit / "submitted").exists():
+            continue
+        name = json.loads((unit / "submitted").read_text())["workunit"]
+        if not STRANDED.fullmatch(name) or name != f"usnm_iris_{row['id']}":
+            raise ValueError(f"{row['id']}: unexpected workunit name")
+        names.append((unit, name))
+    if not apply:
+        return {"dry_run": True, "workunits": [name for _, name in names]}
+    for unit, name in names:
+        subprocess.run([str(project / "bin/cancel_jobs"), "--name", name], cwd=project, check=True)
+        base.durable(unit / "cancelled", base.encoded({"workunit": name}))
+    return {"cancelled": len(names)}
 
 
 def collect(root: Path, seen: Path, v1_seen: Path | None = None):
@@ -268,6 +303,10 @@ def main():
     send.add_argument("--root", type=Path, required=True)
     send.add_argument("--project", type=Path, required=True)
     send.add_argument("--apply", action="store_true")
+    stranded = commands.add_parser("cancel-stranded")
+    stranded.add_argument("--root", type=Path, required=True)
+    stranded.add_argument("--project", type=Path, required=True)
+    stranded.add_argument("--apply", action="store_true")
     inspect = commands.add_parser("collect")
     inspect.add_argument("--root", type=Path, required=True)
     inspect.add_argument("--seen", type=Path, required=True)
@@ -280,6 +319,8 @@ def main():
                        args.bundle_size)
     elif args.command == "submit":
         result = submit(args.root, args.project, args.apply)
+    elif args.command == "cancel-stranded":
+        result = cancel_stranded(args.root, args.project, args.apply)
     else:
         result = collect(args.root, args.seen, args.v1_seen)
     print(json.dumps(result, indent=2))
