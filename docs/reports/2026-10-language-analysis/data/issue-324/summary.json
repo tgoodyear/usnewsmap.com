@@ -1,0 +1,32 @@
+{
+  "release": "pages-v20261006-2",
+  "build": "df5ab03d9397d13790a4b8d31d007cf03fb5a4e3",
+  "parts_verified": 5239,
+  "input_bytes_verified": 114177160,
+  "raw_rows": 17286,
+  "unique_ids": 10414,
+  "selected_pages": 10414,
+  "skipped": 0,
+  "duplicate_rows": 6872,
+  "eligible": 10305,
+  "excluded": 109,
+  "selected_statuses": {
+    "ok": 10305,
+    "empty": 2,
+    "short": 107
+  },
+  "excluded_statuses": {
+    "empty": 2,
+    "short": 107
+  },
+  "excluded_missing_text": 0,
+  "snapshot_sha256": {
+    "manifest.json": "7927d070298ad98b3f958e03b0bab6dc4fd09abc8e6947ba9a129e64889543ca",
+    "ocr_ja.json": "f4620e6d67b5a1cd4e8893ef0e08c8c69d313aa3cf1ad3ba20bb06d2a42d0e22",
+    "batches.json": "2ae256a1be5dbf1d9703ac95b43ebd4e7c070420f1f9c399e8c6ecd8bcf5ab28",
+    "titles.json": "54c8a822e637d38c6912485fd5a43301324d23b939e47f3819b0a7ed2e41419e"
+  },
+  "eligible_ids_sha256": "08d8b11e19d16f29e44ec63047de508363e5efec5453344bb1c38cb0fde54cbd",
+  "excluded_csv_sha256": "3713fe0e223712e56feec40ebf71cc5132c9dfac464cb6247f55ed1d02183d33",
+  "evidence_type": "Complete historical input reconstruction; not a historical index doc_id export"
+}
