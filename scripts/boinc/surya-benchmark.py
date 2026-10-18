@@ -126,7 +126,7 @@ def collect(root, seen, out, binary, intended_device):
         prefix = f"usnm_surya_{job['id']}_host{target_host}_"
         suffix = directory.name.removeprefix(prefix)
         if (not directory.name.startswith(prefix)
-                or re.fullmatch(r"[0-9]+(?:_[0-9]+)*_3", suffix) is None):
+                or re.fullmatch(r"[0-9]+(?:_[0-9]+)*(?:_r[0-9]+)?_3", suffix) is None):
             continue
         files = [directory / f"text-{mode}.txt" for mode in MODES] + [path, directory / "diag.txt"]
         subprocess.run([binary, "surya", "check", "--files", *map(str, files)], check=True)

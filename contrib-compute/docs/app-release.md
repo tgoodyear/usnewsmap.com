@@ -1,10 +1,52 @@
 # Releasing a BOINC app version
 
 Runtime rebuilds retain the deployed feeder's `--allapps` interleaving and 1,000
-shared-memory work slots so older queued applications cannot starve newer
-canaries. Re-rendering an existing project also leaves already-correct config and
+shared-memory work slots, with an explicit query budget as described below.
+Re-rendering an existing project also leaves already-correct config and
 key symlinks intact; a runtime upgrade must not transiently remove its signing
 paths.
+
+### Feeder visibility
+
+`shmem_work_items` sizes the cache, **not** the database enumeration. In the
+[pinned BOINC feeder](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp),
+the default query budget is independently `MAX_WU_RESULTS * 2 = 200`.
+With `--allapps`, each application's enumeration limit is
+`floor(0.5 + feeder_query_size * app_weight / total_app_weight)`.
+Nine equally weighted applications therefore got only 22 candidates each,
+despite 1,000 cache slots (about 111 per app). Replicas already completed by
+the requesting host still occupy that prefix: distinct-host validation correctly
+blocks them, leaving eligible work beyond enumeration invisible (#860).
+
+The template sets `feeder_query_size=20000`: 2,222 candidates per equal-weight
+app. The sizing invariant is that **each positive-weight app's rounded query
+budget covers at least twice the entire cache capacity**, and Qwen's covers
+at least four times the 455 ready results across its current batches (2, 8, 12
+and 18). The whole-cache floor is deliberately conservative; this allocation
+is about 20 times each app's current cache share and 4.9 times the Qwen
+baseline. Tests derive the budgets from `project.xml` weights, so app additions,
+weight changes and cache growth must still satisfy the invariant.
+
+This is a bounded fix, not infinite fairness: queries may enumerate roughly
+20,000 joined result/workunit rows across apps per pass (rounding can vary the
+total), increasing database, feeder memory and collision-check costs without
+allocating more shared-memory slots. A larger blocked prefix or a full cache
+of infeasible work can still hide eligible results. Recheck actual registered
+app weights, ready counts, cache contents and feeder/database load before
+backlog growth exhausts this headroom; update the sizing baseline and budget
+together. Do not clear queues or weaken `one_result_per_host_per_wu` or quorum
+to improve apparent dispatch.
+
+Release verification remains separate from these configuration tests: confirm
+the rendered runtime query size, feeder restart/cache visibility and actual
+GPU returns, distinct-host validation and collection before claiming recovery.
+Ship the reviewed `refresh-plan-policy.py` startup path and Vulkan definitions
+already on main, not the old unconditional policy copy. The refresher preserves
+operator-controlled cohort bounds while restoring missing classes closed;
+registration alone does not admit work. Preview then open at most ten audited
+units through `native-qwen-cohort.php --plan-class shared_8b`, under the existing
+release coordination and locks. Preserve live configuration, quality metrics,
+queues and pins; this code change neither deploys nor opens a cohort.
 
 `scripts/boinc-app-release.sh` builds, stages, signs and publishes one app version on the
 live server in one command:
@@ -69,9 +111,11 @@ The helper checks Qwen identity, model batch, disk bound, independent quorum and
 target of 2, and two unsent results. It journals the old plan, atomically opens
 one WU in one class and closes the other. Stock scheduler range and batch checks
 enforce that window. It creates no work and changes no scientific rows, account
-rows or resource choices. Deployment or reinitialization restores the closed
-template; re-audit before reopening. Stop after the cohort. The helper does not
-authorize general unvalidated dispatch.
+rows or resource choices. Normal server startup refreshes reviewed policy while
+preserving existing bounded admission, including the shared Vulkan window and
+closed container class. Newly introduced classes start closed; reinitialization
+uses the closed template. Re-audit before opening or widening any cohort. Stop
+after the cohort. The helper does not authorize general unvalidated dispatch.
 
 These native-only classes admit stable BOINC 8.2.11+ and do not require a
 container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
