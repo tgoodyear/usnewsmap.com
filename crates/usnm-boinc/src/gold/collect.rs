@@ -370,11 +370,12 @@ fn run_inner(
             if native.is_some() {
                 anyhow::ensure!(
                     native_by_workunit.get(&wu).is_some_and(|results| {
-                        results
-                            .iter()
-                            .any(|result| result.server_state == BOINC_SERVER_STATE_OVER)
+                        !results.is_empty()
+                            && results
+                                .iter()
+                                .all(|result| result.server_state == BOINC_SERVER_STATE_OVER)
                     }),
-                    "{wu}: terminal assimilator marker has no terminal authoritative BOINC result"
+                    "{wu}: terminal assimilator marker has unresolved BOINC results"
                 );
             }
             summary.failed += 1;
@@ -808,6 +809,7 @@ mod tests {
         stale_snapshot[1].server_state = 4;
         stale_snapshot[1].outcome = 0;
         stale_snapshot[1].received_at = None;
+        stale_snapshot.push(native(&jobs[1], 106, 8, 2, 210, false, ("eng", "eng")));
         let stale_contents = stale_snapshot
             .iter()
             .map(|row| serde_json::to_string(row).unwrap())

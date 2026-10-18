@@ -1082,9 +1082,9 @@ timestamp to the matching native server row. An absent/ambiguous DB result or
 host mismatch fails closed for calibrated trust; no zero-crop report is
 synthesized. The files remain on the existing project share. Recollection merges the bounded
 previous native snapshot before refreshing it, preserving captured terminal
-history after BOINC purges result rows. A terminal assimilator marker without a
-current or previously saved terminal server result makes collection fail before
-replacing reports or outcome evidence; a stale in-progress row is insufficient.
+history after BOINC purges result rows. A terminal assimilator marker with any
+unresolved native result (including a stale in-progress row) makes collection fail
+before replacing reports or outcome evidence.
 
 **Models.** The worker image's model lock decides which crops a host can score;
 crops in a language with no locked model are listed as skipped.
