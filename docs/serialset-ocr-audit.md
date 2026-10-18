@@ -69,7 +69,7 @@ Sources checked (2026-10-18):
 The comparison uses the existing #738 `bench-score` implementation and its two rules on the same
 three verified full pages. Both systems produced all three outputs. The human reference subset
 has digest `a6cd647618f652b9cb1b563e8bfe6375ff4d86799bfca1e436e92884563bc2a9`; the complete
-pilot file-set digest is `0f744a8fb83958fdf7eaf1d766ce9bf92e35a4621aa11fe1caa490f743580e19`.
+pilot file-set digest is `47c8cf4b5b8e768cf7225629fac4ff6edcd9b3ca19bfe1f0bd58f54a4131acee`.
 
 | OCR output             | Rule           | Edits / reference chars |    CER | Missing |
 | ---------------------- | -------------- | ----------------------: | -----: | ------: |
