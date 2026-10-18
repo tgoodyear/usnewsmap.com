@@ -31,6 +31,49 @@ DUCKDB_WHL_URL = "https://files.pythonhosted.org/packages/50/52/6e6f5b5b07841cec
 SCANS_SAS = os.environ.get("SCANS_SAS", "")
 CURATED_SAS = os.environ.get("CURATED_SAS", "")
 HANDOFF_SAS = os.environ.get("HANDOFF_SAS", "")
+STORAGE_BEARER_TOKEN = os.environ.get("STORAGE_BEARER_TOKEN", "")
+_MI_TOKEN_CACHE = {"token": "", "expires_at": 0.0}
+
+
+def get_storage_bearer_token(for_curated: bool = False) -> str:
+    if for_curated and STORAGE_BEARER_TOKEN:
+        return STORAGE_BEARER_TOKEN
+    now = time.time()
+    if _MI_TOKEN_CACHE["token"] and now < _MI_TOKEN_CACHE["expires_at"]:
+        return _MI_TOKEN_CACHE["token"]
+    endpoint = os.environ.get("IDENTITY_ENDPOINT")
+    header = os.environ.get("IDENTITY_HEADER")
+    client_id = os.environ.get("AZURE_CLIENT_ID")
+    if endpoint and header:
+        q = f"{endpoint}?api-version=2019-08-01&resource=https://storage.azure.com/"
+        if client_id:
+            q += f"&client_id={urllib.parse.quote(client_id)}"
+        req = urllib.request.Request(q, headers={"X-IDENTITY-HEADER": header})
+        data = json.loads(urllib.request.urlopen(req, timeout=15).read())
+        tok = data.get("access_token", "")
+        if tok:
+            _MI_TOKEN_CACHE["token"] = tok
+            _MI_TOKEN_CACHE["expires_at"] = now + 1800.0
+            return tok
+    return STORAGE_BEARER_TOKEN
+
+
+def azure_blob_url_and_headers(url: str, extra_headers: dict | None = None) -> tuple[str, dict]:
+    headers = {"User-Agent": "usnewsmap-quality/1.3"}
+    if extra_headers:
+        headers.update(extra_headers)
+    if ".blob.core.windows.net/" in url:
+        base, sep, qs = url.partition("?")
+        qs = qs.strip("&?")
+        if "sv=" in qs:
+            return f"{base}?{qs}", headers
+        clean_url = f"{base}?{qs}" if qs else base
+        tok = get_storage_bearer_token(for_curated=("stusnmdffapzy." in base))
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
+            headers["x-ms-version"] = "2021-08-06"
+        return clean_url, headers
+    return url, headers
 
 SCANS_BASE = "https://usnmscansstprodffapzy.blob.core.windows.net/scans"
 CURATED_BASE = "https://stusnmdffapzy.blob.core.windows.net/curated"
@@ -105,17 +148,16 @@ def bootstrap_runtime():
 
 
 def put_blob(blob_path, data_bytes, content_type="application/octet-stream"):
-    url = f"{HANDOFF_BASE}/{blob_path}?{HANDOFF_SAS}"
-    req = urllib.request.Request(
-        url,
-        data=data_bytes,
-        method="PUT",
-        headers={
+    raw_url = f"{HANDOFF_BASE}/{blob_path}?{HANDOFF_SAS}"
+    url, headers = azure_blob_url_and_headers(
+        raw_url,
+        {
             "x-ms-blob-type": "BlockBlob",
             "Content-Type": content_type,
             "Content-Length": str(len(data_bytes)),
         },
     )
+    req = urllib.request.Request(url, data=data_bytes, method="PUT", headers=headers)
     urllib.request.urlopen(req, timeout=120).read()
 
 
@@ -163,7 +205,8 @@ def run_mysql(sql):
 def download_bytes(url, retries=4):
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "usnewsmap-quality/1.3"})
+            clean_url, headers = azure_blob_url_and_headers(url)
+            req = urllib.request.Request(clean_url, headers=headers)
             return urllib.request.urlopen(req, timeout=90).read()
         except Exception:
             if attempt == retries - 1:
@@ -1514,10 +1557,22 @@ def process_shard(shard_idx):
 
             try:
                 loc_alto_url = None
+                cached_jpeg = False
                 if blob_name:
-                    scan_url = f"{SCANS_BASE}/{blob_name}?{SCANS_SAS}"
-                    raw = download_bytes(scan_url)
-                    is_jp2 = blob_name.endswith(".jp2")
+                    if blob_name.endswith(".jp2"):
+                        cache_url = f"{HANDOFF_BASE}/quality-jpeg/l-q75-r1/{blob_name}.jpg?{HANDOFF_SAS}"
+                        try:
+                            raw = download_bytes(cache_url, retries=1)
+                            cached_jpeg = True
+                            is_jp2 = False
+                        except Exception:
+                            scan_url = f"{SCANS_BASE}/{blob_name}?{SCANS_SAS}"
+                            raw = download_bytes(scan_url)
+                            is_jp2 = True
+                    else:
+                        scan_url = f"{SCANS_BASE}/{blob_name}?{SCANS_SAS}"
+                        raw = download_bytes(scan_url)
+                        is_jp2 = False
                 else:
                     jp2_url, loc_alto_url = loc_resolver.resolve(
                         r["lccn"], r["date"], r["edition"], r["seq"]
@@ -1528,7 +1583,12 @@ def process_shard(shard_idx):
                     is_jp2 = True
 
                 w, h = 0, 0
-                if is_jp2 or len(raw) > 20_000_000:
+                if cached_jpeg:
+                    with Image.open(io.BytesIO(raw)) as im:
+                        w, h = im.size
+                    with open(jpg_dst, "wb") as f:
+                        f.write(raw)
+                elif is_jp2 or len(raw) > 20_000_000:
                     with Image.open(io.BytesIO(raw)) as im:
                         if getattr(im, "format", "") == "JPEG2000" and max(im.size) > 4000:
                             im.reduce = 1

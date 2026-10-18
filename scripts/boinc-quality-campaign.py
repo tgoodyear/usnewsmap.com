@@ -786,35 +786,6 @@ def cmd_refresh_db(args: argparse.Namespace) -> int:
     return 0
 
 
-def generate_container_sas(account: str, container: str, permissions: str = "rl") -> str:
-    now = dt.datetime.now(dt.timezone.utc)
-    start = (now - dt.timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%MZ")
-    expiry = (now + dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%MZ")
-    return run_az(
-        [
-            "storage",
-            "container",
-            "generate-sas",
-            "--account-name",
-            account,
-            "--name",
-            container,
-            "--permissions",
-            permissions,
-            "--start",
-            start,
-            "--expiry",
-            expiry,
-            "--auth-mode",
-            "login",
-            "--as-user",
-            "-o",
-            "tsv",
-        ],
-        capture_json=False,
-    )
-
-
 def poke_local_boinc_client(project_url: str = "https://boinc.usnewsmap.com/") -> bool:
     """If a local BOINC client is running on 127.0.0.1:31416, trigger project_update to clear work-fetch backoff."""
     auth_candidates = [
@@ -903,10 +874,6 @@ def cmd_launch_corpus(args: argparse.Namespace) -> int:
     )
     print(f"Uploaded {runner_path.name} -> {args.handoff_account}/{args.handoff_container}/{blob_path}")
 
-    scans_sas = generate_container_sas(DEFAULT_SCANS_ACCOUNT, DEFAULT_SCANS_CONTAINER, "rl")
-    curated_sas = generate_container_sas("stusnmdffapzy", "curated", "rl")
-    handoff_sas = generate_container_sas(args.handoff_account, args.handoff_container, "racwdl")
-
     running = run_az(
         [
             "containerapp",
@@ -982,13 +949,7 @@ def cmd_launch_corpus(args: argparse.Namespace) -> int:
     container.pop("args", None)
     container.pop("imageType", None)
     env_list = [e for e in container.get("env", []) if e.get("name") in base_names]
-    env_list.extend(
-        [
-            {"name": "SCANS_SAS", "value": scans_sas},
-            {"name": "CURATED_SAS", "value": curated_sas},
-            {"name": "HANDOFF_SAS", "value": handoff_sas},
-        ]
-    )
+    env_list.append({"name": "STORAGE_BEARER_TOKEN", "value": token})
     container["env"] = env_list
     cfg = job_doc["properties"]["configuration"]
     cfg.pop("identitySettings", None)
