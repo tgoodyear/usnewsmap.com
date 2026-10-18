@@ -230,3 +230,9 @@ if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[
     raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
 PY
 echo "BOINC deployment ready: ${PROJECT_URL} (secrets, project, app registration and public health verified)"
+workspace=$(baz monitor log-analytics workspace list --resource-group "$BOINC_RG" \
+  --query '[0].customerId' -o tsv) || workspace=""
+if [ -z "$workspace" ] || ! python3 scripts/validate-boinc-workbook.py \
+  --workspace "$workspace" --subscription "$SUBSCRIPTION" > "$work/workbook-validation.json"; then
+  echo "warning: workbook live validation incomplete; run scripts/validate-boinc-workbook.py separately" >&2
+fi

@@ -126,14 +126,13 @@ Keep #510 acceptance open until an authorized operator can:
    drift checks, and verify the latest tiles, state table and time chart consume
    that event.
 
-Live verification requires a recent BOINC log sample and an in-VNet runtime check. Read-only
-ARM metadata confirms both table schemas. The current workspace-context query identity gets
-`InsufficientAccessError` when querying tables, while the authorized resource-context Logs API
-route to the BOINC Container Apps environment succeeds. That route returned no rows from
-`ContainerAppSystemLogs` or `ContainerAppConsoleLogs` over the last 30 days, so actual status
-values, app and job filter hits, a deployed work-volume sample, and workbook output against
-data remain unverified. No Azure grants or configuration were changed. Keep live acceptance
-open until an authorized operator can verify a recent sample and the workbook results.
+Live verification requires a recent BOINC log sample and an in-VNet runtime check.
+The intermittent `InsufficientAccessError` in #528 was isolated to a faulty Traffic
+Manager query frontend, not missing Reader permissions. Resource-context constant
+queries with no visible workspace sources did not prove absence of ingestion.
+Use `scripts/validate-boinc-workbook.py --workspace <customer-GUID>` for the nine
+panels; see [query routing and retries](../../docs/boinc.md#workbook-query-validation).
+Successful empty panels do not establish status/filter or recent-sample acceptance.
 
 `scripts/build-boinc-images.sh` builds and pins the server and bridge artifacts.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the

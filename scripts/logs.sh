@@ -66,14 +66,9 @@ workspace=$(aget "$ws_key")
 [ -n "$workspace" ] ||
   die "$ws_key isn't set for $ENV_NAME; run scripts/provision.sh --env $ENV_NAME to save the stack outputs"
 
-body=$(mktemp)
-trap 'rm -f "$body"' EXIT
-jq -n --rawfile q "ops/queries/$NAME.kql" --arg t "$SPAN" '{query: $q, timespan: $t}' > "$body"
-result=$(az rest --method post \
-  --resource https://api.loganalytics.io \
-  --url "https://api.loganalytics.io/v1/workspaces/$workspace/query" \
-  --headers Content-Type=application/json \
-  --body "@$body" -o json) || die "the query failed (is az signed in to the environment's tenant?)"
+result=$(python3 scripts/log_analytics.py --workspace "$workspace" \
+  --query "$(cat "ops/queries/$NAME.kql")" --timespan "$SPAN") ||
+  die "the query failed; see the bounded Logs attempts above"
 
 # One tab-separated line per row, header first; tabs and newlines inside
 # values become spaces, and empty values "-" (column merges empty fields).

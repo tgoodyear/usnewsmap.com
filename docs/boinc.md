@@ -25,6 +25,41 @@ cached pages with bounded queue backpressure; operators activate it separately.
 The [post-training pilot](boinc-transcription.md) evaluates public-gold
 baselines and adapted models with `usnm_qwen`.
 
+## Workbook query validation
+
+Run `python3 scripts/validate-boinc-workbook.py --workspace <customer-GUID>`
+with the Mac's existing Azure CLI user credential. On an authorized Arc host use
+`--identity arc`; the standard localhost:40342 challenge and token stay on that
+host, and its existing identity must already have workspace Reader access.
+Arc membership alone does not grant query access. No login, grant, workload or
+resource is created by validation. `--subscription <id>` selects the existing
+Azure CLI account without changing global CLI configuration.
+
+The shared `scripts/log_analytics.py` client posts to
+`https://api.loganalytics.io/v1/workspaces/<customer-GUID>/query` with audience
+`https://api.loganalytics.io`. #528 isolated intermittent authorization failures
+to a faulty Traffic Manager frontend: the same authorized user and Arc identity
+worked on other frontends. Neither the replacement hostname with this token nor
+the ARM-ID resource-context route supplied reliable workspace-data acceptance
+in these tests. The client never pins an IP or bypasses Traffic Manager.
+
+Only HTTP403 **InsufficientAccessError**, HTTP429 and HTTP5xx are retried.
+Every attempt uses a new connection so DNS re-resolves, with 3–6s jitter,
+at most six attempts and a 60s query budget (token acquisition is separate).
+Other 403s, 401, 400, transport failures and partial-success error responses
+fail closed. Attempt/status/`via` diagnostics go to stderr, never tokens.
+A persistent authorization error still fails; retries do not confer permission.
+The BOINC execution-log reader, saved-query CLI, cluster report and quality-row
+reader share this implementation.
+
+Validation runs a constant positive control and all nine source workbook KQL
+queries (default seven days, grain one hour), emitting per-panel status, actual
+row counts, query hashes, attempts and aggregate-only samples. Raw log messages
+are excluded. A failed/partial response is never represented as zero rows.
+Empty successful panels do not establish actual status/filter coverage or fresh
+work-volume telemetry. The normal BOINC post-deploy health step runs validation
+as a warning-level check; it does not redeploy resources to query them.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">
   <img alt="OCR and search pipeline with BOINC: LoC scans go through the on-prem scan fetcher and OCR nodes to ocr-out, ocr-sync, the curated lake, release, index and API. The scan fetcher pushes cached scans to a hand-off container; a hand-off job in the main environment reserves pages and later collects results; the BOINC bridge pulls each job from the container, volunteers run the pinned worker, and the result spool and gold trust list go back through the container, so collect publishes to the same ocr-out as the OCR nodes for trusted hosts and holds an untrusted host's result in quarantine." src="images/pipeline-boinc.svg" width="960">
