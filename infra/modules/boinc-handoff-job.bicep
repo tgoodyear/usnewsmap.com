@@ -27,6 +27,8 @@ param curatedUrl string
 param referenceUrl string
 @description('The exchange account\'s ocr-out container URL.')
 param outUrl string
+@description('The exchange account\'s queue endpoint, where the claim step takes pages off the work queues (ocr-exchange.bicep grants the roles).')
+param queueUrl string
 @description('Seconds before a run is stopped. Export copies scans/ down, so a larger cohort needs longer.')
 param timeoutSeconds int = 1800
 
@@ -89,6 +91,7 @@ resource job 'Microsoft.App/jobs@2025-01-01' = {
             { name: 'CURATED_URL', value: curatedUrl }
             { name: 'REFERENCE_URL', value: referenceUrl }
             { name: 'OUT_URL', value: outUrl }
+            { name: 'QUEUE_URL', value: queueUrl }
           ]
         }
       ]

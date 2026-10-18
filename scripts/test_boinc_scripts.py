@@ -721,6 +721,21 @@ class StartBridge(unittest.TestCase):
             self.assertIn(f"--name usnm-boinc-handoff-caj-{env_name} --resource-group rg-usnm-{env_name}", update)
             self.assertIn("HANDOFF_STEP=collect", update)
             self.assertNotIn("BRIDGE_STEP", update)
+            # A job deployed before the queue steps has no QUEUE_URL and still runs.
+            self.assertNotIn("QUEUE_URL", update)
+        with_queue = json.dumps({"containers": [{"name": "handoff", "env": [
+            {"name": k, "value": v} for k, v in {**base, "QUEUE_URL": "https://x.queue.core.windows.net"}.items()]}]})
+        r = self.run_script("--target", "handoff", "--step", "claim", "--var", "CLAIM_NONCE=abcdefgh12",
+                            env_name="prod", STUB_TEMPLATE=with_queue, STUB_SUB=SUB,
+                            USNM_SETTINGS_HOME=settings_home)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        update = [c for c in self.calls() if c.startswith("containerapp job update")][-1]
+        self.assertIn("QUEUE_URL=https://x.queue.core.windows.net", update)
+        self.assertIn("HANDOFF_STEP=claim", update)
+        r = self.run_script("--target", "handoff", "--step", "claim", "--var", "QUEUE_URL=https://evil",
+                            env_name="prod", STUB_TEMPLATE=with_queue, USNM_SETTINGS_HOME=settings_home)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't be changed per run", r.stderr)
         r = self.run_script("--target", "handoff", "--step", "collect", "--var", "HANDOFF_STEP=x",
                             STUB_TEMPLATE=tmpl, USNM_SETTINGS_HOME=settings_home)
         self.assertEqual(r.returncode, 1)
@@ -737,8 +752,9 @@ class BaseVarsMatchBicep(unittest.TestCase):
 
     def test_handoff_lists_agree(self):
         with open(SCRIPT) as f:
-            m = re.search(r"^HANDOFF_BASE_VARS=\(([^)]*)\)", f.read(), re.M)
-        script = m.group(1).split()
+            text = f.read()
+        script = re.search(r"^HANDOFF_BASE_VARS=\(([^)]*)\)", text, re.M).group(1).split()
+        script += re.search(r"^HANDOFF_OPTIONAL_VARS=\(([^)]*)\)", text, re.M).group(1).split()
         with open(os.path.join(ROOT, "infra/modules/boinc-handoff-job.bicep")) as f:
             bicep = re.findall(r"\{ name: '([A-Z_]+)', value:", f.read())
         self.assertEqual(sorted(script), sorted(bicep))
@@ -982,6 +998,9 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                 '  if [ "$1" = "--to" ]; then\n'
                 '    mkdir -p "$2" && : > "$2/sample.jsonl"\n'
                 '    shift 2\n'
+                '  elif [ "$1" = "--summary" ]; then\n'
+                '    mkdir -p "$(dirname "$2")" && : > "$2"\n'
+                '    shift 2\n'
                 '  else\n'
                 '    shift\n'
                 '  fi\n'
@@ -1025,6 +1044,171 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertIn("sample.jsonl", calls[1])
         self.assertIn("handoff put", calls[2])
         self.assertIn("--prefix texts", calls[2])
+
+    def handoff(self, step, **extra):
+        env = {
+            **self.env,
+            "HANDOFF_STEP": step,
+            "HANDOFF_URL": "https://usnmst.blob.core.windows.net/boinc-handoff",
+            "CURATED_URL": "https://usnmst.blob.core.windows.net/curated",
+            "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/",
+            "REFERENCE_URL": "https://usnmst.blob.core.windows.net/reference",
+            "OUT_URL": "https://usnmst.blob.core.windows.net/ocr-out",
+            **extra,
+        }
+        return subprocess.run([HANDOFF_JOB_SCRIPT], cwd=ROOT, env=env, capture_output=True, text=True)
+
+    def stub(self, body):
+        """Replace the usnm-boinc stub: log every call, then run `body` (bash)."""
+        path = os.path.join(self.tmp, "bin", "usnm-boinc")
+        with open(path, "w") as f:
+            f.write('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n' + body + "\nexit 0\n")
+        os.chmod(path, 0o755)
+
+    # Creates what `handoff get` and `get-file` would have copied down.
+    COPY_STUB = (
+        'to=""; for ((i = 1; i <= $#; i++)); do [ "${!i}" = --to ] && j=$((i + 1)) && to=${!j}; done\n'
+        'case "$1 $2" in\n'
+        '  "handoff get-file") mkdir -p "$(dirname "$to")" && : > "$to" ;;\n'
+        '  "handoff get") mkdir -p "$to/pages-v1" && : > "$to/pages-v1/manifest.parquet" ;;\n'
+        'esac'
+    )
+
+    def test_handoff_claim_takes_pages_and_writes_claims_before_the_summary(self):
+        r = self.handoff(
+            "claim",
+            QUEUE_URL="https://usnmst.queue.core.windows.net",
+            HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+            CLAIM_NONCE="abcdefgh12",
+            CLAIM_MAX="7",
+            CLAIM_QUEUES="ocr-bulk,ocr-priority",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 3, calls)
+        self.assertTrue(calls[0].startswith("claim pull --queue-url https://usnmst.queue.core.windows.net "))
+        self.assertIn("--manifest-version pages-v1", calls[0])
+        self.assertIn("--max 7 --lease-hours 96", calls[0])
+        self.assertIn("--nonce abcdefgh12 --queue ocr-bulk --queue ocr-priority", calls[0])
+        # The pop receipts exist only in the claim files: they go up first.
+        self.assertIn("handoff put", calls[1])
+        self.assertIn("--prefix claims", calls[1])
+        self.assertIn("--prefix scheduler", calls[2])
+
+    def test_handoff_claim_refuses_bad_settings(self):
+        base = dict(QUEUE_URL="https://usnmst.queue.core.windows.net",
+                    HANDOFF_MANIFEST="pages-v1/manifest.parquet", CLAIM_NONCE="abcdefgh12")
+        for bad in (dict(QUEUE_URL="http://x"), dict(CLAIM_MAX="101"), dict(CLAIM_MAX="0"),
+                    dict(CLAIM_QUEUES="ocr-deadletter"), dict(CLAIM_NONCE="short"),
+                    dict(CLAIM_LEASE_HOURS="169"), dict(HANDOFF_MANIFEST="../manifest.parquet")):
+            r = self.handoff("claim", **{**base, **bad})
+            self.assertNotEqual(r.returncode, 0, bad)
+        self.assertEqual(self.calls(), [])
+        r = self.handoff("claim", HANDOFF_MANIFEST=base["HANDOFF_MANIFEST"], CLAIM_NONCE="abcdefgh12")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("QUEUE_URL is not set", r.stderr)
+
+    def test_handoff_claim_still_uploads_claims_when_the_pull_fails(self):
+        # The pull fails after taking messages: their claim files still go up, because the
+        # messages are hidden now and their pop receipts exist nowhere else.
+        self.stub('[ "$1 $2" = "claim pull" ] && exit 3')
+        r = self.handoff(
+            "claim",
+            QUEUE_URL="https://usnmst.queue.core.windows.net",
+            HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+            CLAIM_NONCE="abcdefgh12",
+        )
+        self.assertEqual(r.returncode, 3, r.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertIn("--prefix claims", calls[1])
+
+    def test_handoff_collect_deletes_the_queue_message_after_the_journal_is_written_back(self):
+        job = "a" * 64
+        self.stub(
+            self.COPY_STUB + "\n"
+            'if [ "$1 $2" = "handoff get-spool" ]; then\n'
+            '  for ((i = 1; i <= $#; i++)); do [ "${!i}" = --trust-out ] && j=$((i + 1)) && : > "${!j}"; done\n'
+            "  echo 17\n"
+            "fi"
+        )
+        r = self.handoff("collect", JOB_ID=job, QUEUE_URL="https://usnmst.queue.core.windows.net")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        (collect,) = [i for i, c in enumerate(calls) if c.startswith("collect ")]
+        (finish,) = [i for i, c in enumerate(calls) if c.startswith("claim finish")]
+        puts = [i for i, c in enumerate(calls) if c.startswith("handoff put")]
+        self.assertTrue(puts and max(puts) < finish and collect < min(puts), calls)
+        self.assertIn(f"--job {job}", calls[finish])
+        self.assertIn("--queue-url https://usnmst.queue.core.windows.net", calls[finish])
+
+    def test_handoff_collect_without_a_queue_url_or_after_a_failure_deletes_nothing(self):
+        job = "a" * 64
+        body = (
+            self.COPY_STUB + "\n"
+            'if [ "$1 $2" = "handoff get-spool" ]; then\n'
+            '  for ((i = 1; i <= $#; i++)); do [ "${!i}" = --trust-out ] && j=$((i + 1)) && : > "${!j}"; done\n'
+            "  echo 17\n"
+            "fi\n"
+        )
+        self.stub(body)
+        r = self.handoff("collect", JOB_ID=job)  # a job deployed before the queue steps
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse([c for c in self.calls() if c.startswith("claim finish")])
+        os.remove(self.log)
+        self.stub(body + '[ "$1" = collect ] && exit 4')
+        r = self.handoff("collect", JOB_ID=job, QUEUE_URL="https://usnmst.queue.core.windows.net")
+        self.assertEqual(r.returncode, 4)
+        self.assertFalse([c for c in self.calls() if c.startswith("claim finish")])
+
+    def test_handoff_release(self):
+        r = self.handoff(
+            "release",
+            QUEUE_URL="https://usnmst.queue.core.windows.net",
+            HANDOFF_DOCS="sn83045462_1890-05-03_ed-1_seq-1,sn83045462_1890-05-03_ed-1_seq-2",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (call,) = self.calls()
+        self.assertIn("claim release --handoff-url https://usnmst.blob.core.windows.net/boinc-handoff", call)
+        self.assertIn("--doc-id sn83045462_1890-05-03_ed-1_seq-1 --doc-id sn83045462_1890-05-03_ed-1_seq-2", call)
+        r = self.handoff("release", QUEUE_URL="https://usnmst.queue.core.windows.net", HANDOFF_DOCS="a b")
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_handoff_export_with_claims_downloads_each_claim_first(self):
+        self.stub(self.COPY_STUB)
+        r = self.handoff(
+            "export",
+            HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+            HANDOFF_PAGES="sn83045462/1890-05-03/ed-1/seq-1,sn83045462/1890-05-03/ed-1/seq-2",
+            HANDOFF_BATCH="dlc_abc",
+            HANDOFF_PLAN="queue-feed",
+            ENGINE_IMAGE="sha256:" + "a" * 64,
+            HANDOFF_CLAIMS="1",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        claim_gets = [c for c in calls if "--path claims/" in c]
+        self.assertEqual(len(claim_gets), 2, calls)
+        self.assertIn("--path claims/sn83045462_1890-05-03_ed-1_seq-1.json", claim_gets[0])
+        export = [c for c in calls if c.startswith("export ")]
+        self.assertEqual(len(export), 1)
+        self.assertIn("--claims ", export[0])
+        self.assertLess(calls.index(claim_gets[1]), calls.index(export[0]))
+
+    def test_handoff_export_without_claims_is_unchanged(self):
+        self.stub(self.COPY_STUB)
+        r = self.handoff(
+            "export",
+            HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+            HANDOFF_PAGES="sn83045462/1890-05-03/ed-1/seq-1",
+            HANDOFF_BATCH="dlc_abc",
+            HANDOFF_PLAN="pilot",
+            ENGINE_IMAGE="sha256:" + "a" * 64,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        export = [c for c in self.calls() if c.startswith("export ")]
+        self.assertEqual(len(export), 1)
+        self.assertNotIn("--claims", export[0])
 
     def test_bridge_quality_and_qwen_steps(self):
         share = os.path.join(self.tmp, "share")

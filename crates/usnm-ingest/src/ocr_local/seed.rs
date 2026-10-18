@@ -863,6 +863,38 @@ async fn fetched_pages(
     .with_context(|| format!("reading {path}"))?;
     prefetch::sort_keep(&mut rows, &best);
 
+    let (newest, list) = newest_fetched(out, mv).await?;
+    let mut report = FetchedReport {
+        manifest: path,
+        list: newest,
+        listed: list.len() as u64,
+        keep_pages: rows.len() as u64,
+        on_list: 0,
+    };
+    let pages: Vec<(ManifestRow, String)> = rows
+        .into_iter()
+        .filter(|r| list.contains(&r.batch, &r.doc_id))
+        .filter_map(|r| language(&r).map(|l| (r, l)))
+        .collect();
+    report.on_list = pages.len() as u64;
+    tracing::info!(
+        manifest = report.manifest,
+        list = report.list,
+        listed = report.listed,
+        keep_pages = report.keep_pages,
+        on_list = report.on_list,
+        "seeding from fetched scans"
+    );
+    Ok((pages, report))
+}
+
+/// The newest fetched list for manifest `mv` in `ocr-out`, with its path.
+/// A node wrote it, so it is read as untrusted: its size is checked before
+/// it is read, only the bytes listed are read, and it must be for `mv`.
+pub async fn newest_fetched(
+    out: &dyn ObjectStore,
+    mv: &str,
+) -> anyhow::Result<(String, fetched::List)> {
     // The newest by the store's creation time: a node chose the name.
     let lists = out.list_info(&fetched::dir(mv)).await?;
     let newest = lists
@@ -903,28 +935,7 @@ async fn fetched_pages(
             list.manifest
         );
     }
-    let mut report = FetchedReport {
-        manifest: path,
-        list: newest,
-        listed: list.len() as u64,
-        keep_pages: rows.len() as u64,
-        on_list: 0,
-    };
-    let pages: Vec<(ManifestRow, String)> = rows
-        .into_iter()
-        .filter(|r| list.contains(&r.batch, &r.doc_id))
-        .filter_map(|r| language(&r).map(|l| (r, l)))
-        .collect();
-    report.on_list = pages.len() as u64;
-    tracing::info!(
-        manifest = report.manifest,
-        list = report.list,
-        listed = report.listed,
-        keep_pages = report.keep_pages,
-        on_list = report.on_list,
-        "seeding from fetched scans"
-    );
-    Ok((pages, report))
+    Ok((newest, list))
 }
 
 /// A plan's finished units under these filters.

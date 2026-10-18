@@ -64,9 +64,14 @@ die() { echo "error: $*" >&2; exit 1; }
 BASE_VARS=(AZURE_CLIENT_ID KEY_VAULT_NAME DB_HOST DB_NAME MASTER_HOST PROJECT_DIR HANDOFF_DIR)
 # The hand-off job's, from infra/modules/boinc-handoff-job.bicep (checked the same way).
 HANDOFF_BASE_VARS=(AZURE_CLIENT_ID HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL)
+# Also the hand-off job's, but kept only when the deployed job has it, so a job deployed before
+# the queue steps (#296) still runs export and collect. Steps that need it say so themselves.
+HANDOFF_OPTIONAL_VARS=(QUEUE_URL)
+OPTIONAL_VARS=()
 STEP_VAR=BRIDGE_STEP
 if [ "$TARGET" = handoff ]; then
   BASE_VARS=("${HANDOFF_BASE_VARS[@]}")
+  OPTIONAL_VARS=("${HANDOFF_OPTIONAL_VARS[@]}")
   STEP_VAR=HANDOFF_STEP
 fi
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or gold-prepare"
@@ -76,7 +81,7 @@ for v in ${VARS[@]+"${VARS[@]}"}; do
   [[ $v == *=* ]] || die "--var wants NAME=VALUE, got \"$v\""
   [[ $name =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || die "--var $name: names are upper case letters, digits and _"
   [ "$name" != "$STEP_VAR" ] || die "--var $STEP_VAR: use --step"
-  for b in "${BASE_VARS[@]}"; do [ "$name" != "$b" ] || die "--var $name: the job's own setting can't be changed per run"; done
+  for b in "${BASE_VARS[@]}" ${OPTIONAL_VARS[@]+"${OPTIONAL_VARS[@]}"}; do [ "$name" != "$b" ] || die "--var $name: the job's own setting can't be changed per run"; done
   [[ $seen != *" $name "* ]] || die "--var $name is given twice"
   seen="$seen$name "
 done
@@ -120,6 +125,10 @@ for b in "${BASE_VARS[@]}"; do
   val=$(jq -er --arg n "$b" '.containers[0].env // [] | map(select(.name == $n and (.value // "") != "")) | if length == 1 then .[0].value else error end' <<< "$template") ||
     die "$job has no $b setting; run $PROVISION first"
   base+=("$b=$val")
+done
+for b in ${OPTIONAL_VARS[@]+"${OPTIONAL_VARS[@]}"}; do
+  val=$(jq -er --arg n "$b" '.containers[0].env // [] | map(select(.name == $n and (.value // "") != "")) | if length == 1 then .[0].value else empty end' <<< "$template") || val=""
+  [ -z "$val" ] || base+=("$b=$val")
 done
 run=("$STEP_VAR=$STEP" ${VARS[@]+"${VARS[@]}"})
 if $WHAT_IF; then
