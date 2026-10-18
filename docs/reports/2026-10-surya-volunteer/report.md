@@ -20,12 +20,12 @@ No BOINC volunteer results are available. The fields below must be populated
 from `surya-summary` and quality scoring after the pilot; no values are inferred
 from the local CI runner or the 8-page engine survey.
 
-| Group | Input mode | Pages | LoC quality | Gold quality | Device | Seconds/page | CPU seconds/page | Peak host/GPU memory | Failures |
-|---|---|---:|---:|---:|---|---:|---:|---:|---:|
-| Serbian | tiled / whole / capped | — | — | — | — | — | — | — | — |
-| Russian | tiled / whole / capped | — | — | — | — | — | — | — | — |
-| German Fraktur | tiled / whole / capped | — | — | — | — | — | — | — | — |
-| Worst English | tiled / whole / capped | — | — | — | — | — | — | — | — |
+| Group          | Input mode             | Pages | LoC quality | Gold quality | Device | Seconds/page | CPU seconds/page | Peak host/GPU memory | Failures |
+| -------------- | ---------------------- | ----: | ----------: | -----------: | ------ | -----------: | ---------------: | -------------------: | -------: |
+| Serbian        | tiled / whole / capped |     — |           — |            — | —      |            — |                — |                    — |        — |
+| Russian        | tiled / whole / capped |     — |           — |            — | —      |            — |                — |                    — |        — |
+| German Fraktur | tiled / whole / capped |     — |           — |            — | —      |            — |                — |                    — |        — |
+| Worst English  | tiled / whole / capped |     — |           — |            — | —      |            — |                — |                    — |        — |
 
 The pilot must report per-mode word-bag quality against LoC, gold-set metrics
 where page IDs overlap, agreement between the CPU and GPU devices, all outcomes
@@ -83,7 +83,6 @@ claimed. No Surya app was published, BOINC work dispatched, or routing changed
 by this follow-up at this report revision. The results table remains unpopulated
 until real validator/assimilator outputs exist; #812 remains open for #810 too.
 
-
 ### Authoritative release gate, 18 October 15:35–15:38 UTC
 
 A TLS-protected production DB query returned `usnm_surya` with NULL app-version
@@ -112,10 +111,10 @@ retired/unregistered 1.0/1.1. Fresh read-only DB and share checks found **1.2 an
 signed on the isolated unlocked signing host, and built signature-verified ACR
 artifacts under the #529 artifact-only claim:
 
-| Version | Plan class | ACR build | Prepared signed app-version digest |
-|---|---|---|---|
-| 1.2 | `docker_mt` | ch96 | `sha256:0376b394a0b37833dabc6d8a1d57065bd1a96235ed1dda618e10bb6080342b3b` |
-| 1.3 | `docker_nvidia_cuda` | ch97 | `sha256:7f36f808cb5d9bb680e5040cb499540a1bdc2927c6bf7f00cd6603941844d032` |
+| Version | Plan class           | ACR build | Prepared signed app-version digest                                        |
+| ------- | -------------------- | --------- | ------------------------------------------------------------------------- |
+| 1.2     | `docker_mt`          | ch96      | `sha256:0376b394a0b37833dabc6d8a1d57065bd1a96235ed1dda618e10bb6080342b3b` |
+| 1.3     | `docker_nvidia_cuda` | ch97      | `sha256:7f36f808cb5d9bb680e5040cb499540a1bdc2927c6bf7f00cd6603941844d032` |
 
 Both embed the requested public worker `e326a2a5…`; these are **prepared**, not
 published/registered or client-accepted. The last replay pin selects 1.3;
@@ -144,7 +143,6 @@ and **ch99 / 1.3**
 These supersede ch96/ch97 as publication candidates; old artifacts are retained.
 No version has yet been registered or dispatched by this continuation.
 
-
 ### Four-round review-policy receipt
 
 PR #848 received four Copilot requests: round one had three findings (fixed),
@@ -163,7 +161,6 @@ were produced. The corrected 1.2/1.3 signed artifacts remain prepared candidates
 retired 1.0/1.1 and all live routing/settings are unchanged. No production claim,
 controller/start lease or GPU reservation is held. The observed existing quality
 job was preserved, not stopped to manufacture an idle publication window.
-
 
 ### Post-merge authorized execution preflight, 18 October
 

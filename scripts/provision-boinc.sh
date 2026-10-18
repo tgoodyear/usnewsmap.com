@@ -163,11 +163,12 @@ if $WHAT_IF; then
   exit 0
 fi
 
-for lifecycle_output in secretsJobName initJobName ${PUBLISH_IMAGE:+publishJobName}; do
+for lifecycle_output in secretsJobName initJobName publishJobName goldBundleJobName; do
   existing_job=$(boinc_output "$lifecycle_output")
   if [ -n "$existing_job" ]; then
     active_job=$(baz containerapp job execution list --name "$existing_job" --resource-group "$BOINC_RG" \
-      --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv 2>/dev/null || true)
+      --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv) ||
+      die "could not list the executions of $existing_job"
     [ -z "$active_job" ] ||
       die "$existing_job already has an active execution (${active_job//$'\n'/ }); wait for it to finish before mutating $existing_job"
   fi
@@ -175,18 +176,56 @@ done
 active_bridge=""
 existing_bridge=$(boinc_output bridgeJobName)
 if [ -n "$existing_bridge" ]; then
+  JOB_RG="$BOINC_RG"
+  job="$existing_bridge"
+  boinc_start_guard_acquire
   active_bridge=$(baz containerapp job execution list --name "$existing_bridge" --resource-group "$BOINC_RG" \
-    --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv 2>/dev/null || true)
+    --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv) ||
+    die "could not list the executions of $existing_bridge"
   if [ -n "$active_bridge" ]; then
-    bridge_template=$(baz containerapp job show --name "$existing_bridge" --resource-group "$BOINC_RG" --query properties.template -o json 2>/dev/null) ||
+    bridge_template=$(baz containerapp job show --name "$existing_bridge" --resource-group "$BOINC_RG" --query properties.template -o json) ||
       die "could not read $existing_bridge template while active execution (${active_bridge//$'\n'/ }) is running"
-    if ! jq -e --arg img "$BRIDGE_IMAGE" --arg env "$ENV_NAME" '
+    expected_kv=$(boinc_output keyVaultName)
+    expected_db_host=$(boinc_output mysqlHost)
+    if ! jq -e --arg img "$BRIDGE_IMAGE" --arg env "$ENV_NAME" --arg master_host "$MASTER_HOST" \
+      --arg kv "$expected_kv" --arg db_host "$expected_db_host" '
       (.containers | length) == 1 and
+      .containers[0].name == "bridge" and
       .containers[0].image == $img and
-      (if $env == "prod" then
-        ((.containers[0].env // []) | any(.name == "BRIDGE_STEP" and .value == "iris-bundle-collect")) and
-        ((.containers[0].env // []) | any(.name == "IRIS_CAMPAIGN" and .value == "overproof-100-v12"))
-      else true end)
+      ((.containers[0].command // ["/usr/local/bin/bridge-job"]) == ["/usr/local/bin/bridge-job"]) and
+      .containers[0].resources.cpu == 0.5 and
+      .containers[0].resources.memory == "1Gi" and
+      .containers[0].volumeMounts == [{"volumeName": "project", "mountPath": "/project"}] and
+      (.volumes | length) == 1 and
+      .volumes[0].name == "project" and
+      .volumes[0].storageType == "AzureFile" and
+      ((.containers[0].env // []) | all(((keys - ["name", "value"]) | length) == 0 and (.value | type == "string" and length > 0))) and
+      (
+        ([(.containers[0].env // [])[] | select(.name == "AZURE_CLIENT_ID" or .name == "KEY_VAULT_NAME" or .name == "DB_HOST") | .name] | sort)
+        == ["AZURE_CLIENT_ID", "DB_HOST", "KEY_VAULT_NAME"]
+      ) and
+      (if $kv != "" then ([(.containers[0].env // [])[] | select(.name == "KEY_VAULT_NAME") | .value] == [$kv]) else true end) and
+      (if $db_host != "" then ([(.containers[0].env // [])[] | select(.name == "DB_HOST") | .value] == [$db_host]) else true end) and
+      (
+        [(.containers[0].env // [])[] | select(.name != "AZURE_CLIENT_ID" and .name != "KEY_VAULT_NAME" and .name != "DB_HOST") | {name, value}]
+        | sort_by(.name)
+      ) == (
+        (
+          [
+            {"name": "DB_NAME", "value": "usnmocr"},
+            {"name": "HANDOFF_DIR", "value": "/project/handoff"},
+            {"name": "MASTER_HOST", "value": $master_host},
+            {"name": "PROJECT_DIR", "value": "/project"}
+          ] + (
+            if $env == "prod" then
+              [
+                {"name": "BRIDGE_STEP", "value": "iris-bundle-collect"},
+                {"name": "IRIS_CAMPAIGN", "value": "overproof-100-v12"}
+              ]
+            else [] end
+          )
+        ) | sort_by(.name)
+      )
     ' <<< "$bridge_template" > /dev/null; then
       die "$existing_bridge already has an active execution (${active_bridge//$'\n'/ }) and its template would change; wait for it to finish before updating the bridge template"
     fi
@@ -194,7 +233,9 @@ if [ -n "$existing_bridge" ]; then
 fi
 
 echo "deploying stack $BOINC_STACK (custom domain stage $STAGE)"
+[ -z "$BOINC_START_LEASE" ] || BOINC_START_SAFE_TO_RELEASE=false
 baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed"
+[ -z "$BOINC_START_LEASE" ] || BOINC_START_SAFE_TO_RELEASE=true
 echo "deployed stack $BOINC_STACK"
 # Wait for DNS/certificate readiness instead of requiring another manual deployment.
 for _ in $(seq 1 60); do
@@ -208,7 +249,9 @@ for _ in $(seq 1 60); do
   STAGE=$next
   write_params "$STAGE"
   echo "deploying stack $BOINC_STACK again for custom domain stage $STAGE"
+  [ -z "$BOINC_START_LEASE" ] || BOINC_START_SAFE_TO_RELEASE=false
   baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed at custom domain stage $STAGE"
+  [ -z "$BOINC_START_LEASE" ] || BOINC_START_SAFE_TO_RELEASE=true
   [ "$STAGE" -lt 2 ] || break
 done
 [ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || [ "$STAGE" -eq 2 ] ||
@@ -255,7 +298,9 @@ register_apps() {
   local job JOB_RG="$BOINC_RG" template="$work/register-apps.json"
   job=$(boinc_output bridgeJobName)
   [ -n "$job" ] || die "missing bridge job for registration"
-  boinc_start_guard_acquire
+  if [ -z "$BOINC_START_LEASE" ]; then
+    boinc_start_guard_acquire
+  fi
   baz containerapp job show --name "$job" --resource-group "$JOB_RG" --query properties.template -o json |
     jq -e '
       if (.containers | length) != 1 then error("expected one registration container") else . end |
@@ -267,6 +312,9 @@ register_apps() {
 }
 if [ -n "$active_bridge" ]; then
   echo "deferring $existing_bridge registration while ${active_bridge//$'\n'/ } is running; bridge template is unchanged"
+  JOB_RG="$BOINC_RG"
+  job="$existing_bridge"
+  boinc_start_guard_release || die "cannot release the registration start lease"
 else
   register_apps
 fi

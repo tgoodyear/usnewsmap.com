@@ -26,13 +26,18 @@ case "$*" in
   "containerapp job execution list"*)
     if [[ "$*" == *"--name quality "* ]] || [[ "$*" == *"--name usnm-boinc-quality-caj-prod "* ]]; then
       [ "${STUB_QUALITY_ACTIVE:-0}" != 1 ] || echo quality-existing-execution
-    elif [[ "$*" == *"--name bridge "* ]] && grep -q '^storage blob lease acquire' "$STUB_LOG"; then
-      [ "${STUB_REGISTRATION_LIST_FAIL:-0}" != 1 ] || exit 1
-      [ "${STUB_REGISTRATION_ACTIVE:-0}" != 1 ] || echo bridge-existing-execution
+    elif [[ "$*" == *"--name publish "* ]]; then
+      [ "${STUB_PUBLISH_ACTIVE:-0}" != 1 ] || echo publish-existing-execution
     elif [[ "$*" == *"--name bridge "* ]]; then
-      [ "${STUB_BRIDGE_ACTIVE:-0}" != 1 ] || echo bridge-existing-execution
+      [ "${STUB_REGISTRATION_LIST_FAIL:-0}" != 1 ] || exit 1
+      if [ "${STUB_REGISTRATION_ACTIVE:-0}" = 1 ] || [ "${STUB_BRIDGE_ACTIVE:-0}" = 1 ]; then
+        echo bridge-existing-execution
+      fi
     fi ;;
-  "containerapp job show"*) echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"project\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_BRIDGE_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":0.5,\"memory\":\"1Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_BRIDGE_STEP:-iris-bundle-collect}\"},{\"name\":\"IRIS_CAMPAIGN\",\"value\":\"overproof-100-v12\"},{\"name\":\"PRIVATE_SETTING\",\"secretRef\":\"runtime-secret\"},{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}" ;;
+  "containerapp job show"*)
+    extra_secret='{"name":"PRIVATE_SETTING","secretRef":"runtime-secret"},'
+    [ "${STUB_BRIDGE_CLEAN_ENV:-0}" != 1 ] || extra_secret=""
+    echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"project\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_BRIDGE_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":0.5,\"memory\":\"1Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_BRIDGE_STEP:-iris-bundle-collect}\"},{\"name\":\"IRIS_CAMPAIGN\",\"value\":\"overproof-100-v12\"},${extra_secret}{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}" ;;
   "containerapp job update"*) ;;
   "containerapp job start"*)
     if [[ "$*" == *"--yaml"* ]] && [ "${STUB_REGISTRATION_START_FAIL:-0}" = 1 ]; then exit 1; fi
@@ -221,25 +226,39 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
             with self.subTest(non_conflicting=args):
                 self.log.write_text("")
                 result = self.run_script(*args, STUB_BRIDGE_ACTIVE="1",
+                                         STUB_BRIDGE_CLEAN_ENV="1",
                                          STUB_DEPLOYED_BRIDGE_IMAGE=committed_bridge)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 starts = [call.split("--name ")[1].split()[0]
                           for call in self.calls() if call.startswith("containerapp job start")]
                 self.assertEqual(starts, ["secrets", "init", "publish"])
+                self.assertEqual(sum(call.startswith("storage blob lease acquire") for call in self.calls()), 1)
+                self.assertEqual(sum(call.startswith("storage blob lease release") for call in self.calls()), 1)
                 self.assertIn("deferring bridge registration while bridge-existing-execution is running",
                               result.stdout)
 
         for env in (
-            {"STUB_DEPLOYED_BRIDGE_IMAGE": "fixture@sha256:stale"},
-            {"STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge, "STUB_DEPLOYED_BRIDGE_STEP": "submit"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": "fixture@sha256:stale"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge,
+             "STUB_DEPLOYED_BRIDGE_STEP": "submit"},
+            {"STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge},
         ):
             with self.subTest(conflicting_env=env):
                 self.log.write_text("")
                 result = self.run_script(STUB_BRIDGE_ACTIVE="1", **env)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("bridge already has an active execution", result.stderr)
+                self.assertEqual(sum(call.startswith("storage blob lease acquire") for call in self.calls()), 1)
+                self.assertEqual(sum(call.startswith("storage blob lease release") for call in self.calls()), 1)
                 self.assertFalse(any(call.startswith(("stack group create", "containerapp job start"))
                                      for call in self.calls()))
+
+        self.log.write_text("")
+        result_publish = self.run_script("--publish-image", "", STUB_PUBLISH_ACTIVE="1")
+        self.assertNotEqual(result_publish.returncode, 0)
+        self.assertIn("publish already has an active execution", result_publish.stderr)
+        self.assertFalse(any(call.startswith(("stack group create", "containerapp job start"))
+                             for call in self.calls()))
 
     def test_rejects_placeholder_foreign_or_stopped_project(self):
         for health in [

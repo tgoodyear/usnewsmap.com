@@ -48,12 +48,12 @@ record (who deployed what, and when, from
 [#529](https://github.com/tgoodyear/usnewsmap.com/issues/529)) is unchanged. A
 start lease is not permission to deploy or interrupt another owner's work.
 
-| Change type | Required gate |
-| --- | --- |
-| Add-only DB/project changes (publish app versions, create campaigns or workunits, plan-class additions) | [#529](https://github.com/tgoodyear/usnewsmap.com/issues/529) claim plus the controller lease; no idle requirement |
-| Updating one job's template or image | That job's per-job start lease (`scripts/lib/boinc-start-guard.sh`) and no nonterminal execution **of that job**. Other jobs keep running. |
-| Server/CGI/daemon image rollout, config or TLS changes | Claim plus controller lease. Must not replace or alter the template of any job with a running execution: defer just that job's template update (or let the execution finish naturally), not the whole rollout. Executions already running keep their template, so a stack update must not stop or restart them. |
-| Full reprovision, DB migration or destructive operations | All-idle allowed only as a documented extenuating circumstance, with the reason recorded in [#529](https://github.com/tgoodyear/usnewsmap.com/issues/529) |
+| Change type                                                                                             | Required gate                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Add-only DB/project changes (publish app versions, create campaigns or workunits, plan-class additions) | [#529](https://github.com/tgoodyear/usnewsmap.com/issues/529) claim plus the controller lease; no idle requirement                                                                                                                                                                                              |
+| Updating one job's template or image                                                                    | That job's per-job start lease (`scripts/lib/boinc-start-guard.sh`) and no nonterminal execution **of that job**. Other jobs keep running.                                                                                                                                                                      |
+| Server/CGI/daemon image rollout, config or TLS changes                                                  | Claim plus controller lease. Must not replace or alter the template of any job with a running execution: defer just that job's template update (or let the execution finish naturally), not the whole rollout. Executions already running keep their template, so a stack update must not stop or restart them. |
+| Full reprovision, DB migration or destructive operations                                                | All-idle allowed only as a documented extenuating circumstance, with the reason recorded in [#529](https://github.com/tgoodyear/usnewsmap.com/issues/529)                                                                                                                                                       |
 
 ## Failure recovery
 
