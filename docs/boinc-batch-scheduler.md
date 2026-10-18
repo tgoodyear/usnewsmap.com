@@ -194,8 +194,10 @@ There is no `batch` or `pages`: the pages are whatever the queue gives, from any
 number of batches. `claim_queues` is `ocr-bulk` by default. A bulk workunit's
 `delay_bound` is three days. A page someone was shown (`reason` `user`, from
 `ocr-priority`) is submitted with a one-day `delay_bound` and workunit priority 10
-(#866), so a host that sits on it hands it on within a day. The priority takes
-effect only if the feeder orders by priority; the default feeder does not. A
+(#866), so a host that sits on it hands it on within a day. Its results inherit
+the priority, and the feeder's default order (`priority desc, workunitid`) puts
+them ahead of other `usnm_ocr` work in its candidate window (no app uses
+homogeneous redundancy, which would ignore the order). A
 controller that claims `ocr-priority` should set `lease_hours` to cover that
 deadline plus a collect (36 hours), so a lost page returns to the queue sooner.
 The on-prem node reads `ocr-priority` first when it runs.
