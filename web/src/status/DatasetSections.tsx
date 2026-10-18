@@ -268,8 +268,7 @@ function AmericanStories({ as, known }: { as: Sources["american_stories"]; known
 function americanStoriesPages(as: Sources["american_stories"], known: boolean): ReactNode {
   if (!known) return "This server doesn't say.";
   if (!as) return "Not yet: the search index the site uses now doesn't have its text.";
-  if (as.pages === null)
-    return "Its text is in the index. The count of pages with it is shown after the next full rebuild of the index.";
+  if (as.pages === null) return "Its text is in the index; this version does not report a page count.";
   return (
     <>
       {plural(as.pages, "page has", "pages have")} its text
@@ -336,7 +335,7 @@ function JapanesePages({ s, now }: { s: Status; now: number }) {
                   : null}
               </>
             ) : (
-              "Not yet: they become searchable with the next update of the index."
+              "No Japanese OCR is reported for this search index."
             ),
           ],
           [

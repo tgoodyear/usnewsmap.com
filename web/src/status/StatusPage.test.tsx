@@ -130,6 +130,7 @@ describe("DatasetsPage", () => {
     ).toBeTruthy();
     // An older API without the new fields: the page says it doesn't know.
     expect(screen.getByText("This server doesn't say how many pages that is.")).toBeTruthy();
+    expect(screen.getByText("No Japanese OCR is reported for this search index.")).toBeTruthy();
     // No internal terms before the pipeline sections.
     const main = screen.getByRole("main");
     const inProgress = screen.getByRole("heading", { level: 2, name: "In progress" });
