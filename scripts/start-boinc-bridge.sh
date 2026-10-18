@@ -32,9 +32,9 @@
 # One step at a time: a manual job can run several executions at once, and they would share
 # the project tree and the database. So it refuses while any execution of the job is still
 # running, and after the start it reads the new execution's settings back and fails if they
-# are not this run's (another caller updated the job in between). That narrows the window
-# but is no lock: one operator runs these steps.
-# Needs az signed in to the settings' subscription, and jq.
+# are not this run's (another caller updated the job in between). A cross-host blob lease
+# serializes the check/update/start transaction for both targets; see docs/boinc-start-guard.md.
+# Needs az signed in to the settings' subscription, jq, and python3.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge
@@ -130,17 +130,21 @@ if $WHAT_IF; then
 fi
 if [ "$TARGET" = bridge ]; then
   boinc_acquire_lock "start-boinc-bridge.sh --env $ENV_NAME --target $TARGET --step $STEP"
-  trap 'boinc_release_lock' EXIT
 fi
+# shellcheck source=scripts/lib/boinc-start-guard.sh
+. scripts/lib/boinc-start-guard.sh
+trap 'boinc_start_guard_cleanup $?' EXIT
+boinc_start_guard_acquire
 # running_executions: the job's executions that haven't ended.
 running_executions() {
   baz containerapp job execution list --name "$job" --resource-group "$JOB_RG" \
-    --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv
+    --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv
 }
 running=$(running_executions) || die "can't list the executions of $job"
 [ -z "$running" ] || die "$job is still running $(echo "$running" | tr '\n' ' ')- wait for it to end first"
 baz containerapp job update --name "$job" --resource-group "$JOB_RG" --container-name "$container" \
   --replace-env-vars "${base[@]}" "${run[@]}" -o none || die "can't set the run's settings on $job"
+BOINC_START_SAFE_TO_RELEASE=false
 execution=$(baz containerapp job start --name "$job" --resource-group "$JOB_RG" --query name -o tsv) ||
   die "can't start $job"
 [ -n "$execution" ] || die "$job started no execution"
@@ -151,6 +155,9 @@ got=$(baz containerapp job execution show --name "$job" --resource-group "$JOB_R
   die "can't read $execution's settings; stop it if it isn't this run's: az containerapp job stop --name $job --resource-group $JOB_RG --job-execution-name $execution"
 [ "$got" = "$want" ] ||
   die "$execution did not start with this run's settings (another caller changed $job); stop it: az containerapp job stop --name $job --resource-group $JOB_RG --job-execution-name $execution"
+if ! boinc_start_guard_confirm; then
+  die "$execution start visibility is uncertain; reconcile it before another launch"
+fi
 if [ -z "$WAIT_MINS" ]; then
   echo "$execution"
   exit 0

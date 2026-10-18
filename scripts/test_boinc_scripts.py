@@ -28,6 +28,9 @@ printf '%s\n' "$*" >> "$STUB_LOG"
 case "$*" in
   "account show"*) echo "$STUB_SUB" ;;
   "group show"*) ;;
+  "stack sub show"*) echo '{"OCR_EXCHANGE_ACCOUNT":{"value":"exchangeprod"}}' ;;
+  "storage blob exists"*) echo true ;;
+  "storage blob lease acquire"* | "storage blob lease release"*) ;;
   "stack group show"*)
     if [ -n "${STUB_NO_JOB:-}" ]; then echo '{}'
     else echo '{"bridgeJobName": {"type": "String", "value": "usnm-boinc-bridge-caj-prod"}}'; fi ;;
@@ -637,7 +640,7 @@ class StartBridge(unittest.TestCase):
         for flag in ("--env-vars", "--image", "--args", "--command", "--container-name"):
             self.assertNotIn(flag, start)
         order = [c.split(" ")[2] for c in self.calls() if c.startswith("containerapp job ")]
-        self.assertEqual(order, ["show", "execution", "update", "start", "execution"])
+        self.assertEqual(order, ["show", "execution", "update", "start", "execution", "execution"])
 
     def test_drops_a_previous_runs_settings(self):
         r = self.run_script("--step", "register-apps",
@@ -1236,6 +1239,173 @@ class QualityCampaignCli(unittest.TestCase):
         for s in range(4):
             self.assertTrue((out_dir / "shards" / f"shard-s{s}.tar.gz").is_file())
 
+
+class CrossHostStartGuard(StartBridge):
+    # Reuse launcher fixtures; the remote lease is an atomic directory in the
+    # private test tree, shared by processes with different host-local locks.
+    def setUp(self):
+        super().setUp()
+        self.remote = Path(self.tmp, "remote")
+        self.remote.mkdir()
+        self.env["STUB_REMOTE_STATE"] = str(self.remote)
+        az = Path(self.tmp, "bin", "az")
+        az.write_text(r"""#!/usr/bin/env bash
+case "$*" in
+  "storage blob exists"*)
+    if [ -d "$STUB_REMOTE_STATE/blob" ]; then echo true; else echo false; fi
+    exit ;;
+  "storage blob upload"*)
+    printf '%s\n' "$*" >> "$STUB_LOG"
+    mkdir "$STUB_REMOTE_STATE/blob" || exit 9
+    [ -z "${STUB_UPLOAD_RACE:-}" ]; exit ;;
+  "storage blob lease acquire"*)
+    printf '%s\n' "$*" >> "$STUB_LOG"
+    mkdir "$STUB_REMOTE_STATE/held" 2>/dev/null; exit ;;
+  "storage blob lease release"*)
+    printf '%s\n' "$*" >> "$STUB_LOG"
+    [ -z "${STUB_RELEASE_FAILURE:-}" ] || exit 9
+    rmdir "$STUB_REMOTE_STATE/held"; exit ;;
+  "stack sub show"*)
+    [ -z "${STUB_NO_EXCHANGE:-}" ] || { echo '{}'; exit; } ;;
+  "containerapp job execution list"*)
+    if [ -n "${STUB_ACTIVE_VISIBLE:-}" ] && [ -f "$STUB_REMOTE_STATE/started" ]; then
+      printf '%s\n' "$*" >> "$STUB_LOG"
+      echo usnm-boinc-bridge-caj-prod-abc12
+      exit
+    fi ;;
+  "containerapp job start"*)
+    touch "$STUB_REMOTE_STATE/started"
+    [ -z "${STUB_START_FAILURE:-}" ] || exit 9
+    if [ -n "${STUB_PAUSE_START:-}" ]; then
+      touch "$STUB_REMOTE_STATE/starting"
+      while [ ! -f "$STUB_REMOTE_STATE/continue" ]; do sleep 0.02; done
+    fi ;;
+  "containerapp job execution show"*"--query properties.status"*)
+    [ -z "${STUB_STATUS_FAILURE:-}" ] || exit 9 ;;
+esac
+""" + STUB_AZ.partition("\n")[2])
+
+    def test_cross_host_lease_denies_second_starter_before_template_write(self):
+        first = subprocess.Popen(
+            [SCRIPT, "--env", "prod", "--step", "register-apps"], cwd=ROOT,
+            env={**self.env, "STUB_PAUSE_START": "1"},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 10
+            while not (self.remote / "starting").exists() and time.monotonic() < deadline:
+                self.assertIsNone(first.poll(), "first launcher exited before start barrier")
+                time.sleep(0.02)
+            self.assertTrue((self.remote / "starting").exists())
+            second = self.run_script("--step", "submit",
+                                     USNM_BOINC_LOCK_DIR=str(Path(self.tmp, "other-host.lock")))
+            self.assertEqual(second.returncode, 1, second.stderr)
+            self.assertIn("cross-host start guard", second.stderr)
+            self.assertEqual(sum(c.startswith("containerapp job update") for c in self.calls()), 1)
+            (self.remote / "continue").touch()
+            out, err = first.communicate(timeout=10)
+            self.assertEqual(first.returncode, 0, err)
+            self.assertIn("abc12", out)
+            self.assertFalse((self.remote / "held").exists())
+            self.assertFalse(Path(self.lock_dir).exists())
+        finally:
+            if first.poll() is None:
+                first.terminate()
+                first.communicate(timeout=10)
+
+    def test_busy_remote_lease_refuses_handoff_too(self):
+        (self.remote / "blob").mkdir()
+        (self.remote / "held").mkdir()
+        settings = Path(self.tmp, "settings", "prod")
+        settings.mkdir(parents=True)
+        (settings / ".env").write_text(
+            f'AZURE_SUBSCRIPTION_ID="{SUB}"\nAZURE_RESOURCE_GROUP="rg-prod"\n'
+            'BOINC_HANDOFF_JOB="handoff-prod"\n')
+        values = dict(AZURE_CLIENT_ID="client", HANDOFF_URL="https://exchangeprod.blob.core.windows.net/boinc-handoff",
+                      COSMOS_ENDPOINT="https://cosmos", CURATED_URL="https://curated",
+                      REFERENCE_URL="https://reference", OUT_URL="https://out")
+        tmpl = json.dumps({"containers": [{"name": "handoff", "env": [
+            {"name": k, "value": v} for k, v in values.items()]}]})
+        result = self.run_script("--target", "handoff", "--step", "collect",
+                                 STUB_TEMPLATE=tmpl, USNM_SETTINGS_HOME=str(settings.parent))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cross-host start guard", result.stderr)
+        self.assertFalse(any("job update" in c or "job start" in c for c in self.calls()))
+
+    def test_missing_storage_discovery_fails_closed(self):
+        result = self.run_script("--step", "register-apps", STUB_NO_EXCHANGE="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no OCR_EXCHANGE_ACCOUNT", result.stderr)
+        self.assertFalse(any("job update" in c or "job start" in c for c in self.calls()))
+        self.assertFalse(Path(self.lock_dir).exists())
+
+    def test_unknown_nonterminal_status_is_checked_before_update(self):
+        result = self.run_script("--step", "register-apps", STUB_RUNNING="pending-execution")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("still running pending-execution", result.stderr)
+        [query] = [c for c in self.calls() if c.startswith("containerapp job execution list")]
+        self.assertIn("properties.status!='Succeeded'", query)
+        self.assertNotIn("status=='Running'", query)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_ambiguous_start_and_failed_readback_retain_remote_lease(self):
+        for failure in ({"STUB_START_FAILURE": "1"}, {"STUB_STATUS_FAILURE": "1"},
+                        {"STUB_EXEC_ENV": '[{"name":"BRIDGE_STEP","value":"wrong"}]'}):
+            with self.subTest(failure=failure):
+                result = self.run_script("--step", "register-apps", **failure)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("lease retained", result.stderr)
+                self.assertTrue((self.remote / "held").exists())
+                self.assertFalse(Path(self.lock_dir).exists())
+                self.assertFalse(list(Path(ROOT).glob(".boinc-start-*")))
+                (self.remote / "held").rmdir()  # Test-only operator reconciliation.
+
+    def test_simultaneous_marker_creation_is_safe(self):
+        result = self.run_script("--step", "register-apps", STUB_UPLOAD_RACE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [upload] = [c for c in self.calls() if c.startswith("storage blob upload")]
+        self.assertIn("--overwrite false", upload)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_unobservable_execution_times_out_without_unlocking(self):
+        clock = Path(self.tmp, "bin", "date")
+        clock.write_text('#!/usr/bin/env bash\n'
+                         'if [ -f "$STUB_REMOTE_STATE/clock" ]; then echo 121; '
+                         'else touch "$STUB_REMOTE_STATE/clock"; echo 0; fi\n')
+        clock.chmod(0o755)
+        result = self.run_script("--step", "register-apps", STUB_EXEC_STATUS="Running")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("start visibility is uncertain", result.stderr)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertFalse(Path(self.lock_dir).exists())
+
+    def test_active_execution_is_visible_before_unlocking_without_wait(self):
+        result = self.run_script("--step", "register-apps", STUB_EXEC_STATUS="Running",
+                                 STUB_ACTIVE_VISIBLE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        lists = [i for i, c in enumerate(calls) if c.startswith("containerapp job execution list")]
+        release = next(i for i, c in enumerate(calls) if c.startswith("storage blob lease release"))
+        self.assertEqual(len(lists), 2)
+        self.assertLess(lists[-1], release)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_release_failure_is_reported_and_local_mutex_is_cleaned(self):
+        result = self.run_script("--step", "register-apps", STUB_RELEASE_FAILURE="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("lease release failed", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertFalse(Path(self.lock_dir).exists())
+
+    def test_controller_lease_is_never_recursively_acquired(self):
+        result = self.run_script("--step", "register-apps")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lease_calls = [c for c in self.calls() if c.startswith("storage blob lease")]
+        self.assertEqual(len(lease_calls), 2)
+        self.assertTrue(all("scheduler/starts/" in c for c in lease_calls))
+        self.assertFalse(any("scheduler/controller.lock" in c for c in lease_calls))
+        self.assertIn("--lease-duration -1", lease_calls[0])
+        self.assertFalse(list(Path(ROOT).glob(".boinc-start-*")))
 
 if __name__ == "__main__":
     unittest.main()
