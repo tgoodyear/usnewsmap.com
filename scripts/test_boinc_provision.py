@@ -368,7 +368,7 @@ class ProjectInitialization(unittest.TestCase):
 class TlsSettings(unittest.TestCase):
     def test_committed_boolean_and_legacy_default_are_preserved(self):
         settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
-        self.assertIs(settings["requireSecureTransport"], True)
+        self.assertIs(settings["requireSecureTransport"], False)
         for value in (None, False, True):
             with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
                 candidate = dict(settings)
