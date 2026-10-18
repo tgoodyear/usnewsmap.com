@@ -129,6 +129,11 @@ An output for an id outside the subset is an error.
 These are character-level rules. Word error rates depend on how a script is tokenized, so they
 are left out until there is a definition for each script.
 
+The separately versioned [extended evaluation measures v1](ocr-evaluation-measures-v1.md) add
+historical-fidelity adjudications, paired page scoring, full-page region coverage/reading order,
+truncation accounting and fixed search-relevance metrics. They consume generic reference/output
+pairs and do not change this legacy scorer or any benchmark release.
+
 ## How a release is built
 
 A release has two committed files: a recipe, `ocr/bench/<version>/spec.json`, and an inventory
