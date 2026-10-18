@@ -3,8 +3,9 @@
   "series": "annals",
   "volumes": [
     {
-      "unit": "annals-c01-s01-v01",
+      "unit": "annals-c01-s01-v01-b01",
       "volume": 1,
+      "bound_part": 1,
       "congress": 1,
       "session": 1,
       "title": "Annals of Congress, first Congress, first session (fixture)",

@@ -51,7 +51,10 @@ impl Series {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Volume {
     pub unit: String,
+    /// Printed volume number, which can be shared by separately bound parts.
     pub volume: u16,
+    /// The bound PDF's order among parts of the same printed volume.
+    pub bound_part: u16,
     pub congress: u16,
     pub session: u16,
     pub title: String,
@@ -98,7 +101,7 @@ impl Manifest {
             Series::Register => 1824..=1837,
         };
         let mut units = BTreeSet::new();
-        let mut volume_numbers = BTreeSet::new();
+        let mut bound_parts = BTreeSet::new();
         for v in &manifest.volumes {
             ensure!(
                 usnm_store::is_safe_segment(&v.unit),
@@ -112,14 +115,25 @@ impl Manifest {
             );
             ensure!(units.insert(v.unit.as_str()), "duplicate unit `{}`", v.unit);
             ensure!(
-                v.volume > 0 && v.congress > 0 && v.session > 0,
-                "volume, Congress and session must be positive for `{}`",
+                v.volume > 0 && v.bound_part > 0 && v.congress > 0 && v.session > 0,
+                "volume, bound part, Congress and session must be positive for `{}`",
                 v.unit
             );
             ensure!(
-                volume_numbers.insert(v.volume),
-                "duplicate volume number {}",
-                v.volume
+                v.volume <= u8::MAX.into()
+                    && v.bound_part <= u8::MAX.into()
+                    && v.session <= 15
+                    && v.congress <= 4095,
+                "ordering values for `{}` exceed the supported ranges",
+                v.unit
+            );
+            ensure!(
+                bound_parts.insert((v.congress, v.session, v.volume, v.bound_part)),
+                "duplicate bound part {} of volume {} for {} Congress, {} session",
+                v.bound_part,
+                v.volume,
+                v.congress,
+                v.session
             );
             ensure!(
                 year_range.contains(&v.first_day.year()) && year_range.contains(&v.last_day.year()),
@@ -374,9 +388,10 @@ pub struct Report {
 }
 
 fn unit_ordinal(volume: &Volume) -> u32 {
-    (u32::from(volume.congress) << 16)
-        | (u32::from(volume.session) << 8)
-        | u32::from(volume.volume.min(255))
+    (u32::from(volume.congress) << 20)
+        | (u32::from(volume.session) << 16)
+        | (u32::from(volume.volume) << 8)
+        | u32::from(volume.bound_part)
 }
 
 fn ordinal(n: u16) -> String {
@@ -432,6 +447,34 @@ async fn stage_pdf(
     Ok(())
 }
 
+struct ManualDating {
+    dating: globe::Dating,
+    chamber: Option<parse::Chamber>,
+}
+
+impl ManualDating {
+    fn new(item: &globe::Item) -> anyhow::Result<Self> {
+        Ok(Self {
+            dating: globe::Dating::new(item)?,
+            chamber: None,
+        })
+    }
+
+    fn page(&mut self, lines: &[String]) -> globe::PageFacts {
+        let next_chamber = lines
+            .iter()
+            .filter_map(|line| parse::heading(line))
+            .find_map(|heading| heading.chamber);
+        if let Some(next) = next_chamber {
+            if self.chamber.is_some_and(|current| current != next) {
+                self.dating.reset_carried_date();
+            }
+            self.chamber = Some(next);
+        }
+        self.dating.page(lines)
+    }
+}
+
 fn page_row(
     volume: &Volume,
     series: Series,
@@ -450,7 +493,7 @@ fn page_row(
         coverage: Some((volume.first_day, volume.last_day)),
         extent: volume.pages.to_string(),
         appendix: false,
-        part: Some(volume.volume),
+        part: Some(volume.bound_part),
         ..globe::Item::default()
     };
     let mut row = globe::page_row(&item, &canvas, &lines, facts, at);
@@ -461,13 +504,15 @@ fn page_row(
     row.unit_ordinal = unit_ordinal(volume);
     row.package_id = Some(volume.unit.clone());
     row.citation = Some(format!(
-        "{}, {} Cong., {} Sess.{}",
+        "{}, {} Cong., {} Sess., Vol. {}, Part {}{}",
         match series {
             Series::Annals => "Annals",
             Series::Register => "Register of Debates",
         },
         ordinal(volume.congress),
         ordinal(volume.session),
+        ordinal(volume.volume),
+        ordinal(volume.bound_part),
         parse::printed_page(None, &lines)
             .map(|p| format!(" {p}"))
             .unwrap_or_default()
@@ -578,7 +623,7 @@ pub async fn run(
             extent: volume.pages.to_string(),
             ..globe::Item::default()
         };
-        let mut dating = globe::Dating::new(&item)?;
+        let mut dating = ManualDating::new(&item)?;
         let at = Utc::now();
         let rows: Vec<CuratedPage> = pages
             .into_iter()
@@ -652,7 +697,24 @@ mod tests {
     fn manifest_checks_series_ids_coverage_and_pdf_provenance() {
         let m = Manifest::parse(&fixture(), Series::Annals).unwrap();
         assert_eq!(m.volumes.len(), 1);
-        assert_eq!(m.volumes[0].unit, "annals-c01-s01-v01");
+        assert_eq!(m.volumes[0].unit, "annals-c01-s01-v01-b01");
+        let mut two_parts = m.clone();
+        let mut second_part = two_parts.volumes[0].clone();
+        second_part.unit = "annals-c01-s01-v01-b02".into();
+        second_part.bound_part = 2;
+        two_parts.volumes.push(second_part);
+        assert!(Manifest::parse(&serde_json::to_vec(&two_parts).unwrap(), Series::Annals).is_ok());
+        assert_ne!(
+            unit_ordinal(&two_parts.volumes[0]),
+            unit_ordinal(&two_parts.volumes[1])
+        );
+        let mut duplicate_part = two_parts;
+        duplicate_part.volumes[1].bound_part = 1;
+        assert!(Manifest::parse(
+            &serde_json::to_vec(&duplicate_part).unwrap(),
+            Series::Annals
+        )
+        .is_err());
         let mut bad = m.clone();
         bad.volumes[0].unit = "../outside".into();
         assert!(Manifest::parse(&serde_json::to_vec(&bad).unwrap(), Series::Annals).is_err());
@@ -660,6 +722,38 @@ mod tests {
         let mut bad = m;
         bad.volumes[0].pdf_sha256 = "no-digest".into();
         assert!(Manifest::parse(&serde_json::to_vec(&bad).unwrap(), Series::Annals).is_err());
+    }
+
+    #[test]
+    fn manual_dating_resets_carried_day_when_chamber_changes() {
+        #[derive(Deserialize)]
+        struct Transition {
+            senate: Vec<String>,
+            house: Vec<String>,
+        }
+        let transition: Transition = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/congress/lcg/manual/annals/chamber-transition.json"
+        )))
+        .unwrap();
+        let item = globe::Item {
+            id: "annals-dating".into(),
+            congress: Some(17),
+            session: Some("1".into()),
+            coverage: Some((
+                NaiveDate::from_ymd_opt(1823, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(1823, 4, 30).unwrap(),
+            )),
+            ..globe::Item::default()
+        };
+        let mut dating = ManualDating::new(&item).unwrap();
+        let senate = dating.page(&transition.senate);
+        assert_eq!(senate.date, NaiveDate::from_ymd_opt(1823, 3, 10).unwrap());
+        assert_eq!(senate.chamber, Some(parse::Chamber::Senate));
+        let house = dating.page(&transition.house);
+        assert_eq!(house.date, NaiveDate::from_ymd_opt(1823, 1, 10).unwrap());
+        assert_eq!(house.date_from, "heading");
+        assert_eq!(house.chamber, Some(parse::Chamber::House));
     }
 
     struct FixturePdf;
@@ -715,7 +809,7 @@ mod tests {
         let volume = &parsed.volumes[0];
         let pdf_bytes = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../fixtures/congress/lcg/manual/annals/annals-c01-s01-v01.pdf"
+            "/../../fixtures/congress/lcg/manual/annals/annals-c01-s01-v01-b01.pdf"
         ));
         raw.put_new(
             &format!("{RAW_PREFIX}/annals/manifest.json"),
@@ -760,7 +854,7 @@ mod tests {
             .await
             .unwrap();
         assert!(hidden.units.is_empty());
-        assert_eq!(hidden.left_out, ["annals/annals-c01-s01-v01"]);
+        assert_eq!(hidden.left_out, ["annals/annals-c01-s01-v01-b01"]);
         let enabled = super::super::release::Listing::load_enabled(&curated_store, true)
             .await
             .unwrap();
@@ -773,7 +867,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows[0].source, "lcg");
-        assert_eq!(rows[0].doc_id, "lcg-annals-c01-s01-v01_p1");
+        assert_eq!(rows[0].doc_id, "lcg-annals-c01-s01-v01-b01_p1");
         assert_eq!(rows[0].date.to_string(), "1789-11-02");
         assert_eq!(
             rows[0].ocr_engine.as_deref(),
