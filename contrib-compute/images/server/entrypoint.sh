@@ -112,7 +112,7 @@ project_tree() {
   # replaces it.
   python3 "$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/feeder" --target "$PROJ/bin/feeder" ||
     echo "usnm-boinc: warning: bin/feeder is in use by another revision; keeping the old feeder until the next start" >&2
-  cp "$TEMPLATES/plan_class_spec.xml" "$PROJ/plan_class_spec.xml"
+  python3 "$TEMPLATES/refresh-plan-policy.py" --source "$TEMPLATES/plan_class_spec.xml" --target "$PROJ/plan_class_spec.xml"
   for i in $(seq 0 255); do mkdir -p "$PROJ/html/cache/$(printf %02x "$i")"; done
   sed -i -e 's|"REPLACE WITH PROJECT NAME"|"usnewsmap OCR"|' \
     -e 's|"REPLACE WITH COPYRIGHT HOLDER"|"Trevor Goodyear"|' "$inc"
