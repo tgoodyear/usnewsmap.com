@@ -869,6 +869,13 @@ recipe, the Pillow version, the size and the JPEG's sha256. The runner takes the
 when it is there and converts the master otherwise. A grayscale JPEG master under 40 Mpx and
 20 MB goes to workers as it is, so the cache skips it.
 
+`scripts/ocr-node/quality-jpeg-list.py` builds the page list: JPEG2000 pages only, in the
+runner's shard order. The runner gives shard i every eighth batch, largest first, and walks
+each batch's pages in doc_id order. The list interleaves the shards, so the cache keeps
+ahead of all of them. Aim it past each shard's current batch: the runner skips pages that
+are already bundled or have no LoC text, so a shard's bundle count doesn't tell where it is
+in its list.
+
 The output must be byte for byte what the runner would make, so the script runs only on
 Pillow 11.3.0 from the same pinned wheel as the bridge image
 (`contrib-compute/images/bridge/Containerfile`). It checks each master against its fetcher
@@ -876,12 +883,15 @@ sidecar, never replaces a blob (one there with another size stops the run), and 
 pages in `/var/lib/usnm-quality-jpeg-cache/done.txt`. `usnm-quality-jpeg-cache.service`
 runs it under a dynamic user in the `himds` group, for the Arc token. It runs at low CPU
 and I/O priority, so the prefetcher and the scan server go first. In CT 211 (2 cores) it
-converts about 1.5 pages a second.
+converts about 1.5 pages a second on its own, and about 0.9 while pve-big is busy.
 
 ```sh
-# On the operator's machine: the page list, one blob name per line, in the runner's order
-# (each shard's batches in turn), from the wave's manifest. Copy it and the script into
-# CT 211 (pct push).
+# On the operator's machine: the page list from the wave's manifest. --start-after s=k
+# starts shard s after its batch k (0-based; the batch its status file names now), so the
+# cache stays ahead of the runner. Copy the list, the script and the unit into CT 211's
+# /root (pct push).
+scripts/ocr-node/quality-jpeg-list.py --manifest wave9_manifest.parquet --out pages.txt \
+  --start-after 0=0,4=1 [--done done.txt]
 # In CT 211, as root: the pinned Pillow wheel, as the bridge image installs it.
 d=/usr/local/lib/usnm-quality-jpeg-cache
 mkdir -p "$d/py" && cd "$d"
