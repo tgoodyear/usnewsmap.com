@@ -1304,15 +1304,18 @@ requires trust and a canonical host for successful work, refusing a missing list
 or host. `spool-out` already queries
 `workunit.canonical_resultid -> result.hostid`; the hand-off rejects an operator
 override conflicting with that host. Only terminal failure markers bypass trust
-to mark failure, never to publish. The host id in gold remains the client's
-own claim, so this is a quality signal for trusted volunteers, not an identity
-check.
+to mark failure, never to publish. The host ID written by the Gold worker is a
+client claim; v5 native collection cross-checks it against the authoritative
+BOINC canonical result. This remains a quality signal for trusted volunteers,
+not an identity check.
 
 Trust is keyed by the **full immutable worker digest**, not a tag, base image or
-engine version. The latest report's `completed_at` per host and image wins,
-regardless of file order; later failures revoke trust and same-time conflicts
-fail closed. Missing CER never grants trust. These timestamps are also client
-claims, not protection against malicious volunteers.
+engine version. In v5, server `received_time` orders eligible canonical reports
+and attributable terminal client errors within the calibrated scope, regardless
+of file order. The newest event wins; same-time conflicts fail closed. Missing
+CER never grants trust. Client `completed_at` is retained report metadata, not
+the native eligibility clock. The historical v4 pilot used client-clock ordering;
+its receipts do not establish deployment or live acceptance of v5.
 
 `gold submit --target-host HOST` (bridge: `GOLD_TARGET_HOST`) provides a
 targeted, write-ahead campaign; its persisted campaign nonce and host
