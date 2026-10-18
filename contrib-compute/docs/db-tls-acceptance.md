@@ -119,12 +119,18 @@ or a copied-project migration/rollback test. `requireSecureTransport` in the
 BOINC root template and MySQL module deliberately defaults to **false**; `true`
 selects ON only after the remaining gates below. The normal provisioner forwards
 the committed environment setting of the same name, defaulting to false when
-absent. Production remains explicitly false after the #464 activation attempt:
-CLI Python and both PHP APIs negotiated TLS and plaintext was rejected (3159),
-but the public PHP endpoint returned HTTP 500. The operator immediately restored
-OFF, rolled back copied code and restored the prior image; public pages and RPC
-passed again. A new reviewed activation requires resolving this web-specific
-acceptance failure and repeating all gates. The module/legacy default is false.
+absent. The first #464 activation was rolled back immediately after a public
+PHP HTTP 500, despite successful CLI cipher and plaintext-rejection checks.
+The operator restored OFF, copied code and the prior app image; the initial
+HTTP failure's cause was not established. Do not label it a fixed product bug.
+Production selects true for a separately reviewed bounded retry only after a
+stronger web gate: actual public Apache/mysqlnd connections observed through
+existing privileged `performance_schema` access must all have non-empty ciphers,
+with repeated config, apps and status requests succeeding. CLI PHP alone is
+insufficient. The isolated migrated Azure Files project must also pass real
+Apache/PHP requests. On any activation failure restore OFF immediately, capture
+credential-free Apache error classifications before replacing the replica, then
+use the tested code-only/image rollback. The module/legacy default stays false.
 Any future activation needs a reviewed, persisted configuration path and the
 #529 lock/claim protocol, followed by the normal main-triggered release workflow
 and live daemon/scheduler/PHP/bridge and TLS-policy checks. Do not manually toggle
