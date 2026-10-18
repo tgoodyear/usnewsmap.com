@@ -70,6 +70,8 @@ pub struct Trust {
 struct Row {
     completed_at: chrono::DateTime<chrono::Utc>,
     engine_image: String,
+    #[serde(default)]
+    bundle_version: u32,
     host_id: Option<u64>,
     manifest_sha256: String,
     #[serde(default)]
@@ -164,7 +166,7 @@ impl Trust {
                 let row: crate::gold::collect::NativeResult = serde_json::from_str(line)
                     .with_context(|| format!("{}:{}", path.display(), n + 1))?;
                 anyhow::ensure!(
-                    row.schema_version == 1
+                    row.schema_version == 2
                         && row.app == "usnm_gold"
                         && row.workunit.strip_prefix("usnm_gold_").is_some_and(
                             |id| id.len() == 64 && usnm_ocr_contract::boinc::is_sha256(id)
@@ -176,6 +178,7 @@ impl Trust {
                         && row.host_id.is_none_or(|host| host > 0)
                         && (0..=16).contains(&row.server_state)
                         && (0..=16).contains(&row.outcome)
+                        && (-4096..=4096).contains(&row.exit_status)
                         && row.sent_at.is_none_or(|time| time > 0)
                         && row.received_at.is_none_or(|time| time > 0)
                         && row.bundle_version > 0
@@ -207,13 +210,63 @@ impl Trust {
                     row.manifest_sha256 == manifest_sha256,
                     "gold report challenge does not match the calibrated manifest"
                 );
-                if require_native
-                    && (row.language.as_deref() != Some(scope.language.as_str())
-                        || row.profile.as_deref() != Some(scope.profile.as_str())
-                        || row.psm != scope.psm
-                        || row.dpi != u32::from(scope.dpi))
-                {
-                    continue;
+                let native_binding = if require_native {
+                    let language = row
+                        .language
+                        .as_deref()
+                        .context("canonical report lacks native language scope")?;
+                    let profile = row
+                        .profile
+                        .as_deref()
+                        .context("canonical report lacks native profile scope")?;
+                    anyhow::ensure!(
+                        language.len() == 3
+                            && language.bytes().all(|b| b.is_ascii_lowercase())
+                            && !profile.is_empty()
+                            && profile.len() <= 64
+                            && profile.bytes().all(|b| {
+                                b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'-')
+                            }),
+                        "canonical report has invalid native calibration scope"
+                    );
+                    let workunit = row
+                        .workunit
+                        .as_deref()
+                        .context("canonical report lacks its workunit")?;
+                    let result_id = row
+                        .native_result_id
+                        .context("canonical report lacks native result id")?;
+                    let received_at = row
+                        .server_received_at
+                        .context("canonical report lacks server receive timestamp")?;
+                    let native = native_results
+                        .get(&(workunit.to_owned(), result_id))
+                        .context("canonical report has no matching native BOINC result")?;
+                    anyhow::ensure!(
+                        native.canonical
+                            && native.app == "usnm_gold"
+                            && native.host_id.is_some_and(|host| host > 0)
+                            && native.host_id == row.host_id
+                            && native.engine_image == row.engine_image
+                            && native.bundle_version == row.bundle_version
+                            && native.manifest_sha256 == row.manifest_sha256
+                            && native.language == language
+                            && native.profile == profile
+                            && native.psm == row.psm
+                            && u32::from(native.dpi) == row.dpi
+                            && native.received_at == Some(received_at)
+                            && native.server_state == crate::gold::collect::BOINC_SERVER_STATE_OVER
+                            && native.outcome == crate::gold::collect::BOINC_OUTCOME_SUCCESS,
+                        "canonical report disagrees with its native BOINC result"
+                    );
+                    Some((language, profile, received_at))
+                } else {
+                    None
+                };
+                if let Some((language, profile, _)) = native_binding {
+                    if language != scope.language || profile != scope.profile {
+                        continue;
+                    }
                 }
                 anyhow::ensure!(
                     row.complete_loss_crops <= row.crops,
@@ -223,42 +276,7 @@ impl Trust {
                     row.psm == scope.psm && row.dpi == u32::from(scope.dpi),
                     "gold report does not cover the calibrated scoring configuration"
                 );
-                let event_at = if require_native {
-                    anyhow::ensure!(
-                        row.language.as_deref() == Some(scope.language.as_str())
-                            && row.profile.as_deref() == Some(scope.profile.as_str())
-                            && row.psm == scope.psm
-                            && row.dpi == u32::from(scope.dpi),
-                        "canonical Gold report does not match the declared native scope"
-                    );
-                    let workunit = row
-                        .workunit
-                        .as_deref()
-                        .context("canonical report lacks its workunit")?;
-                    let result_id = row
-                        .native_result_id
-                        .context("canonical report lacks native result id")?;
-                    let native = native_results
-                        .get(&(workunit.to_owned(), result_id))
-                        .context("canonical report has no matching native BOINC result")?;
-                    let received_at = row
-                        .server_received_at
-                        .context("canonical report lacks server receive timestamp")?;
-                    anyhow::ensure!(
-                        native.canonical
-                            && native.app == "usnm_gold"
-                            && native.host_id == row.host_id
-                            && native.engine_image == row.engine_image
-                            && native.manifest_sha256 == row.manifest_sha256
-                            && native.language == scope.language
-                            && native.profile == scope.profile
-                            && native.psm == scope.psm
-                            && u32::from(native.dpi) == row.dpi
-                            && native.received_at == Some(received_at)
-                            && native.server_state == crate::gold::collect::BOINC_SERVER_STATE_OVER
-                            && native.outcome == crate::gold::collect::BOINC_OUTCOME_SUCCESS,
-                        "canonical report disagrees with its native BOINC result"
-                    );
+                let event_at = if let Some((_, _, received_at)) = native_binding {
                     chrono::DateTime::from_timestamp(received_at, 0)
                         .context("invalid server receive timestamp")?
                 } else {
@@ -294,6 +312,11 @@ impl Trust {
                     || u32::from(event.dpi) != u32::from(scope.dpi)
                     || event.server_state != crate::gold::collect::BOINC_SERVER_STATE_OVER
                     || event.outcome != crate::gold::collect::BOINC_OUTCOME_CLIENT_ERROR
+                    || matches!(
+                        event.exit_status,
+                        crate::gold::collect::BOINC_EXIT_ABORTED_BY_PROJECT
+                            | crate::gold::collect::BOINC_EXIT_ABORTED_VIA_GUI
+                    )
                 {
                     continue;
                 }

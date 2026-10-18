@@ -108,9 +108,13 @@ kernel lock serializes its own dispatches.
 Issuance does not promote trust or periodically recalibrate it. Review gold
 reports and rebuild trust from validated canonical reports plus the bounded
 `native-outcomes.jsonl` snapshot. Only terminal BOINC `CLIENT_ERROR` results
-(`server_state=5`, `outcome=3`) with a nonzero server host ID and server receive
-time revoke eligibility, and only in the same image/challenge/language/profile/
-PSM/DPI scope. This records an execution failure, not measured OCR quality.
+(`server_state=5`, `outcome=3`) that are not cancellations (`exit_status` is
+neither 202 `EXIT_ABORTED_BY_PROJECT` nor 203 `EXIT_ABORTED_VIA_GUI`) and have a
+nonzero server host ID and server receive time revoke eligibility, and only in the
+same image/challenge/language/profile/PSM/DPI scope. Previously captured bounded
+evidence is retained across recollection so BOINC's result purge cannot erase a
+terminal event; a missing result with no saved evidence fails collection. This
+records an execution failure, not measured OCR quality.
 Server cancellation, send failure, no reply, validator error, a missing spool
 artifact or a result without authoritative host/time does not automatically
 revoke. See [the Gold trust policy](boinc.md#host-trust-for-usnm_ocr).

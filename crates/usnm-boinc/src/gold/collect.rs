@@ -42,6 +42,8 @@ const MAX_NATIVE_BYTES: usize = 16 << 20;
 pub const BOINC_SERVER_STATE_OVER: i64 = 5;
 pub const BOINC_OUTCOME_SUCCESS: i64 = 1;
 pub const BOINC_OUTCOME_CLIENT_ERROR: i64 = 3;
+pub const BOINC_EXIT_ABORTED_BY_PROJECT: i64 = 202;
+pub const BOINC_EXIT_ABORTED_VIA_GUI: i64 = 203;
 
 /// Metadata-only snapshot of one BOINC server result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +60,7 @@ pub struct NativeResult {
     pub language: String,
     pub manifest_sha256: String,
     pub outcome: i64,
+    pub exit_status: i64,
     pub profile: String,
     pub psm: u8,
     pub received_at: Option<i64>,
@@ -149,7 +152,7 @@ pub async fn native_results(
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "SELECT a.name,w.name,r.id,r.hostid,r.server_state,r.outcome,r.sent_time,r.received_time,r.app_version_id,COALESCE(w.canonical_resultid,0) FROM workunit w JOIN app a ON a.id=w.appid JOIN result r ON r.workunitid=w.id WHERE w.name IN ({names}) AND r.app_version_id>0 ORDER BY r.id LIMIT {}",
+        "SELECT a.name,w.name,r.id,r.hostid,r.server_state,r.outcome,r.exit_status,r.sent_time,r.received_time,r.app_version_id,COALESCE(w.canonical_resultid,0) FROM workunit w JOIN app a ON a.id=w.appid JOIN result r ON r.workunitid=w.id WHERE w.name IN ({names}) AND r.app_version_id>0 ORDER BY r.id LIMIT {}",
         MAX_NATIVE_RESULTS + 1
     );
     let mut command = Command::new("mysql");
@@ -191,10 +194,10 @@ fn parse_native_rows(
     let mut rows = Vec::new();
     for line in text.lines() {
         let fields: Vec<_> = line.split('\t').collect();
-        anyhow::ensure!(fields.len() == 10, "invalid Gold native result row");
+        anyhow::ensure!(fields.len() == 11, "invalid Gold native result row");
         let number = |s: &str| s.parse::<i64>().context("invalid Gold native result field");
         let result_id: u64 = fields[2].parse().context("invalid Gold result id")?;
-        let canonical_id: u64 = match fields[9] {
+        let canonical_id: u64 = match fields[10] {
             "NULL" => 0,
             value => value.parse().context("invalid canonical result id")?,
         };
@@ -221,9 +224,9 @@ fn parse_native_rows(
             "native result belongs to another BOINC app"
         );
         rows.push(NativeResult {
-            schema_version: 1,
+            schema_version: 2,
             app: fields[0].to_owned(),
-            app_version_id: number(fields[8])?
+            app_version_id: number(fields[9])?
                 .try_into()
                 .context("invalid app version id")?,
             bundle_version: job.bundle_version,
@@ -234,11 +237,12 @@ fn parse_native_rows(
             language: config.language.clone(),
             manifest_sha256: job.manifest_sha256.clone(),
             outcome: number(fields[5])?,
+            exit_status: number(fields[6])?,
             profile: config.profile.clone(),
             psm: job.engine.psm,
-            received_at: timestamp(fields[7])?,
+            received_at: timestamp(fields[8])?,
             result_id,
-            sent_at: timestamp(fields[6])?,
+            sent_at: timestamp(fields[7])?,
             server_state: number(fields[4])?,
             workunit,
         });
@@ -285,7 +289,34 @@ fn run_inner(
                 Ok::<_, anyhow::Error>((job.workunit(), job))
             })
             .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
-        let mut ordered = rows.to_vec();
+        let mut by_result = BTreeMap::<(String, u64), NativeResult>::new();
+        let previous = opts.out.join("native-outcomes.jsonl");
+        if previous.exists() {
+            let bytes = read(&previous, MAX_NATIVE_BYTES)?;
+            for (line_number, line) in std::str::from_utf8(&bytes)?.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let saved: NativeResult = serde_json::from_str(line)
+                    .with_context(|| format!("{}:{}", previous.display(), line_number + 1))?;
+                let key = (saved.workunit.clone(), saved.result_id);
+                anyhow::ensure!(
+                    by_result.insert(key, saved).is_none(),
+                    "duplicate saved native BOINC result"
+                );
+                anyhow::ensure!(
+                    by_result.len() <= MAX_NATIVE_RESULTS,
+                    "too many saved Gold native results"
+                );
+            }
+        }
+        let mut fresh = BTreeSet::new();
+        for row in rows {
+            let key = (row.workunit.clone(), row.result_id);
+            anyhow::ensure!(fresh.insert(key.clone()), "duplicate native BOINC result");
+            by_result.insert(key, row.clone());
+        }
+        let mut ordered: Vec<_> = by_result.into_values().collect();
         ordered.sort_by(|a, b| (&a.workunit, a.result_id).cmp(&(&b.workunit, b.result_id)));
         let mut seen = BTreeSet::new();
         for row in ordered {
@@ -293,7 +324,7 @@ fn run_inner(
                 format!("unknown Gold workunit {} in native results", row.workunit)
             })?;
             anyhow::ensure!(
-                row.schema_version == 1
+                row.schema_version == 2
                     && row.app == submit::APP
                     && row.bundle_version == job.bundle_version
                     && row.engine_image == job.engine.image
@@ -307,6 +338,7 @@ fn run_inner(
                     && row.host_id.is_none_or(|host| host > 0)
                     && (0..=16).contains(&row.server_state)
                     && (0..=16).contains(&row.outcome)
+                    && (-4096..=4096).contains(&row.exit_status)
                     && row.sent_at.is_none_or(|time| time > 0)
                     && row.received_at.is_none_or(|time| time > 0),
                 "{}: native result identity or scope mismatch",
@@ -335,6 +367,14 @@ fn run_inner(
         if opts.spool.join(format!("{wu}_error")).exists()
             || opts.spool.join(format!("{wu}_no_output_files")).exists()
         {
+            if native.is_some() {
+                anyhow::ensure!(
+                    native_by_workunit
+                        .get(&wu)
+                        .is_some_and(|results| !results.is_empty()),
+                    "{wu}: terminal assimilator marker has no authoritative BOINC result"
+                );
+            }
             summary.failed += 1;
             continue;
         }
@@ -417,7 +457,10 @@ fn run_inner(
     std::fs::create_dir_all(&opts.out)?;
     atomic(&opts.out.join("reports.jsonl"), reports.as_bytes())?;
     atomic(&opts.out.join("crops.jsonl"), crops.as_bytes())?;
-    atomic(&opts.out.join("native-outcomes.jsonl"), outcomes.as_bytes())?;
+    let native_path = opts.out.join("native-outcomes.jsonl");
+    if native.is_some() || !native_path.exists() {
+        atomic(&native_path, outcomes.as_bytes())?;
+    }
     Ok(summary)
 }
 
@@ -440,7 +483,7 @@ mod tests {
             profile: "eng".into(),
         };
         let line = format!(
-            "usnm_gold\t{}\t101\t7\t5\t3\t100\t200\t11\t0",
+            "usnm_gold\t{}\t101\t7\t5\t3\t1\t100\t200\t11\t0",
             job.workunit()
         );
         let parsed = parse_native_rows(&line, &jobs, &config).unwrap();
@@ -610,7 +653,7 @@ mod tests {
         scope: (&str, &str),
     ) -> NativeResult {
         NativeResult {
-            schema_version: 1,
+            schema_version: 2,
             app: submit::APP.into(),
             app_version_id: 100,
             bundle_version: job.bundle_version,
@@ -621,6 +664,11 @@ mod tests {
             language: scope.0.into(),
             manifest_sha256: job.manifest_sha256.clone(),
             outcome,
+            exit_status: if outcome == BOINC_OUTCOME_CLIENT_ERROR {
+                1
+            } else {
+                0
+            },
             profile: scope.1.into(),
             psm: job.engine.psm,
             received_at: Some(received_at),
@@ -723,7 +771,7 @@ mod tests {
         let eng_out = tmp.path().join("eng-out");
         let fra_out = tmp.path().join("fra-out");
         let eng_summary = run_with_native(
-            &options(eng_root, eng_spool, eng_out.clone()),
+            &options(eng_root.clone(), eng_spool.clone(), eng_out.clone()),
             &eng_native,
             &eng_config,
         )
@@ -738,6 +786,50 @@ mod tests {
                 .lines()
                 .count(),
             4
+        );
+        let mut missing_old_row = eng_native.clone();
+        missing_old_row.retain(|row| row.result_id != 102);
+        let lost_out = tmp.path().join("lost-terminal-out");
+        assert!(run_with_native(
+            &options(eng_root.clone(), eng_spool.clone(), lost_out.clone()),
+            &missing_old_row,
+            &eng_config,
+        )
+        .is_err());
+        assert!(
+            !lost_out.exists(),
+            "incomplete evidence must not be written"
+        );
+        run_with_native(
+            &options(eng_root.clone(), eng_spool.clone(), eng_out.clone()),
+            &missing_old_row,
+            &eng_config,
+        )
+        .unwrap();
+        let retained_outcomes =
+            std::fs::read_to_string(eng_out.join("native-outcomes.jsonl")).unwrap();
+        assert_eq!(retained_outcomes.lines().count(), 4);
+        assert!(retained_outcomes.contains("\"result_id\":102"));
+        let file_only_out = tmp.path().join("file-only-out");
+        std::fs::create_dir_all(&file_only_out).unwrap();
+        std::fs::copy(
+            eng_out.join("native-outcomes.jsonl"),
+            file_only_out.join("native-outcomes.jsonl"),
+        )
+        .unwrap();
+        run(&options(
+            eng_root.clone(),
+            eng_spool.clone(),
+            file_only_out.clone(),
+        ))
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(file_only_out.join("native-outcomes.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            4,
+            "file-only recollection must not erase authoritative outcome history"
         );
         run_with_native(
             &options(fra_root, fra_spool, fra_out.clone()),
@@ -783,12 +875,48 @@ mod tests {
         .unwrap();
         assert!(fra_trust.refuse(image_a, Some(7)).is_none());
 
-        for (attempt_outcome, host) in [(2, Some(7)), (4, Some(7)), (5, Some(7)), (3, None)] {
+        let mut unbound_report: serde_json::Value = serde_json::from_str(
+            std::fs::read_to_string(&reports[0])
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        unbound_report.as_object_mut().unwrap().remove("language");
+        let unbound_path = tmp.path().join("unbound-report.jsonl");
+        std::fs::write(&unbound_path, format!("{}\n", unbound_report)).unwrap();
+        assert!(
+            crate::trust::Trust::build_with_outcomes(
+                &[unbound_path],
+                &outcomes,
+                1.0,
+                &expected.manifest_sha256,
+                crate::trust::Scope {
+                    language: "fra".into(),
+                    profile: "fra".into(),
+                    psm: 3,
+                    dpi: 300,
+                },
+            )
+            .is_err(),
+            "missing native scope must fail even when outside the requested scope"
+        );
+
+        for (attempt_outcome, host, exit_status) in [
+            (2, Some(7), 0),
+            (4, Some(7), 0),
+            (5, Some(7), 0),
+            (3, Some(7), BOINC_EXIT_ABORTED_BY_PROJECT),
+            (3, Some(7), BOINC_EXIT_ABORTED_VIA_GUI),
+            (3, None, 1),
+        ] {
             let mut nonrevoking = eng_native.clone();
             nonrevoking[1].outcome = attempt_outcome;
             nonrevoking[1].host_id = host;
+            nonrevoking[1].exit_status = exit_status;
             let alternate = tmp.path().join(format!(
-                "outcome-{attempt_outcome}-{}.jsonl",
+                "outcome-{attempt_outcome}-{exit_status}-{}.jsonl",
                 host.unwrap_or(0)
             ));
             let content = nonrevoking
@@ -812,7 +940,7 @@ mod tests {
             .unwrap();
             assert!(
                 unaffected.refuse(image_a, Some(7)).is_none(),
-                "outcome {attempt_outcome} without attributable client completion must not revoke"
+                "outcome {attempt_outcome} with exit status {exit_status} and host {host:?} must not revoke"
             );
         }
 

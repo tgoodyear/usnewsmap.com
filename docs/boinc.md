@@ -1075,12 +1075,16 @@ queries the read-only BOINC database for the campaign's submitted workunits and
 writes `native-outcomes.jsonl` beside `reports.jsonl` and `crops.jsonl` under
 `<share>/gold/<campaign>/out/`. The native table is capped at 10,000 results and
 16 MiB; it contains only app/workunit/result/version IDs, host ID, immutable job
-image and challenge identity, explicit calibration scope, BOINC state/outcome,
-and server send/receive epoch timestamps. It contains no OCR text, stderr or
+image and challenge identity, explicit calibration scope, BOINC state/outcome/exit
+status, and server send/receive epoch timestamps. It contains no OCR text, stderr or
 filesystem times. Canonical report rows bind their result ID, host and ordering
 timestamp to the matching native server row. An absent/ambiguous DB result or
 host mismatch fails closed for calibrated trust; no zero-crop report is
-synthesized. The files remain on the existing project share.
+synthesized. The files remain on the existing project share. Recollection merges the bounded
+previous native snapshot before refreshing it, preserving captured terminal
+history after BOINC purges result rows. A terminal assimilator marker without a
+current or previously saved authoritative result makes collection fail before
+replacing reports or outcome evidence.
 
 **Models.** The worker image's model lock decides which crops a host can score;
 crops in a language with no locked model are listed as skipped.
@@ -1178,13 +1182,16 @@ a threshold nor promotes hosts.
 
 A terminal attempt revokes the matching host's **quality eligibility** only
 when the authoritative BOINC row is over (`server_state=5`), reports
-`CLIENT_ERROR` (`outcome=3`), identifies a nonzero host, and has a server
-`received_time`. This narrowly treats a returned client execution error (such
+`CLIENT_ERROR` (`outcome=3`), is not a cancellation (`exit_status` is neither
+202 `EXIT_ABORTED_BY_PROJECT` nor 203 `EXIT_ABORTED_VIA_GUI`), identifies a
+nonzero host, and has a server `received_time`. This narrowly treats a returned client execution error (such
 as the all-skipped Gold worker exiting without a report) as a conservative
 eligibility failure; it is not a measured CER/WER result and must not be
-reported as OCR quality. Other outcomes—including server-side inability to send,
-no reply, validator/server errors, cancellation, missing output artifacts, or
-rows without an attributable host/receive timestamp—do not revoke trust. They
+reported as OCR quality. Project and user cancellations (`exit_status=202` or `203`,
+`EXIT_ABORTED_BY_PROJECT` or `EXIT_ABORTED_VIA_GUI`) are excluded even though
+BOINC may record them as `CLIENT_ERROR`. Other outcomes—including server-side
+inability to send, no reply, validator/server errors, missing output artifacts,
+or rows without an attributable host/receive timestamp—do not revoke trust. They
 remain separately visible as native metadata or collection failures and require
 operator review if needed. No inference comes from spool or filesystem times,
 and no canonical report is fabricated for zero scored crops.
