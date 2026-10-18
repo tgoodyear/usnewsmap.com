@@ -412,7 +412,7 @@ export function ocrExperiment(s: Status, now: number): OcrLine | null {
   if (!o && !ja) return null;
   const searchable = ja
     ? `${count(ja.pages)} ${ja.pages === 1 ? "page is" : "pages are"} searchable now.`
-    : "They become searchable with the next update.";
+    : "Processed text becomes searchable only after acceptance and an index update.";
   if (!o)
     return {
       text: "Japanese pages we read ourselves are in the search.",

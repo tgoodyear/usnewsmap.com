@@ -497,7 +497,7 @@ describe("ocrExperiment", () => {
         total: 11_000,
         label: "3,300 of 11,000 Japanese pages read",
       },
-      searchable: "They become searchable with the next update.",
+      searchable: "Processed text becomes searchable only after acceptance and an index update.",
     });
     s.published.ja = { indexes: ["pages-ja-20261006-1"], fold: 1, pages: 3200 };
     expect(ocrExperiment(s, NOW)!.searchable).toBe("3,200 pages are searchable now.");
@@ -524,7 +524,7 @@ describe("ocrExperiment", () => {
     });
     expect(ocrExperiment(s, NOW)).toEqual({
       text: "There are no Japanese pages to read.",
-      searchable: "They become searchable with the next update.",
+      searchable: "Processed text becomes searchable only after acceptance and an index update.",
     });
   });
 

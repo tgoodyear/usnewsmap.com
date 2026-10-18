@@ -54,9 +54,18 @@ function serve(status: unknown, versions: unknown = noVersions) {
     "fetch",
     vi.fn(
       async (url: string) =>
-        new Response(JSON.stringify(url.startsWith("/v1/versions") ? versions : status), {
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify(
+            url.includes("/work_summary.php")
+              ? { schema: 1, updated_at: new Date().toISOString(), apps: [] }
+              : url.startsWith("/v1/versions")
+                ? versions
+                : status,
+          ),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        ),
     ),
   );
 }
@@ -97,6 +106,7 @@ describe("DatasetsPage", () => {
       "What's in the index",
       "The datasets",
       "Pages we read ourselves",
+      "Volunteer computing with BOINC",
       "Languages",
       "Places",
       "In progress",
@@ -120,6 +130,7 @@ describe("DatasetsPage", () => {
     ).toBeTruthy();
     // An older API without the new fields: the page says it doesn't know.
     expect(screen.getByText("This server doesn't say how many pages that is.")).toBeTruthy();
+    expect(screen.getByText("No Japanese OCR is reported for this search index.")).toBeTruthy();
     // No internal terms before the pipeline sections.
     const main = screen.getByRole("main");
     const inProgress = screen.getByRole("heading", { level: 2, name: "In progress" });
