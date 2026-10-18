@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +18,97 @@ REFRESH_SPEC = importlib.util.spec_from_file_location(
 )
 REFRESH = importlib.util.module_from_spec(REFRESH_SPEC)
 REFRESH_SPEC.loader.exec_module(REFRESH)
+POLICY_SPEC = importlib.util.spec_from_file_location(
+    "refresh_plan_policy", ROOT / "contrib-compute/images/server/refresh-plan-policy.py"
+)
+POLICY = importlib.util.module_from_spec(POLICY_SPEC)
+POLICY_SPEC.loader.exec_module(POLICY)
+
+
+class PlanPolicyRefresh(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(prefix=".qwen-policy-", dir=ROOT)
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.source = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
+        self.target = self.root / "plan_class_spec.xml"
+        self.target.write_bytes(self.source.read_bytes())
+
+    def test_restart_preserves_shared_window_and_closed_container_with_reviewed_resources(self):
+        tree = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            nodes[name].find("min_wu_id").text = "16899"
+            nodes[name].find("max_wu_id").text = "16908"
+            nodes[name].find("min_core_client_version").text = "1"
+            nodes[name].find("min_gpu_ram_mb").text = "1"
+        for tag, value in (("min_wu_id", "2"), ("max_wu_id", "1")):
+            ET.SubElement(nodes["docker_nvidia_cuda_8b"], tag).text = value
+        tree.write(self.target)
+        self.assertTrue(POLICY.refresh(self.source, self.target))
+        updated = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in updated.findall("plan_class")}
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            self.assertEqual(nodes[name].findtext("min_wu_id"), "16899")
+            self.assertEqual(nodes[name].findtext("max_wu_id"), "16908")
+            self.assertEqual(nodes[name].findtext("min_core_client_version"), "80211")
+            self.assertEqual(nodes[name].findtext("min_gpu_ram_mb"), "7000")
+            self.assertEqual(nodes[name].findtext("min_batch"), "8")
+        self.assertEqual(nodes["docker_nvidia_cuda_8b"].findtext("min_wu_id"), "2")
+        self.assertEqual(nodes["docker_nvidia_cuda_8b"].findtext("max_wu_id"), "1")
+        self.assertEqual(nodes["docker_nvidia_cuda_8b"].findtext("min_batch"), "18")
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
+    def test_new_project_refresh_is_idempotent(self):
+        self.target.unlink()
+        self.assertTrue(POLICY.refresh(self.source, self.target))
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
+    def test_invalid_existing_windows_fail_without_replacing_policy(self):
+        original = self.source.read_bytes()
+        for low, high in (("0", "0"), ("5", "4"), ("10", "20"), ("bad", "20")):
+            with self.subTest(bounds=(low, high)):
+                tree = ET.fromstring(original)
+                node = next(node for node in tree.findall("plan_class") if node.findtext("name") == "nvidia_vulkan_8b")
+                node.find("min_wu_id").text = low
+                node.find("max_wu_id").text = high
+                payload = ET.tostring(tree)
+                self.target.write_bytes(payload)
+                with self.assertRaises(ValueError):
+                    POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), payload)
+
+    def test_failed_replace_retains_original_and_cleans_only_owned_staging(self):
+        before = self.target.read_bytes()
+        for operation in ("fsync", "replace"):
+            with self.subTest(operation=operation):
+                with patch.object(POLICY.os, operation, side_effect=OSError("operation rejected")):
+                    with self.assertRaises(OSError):
+                        POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), before)
+                self.assertEqual(list(self.root.glob(".usnm-plan-policy-*")), [])
+
+    def test_symlinked_policy_or_lock_is_rejected(self):
+        other = self.root / "other"
+        other.write_bytes(b"not ours")
+        self.target.unlink()
+        self.target.symlink_to(other)
+        with self.assertRaises(ValueError):
+            POLICY.refresh(self.source, self.target)
+        self.target.unlink()
+        self.target.write_bytes(self.source.read_bytes())
+        (self.root / ".native-qwen-cohort.lock").symlink_to(other)
+        with self.assertRaises(ValueError):
+            POLICY.refresh(self.source, self.target)
+        self.assertEqual(other.read_bytes(), b"not ours")
+
+    def test_startup_uses_policy_refresh_before_serving(self):
+        image = (ROOT / "contrib-compute/images/server/Containerfile").read_text()
+        entry = (ROOT / "contrib-compute/images/server/entrypoint.sh").read_text()
+        self.assertIn("images/server/refresh-plan-policy.py", image)
+        project_tree = entry[entry.index("project_tree() {"):entry.index("serve() {")]
+        self.assertIn('"$TEMPLATES/refresh-plan-policy.py"', project_tree)
+        self.assertNotIn('cp "$TEMPLATES/plan_class_spec.xml"', project_tree)
 
 
 class SchedulerRefresh(unittest.TestCase):

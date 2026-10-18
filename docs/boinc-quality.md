@@ -119,6 +119,15 @@ with its `config.xml` and private `html/inc` copy. The policy and journal stay u
 Run one-off queue operators with the committed single-replica bridge configuration,
 not replica settings left by a parallel assessment submission.
 
+The server patch disables app-ID-only version memoization when plan classes have
+workunit restrictions. Otherwise an earlier incompatible/paused batch can cache
+either its payload or a null selection and prevent later eligible native work
+from dispatching. A no-work reply mentioning 15,360 MB can refer to the separate
+training app; it does not change the native 8B classes' 7,000 MB requirement.
+Server startup preserves existing bounded Qwen admission fields, including a
+paused container pool, while refreshing image-owned batch, resource and client
+requirements. Use the cohort operator, not a server restart, to change those windows.
+
 `scripts/boinc/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
 
 Register the apps and platforms on the server (`scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15`), then release the container or native versions with `scripts/boinc-app-release.sh` (see [contrib-compute/docs/app-release.md](../contrib-compute/docs/app-release.md)):
