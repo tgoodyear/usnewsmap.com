@@ -486,3 +486,20 @@ Image builds may proceed, but neither the collector nor TLS activation may be
 released while this compatibility gate is unmet. This is a code compatibility
 gate, not a global all-idle requirement; #856 resource-specific deferrals still
 apply to all later production operations.
+
+### Revision 69 scheduler settings adoption
+
+The maintainer adopted revision 69's live scheduler settings on 2026-10-18:
+`next_rpc_delay=3600` and its plan-policy template, sourced from PR #777
+(`3bad37f5`). The template SHA-256 is
+`c8ec0b9be5aded0f62204669bbe3b5855df04de8227d343d1b33718dc7b6083b`.
+The native `mt` and `apple_gpu_8b` minimum client version is 8.2.11; existing
+closed GPU workunit bounds remain closed. This adoption imports no router,
+collector, assessment database, or other unmerged #777 work. The collector gate
+above remains in force.
+
+Production writers must use the documented exchange-account
+`boinc-handoff/scheduler/controller.lock` lease. The nonstandard
+`boinc-locks/prod-controller.lock` is not a replacement: respect an active lease
+there as a live owner, wait briefly, but never acquire or break it. Continue with
+the #529 claim, documented controller lease and per-job guards under #856.
