@@ -103,9 +103,13 @@ choose it now. Notes:
 - MyISAM. `post`, `thread` and `profile` are MyISAM in `schema.sql`. Forums and profiles are
   disabled. The production project initialization recorded in #470 succeeded against the
   configured MySQL server.
-- TLS. The deployed MySQL server sets `require_secure_transport` to OFF because BOINC's clients
-  do not request TLS (#464 tracks the migration to required TLS). The server has private VNet
-  access only; do not enable transport enforcement until #464's dev migration gate passes.
+- TLS. The deployed MySQL server keeps `require_secure_transport` OFF pending #464's
+  copied-project migration and Azure-chain acceptance. The pinned image's clients now
+  require verified TLS; this does not prove old persistent project copies were upgraded.
+  BOINC's root template and MySQL module expose `requireSecureTransport`, defaulting
+  to `false` (OFF). Explicit `true` maps to ON; normal provisioning omits the parameter
+  and cannot activate it implicitly. The server has private VNet access only. Enable
+  enforcement only after the gates below and a separately coordinated #529 deployment.
   `scripts/boinc/patch-server-db-tls.py` patches the pinned source's Python
   `db_base`, **both** PHP connection paths, and C++ `DB_CONN`; CLI consumers pass
   verified TLS flags. Python's Bookworm mysqlclient cannot use `ssl_mode` against
@@ -136,9 +140,11 @@ choose it now. Notes:
   connector mocks and patch and syntax checks are prerequisites, **not** live Azure
   TLS acceptance or proof of uninterrupted production operation. The [local
   disposable TLS fixture](db-tls-acceptance.md) exercises the actual pinned Python,
-  both PHP APIs, C++ `DB_CONN` and CLI against a TLS-required MariaDB server,
-  including the certificate, hostname and plaintext negative cases. It does not
-  replace Azure MySQL or full persisted-project migration acceptance.
+  both PHP APIs, C++ `DB_CONN` and CLI against TLS-required MariaDB and MySQL 8.4
+  servers, including certificate, hostname and plaintext negative cases. MySQL 8.4
+  uses the same pinned image as the existing CI SQL checks and retests all five
+  consumers after a persisted database restart. Synthetic certificates do not
+  replace Azure-chain or full persisted-project migration acceptance.
 
 - CPU credits. B1ms has 20% baseline CPU. The transitioner and feeder poll constantly. If the
   credit balance drains, MySQL throttles to 20%. We alarm on the CPU-credit metric and move to

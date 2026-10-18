@@ -54,6 +54,9 @@ param bridgeTimeoutSeconds int = 1800
 @description('MySQL admin password. A new one on every deployment, written to Key Vault by this template (mysql-admin-password); nothing outside the deployment sees it.')
 param mysqlAdminPassword string = 'Aa1-${newGuid()}'
 
+@description('Require MySQL TLS only after the #464 acceptance/migration/rollback gates and #529 deploy coordination. Defaults OFF; normal provisioning must not activate it implicitly.')
+param requireSecureTransport bool = false
+
 @description('Public host name of the BOINC master URL, for example boinc.usnewsmap.com. It cannot change once volunteers attach.')
 @minLength(4)
 param masterHost string
@@ -177,6 +180,7 @@ module mysql 'modules/mysql.bicep' = {
     subnetId: network.outputs.mysqlSubnetId
     privateDnsZoneId: network.outputs.mysqlDnsZoneId
     adminPassword: mysqlAdminPassword
+    requireSecureTransport: requireSecureTransport
   }
 }
 

@@ -115,7 +115,7 @@ def matrix(case, succeeds, host="tls-db.test"):
                           "cipher": cipher if succeeds else None}), flush=True)
 
 
-def main():
+def prepare_tls():
     os.umask(0o077)
     certificate("ca")
     certificate("wrong-ca")
@@ -128,6 +128,10 @@ def main():
     shutil.copyfile(ROOT / "ca.pem", CA)
     OPTIONS.write_text("[client]\nssl-enforce=1\nssl-verify-server-cert=1\n"
                        "ssl-ca=/usr/local/share/usnm/mysql-ca.pem\n")
+
+
+def main():
+    prepare_tls()
     run("mariadb-install-db", "--no-defaults", "--datadir=/fixture/data",
         "--auth-root-authentication-method=normal", "--skip-test-db")
     process = start(True)

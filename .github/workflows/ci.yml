@@ -192,6 +192,20 @@ jobs:
       - run: shellcheck -x -S warning scripts/boinc/check-db-tls.sh
       - run: scripts/boinc/check-db-tls.sh
 
+  boinc-mysql84-db-tls:
+    name: BOINC actual database TLS (private MySQL 8.4)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py scripts/boinc/test_mysql84_db_tls.py
+      - run: shellcheck -x -S warning scripts/boinc/check-mysql84-db-tls.sh
+      - run: scripts/boinc/check-mysql84-db-tls.sh
+
   boinc-node-client:
     name: BOINC stable node client (EL9 build, no host installation)
     needs: changes
