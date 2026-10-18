@@ -461,6 +461,348 @@ fn bleed_through(hist: &[u64; 256], threshold: u8) -> f64 {
     band as f64 / total as f64
 }
 
+/// Computes spatial illumination nonuniformity across an 8x8 grid of tiles on the
+/// downscaled image:
+/// - `bg_tile_std`: population standard deviation of the 90th-percentile background
+///   grey across the 64 tiles (`0.0` on spatially uniform pages).
+/// - `otsu_local_diff`: fraction of pixels where global Otsu thresholding disagrees
+///   with local per-tile Otsu thresholding (`0.0` on spatially uniform pages).
+fn tile_illumination(img: &GrayImage, global_threshold: u8) -> (f64, f64) {
+    const GRID: usize = 8;
+    let (w, h) = img.dimensions();
+    let (w_usize, h_usize) = (w as usize, h as usize);
+    if w_usize < GRID || h_usize < GRID {
+        return (0.0, 0.0);
+    }
+    let raw = img.as_raw();
+    let mut tile_hists = vec![[0u64; 256]; GRID * GRID];
+    let mut x_tile = vec![0usize; w_usize];
+    for (x, slot) in x_tile.iter_mut().enumerate() {
+        *slot = (x * GRID / w_usize).min(GRID - 1);
+    }
+    for y in 0..h_usize {
+        let ty = (y * GRID / h_usize).min(GRID - 1);
+        let row = &raw[y * w_usize..(y + 1) * w_usize];
+        let row_hists = &mut tile_hists[ty * GRID..(ty + 1) * GRID];
+        for (x, &px) in row.iter().enumerate() {
+            row_hists[x_tile[x]][usize::from(px)] += 1;
+        }
+    }
+    let mut bg_p90 = Vec::with_capacity(GRID * GRID);
+    let mut diff_pixels = 0u64;
+    let mut total_pixels = 0u64;
+    for th in &tile_hists {
+        let n: u64 = th.iter().sum();
+        if n == 0 {
+            continue;
+        }
+        total_pixels += n;
+        let p90 = percentile(th, 0.90);
+        bg_p90.push(f64::from(p90));
+        let p95 = percentile(th, 0.95);
+        let p05 = percentile(th, 0.05);
+        let local_t = if p95.saturating_sub(p05) < 15 {
+            global_threshold
+        } else {
+            otsu(th)
+        };
+        let lo = usize::from(global_threshold.min(local_t));
+        let hi = usize::from(global_threshold.max(local_t));
+        diff_pixels += th[lo..hi].iter().sum::<u64>();
+    }
+    if bg_p90.is_empty() || total_pixels == 0 {
+        return (0.0, 0.0);
+    }
+    let mean_bg = bg_p90.iter().sum::<f64>() / bg_p90.len() as f64;
+    let var_bg = bg_p90
+        .iter()
+        .map(|v| {
+            let d = *v - mean_bg;
+            d * d
+        })
+        .sum::<f64>()
+        / bg_p90.len() as f64;
+    (var_bg.sqrt(), diff_pixels as f64 / total_pixels as f64)
+}
+
+/// Computes `vertical_stroke_ratio = V_vert / (V_vert + V_horiz)` from the
+/// 8x8 tile-local row and column ink-density profiles. Computing projection
+/// variance within each tile avoids multi-column horizontal phase cancellation
+/// while preserving the exact transpose identity
+/// `vertical_stroke_ratio(I) + vertical_stroke_ratio(I^T) == 1.0`.
+fn vertical_stroke_ratio(img: &GrayImage, threshold: u8) -> f64 {
+    const GRID: usize = 8;
+    let (w, h) = img.dimensions();
+    let (w_usize, h_usize) = (w as usize, h as usize);
+    if w_usize < GRID || h_usize < GRID {
+        return 0.0;
+    }
+    let raw = img.as_raw();
+    let mut var_horiz = 0.0f64;
+    let mut var_vert = 0.0f64;
+    let mut row_ink = Vec::new();
+    let mut col_ink = Vec::new();
+    for ty in 0..GRID {
+        let y0 = ty * h_usize / GRID;
+        let y1 = (ty + 1) * h_usize / GRID;
+        let th = y1 - y0;
+        if th == 0 {
+            continue;
+        }
+        for tx in 0..GRID {
+            let x0 = tx * w_usize / GRID;
+            let x1 = (tx + 1) * w_usize / GRID;
+            let tw = x1 - x0;
+            if tw == 0 {
+                continue;
+            }
+            row_ink.clear();
+            row_ink.resize(th, 0u32);
+            col_ink.clear();
+            col_ink.resize(tw, 0u32);
+            for (dy, r_slot) in row_ink.iter_mut().enumerate() {
+                let row = &raw[(y0 + dy) * w_usize + x0..(y0 + dy) * w_usize + x1];
+                let mut r_sum = 0u32;
+                for (dx, &px) in row.iter().enumerate() {
+                    if px < threshold {
+                        r_sum += 1;
+                        col_ink[dx] += 1;
+                    }
+                }
+                *r_slot = r_sum;
+            }
+            let inv_tw = 1.0 / tw as f64;
+            let inv_th = 1.0 / th as f64;
+            let mean_h =
+                row_ink.iter().map(|&c| f64::from(c) * inv_tw).sum::<f64>() / th as f64;
+            var_horiz += row_ink
+                .iter()
+                .map(|&c| {
+                    let d = f64::from(c) * inv_tw - mean_h;
+                    d * d
+                })
+                .sum::<f64>()
+                / th as f64;
+            let mean_v =
+                col_ink.iter().map(|&c| f64::from(c) * inv_th).sum::<f64>() / tw as f64;
+            var_vert += col_ink
+                .iter()
+                .map(|&c| {
+                    let d = f64::from(c) * inv_th - mean_v;
+                    d * d
+                })
+                .sum::<f64>()
+                / tw as f64;
+        }
+    }
+    let denom = var_vert + var_horiz;
+    if denom <= 0.0 {
+        0.0
+    } else {
+        var_vert / denom
+    }
+}
+
+/// Estimates `(img_columns, gutter_clarity)` from the deskewed vertical ink
+/// projection profile on the central body band (`15%..85%` height) of the
+/// downscaled page image.
+fn projection_columns_and_gutters(small: &GrayImage, threshold: u8, skew_deg: f64) -> (usize, f64) {
+    let (w, h) = small.dimensions();
+    if w == 0 || h == 0 {
+        return (0, 0.0);
+    }
+    let (w_usize, h_usize) = (w as usize, h as usize);
+    let raw = small.as_raw();
+    let t = skew_deg.to_radians().tan();
+    let cy = f64::from(h) / 2.0;
+    let y_start = (h_usize * 15 / 100).min(h_usize.saturating_sub(1));
+    let y_end = (h_usize * 85 / 100).max(y_start + 1).min(h_usize);
+    let band_h = (y_end - y_start).max(1);
+    let mut col_ink = vec![0u32; w_usize];
+    let mut total_ink = 0u64;
+    for y in y_start..y_end {
+        let dx = (f64::from(y as u32) - cy) * t;
+        let row = &raw[y * w_usize..(y + 1) * w_usize];
+        for (x, &px) in row.iter().enumerate() {
+            if px < threshold {
+                total_ink += 1;
+                let rx = (f64::from(x as u32) + dx).round() as i64;
+                if let Some(slot) = usize::try_from(rx).ok().and_then(|i| col_ink.get_mut(i)) {
+                    *slot += 1;
+                }
+            }
+        }
+    }
+    if total_ink == 0 {
+        return (0, 0.0);
+    }
+    let inv_h = 1.0 / band_h as f64;
+    let rad = (w_usize / 128).max(2);
+    let mut smooth = vec![0.0f64; w_usize];
+    for (x, slot) in smooth.iter_mut().enumerate() {
+        let x0 = x.saturating_sub(rad);
+        let x1 = (x + rad + 1).min(w_usize);
+        let sum: u32 = col_ink[x0..x1].iter().sum();
+        *slot = f64::from(sum) * inv_h / (x1 - x0) as f64;
+    }
+    let max_v = smooth.iter().copied().fold(0.0f64, f64::max);
+    if max_v <= 0.0 {
+        return (0, 0.0);
+    }
+    let active: Vec<f64> = smooth.iter().copied().filter(|&v| v >= 0.05 * max_v).collect();
+    if active.is_empty() {
+        return (1, 0.0);
+    }
+    let mean_active = active.iter().sum::<f64>() / active.len() as f64;
+    let lobe_thresh = 0.38 * mean_active;
+    let min_col_w = (w_usize / 20).max(6);
+    let mut raw_lobes: Vec<(usize, usize)> = Vec::new();
+    let mut in_lobe = None;
+    for (x, &v) in smooth.iter().enumerate() {
+        if v >= lobe_thresh {
+            if in_lobe.is_none() {
+                in_lobe = Some(x);
+            }
+        } else if let Some(x0) = in_lobe.take() {
+            if x - x0 >= min_col_w {
+                raw_lobes.push((x0, x - 1));
+            }
+        }
+    }
+    if let Some(x0) = in_lobe {
+        if w_usize - x0 >= min_col_w {
+            raw_lobes.push((x0, w_usize - 1));
+        }
+    }
+    if raw_lobes.is_empty() {
+        return (1, 0.0);
+    }
+    // Merge adjacent lobes separated only by a shallow or narrow dip.
+    let min_gutter_w = (w_usize / 90).max(3);
+    let mut lobes: Vec<(usize, usize)> = Vec::with_capacity(raw_lobes.len());
+    for (l, r) in raw_lobes {
+        if let Some(&mut (prev_l, ref mut prev_r)) = lobes.last_mut() {
+            let gutter_w = l.saturating_sub(*prev_r);
+            let peak_l = smooth[prev_l..=*prev_r].iter().copied().fold(0.0f64, f64::max);
+            let peak_r = smooth[l..=r].iter().copied().fold(0.0f64, f64::max);
+            let ref_peak = peak_l.min(peak_r);
+            let valley = smooth[*prev_r..=l]
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min);
+            if gutter_w < min_gutter_w || (ref_peak > 0.0 && valley > 0.55 * ref_peak) {
+                *prev_r = r;
+                continue;
+            }
+        }
+        lobes.push((l, r));
+    }
+    let n_cols = lobes.len().max(1);
+    if n_cols <= 1 {
+        return (1, 0.0);
+    }
+    let mut clarities = Vec::with_capacity(n_cols - 1);
+    for pair in lobes.windows(2) {
+        let (l0, r0) = pair[0];
+        let (l1, r1) = pair[1];
+        let peak_l = smooth[l0..=r0].iter().copied().fold(0.0f64, f64::max);
+        let peak_r = smooth[l1..=r1].iter().copied().fold(0.0f64, f64::max);
+        let ref_peak = peak_l.min(peak_r);
+        let valley = smooth[r0..=l1]
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        if ref_peak > 0.0 {
+            clarities.push((1.0 - valley / ref_peak).clamp(0.0, 1.0));
+        }
+    }
+    let clarity = if clarities.is_empty() {
+        0.0
+    } else {
+        clarities.iter().sum::<f64>() / clarities.len() as f64
+    };
+    (n_cols, clarity)
+}
+
+/// Estimates text line height in original page pixels by sampling 8 narrow
+/// vertical strips at full vertical resolution (`1:1` in `y`) and computing
+/// the median line pitch across consecutive line ink runs.
+fn estimate_line_height_px(img: &GrayImage, threshold: u8) -> Option<f64> {
+    const STRIPS: usize = 8;
+    let (w, h) = img.dimensions();
+    let (w_usize, h_usize) = (w as usize, h as usize);
+    if w_usize < 16 || h_usize < 16 {
+        return None;
+    }
+    let raw = img.as_raw();
+    let strip_w = (w_usize / 32).clamp(8, 48);
+    let mut pitches = Vec::new();
+    let mut row_dark = vec![0u32; h_usize];
+    let mut smooth_y = vec![0u32; h_usize];
+    for s in 0..STRIPS {
+        let cx = ((2 * s + 1) * w_usize) / (2 * STRIPS);
+        let x0 = cx.saturating_sub(strip_w / 2);
+        let x1 = (x0 + strip_w).min(w_usize);
+        if x1 <= x0 {
+            continue;
+        }
+        for y in 0..h_usize {
+            let slice = &raw[y * w_usize + x0..y * w_usize + x1];
+            let mut cnt = 0u32;
+            for &px in slice {
+                if px < threshold {
+                    cnt += 1;
+                }
+            }
+            row_dark[y] = cnt;
+        }
+        smooth_y[0] = row_dark[0] * 3 + row_dark[1];
+        for y in 1..h_usize - 1 {
+            smooth_y[y] = row_dark[y - 1] + 2 * row_dark[y] + row_dark[y + 1];
+        }
+        smooth_y[h_usize - 1] = row_dark[h_usize - 2] + row_dark[h_usize - 1] * 3;
+        let non_zero: Vec<u32> = smooth_y.iter().copied().filter(|&v| v > 0).collect();
+        if non_zero.len() < 12 {
+            continue;
+        }
+        let mean_nz = non_zero.iter().map(|&v| u64::from(v)).sum::<u64>() as f64
+            / non_zero.len() as f64;
+        let thresh = (mean_nz * 0.35).max(4.0) as u32;
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut start = None;
+        for (y, &v) in smooth_y.iter().enumerate() {
+            if v >= thresh {
+                if start.is_none() {
+                    start = Some(y);
+                }
+            } else if let Some(y0) = start.take() {
+                if y - y0 >= 3 {
+                    runs.push((y0, y));
+                }
+            }
+        }
+        if let Some(y0) = start {
+            if h_usize - y0 >= 3 {
+                runs.push((y0, h_usize));
+            }
+        }
+        for pair in runs.windows(2) {
+            let (a0, a1) = pair[0];
+            let (b0, b1) = pair[1];
+            let h_a = (a1 - a0) as f64;
+            let h_b = (b1 - b0) as f64;
+            let mid_a = (a0 + a1) as f64 * 0.5;
+            let mid_b = (b0 + b1) as f64 * 0.5;
+            let pitch = mid_b - mid_a;
+            let max_h = h_a.max(h_b);
+            if (6.0..=220.0).contains(&pitch) && pitch <= 5.0 * max_h {
+                pitches.push(pitch);
+            }
+        }
+    }
+    median(&mut pitches)
+}
+
 /// The damage features of a page image.
 pub fn image_features(img: &GrayImage) -> ImageFeatures {
     let (width, height) = img.dimensions();
@@ -469,20 +811,32 @@ pub fn image_features(img: &GrayImage) -> ImageFeatures {
     let threshold = otsu(&hist);
     let total: u64 = hist.iter().sum();
     let ink: u64 = hist[..usize::from(threshold)].iter().sum();
+    let skew_deg = skew(&small, threshold);
+    let (bg_tile_std, otsu_local_diff) = tile_illumination(&small, threshold);
+    let (img_columns, gutter_clarity) =
+        projection_columns_and_gutters(&small, threshold, skew_deg);
+    let est_line_height_px = estimate_line_height_px(img, threshold);
+    let vsr = vertical_stroke_ratio(&small, threshold);
     ImageFeatures {
+        bg_tile_std,
         bleed_through: bleed_through(&hist, threshold),
         blur: laplacian_variance(&small),
         contrast: f64::from(percentile(&hist, 0.95)) - f64::from(percentile(&hist, 0.05)),
+        est_line_height_px,
+        gutter_clarity,
         height,
+        img_columns,
         ink_density: if total == 0 {
             0.0
         } else {
             ink as f64 / total as f64
         },
         noise: median_residual(&small),
+        otsu_local_diff,
         scale,
-        skew_deg: skew(&small, threshold),
+        skew_deg,
         threshold,
+        vertical_stroke_ratio: vsr,
         width,
     }
 }
@@ -708,5 +1062,117 @@ pub(crate) mod tests {
         });
         assert_eq!(empty.columns, 0);
         assert_eq!(empty.line_height_px, None);
+    }
+
+    fn synthetic_multicol_page(
+        w: u32,
+        h: u32,
+        cols: u32,
+        pitch: u32,
+        bg: u8,
+        ink: u8,
+    ) -> GrayImage {
+        let mut img = GrayImage::from_pixel(w, h, image::Luma([bg]));
+        let col_w = (w - 80) / cols;
+        let gutter = 24.min(col_w / 3);
+        let ink_h = (pitch / 4).max(4);
+        let mut y0 = 60;
+        while y0 + ink_h < h - 60 {
+            for c in 0..cols {
+                let x_start = 40 + c * col_w + gutter / 2;
+                let x_end = 40 + (c + 1) * col_w - gutter / 2;
+                for x in x_start..x_end {
+                    if (x / 8) % 9 == 8 {
+                        continue;
+                    }
+                    for dy in 0..ink_h {
+                        img.put_pixel(x, y0 + dy, image::Luma([ink]));
+                    }
+                }
+            }
+            y0 += pitch;
+        }
+        img
+    }
+
+    fn transpose_image(img: &GrayImage) -> GrayImage {
+        let (w, h) = img.dimensions();
+        let mut out = GrayImage::new(h, w);
+        for y in 0..h {
+            for x in 0..w {
+                out.put_pixel(y, x, *img.get_pixel(x, y));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn analytic_identities_for_projection_and_illumination_features() {
+        // 1. Uniform tile illumination identity: identical 8x8 tiles -> bg_tile_std == 0, otsu_local_diff == 0.
+        let mut uniform_tiled = GrayImage::from_pixel(512, 512, image::Luma([235]));
+        for ty in 0..8u32 {
+            for tx in 0..8u32 {
+                let x0 = tx * 64;
+                let y0 = ty * 64;
+                for row in 0..4u32 {
+                    let y = y0 + 8 + row * 14;
+                    for x in (x0 + 6)..(x0 + 58) {
+                        for dy in 0..4u32 {
+                            uniform_tiled.put_pixel(x, y + dy, image::Luma([70]));
+                        }
+                    }
+                }
+            }
+        }
+        let fu = image_features(&uniform_tiled);
+        assert_eq!(fu.bg_tile_std, 0.0);
+        assert_eq!(fu.otsu_local_diff, 0.0);
+
+        // Apply a heavy spine shadow across the left columns (where shadowed paper < unshadowed ink)
+        // -> both bg_tile_std and otsu_local_diff become strictly positive.
+        let mut shadowed = uniform_tiled.clone();
+        for (x, _y, p) in shadowed.enumerate_pixels_mut() {
+            if x < 192 {
+                let drop = ((192 - x) * 185 / 192) as u8;
+                p.0[0] = p.0[0].saturating_sub(drop);
+            }
+        }
+        let fs = image_features(&shadowed);
+        assert!(fs.bg_tile_std > 15.0, "bg_tile_std {}", fs.bg_tile_std);
+        assert!(
+            fs.otsu_local_diff > 0.05,
+            "otsu_local_diff {}",
+            fs.otsu_local_diff
+        );
+
+        // 2. Transpose orientation identity: vsr(I) + vsr(I^T) == 1.0.
+        let horiz = synthetic_multicol_page(800, 1000, 4, 24, 235, 30);
+        let vert = transpose_image(&horiz);
+        let fh = image_features(&horiz);
+        let fv = image_features(&vert);
+        let sum_vsr = fh.vertical_stroke_ratio + fv.vertical_stroke_ratio;
+        assert!(
+            (sum_vsr - 1.0).abs() < 1e-12,
+            "transpose sum {} ({} + {})",
+            sum_vsr,
+            fh.vertical_stroke_ratio,
+            fv.vertical_stroke_ratio
+        );
+        assert!(fh.vertical_stroke_ratio < 0.45);
+        assert!(fv.vertical_stroke_ratio > 0.55);
+
+        // 3. Projection column count, gutter clarity, and line height scaling.
+        let c1 = image_features(&synthetic_page(800, 1000, 0.0, 235, 30));
+        assert_eq!(c1.img_columns, 1);
+        assert_eq!(c1.gutter_clarity, 0.0);
+        assert_eq!(fh.img_columns, 4);
+        assert!(fh.gutter_clarity > 0.85, "clarity {}", fh.gutter_clarity);
+        let c7 = image_features(&synthetic_multicol_page(840, 1000, 7, 40, 235, 30));
+        assert_eq!(c7.img_columns, 7);
+        assert!(c7.gutter_clarity > 0.85, "clarity {}", c7.gutter_clarity);
+        let lh24 = fh.est_line_height_px.unwrap();
+        let lh40 = c7.est_line_height_px.unwrap();
+        assert!((lh24 - 24.0).abs() <= 1.5, "lh24 {}", lh24);
+        assert!((lh40 - 40.0).abs() <= 1.5, "lh40 {}", lh40);
     }
 }

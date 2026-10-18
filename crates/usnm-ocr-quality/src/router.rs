@@ -189,8 +189,15 @@ pub fn route_page(
     let img = page.image.as_ref();
     let lay = page.layout.as_ref();
 
-    let cols = lay.map(|l| l.columns).unwrap_or(1);
-    let line_height = lay.and_then(|l| l.line_height_px).unwrap_or(34.0);
+    let cols = lay
+        .map(|l| l.columns)
+        .filter(|&c| c > 0)
+        .or_else(|| img.map(|i| i.img_columns).filter(|&c| c > 0))
+        .unwrap_or(1);
+    let line_height = lay
+        .and_then(|l| l.line_height_px)
+        .or_else(|| img.and_then(|i| i.est_line_height_px))
+        .unwrap_or(34.0);
     let mean_conf = lay.and_then(|l| l.mean_word_conf);
 
     let blur = img.map(|i| i.blur).unwrap_or(5000.0);
@@ -200,6 +207,9 @@ pub fn route_page(
     let noise = img.map(|i| i.noise).unwrap_or(2.0);
     let skew_deg = img.map(|i| i.skew_deg).unwrap_or(0.0);
     let width = img.map(|i| i.width).unwrap_or(2400);
+    let otsu_local_diff = img.map(|i| i.otsu_local_diff).unwrap_or(0.0);
+    let bg_tile_std = img.map(|i| i.bg_tile_std).unwrap_or(0.0);
+    let vertical_stroke_ratio = img.map(|i| i.vertical_stroke_ratio).unwrap_or(0.0);
 
     let mut reasons = Vec::new();
     let is_multiscript = matches!(lang, "deu" | "srp" | "ces" | "yid" | "zho" | "haw");
@@ -210,6 +220,14 @@ pub fn route_page(
     let deskew = skew_deg.abs() >= 0.8;
     if deskew {
         reasons.push(format!("deskew:skew_deg={skew_deg:.2}"));
+    }
+    if otsu_local_diff >= 0.08 || bg_tile_std >= 22.0 {
+        reasons.push(format!(
+            "local_sauvola:otsu_local_diff={otsu_local_diff:.3},bg_tile_std={bg_tile_std:.1}"
+        ));
+    }
+    if vertical_stroke_ratio >= 0.55 {
+        reasons.push(format!("vertical_orientation:vsr={vertical_stroke_ratio:.3}"));
     }
 
     let dense_broadsheet = cols >= 6 || line_height < 26.0;
@@ -330,15 +348,21 @@ mod tests {
     ) -> PageFeatures {
         PageFeatures {
             image: Some(ImageFeatures {
+                bg_tile_std: 4.0,
                 bleed_through,
                 blur,
                 contrast,
+                est_line_height_px: Some(line_height_px),
+                gutter_clarity: 0.9,
                 height: 5200,
+                img_columns: columns,
                 ink_density,
                 noise: 2.5,
+                otsu_local_diff: 0.01,
                 scale: 4,
                 skew_deg: 0.2,
                 threshold: 165,
+                vertical_stroke_ratio: 0.22,
                 width,
             }),
             layout: Some(LayoutFeatures {
@@ -350,6 +374,23 @@ mod tests {
                 words: 2200,
             }),
         }
+    }
+
+    #[test]
+    fn missing_alto_falls_back_to_image_projection_columns_and_line_height() {
+        let mut page = sample_features(4400, 0.10, 0.22, 190.0, 6200.0, 7, 23.5, 0.75);
+        page.layout = Some(LayoutFeatures {
+            blocks: 0,
+            columns: 0,
+            line_height_px: None,
+            lines: 0,
+            mean_word_conf: None,
+            words: 0,
+        });
+        let d = route_page("eng", &page, Some(0.17), Some(0.81));
+        assert_eq!(d.regime, DamageRegime::DenseBroadsheet);
+        assert_eq!(d.psm, 6);
+        assert!(d.slice_columns);
     }
 
     #[test]
