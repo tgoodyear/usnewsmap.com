@@ -194,7 +194,7 @@ pub fn route_page(
     let cols = lay
         .map(|l| l.columns)
         .filter(|&c| c > 0)
-        .or_else(|| img.map(|i| i.img_columns).filter(|&c| c > 0))
+        .or_else(|| img.and_then(|i| i.img_columns).filter(|&c| c > 0))
         .unwrap_or(1);
     let line_height = lay
         .and_then(|l| l.line_height_px)
@@ -209,9 +209,9 @@ pub fn route_page(
     let noise = img.map(|i| i.noise).unwrap_or(2.0);
     let skew_deg = img.map(|i| i.skew_deg).unwrap_or(0.0);
     let width = img.map(|i| i.width).unwrap_or(2400);
-    let otsu_local_diff = img.map(|i| i.otsu_local_diff).unwrap_or(0.0);
-    let bg_tile_std = img.map(|i| i.bg_tile_std).unwrap_or(0.0);
-    let vertical_stroke_ratio = img.map(|i| i.vertical_stroke_ratio).unwrap_or(0.0);
+    let otsu_local_diff = img.and_then(|i| i.otsu_local_diff).unwrap_or(0.0);
+    let bg_tile_std = img.and_then(|i| i.bg_tile_std).unwrap_or(0.0);
+    let vertical_stroke_ratio = img.and_then(|i| i.vertical_stroke_ratio).unwrap_or(0.0);
 
     let mut reasons = Vec::new();
     let is_multiscript = matches!(lang, "deu" | "srp" | "ces" | "yid" | "zho" | "haw");
@@ -352,21 +352,21 @@ mod tests {
     ) -> PageFeatures {
         PageFeatures {
             image: Some(ImageFeatures {
-                bg_tile_std: 4.0,
+                bg_tile_std: Some(4.0),
                 bleed_through,
                 blur,
                 contrast,
                 est_line_height_px: Some(line_height_px),
-                gutter_clarity: 0.9,
+                gutter_clarity: Some(0.9),
                 height: 5200,
-                img_columns: columns,
+                img_columns: Some(columns),
                 ink_density,
                 noise: 2.5,
-                otsu_local_diff: 0.01,
+                otsu_local_diff: Some(0.01),
                 scale: 4,
                 skew_deg: 0.2,
                 threshold: 165,
-                vertical_stroke_ratio: 0.22,
+                vertical_stroke_ratio: Some(0.22),
                 width,
             }),
             layout: Some(LayoutFeatures {
