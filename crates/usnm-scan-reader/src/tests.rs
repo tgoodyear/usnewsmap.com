@@ -435,7 +435,7 @@ async fn ip_request_and_byte_budgets_ignore_spoofed_forwarding_headers() {
                 &token(&different),
                 BLOB,
                 "wu-1",
-                &[("x-forwarded-for", "10.0.0.9")],
+                &[("x-forwarded-for", "198.51.100.9")],
                 "127.0.0.1:3456",
             ))
             .await
