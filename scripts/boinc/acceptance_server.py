@@ -9,6 +9,7 @@ import argparse
 import base64
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -75,10 +76,71 @@ def below(root, name):
     return path
 
 
+def file_hash(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def bounds(manifest):
+    quorum, profile = manifest['min_quorum'], manifest['profile']
+    return dict(min_quorum=quorum, target_nresults=quorum, max_error_results=1,
+                max_total_results=quorum + 1, max_success_results=quorum + 1,
+                rsc_memory_bound=profile['memory_bytes'], rsc_disk_bound=profile['disk_bytes'], delay_bound=14400)
+
+
+def verify_bounds(values, manifest):
+    for key, expected in bounds(manifest).items():
+        if key not in values or float(values[key]) != expected:
+            raise ValueError('effective workunit/template bound mismatch: ' + key)
+
+
+def template_check(project, manifest):
+    path = below(project / 'templates', manifest['input_template'])
+    node = ET.parse(path).find('workunit')
+    if node is None:
+        raise ValueError('input template lacks workunit')
+    for key, expected in bounds(manifest).items():
+        text = node.findtext(key)
+        if text is not None and float(text) != expected:
+            raise ValueError('template overrides acceptance bound: ' + key)
+    return file_hash(path)
+
+
+def isolated_account(db, manifest, workunit=None, host_id=None, fingerprint=None):
+    account = manifest['account_id']
+    users = query(db, 'SELECT id, seti_id, teamid, authenticator FROM user WHERE id=%s', (account,))
+    if len(users) != 1 or not users[0]['seti_id'] or users[0]['teamid']:
+        raise ValueError('dedicated account must already have assignment-only scheduling and no team')
+    if fingerprint is not None and not hmac.compare_digest(
+            hashlib.sha256(users[0]['authenticator'].encode()).hexdigest(), fingerprint):
+        raise ValueError('ephemeral authenticator does not match isolated account')
+    for host in [*manifest.get('peer_host_ids', []), *([host_id] if host_id else [])]:
+        hosts = query(db, 'SELECT id FROM host WHERE id=%s AND userid=%s', (host, account))
+        if len(hosts) != 1:
+            raise ValueError('client/peer is not on the isolated account')
+    # seti_id is stock BOINC's only-run-own-jobs gate: targeted assignments are
+    # served first, then ordinary and broadcast scheduling are skipped entirely.
+    other = query(db, 'SELECT a.id FROM assignment a JOIN workunit w ON w.id=a.workunitid '
+                  'LEFT JOIN host h ON a.target_type=1 AND h.id=a.target_id '
+                  'WHERE ((a.target_type=2 AND a.target_id=%s) OR (a.target_type=1 AND h.userid=%s)) '
+                  'AND w.canonical_resultid=0 AND w.error_mask=0 AND w.name!=%s LIMIT 1',
+                  (account, account, workunit or ''))
+    inflight = query(db, 'SELECT r.id FROM result r JOIN workunit w ON w.id=r.workunitid '
+                     'WHERE r.userid=%s AND r.server_state=4 AND w.name!=%s LIMIT 1',
+                     (account, workunit or ''))
+    if other or inflight:
+        raise ValueError('isolated account has unrelated assignments/in-progress work')
+
+
 def fixture_load(root, name, release):
     manifest = json.loads(below(root, name + '.json').read_text())
     if manifest['release'] != release:
         raise ValueError('fixture release mismatch')
+    if type(manifest['account_id']) is not int or manifest['account_id'] <= 0:
+        raise ValueError('fixture requires a pre-isolated dedicated account')
     if not SAFE.fullmatch(manifest['workunit_name']):
         raise ValueError('invalid fixture workunit identity')
     profile = manifest['profile']
@@ -155,6 +217,9 @@ def scheduler_profile(project, manifest):
     expected_gpu = node.findtext('gpu_type', 'none')
     if profile['gpu'] != expected_gpu:
         raise ValueError('fixture GPU differs from scheduler plan')
+    for field, tag in [('cuda_version', 'min_cuda_version'), ('compute_capability', 'min_nvidia_compcap'),
+                       ('opencl_version', 'min_opencl_version')]:
+        profile[field] = max(profile.get(field, 0), int(node.findtext(tag, '0')))
     return profile
 
 
@@ -176,22 +241,31 @@ def create_args(manifest, workunit, host_id):
 
 def status(db, project, record, manifest):
     base = dict(run_id=record['run_id'], release=record['release'], state='pending')
-    rows = query(db, 'SELECT id, canonical_resultid, error_mask, batch, assimilate_state FROM workunit WHERE name=%s',
+    rows = query(db, 'SELECT id, canonical_resultid, error_mask, batch, assimilate_state, min_quorum, target_nresults, '
+                 'max_error_results, max_total_results, max_success_results, rsc_memory_bound, rsc_disk_bound, '
+                 'delay_bound FROM workunit WHERE name=%s',
                  (record['workunit'],))
     if not rows:
         return base
     wu = rows[0]
+    verify_bounds(wu, manifest)
     if wu['error_mask'] or wu['batch'] != manifest['batch']:
         return dict(base, state='failed')
     clients = query(db, 'SELECT id, hostid, server_state, outcome, validate_state, app_version_id '
-                    'FROM result WHERE workunitid=%s AND hostid=%s', (wu['id'], record['host_id']))
+                    'FROM result WHERE workunitid=%s', (wu['id'],))
     # No cross-version or scheduler-only evidence can pass this gate.
-    good = [r for r in clients if r['server_state'] == 5 and r['outcome'] == 1
+    good = [r for r in clients if r['hostid'] == record['host_id'] and r['server_state'] == 5 and r['outcome'] == 1
             and r['validate_state'] == 1 and r['app_version_id'] == record['app_version_id']]
     if not good:
         if any(r['server_state'] == 5 and (r['outcome'] not in (0, 1) or r['validate_state'] == 2
                                          or r['app_version_id'] != record['app_version_id']) for r in clients):
             return dict(base, state='failed')
+        return base
+    approved = {record['host_id'], *manifest.get('peer_host_ids', [])}
+    valid_hosts = {r['hostid'] for r in clients if r['hostid'] in approved and r['server_state'] == 5
+                   and r['outcome'] == 1 and r['validate_state'] == 1
+                   and r['app_version_id'] == record['app_version_id']}
+    if len(valid_hosts) < manifest['min_quorum']:
         return base
     if not wu['canonical_resultid']:
         return base
@@ -268,6 +342,10 @@ def handle(request, project, fixtures, db):
         if action == 'reserve':
             if record and not record.get('released'):
                 raise ValueError('fixture already reserved; reconcile its journal before recovery')
+            if ET.parse(project / 'config.xml').findtext('./config/enable_assignment') != '1':
+                raise ValueError('host-target assignment must already be enabled')
+            isolated_account(db, manifest, fingerprint=request.get('authenticator_sha256'))
+            input_hash = template_check(project, manifest)
             profile = scheduler_profile(project, manifest)
             versions = query(db, 'SELECT av.id FROM app_version av JOIN app a ON a.id=av.appid '
                              'JOIN platform p ON p.id=av.platformid WHERE a.name=%s AND av.version_num=%s '
@@ -290,21 +368,23 @@ def handle(request, project, fixtures, db):
                                           check=True, capture_output=True, text=True, timeout=30).stdout.strip()
                 path = Path(location)
                 path = path if path.is_absolute() else project / path
-                raw = below(project / 'download', str(path.resolve())).read_bytes()
-                if hashlib.sha256(raw).hexdigest() != entry['sha256']:
+                if file_hash(below(project / 'download', str(path.resolve()))) != entry['sha256']:
                     raise ValueError('fixture input changed')
             if query(db, 'SELECT id FROM workunit WHERE name=%s', (manifest['workunit_name'],)):
                 raise ValueError('fixture workunit already exists; stage a fresh fixture identity')
             record = dict(run_id=run_id, release=release, app_version_id=versions[0]['id'],
-                          workunit=manifest['workunit_name'], released=False,
+                          workunit=manifest['workunit_name'], released=False, input_template_sha256=input_hash,
                           manifest_sha256=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest())
             durable(journal, record)
-            return dict(run_id=run_id, release=release, profile=profile, workunit=record['workunit'])
+            return dict(run_id=run_id, release=release, profile=profile, workunit=record['workunit'], isolation_verified=True)
         if not record or record['run_id'] != run_id or record.get('released') or record['release'] != release:
             raise ValueError('reservation not owned by this run')
         if record['manifest_sha256'] != hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest():
             raise ValueError('fixture changed during reservation')
+        isolated_account(db, manifest, workunit=record['workunit'], host_id=request.get('host_id') or record.get('host_id'))
         if action == 'dispatch':
+            if template_check(project, manifest) != record['input_template_sha256']:
+                raise ValueError('input template changed after reservation')
             host_id = request['host_id']
             if (type(host_id) is not int or host_id <= 0 or record.get('dispatch_intent')
                     or host_id in manifest.get('peer_host_ids', [])):
@@ -318,10 +398,13 @@ def handle(request, project, fixtures, db):
             durable(journal, record)  # Persist before mutation: do not retry unknown outcomes.
             subprocess.run([str(project / 'bin/create_work'), *create_args(manifest, record['workunit'], host_id)],
                            cwd=project, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+            units = query(db, 'SELECT id, min_quorum, target_nresults, max_error_results, max_total_results, '
+                          'max_success_results, rsc_memory_bound, rsc_disk_bound, delay_bound FROM workunit WHERE name=%s',
+                          (record['workunit'],))
+            if len(units) != 1:
+                raise ValueError('uncertain fixture workunit creation')
+            verify_bounds(units[0], manifest)
             if manifest.get('peer_host_ids'):
-                units = query(db, 'SELECT id FROM workunit WHERE name=%s', (record['workunit'],))
-                if len(units) != 1:
-                    raise ValueError('uncertain fixture workunit creation')
                 cursor = db.cursor()
                 try:
                     for peer in manifest['peer_host_ids']:

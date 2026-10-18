@@ -65,6 +65,8 @@ done
 
 [ -z "$RESOURCE_SUFFIX" ] || [[ $RESOURCE_SUFFIX =~ ^[0-9a-f]{32}$ ]] || die "--resource-suffix must be 32 hex digits"
 
+[ -z "$RESOURCE_SUFFIX" ] || [ -n "$AUTH_FILE" ] || die "acceptance clients require a pre-isolated --authenticator-file"
+
 auth_val=""
 if [ -n "$AUTH_FILE" ]; then
   [ -f "$AUTH_FILE" ] || die "--authenticator-file $AUTH_FILE does not exist"

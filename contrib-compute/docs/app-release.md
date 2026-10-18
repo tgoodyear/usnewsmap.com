@@ -400,21 +400,34 @@ MySQL connector and project configuration; no DB credentials leave the server.
 `python_command` executes Python source from stdin as the **BOINC service user**,
 with its normal local RPC-password lookup. For nonstandard data directories,
 put `env BOINC_DIR=/path/to/data` before `python3 -`. This also permits Mac,
-Windows (with an appropriate transport), and ARM test clients. Existing clients
-must already be attached; acceptance only probes and requests scheduler updates,
+Windows (with an appropriate transport), and ARM test clients. Before any attachment/update, the server must verify a **dedicated assignment-only
+account**: stock pinned BOINC uses the existing `user.seti_id` only-run-own-jobs
+gate to serve targeted assignments and then skip ordinary/broadcast scheduling.
+The account must have no team, unrelated active assignments, or unrelated
+in-progress results. Its hosts/peers must belong to that account. Establish this
+account deliberately under #529 coordination; the runner does not change account
+flags, trust, project preferences, or scheduler policy. Every dispatch/status
+rechecks isolation; fixture targeting alone is not sufficient. Existing clients
+must already be attached to that isolated account; acceptance only probes and requests scheduler updates,
 never detaches, deletes, or rewrites their preferences. Do not select a volunteer
 or any client running unrelated work.
 
 There is **no automatic paid fallback**. To explicitly opt into the existing
 Azure ephemeral infrastructure, use `"client": {"mode": "ephemeral", "sku":
-"Standard_D8s_v5"}` (CPU), or an explicitly approved NVIDIA SKU for a CUDA plan.
+"Standard_D8s_v5", "authenticator_file": "/private/test-account.auth"}` (CPU), or an explicitly approved NVIDIA SKU for a CUDA plan.
 Only Linux x86 CPU/NVIDIA clients are provisionable by that template; unsupported
 platform/GPU combinations fail before reservation. Each run uses a random,
 run-specific resource group, including partial creates. Dedicated acceptance
+VMs use the **existing isolated account**, never the template's default new
+disposable account. The private regular authenticator file must have mode 0600
+or stricter. Its fingerprint is verified against the isolated server account
+before provisioning; the key is copied once to a run-private 0600 file to avoid
+attachment to changed credentials, and removed during teardown. Keys are never
+placed in JSON config, logs, evidence, or command arguments. Dedicated acceptance
 VMs expose all CPUs and 90% RAM; existing volunteer defaults remain unchanged.
 The runner invokes VM commands as `boinc` and waits for attachment. CPU counts
 are **effective preference-limited CPUs**, not physical cores; memory/disk, client
-version, GPU vendor/VRAM, platform, and container runtime must meet the fixture
+version, GPU vendor/VRAM/CUDA/compute/OpenCL capability, platform, and container runtime must meet the fixture
 and current server plan class. Closed cohorts/batch mismatches are rejected;
 acceptance never opens experimental cohorts or changes production trust policy.
 Because stock workunit routing binds a numeric version rather than an exact
@@ -439,16 +452,28 @@ fixture's actual requirements, including cold image/model extraction space):
 {
   "release": {"app": "usnm_qwen", "version_num": 100, "platform": "x86_64-pc-linux-gnu", "plan_class": "docker_mt_2b"},
   "workunit_name": "REPLACE_WITH_ACTUAL_APP_WORKUNIT_NAME",
+  "account_id": 42,
   "batch": 12,
   "min_quorum": 2,
   "peer_host_ids": [3],
   "profile": {"cpus": 4, "memory_bytes": 6442450944, "disk_bytes": 42949672960, "gpu": "none"},
-  "input_template": "usnm_qwen_2b_in",
+  "input_template": "usnm_qwen_acceptance_in",
   "output_template": "usnm_qwen_out",
   "inputs": [{"name": "fixture-physical-input", "sha256": "REPLACE_WITH_ACTUAL_SHA256"}],
   "outputs": [{"name": "result.json", "kind": "json", "equals": {"unit_error": null}, "nonempty": ["transcription"]}]
 }
 ```
+
+Stage an acceptance-specific input template whose explicit quorum, replica,
+RAM/disk, error/result limits and deadline match the manifest/runner bounds:
+`min_quorum=target_nresults=Q`, `max_error_results=1`,
+`max_total_results=max_success_results=Q+1`, resource bounds equal `profile`,
+and `delay_bound=14400`. A stock production template may override CLI flags;
+conflicts are rejected before reservation/provisioning, and effective database
+workunit fields are verified after creation and before accepting output. The
+manifest quorum must also be satisfied by successful validated results from all
+approved distinct hosts, not merely by an early canonical ID. Input hashing is
+streamed in bounded chunks, including multi-gigabyte native model payloads.
 
 List **all** template inputs in positional order, with actual content hashes, and
 all required canonical outputs. JSON checks use dotted object keys; `text` checks
@@ -459,7 +484,7 @@ never reduced by the runner: `peer_host_ids` must name exactly quorum-minus-one
 existing dedicated independent peers (distinct from the driven client). The adapter
 adds only exact-workunit, exact-host assignments for these peers; it never opens
 work to an entire account/team. Those peers must already be compatible and
-attached/running; absent consensus correctly times out. A
+attached/running on the same isolated account; absent consensus correctly times out. A
 single-client structural-validation fixture is suitable only where the app's
 existing scientific/trust policy permits it, not as a consensus bypass.
 

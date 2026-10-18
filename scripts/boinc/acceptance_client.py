@@ -3,6 +3,7 @@ import argparse
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -60,10 +61,15 @@ def probe(root, url):
     disk = disk_allowance(filesystem.total, filesystem.free, directory_usage(root), prefs)
     gpus = []
     gpu_memory = {}
+    gpu_capabilities = {}
     for tag, vendor in [('coproc_cuda', 'nvidia'), ('coproc_intel_gpu', 'intel'), ('coproc_apple_gpu', 'apple')]:
         node = state.find('.//' + tag)
         if node is not None and float(node.findtext('count', '0')) > 0:
             gpus.append(vendor)
+            version = re.search(r'OpenCL\s+(\d+)\.(\d+)', node.findtext('.//opencl_device_version', ''))
+            gpu_capabilities[vendor] = dict(cuda_version=int(node.findtext('.//cudaVersion', '0')),
+                compute_capability=int(node.findtext('.//major', '0')) * 100 + int(node.findtext('.//minor', '0')),
+                opencl_version=int(version[1]) * 100 + int(version[2]) if version else 0)
             gpu_memory[vendor] = max([float(n.text or 0) for tag in
                                      ('available_ram', 'totalGlobalMem', 'global_mem_size')
                                      for n in node.findall('.//' + tag)] or [0])
@@ -75,7 +81,7 @@ def probe(root, url):
             runtime |= result.returncode == 0
     return dict(ready=True, project_url=url, host_id=int(project.findtext('hostid')),
                 platform=state.findtext('platform_name'), cpus=usable,
-                memory_bytes=memory, disk_bytes=disk, gpus=gpus, gpu_memory_bytes=gpu_memory,
+                memory_bytes=memory, disk_bytes=disk, gpus=gpus, gpu_memory_bytes=gpu_memory, gpu_capabilities=gpu_capabilities,
                 client_version=sum(int(state.findtext(tag, '0')) * factor for tag, factor in
                                    [('core_client_major_version', 10000), ('core_client_minor_version', 100),
                                     ('core_client_release', 1)]),

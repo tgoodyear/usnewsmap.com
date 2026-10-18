@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -71,6 +72,18 @@ class Eligibility(Workspace):
             with self.subTest(key=key), self.assertRaises(A.AcceptanceError):
                 A.eligible({**PROBE, key: bad}, PROFILE, RELEASE, URL)
 
+    def test_gpu_cuda_compute_and_opencl_minima_are_enforced(self):
+        release = {**RELEASE, 'plan_class': 'docker_nvidia_train'}
+        profile = {**PROFILE, 'gpu': 'nvidia', 'cuda_version': 12080,
+                   'compute_capability': 800, 'opencl_version': 300}
+        caps = dict(cuda_version=12080, compute_capability=800, opencl_version=300)
+        probe = {**PROBE, 'gpus': ['nvidia'], 'gpu_capabilities': {'nvidia': caps}}
+        A.eligible(probe, profile, release, URL)
+        for key in caps:
+            with self.assertRaises(A.AcceptanceError):
+                A.eligible({**probe, 'gpu_capabilities': {'nvidia': {**caps, key: caps[key] - 1}}},
+                           profile, release, URL)
+
     def test_gpu_vendor_and_vram_and_native_do_not_require_docker(self):
         for plan, gpu, platform in [('nvidia_cuda_8b', 'nvidia', RELEASE['platform']),
                                     ('apple_gpu_8b', 'apple', 'arm64-apple-darwin'),
@@ -121,10 +134,13 @@ class Lifecycle(Workspace):
     def simulate(self, fail=None, ephemeral=False, statuses=None):
         config = copy.deepcopy(CONFIG)
         if ephemeral:
-            config['client'] = dict(mode='ephemeral', sku='Standard_D8s_v5')
+            auth = self.root / 'authenticator'
+            auth.write_text('a' * 32)
+            auth.chmod(0o600)
+            config['client'] = dict(mode='ephemeral', sku='Standard_D8s_v5', authenticator_file=str(auth))
         runner = self.runner(config)
         calls = []
-        states = iter(statuses or [evidence(runner.run_id)])
+        states = iter(statuses or [dict(state='pending', run_id=runner.run_id, release=RELEASE), evidence(runner.run_id)])
         group = {'exists': False}
 
         def call(argv, payload=None):
@@ -135,7 +151,7 @@ class Lifecycle(Workspace):
                 if fail == action:
                     raise A.AcceptanceError('injected ' + action)
                 if action == 'reserve':
-                    return json.dumps(dict(run_id=runner.run_id, release=RELEASE, profile=PROFILE))
+                    return json.dumps(dict(run_id=runner.run_id, release=RELEASE, profile=PROFILE, isolation_verified=fail != 'isolation'))
                 if action == 'status':
                     return json.dumps(next(states))
                 return json.dumps({'released': True, 'dispatched': True})
@@ -212,6 +228,18 @@ class Lifecycle(Workspace):
         self.assertEqual(contacted, ['release'])
         self.assertFalse(runner.report['cleanup_complete'])
 
+    def test_ephemeral_isolation_is_verified_before_attachment_and_keys_never_logged(self):
+        runner, calls = self.simulate(ephemeral=True)
+        reserve = json.loads(calls[0][1])
+        self.assertEqual(reserve['authenticator_sha256'], hashlib.sha256(('a' * 32).encode()).hexdigest())
+        create = next(argv for argv, _ in calls if argv[0].endswith('boinc-test-client.sh'))
+        self.assertIn('--authenticator-file', create)
+        self.assertFalse(runner.auth_path.exists())
+        self.assertNotIn('a' * 32, json.dumps(runner.report))
+        runner, calls = self.simulate('isolation', ephemeral=True)
+        self.assertFalse(any(argv[0].endswith('boinc-test-client.sh') for argv, _ in calls))
+        self.assertFalse(runner.auth_path.exists())
+
     def test_uncertain_reservation_is_released_and_no_client_is_created(self):
         runner, calls = self.simulate('reserve', ephemeral=True)
         self.assertFalse(runner.report['accepted'])
@@ -260,7 +288,7 @@ class Lifecycle(Workspace):
 request=json.load(sys.stdin)
 with open(sys.argv[1], 'a') as out: out.write(json.dumps(request)+'\\n')
 action=request['action']
-if action=='reserve': print(json.dumps(dict(run_id=request['run_id'],release=request['release'],profile=""" + repr(PROFILE) + """)))
+if action=='reserve': print(json.dumps(dict(run_id=request['run_id'],release=request['release'],profile=""" + repr(PROFILE) + """,isolation_verified=True)))
 elif action=='status': print(json.dumps(dict(run_id=request['run_id'],release=request['release'],state='pending')))
 else: print(json.dumps(dict(released=True,dispatched=True)))
 """)
@@ -390,6 +418,21 @@ class ClientProbe(Workspace):
         self.assertEqual(probe['client_version'], 80213)
         self.assertNotIn('SECRET', json.dumps(probe))
 
+    def test_probe_reads_actual_gpu_capability_properties(self):
+        self.state()
+        state = C.ET.parse(self.root / 'client_state.xml')
+        node = C.ET.SubElement(C.ET.SubElement(state.getroot(), 'coprocs'), 'coproc_cuda')
+        for key, value in {'count': '1', 'cudaVersion': '12080', 'opencl_device_version': 'OpenCL 3.0 CUDA'}.items():
+            C.ET.SubElement(node, key).text = value
+        prop = C.ET.SubElement(node, 'prop')
+        for key, value in {'major': '8', 'minor': '0', 'totalGlobalMem': str(16 * 1024**3)}.items():
+            C.ET.SubElement(prop, key).text = value
+        state.write(self.root / 'client_state.xml')
+        with patch.object(C.shutil, 'which', return_value=None):
+            probe = C.probe(self.root, URL)
+        self.assertEqual(probe['gpu_capabilities']['nvidia'],
+                         dict(cuda_version=12080, compute_capability=800, opencl_version=300))
+
     def test_disk_quota_subtracts_existing_usage_and_zero_absolute_is_unlimited(self):
         total, free, used = 100_000_000_000, 60_000_000_000, 20_000_000_000
         self.assertEqual(C.disk_allowance(total, free, used, {'disk_max_used_pct': 25,
@@ -419,12 +462,77 @@ class ClientProbe(Workspace):
 
 
 class Server(Workspace):
+    def setUp(self):
+        super().setUp()
+        (self.root / 'config.xml').write_text('<boinc><config><enable_assignment>1</enable_assignment></config></boinc>')
+
     def manifest(self):
         return dict(release=RELEASE, profile=PROFILE, batch=12, min_quorum=2,
-                    workunit_name='usnm_qwen_' + 'a' * 64, peer_host_ids=[3],
+                    workunit_name='usnm_qwen_' + 'a' * 64, peer_host_ids=[3], account_id=42,
                     input_template='qwen_in', output_template='qwen_out',
                     inputs=[dict(name='page.jpg', sha256='a' * 64)],
                     outputs=[dict(name='result.json', kind='json', equals={'unit_error': None}, nonempty=['transcription'])])
+
+    def test_account_isolation_rejects_ordinary_work_and_wrong_credentials(self):
+        manifest = self.manifest()
+        user = dict(id=42, seti_id=1, teamid=0, authenticator='a' * 32)
+        def rows(_db, sql, args):
+            if 'FROM user' in sql:
+                return [user]
+            if 'FROM host' in sql:
+                self.assertEqual(args[1], 42)
+                return [{'id': args[0]}]
+            return []
+        with patch.object(S, 'query', side_effect=rows):
+            S.isolated_account(None, manifest, host_id=2,
+                               fingerprint=hashlib.sha256(('a' * 32).encode()).hexdigest())
+            user['seti_id'] = 0
+            with self.assertRaises(ValueError):
+                S.isolated_account(None, manifest)
+            user['seti_id'] = 1
+            with self.assertRaises(ValueError):
+                S.isolated_account(None, manifest, fingerprint='b' * 64)
+        with patch.object(S, 'query', side_effect=lambda db, sql, args: [{'id': 99}] if 'FROM assignment' in sql else rows(db, sql, args)):
+            with self.assertRaises(ValueError):
+                S.isolated_account(None, manifest)
+
+    def test_input_hashing_streams_bounded_chunks(self):
+        sizes = []
+        class Reader(io.BytesIO):
+            def read(self, size=-1):
+                sizes.append(size)
+                return super().read(size)
+        data = b'x' * (3 * 1024 * 1024 + 3)
+        path = MagicMock()
+        path.open.return_value = Reader(data)
+        self.assertEqual(S.file_hash(path), hashlib.sha256(data).hexdigest())
+        self.assertTrue(all(size == 1024 * 1024 for size in sizes))
+
+    def test_template_and_effective_bounds_cannot_lower_manifest_quorum(self):
+        manifest = self.manifest()
+        templates = self.root / 'templates'
+        templates.mkdir()
+        path = templates / manifest['input_template']
+        values = S.bounds(manifest)
+        def write(values):
+            path.write_text('<input_template><workunit>' + ''.join('<'+k+'>'+str(v)+'</'+k+'>' for k,v in values.items()) + '</workunit></input_template>')
+        write(values)
+        self.assertEqual(S.template_check(self.root, manifest), hashlib.sha256(path.read_bytes()).hexdigest())
+        for key in ('min_quorum', 'target_nresults', 'rsc_memory_bound', 'rsc_disk_bound'):
+            bad = {**values, key: values[key] + 1}
+            write(bad)
+            with self.assertRaises(ValueError):
+                S.template_check(self.root, manifest)
+            with self.assertRaises(ValueError):
+                S.verify_bounds(bad, manifest)
+
+    def test_canonical_result_cannot_bypass_requested_independent_quorum(self):
+        manifest = {**self.manifest(), 'min_quorum': 3, 'peer_host_ids': [3, 4]}
+        record = dict(run_id='a'*32, release=RELEASE, host_id=2, workunit=manifest['workunit_name'], app_version_id=7)
+        wu = dict(id=1, canonical_resultid=88, error_mask=0, batch=12, assimilate_state=2, **S.bounds(manifest))
+        client = dict(id=88, hostid=2, server_state=5, outcome=1, validate_state=1, app_version_id=7)
+        with patch.object(S, 'query', side_effect=[[wu], [client, {**client, 'hostid': 3, 'id': 89}]]):
+            self.assertEqual(S.status(None, self.root, record, manifest)['state'], 'pending')
 
     def test_connector_uses_shipped_verified_tls_options_and_rejects_plaintext(self):
         (self.root / 'config.xml').write_text('<boinc><config><db_host>test.invalid</db_host>'
@@ -451,7 +559,7 @@ class Server(Workspace):
     def test_reservation_rejects_ambiguous_plan_or_platform_before_provisioning(self):
         manifest = self.manifest()
         request = dict(fixture='fixture', run_id='a' * 32, release=RELEASE, action='reserve')
-        with patch.object(S, 'fixture_load', return_value=manifest), \
+        with patch.object(S, 'fixture_load', return_value=manifest), patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
                 patch.object(S, 'scheduler_profile', return_value=PROFILE), \
                 patch.object(S, 'query', side_effect=[[{'id': 7}], [{'id': 7}, {'id': 8}]]):
             with self.assertRaisesRegex(ValueError, 'ambiguous'):
@@ -497,6 +605,10 @@ class Server(Workspace):
         (self.root / 'plan_class_spec.xml').write_bytes((ROOT / 'contrib-compute/boinc/plan_class_spec.xml').read_bytes())
         manifest = self.manifest()
         self.assertEqual(S.scheduler_profile(self.root, manifest)['client_version'], 80213)
+        training = {**manifest, 'release': {**RELEASE, 'plan_class': 'docker_nvidia_train'},
+                    'profile': {**PROFILE, 'gpu': 'nvidia'}}
+        self.assertEqual(S.scheduler_profile(self.root, training)['cuda_version'], 12080)
+        self.assertEqual(S.scheduler_profile(self.root, training)['compute_capability'], 800)
         manifest['batch'] = 0
         with self.assertRaises(ValueError):
             S.scheduler_profile(self.root, manifest)
@@ -509,7 +621,7 @@ class Server(Workspace):
     def test_dispatch_adds_only_exact_host_peer_assignments(self):
         manifest = self.manifest()
         record = dict(run_id='a' * 32, release=RELEASE, workunit=manifest['workunit_name'],
-                      app_version_id=7, released=False,
+                      app_version_id=7, released=False, input_template_sha256='approved',
                       manifest_sha256=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest())
         (self.root / 'fixture.reservation.json').write_text(json.dumps(record))
         (self.root / 'config.xml').write_text('<boinc><config><enable_assignment>1</enable_assignment></config></boinc>')
@@ -522,12 +634,12 @@ class Server(Workspace):
             if 'FROM host' in sql:
                 visibility['snapshot'] = True
                 return [{'id': 2}]
-            return [{'id': 11}] if visibility['created'] and not visibility['snapshot'] else []
+            return [{'id': 11, **S.bounds(manifest)}] if visibility['created'] and not visibility['snapshot'] else []
         def create(*_args, **_kwargs):
             self.assertFalse(visibility['snapshot'], 'host lookup transaction must end before external create_work')
             visibility['created'] = True
         db.commit.side_effect = commit
-        with patch.object(S, 'fixture_load', return_value=manifest), \
+        with patch.object(S, 'fixture_load', return_value=manifest), patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
                 patch.object(S, 'query', side_effect=query), patch.object(S.subprocess, 'run', side_effect=create):
             result = S.handle(request, self.root, self.root, db)
         self.assertTrue(result['dispatched'])
@@ -559,7 +671,7 @@ class Server(Workspace):
         page.write_bytes(b'fixture')
         (self.root / 'config.xml').write_text('<boinc><config><enable_assignment>1</enable_assignment></config></boinc>')
         request = dict(fixture='fixture', run_id='a' * 32, release=RELEASE, action='reserve')
-        with patch.object(S, 'fixture_load', return_value=manifest), patch.object(S, 'scheduler_profile', return_value=PROFILE), \
+        with patch.object(S, 'fixture_load', return_value=manifest), patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), patch.object(S, 'scheduler_profile', return_value=PROFILE), \
                 patch.object(S, 'query', side_effect=lambda db, sql, args: [] if 'FROM workunit' in sql else [{'id': 7}]), patch.object(S.subprocess, 'run') as run:
             run.return_value.stdout = str(page)
             self.assertEqual(S.handle(request, self.root, self.root, None)['profile'], PROFILE)
@@ -590,7 +702,7 @@ class Server(Workspace):
         upload.mkdir()
         output = upload / 'output.json'
         output.write_bytes(DATA)
-        rows = [[dict(id=1, canonical_resultid=88, error_mask=0, batch=12, assimilate_state=0)], [client], [canonical]]
+        rows = [[dict(id=1, canonical_resultid=88, error_mask=0, batch=12, assimilate_state=0, **S.bounds(self.manifest()))], [client, {**client, 'hostid': 3, 'id': 89}], [canonical]]
         with patch.object(S, 'query', side_effect=rows), patch.object(S.subprocess, 'run') as run:
             run.return_value.stdout = str(self.root / 'download' / output.name)
             receipt = S.status(None, self.root, record, self.manifest())
@@ -610,7 +722,7 @@ class Server(Workspace):
                     output.rename(collected)
                     raise FileNotFoundError(path)
                 return original(path)
-            settled = [[{**rows[0][0], 'assimilate_state': 2}], [client], [canonical]]
+            settled = [[{**rows[0][0], 'assimilate_state': 2}], [client, {**client, 'hostid': 3, 'id': 89}], [canonical]]
             with patch.object(S, 'query', side_effect=settled), patch.object(S.subprocess, 'run') as run, \
                     patch.object(Path, 'read_bytes', read):
                 run.return_value.stdout = str(self.root / 'download' / output.name)

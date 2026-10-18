@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -65,6 +66,10 @@ def load(path, app, version, platform, plan):
     elif client['mode'] == 'ephemeral':
         if platform != 'x86_64-pc-linux-gnu' or any(x in plan for x in ('apple', 'intel', 'vulkan')):
             raise AcceptanceError('Azure ephemeral clients support Linux x86 CPU/NVIDIA only')
+        if not client.get('authenticator_file'):
+            raise AcceptanceError('ephemeral clients require a private pre-isolated account authenticator_file')
+        secret = Path(client['authenticator_file'])
+        client['authenticator_file'] = str(secret if secret.is_absolute() else path.resolve().parent / secret)
         if not re.fullmatch(r'Standard_[A-Za-z0-9_]+', client['sku']):
             raise AcceptanceError('invalid Azure SKU')
     else:
@@ -98,6 +103,9 @@ def eligible(probe, profile, release, url):
     # docker_mt needs four *usable* CPUs, not merely four physical cores.
     if ('docker_mt' in plan or plan == 'mt') and probe['cpus'] < 4:
         raise AcceptanceError('multi-thread plan requires four usable CPUs')
+    for key in ('cuda_version', 'compute_capability', 'opencl_version'):
+        if profile.get(key, 0) > probe.get('gpu_capabilities', {}).get(gpu, {}).get(key, 0):
+            raise AcceptanceError('GPU lacks scheduler capability: ' + key)
     if plan.startswith('docker') and not probe.get('container_runtime'):
         raise AcceptanceError('container plan requires a usable container runtime')
 
@@ -134,6 +142,7 @@ class Runner:
         self.cleanup = False
         self.vm_owned = False
         self.reserved = False
+        self.auth_path = None
         self.report = dict(schema_version=1, run_id=self.run_id, release=release,
                            fixture=config['fixture'], accepted=False, cleanup_complete=False,
                            coordination_claim=getattr(args, 'coordination_claim', None))
@@ -177,7 +186,24 @@ class Runner:
 
     def execute(self):
         self.reserved = True  # Reservation may succeed remotely before the transport fails.
-        reservation = self.server('reserve')
+        private = {}
+        if self.config['client']['mode'] == 'ephemeral':
+            fd = os.open(self.config['client']['authenticator_file'], os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd) as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+                    raise AcceptanceError('authenticator file must be private and regular')
+                key = stream.read(256).strip()
+            if not re.fullmatch(r'[0-9a-f]{32}', key):
+                raise AcceptanceError('expected dedicated test-account authenticator in private file')
+            self.auth_path = ROOT / ('.boinc-acceptance-' + self.run_id)
+            fd = os.open(self.auth_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                stream.write(key)
+            private['authenticator_sha256'] = hashlib.sha256(key.encode()).hexdigest()
+        reservation = self.server('reserve', **private)
+        if reservation.get('isolation_verified') is not True:
+            raise AcceptanceError('server did not verify assignment-only isolation before attachment')
         if reservation.get('run_id') != self.run_id or reservation.get('release') != self.release:
             raise AcceptanceError('invalid fixture reservation')
         self.report['profile'] = reservation['profile']
@@ -188,7 +214,7 @@ class Runner:
             self.vm_owned = True  # Includes partial provisioning failures.
             self.call([str(ROOT / 'scripts/boinc-test-client.sh'), '--env', self.args.env,
                        '--create', '--sku', self.config['client']['sku'],
-                       '--resource-suffix', self.run_id])
+                       '--resource-suffix', self.run_id, '--authenticator-file', str(self.auth_path)])
         while True:
             probe = self.client('probe')
             if probe.get('ready'):
@@ -198,13 +224,13 @@ class Runner:
         self.report['client'] = probe
         self.server('dispatch', host_id=probe['host_id'])
         while True:
-            self.client('update')
             status = self.server('status')
             evidence = check_evidence(status, self.release, probe['host_id'], self.run_id)
             if evidence is not None:
                 self.report['evidence'] = evidence
                 self.report['accepted'] = True
                 return
+            self.client('update')
             self.pause()
 
     def pause(self):
@@ -235,6 +261,11 @@ class Runner:
                     raise AcceptanceError('fixture reservation not owned')
             except Exception:
                 errors.append('fixture reservation release unconfirmed')
+        if self.auth_path is not None:
+            try:
+                self.auth_path.unlink(missing_ok=True)
+            except OSError:
+                errors.append('private acceptance authenticator cleanup failed')
         self.report['cleanup_complete'] = not errors
         self.report['cleanup_errors'] = errors
         if errors:
