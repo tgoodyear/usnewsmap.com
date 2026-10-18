@@ -74,6 +74,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_BOINC_CONTROLLER_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_BOINC_HANDOFF_RUNNER (CT 211) run the BOINC batch controller (#866): Reader on the subscription and a role that updates and starts the hand-off and bridge jobs.",
+      "type": "boolean"
+    },
     "USNM_BOINC_HANDOFF_IMAGE": {
       "x-usnm-visibility": "public",
       "description": "The BOINC hand-off job's image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json. Empty or unset: no hand-off job.",

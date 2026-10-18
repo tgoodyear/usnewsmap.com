@@ -3,6 +3,7 @@
   "USNM_AMERICAN_STORIES": true,
   "USNM_AMERICAN_STORIES_SEARCH": true,
   "USNM_API_IMAGE_TAG": "00fbdd968f3cc87a619d5ec05916a4e34a9c9ee7",
+  "USNM_BOINC_CONTROLLER_ONPREM": true,
   "USNM_BOINC_GROUP": true,
   "USNM_BOINC_HANDOFF_IMAGE": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:dbe67397afe3e49174ffd359e4f25bd0f1d87f515050aece51f478f5f67429ca",
   "USNM_BROWSE_PAGES": true,

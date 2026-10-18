@@ -26,6 +26,23 @@ must contain the new additive `batch-inventory` step; retain the existing
 immutable worker pin. Do not deploy server or bridge images or run the
 controller while another release owner is changing them.
 
+### On-prem controller host (CT 211)
+
+Production runs the queue-fed priority controller in the scan-fetch container
+(CT 211, #866), signed in as its Arc machine identity, the same
+`USNM_BOINC_HANDOFF_RUNNER` that pushes scans. `USNM_BOINC_CONTROLLER_ONPREM`
+(`infra/modules/boinc-controller.bicep`) gives that identity Reader on the
+subscription, for the stacks' outputs, and a custom role on the main and BOINC
+groups that reads, updates and starts the hand-off and bridge jobs (with the
+environment join and identity assign checks an update makes). That role can
+change those jobs, so the host can act as their identities; this was accepted
+for CT 211. CT 211 holds a checkout of main at `/opt/usnm`, the non-secret
+outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
+`/etc/usnm/boinc-priority-controller.json` (`claim_queues ["ocr-priority"]`,
+`claim_languages ["eng"]`, `lease_hours` 36), its state in
+`/var/lib/usnm-priority-controller`, and the push command
+`/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local, no SSH).
+
 ### Separate hand-off runtime
 
 The hand-off job is in the **main** resource group, not the BOINC runtime
