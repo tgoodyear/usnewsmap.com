@@ -32,3 +32,4 @@ resource readers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 
 output id string = workspace.id
 output customerId string = workspace.properties.customerId
+output logAnalyticsQueryHost string = '${location}.api.loganalytics.io'

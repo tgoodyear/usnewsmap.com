@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--identity", choices=["az", "arc"], default="az")
     parser.add_argument("--subscription")
+    parser.add_argument("--host")
+    parser.add_argument("--location")
     parser.add_argument("--workbook", type=pathlib.Path,
                         default=pathlib.Path(__file__).resolve().parents[1]
                         / "infra/workbooks/boinc.json")
@@ -26,15 +28,19 @@ def main():
     if len(panels) != 9:
         raise log_analytics.QueryError("Expected exactly nine workbook query panels")
     token = log_analytics.access_token(args.identity, args.subscription)
+    host = log_analytics.query_host(args.workspace, host=args.host, location=args.location,
+                                    identity=args.identity, subscription=args.subscription)
     receipt = {"identityClass": args.identity, "workspace": args.workspace,
-               "endpoint": log_analytics.AUDIENCE, "timespan": args.timespan, "panels": []}
+               "endpoint": f"https://{host}", "audience": log_analytics.AUDIENCE,
+               "timespan": args.timespan, "panels": []}
     for panel in [{"name": "positive-control", "content": {"query": "print QueryRouteControl=1"}},
                   *panels]:
         kql = panel["content"]["query"].replace("{TimeRange:grain}", "1h")
         row = {"name": panel["name"], "querySha256": hashlib.sha256(kql.encode()).hexdigest(),
                "startedUtc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         try:
-            body, history = log_analytics.query(args.workspace, kql, args.timespan, token=token)
+            body, history = log_analytics.query(args.workspace, kql, args.timespan,
+                                                token=token, host=host)
             if (panel["name"] == "positive-control"
                     and body["tables"][0].get("rows") != [[1]]):
                 raise log_analytics.QueryError("Positive control did not return [[1]]", history)

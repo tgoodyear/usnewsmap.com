@@ -5,10 +5,12 @@ import argparse
 import contextlib
 import http.client
 import json
+import os
 import pathlib
 import random
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -18,6 +20,31 @@ import urllib.request
 import uuid
 
 AUDIENCE = "https://api.loganalytics.io"
+GLOBAL_HOST = "api.loganalytics.io"
+
+
+def query_host(workspace, *, host=None, location=None, identity="az", subscription=None):
+    host = host or os.environ.get("LOG_ANALYTICS_QUERY_HOST")
+    if host:
+        if not re.fullmatch(r"(?:[a-z0-9]+[.])?api[.]loganalytics[.]io", host):
+            raise QueryError("Query host must be a regional or global api.loganalytics.io hostname")
+        return host
+    location = location or os.environ.get("LOG_ANALYTICS_WORKSPACE_LOCATION")
+    if not location and identity == "az":
+        args = ["az", "monitor", "log-analytics", "workspace", "list",
+                "--query", f"[?customerId=='{workspace}'].location", "-o", "json",
+                "--only-show-errors"]
+        if subscription:
+            args += ["--subscription", subscription]
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise QueryError("Workspace location lookup failed; configure the query host or location")
+        locations = json.loads(result.stdout)
+        if len(locations) == 1:
+            location = locations[0]
+    if not isinstance(location, str) or not re.fullmatch(r"[a-z0-9]+", location):
+        raise QueryError("Workspace location required; configure --location or LOG_ANALYTICS_QUERY_HOST")
+    return f"{location}.api.loganalytics.io"
 
 
 class QueryError(RuntimeError):
@@ -86,27 +113,32 @@ def absolute_timeout(seconds):
 
 
 def query(workspace, kql, timespan="P1D", *, token=None, identity="az",
-          subscription=None, attempts=6, budget=60):
+          subscription=None, attempts=6, budget=60, host=None, location=None):
     if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", workspace):
         raise QueryError("workspace must be its customer GUID, not an ARM resource ID")
     if token is None:
         token = access_token(identity, subscription)
+    host = query_host(workspace, host=host, location=location, identity=identity,
+                      subscription=subscription)
     history = []
     try:
         with absolute_timeout(budget):
-            return _query(workspace, kql, timespan, token, attempts, budget, history)
+            return _query(workspace, kql, timespan, token, attempts, budget, history, host)
     except TimeoutError:
         raise QueryError("Logs query absolute deadline expired", history) from None
 
 
-def _query(workspace, kql, timespan, token, attempts, budget, history):
-    url = f"{AUDIENCE}/v1/workspaces/{workspace}/query"
+def _query(workspace, kql, timespan, token, attempts, budget, history, host):
     data = json.dumps({"query": kql, "timespan": timespan}).encode()
     deadline = time.monotonic() + budget
+    regional_limit = max(1, attempts - 1)
     for attempt in range(1, attempts + 1):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
+        if attempt > regional_limit:
+            host = GLOBAL_HOST
+        url = f"https://{host}/v1/workspaces/{workspace}/query"
         request = urllib.request.Request(url, data=data, headers={
             "Authorization": "Bearer " + token, "Content-Type": "application/json",
             "x-ms-client-request-id": str(uuid.uuid4()),
@@ -117,16 +149,23 @@ def _query(workspace, kql, timespan, token, attempts, budget, history):
             response = opener.open(request, timeout=min(20, remaining))
         except urllib.error.HTTPError as error:
             response = error
-        except (urllib.error.URLError, OSError, http.client.HTTPException):
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
             history.append({"attempt": attempt, "status": "transport-error",
-                            "via": "", "requestId": None})
+                            "via": "", "requestId": None, "host": host})
+            if (host != GLOBAL_HOST and isinstance(
+                    error.reason if isinstance(error, urllib.error.URLError) else error,
+                    socket.gaierror)):
+                print(f"Logs attempt {attempt}/{attempts}: DNS failed; host={host}; global fallback",
+                      file=sys.stderr)
+                host = GLOBAL_HOST
+                continue
             raise QueryError("Logs query transport failed", history) from None
         status = response.status
         via = re.sub(r"[\r\n]", " ", response.headers.get("via", ""))[:240]
-        record = {"attempt": attempt, "status": status, "via": via,
+        record = {"attempt": attempt, "status": status, "via": via, "host": host,
                   "requestId": response.headers.get("x-ms-request-id")}
         history.append(record)
-        print(f"Logs attempt {attempt}/{attempts}: HTTP {status}; via={via or '-'}",
+        print(f"Logs attempt {attempt}/{attempts}: HTTP {status}; host={host}; via={via or '-'}",
               file=sys.stderr)
         try:
             with response:
@@ -160,10 +199,13 @@ def main():
     parser.add_argument("--timespan", default="P1D")
     parser.add_argument("--identity", choices=["az", "arc"], default="az")
     parser.add_argument("--subscription")
+    parser.add_argument("--host")
+    parser.add_argument("--location")
     args = parser.parse_args()
     try:
         body, _ = query(args.workspace, args.query, args.timespan,
-                        identity=args.identity, subscription=args.subscription)
+                        identity=args.identity, subscription=args.subscription,
+                        host=args.host, location=args.location)
         print(json.dumps(body))
     except (QueryError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         # Authentication/HTTP exception payloads may contain credentials; never dump them.

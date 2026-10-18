@@ -236,7 +236,9 @@ if [ -z "$workspace" ]; then
   echo "warning: workbook live validation incomplete; run scripts/validate-boinc-workbook.py separately" >&2
 else
   workbook_receipt_dir=$(boinc_workdir)
-  if ! (umask 077; python3 scripts/validate-boinc-workbook.py \
+  workbook_query_host=$(boinc_output logAnalyticsQueryHost) || workbook_query_host=""
+  if ! (umask 077; LOG_ANALYTICS_QUERY_HOST="${workbook_query_host:-${LOG_ANALYTICS_QUERY_HOST:-}}" \
+    python3 scripts/validate-boinc-workbook.py \
     --workspace "$workspace" --subscription "$SUBSCRIPTION" > "$workbook_receipt_dir/workbook-validation.json"); then
     echo "warning: workbook live validation incomplete; inspect the retained receipt" >&2
   fi

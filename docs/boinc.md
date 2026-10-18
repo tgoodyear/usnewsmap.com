@@ -35,17 +35,38 @@ Arc membership alone does not grant query access. No login, grant, workload or
 resource is created by validation. `--subscription <id>` selects the existing
 Azure CLI account without changing global CLI configuration.
 
-The shared `scripts/log_analytics.py` client posts to
-`https://api.loganalytics.io/v1/workspaces/<customer-GUID>/query` with audience
-`https://api.loganalytics.io`. #528 isolated intermittent authorization failures
-to a faulty Traffic Manager frontend: the same authorized user and Arc identity
-worked on other frontends. Neither the replacement hostname with this token nor
-the ARM-ID resource-context route supplied reliable workspace-data acceptance
-in these tests. The client never pins an IP or bypasses Traffic Manager.
+The shared `scripts/log_analytics.py` client defaults to
+`https://<workspace-location>.api.loganalytics.io/v1/workspaces/<customer-GUID>/query`
+with the unchanged token audience `https://api.loganalytics.io`. It derives the
+location from workspace metadata using the existing Azure CLI subscription, or
+accepts `--location`, `LOG_ANALYTICS_WORKSPACE_LOCATION`, or an explicit
+`--host` / `LOG_ANALYTICS_QUERY_HOST` hostname. Arc-only hosts must configure the
+location or host; they do not need Azure CLI. For the BOINC workspace use
+`--location westus2`. Host overrides accept only global/regional `.io` API hosts.
+
+#528 isolated authorization failures to a faulty **global** Traffic Manager
+frontend. When global DNS sends this location exclusively there, reconnecting
+cannot recover. The workspace-region endpoint uses regional Traffic Manager
+routing with valid TLS and the same audience. Controlled real-table queries
+returned HTTP200 8/8 for both the Mac user and Node5 Arc identity before this
+change. No RBAC change is needed. The client never pins IPs, changes resolvers,
+or sends tokens to arbitrary hosts. Portal Workbooks use Azure's own routing;
+their queries do not need endpoint changes.
+
+Live source-panel acceptance on 2026-10-18 at 00:51–00:52 UTC returned HTTP200
+on the first attempt for all nine panels and the positive control from both
+the Mac Azure CLI user and Node5 Arc identity. All panels were populated:
+state/latest/chart rows were 1/12/5; job activity/events, revisions, warnings
+and console panels also returned data. This validates query execution, not
+an assurance that the system has no operational warnings.
 
 Only HTTP403 **InsufficientAccessError**, HTTP429 and HTTP5xx are retried.
 Every attempt uses a new connection so DNS re-resolves, with 3–6s jitter,
-at most six attempts and a 60s query budget (token acquisition is separate).
+at most six attempts and an absolute 60s query budget (token acquisition and
+metadata lookup are separate). Five retryable regional failures exhaust the
+regional allocation, reserving the final attempt for global `api.loganalytics.io`.
+A regional DNS resolution failure switches to global immediately within the
+same total attempt/time budget. Non-retryable denials never trigger fallback.
 Other 403s, 401, 400, transport failures and partial-success error responses
 fail closed. Attempt/status/`via` diagnostics go to stderr, never tokens.
 A persistent authorization error still fails; retries do not confer permission.
@@ -59,6 +80,9 @@ are excluded. A failed/partial response is never represented as zero rows.
 Empty successful panels do not establish actual status/filter coverage or fresh
 work-volume telemetry. The normal BOINC post-deploy health step runs validation
 as a warning-level check; it does not redeploy resources to query them.
+The monitoring modules expose the regional query host as Bicep outputs; the
+BOINC stack passes its `logAnalyticsQueryHost` output to this smoke step.
+Older stacks without that output use workspace metadata discovery.
 Its receipt is retained in a separate private `.boinc-work-*` directory beneath
 the checkout (path printed to stderr), outside the deployment scratch cleanup.
 Remove that directory manually after inspecting the receipt.
