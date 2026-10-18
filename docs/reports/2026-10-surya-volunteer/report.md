@@ -157,6 +157,13 @@ usnm-ocr-survey bench-score --release VERIFIED_V1_0_0 \
   --rule legacy-ws-v1 --report SCORE.json
 ```
 
+For a **new** apples-to-apples campaign, `surya benchmark-stage` accepts
+`--cpu-modes tiled,whole,capped`. This opt-in records all three modes in the job
+before identity hashing; both host assignments can therefore use identical
+immutable jobs and input hashes with the existing signed workers. The default
+remains CPU tiled only. Do not modify already staged/submitted jobs or interpret
+this staging option as a new execution result.
+
 Repeat for `raw-v1`, both source subsets and each scheduled mode. Actual
 CPU-reported GPU outputs use `cpu-*` streams; empty intended `cuda-*` streams
 are diagnostic, not the actual quality denominator. For CPU, aggregate only

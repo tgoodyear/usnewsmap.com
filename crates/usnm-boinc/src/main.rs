@@ -649,6 +649,9 @@ enum Surya {
         engine_weights: String,
         #[arg(long, default_value = "0.22.1")]
         engine_surya: String,
+        /// CPU modes for an apples-to-apples bounded probe; defaults remain tiled only.
+        #[arg(long, value_delimiter = ',', default_value = "tiled")]
+        cpu_modes: Vec<SuryaMode>,
     },
 
     /// Get each page's full-size IIIF JPEG (the scan archive, then tile.loc.gov one request at a
@@ -1746,8 +1749,9 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             engine_llama,
             engine_weights,
             engine_surya,
+            cpu_modes,
         } => {
-            let count = x::stage::benchmark(
+            let count = x::stage::benchmark_with_cpu_modes(
                 &manifest,
                 &manifest_sha256,
                 &root,
@@ -1757,6 +1761,7 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
                     weights: engine_weights,
                     surya: engine_surya,
                 },
+                &cpu_modes.into_iter().map(Into::into).collect::<Vec<_>>(),
             )?;
             eprintln!("staged {count} immutable benchmark inputs");
         }

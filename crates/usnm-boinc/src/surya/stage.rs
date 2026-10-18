@@ -210,6 +210,25 @@ pub fn benchmark(
     root: &Path,
     engine: Engine,
 ) -> anyhow::Result<usize> {
+    benchmark_with_cpu_modes(manifest, manifest_sha256, root, engine, &[InputMode::Tiled])
+}
+
+/// Opt in to identical scheduled modes on CPU and GPU without changing signed workers.
+pub fn benchmark_with_cpu_modes(
+    manifest: &Path,
+    manifest_sha256: &str,
+    root: &Path,
+    engine: Engine,
+    cpu_modes: &[InputMode],
+) -> anyhow::Result<usize> {
+    ensure!(
+        !cpu_modes.is_empty()
+            && cpu_modes
+                .iter()
+                .enumerate()
+                .all(|(i, mode)| !cpu_modes[..i].contains(mode)),
+        "CPU modes must be nonempty and unique"
+    );
     check_no_hold(root)?;
     let raw = crate::read(manifest, 1024 * 1024)?;
     ensure!(
@@ -283,7 +302,7 @@ pub fn benchmark(
             },
             engine: engine.clone(),
             gpu_modes: usnm_ocr_contract::surya::MODES.to_vec(),
-            cpu_modes: vec![InputMode::Tiled],
+            cpu_modes: cpu_modes.to_vec(),
             gpu_timeout_secs: 1800,
             cpu_timeout_secs: 5400,
         };
@@ -387,6 +406,41 @@ mod benchmark_tests {
             1
         );
         verify_benchmark(&root).unwrap();
+        let original: Job = serde_json::from_slice(
+            &std::fs::read(root.join("units/overproof-1/surya.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(original.cpu_modes, vec![InputMode::Tiled]);
+        let paired = dir.path().join("paired");
+        benchmark_with_cpu_modes(
+            &manifest,
+            &sha256(&raw),
+            &paired,
+            engine.clone(),
+            &usnm_ocr_contract::surya::MODES,
+        )
+        .unwrap();
+        verify_benchmark(&paired).unwrap();
+        let paired_job: Job = serde_json::from_slice(
+            &std::fs::read(paired.join("units/overproof-1/surya.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(paired_job.cpu_modes, paired_job.gpu_modes);
+        assert_eq!(paired_job.input, original.input);
+        assert_ne!(paired_job.id, original.id);
+        assert_eq!(paired_job.id, paired_job.identity().unwrap());
+        for modes in [vec![], vec![InputMode::Tiled, InputMode::Tiled]] {
+            let invalid = dir.path().join("invalid-modes");
+            assert!(benchmark_with_cpu_modes(
+                &manifest,
+                &sha256(&raw),
+                &invalid,
+                engine.clone(),
+                &modes,
+            )
+            .is_err());
+            assert!(!invalid.exists());
+        }
         assert!(benchmark(&manifest, &sha256(&raw), &root, engine.clone()).is_err());
         std::fs::write(root.join("units/overproof-1/reference.txt"), b"changed").unwrap();
         assert!(verify_benchmark(&root).is_err());
