@@ -238,3 +238,32 @@ The authorized current-worker probe version pair is **1.2 (`docker_mt`) and
 1.0/1.1 payloads remain retired/unregistered and immutable; do not publish or
 replace them. Use the same normal `boinc-app-release.sh` commands above with
 these new version numbers and the requested worker digest.
+
+### Scoped signed publication without runtime rollback
+
+When reviewed main differs from the deployed stack, do not run a full-stack
+provision to release this probe. Under the #529 claim and ordinary local mutex /
+controller lease, first verify **all six lifecycle jobs idle**. Prepare each new
+version with `scripts/boinc-app-release.sh --prepare-only` and the normal signing
+host. Review and merge the resulting immutable appver pin before publication.
+Do not reuse a locked signer or change existing signed payloads.
+
+For publication, save the existing publish job's complete `properties.template`;
+copy it as an execution-only YAML/JSON document (JSON is YAML), change only its
+container image to the approved signed appver digest, and add
+`APPVER_REUSE_PROJECT=1` to that container's existing environment. Preserve all
+other environment, identity/secret references, resources and volume definitions.
+Start the existing publish job with `az containerapp job start --yaml FILE`;
+**never update its persisted template** or deploy the stack. The reviewed scoped
+publisher leaves project config, credentials and `project.xml`/other app
+registration untouched, while preserving signature checks, immutable-directory
+checks, stock `update_versions` and exact app-version DB verification. The app
+must already exist; this mode does not create it.
+
+Check the actual execution's image, environment and volumes match the intended
+full template, wait for success, then independently verify DB registration,
+Dockerfile worker digest/signature and anonymous downloads. If execution is
+uncertain, retain the serialization lease and reconcile rather than retrying.
+Release the claim/lease only after terminal status and verification. Keep current
+live server/bridge pins/settings unchanged; the appver release pin alone does not
+authorize replacing them.

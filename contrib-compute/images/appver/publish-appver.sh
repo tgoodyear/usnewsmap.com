@@ -111,9 +111,19 @@ for t in "$src"/templates/*; do
   mv -f "$tmp_tpl" "$PROJ/templates/$n" || { rm -f "$tmp_tpl"; fail "can't install templates/$n"; }
   log "installed templates/$n"
 done
-fetch_secrets
-render_config
-(cd "$PROJ" && cp "$src/project.xml" project.xml && bin/xadd)
+case "${APPVER_REUSE_PROJECT:-0}" in
+  0)
+    fetch_secrets
+    render_config
+    (cd "$PROJ" && cp "$src/project.xml" project.xml && bin/xadd)
+    ;;
+  1)
+    # Scoped replay uses the live project's existing credentials/configuration and app rows.
+    [ -s "$PROJ/config.xml" ] && [ -s "$PROJ/html/inc/boinc_db.inc" ] ||
+      fail "scoped publication requires an already configured project"
+    ;;
+  *) fail "APPVER_REUSE_PROJECT must be 0 or 1" ;;
+esac
 # Stock update_versions has no app selector and can abort on an unrelated version's
 # immutable files. Keep its code and signed payloads unchanged, but isolate its apps tree.
 registration=$(mktemp -d)

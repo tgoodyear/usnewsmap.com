@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 
 
 class PublishTests(unittest.TestCase):
@@ -60,6 +61,18 @@ class PublishTests(unittest.TestCase):
         self.assertEqual((template.stat().st_ino, template.stat().st_mtime_ns), template_before)
         self.assertEqual(len((self.project / 'calls').read_text().splitlines()), 6)
         self.assertFalse((self.project / '.usnm-publish.lock').exists())
+
+    def test_scoped_publication_preserves_live_configuration_and_app_registry(self):
+        (self.project / 'html/inc/boinc_db.inc').write_text('existing database configuration')
+        before = (self.project / 'config.xml').read_bytes()
+        with unittest.mock.patch.dict(os.environ, {'APPVER_REUSE_PROJECT': '1'}):
+            result = self.publish('x86_64-pc-linux-gnu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.project / 'config.xml').read_bytes(), before)
+        calls = (self.project / 'calls').read_text().splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].endswith('update_versions'))
+        self.assertFalse((self.project / 'project.xml').exists())
 
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_all_container_classes_publish_and_pass_actual_php_verification(self):
