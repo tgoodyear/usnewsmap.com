@@ -276,7 +276,7 @@ closure_embeds() {
 closure_tree() {
   local dir=$1 p args=(); shift
   for p in "$@"; do args+=(-p "$p"); done
-  (cd "$dir" && cargo tree --locked "${args[@]}" -e normal,build,dev --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
+  (cd "$dir" && cargo tree --locked --target all "${args[@]}" -e normal,build,dev --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
 }
 # root_settings: the workspace manifest at revision $1 without its member list
 # and [workspace.dependencies], whose effect on these crates the package tree

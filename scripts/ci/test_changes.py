@@ -398,7 +398,7 @@ class BuildInputs(unittest.TestCase):
 
     def stub_tool(self, name: str) -> dict:
         """An environment whose `name` fails, as when the tool is broken or missing."""
-        bin_dir = self.tmp / "stub-bin"
+        bin_dir = self.tmp / f"stub-{name}-bin"
         bin_dir.mkdir(exist_ok=True)
         stub = bin_dir / name
         stub.write_text("#!/bin/sh\necho 'stub: broken' >&2\nexit 1\n")
@@ -538,7 +538,10 @@ class BuildInputs(unittest.TestCase):
         for tool in ("cargo", "perl"):
             with self.subTest(tool=tool):
                 on = self.select("fixtures/ocr-gold/bundle-v1.lock.json", env=self.stub_tool(tool))
-                self.assertGreaterEqual(on, BOINC_IMAGES)
+                self.assertGreaterEqual(on, BOINC_IMAGES | NATIVE | DASHBOARD | {"ocr_worker"})
+                if tool == "perl":
+                    self.assertIn("can't list what usnm-boinc embed", self.log)
+                    self.assertNotIn("cargo metadata failed", self.log)
 
     def test_a_broken_embed_scan_runs_everything_that_links_a_crate(self):
         on = self.select("crates/usnm-ocr-dash/src/html.rs", env=self.stub_tool("perl"))
@@ -588,6 +591,23 @@ class BuildInputs(unittest.TestCase):
         on = self.select(("crates/usnm-ocr-dash/src/lib.rs", ""))
         self.assertGreaterEqual(on, DASHBOARD)
         self.assertFalse(on & (BOINC_IMAGES | {"ocr_worker"}), on)
+
+    @unittest.skipUnless(CARGO, "no cargo")
+    def test_a_windows_only_lockfile_bump_runs_the_native_matrix(self):
+        def host_tree():
+            return subprocess.run(
+                [CARGO, "tree", "--locked", "-p", "usnm-quality-app", "-p", "usnm-qwen-app",
+                 "-e", "normal,build,dev", "--prefix", "none", "-f", "{p} {f}"],
+                cwd=self.repo, check=True, capture_output=True, text=True,
+            ).stdout
+
+        before = host_tree()
+        self.assertNotIn("windows-sys", before)
+        subprocess.run([CARGO, "update", "-q", "-p", "windows-sys@0.61.2", "--precise", "0.61.1"],
+                       cwd=self.repo, check=True, capture_output=True)
+        self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.lock")
+        self.assertEqual(host_tree(), before)
+        self.assertIn("boinc_native", self.select())
 
     @unittest.skipUnless(CARGO, "no cargo")
     def test_a_dependency_bump_under_usnm_boinc_runs_the_boinc_images(self):
