@@ -15,8 +15,10 @@ writes the result itself, so a timeout, crash or OOM kill still returns a diagno
 Exit status 0 means an "ok" result; otherwise the result is a well-formed "error" and the exit
 status is 1 (3 if even the result could not be written).
 
-Compilation is cold (no persistent CACHE_DIR), with an FP16 precision hint and plugin defaults.
-A bundle amortizes that load over its crops; measurements are in docs/reports/2026-10-iris-model-reuse.
+The model compiles with an FP16 precision hint and plugin defaults. job.toml mounts a persistent
+volume at /cache for OpenVINO's compile cache (cache.py): a warm load takes about 2 s instead of
+about 23 s. A missing, busy, full or damaged cache only means a cold load, never a failed unit.
+A bundle amortizes the load over its crops; measurements are in docs/reports/2026-10-iris-model-reuse.
 Process RSS excludes i915/shmem allocations charged to the container: it is not a memory-cap proof.
 """
 from __future__ import annotations
@@ -39,6 +41,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bundle as b  # noqa: E402
+import cache  # noqa: E402
 import contract as c  # noqa: E402
 
 # Tiger Lake GT2 Iris Xe (Computer9's i7-1185G7 reports 0x9a49).
@@ -46,6 +49,8 @@ INTEL_VENDOR = "0x8086"
 IRIS_XE_DEVICE_IDS = frozenset({"0x9a40", "0x9a49"})
 RENDER_NODE = "renderD128"
 MAX_INIT_DATA_BYTES = 1024 * 1024
+COMPILE_CONFIG = {"INFERENCE_PRECISION_HINT": "f16"}
+DPKG_LIST = Path("/opt/iris/dpkg.txt")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -56,6 +61,7 @@ class Paths:
     dev_dri: Path = Path("/dev/dri")
     sys_drm: Path = Path("/sys/class/drm")
     scratch: Path = Path("/tmp/usnm-iris")
+    cache: Path = Path("/cache")
 
 
 class Failure(Exception):
@@ -212,6 +218,48 @@ def _versions(engine: dict[str, Any]) -> tuple[Any, Any]:
     return ov, genai
 
 
+def load_pipeline(paths: Paths, genai: Any, model_sha: str, engine: dict[str, Any],
+                  diag: dict[str, Any]) -> tuple[Any, cache.Lease | None]:
+    """VLMPipeline on the GPU, through the compile cache when one is usable.
+
+    If loading through the cache fails, the cache is discarded and the model loads once more
+    without it, so a damaged cache costs a cold load, not the unit.
+    """
+    diag["compile_config"] = json.dumps(COMPILE_CONFIG, sort_keys=True)
+    parts = {"model_manifest_sha256": model_sha, "openvino": engine["openvino"],
+             "openvino_genai": engine["openvino_genai"], "dpkg_sha256": cache.file_sha256(DPKG_LIST),
+             "compile_config": COMPILE_CONFIG, "device": c.DEVICE, "full_device_name": diag.get("full_device_name"),
+             "device_architecture": diag.get("device_architecture")}
+    lease = cache.acquire(paths.cache, parts, diag)
+    if lease is not None:
+        try:
+            return genai.VLMPipeline(str(paths.model_dir), c.DEVICE, CACHE_DIR=str(lease.directory),
+                                     **COMPILE_CONFIG), lease
+        except Exception as exc:  # noqa: BLE001 - retried below without the cache
+            diag["compile_cache_load_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            diag["compile_cache"] = "load_failed"
+            cache.discard(lease)
+            cache.release(lease)
+    try:
+        return genai.VLMPipeline(str(paths.model_dir), c.DEVICE, **COMPILE_CONFIG), None
+    except Exception as exc:  # noqa: BLE001
+        raise Failure("load", "pipeline_load", f"{type(exc).__name__}: {exc}") from None
+
+
+def finish_cache(lease: cache.Lease | None, clean: bool, diag: dict[str, Any]) -> None:
+    """After the pipeline is gone: keep what a clean run compiled, else discard it all."""
+    if lease is None:
+        return
+    try:
+        if clean:
+            cache.commit(lease, diag)
+        else:
+            diag["compile_cache_commit"] = "discarded"
+            cache.discard(lease)
+    finally:
+        cache.release(lease)
+
+
 def new_result() -> dict[str, Any]:
     engine = {"worker": c.WORKER, "build_revision": (os.environ.get("USNM_IRIS_BUILD_REVISION") or None),
               "python": platform.python_version(), "openvino": None, "openvino_genai": None}
@@ -297,14 +345,18 @@ def run(paths: Paths = Paths()) -> dict[str, Any]:
         ov, genai = _versions(engine)
         check_openvino_gpu(ov, diag)
         load_start = time.monotonic()
-        try:
-            config = {"INFERENCE_PRECISION_HINT": "f16"}
-            diag["compile_config"] = json.dumps(config, sort_keys=True)
-            pipe = genai.VLMPipeline(str(paths.model_dir), c.DEVICE, **config)
-        except Exception as exc:  # noqa: BLE001
-            raise Failure("load", "pipeline_load", f"{type(exc).__name__}: {exc}") from None
+        pipe, lease = load_pipeline(paths, genai, result["model_manifest_sha256"], engine, diag)
         result["load_ms"] = int((time.monotonic() - load_start) * 1000)
-        generate_one(pipe, ov, result, job["prompt_version"], job["max_new_tokens"], pixels)
+        clean = False
+        try:
+            generate_one(pipe, ov, result, job["prompt_version"], job["max_new_tokens"], pixels)
+            clean = True
+        except Failure as exc:
+            clean = exc.code != "generate_failed"
+            raise
+        finally:
+            del pipe
+            finish_cache(lease, clean, diag)
     except Failure as exc:
         result["error"] = {"stage": exc.stage, "code": exc.code, "message": exc.message[:c.MAX_MESSAGE_CHARS]}
     except Exception as exc:  # noqa: BLE001 - reported, never success-shaped
@@ -383,50 +435,65 @@ def run_bundle(paths: Paths = Paths(), progress: Any = None) -> dict[str, Any]:
         ov, genai = _versions(engine)
         check_openvino_gpu(ov, diag)
         load_start = time.monotonic()
-        try:
-            pipe = genai.VLMPipeline(str(paths.model_dir), c.DEVICE, INFERENCE_PRECISION_HINT="f16")
-        except Exception as exc:  # noqa: BLE001
-            raise Failure("load", "pipeline_load", f"{type(exc).__name__}: {exc}") from None
+        pipe, lease = load_pipeline(paths, genai, base["model_manifest_sha256"], engine, diag)
         load_ms = int((time.monotonic() - load_start) * 1000)
-        with open(pack_path, "rb") as fh:
-            for index, (offset, length) in enumerate(b.crop_slices(job)):
-                single = b.crop_job(job, index)
-                crop_start = time.monotonic()
-                result = crop_error(job, index, base, "internal", "unset", "unset")
-                result["diagnostics"].update({k: v for k, v in diag.items() if k != "render_node"})
-                result["diagnostics"]["compile_config"] = '{"INFERENCE_PRECISION_HINT": "f16"}'
-                result["load_ms"] = load_ms if index == 0 else 0
-                try:
-                    fh.seek(offset)
-                    page = fh.read(length)
-                    width, height = c.check_page(single, page)
-                    pixels = decode_rgb(page, width, height)
-                    result["error"] = None
-                    generate_one(pipe, ov, result, job["prompt_version"], job["max_new_tokens"], pixels)
-                except (Failure, c.ContractError) as exc:
-                    stage, code = (exc.stage, exc.code) if isinstance(exc, Failure) else ("image", "page_invalid")
-                    message = exc.message if isinstance(exc, Failure) else str(exc)
-                    result["status"], result["text"] = "error", None
-                    result["error"] = {"stage": stage, "code": code, "message": message[:c.MAX_MESSAGE_CHARS]}
-                    if code == "generate_failed":
-                        rows.append(result)
-                        result["elapsed_ms"] = int((time.monotonic() - crop_start) * 1000)
-                        return complete_bundle(job, rows, base, "generate", "bundle_aborted",
-                                               "an earlier crop's generate() raised; pipeline state is untrusted",
-                                               load_ms, elapsed())
-                finally:
-                    pixels = None
-                result["elapsed_ms"] = int((time.monotonic() - crop_start) * 1000) + (load_ms if index == 0 else 0)
-                rows.append(result)
-                if progress:
-                    progress(rows)
-        return complete_bundle(job, rows, base, "internal", "incomplete", "no result for this crop", load_ms, elapsed())
+        clean = False
+        try:
+            outcome = _bundle_crops(job, pack_path, pipe, ov, base, rows, load_ms, elapsed, progress)
+            clean = outcome is None
+        finally:
+            del pipe
+            finish_cache(lease, clean, diag)
+        final = outcome or complete_bundle(job, rows, base, "internal", "incomplete", "no result for this crop",
+                                           load_ms, elapsed())
+        final["elapsed_ms"] = elapsed()
+        final["results"][-1]["diagnostics"].update(
+            {k: v for k, v in diag.items() if k in ("compile_cache_commit", "compile_cache_new_files")})
+        return final
     except Failure as exc:
         return complete_bundle(job, rows, base, exc.stage, exc.code, exc.message, load_ms, elapsed())
     except Exception as exc:  # noqa: BLE001 - reported, never success-shaped
         traceback.print_exc(file=sys.stderr)
         return complete_bundle(job, rows, base, "internal", "unexpected_exception",
                                f"{type(exc).__name__}: {exc}", load_ms, elapsed())
+
+
+def _bundle_crops(job: dict[str, Any], pack_path: Path, pipe: Any, ov: Any, base: dict[str, Any],
+                  rows: list[dict[str, Any]], load_ms: int, elapsed: Any, progress: Any) -> dict[str, Any] | None:
+    """Each crop in order, appended to rows; the aborted bundle's result if a generate() raised, else None."""
+    diag = base["diagnostics"]
+    with open(pack_path, "rb") as fh:
+        for index, (offset, length) in enumerate(b.crop_slices(job)):
+            single = b.crop_job(job, index)
+            crop_start = time.monotonic()
+            result = crop_error(job, index, base, "internal", "unset", "unset")
+            result["diagnostics"].update({k: v for k, v in diag.items() if k != "render_node"})
+            result["load_ms"] = load_ms if index == 0 else 0
+            try:
+                fh.seek(offset)
+                page = fh.read(length)
+                width, height = c.check_page(single, page)
+                pixels = decode_rgb(page, width, height)
+                result["error"] = None
+                generate_one(pipe, ov, result, job["prompt_version"], job["max_new_tokens"], pixels)
+            except (Failure, c.ContractError) as exc:
+                stage, code = (exc.stage, exc.code) if isinstance(exc, Failure) else ("image", "page_invalid")
+                message = exc.message if isinstance(exc, Failure) else str(exc)
+                result["status"], result["text"] = "error", None
+                result["error"] = {"stage": stage, "code": code, "message": message[:c.MAX_MESSAGE_CHARS]}
+                if code == "generate_failed":
+                    rows.append(result)
+                    result["elapsed_ms"] = int((time.monotonic() - crop_start) * 1000)
+                    return complete_bundle(job, rows, base, "generate", "bundle_aborted",
+                                           "an earlier crop's generate() raised; pipeline state is untrusted",
+                                           load_ms, elapsed())
+            finally:
+                pixels = None
+            result["elapsed_ms"] = int((time.monotonic() - crop_start) * 1000) + (load_ms if index == 0 else 0)
+            rows.append(result)
+            if progress:
+                progress(rows)
+    return None
 
 
 def _write_file(directory: Path, name: str, data: bytes) -> None:
