@@ -61,7 +61,7 @@ def inventory(project, source, templates):
     return rows
 
 
-def replace(source, target, mode, uid=None, gid=None):
+def replace(source, target, mode, uid=None, gid=None, expected=None):
     stage = target.with_name(target.name + ".usnm-tls-stage")
     if stage.exists() or stage.is_symlink():
         raise ValueError(f"staging file already exists: {target.name}")
@@ -73,6 +73,8 @@ def replace(source, target, mode, uid=None, gid=None):
         os.chmod(stage, mode)
         if uid is not None and gid is not None:
             os.chown(stage, uid, gid)
+        if expected is not None and (target.is_symlink() or digest(target) != expected):
+            raise ValueError(f"target drift before replacement: {target.name}")
         os.replace(stage, target)
     finally:
         if stage.exists():
@@ -99,19 +101,23 @@ def rollback(project, backup, only=None):
     restore = []
     for row in rows:
         target, saved = project / row["path"], backup / "files" / row["path"]
-        if target.is_symlink() or digest(target) not in (row["before"], row["after"]):
-            failures.append(f"rollback conflict: {row['path']}")
-            continue
-        if digest(saved) != row["before"]:
-            failures.append(f"backup hash mismatch: {row['path']}")
-            continue
-        restore.append(row)
-    for row in reversed(restore):
-        if digest(project / row["path"]) == row["before"]:
-            continue
         try:
-            replace(backup / "files" / row["path"], project / row["path"], row["mode"], row["uid"], row["gid"])
+            if target.is_symlink() or digest(target) not in (row["before"], row["after"]):
+                failures.append(f"rollback conflict: {row['path']}")
+                continue
+            if saved.is_symlink() or digest(saved) != row["before"]:
+                failures.append(f"backup hash mismatch: {row['path']}")
+                continue
+            restore.append(row)
         except OSError:
+            failures.append(f"rollback validation read failed: {row['path']}")
+    for row in reversed(restore):
+        try:
+            target = project / row["path"]
+            if not target.is_symlink() and digest(target) == row["before"]:
+                continue
+            replace(backup / "files" / row["path"], target, row["mode"], row["uid"], row["gid"], row["after"])
+        except (OSError, ValueError):
             failures.append(f"rollback replacement failed: {row['path']}")
     if failures:
         raise ValueError("; ".join(failures))
@@ -139,7 +145,7 @@ def apply(project, source, templates, backup):
             target = project / row["path"]
             if target.is_symlink() or digest(target) != row["before"] or digest(Path(row["source"])) != row["after"]:
                 raise ValueError("runtime code changed after inventory")
-            replace(Path(row["source"]), target, row["mode"], row["uid"], row["gid"])
+            replace(Path(row["source"]), target, row["mode"], row["uid"], row["gid"], row["before"])
             completed.append(row["path"])
         if any(digest(project / row["path"]) != row["after"] for row in changed(rows)):
             raise ValueError("migration verification failed")

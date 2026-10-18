@@ -131,3 +131,31 @@ class RefreshProjectCode(unittest.TestCase):
             code.rollback(self.project, self.backup)
         self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
         self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "concurrent owner code")
+
+    def test_missing_target_does_not_block_other_recovery(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        (self.project / "cgi-bin/cgi").unlink()
+        with self.assertRaisesRegex(ValueError, "validation read failed"):
+            code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertFalse((self.project / "cgi-bin/cgi").exists())
+
+    def test_missing_backup_does_not_block_other_recovery(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        (self.backup / "files/cgi-bin/cgi").unlink()
+        with self.assertRaisesRegex(ValueError, "validation read failed"):
+            code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+
+    def test_replacement_rechecks_drift_after_staging(self):
+        target = self.project / "bin/create_work"
+        expected = code.digest(target)
+        original = code.os.chmod
+        def change_after_stage(path, mode):
+            original(path, mode)
+            target.write_text("concurrent edit after validation")
+        with patch.object(code.os, "chmod", side_effect=change_after_stage):
+            with self.assertRaisesRegex(ValueError, "target drift"):
+                code.replace(self.source / "tools/create_work", target, 0o755, expected=expected)
+        self.assertEqual(target.read_text(), "concurrent edit after validation")
+        self.assertFalse(target.with_name(target.name + ".usnm-tls-stage").exists())
