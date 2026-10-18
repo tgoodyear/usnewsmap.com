@@ -89,6 +89,8 @@ boinc_load_settings() {
 
 # Every az call names the subscription; the default one is never used.
 baz() { az "$@" --subscription "$SUBSCRIPTION" --only-show-errors; }
+# For acr_build_verified: Azure CLI 2.90 acknowledges a --no-wait build only in a warning.
+baz_build() { az "$@" --subscription "$SUBSCRIPTION"; }
 
 boinc_az_check() {
   command -v az > /dev/null || die "az is not installed"

@@ -280,6 +280,8 @@ echo verified
             text = Path(HERE, name).read_text()
             self.assertIn(". scripts/lib/acr-build.sh", text)
             self.assertEqual(text.count("acr_build_verified "), count, name)
+            # --only-show-errors would hide the queued run id (Azure CLI 2.90).
+            self.assertNotIn("acr_build_verified baz ", text, name)
         # Prevent a new shell/workflow caller from reintroducing direct streaming builds/runs.
         for path in [*Path(ROOT).rglob("*.sh"), *Path(ROOT, ".github/workflows").glob("*.yml")]:
             if path.name == "acr-build.sh":
