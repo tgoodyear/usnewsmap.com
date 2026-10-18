@@ -150,11 +150,11 @@ class RefreshProjectCode(unittest.TestCase):
     def test_replacement_rechecks_drift_after_staging(self):
         target = self.project / "bin/create_work"
         expected = code.digest(target)
-        original = code.os.chmod
+        original = code.os.fchmod
         def change_after_stage(path, mode):
             original(path, mode)
             target.write_text("concurrent edit after validation")
-        with patch.object(code.os, "chmod", side_effect=change_after_stage):
+        with patch.object(code.os, "fchmod", side_effect=change_after_stage):
             with self.assertRaisesRegex(ValueError, "target drift"):
                 code.replace(self.source / "tools/create_work", target, 0o755, expected=expected)
         self.assertEqual(target.read_text(), "concurrent edit after validation")
@@ -173,3 +173,29 @@ class RefreshProjectCode(unittest.TestCase):
                 code.rollback(self.project, self.backup)
         self.assertEqual((self.project / "bin/create_work").read_text(), "edit during rollback")
         self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "old cgi-bin/cgi")
+
+    def test_parent_link_drift_never_writes_external_cgi(self):
+        original = code.replace
+        outside = self.root / "external-cgi"
+        outside.mkdir()
+        external = outside / "cgi"
+        external.write_text("old cgi-bin/cgi")
+        def swap_parent(source, target, mode, *owner):
+            result = original(source, target, mode, *owner)
+            if str(target).endswith("bin/create_work") and str(source).startswith(str(self.source)):
+                (self.project / "cgi-bin").rename(self.project / "cgi-bin-original")
+                (self.project / "cgi-bin").symlink_to(outside)
+            return result
+        with patch.object(code, "replace", side_effect=swap_parent):
+            with self.assertRaises(OSError):
+                code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual(external.read_text(), "old cgi-bin/cgi")
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+
+    def test_setgid_mode_is_restored_after_ownership(self):
+        target = self.project / "bin/create_work"
+        os.chmod(target, 0o2755)
+        code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual(target.stat().st_mode & 0o7777, 0o2755)
+        code.rollback(self.project, self.backup)
+        self.assertEqual(target.stat().st_mode & 0o7777, 0o2755)

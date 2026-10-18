@@ -61,24 +61,39 @@ def inventory(project, source, templates):
     return rows
 
 
-def replace(source, target, mode, uid=None, gid=None, expected=None):
-    stage = target.with_name(target.name + ".usnm-tls-stage")
-    if stage.exists() or stage.is_symlink():
-        raise ValueError(f"staging file already exists: {target.name}")
+def replace(source, target, mode, uid=None, gid=None, expected=None, root=None):
+    root = target.parent if root is None else root
+    relative = target.relative_to(root)
+    if ".." in relative.parts:
+        raise ValueError("replacement outside project")
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    stage = target.name + ".usnm-tls-stage"
+    created = False
     try:
-        with stage.open("xb") as out, source.open("rb") as src:
+        for part in relative.parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        created = True
+        with os.fdopen(descriptor, "wb") as out, source.open("rb") as src:
             shutil.copyfileobj(src, out)
             out.flush()
+            if uid is not None and gid is not None:
+                os.fchown(out.fileno(), uid, gid)
+            os.fchmod(out.fileno(), mode)
             os.fsync(out.fileno())
-        os.chmod(stage, mode)
-        if uid is not None and gid is not None:
-            os.chown(stage, uid, gid)
-        if expected is not None and (target.is_symlink() or digest(target) != expected):
-            raise ValueError(f"target drift before replacement: {target.name}")
-        os.replace(stage, target)
+        if expected is not None:
+            descriptor = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+            with os.fdopen(descriptor, "rb") as current:
+                if hashlib.file_digest(current, "sha256").hexdigest() != expected:
+                    raise ValueError(f"target drift before replacement: {target.name}")
+        os.replace(stage, target.name, src_dir_fd=directory, dst_dir_fd=directory)
+        created = False
     finally:
-        if stage.exists():
-            stage.unlink()
+        if created:
+            os.unlink(stage, dir_fd=directory)
+        os.close(directory)
 
 
 def changed(rows):
@@ -94,8 +109,6 @@ def rollback(project, backup, only=None):
         if rel.is_absolute() or ".." in rel.parts or str(rel) == "." or not any(str(rel).startswith(tree + "/") for tree in TREES):
             raise ValueError("invalid manifest path")
         target = project / rel
-        if any(parent.is_symlink() for parent in target.parents if parent != project and project in parent.parents):
-            raise ValueError("linked rollback parent")
     rows = [row for row in changed(manifest["files"]) if only is None or row["path"] in only]
     failures = []
     restore = []
@@ -116,7 +129,7 @@ def rollback(project, backup, only=None):
             target = project / row["path"]
             if not target.is_symlink() and digest(target) == row["before"]:
                 continue
-            replace(backup / "files" / row["path"], target, row["mode"], row["uid"], row["gid"], row["after"])
+            replace(backup / "files" / row["path"], target, row["mode"], row["uid"], row["gid"], row["after"], project)
         except (OSError, ValueError):
             failures.append(f"rollback replacement failed: {row['path']}")
     if failures:
@@ -145,7 +158,7 @@ def apply(project, source, templates, backup):
             target = project / row["path"]
             if target.is_symlink() or digest(target) != row["before"] or digest(Path(row["source"])) != row["after"]:
                 raise ValueError("runtime code changed after inventory")
-            replace(Path(row["source"]), target, row["mode"], row["uid"], row["gid"], row["before"])
+            replace(Path(row["source"]), target, row["mode"], row["uid"], row["gid"], row["before"], project)
             completed.append(row["path"])
         if any(digest(project / row["path"]) != row["after"] for row in changed(rows)):
             raise ValueError("migration verification failed")
