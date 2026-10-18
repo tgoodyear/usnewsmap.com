@@ -1206,8 +1206,7 @@ mod tests {
 
         // Analytic cross-reader coverage ratio identity:
         // ink_word_coverage(A) / ink_word_coverage(loc) == word_ratio_vs_loc(A).
-        let cov_ratio =
-            ours_row.ink_word_coverage.unwrap() / loc_row.ink_word_coverage.unwrap();
+        let cov_ratio = ours_row.ink_word_coverage.unwrap() / loc_row.ink_word_coverage.unwrap();
         assert!(
             (cov_ratio - ours_row.word_ratio_vs_loc.unwrap()).abs() <= 1e-4,
             "cov_ratio {cov_ratio} != word_ratio_vs_loc {:?}",

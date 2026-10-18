@@ -229,7 +229,9 @@ pub fn route_page(
         ));
     }
     if vertical_stroke_ratio >= 0.55 {
-        reasons.push(format!("vertical_orientation:vsr={vertical_stroke_ratio:.3}"));
+        reasons.push(format!(
+            "vertical_orientation:vsr={vertical_stroke_ratio:.3}"
+        ));
     }
 
     let dense_broadsheet = cols >= 6 || line_height < 26.0;

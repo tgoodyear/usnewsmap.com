@@ -573,8 +573,7 @@ fn vertical_stroke_ratio(img: &GrayImage, threshold: u8) -> f64 {
             }
             let inv_tw = 1.0 / tw as f64;
             let inv_th = 1.0 / th as f64;
-            let mean_h =
-                row_ink.iter().map(|&c| f64::from(c) * inv_tw).sum::<f64>() / th as f64;
+            let mean_h = row_ink.iter().map(|&c| f64::from(c) * inv_tw).sum::<f64>() / th as f64;
             var_horiz += row_ink
                 .iter()
                 .map(|&c| {
@@ -583,8 +582,7 @@ fn vertical_stroke_ratio(img: &GrayImage, threshold: u8) -> f64 {
                 })
                 .sum::<f64>()
                 / th as f64;
-            let mean_v =
-                col_ink.iter().map(|&c| f64::from(c) * inv_th).sum::<f64>() / tw as f64;
+            let mean_v = col_ink.iter().map(|&c| f64::from(c) * inv_th).sum::<f64>() / tw as f64;
             var_vert += col_ink
                 .iter()
                 .map(|&c| {
@@ -649,7 +647,11 @@ fn projection_columns_and_gutters(small: &GrayImage, threshold: u8, skew_deg: f6
     if max_v <= 0.0 {
         return (0, 0.0);
     }
-    let active: Vec<f64> = smooth.iter().copied().filter(|&v| v >= 0.05 * max_v).collect();
+    let active: Vec<f64> = smooth
+        .iter()
+        .copied()
+        .filter(|&v| v >= 0.05 * max_v)
+        .collect();
     if active.is_empty() {
         return (1, 0.0);
     }
@@ -683,7 +685,10 @@ fn projection_columns_and_gutters(small: &GrayImage, threshold: u8, skew_deg: f6
     for (l, r) in raw_lobes {
         if let Some(&mut (prev_l, ref mut prev_r)) = lobes.last_mut() {
             let gutter_w = l.saturating_sub(*prev_r);
-            let peak_l = smooth[prev_l..=*prev_r].iter().copied().fold(0.0f64, f64::max);
+            let peak_l = smooth[prev_l..=*prev_r]
+                .iter()
+                .copied()
+                .fold(0.0f64, f64::max);
             let peak_r = smooth[l..=r].iter().copied().fold(0.0f64, f64::max);
             let ref_peak = peak_l.min(peak_r);
             let valley = smooth[*prev_r..=l]
@@ -765,8 +770,8 @@ fn estimate_line_height_px(img: &GrayImage, threshold: u8) -> Option<f64> {
         if non_zero.len() < 12 {
             continue;
         }
-        let mean_nz = non_zero.iter().map(|&v| u64::from(v)).sum::<u64>() as f64
-            / non_zero.len() as f64;
+        let mean_nz =
+            non_zero.iter().map(|&v| u64::from(v)).sum::<u64>() as f64 / non_zero.len() as f64;
         let thresh = (mean_nz * 0.35).max(4.0) as u32;
         let mut runs: Vec<(usize, usize)> = Vec::new();
         let mut start = None;
@@ -813,8 +818,7 @@ pub fn image_features(img: &GrayImage) -> ImageFeatures {
     let ink: u64 = hist[..usize::from(threshold)].iter().sum();
     let skew_deg = skew(&small, threshold);
     let (bg_tile_std, otsu_local_diff) = tile_illumination(&small, threshold);
-    let (img_columns, gutter_clarity) =
-        projection_columns_and_gutters(&small, threshold, skew_deg);
+    let (img_columns, gutter_clarity) = projection_columns_and_gutters(&small, threshold, skew_deg);
     let est_line_height_px = estimate_line_height_px(img, threshold);
     let vsr = vertical_stroke_ratio(&small, threshold);
     ImageFeatures {
