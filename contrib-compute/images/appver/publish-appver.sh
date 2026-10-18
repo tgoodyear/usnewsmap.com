@@ -165,6 +165,10 @@ echo "Verified $name $version $platformName $plan (app_version ".$versions[0]->i
 PHP
 )
 touch "$PROJ/reread_db"
-chown -R boincadm:boincadm "$dst" "$PROJ/templates" "$PROJ/download" 2> /dev/null ||
+chown -R boincadm:boincadm "$dst" "$PROJ/templates" 2> /dev/null ||
   log "chown on the share failed (UNVERIFIED semantics, design.md 2.3)"
+for f in "$dst"/*; do
+  b=$(basename "$f")
+  [ ! -e "$PROJ/download/$b" ] || chown boincadm:boincadm "$PROJ/download/$b" 2> /dev/null || true
+done
 log "published $APPVER_APP $APPVER_VERSION"
