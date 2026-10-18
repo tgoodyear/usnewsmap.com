@@ -650,6 +650,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn longer_gpu_budget_is_valid_and_has_a_new_immutable_identity() {
+        let original = job();
+        let mut longer = original.clone();
+        longer.gpu_timeout_secs = 14_400;
+        longer.id = longer.identity().unwrap();
+        longer.validate().unwrap();
+        assert_ne!(longer.id, original.id);
+        assert_eq!(longer.crops, original.crops);
+        longer.gpu_timeout_secs = 14_401;
+        longer.id = longer.identity().unwrap();
+        assert!(longer.validate().is_err());
+    }
+
+    #[test]
     fn job_identity_and_limits() {
         let j = job();
         j.validate().unwrap();

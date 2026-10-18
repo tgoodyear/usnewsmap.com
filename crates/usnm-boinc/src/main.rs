@@ -884,7 +884,8 @@ enum Qwen {
         /// Its USNM_QWEN_WEIGHTS.
         #[arg(long)]
         engine_weights: String,
-        #[arg(long, default_value_t = 1800)]
+        /// GPU runtime per page, including all crops; allow slower volunteer GPUs.
+        #[arg(long, default_value_t = 14_400)]
         gpu_timeout_secs: u32,
         #[arg(long, default_value_t = 7200)]
         cpu_timeout_secs: u32,
@@ -974,6 +975,54 @@ enum Qwen {
         #[arg(long)]
         pairs: PathBuf,
     },
+}
+
+#[cfg(test)]
+mod qwen_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn staged_gpu_jobs_allow_four_hours_unless_explicitly_bounded() {
+        let args = [
+            "usnm-boinc",
+            "qwen",
+            "stage",
+            "--quality-root",
+            "quality",
+            "--root",
+            "qwen",
+            "--engine-image",
+            "sha256:image",
+            "--engine-llama",
+            "sha256:llama",
+            "--engine-weights",
+            "sha256:weights",
+        ];
+        for override_secs in [None, Some("1800")] {
+            let mut command = args.to_vec();
+            if let Some(value) = override_secs {
+                command.extend(["--gpu-timeout-secs", value]);
+            }
+            let cli = Cli::try_parse_from(command).unwrap();
+            let Commands::Qwen(Qwen::Stage {
+                gpu_timeout_secs,
+                cpu_timeout_secs,
+                ..
+            }) = cli.command
+            else {
+                panic!("expected Qwen staging command");
+            };
+            assert_eq!(
+                gpu_timeout_secs,
+                if override_secs.is_some() {
+                    1800
+                } else {
+                    14_400
+                }
+            );
+            assert_eq!(cpu_timeout_secs, 7200);
+        }
+    }
 }
 #[derive(Clone, Copy, ValueEnum)]
 enum SuryaMode {
