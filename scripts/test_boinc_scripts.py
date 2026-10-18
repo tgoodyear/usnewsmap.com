@@ -201,6 +201,55 @@ class LogsFrontendRetry(unittest.TestCase):
             sleep.assert_not_called()
 
 
+class WorkbookValidation(unittest.TestCase):
+    def load_validator(self):
+        client_spec = importlib.util.spec_from_file_location(
+            "log_analytics", Path(HERE, "log_analytics.py"))
+        client = importlib.util.module_from_spec(client_spec)
+        client_spec.loader.exec_module(client)
+        spec = importlib.util.spec_from_file_location(
+            "workbook_validation", Path(HERE, "validate-boinc-workbook.py"))
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict("sys.modules", {"log_analytics": client}):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_exact_nine_queries_are_extracted_and_raw_messages_excluded(self):
+        validator = self.load_validator()
+        result = {"tables": [{"columns": [{"name": "Log_s"}, {"name": "Count"}],
+                              "rows": [["private log contents", 7]]}]}
+        positive = {"tables": [{"columns": [{"name": "QueryRouteControl"}], "rows": [[1]]}]}
+        with mock.patch("sys.argv", ["validator", "--workspace", SUB]), \
+                mock.patch.object(validator.log_analytics, "access_token", return_value="fake"), \
+                mock.patch.object(validator.log_analytics, "query",
+                                  side_effect=[(positive, [])] + [(result, [])] * 9) as query, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(validator.main(), 0)
+        receipt = json.loads(out.getvalue())
+        self.assertEqual(len(receipt["panels"]), 10)
+        self.assertEqual(query.call_count, 10)
+        self.assertNotIn("private log contents", out.getvalue())
+        self.assertEqual(receipt["panels"][1]["tables"][0]["rowCount"], 1)
+        source = json.loads(Path(ROOT, "infra/workbooks/boinc.json").read_text())
+        expected = [x["content"]["query"].replace("{TimeRange:grain}", "1h")
+                    for x in source["items"] if x["type"] == 3]
+        self.assertEqual([call.args[1] for call in query.call_args_list[1:]], expected)
+
+    def test_failure_is_not_zero_rows(self):
+        validator = self.load_validator()
+        with mock.patch("sys.argv", ["validator", "--workspace", SUB]), \
+                mock.patch.object(validator.log_analytics, "access_token", return_value="fake"), \
+                mock.patch.object(validator.log_analytics, "query",
+                                  side_effect=validator.log_analytics.QueryError("denied")), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(validator.main(), 1)
+        receipt = json.loads(out.getvalue())
+        self.assertTrue(all(row["status"] == "failed" and "tables" not in row
+                            for row in receipt["panels"]))
+
+
 class StartBridge(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

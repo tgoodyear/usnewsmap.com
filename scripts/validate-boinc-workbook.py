@@ -35,6 +35,9 @@ def main():
                "startedUtc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         try:
             body, history = log_analytics.query(args.workspace, kql, args.timespan, token=token)
+            if (panel["name"] == "positive-control"
+                    and body["tables"][0].get("rows") != [[1]]):
+                raise log_analytics.QueryError("Positive control did not return [[1]]", history)
             tables = []
             for table in body["tables"]:
                 names = [column["name"] for column in table["columns"]]
@@ -50,6 +53,8 @@ def main():
             row.update(status="failed", error=str(error), attempts=error.history)
         row["endedUtc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         receipt["panels"].append(row)
+        counts = [table["rowCount"] for table in row.get("tables", [])]
+        print(f"Workbook {row['name']}: {row['status']}; row counts={counts}", file=sys.stderr)
     print(json.dumps(receipt, indent=2))
     return int(any(panel["status"] != "success" for panel in receipt["panels"]))
 
