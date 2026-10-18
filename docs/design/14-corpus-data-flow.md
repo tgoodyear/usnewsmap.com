@@ -335,3 +335,33 @@ configuration. Verify drain-on-stop and sufficient systemd stop timeout first;
 let the existing worker drain its in-flight pages rather than killing engines.
 Rollback removes only the capture setting at another graceful boundary; retained
 evidence and its read-only query service remain intact.
+
+## Release selection and search provenance
+
+Committed `ocr-sync` import records (`ocr-local/import/<run>.json`) prove
+structural import into `ocr-local` (`stage="imported"`), never release
+acceptance or search publication. Export committed imports, authoritative
+release decisions (`accepted`, `rejected`, `revoked`, `unchanged_baseline`) and
+public `/v1/hits` verification receipts as independent evidence batches:
+
+```bash
+python3 scripts/data_catalog.py --db catalog.sqlite ingest-import \
+  --input import.json --evidence-out import-001.jsonl \
+  --batch-id import-001 --source ocr-sync-import
+python3 scripts/data_catalog.py --db catalog.sqlite ingest-release \
+  --input release-decisions.json --evidence-out release-001.jsonl \
+  --batch-id release-001 --source release-builder
+python3 scripts/data_catalog.py --db catalog.sqlite ingest-search \
+  --input hits.json --evidence-out search-001.jsonl \
+  --batch-id search-001 --source public-hits-check \
+  --page-id loc:<doc_id> --verified-at 2026-10-18T12:00:00Z --run-id <run_id>
+python3 scripts/data_catalog.py --db catalog.sqlite trace --page-id loc:<doc_id>
+```
+
+`trace` (and `GET /trace?page_id=loc%3A<doc_id>`) reconciles a page across
+`artifact`, `execution`, `imported`, `release_decision` and `search_provenance`
+while keeping `accepted` and `published` explicitly `false` until authoritative
+release selection and published `/v1/hits` replacement provenance are observed.
+When `/v1/hits` returns a page without replacement `ocr` metadata, `ingest-search`
+records `decision="unchanged_baseline"` and `selected_source="loc"` with a
+checksummed `search_receipt` and no raw OCR text.
