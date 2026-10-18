@@ -654,7 +654,11 @@ guard_stack_renames() {
   local location=$1 resources plan
   shift
   if ! resources=$(az stack sub show -n "$STACK" --query resources -o json --only-show-errors 2>&1); then
-    if grep -q 'DeploymentStackNotFound' <<< "$resources"; then
+    # Azure also returns ResourceNotFound for the stack itself. Do not
+    # accept that code for a missing dependency or a different resource.
+    if grep -q 'DeploymentStackNotFound' <<< "$resources" ||
+      { grep -q '^Code: ResourceNotFound$' <<< "$resources" &&
+        grep -Fq "The resource '$STACK' was not found." <<< "$resources"; }; then
       resources='[]'
     else
       echo "error: rename guard can't read $STACK: $resources" >&2

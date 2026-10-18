@@ -117,8 +117,10 @@ The TLS-disabled-peer rejection remains covered by the MariaDB matrix.
 This is **not** the Azure MySQL certificate chain, a full MySQL project lifecycle,
 or a copied-project migration/rollback test. `requireSecureTransport` in the
 BOINC root template and MySQL module deliberately defaults to **false**; `true`
-selects ON only after the remaining gates below. The normal provisioner does not
-supply this parameter, so this change cannot enable production enforcement.
+selects ON only after the remaining gates below. The normal provisioner forwards
+the committed environment setting of the same name, defaulting to false when
+absent; `env/prod.json` explicitly remains false. Changing it to true requires a
+separate reviewed activation PR after all acceptance and rollback gates pass.
 Any future activation needs a reviewed, persisted configuration path and the
 #529 lock/claim protocol, followed by the normal main-triggered release workflow
 and live daemon/scheduler/PHP/bridge and TLS-policy checks. Do not manually toggle

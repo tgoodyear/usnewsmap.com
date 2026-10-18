@@ -1,0 +1,120 @@
+{
+  "format": "usnm-calamari-segmentation-lock-v1",
+  "release": "v1.0.0",
+  "subset": "reichsanzeiger-de/smoke-10",
+  "segmentation_method": "manually checked horizontal projection minima; pub-reichsanzeiger-lines-487 has four tightly spaced number rows and explicit cuts",
+  "samples": [
+    {
+      "id": "pub-reichsanzeiger-lines-028",
+      "image_sha256": "97cc9f34f63104b2b1c6c755f454faf4d8d88c7affd43000d990c623e6be76e4",
+      "image_size": [
+        1042,
+        104
+      ],
+      "cuts_y": [
+        53
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-064",
+      "image_sha256": "e2e2ec96260c4632571ad66838d7c5396efce450bb418eb8f7bd9bea3c386438",
+      "image_size": [
+        1890,
+        144
+      ],
+      "cuts_y": [
+        81
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-183",
+      "image_sha256": "9faf2f847d001add4114e07b4f2d4d0ae93f0d8de272facf19467621597d9450",
+      "image_size": [
+        1927,
+        145
+      ],
+      "cuts_y": [
+        68
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-450",
+      "image_sha256": "932d6eaf94bdab827113047f75b1b788a27e3fc6eebccd9fae5b1abe29ef0b1f",
+      "image_size": [
+        1402,
+        113
+      ],
+      "cuts_y": [
+        59
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-482",
+      "image_sha256": "92202770f426e3c55aed773597a3240007b9f4f5960af73a09d0554e532e0ae2",
+      "image_size": [
+        1900,
+        159
+      ],
+      "cuts_y": [
+        79
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-487",
+      "image_sha256": "91ee9ad9e15568b1eff4da2a32958ebb190741472e54d0f4c096ab564c8b49ac",
+      "image_size": [
+        1046,
+        117
+      ],
+      "cuts_y": [
+        29,
+        60,
+        89
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-499",
+      "image_sha256": "ee78a40800839c860f81e67ff638c8b9d171f39e15a2429b467310fe28b5107d",
+      "image_size": [
+        1376,
+        107
+      ],
+      "cuts_y": [
+        50
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-527",
+      "image_sha256": "0aa1e38ed0f2caa08d17d0111011965c52af8e23fea09757bdcb9dcb645d4fc2",
+      "image_size": [
+        744,
+        101
+      ],
+      "cuts_y": [
+        52
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-602",
+      "image_sha256": "9d44215a5aefcb88d4ce182ffd0e9214f10ff601e6c125ddf60a094189b43b01",
+      "image_size": [
+        1931,
+        135
+      ],
+      "cuts_y": [
+        61
+      ]
+    },
+    {
+      "id": "pub-reichsanzeiger-lines-613",
+      "image_sha256": "bc9d6051be0c66c079e0a581ceec8749f2c2b6e78916f4554281e0c9035cd50f",
+      "image_size": [
+        1070,
+        92
+      ],
+      "cuts_y": [
+        48
+      ]
+    }
+  ]
+}

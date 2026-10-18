@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 import unittest
@@ -834,7 +835,7 @@ class TestClient(unittest.TestCase):
         self.assertEqual(params["env"]["value"], "prod")
         self.assertEqual(params["vmSize"]["value"], "Standard_NC4as_T4_v3")
         self.assertIs(params["spot"]["value"], True)
-        self.assertEqual(params["projectUrl"]["value"], "https://boinc.usnewsmap.com/usnmocr/")
+        self.assertEqual(params["projectUrl"]["value"], "https://boinc.usnewsmap.com/")
         self.assertEqual(params["projectAuthenticator"]["value"], "")
 
     def test_create_supports_paygo_custom_sku_and_authenticator_file(self):
@@ -923,6 +924,25 @@ class AppReleaseArgs(unittest.TestCase):
 
 
 class AppReleasePublication(unittest.TestCase):
+    def test_native_extra_archive_contains_only_requested_files(self):
+        text = Path(APP_RELEASE_SCRIPT).read_text()
+        command = next(line.strip().split(" | ssh_host", 1)[0]
+                       for line in text.splitlines() if 'tar -C "$work" -c extra |' in line)
+        with tempfile.TemporaryDirectory() as tmp:
+            extra = Path(tmp, "extra")
+            extra.mkdir()
+            library = extra / "libggml.so"
+            library.write_bytes(b"native-library")
+            if os.uname().sysname == "Darwin":
+                subprocess.run(["xattr", "-w", "com.usnm.release-test", "metadata", str(library)],
+                               check=True, capture_output=True)
+            archive = subprocess.run(["bash", "-c", command],
+                                     env=dict(os.environ, work=tmp),
+                                     capture_output=True, check=True)
+            with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as bundle:
+                self.assertEqual(sorted(name.rstrip("/") for name in bundle.getnames()),
+                                 ["extra", "extra/libggml.so"])
+
     def test_prepare_and_publish_paths_update_only_the_appver_pin(self):
         text = Path(APP_RELEASE_SCRIPT).read_text()
         _, marker, tail = text.partition('echo "   $appver_image"\n')

@@ -186,3 +186,218 @@ pub fn local_unit(
     atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(job)
 }
+
+/// Immutable, operator-pinned benchmark bundle. Reference files never enter BOINC downloads.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkInput {
+    pub sample_id: String,
+    pub group: String,
+    pub language: String,
+    pub image: PathBuf,
+    pub image_sha256: String,
+    pub reference: PathBuf,
+    pub reference_sha256: String,
+    pub source_url: String,
+    pub license: String,
+}
+
+/// Stage a bounded local bundle without changing pixels or fetching external URLs.
+/// Uses the existing local-unit URL sentinel; actual provenance stays in benchmark-inputs.json.
+pub fn benchmark(
+    manifest: &Path,
+    manifest_sha256: &str,
+    root: &Path,
+    engine: Engine,
+) -> anyhow::Result<usize> {
+    check_no_hold(root)?;
+    let raw = crate::read(manifest, 1024 * 1024)?;
+    ensure!(
+        is_sha256(manifest_sha256) && sha256(&raw) == manifest_sha256,
+        "benchmark manifest checksum mismatch"
+    );
+    let inputs: Vec<BenchmarkInput> = serde_json::from_slice(&raw)?;
+    ensure!(
+        (1..=30).contains(&inputs.len()),
+        "benchmark probe requires 1 to 30 inputs"
+    );
+    ensure!(
+        !root.exists(),
+        "benchmark campaign already exists; never overwrite it"
+    );
+    let base = manifest
+        .canonicalize()?
+        .parent()
+        .context("manifest parent")?
+        .to_owned();
+    let mut staged = Vec::new();
+    let mut ids = std::collections::BTreeSet::new();
+    for input in &inputs {
+        ensure!(
+            !input.sample_id.is_empty()
+                && input.sample_id.len() <= 120
+                && input
+                    .sample_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)),
+            "invalid sample ID"
+        );
+        ensure!(
+            ids.insert(&input.sample_id),
+            "duplicate benchmark sample ID"
+        );
+        check_word(&input.group, "group")?;
+        check_word(&input.language, "language")?;
+        ensure!(
+            input.source_url.starts_with("https://") && !input.license.trim().is_empty(),
+            "source provenance and license required"
+        );
+        let load = |path: &Path, digest: &str, limit| -> anyhow::Result<Vec<u8>> {
+            ensure!(!path.is_absolute(), "benchmark paths must be relative");
+            let path = base.join(path).canonicalize()?;
+            ensure!(path.starts_with(&base), "benchmark path escapes bundle");
+            let data = crate::read(&path, limit)?;
+            ensure!(
+                is_sha256(digest) && sha256(&data) == digest,
+                "benchmark input checksum mismatch"
+            );
+            Ok(data)
+        };
+        let image = load(&input.image, &input.image_sha256, MAX_SCAN)?;
+        let reference = load(
+            &input.reference,
+            &input.reference_sha256,
+            usnm_ocr_contract::surya::MAX_TEXT,
+        )?;
+        std::str::from_utf8(&reference).context("benchmark reference must be UTF-8")?;
+        let mut job = Job {
+            v: VERSION,
+            id: String::new(),
+            doc_id: input.sample_id.clone(),
+            group: input.group.clone(),
+            language: input.language.clone(),
+            input: Input {
+                bytes: image.len() as u64,
+                sha256: sha256(&image),
+                url: "https://tile.loc.gov/local".into(),
+            },
+            engine: engine.clone(),
+            gpu_modes: usnm_ocr_contract::surya::MODES.to_vec(),
+            cpu_modes: vec![InputMode::Tiled],
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 5400,
+        };
+        job.id = job.identity()?;
+        job.validate()?;
+        staged.push((job, image, reference));
+    }
+    // All checks finish before any campaign files are written. A partial write is never reused.
+    if let Some(parent) = root
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir(root).context("campaign created concurrently; refusing overwrite")?;
+    atomic(&root.join("benchmark-inputs.json"), &raw)?;
+    atomic(
+        &root.join("benchmark-inputs.sha256"),
+        manifest_sha256.as_bytes(),
+    )?;
+    for (job, image, reference) in &staged {
+        let unit = units(root).join(&job.doc_id);
+        std::fs::create_dir_all(&unit)?;
+        atomic(&unit.join(PAGE_FILE), image)?;
+        atomic(&unit.join("reference.txt"), reference)?;
+        atomic(&unit.join(JOB_FILE), &serde_json::to_vec_pretty(job)?)?;
+    }
+    atomic(&root.join("benchmark-ready"), manifest_sha256.as_bytes())?;
+    Ok(staged.len())
+}
+
+/// Reject partially staged or modified benchmark campaigns before any create_work call.
+pub fn verify_benchmark(root: &Path) -> anyhow::Result<()> {
+    let manifest = root.join("benchmark-inputs.json");
+    if !manifest.exists() {
+        ensure!(
+            !root.join("benchmark-ready").exists()
+                && !root.join("benchmark-inputs.sha256").exists(),
+            "benchmark manifest missing with stale verification markers"
+        );
+        return Ok(());
+    }
+    let raw = crate::read(&manifest, 1024 * 1024)?;
+    let digest = sha256(&raw);
+    ensure!(
+        std::fs::read_to_string(root.join("benchmark-ready"))? == digest
+            && std::fs::read_to_string(root.join("benchmark-inputs.sha256"))? == digest,
+        "benchmark manifest changed or staging is incomplete"
+    );
+    let inputs: Vec<BenchmarkInput> = serde_json::from_slice(&raw)?;
+    ensure!(
+        std::fs::read_dir(units(root))?.count() == inputs.len(),
+        "benchmark unit count changed"
+    );
+    for input in inputs {
+        let unit = units(root).join(&input.sample_id);
+        let job: Job = serde_json::from_slice(&crate::read(
+            &unit.join(JOB_FILE),
+            usnm_ocr_contract::surya::MAX_JSON,
+        )?)?;
+        job.validate()?;
+        ensure!(
+            job.doc_id == input.sample_id
+                && job.group == input.group
+                && job.language == input.language
+                && job.input.sha256 == input.image_sha256,
+            "benchmark job differs from input lock"
+        );
+        ensure!(
+            sha256(&crate::read(&unit.join(PAGE_FILE), MAX_SCAN)?) == input.image_sha256
+                && sha256(&crate::read(
+                    &unit.join("reference.txt"),
+                    usnm_ocr_contract::surya::MAX_TEXT
+                )?) == input.reference_sha256,
+            "benchmark image/reference changed after staging"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod benchmark_tests {
+    use super::*;
+    #[test]
+    fn immutable_bundle_checks_all_inputs_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("inputs.json");
+        let root = dir.path().join("campaign");
+        std::fs::write(dir.path().join("input.png"), b"image").unwrap();
+        std::fs::write(dir.path().join("reference.txt"), b"reference").unwrap();
+        let row = serde_json::json!({"sample_id":"overproof-1", "group":"english", "language":"eng",
+            "image":"input.png", "image_sha256":sha256(b"image"), "reference":"reference.txt",
+            "reference_sha256":sha256(b"reference"), "source_url":"https://example.org/published", "license":"Public domain"});
+        let raw = serde_json::to_vec(&vec![row.clone()]).unwrap();
+        std::fs::write(&manifest, &raw).unwrap();
+        let engine = super::super::work::tests::job().engine;
+        assert!(benchmark(&manifest, &"0".repeat(64), &root, engine.clone()).is_err());
+        assert!(!root.exists());
+        assert_eq!(
+            benchmark(&manifest, &sha256(&raw), &root, engine.clone()).unwrap(),
+            1
+        );
+        verify_benchmark(&root).unwrap();
+        assert!(benchmark(&manifest, &sha256(&raw), &root, engine.clone()).is_err());
+        std::fs::write(root.join("units/overproof-1/reference.txt"), b"changed").unwrap();
+        assert!(verify_benchmark(&root).is_err());
+        std::fs::remove_file(root.join("benchmark-inputs.json")).unwrap();
+        assert!(verify_benchmark(&root).is_err());
+
+        let mut bad = row;
+        bad["image"] = serde_json::json!("../escape");
+        let raw = serde_json::to_vec(&vec![bad]).unwrap();
+        std::fs::write(&manifest, &raw).unwrap();
+        assert!(benchmark(&manifest, &sha256(&raw), &dir.path().join("bad"), engine).is_err());
+        assert!(!dir.path().join("bad").exists());
+    }
+}

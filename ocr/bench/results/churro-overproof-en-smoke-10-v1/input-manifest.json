@@ -1,0 +1,86 @@
+{
+  "format": "usnm-ocr-bench-churro-inputs-v1",
+  "adapter_lock": "ocr/bench/adapters/churro/overproof-en-smoke-10-v1.json",
+  "samples": [
+    {
+      "id": "pub-overproof-ca-013",
+      "image": "pub-overproof-ca-013.jpg",
+      "image_sha256": "d9f5eaf75fcee194636f7b02e3fe1ee79a378bf3c9e321fa4a98d0aa5dcaf520",
+      "image_width": 823,
+      "image_height": 416,
+      "reference_sha256": "aed6a7bcf582196a9f5030d15c26acd2710e780571031bcf127d23e4cedfe041"
+    },
+    {
+      "id": "pub-overproof-ca-017",
+      "image": "pub-overproof-ca-017.jpg",
+      "image_sha256": "2062e3b0c407a74adfaa6d44953d162ed00a8647c4d789ecf0fbf42558b36276",
+      "image_width": 688,
+      "image_height": 293,
+      "reference_sha256": "ae53a40048c7cda985cf3acfdd77ec1da2d0d53d837117f7153ee5d87709cb27"
+    },
+    {
+      "id": "pub-overproof-ca-022",
+      "image": "pub-overproof-ca-022.jpg",
+      "image_sha256": "4fafc4e340b64754597726d948ab923d4e50200c0580d56dcdf6a04a932220ef",
+      "image_width": 648,
+      "image_height": 312,
+      "reference_sha256": "545ae79761a9b8389e9e3d5dc3933d382287858ee764ce5704d7a8c5ca011710"
+    },
+    {
+      "id": "pub-overproof-ca-034",
+      "image": "pub-overproof-ca-034.jpg",
+      "image_sha256": "2b34a5c1a2661d2ee68f9e34266127213340550a7191b25ab1980925409b8efb",
+      "image_width": 832,
+      "image_height": 415,
+      "reference_sha256": "173bac258f565604a4e037bd0ebf4cc89dcfefe84f30ac75d186c88f7be5da7d"
+    },
+    {
+      "id": "pub-overproof-ca-039",
+      "image": "pub-overproof-ca-039.jpg",
+      "image_sha256": "81881ecc772a0577c4408a7114283c1103cfa7075eacfe23e603fcdc34199673",
+      "image_width": 646,
+      "image_height": 367,
+      "reference_sha256": "2892cb997fb4bcdaa3e60d3e25fe39a469c276d350983c08a4b3483c943779c0"
+    },
+    {
+      "id": "pub-overproof-ca-042",
+      "image": "pub-overproof-ca-042.jpg",
+      "image_sha256": "d4fbd7d26ed6b72c9aec0963f0bc8520689c1c0aba70b8a499aedc70deb3ec3d",
+      "image_width": 657,
+      "image_height": 376,
+      "reference_sha256": "a96d8e614663dba0f6c73daebdd1309e4be2a45f05fc1528fbabb8c16e8bbf55"
+    },
+    {
+      "id": "pub-overproof-ca-044",
+      "image": "pub-overproof-ca-044.jpg",
+      "image_sha256": "939bad52dcc743ad162cd142c0b14d82dec7092d572986779d81b7c92c885e92",
+      "image_width": 859,
+      "image_height": 467,
+      "reference_sha256": "62d9fd3c823323c1aa7175f18d2a18dd1a9de5139094a5a47658d9fac2015125"
+    },
+    {
+      "id": "pub-overproof-ca-068",
+      "image": "pub-overproof-ca-068.jpg",
+      "image_sha256": "ab843bc62f1ffb97ea5618d286a6dd4d7dd7141c6525518645e2b63839e3db4b",
+      "image_width": 658,
+      "image_height": 408,
+      "reference_sha256": "c9ee27d445dfe9bdd74a2556055d0acfe1ff7068f0c21ea8f1f7188ca38bebbc"
+    },
+    {
+      "id": "pub-overproof-ca-073",
+      "image": "pub-overproof-ca-073.jpg",
+      "image_sha256": "a44b00575c2a01a44429a2f733fe3afbf567044466de98eba448fd00d081cdc5",
+      "image_width": 646,
+      "image_height": 300,
+      "reference_sha256": "4781955a34a3c387f1b681e18e79027c1912f3c580b0f90451f3164e9240bfd4"
+    },
+    {
+      "id": "pub-overproof-ca-075",
+      "image": "pub-overproof-ca-075.jpg",
+      "image_sha256": "ce8e18e3343b40c0cddb5dd262ab285e0cc888d2682c9c0e6c82dcd7de290019",
+      "image_width": 649,
+      "image_height": 357,
+      "reference_sha256": "59404c6dd5c86364ee4fd1127a8613981c60514e02950c3f6588109d49751578"
+    }
+  ]
+}

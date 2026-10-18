@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 
 
 class PublishTests(unittest.TestCase):
@@ -30,7 +31,7 @@ class PublishTests(unittest.TestCase):
         (self.source / 'templates' / 'usnm_ocr_1.0.xml').write_text('template')
         (self.source / 'project.xml').write_text('<project/>')
         lib = self.root / 'lib.sh'
-        lib.write_text('fail() { echo "$*" >&2; exit 1; }\nlog() { :; }\nfetch_secrets() { :; }\nrender_config() { :; }\n')
+        lib.write_text('SECRETS="$PROJ/local-secrets"\nDB_RUNTIME_USER=fixture\nexport DB_RUNTIME_USER\nfail() { echo "$*" >&2; exit 1; }\nlog() { :; }\nfetch_secrets() { mkdir -p "$SECRETS/keys"; printf fixture > "$SECRETS/db-runtime"; }\nrender_config() { :; }\n')
         script = Path(__file__).with_name('publish-appver.sh').read_text()
         script = script.replace('. /usr/local/lib/usnm-boinc/lib.sh', f'. "{lib}"')
         script = script.replace('src=/usr/local/lib/usnm-boinc/appver', f'src="{self.source}"')
@@ -44,6 +45,7 @@ class PublishTests(unittest.TestCase):
         return subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
                               env={**os.environ, 'PROJ': str(self.project), 'APPVER_APP': 'usnm_ocr',
                                    'APPVER_VERSION': version, 'APPVER_PLATFORM': platform,
+                                   'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
                                    'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
 
     def test_sibling_platform_publish_and_replay_preserve_linux(self):
@@ -60,6 +62,23 @@ class PublishTests(unittest.TestCase):
         self.assertEqual((template.stat().st_ino, template.stat().st_mtime_ns), template_before)
         self.assertEqual(len((self.project / 'calls').read_text().splitlines()), 6)
         self.assertFalse((self.project / '.usnm-publish.lock').exists())
+
+    def test_scoped_publication_preserves_live_configuration_and_app_registry(self):
+        (self.project / 'html/inc/boinc_db.inc').write_text('existing database configuration')
+        (self.project / 'config.xml').unlink()
+        (self.project / 'config.xml').symlink_to('/dev/shm/absent-web-config.xml')
+        (self.project / 'keys').symlink_to('/dev/shm/absent-web-keys')
+        before = os.readlink(self.project / 'config.xml')
+        with unittest.mock.patch.dict(os.environ, {'APPVER_REUSE_PROJECT': '1'}):
+            result = self.publish('x86_64-pc-linux-gnu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(os.readlink(self.project / 'config.xml'), before)
+        self.assertEqual(os.readlink(self.project / 'keys'), '/dev/shm/absent-web-keys')
+        self.assertTrue((self.project / 'local-secrets/appver-config.xml').is_file())
+        calls = (self.project / 'calls').read_text().splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].endswith('update_versions'))
+        self.assertFalse((self.project / 'project.xml').exists())
 
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_all_container_classes_publish_and_pass_actual_php_verification(self):
@@ -96,7 +115,8 @@ class BoincAppVersion {
                     env={**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'container',
                          'APPVER_APP': app, 'APPVER_VERSION': '1.0',
                          'APPVER_PLATFORM': 'x86_64-pc-linux-gnu', 'APPVER_PLAN_CLASS': plan,
-                         'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+                         'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+                                   'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f'Verified {app} 1.0 x86_64-pc-linux-gnu {plan}', result.stdout)
@@ -117,7 +137,8 @@ class BoincAppVersion {
                     env={**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'container',
                          'APPVER_APP': app, 'APPVER_VERSION': '1.0', 'APPVER_PLATFORM': platform,
                          'APPVER_PLAN_CLASS': plan,
-                         'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+                         'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+                                   'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
                 )
                 self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.project / 'calls').exists())

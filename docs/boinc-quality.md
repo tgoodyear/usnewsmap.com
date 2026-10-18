@@ -97,10 +97,36 @@ Plan classes are defined in `contrib-compute/boinc/plan_class_spec.xml`:
 | `usnm_qwen`    | `native`    | `apple_gpu_8b`          | `arm64-apple-darwin`                                                                                              | `<gpu_type>apple</gpu_type>`, Metal support (`min_metal_support` 1), >= 7,000 MB available unified RAM (~8 GiB Mac), 8B `Q4_K_M`                                                                            |
 | `usnm_qwen`    | `native`    | `nvidia_cuda_8b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 7,000 MB GPU RAM, 2 host CPUs, 8B `Q4_K_M`                                                                                    |
 | `usnm_qwen`    | `native`    | `intel_vulkan_8b`       | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>intel</gpu_type><opencl/>`, llama.cpp Vulkan, >= 7,000 MB GPU RAM and 7,000 MiB free Vulkan memory, 8B `Q4_K_M`; integrated GPUs use about 8.6 GB of host RAM ([Intel GPUs](boinc-intel-gpu.md)) |
+| `usnm_qwen`    | `native`    | `nvidia_vulkan_8b`      | `x86_64-pc-linux-gnu`                                                                                             | NVIDIA detection/assignment through BOINC CUDA; execution through the same pinned Vulkan runtime as Intel, >= 7,000 MB GPU RAM and 7,000 MiB free Vulkan memory, 2 host CPUs, 8B `Q4_K_M`                   |
 | `usnm_qwen`    | `native`    | `nvidia_cuda_2b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 3,000 MB GPU RAM, 2 host CPUs, 2B `Q8_0`                                                                                      |
 | `usnm_qwen`    | `native`    | `mt`                    | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Multi-thread CPU (`min_ncpus` 4, `max_threads` 8), 2B `Q8_0` fallback                                                                                                                                       |
 | `usnm_qwen`    | `container` | `docker_mt_2b`          | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-cpu.toml`: 2B only, `--cpus` from the thread count (4–8), 6 GiB, no swap                                                                                                                |
 | `usnm_qwen`    | `container` | `docker_nvidia_cuda_8b` | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-gpu.toml`: 8B only, `--gpus all`, 2 CPUs, >= 7,000 MB GPU RAM, compute capability >= 6.0, 6 GiB, no swap                                                                                |
+
+The native Intel and NVIDIA Vulkan classes share batch-8 inputs, not the container batch-18
+queue. Publish signed Linux versions with the same locked Vulkan bundle first. To open a
+shared dispatch window, use `scripts/boinc/native-qwen-cohort.php --project PATH
+--plan-class shared_8b --workunit FIRST --workunit-end LAST` (preview, then `--apply`).
+The helper requires at most ten contiguous Qwen native-8B workunits, each unaccepted with
+two unsent replicas and quorum two; it closes the other native classes and pauses the
+separate NVIDIA container batch-18 queue, without changing its input format or aborting
+already assigned work. This keeps NVIDIA fetching from the same bounded native pool as
+Intel, rather than selecting the older container app version. `--stop --apply`
+closes all native classes. This changes eligibility only, not distinct-host validation.
+When DB credentials are rendered into a separate tmpfs project, pass `--db-project PATH`
+with its `config.xml` and private `html/inc` copy. The policy and journal stay under
+`--project`; credentials must not be copied to the shared project filesystem.
+Run one-off queue operators with the committed single-replica bridge configuration,
+not replica settings left by a parallel assessment submission.
+
+The server patch disables app-ID-only version memoization when plan classes have
+workunit restrictions. Otherwise an earlier incompatible/paused batch can cache
+either its payload or a null selection and prevent later eligible native work
+from dispatching. A no-work reply mentioning 15,360 MB can refer to the separate
+training app; it does not change the native 8B classes' 7,000 MB requirement.
+Server startup preserves existing bounded Qwen admission fields, including a
+paused container pool, while refreshing image-owned batch, resource and client
+requirements. Use the cohort operator, not a server restart, to change those windows.
 
 `scripts/boinc/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
 
@@ -271,7 +297,17 @@ The daemons are in `ocr/boinc/daemons.xml` and `contrib-compute/images/server/li
 
 ### usnm-boinc qwen
 
-- `stage`: reads staged `usnm_quality` units from `--quality-root` (`--root`, `--engine-image`, `--engine-llama`, `--engine-weights`, `--gpu-timeout-secs` default 1800, `--cpu-timeout-secs` default 7200, `--max-tokens-per-1000px2` default 4, `--max-pages` default 20), cuts the same deterministic crops from each unit's `page.jpg` and `loc.xml` (`crop_seed` and `k_crops` from `quality.json`) without contacting LoC again, and writes `<root>/units/<doc_id>/{page.jpg, qwen.json}`.
+- `stage`: reads staged `usnm_quality` units from `--quality-root` (`--root`, `--engine-image`, `--engine-llama`, `--engine-weights`, `--gpu-timeout-secs` default 14400, `--cpu-timeout-secs` default 7200, `--max-tokens-per-1000px2` default 4, `--max-pages` default 20), cuts the same deterministic crops from each unit's `page.jpg` and `loc.xml` (`crop_seed` and `k_crops` from `quality.json`) without contacting LoC again, and writes `<root>/units/<doc_id>/{page.jpg, qwen.json}`.
+
+The GPU budget is four hours of application runtime for the entire page,
+not a BOINC task-duration limit. It accommodates slower volunteer GPUs without
+discarding a nearly complete page at the former 30-minute default. Explicit
+shorter budgets remain available for bounded experiments; the job contract accepts
+60–14,400 seconds. This is separate from BOINC's report deadline and resource bounds.
+Timeouts are part of the immutable job identity: never edit staged inputs already
+submitted to volunteers. To retry an affected page with a longer budget, stage a
+new job identity and preserve the original attempt and validation evidence.
+
 - `submit`: hands staged `usnm_qwen` units in `<root>/units/` to `create_work` (`--root`, `--project`, `--max-units` default 20) with write-ahead `submitting` and `submitted` markers.
 - `local-unit`: writes a unit directory from `--image` and `--alto` (or `--synthetic`, which generates a built-in two-line block-capitals page and ALTO) into `--dir` (`--engine-image`, `--engine-llama` defaulting to `USNM_QWEN_LLAMA_IMAGE`, `--engine-weights` defaulting to `USNM_QWEN_WEIGHTS`, `--crop-seed` default 522, `--k-crops` default 12, `--timeout-secs` default 1800, `--max-tokens-per-1000px2` default 4).
 - `probe`: runs `/app/llama-server --version` and checks that every model and multimodal projector in `usnm_boinc::qwen::default_models()` exists under `/opt/qwen/models`, printing their sizes without loading weights into memory.

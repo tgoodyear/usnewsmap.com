@@ -32,11 +32,13 @@ The hand-off job is in the **main** resource group, not the BOINC runtime
 group. Updating the BOINC server and bridge pair does not update this job.
 `USNM_BOINC_HANDOFF_IMAGE` in `infra/env/prod.json` must name a reviewed bridge
 artifact containing the bounded export, exact-file reads and accepted-snapshot
-collection code. The desired production pin is the scoped-trust v4 bridge
+collection code. The existing production pin is the scoped-trust v4 bridge
 artifact built from merged #755 source `38893b3008708f6f25c2beab2dcba40ab7521fab`,
 also selected for the BOINC bridge. It includes the current-worker Gold routing
-registry and rejects unscoped legacy trust for publication. This pin alone is
-not a runtime rollout or host promotion.
+registry and rejects unscoped legacy trust for publication. The v5 source changes
+in #756 do not update this image; a reviewed image rebuild and separately
+coordinated rollout are required. This pin alone is not a runtime rollout or host
+promotion.
 
 After the pin PR passes review and CI and merges, serialize a hand-off-only
 update through #529. Verify the job and other lifecycle jobs are idle and retain
@@ -299,6 +301,30 @@ hand-off job and its roles, reconcile, and approve a first tick with `--apply`
 before scheduling it.
 
 ## Validation, scheduling and recovery
+
+### Drain without changing the allocation
+
+For a controlled feed handoff or rollback ([#833](https://github.com/tgoodyear/usnewsmap.com/issues/833)),
+add `--drain --apply` to the existing invocation. The controller still takes both
+locks, checks inventory and collects existing results through the normal trust
+gates, but selects no new pages, pushes no scans, exports no jobs and submits no
+reservations, including reservations recovered from an interrupted tick.
+Existing allocations and journals remain intact. Tick telemetry reports
+`draining: true`; omit `--apply` to validate offline without remote calls.
+Remove `--drain` to resume the same immutable allocation and state directory.
+Uncertain submissions and terminal failures still require explicit reconciliation.
+Drain mode does not cancel outstanding BOINC work or release reservations.
+
+This switch controls only this BOINC controller. To drain the **direct OCR**
+bulk feed, first preserve the configured `USNM_OCR_SEED_*` values and disable
+seeding by clearing `USNM_OCR_SEED_PLAN` on the sync job through the normal
+reviewed settings/deployment path. Keep `ocr-sync` running for imports and
+dead-letter handling. Its user-hit priority feed is separate and remains enabled;
+manual enqueue/requeue commands must also be coordinated. Do not transfer or
+purge queue messages. Before assigning drained pages to BOINC, reconcile their
+native ledger state and prove the selected worker image, German/Fraktur model
+and calibrated trust scope match the intended cohort. Disabling a feed is not
+evidence that all outstanding work has completed.
 
 Offline validation makes no Azure or SSH calls and creates no state:
 

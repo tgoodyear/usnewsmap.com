@@ -1,0 +1,199 @@
+{
+  "format": "usnm-serialset-ocr-pilot-selection/1",
+  "selected_at": "2026-10-18",
+  "selection_policy": "Fixed, page-disjoint, purposive pilot: ordinary single-column text, comparative tables, multi-column layout, and pages with visible scan irregularities. No random replacement and no claim of corpus representativeness.",
+  "retrieval": {
+    "source": "GovInfo public content and ALTO URLs; no API key",
+    "user_agent": "usnewsmap.com issue-814 bounded OCR audit (https://github.com/tgoodyear/usnewsmap.com/issues/814)",
+    "pdf_requests": 3,
+    "alto_requests": 4,
+    "gap_seconds": 3,
+    "retries": 0,
+    "full_pdfs_committed": false
+  },
+  "transcription_policy": {
+    "version": "serialset-full-page-v1",
+    "status": "pilot policy; needs review before expanding",
+    "rules": [
+      "Transcribe only visible print from the page image; never copy the PDF text layer or ALTO into a reference.",
+      "Preserve capitalization, punctuation, historical spelling, diacritics, numerals, and printed line-end hyphens with their following line breaks.",
+      "Include legible page identifiers and headings.",
+      "For tables, read the left table region top-to-bottom, then the right table region top-to-bottom; within a table, read each row left-to-right.",
+      "Represent a printed half fraction as the Unicode character ½.",
+      "Omit blank cells, decorative rules, and repeated leader dashes; retain textual labels, cell values, and totals.",
+      "Unclear or illegible print is not guessed; it stays outside the verified subset and is queued for human review."
+    ]
+  },
+  "rights": {
+    "images": "U.S. federal government publications made available by GovInfo; treated as public-domain government works in the United States.",
+    "machine_ocr": "GovInfo ALTO and PDF text-layer outputs; retained only as machine outputs, never as references.",
+    "references": "Human transcriptions of the same public-domain pages; no third-party annotation set is copied.",
+    "limits": "No HathiTrust text, Google-digitized material, private archive data, or restricted output is included."
+  },
+  "documents": [
+    {
+      "package_id": "SERIALSET-00033_00_00-009-0042-0000",
+      "citation": "H. Doc. 16-42",
+      "date_issued": "1820-01-13",
+      "pdf_url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-009-0042-0000/pdf/SERIALSET-00033_00_00-009-0042-0000.pdf",
+      "pdf_sha256": "585f435788d808905bed4b4b8c75afbcf3e11b8bd2d0f81f4f57ab69da458126",
+      "pdf_bytes": 6638303,
+      "pdf_pages": 12,
+      "pdf_producer": "Recoded by LuraDocument PDF v2.68",
+      "mods_fixture": "fixtures/congress/govinfo/SERIALSET-00033_00_00-009-0042-0000-mods.xml",
+      "mods_fixture_sha256": "16cb6a4ebb3833fc7778158878656ac5815f36ff67077feaf6106c231b1b6400",
+      "source_ocr_engine": "ABBYY FineReader Engine 11",
+      "alto_processing_date": "2020-04-01",
+      "alto_pages": [
+        {
+          "pdf_page": 3,
+          "page_id": "0125",
+          "url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-009-0042-0000/alto/SERIALSET-00033_00_00-009-0042-0000-0125.xml",
+          "sha256": "e1874c3b5e5620ef70b4d908634dc67f340bc4099fb3903318ae13a9e3d6c8b0",
+          "fixture_path": "source/alto/doc42-p3.xml"
+        }
+      ]
+    },
+    {
+      "package_id": "SERIALSET-00033_00_00-020-0053-0000",
+      "citation": "H. Doc. 16-53",
+      "date_issued": "1820-01-20",
+      "pdf_url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-020-0053-0000/pdf/SERIALSET-00033_00_00-020-0053-0000.pdf",
+      "pdf_sha256": "31c17e5f6b2d6cf3242cc197c720339e2d28dc66fae609e2a7166c6d6b34fbc3",
+      "pdf_bytes": 7000324,
+      "pdf_pages": 6,
+      "pdf_producer": "Recoded by LuraDocument PDF v2.68",
+      "mods_fixture": "fixtures/congress/govinfo/SERIALSET-00033_00_00-020-0053-0000-mods.xml",
+      "mods_fixture_sha256": "fdca6c4a519606e652dc70c73d051acd861ac60c51799e3044191f5bb8e47c1a",
+      "source_ocr_engine": "ABBYY FineReader Engine 11",
+      "alto_processing_date": "2020-04-01",
+      "alto_pages": [
+        {
+          "pdf_page": 4,
+          "page_id": "0267",
+          "url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-020-0053-0000/alto/SERIALSET-00033_00_00-020-0053-0000-0267.xml",
+          "sha256": "b6a997631cdf534046965329c161a9e8af910a72136eaa7a1df30d4ab4e5ac44",
+          "fixture_path": "source/alto/doc53-p4.xml"
+        },
+        {
+          "pdf_page": 5,
+          "page_id": "0268",
+          "url": "https://www.govinfo.gov/content/pkg/SERIALSET-00033_00_00-020-0053-0000/alto/SERIALSET-00033_00_00-020-0053-0000-0268.xml",
+          "sha256": "85734559744ed8decfae9dd8969f58f421826004254722b9fdfdd796b91915fa",
+          "fixture_path": "source/alto/doc53-p5.xml"
+        }
+      ]
+    },
+    {
+      "package_id": "SERIALSET-13993_00_00-021-0183-0000",
+      "citation": "H. Doc. 101-183",
+      "date_issued": "1990-05-01",
+      "pdf_url": "https://www.govinfo.gov/content/pkg/SERIALSET-13993_00_00-021-0183-0000/pdf/SERIALSET-13993_00_00-021-0183-0000.pdf",
+      "pdf_sha256": "3a8741a0f6005c0efd403e9fa44d8919591b86b1b91c7feaf68e5f44a94d8760",
+      "pdf_bytes": 5736925,
+      "pdf_pages": 16,
+      "pdf_producer": "not declared by pdfinfo",
+      "mods_fixture": "fixtures/congress/govinfo/SERIALSET-13993_00_00-021-0183-0000-mods.xml",
+      "mods_fixture_sha256": "e8c48588a7a275ec821540d92214d23f1e985542e3fad0e1cb4687ca631f2230",
+      "source_ocr_engine": "Tesseract 5.1.0",
+      "alto_processing_date": "not declared",
+      "alto_pages": [
+        {
+          "pdf_page": 3,
+          "page_id": "1029",
+          "url": "https://www.govinfo.gov/content/pkg/SERIALSET-13993_00_00-021-0183-0000/alto/SERIALSET-13993_00_00-021-0183-0000-1029.xml",
+          "sha256": "f6cd7581f76aa9bc6e47321dba8da09d112ffd069e3daa92bfbb952fdd354229",
+          "fixture_path": "source/alto/doc183-p3.xml"
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "id": "serialset/00033-009-0042-p03",
+      "package_id": "SERIALSET-00033_00_00-009-0042-0000",
+      "pdf_page": 3,
+      "alto_page_id": "0125",
+      "source_page_id": "govinfo:SERIALSET-00033_00_00-009-0042-0000:pdf-page-3",
+      "image": "images/doc42-p03.jpg",
+      "reference": "references/doc42-p03.txt",
+      "annotation_status": "human-verified",
+      "layout": [
+        "single-column prose"
+      ],
+      "observed_visual_features": [
+        "light speckle and uneven scan tone; text remains legible"
+      ],
+      "source_ocr_engine": "ABBYY FineReader Engine 11",
+      "coverage_strata": [
+        "single-column prose",
+        "pages with visible scan irregularities"
+      ]
+    },
+    {
+      "id": "serialset/00033-020-0053-p04",
+      "package_id": "SERIALSET-00033_00_00-020-0053-0000",
+      "pdf_page": 4,
+      "alto_page_id": "0267",
+      "source_page_id": "govinfo:SERIALSET-00033_00_00-020-0053-0000:pdf-page-4",
+      "image": "images/doc53-p04.jpg",
+      "reference": null,
+      "annotation_status": "needs-human-verification",
+      "layout": [
+        "comparative two-sided tables",
+        "dense vertical column headings"
+      ],
+      "observed_visual_features": [
+        "irregular or clipped upper-left sheet edge; small print and narrow table columns"
+      ],
+      "source_ocr_engine": "ABBYY FineReader Engine 11",
+      "gap_reason": "No reference is committed: the dense two-sided tables and small vertical headings require independent human verification.",
+      "coverage_strata": [
+        "comparative or multi-column tables",
+        "pages with visible scan irregularities"
+      ]
+    },
+    {
+      "id": "serialset/00033-020-0053-p05",
+      "package_id": "SERIALSET-00033_00_00-020-0053-0000",
+      "pdf_page": 5,
+      "alto_page_id": "0268",
+      "source_page_id": "govinfo:SERIALSET-00033_00_00-020-0053-0000:pdf-page-5",
+      "image": "images/doc53-p05.jpg",
+      "reference": "references/doc53-p05.txt",
+      "annotation_status": "human-verified",
+      "layout": [
+        "paired numeric tables",
+        "multi-column table"
+      ],
+      "observed_visual_features": [
+        "visible central seam or gutter shadow and uneven tone; tabular text remains legible"
+      ],
+      "source_ocr_engine": "ABBYY FineReader Engine 11",
+      "coverage_strata": [
+        "comparative or multi-column tables",
+        "pages with visible scan irregularities"
+      ]
+    },
+    {
+      "id": "serialset/13993-021-0183-p03",
+      "package_id": "SERIALSET-13993_00_00-021-0183-0000",
+      "pdf_page": 3,
+      "alto_page_id": "1029",
+      "source_page_id": "govinfo:SERIALSET-13993_00_00-021-0183-0000:pdf-page-3",
+      "image": "images/doc183-p03.jpg",
+      "reference": "references/doc183-p03.txt",
+      "annotation_status": "human-verified",
+      "layout": [
+        "single-column numbered prose"
+      ],
+      "observed_visual_features": [
+        "no obvious text-obscuring scan defect in this page"
+      ],
+      "source_ocr_engine": "Tesseract 5.1.0",
+      "coverage_strata": [
+        "single-column prose"
+      ]
+    }
+  ]
+}

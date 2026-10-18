@@ -1070,8 +1070,16 @@ class StackRenameGuard(Stubbed):
     def test_new_stack_and_read_errors(self):
         r = self.lib("deploy_stack", STUB_RESOURCES_ERROR="DeploymentStackNotFound: usnm-dev")
         self.assertEqual(r.returncode, 0, r.stderr)
-        r = self.lib("deploy_stack", STUB_RESOURCES_ERROR="ResourceNotFound: unexpected dependency")
-        self.assertEqual(r.returncode, 42, r.stderr)
+        message = ("ERROR: (ResourceNotFound) The resource 'usnm-dev' was not found. "
+                   "For more details please go to https://aka.ms/ARMResourceNotFoundFix\n"
+                   "Code: ResourceNotFound\nMessage: The resource 'usnm-dev' was not found.")
+        r = self.lib("deploy_stack", STUB_RESOURCES_ERROR=message)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for error in ("ResourceNotFound: unexpected dependency",
+                      message.replace("usnm-dev", "some-dependency"),
+                      message.replace("Code: ResourceNotFound", "Code: AuthorizationFailed")):
+            r = self.lib("deploy_stack", STUB_RESOURCES_ERROR=error)
+            self.assertEqual(r.returncode, 42, r.stderr)
 
     def test_guard_failure_is_not_retried(self):
         r = self.lib("vaults_recover() { :; }; settings_store_ensure() { :; }; "

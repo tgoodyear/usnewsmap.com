@@ -1,0 +1,80 @@
+{
+  "by_source": {
+    "reichsanzeiger": {
+      "cer": 0.4365924491771539,
+      "cer_missing_as_empty": 0.4365924491771539,
+      "edits": 451,
+      "missing": 0,
+      "missing_chars": 0,
+      "reference_chars": 1033,
+      "samples": 10,
+      "scored": 10
+    }
+  },
+  "release": "v1.0.0",
+  "rows": [
+    {
+      "edits": 28,
+      "id": "pub-reichsanzeiger-lines-028",
+      "reference_chars": 71
+    },
+    {
+      "edits": 18,
+      "id": "pub-reichsanzeiger-lines-064",
+      "reference_chars": 72
+    },
+    {
+      "edits": 95,
+      "id": "pub-reichsanzeiger-lines-183",
+      "reference_chars": 125
+    },
+    {
+      "edits": 60,
+      "id": "pub-reichsanzeiger-lines-450",
+      "reference_chars": 126
+    },
+    {
+      "edits": 32,
+      "id": "pub-reichsanzeiger-lines-482",
+      "reference_chars": 121
+    },
+    {
+      "edits": 66,
+      "id": "pub-reichsanzeiger-lines-487",
+      "reference_chars": 77
+    },
+    {
+      "edits": 34,
+      "id": "pub-reichsanzeiger-lines-499",
+      "reference_chars": 111
+    },
+    {
+      "edits": 14,
+      "id": "pub-reichsanzeiger-lines-527",
+      "reference_chars": 65
+    },
+    {
+      "edits": 40,
+      "id": "pub-reichsanzeiger-lines-602",
+      "reference_chars": 135
+    },
+    {
+      "edits": 64,
+      "id": "pub-reichsanzeiger-lines-613",
+      "reference_chars": 130
+    }
+  ],
+  "rule": "legacy-ws-v1",
+  "subset": "reichsanzeiger-de/smoke-10",
+  "subset_digest": "0aa2c383e04e0d2709ec11faedd8a6d2bdc1850430ca3e8ea6efc68e2239b695",
+  "total": {
+    "cer": 0.4365924491771539,
+    "cer_missing_as_empty": 0.4365924491771539,
+    "edits": 451,
+    "missing": 0,
+    "missing_chars": 0,
+    "reference_chars": 1033,
+    "samples": 10,
+    "scored": 10
+  }
+}

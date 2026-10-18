@@ -110,7 +110,7 @@ enum Commands {
         subset: String,
         #[arg(long)]
         outputs: PathBuf,
-        /// legacy-ws-v1 (the Iris pilot's whitespace-collapsed CER) or raw-v1.
+        /// legacy-ws-v1 (whitespace-collapsed CER), raw-v1, or opt-in raw-masked-v1.
         #[arg(long, default_value = "legacy-ws-v1")]
         rule: String,
         /// Write the per-sample report here; stdout gets the totals.

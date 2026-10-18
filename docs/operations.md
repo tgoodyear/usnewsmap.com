@@ -1057,6 +1057,8 @@ Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.ta
 
 ## Dev environment lifecycle
 
+A first stand-up accepts Azure’s missing-stack responses (`DeploymentStackNotFound`, or `ResourceNotFound` naming the stack itself); other inventory read errors still block the protected-resource guard.
+
 Reprovisioning the same experiment preserves the project group's original `started` timestamp, including stand-up's second provision. If that timestamp is missing, status reports an unknown start and falls back to month-to-date cost; an unreadable group is an error, not a missing tag.
 
 **The rule** (#275): `dev` (the stack `usnm-dev`, the group `usnm-core-rg-dev`) holds no resources unless a focused experiment is running. Stand it up for the experiment, and tear it down completely once the results are saved. Scaling to zero isn't enough: with no replicas running it still costs about $2 a day, about $60 a month. That's the 4 private endpoints ($0.24 a day each), the Container Apps environment's load balancer (about $0.45 to $0.60 a day) and public IP ($0.12), the registry (ACR Basic, about $0.17), the NFS share (64 GiB, about $0.21), 3 private DNS zones (about $0.05) and storage (Cost Management, October 2026).

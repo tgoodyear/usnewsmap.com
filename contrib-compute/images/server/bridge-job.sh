@@ -29,7 +29,9 @@
 #                               onboard pass: a gold unit for each untrusted host without one
 #                               outstanding, and a fresh one after a failed unit
 #   BRIDGE_STEP=gold-mirror-loc stages only the 18 locked v1 LoC JPEGs; no BLN or work creation
-#   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>; writes <campaign>/out
+#   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>
+#                               GOLD_LANGUAGE=<calibration language> GOLD_PROFILE=<model profile>;
+#                               records bounded native result metadata and validated reports
 #   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold> GOLD_MANIFEST_SHA256=<challenge hash>
 #                              GOLD_LANGUAGE=<source language> GOLD_PROFILE=<model profile>;
 #                               writes $SHARE_DIR/gold/trust.json from this campaign's complete reports
@@ -201,6 +203,13 @@ case "$step" in
     python3 /usr/local/lib/usnm-boinc/assess/aggregate.py --scores "$ASSESS/out/scores.jsonl" \
       --results "$ASSESS/out/results.jsonl" --crash "$ASSESS/out/crash.jsonl" > "$ASSESS/out/tables.md"
     exit 0 ;;
+  surya-benchmark-stage)
+    [[ "${SURYA_BENCHMARK_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || fail "SURYA_BENCHMARK_SHA256 must pin inputs.json"
+    exec usnm-boinc surya benchmark-stage --manifest "$SHARE_DIR/surya-inputs/$SURYA_CAMPAIGN/inputs.json" \
+      --manifest-sha256 "$SURYA_BENCHMARK_SHA256" --root "$SURYA" \
+      --engine-image "${SURYA_ENGINE_IMAGE:?set SURYA_ENGINE_IMAGE}" \
+      --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
+      --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" ;;
   surya-stage)
     # No database or secrets: this step only reads the scan archive and LoC and writes the share.
     [[ "${SURYA_PAGES:-}" =~ ^[a-z0-9:_,+-]+$ ]] || fail "SURYA_PAGES must be group:lang:doc_id:batch[+batch...],..."
@@ -324,12 +333,10 @@ case "$step" in
     # No database or secrets: this step only talks to the datasets' publishers and writes the share.
     [ -f /usr/local/lib/usnm-boinc/gold-bundle.sh ] || fail "gold-bundle needs the bridge image"
     exec bash /usr/local/lib/usnm-boinc/gold-bundle.sh --share "$SHARE_DIR" --campaign "$GOLD_CAMPAIGN" ;;
-  gold-collect)
-    exec usnm-boinc gold collect --root "$GOLD" --project "$PROJ" \
-      --spool "${GOLD_SPOOL:?set GOLD_SPOOL}" --out "$GOLD/out" ;;
   gold-trust)
     # No database or secrets: reads this campaign's reports and writes the share's trust list.
     exec usnm-boinc gold trust --reports "$GOLD/out/reports.jsonl" \
+      --outcomes "$GOLD/out/native-outcomes.jsonl" \
       --max-cer "${GOLD_MAX_CER:?set GOLD_MAX_CER from campaign calibration}" \
       --manifest-sha256 "${GOLD_MANIFEST_SHA256:?set GOLD_MANIFEST_SHA256 to the calibrated challenge}" \
       --language "${GOLD_LANGUAGE:?set GOLD_LANGUAGE to the calibrated source language}" \
@@ -339,7 +346,7 @@ esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
   [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
-  [ "$step" != gold-onboard ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ]; then
+  [ "$step" != gold-onboard ] && [ "$step" != gold-collect ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -464,7 +471,19 @@ case "$step" in
   surya-submit)
     stamp="$(mktemp)"
     rc=0
-    usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" || rc=$?
+    target_args=()
+    if [ -n "${SURYA_TARGET_HOST:-}" ]; then
+      [[ "$SURYA_TARGET_HOST" =~ ^[1-9][0-9]*$ ]] || fail "SURYA_TARGET_HOST must be positive"
+      target_args=(--target-host "$SURYA_TARGET_HOST")
+      case "${SURYA_GPU_PROBE:-0}" in
+        0) ;;
+        1) target_args+=(--gpu-probe) ;;
+        *) fail "SURYA_GPU_PROBE must be 0 or 1" ;;
+      esac
+    elif [ "${SURYA_GPU_PROBE:-0}" != 0 ]; then
+      fail "SURYA_GPU_PROBE requires SURYA_TARGET_HOST"
+    fi
+    usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" "${target_args[@]}" || rc=$?
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp"
     exit "$rc" ;;
@@ -482,6 +501,14 @@ case "$step" in
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp" "$PROJ/html/cache/f2/server_status.php_job_status" 2>/dev/null || true
     exit "$rc" ;;
+  gold-collect)
+    write_mycnf
+    usnm-boinc gold collect --root "$GOLD" --project "$PROJ" \
+      --spool "${GOLD_SPOOL:?set GOLD_SPOOL}" --out "$GOLD/out" \
+      --mysql-defaults-file "$mycnf" --mysql-ca-file /usr/local/share/usnm/mysql-ca.pem \
+      --database "$DB_NAME" --language "${GOLD_LANGUAGE:?set GOLD_LANGUAGE to the calibrated source language}" \
+      --profile "${GOLD_PROFILE:?set GOLD_PROFILE to the calibrated model profile}"
+    exit 0 ;;
   gold-submit)
     stamp="$(mktemp)"
     rc=0

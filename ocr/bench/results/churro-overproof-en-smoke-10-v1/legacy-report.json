@@ -1,0 +1,80 @@
+{
+  "by_source": {
+    "overproof-ca": {
+      "cer": 0.005339435545385202,
+      "cer_missing_as_empty": 0.005339435545385202,
+      "edits": 14,
+      "missing": 0,
+      "missing_chars": 0,
+      "reference_chars": 2622,
+      "samples": 10,
+      "scored": 10
+    }
+  },
+  "release": "v1.0.0",
+  "rows": [
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-013",
+      "reference_chars": 326
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-017",
+      "reference_chars": 240
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-022",
+      "reference_chars": 252
+    },
+    {
+      "edits": 3,
+      "id": "pub-overproof-ca-034",
+      "reference_chars": 243
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-039",
+      "reference_chars": 255
+    },
+    {
+      "edits": 1,
+      "id": "pub-overproof-ca-042",
+      "reference_chars": 306
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-044",
+      "reference_chars": 239
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-068",
+      "reference_chars": 269
+    },
+    {
+      "edits": 5,
+      "id": "pub-overproof-ca-073",
+      "reference_chars": 213
+    },
+    {
+      "edits": 0,
+      "id": "pub-overproof-ca-075",
+      "reference_chars": 279
+    }
+  ],
+  "rule": "legacy-ws-v1",
+  "subset": "overproof-en/smoke-10",
+  "subset_digest": "e4256f3e6c9ae9e0453e74d7b38c5c862e8265ab88a50ca95dd3fbfd8fd10576",
+  "total": {
+    "cer": 0.005339435545385202,
+    "cer_missing_as_empty": 0.005339435545385202,
+    "edits": 14,
+    "missing": 0,
+    "missing_chars": 0,
+    "reference_chars": 2622,
+    "samples": 10,
+    "scored": 10
+  }
+}

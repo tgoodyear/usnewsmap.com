@@ -71,7 +71,9 @@ for spec in "$root"/ocr/bench/v*/spec.json; do
   inputs="$WORK/inputs-$version"
   tarball="$WORK/usnm-ocr-bench-inputs-$version.tar"
   if [ ! -d "$inputs" ]; then
-    curl -fL --retry 4 --retry-connrefused -o "$tarball" "$INPUTS_BASE/usnm-ocr-bench-inputs-$version.tar" ||
+    inputs_url=$(jq -r --arg fallback "$INPUTS_BASE/usnm-ocr-bench-inputs-$version.tar" '(.inputs_url // $fallback)' "$spec")
+    [[ $inputs_url = https://* ]] || die "inputs URL must use HTTPS"
+    curl -fL --retry 4 --retry-connrefused -o "$tarball" "$inputs_url" ||
       die "could not download the inputs of $version"
     bad=$(tar -tvf "$tarball" | awk '
       substr($1, 1, 1) != "-" { print; next }

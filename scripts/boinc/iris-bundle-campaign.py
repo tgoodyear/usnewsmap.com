@@ -2,7 +2,7 @@
 """Host-9-only multi-crop (v2 bundle) re-run of an already-prepared Iris evaluation campaign (#736).
 
 Groups the crops of a prepared 100-crop campaign (iris-campaign.py prepare) into bundles for app
-version 1.1 so the bundle worker can be compared with the accepted 1.0 per-crop results on the same
+version 1.2 (bundles plus the persistent compile cache) so the bundle worker can be compared with the accepted 1.0 per-crop results on the same
 images. Evaluation only: never production OCR publication, never the gated 20,000-page set.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ import contract as c  # noqa: E402
 # collide with a v1 workunit or with the unsendable batch-105 units of the first submission.
 BATCH = 104
 SUFFIX = f"b{BATCH}"
-VERSION_NUM = 101  # publish-appver.sh: 100 * major + minor
+VERSION_NUM = 102  # publish-appver.sh: 100 * major + minor (1.2: persistent compile cache)
 DEFAULT_SIZE = 16
 
 

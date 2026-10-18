@@ -98,9 +98,51 @@ class SchedulerTests(unittest.TestCase):
         self.fake = Fake()
         self.saved = []
 
-    def tick(self):
+    def tick(self, *, drain=False):
         return batch.tick(self.config, self.state, self.fake,
-                          lambda: self.saved.append(copy.deepcopy(self.state)), NOW)
+                          lambda: self.saved.append(copy.deepcopy(self.state)), NOW, drain=drain)
+
+    def test_drain_does_not_allocate_or_dispatch(self):
+        event = self.tick(drain=True)
+        self.assertTrue(event["draining"])
+        self.assertTrue(event["backpressure"])
+        self.assertEqual(event["selected"], 0)
+        self.assertEqual(self.fake.actions, [])
+
+    def test_drain_collects_and_can_resume_same_allocation(self):
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.actions.clear()
+        event = self.tick(drain=True)
+        self.assertEqual(event["published"], 2)
+        self.assertEqual(event["selected"], 2)
+        self.assertEqual([action[0] for action in self.fake.actions], ["collect", "collect"])
+        self.assertFalse(self.tick()["draining"])
+        self.assertEqual(len(self.state["selected"]), 4)
+
+    def test_drain_preserves_unexported_and_reserved_allocations(self):
+        self.state["selected"] = {self.config["pages"][0]["page"]: NOW}
+        self.fake.rows = [record(self.config["pages"][1]["page"], 1)]
+        self.tick(drain=True)
+        self.assertEqual(len(self.state["selected"]), 2)
+        self.assertEqual(self.fake.actions, [])
+        self.assertEqual(self.fake.rows[0]["stage"], "reserved")
+
+    def test_drain_still_reports_uncertain_submissions(self):
+        self.fake.rows = [record(self.config["pages"][0]["page"], 1)]
+        self.fake.jobs["0" * 63 + "1"] = {"stage": "submitting", "spool": None}
+        with self.assertRaisesRegex(ValueError, "uncertain"):
+            self.tick(drain=True)
+        self.assertEqual(self.fake.actions, [])
+
+    def test_drain_does_not_bypass_trust_failure(self):
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.hold = True
+        with self.assertRaisesRegex(RuntimeError, "trust"):
+            self.tick(drain=True)
 
     def test_full_feed_collect_refill_and_replay(self):
         first = self.tick()
@@ -321,7 +363,19 @@ class SchedulerTests(unittest.TestCase):
             with patch.object(batch.subprocess, "run", side_effect=AssertionError("offline")), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory)]), 0)
+            output = io.StringIO()
+            with patch.object(batch.subprocess, "run", side_effect=AssertionError("offline")), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory),
+                                             "--drain"]), 0)
+            self.assertTrue(json.loads(output.getvalue())["draining"])
             self.assertFalse((directory / "state.json").exists())
+            with patch.object(batch.Transport, "lock", return_value=contextlib.nullcontext()), \
+                    patch.object(batch, "tick", return_value={"draining": True}) as tick, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory),
+                                             "--apply", "--drain"]), 0)
+            self.assertTrue(tick.call_args.kwargs["drain"])
             batch.save(directory / "state.json", {"config_sha256": "wrong"})
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory),

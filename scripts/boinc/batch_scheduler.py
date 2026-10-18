@@ -410,7 +410,7 @@ class QueueFeed:
             self.persist()
 
 
-def tick(config, state, transport, persist, now=None):
+def tick(config, state, transport, persist, now=None, *, drain=False):
     feed = QueueFeed(config, state, transport, persist) if config.get("source") == "queue" else None
     if feed:
         feed.restore()
@@ -479,7 +479,7 @@ def tick(config, state, transport, persist, now=None):
     require(not uncertain, "uncertain server submission blocks fresh allocation")
     held = sum(record["stage"] != "published" and
                bool(server.get(record["job"]["id"], {}).get("spool")) for record in owned.values())
-    if target and not held:
+    if target and not held and not drain:
         free = max(0, target - pending)
         if feed:
             feed.fill(min(config["batch_size"], free), selected)
@@ -524,6 +524,7 @@ def tick(config, state, transport, persist, now=None):
     persist()
     return {
         "event": "boinc_batch_tick", "schema_version": 1, "at": int(now), "plan": config["plan"],
+        "draining": drain,
         "active_hosts": snapshot["active_hosts"], "target_pending": target,
         "observed_pending": pending, "selected": len(selected), "published": published,
         "collection_backlog": held,
@@ -532,7 +533,7 @@ def tick(config, state, transport, persist, now=None):
         "oldest_pending_seconds": int(max((now - at for page, at in selected.items()
                                           if page not in owned or owned[page]["stage"] != "published"),
                                          default=0)),
-        "backpressure": target == 0 or pending >= target or held > 0,
+        "backpressure": drain or target == 0 or pending >= target or held > 0,
     }
 
 
@@ -542,12 +543,15 @@ def main(argv=None):
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--apply", action="store_true",
                         help="mutate the explicitly allocated feed; requires serialized operator approval")
+    parser.add_argument("--drain", action="store_true",
+                        help="collect existing results without selecting, exporting or submitting work")
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
         if not args.apply:
             print(json.dumps({"event": "boinc_batch_plan", "apply": False, "plan": config["plan"],
                               "source": config.get("source", "pages"),
+                              "draining": args.drain,
                               "allocated_pages": len(config["pages"]),
                               "max_pending": config["max_pending"], "config_sha256": digest(config)}))
             return 0
@@ -561,7 +565,7 @@ def main(argv=None):
                     "immutable allocation changed; drain/reconcile before an operator migration")
             transport = Transport(config, args.state_dir)
             with transport.lock():
-                event = tick(config, state, transport, lambda: save(path, state))
+                event = tick(config, state, transport, lambda: save(path, state), drain=args.drain)
             print(json.dumps(event, sort_keys=True))
         return 0
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:

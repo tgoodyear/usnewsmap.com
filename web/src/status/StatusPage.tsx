@@ -9,6 +9,7 @@ import { TERMS } from "./terms";
 import { Brand } from "../components/Brand";
 import { InTheIndex, Languages, OurOcr, Places, TheDatasets, VersionsSection, lastPublished } from "./DatasetSections";
 import { Bar, Stats, Table, Time, Unavailable } from "./parts";
+import { BoincSection } from "./BoincSection";
 
 const REFRESH_MS = 30_000;
 
@@ -50,8 +51,8 @@ export default function DatasetsPage() {
       <main className="status">
         <h1>Dataset details</h1>
         <p className="status-intro">
-          What the site searches, where its text comes from, and what is being added. The numbers are those of the
-          search index the site uses now, and the page refreshes every 30 seconds.
+          Searchable newspapers, text sources and work in progress. Index figures describe the version currently served,
+          not everything downloaded or processed.
         </p>
         {status.error && (
           <p className="notice notice--error" role="alert">
@@ -67,6 +68,7 @@ export default function DatasetsPage() {
         {s && <InTheIndex s={s} />}
         {s && <TheDatasets s={s} now={now} />}
         {s && <OurOcr s={s} now={now} />}
+        <BoincSection now={now} />
         {s && <Languages s={s} />}
         {s && <Places s={s} />}
         {s && <InProgress s={s} now={now} versions={versions.data} />}

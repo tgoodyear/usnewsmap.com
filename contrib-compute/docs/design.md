@@ -107,8 +107,10 @@ choose it now. Notes:
   copied-project migration and Azure-chain acceptance. The pinned image's clients now
   require verified TLS; this does not prove old persistent project copies were upgraded.
   BOINC's root template and MySQL module expose `requireSecureTransport`, defaulting
-  to `false` (OFF). Explicit `true` maps to ON; normal provisioning omits the parameter
-  and cannot activate it implicitly. The server has private VNet access only. Enable
+  to `false` (OFF). Normal provisioning forwards the committed environment setting
+  `requireSecureTransport` (absent means false); production explicitly remains false.
+  A separately reviewed true setting maps to ON; activation is never implicit.
+  The server has private VNet access only. Enable
   enforcement only after the gates below and a separately coordinated #529 deployment.
   `scripts/boinc/patch-server-db-tls.py` patches the pinned source's Python
   `db_base`, **both** PHP connection paths, and C++ `DB_CONN`; CLI consumers pass
@@ -392,7 +394,9 @@ Per-unit consequences, using the unit prices above:
   hardware), so one core completes roughly 11 to 22 tasks an hour, and downloads about 50 to
   100 MB an hour. Scheduler contacts are about one per task.
 - Files holds the staged scans for `delete_delay_hours` (168 in the template) after
-  assimilation. The share quota is a parameter (`shareQuotaGb`, 200).
+  assimilation. The share quota is a parameter (`shareQuotaGb`, 200 GiB by default;
+  production explicitly permits 250 GiB). Check actual share usage before staging:
+  retained assessment inputs exhausted the former 200 GiB production limit.
 - The bridge job runs for seconds to minutes per cohort at 0.5 vCPU and 1 GiB, billed at the
   active rate for that time only.
 

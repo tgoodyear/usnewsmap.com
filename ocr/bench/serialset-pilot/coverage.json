@@ -1,0 +1,153 @@
+{
+  "annotation_gap_pages": 1,
+  "damage_taxonomy_status": "not formally annotated; observed visual features are descriptive only",
+  "format": "usnm-serialset-ocr-pilot-coverage/1",
+  "human_verified_pages": 3,
+  "limitations": [
+    "Selection is purposive and very small; counts are not estimates of corpus prevalence.",
+    "One dense comparative table page has no reference and is excluded from accuracy scoring.",
+    "Observed scan features are not mapped to severity labels; no damage claim is made for clean text regions.",
+    "All 3 scored pages come from 2 distinct serial numbers and are public evaluation data."
+  ],
+  "page_disjoint": true,
+  "pages": [
+    {
+      "annotation_status": "human-verified",
+      "coverage_strata": [
+        "single-column prose",
+        "pages with visible scan irregularities"
+      ],
+      "gap_reason": null,
+      "id": "serialset/00033-009-0042-p03",
+      "image": {
+        "bytes": 543073,
+        "path": "images/doc42-p03.jpg",
+        "sha256": "8addb0adf4f6d751314f80e6fcf489fd5cb3538811e4429e6d9d76e0e9938eef"
+      },
+      "image_height": 1725,
+      "image_width": 1000,
+      "layout": [
+        "single-column prose"
+      ],
+      "observed_visual_features": [
+        "light speckle and uneven scan tone; text remains legible"
+      ],
+      "package_id": "SERIALSET-00033_00_00-009-0042-0000",
+      "pdf_page": 3,
+      "reference": {
+        "bytes": 1942,
+        "path": "references/doc42-p03.txt",
+        "sha256": "2ed817ced2f774e0a6cff00035589874278a9edecf28f6d87a300d77cb79f715"
+      },
+      "source_page_id": "govinfo:SERIALSET-00033_00_00-009-0042-0000:pdf-page-3"
+    },
+    {
+      "annotation_status": "needs-human-verification",
+      "coverage_strata": [
+        "comparative or multi-column tables",
+        "pages with visible scan irregularities"
+      ],
+      "gap_reason": "No reference is committed: the dense two-sided tables and small vertical headings require independent human verification.",
+      "id": "serialset/00033-020-0053-p04",
+      "image": {
+        "bytes": 2607601,
+        "path": "images/doc53-p04.jpg",
+        "sha256": "926a4bfe6a93016fd397d2ea4801c83e7373f320b996d373993723a535cb7475"
+      },
+      "image_height": 3871,
+      "image_width": 2441,
+      "layout": [
+        "comparative two-sided tables",
+        "dense vertical column headings"
+      ],
+      "observed_visual_features": [
+        "irregular or clipped upper-left sheet edge; small print and narrow table columns"
+      ],
+      "package_id": "SERIALSET-00033_00_00-020-0053-0000",
+      "pdf_page": 4,
+      "reference": null,
+      "source_page_id": "govinfo:SERIALSET-00033_00_00-020-0053-0000:pdf-page-4"
+    },
+    {
+      "annotation_status": "human-verified",
+      "coverage_strata": [
+        "comparative or multi-column tables",
+        "pages with visible scan irregularities"
+      ],
+      "gap_reason": null,
+      "id": "serialset/00033-020-0053-p05",
+      "image": {
+        "bytes": 2431845,
+        "path": "images/doc53-p05.jpg",
+        "sha256": "723d7913b24391df001eb9e6818d34d0dee10e30cb52358028bb81aab7ff18bc"
+      },
+      "image_height": 2453,
+      "image_width": 3824,
+      "layout": [
+        "paired numeric tables",
+        "multi-column table"
+      ],
+      "observed_visual_features": [
+        "visible central seam or gutter shadow and uneven tone; tabular text remains legible"
+      ],
+      "package_id": "SERIALSET-00033_00_00-020-0053-0000",
+      "pdf_page": 5,
+      "reference": {
+        "bytes": 1560,
+        "path": "references/doc53-p05.txt",
+        "sha256": "6d4de2d6a49e4217f3fc5c9dff079d50983018df3d006108db8f0f58cf529aa6"
+      },
+      "source_page_id": "govinfo:SERIALSET-00033_00_00-020-0053-0000:pdf-page-5"
+    },
+    {
+      "annotation_status": "human-verified",
+      "coverage_strata": [
+        "single-column prose"
+      ],
+      "gap_reason": null,
+      "id": "serialset/13993-021-0183-p03",
+      "image": {
+        "bytes": 622463,
+        "path": "images/doc183-p03.jpg",
+        "sha256": "ab071ce2ede0f78639ae902a972bbb765ddb5438327a23166910554f8a4abb2f"
+      },
+      "image_height": 1776,
+      "image_width": 1077,
+      "layout": [
+        "single-column numbered prose"
+      ],
+      "observed_visual_features": [
+        "no obvious text-obscuring scan defect in this page"
+      ],
+      "package_id": "SERIALSET-13993_00_00-021-0183-0000",
+      "pdf_page": 3,
+      "reference": {
+        "bytes": 2948,
+        "path": "references/doc183-p03.txt",
+        "sha256": "6ec5479ef0e307ba5681edbdfd54d52d46010703e82b88ecbd15739e3976b943"
+      },
+      "source_page_id": "govinfo:SERIALSET-13993_00_00-021-0183-0000:pdf-page-3"
+    }
+  ],
+  "retrieved_at": "2026-10-18",
+  "sample_pages": 4,
+  "selection": "selection.json",
+  "source_documents": 3,
+  "strata": {
+    "comparative or multi-column tables": {
+      "human_verified": 1,
+      "needs_human_verification": 1,
+      "pages": 2
+    },
+    "pages with visible scan irregularities": {
+      "human_verified": 2,
+      "needs_human_verification": 1,
+      "pages": 3
+    },
+    "single-column prose": {
+      "human_verified": 2,
+      "needs_human_verification": 0,
+      "pages": 2
+    }
+  }
+}

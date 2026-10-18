@@ -29,13 +29,13 @@ use axum::Router;
 use tower_http::services::ServeDir;
 
 /// Headers on every response (the site's and the API's). `connect-src`
-/// allows the same-origin API and the OpenFreeMap basemap.
+/// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
 pub const SECURITY_HEADERS: [(&str, &str); 4] = [
     (
         "content-security-policy",
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob: https:; font-src 'self' https://tiles.openfreemap.org; \
-         connect-src 'self' https://tiles.openfreemap.org; \
+         connect-src 'self' https://tiles.openfreemap.org https://boinc.usnewsmap.com; \
          worker-src 'self' blob:; child-src blob:; object-src 'none'; base-uri 'self'; \
          form-action 'self'",
     ),
@@ -311,7 +311,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connect_src_allows_only_the_api_and_basemap() {
+    fn connect_src_allows_only_the_api_basemap_and_boinc() {
         let csp = SECURITY_HEADERS
             .iter()
             .find(|(name, _)| *name == "content-security-policy")
@@ -322,7 +322,10 @@ mod tests {
             .map(str::trim)
             .find(|directive| directive.starts_with("connect-src "))
             .unwrap();
-        assert_eq!(connect, "connect-src 'self' https://tiles.openfreemap.org");
+        assert_eq!(
+            connect,
+            "connect-src 'self' https://tiles.openfreemap.org https://boinc.usnewsmap.com"
+        );
         assert!(!csp.contains("blob.core.windows.net"));
     }
 

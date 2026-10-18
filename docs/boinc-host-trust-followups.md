@@ -53,11 +53,11 @@ changed.
 original-file set** from the existing `gold prepare` command. Each prepared remote
 must be present under `cache/<remotes[*].name>` and match its size, MD5 and SHA-256.
 Metadata and the bundle alone are not sufficient for mirrored gold submission.
-`trust` is the existing calibrated v2 list: no default CER or
+`trust` is the existing calibrated v5 list: no default CER or
 new approval is invented. Only `onboard` accepts a missing list or the
-uncalibrated v1 list, and treats either as trusting no host: issuing gold
+uncalibrated v1-v4 list, and treats either as trusting no host: issuing gold
 publishes nothing, and its reports are what calibrates the first threshold.
-Spot checks and publication still require a valid v2 list. `jobs_root` is the server-local root containing the
+Spot checks and publication still require a valid v5 list. `jobs_root` is the server-local root containing the
 exported OCR job journals and staged inputs, not the controller root.
 
 ## Automatically discover and issue first gold
@@ -106,8 +106,22 @@ not evade uncertainty by choosing another controller root. The controller's
 kernel lock serializes its own dispatches.
 
 Issuance does not promote trust or periodically recalibrate it. Review gold
-reports and rebuild trust through the calibrated workflow; later failures revoke
-trust.
+reports and rebuild trust from validated canonical reports plus the bounded
+`native-outcomes.jsonl` snapshot. Only terminal BOINC `CLIENT_ERROR` results
+(`server_state=5`, `outcome=3`) that are not cancellations (`exit_status` is
+neither 202 `EXIT_ABORTED_BY_PROJECT` nor 203 `EXIT_ABORTED_VIA_GUI`) and have a
+nonzero server host ID and server receive time revoke eligibility, and only in the
+same image/challenge/language/profile/PSM/DPI scope. Previously captured bounded
+evidence is retained across recollection so BOINC's result purge cannot erase a
+terminal event. Collection records results only after the workunit's server-side
+assimilation is done (`assimilate_state=2`), stores the authoritative result count,
+and requires every counted result to be present and over; trust rebuild validates
+the saved count again. An earlier non-final snapshot cannot be upgraded after
+retries may have been issued and purged. A marker with unresolved native results
+fails collection. This records an execution failure, not measured OCR quality.
+Server cancellation, send failure, no reply, validator error, a missing spool
+artifact or a result without authoritative host/time does not automatically
+revoke. See [the Gold trust policy](boinc.md#host-trust-for-usnm_ocr).
 In production, the bridge's `gold-onboard` step runs one pass with the bridge's
 own database credentials, the campaign's prepared inputs and
 `$SHARE_DIR/gold/trust.json` (when there); the controller root is `$SHARE_DIR/host-trust`:
