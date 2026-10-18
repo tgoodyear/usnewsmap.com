@@ -69,7 +69,7 @@ Sources checked (2026-10-18):
 The comparison uses the existing #738 `bench-score` implementation and its two rules on the same
 three verified full pages. Both systems produced all three outputs. The human reference subset
 has digest `8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382`; the complete
-pilot file-set digest is `1d6567cb7efb375ed0a3eb39609c80479cf8bf0b43e6ffa4aa37dd72b0c07a3d`.
+pilot file-set digest is `aaeb190faebadc563e5350cb5319ff727239527910e8db73f1906cfeb09c2181`.
 
 | OCR output             | Rule           | Edits / reference chars |    CER | Missing |
 | ---------------------- | -------------- | ----------------------: | -----: | ------: |
@@ -92,8 +92,9 @@ include layout/order mismatch as well as recognition errors, and are not a clean
 engine comparison. No masks or alternate layout metric were introduced. Page 4's OCR outputs are
 retained for inspection but excluded from scoring because no ground truth was verified.
 The four exact score reports are committed next to the pilot outputs; they record page-level edits
-and denominators. `reports/binding.json` pins the input manifest, subset, scorer implementation,
-OCR output hashes, and report hashes; `--build` invalidates stale reports and `--verify` rejects
+and denominators. `reports/binding.json` pins the input manifest, subset, scorer implementation
+(including the local `usnm-ocr-quality` sources and manifest), OCR output hashes, and report hashes;
+`--build` invalidates stale reports and `--verify` rejects
 results that do not bind to the current references and outputs. Whitespace-normalized versus raw
 scores are both retained per #738 convention.
 

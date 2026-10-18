@@ -273,12 +273,23 @@ def expected_sums():
     return "".join(f"{sha((PILOT / name).read_bytes())}  {name}\n" for name in files_under(PILOT))
 
 
+def score_implementation_paths():
+    paths = [
+        ROOT / "Cargo.toml",
+        ROOT / "Cargo.lock",
+        ROOT / "crates/usnm-ocr-survey/Cargo.toml",
+        ROOT / "crates/usnm-ocr-quality/Cargo.toml",
+        ROOT / "scripts/ocr-bench/serialset-pilot.py",
+    ]
+    for crate in ("usnm-ocr-survey", "usnm-ocr-quality"):
+        paths.extend((ROOT / f"crates/{crate}/src").rglob("*.rs"))
+    return sorted(paths)
+
+
 def score_implementation_sha256():
-    paths = [ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "crates/usnm-ocr-survey/Cargo.toml"]
-    paths.extend(sorted((ROOT / "crates/usnm-ocr-survey/src").rglob("*.rs")))
     rows = "".join(
         f"{sha(path.read_bytes())}  {path.relative_to(ROOT).as_posix()}\n"
-        for path in paths
+        for path in score_implementation_paths()
     )
     return sha(rows.encode("utf-8"))
 
