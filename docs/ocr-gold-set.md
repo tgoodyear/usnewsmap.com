@@ -209,8 +209,9 @@ emulation also matched those counts (report SHA-256
 `c17ff88f1051623b5f71879981b07b8d8a900e08771f751b8536522a1c1baf41`);
 it is not a substitute for the actual Linux BOINC result.
 
-At `2026-10-17T07:19:56Z`, the normal local production mutex, all-six-idle
-preflight and infinite controller lease guarded the global trust promotion.
+At `2026-10-17T07:19:56Z`, the normal local production mutex, per-job idle
+preflight (historically all-six-idle before [#856](boinc-start-guard.md#scope-boundaries-and-per-resource-deploy-gates))
+and infinite controller lease guarded the global trust promotion.
 Native receipts and the unchanged old policy were rechecked before publishing.
 `/project/gold/current247c-scope-eng-20261017/` retains the before-policy
 snapshot, generated candidate and promotion receipt. The actual shared

@@ -38,7 +38,12 @@ case "$*" in
   "containerapp job show"*) printf '%s\n' "$STUB_TEMPLATE" ;;
   "containerapp job update"*) ;;
   "containerapp job start"*) echo usnm-boinc-bridge-caj-prod-abc12 ;;
-  "containerapp job execution list"*) printf '%s' "${STUB_RUNNING:-}" ;;
+  "containerapp job execution list"*)
+    if [ -n "${STUB_RUNNING_JOB:-}" ]; then
+      if [[ "$*" == *"--name $STUB_RUNNING_JOB "* ]]; then printf '%s' "${STUB_RUNNING:-}"; fi
+    else
+      printf '%s' "${STUB_RUNNING:-}"
+    fi ;;
   "containerapp job execution show"*"--query properties.status"*) echo "${STUB_EXEC_STATUS:-Succeeded}" ;;
   "containerapp job execution show"*"properties.template"*)
     if [ -n "${STUB_EXEC_ENV:-}" ]; then printf '%s\n' "$STUB_EXEC_ENV"
@@ -678,6 +683,35 @@ class StartBridge(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("still running usnm-boinc-bridge-caj-prod-old11", r.stderr)
         self.assertFalse([c for c in self.calls() if "job update" in c or "job start" in c])
+
+    def test_running_quality_or_bridge_job_blocks_only_matching_job_update(self):
+        r = self.run_script("--step", "register-apps",
+                            STUB_RUNNING_JOB="usnm-boinc-quality-caj-prod",
+                            STUB_RUNNING="usnm-boinc-quality-caj-prod-q1\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        base = {"AZURE_CLIENT_ID": "client-2", "HANDOFF_URL": "https://x.blob.core.windows.net/boinc-handoff",
+                "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated",
+                "REFERENCE_URL": "https://d/reference", "OUT_URL": "https://x/ocr-out"}
+        tmpl = json.dumps({"containers": [{"name": "handoff", "env": [{"name": k, "value": v} for k, v in base.items()]}]})
+        settings_home = os.path.join(self.tmp, "settings-conflict")
+        env_dir = os.path.join(settings_home, "prod")
+        os.makedirs(env_dir)
+        with open(os.path.join(env_dir, ".env"), "w") as f:
+            f.write(f'AZURE_SUBSCRIPTION_ID="{SUB}"\n')
+            f.write('AZURE_RESOURCE_GROUP="rg-usnm-prod"\n')
+            f.write('BOINC_HANDOFF_JOB="usnm-boinc-handoff-caj-prod"\n')
+        r_handoff = self.run_script(
+            "--target", "handoff", "--step", "collect", "--var", "JOB_ID=" + "a" * 64,
+            STUB_TEMPLATE=tmpl, STUB_SUB=SUB, USNM_SETTINGS_HOME=settings_home,
+            STUB_RUNNING_JOB="usnm-boinc-bridge-caj-prod",
+            STUB_RUNNING="usnm-boinc-bridge-caj-prod-old11\n")
+        self.assertEqual(r_handoff.returncode, 0, r_handoff.stderr)
+        r_bridge = self.run_script(
+            "--target", "bridge", "--step", "register-apps",
+            STUB_RUNNING_JOB="usnm-boinc-bridge-caj-prod",
+            STUB_RUNNING="usnm-boinc-bridge-caj-prod-old11\n")
+        self.assertEqual(r_bridge.returncode, 1)
+        self.assertIn("still running usnm-boinc-bridge-caj-prod-old11", r_bridge.stderr)
 
     def test_fails_when_the_execution_has_another_runs_settings(self):
         r = self.run_script("--step", "register-apps",
@@ -1599,6 +1633,18 @@ esac
         release = next(i for i, c in enumerate(calls) if c.startswith("storage blob lease release"))
         self.assertEqual(len(lists), 2)
         self.assertLess(lists[-1], release)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_wait_mins_releases_remote_lease_before_status_poll(self):
+        result = self.run_script("--step", "register-apps", "--wait-mins", "5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        release = next(i for i, c in enumerate(calls) if c.startswith("storage blob lease release"))
+        status_polls = [i for i, c in enumerate(calls) if "--query properties.status" in c]
+        self.assertEqual(len(status_polls), 2)
+        self.assertLess(status_polls[0], release)
+        self.assertLess(release, status_polls[1])
+        self.assertEqual(sum(c.startswith("storage blob lease release") for c in calls), 1)
         self.assertFalse((self.remote / "held").exists())
 
     def test_release_failure_is_reported_and_local_mutex_is_cleaned(self):
