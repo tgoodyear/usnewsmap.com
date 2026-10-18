@@ -111,6 +111,11 @@ python3() {
 
 
 class LogsFrontendRetry(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.dict(os.environ, {"LOG_ANALYTICS_QUERY_HOST": "westus2.api.loganalytics.io"})
+        patch.start()
+        self.addCleanup(patch.stop)
+
     @classmethod
     def setUpClass(cls):
         spec = importlib.util.spec_from_file_location("logs_client", Path(HERE, "log_analytics.py"))
@@ -151,8 +156,10 @@ class LogsFrontendRetry(unittest.TestCase):
             self.response(403, {"error": {"code": "InsufficientAccessError"}}),
             self.response(200, success)])
         self.assertEqual(result[:4], (success, [
-            {"attempt": 1, "status": 403, "via": "frontend", "requestId": "request"},
-            {"attempt": 2, "status": 200, "via": "frontend", "requestId": "request"}], 2, 1))
+            {"attempt": 1, "status": 403, "via": "frontend", "requestId": "request",
+             "host": "westus2.api.loganalytics.io"},
+            {"attempt": 2, "status": 200, "via": "frontend", "requestId": "request",
+             "host": "westus2.api.loganalytics.io"}], 2, 1))
         self.assertNotIn("not-a-real-token", result[4])
 
     def test_partial_response_is_not_success(self):
@@ -228,6 +235,45 @@ class LogsFrontendRetry(unittest.TestCase):
                 self.client.query(SUB, "print 1", token="fake")
             sleep.assert_not_called()
 
+    def test_host_derivation_from_workspace_metadata(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(self.client.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout='["westus2"]')
+            self.assertEqual(self.client.query_host(SUB.upper(), subscription=SUB),
+                             "westus2.api.loganalytics.io")
+            self.assertIn(f"[?customerId=='{SUB}'].location", run.call_args.args[0])
+            self.assertIn("--subscription", run.call_args.args[0])
+
+    def test_explicit_host_and_location_and_arc_without_az(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(self.client.subprocess, "run") as run:
+            self.assertEqual(self.client.query_host(SUB, location="westus2", identity="arc"),
+                             "westus2.api.loganalytics.io")
+            self.assertEqual(self.client.query_host(SUB, host="eastus.api.loganalytics.io"),
+                             "eastus.api.loganalytics.io")
+            for host in ("evil.example", "https://westus2.api.loganalytics.io", "api.loganalytics.io/"):
+                with self.assertRaises(self.client.QueryError):
+                    self.client.query_host(SUB, host=host)
+            with self.assertRaises(self.client.QueryError):
+                self.client.query_host(SUB, identity="arc")
+            run.assert_not_called()
+
+    def test_regional_exhaustion_falls_back_within_six_attempts(self):
+        failure = self.response(403, {"error": {"code": "InsufficientAccessError"}})
+        result = self.run_query([failure] * 5 + [
+            self.response(200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual([x["host"] for x in result[1]],
+                         ["westus2.api.loganalytics.io"] * 5 + ["api.loganalytics.io"])
+        self.assertEqual(result[2], 6)
+
+    def test_regional_dns_failure_falls_back_immediately(self):
+        error = self.client.urllib.error.URLError(self.client.socket.gaierror("no DNS"))
+        result = self.run_query([error, self.response(
+            200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual([x["host"] for x in result[1]],
+                         ["westus2.api.loganalytics.io", "api.loganalytics.io"])
+        self.assertEqual(result[3], 0)
+
 
 class WorkbookValidation(unittest.TestCase):
     def load_validator(self):
@@ -247,7 +293,7 @@ class WorkbookValidation(unittest.TestCase):
         result = {"tables": [{"columns": [{"name": "Log_s"}, {"name": "Count"}],
                               "rows": [["private log contents", 7]]}]}
         positive = {"tables": [{"columns": [{"name": "QueryRouteControl"}], "rows": [[1]]}]}
-        with mock.patch("sys.argv", ["validator", "--workspace", SUB]), \
+        with mock.patch("sys.argv", ["validator", "--workspace", SUB, "--location", "westus2"]), \
                 mock.patch.object(validator.log_analytics, "access_token", return_value="fake"), \
                 mock.patch.object(validator.log_analytics, "query",
                                   side_effect=[(positive, [])] + [(result, [])] * 9) as query, \
@@ -266,7 +312,7 @@ class WorkbookValidation(unittest.TestCase):
 
     def test_failure_is_not_zero_rows(self):
         validator = self.load_validator()
-        with mock.patch("sys.argv", ["validator", "--workspace", SUB]), \
+        with mock.patch("sys.argv", ["validator", "--workspace", SUB, "--location", "westus2"]), \
                 mock.patch.object(validator.log_analytics, "access_token", return_value="fake"), \
                 mock.patch.object(validator.log_analytics, "query",
                                   side_effect=validator.log_analytics.QueryError("denied")), \
@@ -276,6 +322,48 @@ class WorkbookValidation(unittest.TestCase):
         receipt = json.loads(out.getvalue())
         self.assertTrue(all(row["status"] == "failed" and "tables" not in row
                             for row in receipt["panels"]))
+
+
+class LogsCallerSubscriptions(unittest.TestCase):
+    def test_environment_shell_callers_forward_subscription(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("scripts/lib", "scripts/ja-ocr", "ops/queries", "bin"):
+                (root / name).mkdir(parents=True)
+            (root / "settings.env").write_text("fixture\n")
+            (root / "ops/queries/fixture.kql").write_text("print 1")
+            (root / "scripts/lib/env.sh").write_text(
+                'ENV_FILE=settings.env\n'
+                'aget() { case "$1" in AZURE_SUBSCRIPTION_ID) echo selected-subscription ;; '
+                '*) echo workspace-guid ;; esac; }\n')
+            stub = root / "bin/python3"
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CALLER_LOG"\n'
+                            'echo \'{"tables":[{"columns":[],"rows":[]}]}\'\n')
+            stub.chmod(0o755)
+            for script, args in (
+                ("logs.sh", ["--env", "prod", "--query-name", "fixture"]),
+                ("ja-ocr/quality-rows.sh", ["--env", "prod", "--execution",
+                                          "usnm-jaocr-caj-prod-fixture"])):
+                target = root / "scripts" / script
+                shutil.copy(Path(HERE, script), target)
+                log = root / "arguments"
+                result = subprocess.run(
+                    ["bash", str(target), *args], cwd=root, text=True, capture_output=True,
+                    env={**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
+                         "CALLER_LOG": str(log), "AZURE_SUBSCRIPTION_ID": "wrong-default"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                values = log.read_text().splitlines()
+                self.assertEqual(values[values.index("--subscription") + 1], "selected-subscription")
+
+    def test_cluster_report_forwards_selected_subscription(self):
+        spec = importlib.util.spec_from_file_location("cluster_report", Path(HERE, "qwcluster-report.py"))
+        report = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(report)
+        with mock.patch.object(report.subprocess, "run") as run:
+            run.return_value = mock.Mock(stdout='{"tables":[{"columns":[],"rows":[]}]}', stderr="")
+            report.log_query(SUB, "print 1", "P1D", "selected-subscription")
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("--subscription") + 1], "selected-subscription")
 
 
 class StartBridge(unittest.TestCase):
