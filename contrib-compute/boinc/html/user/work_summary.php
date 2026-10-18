@@ -21,8 +21,15 @@ try {
         throw new RuntimeException("Summary cache busy or unavailable");
     }
     $cached = stream_get_contents($file);
-    $data = $cached ? json_decode($cached, true, 512, JSON_THROW_ON_ERROR) : null;
-    if (!$data || time() - strtotime($data["updated_at"]) >= 120) {
+    $data = $cached ? json_decode($cached, true) : null;
+    $timestamp = is_array($data) && is_string($data["updated_at"] ?? null)
+        ? strtotime($data["updated_at"]) : false;
+    if ($cached && (!is_array($data) || ($data["schema"] ?? null) !== 1 ||
+            !is_array($data["apps"] ?? null) || $timestamp === false)) {
+        error_log("BOINC work summary: invalid cache; refreshing from database");
+        $data = null;
+    }
+    if (!$data || time() - $timestamp >= 120) {
         $db = BoincDb::get();
         if (!$db) {
             throw new RuntimeException("Summary database unavailable");

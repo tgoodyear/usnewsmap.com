@@ -110,7 +110,7 @@ export function BoincSection({ now }: { now: number }) {
             caption="BOINC tasks by application"
             head={["Work", "Ready to send", "In progress", "Completed and validated"]}
             numeric={[1, 2, 3]}
-            empty="No tasks are recorded in the current BOINC database."
+            empty="No ready, in-progress or completed-and-validated tasks are currently recorded."
             rows={(active ?? []).map((app) => [
               LABELS[app.name] ?? app.name,
               count(app.ready),

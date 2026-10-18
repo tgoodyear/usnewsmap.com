@@ -83,6 +83,15 @@ class SummaryRows {
         data, _ = self.run_endpoint()
         self.assertEqual(len(data["apps"]), 2)
 
+    def test_invalid_cache_recovers_under_the_lock(self):
+        for cached in ('{"schema":1,', '{"schema":1,"apps":[]}', 'null'):
+            with self.subTest(cached=cached):
+                (self.user.parent / "cache.json").write_text(cached)
+                data, errors = self.run_endpoint()
+                self.assertEqual(len(data["apps"]), 2)
+                self.assertIn("invalid cache; refreshing from database", errors)
+                self.assertNotIn("HTTP:503", errors)
+
     def test_concurrent_refresh_is_unavailable_not_a_second_query(self):
         import fcntl
         with (self.user.parent / "cache.json").open("w") as file:

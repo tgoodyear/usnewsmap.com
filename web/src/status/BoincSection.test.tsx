@@ -53,7 +53,17 @@ describe("BOINC summary", () => {
   it("distinguishes a valid zero report from unavailable counts", async () => {
     show({ ...summary, apps: [] });
     expect(await screen.findByText("0 ready to send")).toBeTruthy();
-    expect(screen.getByText("No tasks are recorded in the current BOINC database.")).toBeTruthy();
+    expect(
+      screen.getByText("No ready, in-progress or completed-and-validated tasks are currently recorded."),
+    ).toBeTruthy();
+  });
+
+  it("does not call the database empty when applications have only undisplayed task states", async () => {
+    show({ ...summary, apps: [{ name: "usnm_qwen", ready: 0, in_progress: 0, validated: 0 }] });
+    expect(
+      await screen.findByText("No ready, in-progress or completed-and-validated tasks are currently recorded."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/database.*empty|no tasks are recorded/i)).toBeNull();
   });
 
   it("marks old readings as out of date", async () => {
