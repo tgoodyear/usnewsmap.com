@@ -62,15 +62,17 @@ def azure_blob_url_and_headers(url: str, extra_headers: dict | None = None) -> t
     headers = {"User-Agent": "usnewsmap-quality/1.3"}
     if extra_headers:
         headers.update(extra_headers)
-    if ".blob.core.windows.net/" in url:
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    if host == "blob.core.windows.net" or host.endswith(".blob.core.windows.net"):
         base, sep, qs = url.partition("?")
         qs = qs.strip("&?")
         if "sv=" in qs:
             return f"{base}?{qs}", headers
         clean_url = f"{base}?{qs}" if qs else base
-        tok = get_storage_bearer_token(for_curated=("stusnmdffapzy." in base))
+        tok = get_storage_bearer_token(for_curated=(host == "stusnmdffapzy.blob.core.windows.net"))
         if tok:
-            headers["Authorization"] = f"Bearer {tok}"
+            headers["Authorization"] = "Bearer " + tok
             headers["x-ms-version"] = "2021-08-06"
         return clean_url, headers
     return url, headers
