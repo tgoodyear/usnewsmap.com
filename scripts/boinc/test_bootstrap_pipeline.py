@@ -172,9 +172,11 @@ class PipelineTests(unittest.TestCase):
         title = "boinc-worker (bootstrap-" + self.p.state["id"] + ")"
         build = {"databaseId": 123, "displayTitle": title, "status": "completed", "conclusion": "success", "headSha": "a" * 40}
         for changes, error in (({"status": "in_progress"}, pipeline.Blocked), ({"conclusion": "failure"}, pipeline.PipelineError)):
+            self.p.state.pop("worker_run", None)
             with patch.object(self.p, "gh", return_value=json.dumps([{**build, **changes}])):
                 with self.assertRaises(error):
                     self.p.worker(self.work)
+        self.p.state.pop("worker_run", None)
         with patch.object(self.p, "gh", return_value=json.dumps([build, build])):
             with self.assertRaisesRegex(pipeline.PipelineError, "ambiguous"):
                 self.p.worker(self.work)
@@ -183,6 +185,15 @@ class PipelineTests(unittest.TestCase):
             self.p.worker(self.work)
         public.assert_called_once_with("a" * 40)
         self.assertEqual(self.p.state["worker_build"], 123)
+
+    def test_worker_resume_uses_persisted_run_id_not_truncated_listing(self):
+        self.p.state["worker_run"] = 123
+        build = {"databaseId": 123, "displayTitle": "boinc-worker (bootstrap-" + self.p.state["id"] + ")",
+                 "status": "in_progress", "conclusion": "", "headSha": "a" * 40}
+        with patch.object(self.p, "gh", return_value=json.dumps(build)) as gh:
+            with self.assertRaises(pipeline.Blocked):
+                self.p.worker(self.work)
+        self.assertEqual(gh.call_args.args[:3], ("run", "view", "123"))
 
     def test_review_rejects_non_artifact_configuration_changes(self):
         baseline = settings()
@@ -259,6 +270,92 @@ class PipelineTests(unittest.TestCase):
             (self.directory / "acceptance.json").write_text(json.dumps(bad))
             with self.assertRaisesRegex(pipeline.PipelineError, "evidence failed"):
                 self.p.acceptance(self.work)
+
+    def test_end_to_end_real_git_with_fake_provision_sign_publish_and_acceptance(self):
+        repo = self.directory / "fixture-repo"
+        repo.mkdir()
+        def git(*argv, cwd=repo):
+            if argv[0] == "push":
+                return ""  # Never contact an actual remote from the integration fixture.
+            return pipeline.run(["git", *argv], cwd=cwd)
+        git("init", "-b", "main")
+        git("config", "user.email", "fixture@example.invalid")
+        git("config", "user.name", "Offline Fixture")
+        initial = repo / self.p.settings
+        initial.parent.mkdir(parents=True)
+        initial.write_text(json.dumps(settings()))
+        scripts = repo / "scripts"
+        (scripts / "boinc").mkdir(parents=True)
+        fake = """#!/usr/bin/env python3
+import json
+from pathlib import Path
+import sys
+settings = Path('contrib-compute/infra/boinc/env/dev.json')
+value = json.loads(settings.read_text())
+name = Path(sys.argv[0]).name
+keys = ['server', 'bridge'] if name == 'build-boinc-images.sh' else ['appver'] if name == 'boinc-app-release.sh' else []
+if name == 'boinc-app-release.sh':
+    assert '--prepare-only' in sys.argv
+for key in keys:
+    value['images'][key] = 'example.azurecr.io/usnm-boinc-' + key + '@sha256:' + 'b' * 64
+if keys:
+    settings.write_text(json.dumps(value))
+"""
+        for name in ("provision-boinc.sh", "build-boinc-images.sh", "boinc-app-release.sh"):
+            script = scripts / name
+            script.write_text(fake)
+            script.chmod(0o755)
+        (scripts / "boinc/acceptance.py").write_text("""import json
+from pathlib import Path
+import sys
+args = sys.argv
+get = lambda name: args[args.index('--' + name) + 1]
+if '--dry-run' not in args:
+    major, minor = get('version').split('.')
+    release = dict(app=get('app'), version_num=int(major)*100+int(minor), platform=get('platform'), plan_class=get('plan-class'))
+    Path(get('evidence')).write_text(json.dumps(dict(accepted=True, cleanup_complete=True, release=release)))
+""")
+        git("add", ".")
+        git("commit", "-m", "offline fixture")
+        self.p.run = pipeline.run
+        dispatched = False
+        created = {}
+        def gh(*argv):
+            nonlocal dispatched
+            if argv[:2] == ("run", "list"):
+                return json.dumps([dict(databaseId=123, displayTitle="boinc-worker (bootstrap-" + self.p.state["id"] + ")", headSha=git("rev-parse", "main"), status="completed", conclusion="success")] if dispatched else [])
+            if argv[:2] == ("workflow", "run"):
+                dispatched = True
+                return ""
+            if argv[:2] == ("pr", "list"):
+                branch = argv[argv.index("--head") + 1]
+                return json.dumps([dict(number=created[branch], state="MERGED")] if branch in created else [])
+            if argv[:2] == ("pr", "create"):
+                branch = argv[argv.index("--head") + 1]
+                created[branch] = len(created) + 1
+                git("merge", "--ff-only", branch)
+                return "fake PR created and independently approved/merged"
+            if argv[:2] == ("pr", "view"):
+                return json.dumps(dict(baseRefName="main", reviewDecision="APPROVED", statusCheckRollup=[dict(conclusion="SUCCESS")]))
+            self.fail("unexpected external command: " + str(argv))
+        with patch.object(self.p, "git", side_effect=git), patch.object(self.p, "main", side_effect=lambda: git("rev-parse", "main")), patch.object(self.p, "preflight"), patch.object(self.p, "gh", side_effect=gh), patch.object(pipeline, "public_worker", return_value="ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "c" * 64):
+            for _ in range(8):
+                try:
+                    self.p.execute()
+                    break
+                except pipeline.Blocked:
+                    continue
+            else:
+                self.fail("offline pipeline never completed")
+        self.assertEqual(self.p.state["done"], list(pipeline.PHASES))
+        self.assertEqual(len(created), 2)
+        self.assertTrue(json.loads((self.directory / "acceptance.json").read_text())["accepted"])
+
+    def test_subprocess_preserves_git_porcelain_leading_columns(self):
+        process = Mock(returncode=0)
+        process.communicate.return_value = (" M settings.json\n", "")
+        with patch.object(pipeline.subprocess, "Popen", return_value=process):
+            self.assertEqual(pipeline.run(["git", "status"]), " M settings.json")
 
     def test_subprocess_failure_suppresses_secret_output(self):
         process = Mock(returncode=1)

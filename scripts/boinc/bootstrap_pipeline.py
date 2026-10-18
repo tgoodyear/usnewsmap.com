@@ -47,7 +47,7 @@ def run(argv, cwd=ROOT, timeout=14400):
         raise
     if process.returncode:
         raise PipelineError(f"{Path(argv[0]).name} failed (exit {process.returncode}); output suppressed")
-    return out.strip()
+    return out.rstrip("\n")
 
 
 def atomic(path, value):
@@ -195,9 +195,13 @@ class Pipeline:
     def worker(self, work):
         workflow = "boinc-qwen.yml" if self.config["app"] == "usnm_qwen" else "boinc-worker.yml"
         correlation = "bootstrap-" + self.state["id"]
-        runs = json.loads(self.gh("run", "list", "--workflow", workflow, "--event", "workflow_dispatch",
-                                 "--branch", "main", "--limit", "100", "--json",
-                                 "databaseId,displayTitle,headSha,status,conclusion"))
+        fields = "databaseId,displayTitle,headSha,status,conclusion"
+        known_run = self.state.get("worker_run")
+        if known_run:
+            runs = [json.loads(self.gh("run", "view", str(known_run), "--json", fields))]
+        else:
+            runs = json.loads(self.gh("run", "list", "--workflow", workflow, "--event", "workflow_dispatch",
+                                     "--branch", "main", "--limit", "100", "--json", fields))
         matching = [r for r in runs if r["displayTitle"] == workflow[:-4] + " (" + correlation + ")"]
         if len(matching) > 1:
             raise PipelineError("ambiguous worker workflow dispatch")
@@ -209,6 +213,8 @@ class Pipeline:
             self.gh("workflow", "run", workflow, "--ref", "main", "-f", "correlation=" + correlation)
             raise Blocked("worker build dispatched; awaiting terminal workflow result")
         build = matching[0]
+        self.state["worker_run"] = build["databaseId"]
+        self.save()
         if build["status"] != "completed":
             raise Blocked("worker build is still running")
         if build["conclusion"] != "success":
