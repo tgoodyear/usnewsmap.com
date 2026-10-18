@@ -148,14 +148,31 @@ def _aggregate_metrics(refs, hyps, ids, rule):
         totals["empty_outputs"] += status not in ("missing", "error") and text == ""
         page_id = ref.get("page_id") or identity
         title_id = ref.get("title_id") or page_id
-        items.append({"id": identity, "page_id": page_id,
-                      "title_id": title_id, "errors": errors,
-                      "reference_characters": len(reference), "cer": errors / max(1, len(reference)), "status": status})
+        items.append({"id": identity, "page_id": page_id, "title_id": title_id, "errors": errors,
+                      "substitutions": counts["substitutions"], "insertions": counts["insertions"],
+                      "deletions": counts["deletions"], "missing_outputs": status == "missing",
+                      "status_errors": status == "error", "truncated_outputs": status == "truncated",
+                      "empty_outputs": status not in ("missing", "error") and text == "",
+                      "reference_characters": len(reference),
+                      "cer": _ratio(errors, len(reference)), "status": status})
     return _metric_record(totals), items
 
 
-def _strata(refs, hyps, ids, rule):
-    result = {}
+def _metrics_from_items(items):
+    totals = Counter()
+    for item in items:
+        for field in ("substitutions", "insertions", "deletions", "reference_characters"):
+            totals[field] += item[field]
+        totals["samples"] += 1
+        totals["missing"] += item["missing_outputs"]
+        totals["errors"] += item["status_errors"]
+        totals["truncated"] += item["truncated_outputs"]
+        totals["empty_outputs"] += item["empty_outputs"]
+    return _metric_record(totals)
+
+
+def _strata(refs, items, ids):
+    result, by_id = {}, {item["id"]: item for item in items}
     for field in STRATA_FIELDS:
         groups = defaultdict(list)
         for identity in ids:
@@ -166,7 +183,7 @@ def _strata(refs, hyps, ids, rule):
                 raise ValueError(f"{field} must be a string or list of strings")
             for value in set(values or ["unlabelled"]):
                 groups[value].append(identity)
-        result[field] = {key: _aggregate_metrics(refs, hyps, members, rule)[0]
+        result[field] = {key: _metrics_from_items([by_id[identity] for identity in members])
                          for key, members in sorted(groups.items())}
     return result
 
@@ -186,7 +203,7 @@ def _boxes(regions):
             raise ValueError("regions require unique integer order, positive [x,y,width,height], and text")
         orders.add(order)
         result.append({"box": box, "order": order, "text": text})
-    return result
+    return sorted(result, key=lambda region: region["order"])
 
 
 def _iou(a, b):
@@ -204,8 +221,10 @@ def _region_matches(reference, hypothesis, threshold):
             overlap = _iou(ref["box"], hyp["box"])
             if overlap >= threshold:
                 candidates[i].append((overlap, j))
-    for edges in candidates.values():
-        edges.sort(key=lambda item: (-item[0], item[1]))
+    for i, edges in candidates.items():
+        edges.sort(key=lambda item: (-item[0],
+                                     abs(reference[i]["order"] - hypothesis[item[1]]["order"]),
+                                     hypothesis[item[1]]["order"]))
     hypothesis_to_reference = {}
 
     def augment(i, seen):
@@ -327,19 +346,21 @@ def _cluster_uncertainty(refs, baseline_items, candidate_items, field, seed, boo
         for position in (0, 1):
             item = by_system[position][identity]
             clusters[key][position]["errors"] += item["errors"]
-            clusters[key][position]["chars"] += max(1, item["reference_characters"])
+            clusters[key][position]["chars"] += item["reference_characters"]
     names = sorted(clusters)
-    deltas = [(c[1]["errors"] / c[1]["chars"]) - (c[0]["errors"] / c[0]["chars"])
-              for c in (clusters[name] for name in names)]
-    observed = sum(deltas) / len(deltas) if deltas else 0.0
+    eligible = [clusters[name] for name in names if clusters[name][0]["chars"] > 0 and clusters[name][1]["chars"] > 0]
+    deltas = [(cluster[1]["errors"] / cluster[1]["chars"]) -
+              (cluster[0]["errors"] / cluster[0]["chars"]) for cluster in eligible]
+    observed = sum(deltas) / len(deltas) if deltas else None
     rng, samples = random.Random(seed), []
-    for _ in range(bootstrap_samples):
+    for _ in range(bootstrap_samples if deltas else 0):
         samples.append(sum(deltas[rng.randrange(len(deltas))] for _ in deltas) / len(deltas))
     samples.sort()
     lo = samples[int(0.025 * (len(samples) - 1))] if samples else None
     hi = samples[int(0.975 * (len(samples) - 1))] if samples else None
-    return {"clusters": len(names), "macro_mean_cer_delta_candidate_minus_baseline": observed,
-            "ci95_percentile": [lo, hi], "bootstrap_samples": bootstrap_samples, "seed": seed}
+    return {"clusters": len(eligible), "excluded_zero_character_clusters": len(names) - len(eligible),
+            "macro_mean_cer_delta_candidate_minus_baseline": observed,
+            "ci95_percentile": [lo, hi], "bootstrap_samples": len(samples), "seed": seed}
 
 
 def compare_transcriptions(references, systems, *, rule="diplomatic-v1", adjudications=(),
@@ -360,22 +381,23 @@ def compare_transcriptions(references, systems, *, rule="diplomatic-v1", adjudic
             raise ValueError(f"output outside reference set for {name}: {min(unknown)}")
         metrics, items = _aggregate_metrics(refs, hyps, ids, rule)
         details[name] = {item["id"]: item for item in items}
-        scored[name] = {"transcription": metrics, "strata": _strata(refs, hyps, ids, rule),
+        scored[name] = {"transcription": metrics, "strata": _strata(refs, items, ids),
                         "page_regions": _region_metrics(refs, hyps, ids, rule)}
     baseline = next(iter(systems))
     base_items = list(details[baseline].values())
     page_counts = defaultdict(lambda: [0, 0])
     for item in base_items:
         page_counts[item["page_id"]][0] += item["errors"]
-        page_counts[item["page_id"]][1] += max(1, item["reference_characters"])
-    good_pages = {page for page, (errors, chars) in page_counts.items() if errors / chars <= good_page_cer_threshold}
+        page_counts[item["page_id"]][1] += item["reference_characters"]
+    good_pages = {page for page, (errors, chars) in page_counts.items()
+                  if chars > 0 and errors / chars <= good_page_cer_threshold}
     comparisons = {}
     for name in list(systems)[1:]:
         candidate_items = list(details[name].values())
         candidate_pages = defaultdict(lambda: [0, 0])
         for item in candidate_items:
             candidate_pages[item["page_id"]][0] += item["errors"]
-            candidate_pages[item["page_id"]][1] += max(1, item["reference_characters"])
+            candidate_pages[item["page_id"]][1] += item["reference_characters"]
         regressions = {page for page in good_pages
                        if candidate_pages[page][0] / candidate_pages[page][1] >
                        page_counts[page][0] / page_counts[page][1]}
@@ -430,9 +452,10 @@ def _search_metrics(documents, queries, k):
                     norm = tf + 1.2 * (1 - 0.75 + 0.75 * lengths[doc_id] / average_length)
                     score += idf * tf * 2.2 / norm
             scores[doc_id] = score
-        ranked = sorted((doc for doc in docs if scores[doc] > 0), key=lambda doc: (-scores[doc], doc))[:k]
+        full_ranking = sorted((doc for doc in docs if scores[doc] > 0), key=lambda doc: (-scores[doc], doc))
+        ranked = full_ranking[:k]
         positives = [doc for doc, grade in relevance.items() if grade > 0]
-        first = next((rank for rank, doc in enumerate(ranked, 1) if relevance.get(doc, 0) > 0), None)
+        first = next((rank for rank, doc in enumerate(full_ranking, 1) if relevance.get(doc, 0) > 0), None)
         dcg = sum((2 ** relevance.get(doc, 0) - 1) / math.log2(rank + 1) for rank, doc in enumerate(ranked, 1))
         ideal = sorted(relevance.values(), reverse=True)[:k]
         idcg = sum((2 ** grade - 1) / math.log2(rank + 1) for rank, grade in enumerate(ideal, 1))
@@ -468,11 +491,13 @@ def quality_cost_decision(baseline, candidate, *, baseline_cost, candidate_cost,
     base, cand = baseline["transcription"], candidate["transcription"]
     base_missing = (base["missing"] + base["errors"]) / base["samples"]
     cand_missing = (cand["missing"] + cand["errors"]) / cand["samples"]
-    cer_delta = (cand["cer"] or 0) - (base["cer"] or 0)
+    if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in (base["cer"], cand["cer"])):
+        raise ValueError("quality/cost decision requires defined baseline and candidate CER")
+    cer_delta = cand["cer"] - base["cer"]
     regression = candidate.get("good_page_regression_rate")
     values = (baseline_cost, candidate_cost, max_cer_delta, max_missing_rate_delta, max_good_page_regression_rate)
-    if any(not isinstance(x, (int, float)) or x < 0 for x in values):
-        raise ValueError("costs and preregistered quality margins must be nonnegative numbers")
+    if any(not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0 for x in values):
+        raise ValueError("costs and preregistered quality margins must be finite nonnegative numbers")
     gates = {"cer_within_margin": cer_delta <= max_cer_delta,
              "missing_error_rate_within_margin": cand_missing - base_missing <= max_missing_rate_delta,
              "good_page_regressions_within_margin": regression is not None and regression <= max_good_page_regression_rate}

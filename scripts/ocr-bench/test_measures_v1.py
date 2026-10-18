@@ -68,6 +68,17 @@ class MeasuresV1Tests(unittest.TestCase):
         self.assertEqual(region["transcription"]["reference_characters"], 11)
         self.assertEqual(region["transcription"]["deletions"], 6)
 
+    def test_region_metrics_are_invariant_to_json_array_order(self):
+        references = [{"id": "p", "reference": "alpha beta", "regions": [
+            {"box": [0, 0, 10, 10], "order": 1, "text": "beta"},
+            {"box": [0, 0, 10, 10], "order": 0, "text": "alpha"}]}]
+        outputs = {"engine": [{"id": "p", "text": "alpha beta", "regions": [
+            {"box": [0, 0, 10, 10], "order": 0, "text": "alpha"},
+            {"box": [0, 0, 10, 10], "order": 1, "text": "beta"}]}]}
+        region = measures.compare_transcriptions(references, outputs, bootstrap_samples=5)["systems"]["engine"]["page_regions"]
+        self.assertEqual(region["transcription"]["cer"], 0)
+        self.assertEqual(region["reconstruction"]["cross_region_contamination_count"], 0)
+
     def test_human_adjudication_requires_two_qualified_readers(self):
         refs = [{"id": "x", "reference": "long s", "page_id": "p"}]
         outs = {"engine": [{"id": "x", "text": "long f"}]}
@@ -116,6 +127,22 @@ class MeasuresV1Tests(unittest.TestCase):
         self.assertEqual(set(result["results"]["candidate"]["by_kind"]), {"name", "place", "date"})
         self.assertEqual(result["results"]["candidate"]["analyzer"], "nfkc-casefold-word-v1")
 
+    def test_uncertainty_uses_real_reference_characters_and_excludes_empty_clusters(self):
+        refs = [{"id": "nonempty", "reference": "x", "page_id": "p", "title_id": "t"}] + [
+            {"id": f"empty-{i}", "reference": "", "page_id": "p", "title_id": "t"} for i in range(50)]
+        base = [{"id": "nonempty", "text": "z"}] + [{"id": f"empty-{i}", "text": ""} for i in range(50)]
+        candidate = [{"id": "nonempty", "text": "x"}] + [{"id": f"empty-{i}", "text": ""} for i in range(50)]
+        result = measures.compare_transcriptions(refs, {"base": base, "candidate": candidate}, bootstrap_samples=20)
+        comparison = result["comparisons"]["candidate"]
+        self.assertEqual(comparison["baseline_good_pages"], 0)
+        self.assertEqual(comparison["paired_uncertainty_by_page"]["macro_mean_cer_delta_candidate_minus_baseline"], -1)
+        empty = [{"id": "empty", "reference": "", "page_id": "p", "title_id": "t"}]
+        zero = measures.compare_transcriptions(empty, {"base": [{"id": "empty", "text": "x"}],
+                                                       "candidate": [{"id": "empty", "text": ""}]}, bootstrap_samples=5)
+        ci = zero["comparisons"]["candidate"]["paired_uncertainty_by_page"]
+        self.assertEqual(ci["excluded_zero_character_clusters"], 1)
+        self.assertEqual(ci["ci95_percentile"], [None, None])
+
     def test_search_does_not_credit_documents_without_query_matches(self):
         queries = [{"id": "q", "query": "Mercy", "relevance": {"only": 1}}]
         result = measures.score_search({"system": [{"id": "only", "text": "Marcy"}]}, queries, k=5)
@@ -134,6 +161,13 @@ class MeasuresV1Tests(unittest.TestCase):
         result = measures.compare_transcriptions(refs, outputs, bootstrap_samples=5)
         self.assertEqual(result["systems"]["engine"]["page_regions"]["reconstruction"]["cross_region_contamination_count"], 0)
 
+    def test_reciprocal_rank_uses_relevant_rank_beyond_k(self):
+        query = [{"id": "q", "query": "mercy", "relevance": {"a": 0, "b": 1}}]
+        docs = [{"id": "a", "text": "mercy"}, {"id": "b", "text": "mercy"}]
+        score = measures.score_search({"system": docs}, query, k=1)["results"]["system"]
+        self.assertEqual(score["recall@1"], 0)
+        self.assertEqual(score["reciprocal_rank"], 0.5)
+
     def test_review_sample_is_stable_and_independent_of_order(self):
         first = measures.deterministic_review_sample(["c", "a", "b"], 2, "fixed-run")
         self.assertEqual(first, measures.deterministic_review_sample(["b", "c", "a"], 2, "fixed-run"))
@@ -147,6 +181,16 @@ class MeasuresV1Tests(unittest.TestCase):
             max_cer_delta=0.01, max_missing_rate_delta=0, max_good_page_regression_rate=0.1)
         self.assertFalse(decision["eligible"])
         self.assertFalse(decision["cost_better_after_quality_gates"])
+
+    def test_quality_cost_gate_rejects_undefined_cer(self):
+        refs = [{"id": "empty", "reference": ""}]
+        result = measures.compare_transcriptions(refs, {"baseline": [{"id": "empty", "text": ""}],
+                                                       "candidate": [{"id": "empty", "text": "x"}]})
+        with self.assertRaisesRegex(ValueError, "requires defined.*CER"):
+            measures.quality_cost_decision(result["systems"]["baseline"],
+                {**result["systems"]["candidate"], "good_page_regression_rate": 0}, baseline_cost=1,
+                candidate_cost=0.5, max_cer_delta=0, max_missing_rate_delta=0,
+                max_good_page_regression_rate=0)
 
     def test_rejects_outputs_outside_paired_reference_set(self):
         with self.assertRaisesRegex(ValueError, "outside reference set"):

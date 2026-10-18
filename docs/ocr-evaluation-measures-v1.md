@@ -59,7 +59,8 @@ as immutable inputs alongside the report; the scorer never rewrites them.
   accuracy over reference regions (unmatched reference regions count as omissions); `segmentation`
   reports region recall/coverage, precision and F1; `reconstruction` reports pairwise reading-order
   accuracy plus a cross-region contamination indicator. Geometry matching is deterministic
-  maximum-cardinality one-to-one matching at IoU >= 0.5, with overlap and IDs as stable tie-breaks.
+  maximum-cardinality one-to-one matching at IoU >= 0.5, with overlap and validated order values
+  as stable tie-breaks after canonicalizing regions by order.
   The contamination indicator counts a geometrically matched region only when another reference
   region has strictly smaller normalized edit distance than its assigned region (equal-distance
   ties do not count). It is a screening measure, not ground truth; inspect and human-adjudicate a
@@ -68,7 +69,8 @@ as immutable inputs alongside the report; the scorer never rewrites them.
 - Per-system CER and missing/error counts are reported overall and by the available language,
   script, damage and layout labels. Paired candidate-minus-baseline CER uncertainty is a seeded
   percentile bootstrap (2,000 replicates by default) over page clusters and separately title
-  clusters. The comparison also reports the rate of pages whose baseline CER is <= 2% and whose
+  clusters with nonzero reference text; zero-character clusters are counted and excluded from
+  undefined CIs. The comparison also reports the rate of pages whose baseline CER is <= 2% and whose
   candidate page CER is worse; pass an explicitly preregistered threshold to the library API when
   another “already-good” cutoff is appropriate. Small cluster counts yield wide/coarse intervals;
   report denominators, not only point estimates.
@@ -104,8 +106,9 @@ historical transcription. Retain the adjudication protocol and query set version
 Measure cost (e.g. actual dollars, joules, or wall time per **usable page**) independently; never
 assign published OCR zero cost or substitute GPU utilization for quality. Before a run, declare
 non-inferiority margins for CER, missing/error rate and regression rate on already-good pages.
-`quality_cost_decision(...)` applies those margins first and calls a candidate cost-better only if it
-passes every quality gate and has lower measured cost per usable page. Compare like units, hardware
+`quality_cost_decision(...)` requires defined CER for both systems, applies those margins first and
+calls a candidate cost-better only if it passes every quality gate and has lower measured cost per
+usable page. Compare like units, hardware
 scope and page definitions, and also inspect strata, truncation and retrieval results before
 selecting an engine. The margins are project policy, not universal defaults.
 
