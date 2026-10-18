@@ -143,3 +143,23 @@ and **ch99 / 1.3**
 `sha256:8db09402135495f1c9384c87e344586842632053fc01c57f72050f0168ebd2e2`.
 These supersede ch96/ch97 as publication candidates; old artifacts are retained.
 No version has yet been registered or dispatched by this continuation.
+
+
+### Four-round review-policy receipt
+
+PR #848 received four Copilot requests: round one had three findings (fixed),
+round two had two findings (fixed), round three returned a service error rather
+than a review, and round four identified the stock targeted-result naming shape.
+The fourth-round finding is now fixed: collection accepts the scheduler's
+numeric PID/timestamp/sequence components after the exact host-qualified prefix,
+with a regression using an authentic assignment-style suffix. It still rejects
+results from another target host.
+
+All allowed review requests are exhausted; no fifth request was made. The last
+completed review is yellow, not a merge authorization. The fixes are pushed for
+maintainer disposition, with CI tracked separately. No signed version was
+published, no campaign dispatched and no validator/assimilator inference results
+were produced. The corrected 1.2/1.3 signed artifacts remain prepared candidates;
+retired 1.0/1.1 and all live routing/settings are unchanged. No production claim,
+controller/start lease or GPU reservation is held. The observed existing quality
+job was preserved, not stopped to manufacture an idle publication window.

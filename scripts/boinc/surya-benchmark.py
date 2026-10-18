@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -124,8 +125,8 @@ def collect(root, seen, out, binary, intended_device):
         row, job = jobs[result["job_id"]]
         prefix = f"usnm_surya_{job['id']}_host{target_host}_"
         suffix = directory.name.removeprefix(prefix)
-        if (not directory.name.startswith(prefix) or not suffix.endswith("_3")
-                or not suffix.removesuffix("_3").isdigit()):
+        if (not directory.name.startswith(prefix)
+                or re.fullmatch(r"[0-9]+(?:_[0-9]+)*_3", suffix) is None):
             continue
         files = [directory / f"text-{mode}.txt" for mode in MODES] + [path, directory / "diag.txt"]
         subprocess.run([binary, "surya", "check", "--files", *map(str, files)], check=True)

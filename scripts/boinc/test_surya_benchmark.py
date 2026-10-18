@@ -41,14 +41,14 @@ class SuryaBenchmarkTests(unittest.TestCase):
                    "input": {"sha256": row["image_sha256"]}, "cpu_modes": ["tiled"], "gpu_modes": list(module.MODES)}
             (unit / "surya.json").write_bytes(module.encode(job))
             seen = Path(directory) / "seen"
-            result_dir = seen / "usnm_surya_job_host10_0_3"
+            result_dir = seen / "usnm_surya_job_host10_4321_1792340312_0_3"
             result_dir.mkdir(parents=True)
             result = {"job_id": "job", "engine": job["engine"], "runs": [
                 {"mode": "tiled", "device": "cuda", "outcome": "ok", "engine_ms": 123},
                 {"mode": "whole", "device": "cuda", "outcome": "timeout"}]}
             (result_dir / "result.json").write_bytes(module.encode(result))
             (result_dir / "text-tiled.txt").write_bytes(b"text\r\nwith\rnewline")
-            other = seen / "usnm_surya_job_host11_0_3"
+            other = seen / "usnm_surya_job_host11_4321_1792340312_0_3"
             other.mkdir()
             (other / "result.json").write_bytes(module.encode(result))
             with patch.object(module.subprocess, "run") as validator:
