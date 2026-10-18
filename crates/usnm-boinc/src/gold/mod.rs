@@ -283,20 +283,51 @@ pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
 #[cfg(all(test, unix))]
 mod command_tests {
     use super::*;
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+
+    fn executable(dir: &Path, script: &str) -> PathBuf {
+        let path = dir.join("engine");
+        let mut staged = tempfile::NamedTempFile::new_in(dir).unwrap();
+        writeln!(staged, "#!/bin/sh\n{script}").unwrap();
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        staged.as_file().sync_all().unwrap();
+        // Close before publishing the executable, not just before spawning it.
+        let staged = staged.into_temp_path();
+        std::fs::rename(&staged, &path).unwrap();
+        path
+    }
+
+    async fn fixture_command(
+        executable: &Path,
+        image: &Path,
+        timeout: Duration,
+    ) -> anyhow::Result<String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let result = command_text(executable, image, "eng", timeout).await;
+            // A different test's pre-exec child can inherit the staging writer
+            // across our close/rename. Retry only that spawn error, never a run.
+            if result.as_ref().err().is_some_and(|error| {
+                error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                    error.raw_os_error() == Some(rustix::io::Errno::TXTBSY.raw_os_error())
+                })
+            }) && Instant::now() < deadline
+            {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            return result;
+        }
+    }
 
     async fn invoke(script: &str, timeout: Duration) -> anyhow::Result<String> {
         let dir = tempfile::tempdir().unwrap();
-        let executable = dir.path().join("engine");
-        std::fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        command_text(
-            &executable,
-            Path::new("crop with spaces.png"),
-            "eng",
-            timeout,
-        )
-        .await
+        let executable = executable(dir.path(), script);
+        fixture_command(&executable, Path::new("crop with spaces.png"), timeout).await
     }
 
     #[tokio::test]
@@ -311,63 +342,78 @@ mod command_tests {
 
     #[tokio::test]
     async fn failures_never_report_output() {
-        assert_eq!(
-            invoke(
+        for (script, timeout, expected) in [
+            (
                 "echo SECRET; echo SECRET >&2; exit 1",
-                Duration::from_secs(2)
-            )
-            .await
-            .unwrap_err()
-            .to_string(),
-            "engine command failed"
-        );
-        assert_eq!(
-            invoke("printf '\\377'", Duration::from_secs(2))
-                .await
-                .unwrap_err()
-                .to_string(),
-            "engine output is not UTF-8"
-        );
-        assert_eq!(
-            invoke("exec sleep 2", Duration::from_millis(20))
-                .await
-                .unwrap_err()
-                .to_string(),
-            "engine command timed out"
-        );
+                Duration::from_secs(2),
+                "engine command failed",
+            ),
+            (
+                "printf '\\377'",
+                Duration::from_secs(2),
+                "engine output is not UTF-8",
+            ),
+            (
+                "exec sleep 2",
+                Duration::from_millis(20),
+                "engine command timed out",
+            ),
+        ] {
+            let error = invoke(script, timeout).await.unwrap_err();
+            // Display the safe error chain (including spawn errno), not output.
+            assert_eq!(error.to_string(), expected, "{error:#}");
+        }
     }
 
     #[tokio::test]
     async fn timeout_stops_a_non_exec_adapters_worker() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
         let dir = tempfile::tempdir().unwrap();
-        let executable = dir.path().join("adapter");
-        let pid_file = dir.path().join("pid");
-        std::fs::write(
-            &executable,
-            "#!/bin/sh\nsleep 60 &\necho $! > \"$1\"\nwait\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
-            command_text(&executable, &pid_file, "eng", Duration::from_millis(200))
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("timed out")
+        let fifo = dir.path().join("worker");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let executable = executable(
+            dir.path(),
+            "{ echo \"$$\"; sh -c 'echo $$; exec sleep 3600' & wait; } > \"$1\"",
         );
-        let pid = std::fs::read_to_string(pid_file).unwrap();
-        for _ in 0..100 {
-            let output = std::process::Command::new("ps")
-                .args(["-p", pid.trim(), "-o", "stat="])
-                .output()
+        let command = tokio::spawn(async move {
+            fixture_command(&executable, &fifo, Duration::from_secs(60)).await
+        });
+        // Opening the FIFO and reading its PID proves the worker has started.
+        // Its dedicated stdout stays open through exec, until that worker dies.
+        let mut worker = tokio::time::timeout(Duration::from_secs(10), async {
+            let file = tokio::fs::File::open(dir.path().join("worker"))
+                .await
                 .unwrap();
-            let state = String::from_utf8_lossy(&output.stdout);
-            if !output.status.success() || state.trim().is_empty() || state.trim().starts_with('Z')
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("adapter's worker is still running");
+            let mut reader = BufReader::new(file);
+            let mut adapter = String::new();
+            reader.read_line(&mut adapter).await.unwrap();
+            let adapter = rustix::process::Pid::from_raw(adapter.trim().parse().unwrap()).unwrap();
+            let mut pid = String::new();
+            reader.read_line(&mut pid).await.unwrap();
+            let pid = rustix::process::Pid::from_raw(pid.trim().parse().unwrap()).unwrap();
+            assert_ne!(pid, adapter);
+            assert_eq!(rustix::process::getpgid(Some(pid)).unwrap(), adapter);
+            reader
+        })
+        .await
+        .expect("adapter's worker did not start");
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert_eq!(
+            command.await.unwrap().unwrap_err().to_string(),
+            "engine command timed out"
+        );
+        tokio::time::resume();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), worker.read_to_end(&mut remaining))
+            .await
+            .expect("adapter's worker is still running")
+            .unwrap();
+        assert!(remaining.is_empty());
     }
 }
