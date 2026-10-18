@@ -6,6 +6,7 @@ const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
 
 function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null) {
     $classes = NATIVE_QWEN_CLASSES;
+    if ($plan_class === "shared_8b") $classes[] = "docker_nvidia_cuda_8b";
     $last_id = $last_id ?? $workunit_id;
     if ((!in_array($plan_class, $classes, true) && $plan_class !== "shared_8b")
         || $workunit_id < 0 || $workunit_id === 1 || $last_id < $workunit_id
@@ -25,6 +26,10 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
         }
         foreach (["min_wu_id", "max_wu_id"] as $tag) {
             $fields = $xpath->query($tag, $node);
+            if ($fields->length === 0 && $name === "docker_nvidia_cuda_8b") {
+                $node->appendChild($doc->createElement($tag));
+                $fields = $xpath->query($tag, $node);
+            }
             if ($fields->length !== 1) throw new RuntimeException("Missing bounded cohort field");
             $open = $workunit_id > 1 && ($name === $plan_class
                 || ($plan_class === "shared_8b" && in_array($name, SHARED_QWEN_CLASSES, true)));
