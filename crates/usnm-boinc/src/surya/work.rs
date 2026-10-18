@@ -669,7 +669,7 @@ pub(crate) fn gpu_mem_used(index: u32) -> Option<u64> {
 pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
     let mut lines = String::new();
     let mut offload = None;
-    let mut gpu_offloaded = false;
+    let mut offloaded_layers = None;
     let mut saw_vulkan = false;
     let mut saw_cuda = false;
     for l in log.lines() {
@@ -686,13 +686,23 @@ pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
             saw_cuda = true;
         }
         if low.contains("offloaded") && low.contains("layers to gpu") {
-            offload = l
-                .split("offloaded")
-                .nth(1)
-                .map(|s| s.trim().chars().take(64).collect::<String>());
-            if let Some(o) = &offload {
-                gpu_offloaded = !o.starts_with("0/");
-            }
+            let detail = low.split_once("offloaded").map(|(_, detail)| detail.trim());
+            offloaded_layers = detail.and_then(|detail| {
+                let count = detail.split_whitespace().next()?;
+                let (used, total) = count.split_once('/')?;
+                let used = used.parse::<u32>().ok()?;
+                let total = total.parse::<u32>().ok()?;
+                (total > 0 && used <= total).then_some(used)
+            });
+            offload = offloaded_layers.and_then(|_| {
+                l.to_ascii_lowercase().find("offloaded").map(|index| {
+                    l[index + "offloaded".len()..]
+                        .trim()
+                        .chars()
+                        .take(64)
+                        .collect::<String>()
+                })
+            });
         }
         let shown = [
             "cuda",
@@ -712,14 +722,17 @@ pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
             lines.push('\n');
         }
     }
-    let device = if gpu_offloaded {
+    let device = if offloaded_layers.is_some_and(|layers| layers > 0) {
         if saw_vulkan && !saw_cuda {
             "vulkan"
         } else {
             "cuda"
         }
-    } else {
+    } else if offloaded_layers == Some(0) {
         "cpu"
+    } else {
+        // Missing/quiet startup logs do not prove that inference fell back to CPU.
+        "none"
     };
     (device.into(), offload, lines)
 }
@@ -1124,7 +1137,25 @@ pub(crate) mod tests {
             llama_device("load_tensors: offloaded 0/29 layers to GPU\n").0,
             "cpu"
         );
-        assert_eq!(llama_device("main: server is listening\n").0, "cpu");
+        assert_eq!(llama_device("main: server is listening\n").0, "none");
+        assert_eq!(
+            llama_device("1.01.512.448 I srv llama_server: model loaded\n").0,
+            "none"
+        );
+        assert_eq!(
+            llama_device("ggml_cuda_init: found 1 CUDA devices\n").0,
+            "none"
+        );
+        assert_eq!(
+            llama_device("load_tensors: OFFLOADED 29/29 layers to GPU\n").0,
+            "cuda"
+        );
+        for count in ["invalid", "-1/29", "30/29", "0/0"] {
+            assert_eq!(
+                llama_device(&format!("load_tensors: offloaded {count} layers to GPU\n")).0,
+                "none"
+            );
+        }
     }
 
     #[test]

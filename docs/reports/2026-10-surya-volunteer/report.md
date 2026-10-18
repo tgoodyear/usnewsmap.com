@@ -118,7 +118,11 @@ visible NVIDIA devices, CUDA libraries, GPU allocations around 1.8 GiB, and a
 GPU plan/cgroup verified in the kept diagnostics. torch is intentionally the CPU
 layout fallback; `torch_cuda=false` alone does not identify the llama OCR device.
 The llama device-log sections contain no offload evidence accepted by the
-worker parser. Consequently these are **RTX-assigned, CPU-reported** results,
+worker parser. The original parser treated any nonempty log lacking an offload
+count as CPU; corrected telemetry now reports `none` (unknown) unless an explicit
+valid zero-layer count proves CPU or a positive count proves GPU offloading.
+This changes future reporting only: signed 1.2/1.3 and these historical raw
+results remain immutable. CUDA device discovery alone is not offload proof. Consequently these are **RTX-assigned, CPU-reported** results,
 not proven CUDA acceptance and not proof of CPU-only fallback. Diagnosing that
 instrumentation/runtime ambiguity requires a separate reviewed follow-up, not
 relabeling these measurements or altering this immutable trial.
