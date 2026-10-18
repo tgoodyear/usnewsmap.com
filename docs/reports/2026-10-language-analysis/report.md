@@ -385,7 +385,7 @@ By paper:
 **Where it stands (7 October 2026).**
 
 - **Read:** 11,018 of the 11,058 target pages. Of the other 40, 14 have no image at LoC; the job writes an issue only when every page in it is read, so pages that share an issue with them are held back too.
-- **Searchable:** the live version `pages-v20261006-2` has a Japanese index of 10,305 pages (`/v1/meta`). The release read 10,414 OCR'd pages when it started; why 109 fewer are in the index is unchecked. The pages read after that go out with the next release.
+- **Searchable:** the live version `pages-v20261006-2` has a Japanese index of 10,305 pages (`/v1/meta`). The release selected 10,414 OCR'd pages when it started. [The complete historical input reconciliation](data/issue-324/README.md) identifies the 109 excluded page IDs: 107 had short OCR text (2–19 characters), and 2 had empty text. The build intentionally indexed only pages with OK OCR status and present text; its 10,305 eligible inputs match the recorded index count. The pages read after that go out with the next release.
 - **Search:** a query in Japanese script searches only these pages, one character per token, with old character forms matched to modern ones (戰 finds 戦). 日本 finds 6,269 pages in 21 titles and 真珠湾 443.
 
 ## Hawaiian
@@ -421,7 +421,7 @@ For all five the status is unknown. The next step is a look at a few pages of ea
 4. **Page-level language** where it differs from the title's first language: about 3% of pages, in another language or mixed. In single-language titles the audit found almost no pages (0.03%) in another language. Languages without a word list keep their title language.
 5. **Undetermined pages** in the Swedish, Hungarian, Croatian and Romanian titles: find out why so many of their pages can't be placed (19% to 44% by language, 83% in *America*).
 6. **The worst English batches:** count how many of their pages American Stories covers before planning a re-OCR.
-7. **Japanese:** the hand checks of the sites we could not search, a comparison with CHNC's *Colorado Times*, a Japanese reader's review, and the 109 pages missing from the index (see Open questions).
+7. **Japanese:** the hand checks of the sites we could not search, a comparison with CHNC's *Colorado Times*, a Japanese reader's review, and improving the OCR of the [109 short/empty pages intentionally excluded from the historical index](data/issue-324/README.md).
 8. **Indigenous languages:** a look at a few pages of each title, Cherokee first.
 
 # Caveats
@@ -495,7 +495,7 @@ The selections use the **first-listed catalog language**, matching the report's 
 1. **Japanese text at the sites we could not search,** checked by hand in a browser: search 日本 within *Topaz Times* on Utah Digital Newspapers, *Granada Pioneer* on CHNC, *Heart Mountain Sentinel* on Wyoming Newspapers (and see whether it has the Japanese edition), ASU's Japanese *Poston Chronicle*, and one Densho camp paper.
 2. **A quality comparison with CHNC** on the same *Colorado Times* 1945 pages.
 3. **A Japanese reader's review** of the reference crops and a sample of our OCR.
-4. **The Japanese index count:** the release read 10,414 pages, and the index has 10,305.
+4. **Resolved — Japanese index count:** all 109 excluded IDs are [identified](data/issue-324/excluded-pages.csv): 107 short and 2 empty OCR results fail the historical index eligibility rule. The [complete input reconstruction](data/issue-324/README.md) reproduces 10,414 selected and 10,305 eligible pages; no index-filter defect or rebuild is indicated.
 5. **Typefaces of the damaged German pages:** how many are Fraktur, and how much a Fraktur model recovers.
 6. **Hand-check the mixed-language detections.** The title attribution is resolved above; the detector's page-language assignments have not been manually verified, particularly the 55-word *St. Paul Tidende* page.
 
