@@ -201,6 +201,13 @@ case "$step" in
     python3 /usr/local/lib/usnm-boinc/assess/aggregate.py --scores "$ASSESS/out/scores.jsonl" \
       --results "$ASSESS/out/results.jsonl" --crash "$ASSESS/out/crash.jsonl" > "$ASSESS/out/tables.md"
     exit 0 ;;
+  surya-benchmark-stage)
+    [[ "${SURYA_BENCHMARK_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || fail "SURYA_BENCHMARK_SHA256 must pin inputs.json"
+    exec usnm-boinc surya benchmark-stage --manifest "$SHARE_DIR/surya-inputs/$SURYA_CAMPAIGN/inputs.json" \
+      --manifest-sha256 "$SURYA_BENCHMARK_SHA256" --root "$SURYA" \
+      --engine-image "${SURYA_ENGINE_IMAGE:?set SURYA_ENGINE_IMAGE}" \
+      --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
+      --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" ;;
   surya-stage)
     # No database or secrets: this step only reads the scan archive and LoC and writes the share.
     [[ "${SURYA_PAGES:-}" =~ ^[a-z0-9:_,+-]+$ ]] || fail "SURYA_PAGES must be group:lang:doc_id:batch[+batch...],..."
@@ -464,7 +471,12 @@ case "$step" in
   surya-submit)
     stamp="$(mktemp)"
     rc=0
-    usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" || rc=$?
+    target_args=()
+    if [ -n "${SURYA_TARGET_HOST:-}" ]; then
+      [[ "$SURYA_TARGET_HOST" =~ ^[1-9][0-9]*$ ]] || fail "SURYA_TARGET_HOST must be positive"
+      target_args=(--target-host "$SURYA_TARGET_HOST")
+    fi
+    usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" "${target_args[@]}" || rc=$?
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     rm -f "$stamp"
     exit "$rc" ;;

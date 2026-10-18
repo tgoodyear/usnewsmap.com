@@ -539,6 +539,24 @@ enum Gold {
 }
 #[derive(Subcommand)]
 enum Surya {
+    /// Stage checksummed benchmark images and private references, with no network requests.
+    BenchmarkStage {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        manifest_sha256: String,
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        engine_image: String,
+        #[arg(long)]
+        engine_llama: String,
+        #[arg(long)]
+        engine_weights: String,
+        #[arg(long, default_value = "0.22.1")]
+        engine_surya: String,
+    },
+
     /// Get each page's full-size IIIF JPEG (the scan archive, then tile.loc.gov one request at a
     /// time) and write its unit.
     Stage {
@@ -585,6 +603,9 @@ enum Surya {
         project: PathBuf,
         #[arg(long, default_value_t = 20)]
         max_units: usize,
+        /// Experimental single-replica probe, at most 30 units, no fallback hosts.
+        #[arg(long)]
+        target_host: Option<u64>,
     },
     /// Write a unit from a local image, to check a host or the image without LoC or BOINC.
     /// Inside the worker image the engine values default to the image's own.
@@ -1424,6 +1445,29 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
 async fn surya(c: Surya) -> anyhow::Result<()> {
     use usnm_boinc::surya as x;
     match c {
+        Surya::BenchmarkStage {
+            manifest,
+            manifest_sha256,
+            root,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            engine_surya,
+        } => {
+            let count = x::stage::benchmark(
+                &manifest,
+                &manifest_sha256,
+                &root,
+                usnm_ocr_contract::surya::Engine {
+                    image: engine_image,
+                    llama: engine_llama,
+                    weights: engine_weights,
+                    surya: engine_surya,
+                },
+            )?;
+            eprintln!("staged {count} immutable benchmark inputs");
+        }
+
         Surya::Stage {
             pages,
             root,
@@ -1465,11 +1509,13 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             root,
             project,
             max_units,
+            target_host,
         } => {
             let s = x::submit::run(&x::submit::Options {
                 root,
                 project,
                 max_units,
+                target_host,
             })
             .await?;
             eprintln!("{s:?}");
