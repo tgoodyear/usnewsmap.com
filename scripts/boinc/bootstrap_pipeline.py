@@ -138,7 +138,8 @@ class Pipeline:
         for name in (self.settings, "scripts/provision-boinc.sh", "scripts/build-boinc-images.sh",
                      "scripts/boinc-app-release.sh", "scripts/boinc/acceptance.py"):
             if name not in files:
-                raise PipelineError("missing reviewed main entrypoint: " + name + " (#807/#548 must merge first)")
+                dependency = " (#807/#548 must merge first)" if name == "scripts/boinc/acceptance.py" else ""
+                raise PipelineError("missing reviewed main entrypoint: " + name + dependency)
         if not self.args.dry_run and not re.fullmatch(
                 r"https://github.com/tgoodyear/usnewsmap.com/issues/529#issuecomment-[0-9]+",
                 self.args.coordination_claim or ""):
@@ -172,6 +173,8 @@ class Pipeline:
         return json.loads((work / self.settings).read_text())
 
     def script(self, work, name, *args):
+        if self.git("status", "--porcelain", "--untracked-files=normal", cwd=work):
+            raise PipelineError("clean lifecycle workspace required; unreviewed local edits cannot deploy")
         self.run([str(work / "scripts" / name), "--env", self.config["env"], *args], cwd=work)
 
     def acceptance(self, work, dry_run=False):

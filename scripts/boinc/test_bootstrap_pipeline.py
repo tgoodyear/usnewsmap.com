@@ -151,6 +151,13 @@ class PipelineTests(unittest.TestCase):
             self.p.phase("base")
         script.assert_called_once_with(self.work, "provision-boinc.sh")
 
+    def test_all_lifecycle_commands_reject_dirty_workspace(self):
+        with patch.object(self.p, "git", return_value=" M unreviewed.bicep"):
+            for name in ("provision-boinc.sh", "build-boinc-images.sh", "boinc-app-release.sh"):
+                with self.assertRaisesRegex(pipeline.PipelineError, "clean lifecycle workspace"):
+                    self.p.script(self.work, name)
+        self.runner.assert_not_called()
+
     def test_locked_signing_never_bypasses_prepare_only(self):
         with patch.object(self.p, "workspace", return_value=self.work), patch.object(self.p, "assert_reviewed"), patch.object(self.p, "git", return_value=""), patch.object(self.p, "script", side_effect=pipeline.PipelineError("locked")) as script:
             with self.assertRaisesRegex(pipeline.PipelineError, "never unlock or bypass"):
