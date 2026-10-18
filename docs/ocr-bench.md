@@ -6,6 +6,8 @@ because everyone uses the same bytes. Each release is a GitHub release of this r
 tagged `ocr-bench-<version>`. It has a content digest to cite and named subsets that resolve to
 the same files ([#738](https://github.com/tgoodyear/usnewsmap.com/issues/738)).
 
+Candidate licensing, model-availability and bounded local CPU findings are recorded in [the 2026-10-18 feasibility note](ocr-bench-candidate-feasibility-2026-10-18.md).
+
 ## Fetch a release
 
 ```sh
