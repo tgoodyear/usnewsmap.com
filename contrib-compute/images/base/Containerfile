@@ -26,7 +26,7 @@ RUN git init /usr/local/boinc \
  && git fetch --depth 1 origin "${BOINC_COMMIT}" \
  && git checkout --detach FETCH_HEAD \
  && test "$(git rev-parse HEAD)" = "${BOINC_COMMIT}" \
- && python3 /opt/usnm-build/patch-server-apple-gpu.py --source /usr/local/boinc/sched/plan_class_spec.cpp \
+ && python3 /opt/usnm-build/patch-server-apple-gpu.py --source /usr/local/boinc/sched/plan_class_spec.cpp --version-source /usr/local/boinc/sched/sched_version.cpp \
  && python3 /opt/usnm-build/patch-server-intel-proc-type.py --source /usr/local/boinc/sched/sched_util_basic.cpp \
  && python3 /usr/local/lib/patch-server-db-tls.py --source /usr/local/boinc \
  && python3 /opt/usnm-build/patch-server-gold-routing.py --sched-dir /usr/local/boinc/sched \
