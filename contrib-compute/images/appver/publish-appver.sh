@@ -133,7 +133,7 @@ for key, value in {
     "db_user": os.environ["DB_RUNTIME_USER"],
     "db_passwd": open(sys.argv[2]).read().rstrip("\n"),
     "project_dir": sys.argv[3], "download_dir": sys.argv[3] + "/download",
-    "download_url": "https://" + os.environ["MASTER_HOST"] + "/download",
+    "download_url": "https://" + os.environ["MASTER_HOST"] + "/" + os.environ.get("PROJECT", "usnmocr") + "_download",
     "key_dir": os.path.dirname(sys.argv[1]) + "/keys",
 }.items():
     ET.SubElement(config, key).text = value
