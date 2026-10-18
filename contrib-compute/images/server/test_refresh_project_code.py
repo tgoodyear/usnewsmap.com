@@ -159,3 +159,17 @@ class RefreshProjectCode(unittest.TestCase):
                 code.replace(self.source / "tools/create_work", target, 0o755, expected=expected)
         self.assertEqual(target.read_text(), "concurrent edit after validation")
         self.assertFalse(target.with_name(target.name + ".usnm-tls-stage").exists())
+
+    def test_drift_during_earlier_restoration_is_preserved_and_reported(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        original = code.replace
+        def edit_pending(source, target, mode, *owner):
+            result = original(source, target, mode, *owner)
+            if str(target).endswith("py/Boinc/db_base.py"):
+                (self.project / "bin/create_work").write_text("edit during rollback")
+            return result
+        with patch.object(code, "replace", side_effect=edit_pending):
+            with self.assertRaisesRegex(ValueError, "rollback replacement failed"):
+                code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "edit during rollback")
+        self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "old cgi-bin/cgi")
