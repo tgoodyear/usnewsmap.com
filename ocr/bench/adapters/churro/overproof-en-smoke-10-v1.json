@@ -1,0 +1,129 @@
+{
+  "format": "usnm-ocr-bench-churro-adapter-v1",
+  "release": "v1.0.0",
+  "release_content_digest": "c5e38736b6e60610ef0dbe6d8296c3dc58f8a945d6e1cfea5aa47b03fb163800",
+  "subset": "overproof-en/smoke-10",
+  "subset_digest": "e4256f3e6c9ae9e0453e74d7b38c5c862e8265ab88a50ca95dd3fbfd8fd10576",
+  "model_repo": "stanford-oval/churro-3B",
+  "model_revision": "ca2150ea465d5a3d67818c50e234b9422619c75d",
+  "model_license": "Qwen Research License (non-commercial research/evaluation only)",
+  "code_repo": "stanford-oval/Churro",
+  "code_revision": "23c3ac65781443b18d87c8cdac5f77445c3319e6",
+  "runtime_version": "0.3.0",
+  "prompt_profile": "CHURRO_3B_XML_TEMPLATE",
+  "torch_dtype": "float16",
+  "device_map": "auto",
+  "max_memory_gpu": "6GiB",
+  "max_memory_cpu": "9GiB",
+  "max_new_tokens": 4096,
+  "do_sample": false,
+  "model_tree_sha256": "0136091efd1189d23893f04b9118c9f6ecb98793c108b36655e9894ac72c2603",
+  "samples": [
+    {
+      "id": "pub-overproof-ca-013",
+      "image": "images/pub-overproof-ca-013.jpg",
+      "image_sha256": "d9f5eaf75fcee194636f7b02e3fe1ee79a378bf3c9e321fa4a98d0aa5dcaf520",
+      "reference": "references/pub-overproof-ca-013.txt",
+      "reference_sha256": "aed6a7bcf582196a9f5030d15c26acd2710e780571031bcf127d23e4cedfe041",
+      "image_width": 823,
+      "image_height": 416
+    },
+    {
+      "id": "pub-overproof-ca-017",
+      "image": "images/pub-overproof-ca-017.jpg",
+      "image_sha256": "2062e3b0c407a74adfaa6d44953d162ed00a8647c4d789ecf0fbf42558b36276",
+      "reference": "references/pub-overproof-ca-017.txt",
+      "reference_sha256": "ae53a40048c7cda985cf3acfdd77ec1da2d0d53d837117f7153ee5d87709cb27",
+      "image_width": 688,
+      "image_height": 293
+    },
+    {
+      "id": "pub-overproof-ca-022",
+      "image": "images/pub-overproof-ca-022.jpg",
+      "image_sha256": "4fafc4e340b64754597726d948ab923d4e50200c0580d56dcdf6a04a932220ef",
+      "reference": "references/pub-overproof-ca-022.txt",
+      "reference_sha256": "545ae79761a9b8389e9e3d5dc3933d382287858ee764ce5704d7a8c5ca011710",
+      "image_width": 648,
+      "image_height": 312
+    },
+    {
+      "id": "pub-overproof-ca-034",
+      "image": "images/pub-overproof-ca-034.jpg",
+      "image_sha256": "2b34a5c1a2661d2ee68f9e34266127213340550a7191b25ab1980925409b8efb",
+      "reference": "references/pub-overproof-ca-034.txt",
+      "reference_sha256": "173bac258f565604a4e037bd0ebf4cc89dcfefe84f30ac75d186c88f7be5da7d",
+      "image_width": 832,
+      "image_height": 415
+    },
+    {
+      "id": "pub-overproof-ca-039",
+      "image": "images/pub-overproof-ca-039.jpg",
+      "image_sha256": "81881ecc772a0577c4408a7114283c1103cfa7075eacfe23e603fcdc34199673",
+      "reference": "references/pub-overproof-ca-039.txt",
+      "reference_sha256": "2892cb997fb4bcdaa3e60d3e25fe39a469c276d350983c08a4b3483c943779c0",
+      "image_width": 646,
+      "image_height": 367
+    },
+    {
+      "id": "pub-overproof-ca-042",
+      "image": "images/pub-overproof-ca-042.jpg",
+      "image_sha256": "d4fbd7d26ed6b72c9aec0963f0bc8520689c1c0aba70b8a499aedc70deb3ec3d",
+      "reference": "references/pub-overproof-ca-042.txt",
+      "reference_sha256": "a96d8e614663dba0f6c73daebdd1309e4be2a45f05fc1528fbabb8c16e8bbf55",
+      "image_width": 657,
+      "image_height": 376
+    },
+    {
+      "id": "pub-overproof-ca-044",
+      "image": "images/pub-overproof-ca-044.jpg",
+      "image_sha256": "939bad52dcc743ad162cd142c0b14d82dec7092d572986779d81b7c92c885e92",
+      "reference": "references/pub-overproof-ca-044.txt",
+      "reference_sha256": "62d9fd3c823323c1aa7175f18d2a18dd1a9de5139094a5a47658d9fac2015125",
+      "image_width": 859,
+      "image_height": 467
+    },
+    {
+      "id": "pub-overproof-ca-068",
+      "image": "images/pub-overproof-ca-068.jpg",
+      "image_sha256": "ab843bc62f1ffb97ea5618d286a6dd4d7dd7141c6525518645e2b63839e3db4b",
+      "reference": "references/pub-overproof-ca-068.txt",
+      "reference_sha256": "c9ee27d445dfe9bdd74a2556055d0acfe1ff7068f0c21ea8f1f7188ca38bebbc",
+      "image_width": 658,
+      "image_height": 408
+    },
+    {
+      "id": "pub-overproof-ca-073",
+      "image": "images/pub-overproof-ca-073.jpg",
+      "image_sha256": "a44b00575c2a01a44429a2f733fe3afbf567044466de98eba448fd00d081cdc5",
+      "reference": "references/pub-overproof-ca-073.txt",
+      "reference_sha256": "4781955a34a3c387f1b681e18e79027c1912f3c580b0f90451f3164e9240bfd4",
+      "image_width": 646,
+      "image_height": 300
+    },
+    {
+      "id": "pub-overproof-ca-075",
+      "image": "images/pub-overproof-ca-075.jpg",
+      "image_sha256": "ce8e18e3343b40c0cddb5dd262ab285e0cc888d2682c9c0e6c82dcd7de290019",
+      "reference": "references/pub-overproof-ca-075.txt",
+      "reference_sha256": "59404c6dd5c86364ee4fd1127a8613981c60514e02950c3f6588109d49751578",
+      "image_width": 649,
+      "image_height": 357
+    }
+  ],
+  "benchmark_source_licenses": {
+    "annotation_status": "human-verified",
+    "attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026; page images from Library of Congress, Chronicling America.",
+    "image_license": "Public domain (Library of Congress, Chronicling America)",
+    "reference_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 structured copy)",
+    "unit": "crop"
+  },
+  "training_corpus_overlap": {
+    "collections": [
+      "American Stories / Chronicling America",
+      "Reichsanzeiger-GT"
+    ],
+    "page_level_exposure": "unknown"
+  },
+  "output_rights_note": "Qwen Research License permits non-commercial research/evaluation. No general OCR-output redistribution prohibition was found; the license imposes a Qwen notice only if outputs are used to train, fine-tune, or improve a distributed AI model.",
+  "expected_model_bytes": 7525294542
+}

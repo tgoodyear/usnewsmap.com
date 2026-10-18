@@ -45,7 +45,7 @@ The legacy Fraktur model `deu_frak` is 34.08 CER percentage points worse than or
 
 ## Remaining work
 
-The #810 adapter is merged, but its common paired trial, refreshed-LoC binding, and per-track accuracy/throughput/resource comparison remain blocked until exact scan/ALTO registration and human-reference overlap exists in a new immutable subset. It must use the same verified paired members and references before drawing comparative conclusions. The maintainer authorized noncommercial research use of research-licensed models; a bounded CHURRO run still awaits the explicit #559 GPU handoff because local CPU headroom is unsafe. EffOCR remains blocked by its checkpoint's unverified license and provenance. The segmented Calamari smoke trial is now recorded below. Keep v1.0.0 as-is: every sample is already public evaluation data and no new evaluation set is created here.
+The #810 adapter is merged, but its common paired trial, refreshed-LoC binding, and per-track accuracy/throughput/resource comparison remain blocked until exact scan/ALTO registration and human-reference overlap exists in a new immutable subset. It must use the same verified paired members and references before drawing comparative conclusions. The maintainer authorized noncommercial research use of research-licensed models; the bounded CHURRO GPU smoke trial and the segmented Calamari trial are now recorded below. EffOCR remains blocked because its exact checkpoint has no verifiable license or training-data provenance; the project-use authorization does not establish rights for an unlicensed checkpoint. Keep v1.0.0 as-is: every sample is already public evaluation data and no new evaluation set is created here.
 
 ## Bounded trial follow-up (2026-10-18)
 
@@ -53,9 +53,36 @@ The maintainer decision was posted on [#812](https://github.com/tgoodyear/usnews
 
 ### CHURRO 3B
 
-The exact checkpoint remains `stanford-oval/churro-3B` revision `ca2150ea465d5a3d67818c50e234b9422619c75d`; its 7,509,337,944-byte weights are under the Qwen Research License (non-commercial research/evaluation only). The license permits distribution of its materials with its notice/attribution conditions and does not state a blanket prohibition on ordinary OCR-output redistribution; clause 4(b) requires “Built with Qwen”/“Improved using Qwen” only when outputs are used to train, fine-tune or improve a distributed AI model. This use falls within the maintainer's authorization. The project source list still overlaps at collection level with Chronicling America/American Stories and Reichsanzeiger-GT; exact page exposure is unknown.
+The exact checkpoint is `stanford-oval/churro-3B` revision `ca2150ea465d5a3d67818c50e234b9422619c75d`; its 7,509,337,944-byte weights are under the Qwen Research License (non-commercial research/evaluation only). The license permits distribution of its materials with its notice/attribution conditions and does not state a blanket prohibition on ordinary OCR-output redistribution; clause 4(b) requires “Built with Qwen”/“Improved using Qwen” only when outputs are used to train, fine-tune or improve a distributed AI model. This use falls within the maintainer's authorization. The project source list overlaps at collection level with Chronicling America/American Stories and Reichsanzeiger-GT; exact page exposure is unknown.
 
-No local CPU inference was attempted: this M1 host has 16 GiB unified RAM, while the 7.51-GB checkpoint leaves unsafe framework/activation/OS headroom. The GPU is currently reserved for the #559 campaign; a coordination request was posted on [#794](https://github.com/tgoodyear/usnewsmap.com/issues/794), and no pve-big access or GPU trial will occur before its explicit handoff. CHURRO remains unscored.
+A single bounded GPU trial ran on 2026-10-18 after #559's explicit handoff and fresh host/CT214 idle checks. The exact model tree has digest `0136091efd1189d23893f04b9118c9f6ecb98793c108b36655e9894ac72c2603`; CHURRO code was pinned to `stanford-oval/Churro` commit `23c3ac65781443b18d87c8cdac5f77445c3319e6`. It used the official 0.3.0 Hugging Face profile `CHURRO_3B_XML_TEMPLATE`, deterministic decoding, FP16 without quantization, a 6-GiB GPU/9-GiB CPU placement cap, and `max_new_tokens=4096`. Runtime was Python 3.13.5, PyTorch 2.14.1+cu126, Transformers 5.20.1, and Accelerate 1.15.0. The RTX 2060 SUPER has 8 GiB VRAM; layers 0–27 were placed on GPU and layers 28–35 plus normalization on CPU. The trial did not modify BOINC tasks, queues, preferences, caches, or services; the GPU was idle again immediately after completion.
+
+The OCR loop took 926.040 s for ten images (0.65 images/min); first image 97.404 s, warm median 88.878 s and p95 107.916 s. Runtime import, processor load, and model load took 7.125 s, 1.070 s, and 12.287 s. Every output was nonblank; no sample reached the token cap (largest generation 316 tokens). PyTorch peak allocated/reserved GPU memory was 6,404,122,624 / 6,455,033,856 bytes. The process peak RSS was 9,285,700 KiB (8.85 GiB); there was no cgroup memory limit. The exact generated XML is preserved separately; scoring text excludes the non-OCR `<Metadata>` subtree, ignores formatting-only XML whitespace, unescapes XML text, and preserves line breaks. There is no OCR post-correction.
+
+| Candidate | Rule           |     CER | Edits / reference chars | Scored / missing / blank | Output JSONL SHA-256                                               |       OCR loop / throughput |
+| --------- | -------------- | ------: | ----------------------: | -----------------------: | ------------------------------------------------------------------ | --------------------------: |
+| CHURRO 3B | `legacy-ws-v1` | 0.5339% |              14 / 2,622 |               10 / 0 / 0 | `57eab5ead48d125a5049621d3d834d744cde9757a56665a1f701181db865612c` | 926.040 s / 0.65 images/min |
+| CHURRO 3B | `raw-v1`       | 0.6102% |              16 / 2,622 |               10 / 0 / 0 | same output                                                        |                    same run |
+
+On this same smoke subset, Tesseract `eng` previously scored 2.4027% (`legacy-ws-v1`) and 2.6316% (`raw-v1`), with much higher CPU throughput. CHURRO's unusually low CER should be treated especially cautiously: the images are public-eval Overproof/Chronicling America crops, the training corpus includes Chronicling America/American Stories, and page-level exposure is unknown. These ten samples cannot distinguish OCR quality from possible training-set recall and are not a held-out/generalization result or an adoption decision. The #813 extended measures were not used: this crop-only subset has no paired-page, full-page region, or human-adjudication annotations; token-cap status is captured in the run receipt.
+
+The adapter, checksum lock, input manifest, raw/transformed outputs, per-sample scorer reports, and run receipt are committed under `scripts/ocr-bench/churro_trial.py`, `scripts/ocr-bench/test_churro_trial.py`, `ocr/bench/adapters/churro/`, and `ocr/bench/results/churro-overproof-en-smoke-10-v1/`. The transformed output SHA-256 is `57eab5ead48d125a5049621d3d834d744cde9757a56665a1f701181db865612c`; exact raw XML SHA-256 is `a103f719071ef48efadf04f4f2cc4cc421d119caa11c78bc41f63012230bbb66`.
+
+After fetching/verifying the release and installing the versions recorded in `run.json`, rerun from the repository root with:
+
+```sh
+scripts/ocr-bench/fetch --version v1.0.0 --verify --dest .local/bench-v1.0.0
+python3 scripts/ocr-bench/churro_trial.py \
+  --adapter-lock ocr/bench/adapters/churro/overproof-en-smoke-10-v1.json \
+  --input-manifest ocr/bench/results/churro-overproof-en-smoke-10-v1/input-manifest.json \
+  --image-dir .local/bench-v1.0.0/usnm-ocr-bench-v1.0.0/images \
+  --model-cache .local/hf-home --out-dir .local/churro-rerun
+cargo run -p usnm-ocr-survey -- bench-score \
+  --release .local/bench-v1.0.0/usnm-ocr-bench-v1.0.0 \
+  --subset overproof-en/smoke-10 \
+  --outputs .local/churro-rerun/outputs.jsonl \
+  --rule legacy-ws-v1 --report .local/churro-rerun/legacy-report.json
+```
 
 ### EffOCR
 
