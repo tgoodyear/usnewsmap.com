@@ -8,3 +8,8 @@ web/playwright-report/
 web/*.tsbuildinfo
 .azure
 __pycache__/
+
+# Private operator credentials/staging; interrupted runs require local cleanup.
+.boinc-acceptance-*
+.boinc-provision-*
+.boinc-work-*

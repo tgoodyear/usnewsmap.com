@@ -57,6 +57,20 @@ class Workspace(unittest.TestCase):
         for sig, handler in handlers.items():
             self.addCleanup(signal.signal, sig, handler)
 
+
+    def mock_az(self):
+        stub, log = self.root / 'az', self.root / 'az-calls.jsonl'
+        stub.write_text('#!' + sys.executable + '\n' + """import json,os,sys,time
+args=sys.argv[1:]
+with open(os.environ['AZ_CALLS'], 'a') as out: out.write(json.dumps(args)+'\\n')
+if args[:2]==['account','show']: print(args[args.index('--subscription')+1])
+elif args[:2]==['group','exists']: print('true')
+elif args[:3]==['stack','group','show']: print(json.dumps({'keyVaultName':{'value':'test-vault'}}))
+elif args[:3]==['deployment','group','create'] and os.environ.get('AZ_HANG'): time.sleep(10)
+""")
+        stub.chmod(0o700)
+        return dict(PATH=str(self.root) + os.pathsep + os.environ['PATH'], AZ_CALLS=str(log))
+
     def runner(self, config=None, **bounds):
         args = argparse.Namespace(env='prod', timeout=5, command_timeout=1, cleanup_timeout=2,
                                   poll_interval=.001, evidence=self.root / 'evidence.json', **bounds)
@@ -205,6 +219,40 @@ class Lifecycle(Workspace):
                 self.assertIn(runner.run_id, runner.group)
                 self.assertEqual(runner.report['accepted'], failure is None)
                 self.assertTrue(runner.report['cleanup_complete'])
+
+    def test_forced_provisioning_termination_removes_parent_owned_secret_params(self):
+        auth = self.root / 'authenticator'
+        auth.write_text('a' * 32)
+        auth.chmod(0o600)
+        runner = self.runner({**CONFIG, 'client': dict(mode='ephemeral', sku='Standard_D8s_v5',
+                                                     authenticator_file=str(auth))})
+        runner.args.command_timeout = 1.5
+        reserve = dict(run_id=runner.run_id, release=RELEASE, profile=PROFILE, isolation_verified=True)
+        with patch.dict(os.environ, {**self.mock_az(), 'AZ_HANG': '1'}), \
+                patch.object(runner, 'az', return_value='false'), \
+                patch.object(runner, 'server', side_effect=lambda action, **kw: reserve if action == 'reserve' else {'released': True}):
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    runner.execute()
+                self.assertEqual(runner.provision_dir.stat().st_mode & 0o777, 0o700)
+                params = runner.provision_dir / 'params.json'
+                self.assertIn('a' * 32, params.read_text())
+                self.assertEqual(params.stat().st_mode & 0o777, 0o600)
+            finally:
+                runner.finish()
+        self.assertFalse(runner.provision_dir.exists())
+        self.assertFalse(runner.auth_path.exists())
+        self.assertTrue(runner.report['cleanup_complete'])
+
+    def test_provisioning_workspace_removal_failure_cannot_claim_clean_acceptance(self):
+        runner = self.runner()
+        runner.provision_dir = self.root / 'private-provision'
+        runner.provision_dir.mkdir(mode=0o700)
+        runner.report['accepted'] = True
+        with patch.object(A.shutil, 'rmtree', side_effect=OSError('injected')):
+            self.assertFalse(runner.finish())
+        self.assertFalse(runner.report['accepted'])
+        self.assertIn('private provisioning workspace cleanup failed', runner.report['cleanup_errors'])
 
     def test_slow_azure_deletion_cannot_exhaust_fixture_release_budget(self):
         config = {**CONFIG, 'client': dict(mode='ephemeral', sku='Standard_D8s_v5')}
@@ -395,6 +443,39 @@ class ReleaseIntegration(Workspace):
         self.assertIn('unpublished candidate', result.stderr)
 
 
+class ProvisioningHelper(Workspace):
+    def helper(self, *args):
+        with patch.dict(os.environ, self.mock_az()):
+            return subprocess.run([str(ROOT / 'scripts/boinc-test-client.sh'), '--env', 'prod',
+                                   '--resource-suffix', 'b' * 32, *args], cwd=ROOT, capture_output=True, text=True)
+
+    def test_recovery_deletion_does_not_require_authenticator(self):
+        result = self.helper('--delete')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in (self.root / 'az-calls.jsonl').read_text().splitlines()]
+        deletion = next(call for call in calls if call[:2] == ['group', 'delete'])
+        self.assertIn('usnm-boinc-test-rg-prod-' + 'b' * 32, deletion)
+        self.assertIn('--subscription', deletion)
+
+    def test_caller_owned_workspace_is_private_empty_and_not_removed_by_child(self):
+        auth = self.root / 'authenticator'
+        auth.write_text('a' * 32)
+        workspace = self.root / 'private-provision'
+        workspace.mkdir(mode=0o700)
+        args = ['--create', '--what-if', '--authenticator-file', str(auth), '--work-dir', str(workspace)]
+        result = self.helper(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((workspace / 'params.json').exists())
+        self.assertNotIn('a' * 32, result.stdout + result.stderr)
+        for mode in (0o700, 0o755):
+            if mode == 0o755:
+                (workspace / 'params.json').unlink()
+            workspace.chmod(mode)
+            result = self.helper(*args)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('caller-owned private directory', result.stderr)
+
+
 class ClientProbe(Workspace):
     def state(self, **changes):
         values = dict(hostid=2, platform=RELEASE['platform'], cpus=4)
@@ -411,12 +492,86 @@ class ClientProbe(Workspace):
         (self.root / 'global_prefs_override.xml').write_text('''<global_preferences>
         <max_ncpus_pct>50</max_ncpus_pct><ram_max_used_busy_pct>25</ram_max_used_busy_pct>
         <ram_max_used_idle_pct>90</ram_max_used_idle_pct></global_preferences>''')
-        with patch.object(C.shutil, 'which', return_value=None):
+        with patch.object(C, 'container_runtime', return_value=False):
             probe = C.probe(self.root, URL)
         self.assertEqual(probe['cpus'], 2)
         self.assertEqual(probe['memory_bytes'], 4 * 1024**3)
         self.assertEqual(probe['client_version'], 80213)
         self.assertNotIn('SECRET', json.dumps(probe))
+
+    def test_zero_cpu_percentage_means_all_processors(self):
+        self.state()
+        (self.root / 'global_prefs_override.xml').write_text('<global_preferences><max_ncpus_pct>0</max_ncpus_pct></global_preferences>')
+        with patch.object(C, 'container_runtime', return_value=False):
+            probe = C.probe(self.root, URL)
+        self.assertEqual(probe['cpus'], 4)
+        A.eligible(probe, PROFILE, {**RELEASE, 'plan_class': 'mt'}, URL)
+
+    def test_optional_runtime_failures_preserve_native_clients_and_try_fallback(self):
+        self.state()
+        podman = json.dumps({'host': {'arch': 'amd64'}, 'store': {'graphRoot': '/test'}})
+        for error in (subprocess.TimeoutExpired('docker', 15), FileNotFoundError(), PermissionError()):
+            with self.subTest(error=type(error).__name__), patch.object(C.platform, 'system', return_value='Linux'), \
+                    patch.object(C.shutil, 'which', side_effect=lambda name: '/test/' + name), \
+                    patch.object(C.subprocess, 'run', side_effect=[error, subprocess.CompletedProcess([], 0, podman)]) as run:
+                self.assertTrue(C.container_runtime())
+                self.assertEqual(run.call_args_list[-1].args[0][0], '/test/podman')
+            with patch.object(C.platform, 'system', return_value='Linux'), \
+                    patch.object(C.shutil, 'which', return_value='/test/runtime'), \
+                    patch.object(C.subprocess, 'run', side_effect=error):
+                probe = C.probe(self.root, URL)
+            self.assertFalse(probe['container_runtime'])
+            A.eligible(probe, PROFILE, {**RELEASE, 'plan_class': 'mt'}, URL)
+
+    def test_mac_runtime_probes_boinc_helper_context_and_validates_output(self):
+        helper = '/Library/Application Support/BOINC Data/Run_Podman'
+        podman = '/opt/podman/bin/podman'
+        outputs = [('', False), ('error: unavailable', False), ('{}', False), ('[]', False),
+                   ('{"host":{},"store":{}}', False),
+                   ('{"host":{"arch":"arm64"},"store":{"graphRoot":"/Library/Application Support/BOINC podman"}}', True)]
+        for output, expected in outputs:
+            with self.subTest(output=output), patch.object(C.platform, 'system', return_value='Darwin'), \
+                    patch.object(C.os, 'access', return_value=True), patch.object(C, 'mac_podman', return_value=podman), \
+                    patch.object(C.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output)) as run:
+                self.assertEqual(C.container_runtime(), expected)
+                self.assertEqual(run.call_args.args[0], [helper, podman, 'info', '--format=json'])
+
+    def test_runtime_requires_structured_server_identity_not_only_exit_status(self):
+        for output, code, expected in [('', 0, False), ('{}', 0, False), ('[]', 0, False),
+                                      ('{"ServerVersion":""}', 0, False),
+                                      ('{"ServerVersion":"27.0"}', 1, False),
+                                      ('{"ServerVersion":"27.0"}', 0, True)]:
+            with self.subTest(output=output, code=code), patch.object(C.platform, 'system', return_value='Linux'), \
+                    patch.object(C.shutil, 'which', side_effect=lambda name: '/test/docker' if name == 'docker' else None), \
+                    patch.object(C.subprocess, 'run', return_value=subprocess.CompletedProcess([], code, output)) as run:
+                self.assertEqual(C.container_runtime(), expected)
+                self.assertEqual(run.call_args.args[0], ['/test/docker', 'info', '--format', '{{json .}}'])
+        for error in (OSError(), subprocess.TimeoutExpired('Run_Podman', 15)):
+            with patch.object(C.platform, 'system', return_value='Darwin'), patch.object(C.os, 'access', return_value=True), \
+                    patch.object(C, 'mac_podman', return_value='/opt/podman/bin/podman'), \
+                    patch.object(C.subprocess, 'run', side_effect=error):
+                self.assertFalse(C.container_runtime())
+
+    def test_mac_discovery_uses_terminal_path_then_installer_and_homebrew(self):
+        output = subprocess.CompletedProcess([], 0, 'PATH="/opt/local/bin:/usr/bin"; export PATH;')
+        with patch.object(C.subprocess, 'run', return_value=output), \
+                patch.object(C.shutil, 'which', return_value='/opt/local/bin/podman') as which:
+            self.assertEqual(C.mac_podman(), '/opt/local/bin/podman')
+            which.assert_called_once_with('podman', path='/opt/local/bin:/usr/bin')
+        for arch, fallback in [('arm64', '/opt/homebrew/bin/podman'), ('x86_64', '/usr/local/bin/podman')]:
+            with patch.object(C.subprocess, 'run', side_effect=OSError()), patch.object(C.shutil, 'which', return_value=None), \
+                    patch.object(C.platform, 'machine', return_value=arch), \
+                    patch.object(C.os, 'access', side_effect=lambda path, mode: path == fallback):
+                self.assertEqual(C.mac_podman(), fallback)
+        with patch.object(C.platform, 'system', return_value='Darwin'), \
+                patch.object(C.os, 'access', return_value=False), patch.object(C.subprocess, 'run') as run:
+            self.assertFalse(C.container_runtime())
+            run.assert_not_called()
+
+    def test_mac_boinccmd_uses_installed_app_when_path_is_restricted(self):
+        with patch.object(C.platform, 'system', return_value='Darwin'), patch.object(C.shutil, 'which', return_value=None), \
+                patch.object(C.os, 'access', return_value=True):
+            self.assertEqual(C.boinccmd(), '/Applications/BOINCManager.app/Contents/Resources/boinccmd')
 
     def test_probe_reads_actual_gpu_capability_properties(self):
         self.state()
@@ -428,7 +583,7 @@ class ClientProbe(Workspace):
         for key, value in {'major': '8', 'minor': '0', 'totalGlobalMem': str(16 * 1024**3)}.items():
             C.ET.SubElement(prop, key).text = value
         state.write(self.root / 'client_state.xml')
-        with patch.object(C.shutil, 'which', return_value=None):
+        with patch.object(C, 'container_runtime', return_value=False):
             probe = C.probe(self.root, URL)
         self.assertEqual(probe['gpu_capabilities']['nvidia'],
                          dict(cuda_version=12080, compute_capability=800, opencl_version=300))

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -143,6 +144,7 @@ class Runner:
         self.vm_owned = False
         self.reserved = False
         self.auth_path = None
+        self.provision_dir = None
         self.report = dict(schema_version=1, run_id=self.run_id, release=release,
                            fixture=config['fixture'], accepted=False, cleanup_complete=False,
                            coordination_claim=getattr(args, 'coordination_claim', None))
@@ -212,9 +214,13 @@ class Runner:
             if self.az(['group', 'exists', '-n', self.group, '-o', 'tsv']).strip() != 'false':
                 raise AcceptanceError('refusing to own an existing resource group')
             self.vm_owned = True  # Includes partial provisioning failures.
+            provision_dir = ROOT / ('.boinc-provision-' + self.run_id)
+            provision_dir.mkdir(mode=0o700)
+            self.provision_dir = provision_dir
             self.call([str(ROOT / 'scripts/boinc-test-client.sh'), '--env', self.args.env,
                        '--create', '--sku', self.config['client']['sku'],
-                       '--resource-suffix', self.run_id, '--authenticator-file', str(self.auth_path)])
+                       '--resource-suffix', self.run_id, '--authenticator-file', str(self.auth_path),
+                       '--work-dir', str(self.provision_dir)])
         while True:
             probe = self.client('probe')
             if probe.get('ready'):
@@ -261,6 +267,12 @@ class Runner:
                     raise AcceptanceError('fixture reservation not owned')
             except Exception:
                 errors.append('fixture reservation release unconfirmed')
+        if self.provision_dir is not None:
+            try:
+                if self.provision_dir.exists():
+                    shutil.rmtree(self.provision_dir)
+            except OSError:
+                errors.append('private provisioning workspace cleanup failed')
         if self.auth_path is not None:
             try:
                 self.auth_path.unlink(missing_ok=True)

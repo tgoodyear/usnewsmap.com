@@ -422,14 +422,25 @@ VMs use the **existing isolated account**, never the template's default new
 disposable account. The private regular authenticator file must have mode 0600
 or stricter. Its fingerprint is verified against the isolated server account
 before provisioning; the key is copied once to a run-private 0600 file to avoid
-attachment to changed credentials, and removed during teardown. Keys are never
+attachment to changed credentials, and removed during teardown. Provisioning uses
+a parent-owned mode-0700 `.boinc-provision-<run_id>` directory so the runner also
+removes credential-bearing ARM parameters if its child must be forcibly killed.
+Failure to remove either private staging artifact fails cleanup. Keys are never
 placed in JSON config, logs, evidence, or command arguments. Dedicated acceptance
 VMs expose all CPUs and 90% RAM; existing volunteer defaults remain unchanged.
 The runner invokes VM commands as `boinc` and waits for attachment. CPU counts
-are **effective preference-limited CPUs**, not physical cores; memory/disk, client
+are **effective preference-limited CPUs**, not physical cores (`max_ncpus_pct=0`
+means unrestricted); memory/disk, client
 version, GPU vendor/VRAM/CUDA/compute/OpenCL capability, platform, and container runtime must meet the fixture
 and current server plan class. Closed cohorts/batch mismatches are rejected;
 acceptance never opens experimental cohorts or changes production trust policy.
+On macOS, the probe discovers Podman through BOINC's Terminal-PATH/installer/Homebrew
+locations and runs `info` through `/Library/Application Support/BOINC Data/Run_Podman`,
+not the login user's separate Podman machine. Structured runtime output must confirm
+a working server; an empty successful helper response is insufficient. Unavailable,
+timed-out, or unlaunchable optional runtimes do not reject native apps or prevent
+trying a fallback runtime. Mac RPC updates also discover the installed BOINC app's
+`boinccmd` when the service user's PATH is restricted.
 Because stock workunit routing binds a numeric version rather than an exact
 app-version ID, reservation rejects another active platform/plan at the same app
 and numeric version. Use distinct candidate version numbers per platform/plan;
@@ -498,7 +509,12 @@ runner never mutates project trust, validation, or queue-allocation policy.
 Every catchable exit (success, timeout, command failure, SIGINT/SIGTERM/SIGHUP)
 attempts fixture release and ephemeral-client teardown. Teardown has its own
 bounded budget and polls until the resource group is absent; an unconfirmed
-delete makes acceptance fail and records the exact group for recovery. As with
+delete makes acceptance fail and records the exact group for recovery. Recovery
+can use `scripts/boinc-test-client.sh --env prod --delete --resource-suffix <run_id>`
+without an authenticator file. If the runner itself is killed or its host fails,
+also reconcile/remove its local `.boinc-acceptance-<run_id>` credential copy and
+`.boinc-provision-<run_id>` parameter directory; these private artifacts are ignored
+by Git but must not be retained or committed. As with
 any process, SIGKILL, host failure, or an unavailable control plane needs operator
 reconciliation using the run ID/resource group; no cleanup guarantee is possible
 under those conditions. Total run defaults to 30 minutes (maximum 4 hours),

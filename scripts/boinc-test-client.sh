@@ -25,6 +25,7 @@ usage: scripts/boinc-test-client.sh --env <prod|dev> (--create | --delete) [opti
   --paygo                          Deploy as a regular pay-as-you-go VM
   --authenticator-file <PATH>      Optional file holding an existing BOINC authenticator (default: create a disposable account on the server)
   --resource-suffix <32 hex>        Isolate an acceptance run in a unique resource group
+  --work-dir <PATH>                Existing empty private directory owned/cleaned by caller
   --what-if                        Check settings and print the plan without creating or deleting resources
   -h, --help                       Show this help
 EOF
@@ -43,6 +44,7 @@ SPOT=true
 AUTH_FILE=""
 WHAT_IF=false
 RESOURCE_SUFFIX=""
+WORK_DIR=""
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -54,6 +56,7 @@ while [ $# -gt 0 ]; do
     --paygo) SPOT=false; shift ;;
     --authenticator-file) [ $# -ge 2 ] || usage; AUTH_FILE=$2; shift 2 ;;
     --resource-suffix) [ $# -ge 2 ] || usage; RESOURCE_SUFFIX=$2; shift 2 ;;
+    --work-dir) [ $# -ge 2 ] || usage; WORK_DIR=$2; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
@@ -65,10 +68,10 @@ done
 
 [ -z "$RESOURCE_SUFFIX" ] || [[ $RESOURCE_SUFFIX =~ ^[0-9a-f]{32}$ ]] || die "--resource-suffix must be 32 hex digits"
 
-[ -z "$RESOURCE_SUFFIX" ] || [ -n "$AUTH_FILE" ] || die "acceptance clients require a pre-isolated --authenticator-file"
+[ "$MODE" != create ] || [ -z "$RESOURCE_SUFFIX" ] || [ -n "$AUTH_FILE" ] || die "acceptance clients require a pre-isolated --authenticator-file"
 
 auth_val=""
-if [ -n "$AUTH_FILE" ]; then
+if [ "$MODE" = create ] && [ -n "$AUTH_FILE" ]; then
   [ -f "$AUTH_FILE" ] || die "--authenticator-file $AUTH_FILE does not exist"
   auth_val=$(tr -d '[:space:]' < "$AUTH_FILE")
   [[ -n $auth_val && $auth_val =~ ^[0-9a-fA-F_]+$ ]] ||
@@ -102,9 +105,24 @@ vault=$(boinc_output keyVaultName)
 
 master_url="${PROJECT_URL}usnmocr/"
 
-work=$(boinc_workdir)
+if [ -n "$WORK_DIR" ]; then
+  python3 - --path "$WORK_DIR" <<'PYWORK' || die "--work-dir must be an empty caller-owned private directory beneath this checkout"
+import argparse, os, stat
+from pathlib import Path
+p = argparse.ArgumentParser()
+p.add_argument('--path', type=Path, required=True)
+path = p.parse_args().path
+info = path.lstat()
+if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
+        or not path.resolve().is_relative_to(Path.cwd().resolve()) or any(path.iterdir())):
+    raise ValueError('unsafe provisioning workspace')
+PYWORK
+  work=$WORK_DIR
+else
+  work=$(boinc_workdir)
+  trap 'rm -rf "$work"' EXIT
+fi
 params="$work/params.json"
-trap 'rm -rf "$work"' EXIT
 umask 077
 printf '%s' "$auth_val" | jq -Rs \
   --arg env "$ENV_NAME" \

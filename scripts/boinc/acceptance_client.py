@@ -3,6 +3,7 @@ import argparse
 import json
 import math
 import os
+import platform
 import re
 from pathlib import Path
 import shutil
@@ -36,6 +37,66 @@ def disk_allowance(total, free, used, prefs):
     return max(0, int(min(available)))
 
 
+def mac_podman():
+    # Match BOINC's Terminal-PATH discovery without evaluating path_helper shell output.
+    search_path = os.environ.get('PATH', '')
+    try:
+        result = subprocess.run(['/usr/libexec/path_helper', '-s'], capture_output=True,
+                                text=True, timeout=5)
+        match = re.search(r'(?:^|\n)PATH="([^"]*)"', result.stdout)
+        if result.returncode == 0 and match:
+            search_path = match[1]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    executable = shutil.which('podman', path=search_path)
+    if executable:
+        return executable
+    homebrew = '/opt/homebrew/bin/podman' if platform.machine() == 'arm64' else '/usr/local/bin/podman'
+    return next((p for p in ('/opt/podman/bin/podman', homebrew) if os.access(p, os.X_OK)), None)
+
+
+def container_runtime():
+    commands = []
+    if platform.system() == 'Darwin':
+        helper = '/Library/Application Support/BOINC Data/Run_Podman'
+        executable = mac_podman() if os.access(helper, os.X_OK) else None
+        if executable:
+            commands.append(('podman', [helper, executable, 'info', '--format=json']))
+    else:
+        for name in ('docker', 'podman'):
+            executable = shutil.which(name)
+            if executable:
+                args = ['--format', '{{json .}}'] if name == 'docker' else ['--format=json']
+                commands.append((name, [executable, 'info', *args]))
+    for name, command in commands:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+            if result.returncode:
+                continue
+            info = json.loads(result.stdout)
+            if not isinstance(info, dict):
+                continue
+            if name == 'docker' and isinstance(info.get('ServerVersion'), str) and info['ServerVersion']:
+                return True
+            if name == 'podman' and all(isinstance(info.get(k), dict) and info[k] for k in ('host', 'store')):
+                return True
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            # Optional runtimes must neither reject native apps nor prevent fallback.
+            continue
+    return False
+
+
+def boinccmd():
+    executable = shutil.which('boinccmd')
+    if executable:
+        return executable
+    if platform.system() == 'Darwin':
+        executable = '/Applications/BOINCManager.app/Contents/Resources/boinccmd'
+        if os.access(executable, os.X_OK):
+            return executable
+    raise FileNotFoundError('boinccmd is unavailable')
+
+
 def probe(root, url):
     state = ET.parse(root / 'client_state.xml').getroot()
     project = next((p for p in state.findall('project') if p.findtext('master_url') == url), None)
@@ -52,7 +113,8 @@ def probe(root, url):
                 raise ValueError('venue preferences require dedicated-client override')
             prefs.update({n.tag: n.text for n in tree if n.text})
     cpus = int(host.findtext('p_ncpus', '0'))
-    fraction = min(float(prefs.get('max_ncpus_pct', 100)), 100) / 100
+    cpu_pct = float(prefs.get('max_ncpus_pct', 100))
+    fraction = min(cpu_pct or 100, 100) / 100
     usable = max(1, math.floor(cpus * fraction)) if cpus else 0
     memory_fraction = min(float(prefs.get('ram_max_used_busy_pct', 50)),
                           float(prefs.get('ram_max_used_idle_pct', 90))) / 100
@@ -73,19 +135,13 @@ def probe(root, url):
             gpu_memory[vendor] = max([float(n.text or 0) for tag in
                                      ('available_ram', 'totalGlobalMem', 'global_mem_size')
                                      for n in node.findall('.//' + tag)] or [0])
-    runtime = False
-    for name in ('docker', 'podman'):
-        if shutil.which(name):
-            result = subprocess.run([name, 'info'], stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, timeout=15)
-            runtime |= result.returncode == 0
     return dict(ready=True, project_url=url, host_id=int(project.findtext('hostid')),
                 platform=state.findtext('platform_name'), cpus=usable,
                 memory_bytes=memory, disk_bytes=disk, gpus=gpus, gpu_memory_bytes=gpu_memory, gpu_capabilities=gpu_capabilities,
                 client_version=sum(int(state.findtext(tag, '0')) * factor for tag, factor in
                                    [('core_client_major_version', 10000), ('core_client_minor_version', 100),
                                     ('core_client_release', 1)]),
-                container_runtime=runtime)
+                container_runtime=container_runtime())
 
 
 def main():
@@ -94,7 +150,8 @@ def main():
     parser.add_argument("--project-url", required=True)
     args = parser.parse_args()
     action, url = args.action, args.project_url
-    root = Path(os.environ.get('BOINC_DIR', '/var/lib/boinc'))
+    default_root = '/Library/Application Support/BOINC Data' if platform.system() == 'Darwin' else '/var/lib/boinc'
+    root = Path(os.environ.get('BOINC_DIR', default_root))
     if action == 'probe':
         try:
             receipt = probe(root, url)
@@ -103,7 +160,7 @@ def main():
         print(json.dumps(receipt))
     elif action == 'update':
         # Read the RPC password locally via boinccmd's normal data-directory lookup.
-        subprocess.run(['boinccmd', '--project', url, 'update'], cwd=root, check=True,
+        subprocess.run([boinccmd(), '--project', url, 'update'], cwd=root, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         print('{}')
     else:
