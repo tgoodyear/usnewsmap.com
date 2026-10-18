@@ -679,14 +679,20 @@ async fn onboarding_upgrade_respects_legacy_pending_and_uncertain_attempts() {
         .success());
     assert!(c.calls().is_empty());
 
-    // 2. Reconciling the legacy marker to `submitted` with a pending unit skips host 3 and
+    // 2. Reconciling an absent workunit by removing `submitting` (leaving the legacy directory
+    // without `submitted`) allows a fresh scoped attempt for host 3.
+    std::fs::remove_file(legacy_unit.join("submitting")).unwrap();
+    let out = c.command("onboard").output().unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[3]");
+
+    // 3. Reconciling the legacy marker to `submitted` with a pending unit skips host 3 and
     // plans/dispatches host 4 instead of re-submitting host 3.
     let job = usnm_boinc::gold::submit::job(&prepared, &cfg.engine, 0).unwrap();
     write(
         &legacy_unit.join(usnm_boinc::gold::job::JOB_FILE),
         serde_json::to_vec_pretty(&job).unwrap(),
     );
-    std::fs::remove_file(legacy_unit.join("submitting")).unwrap();
     write(&legacy_unit.join("submitted"), b"");
 
     let pending_status = "NULL\\tNULL\\tNULL\\tNULL\\tNULL\\tNULL\\n";

@@ -594,6 +594,15 @@ impl Trust {
     /// scope preserves existing calibrated scopes while discarding any uncalibrated legacy
     /// v1–v3 or unscoped v4 eligibility at `out` or `merge_from`.
     pub fn promote_to(&self, out: &Path, merge_from: Option<&Path>) -> anyhow::Result<Self> {
+        self.promote_to_with_limit(out, merge_from, MAX_REPORTS as usize)
+    }
+
+    fn promote_to_with_limit(
+        &self,
+        out: &Path,
+        merge_from: Option<&Path>,
+        max_bytes: usize,
+    ) -> anyhow::Result<Self> {
         self.validate()?;
         let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
             Path::new(".").join(out)
@@ -618,7 +627,12 @@ impl Trust {
             (Some(base), None) | (None, Some(base)) => base.merge(self)?,
             (None, None) => self.clone(),
         };
-        atomic(&out, &serde_json::to_vec_pretty(&merged)?)?;
+        let encoded = serde_json::to_vec_pretty(&merged)?;
+        anyhow::ensure!(
+            encoded.len() <= max_bytes,
+            "promoted trust policy exceeds {max_bytes}-byte reader limit"
+        );
+        atomic(&out, &encoded)?;
         Ok(merged)
     }
 
@@ -1755,5 +1769,16 @@ mod tests {
         // Corrupt or unsupported-version `--out` files still fail closed during promotion.
         std::fs::write(&out_path, r#"{"v": 99, "max_cer": 0.1, "hosts": {}}"#).unwrap();
         assert!(eng_trust.promote_to(&out_path, None).is_err());
+
+        // An oversized merged policy is rejected before replacing the destination file, leaving
+        // the existing readable trust artifact unchanged.
+        std::fs::remove_file(&out_path).unwrap();
+        eng_trust.promote_to(&out_path, None).unwrap();
+        let before_oversized = std::fs::read(&out_path).unwrap();
+        assert!(deu_old
+            .promote_to_with_limit(&out_path, None, before_oversized.len())
+            .is_err());
+        assert_eq!(std::fs::read(&out_path).unwrap(), before_oversized);
+        assert_eq!(Trust::load(&out_path).unwrap(), eng_trust);
     }
 }

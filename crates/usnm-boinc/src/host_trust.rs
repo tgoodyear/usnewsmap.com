@@ -330,11 +330,14 @@ async fn legacy_blocks_attempt(
     }
     let root = attempt_root(legacy_host_root, attempt);
     let unit = gold::submit::units_dir(&root).join("0000");
-    ensure!(
-        unit.join("submitted").is_file(),
-        "uncertain gold submission in {}; reconcile native campaign markers",
-        unit.display()
-    );
+    if !unit.join("submitted").is_file() {
+        ensure!(
+            std::fs::symlink_metadata(unit.join("submitting")).is_err(),
+            "uncertain gold submission in {}; reconcile native campaign markers",
+            unit.display()
+        );
+        return Ok(false);
+    }
     if std::fs::symlink_metadata(active_host_root).is_ok() {
         return Ok(false);
     }
