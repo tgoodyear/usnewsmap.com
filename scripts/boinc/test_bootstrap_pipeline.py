@@ -41,6 +41,7 @@ class PipelineTests(unittest.TestCase):
         self.runner = Mock(return_value="")
         self.p = pipeline.Pipeline(self.args, self.config, "identity", self.runner)
         self.p.has_open_findings = Mock(return_value=False)
+        self.p.successful_attempt = Mock(side_effect=lambda build, detail, model: detail["attempt"])
         self.work = self.directory / "work"
         self.work.mkdir()
         self.file = self.work / self.p.settings
@@ -266,9 +267,49 @@ class PipelineTests(unittest.TestCase):
             value["reviews"][0]["commit"]["oid"] = "b" * 40
             self.assertFalse(pipeline.approved_review(value))
         value = dict(reviewDecision="", headRefOid=head, reviews=[dict(author=dict(login="maintainer"), state="APPROVED", commit=dict(oid=head))])
-        self.assertTrue(pipeline.approved_review(value))
+        self.assertFalse(pipeline.approved_review(value))
+        self.assertTrue(pipeline.approved_review(value, lambda login: login == "maintainer"))
         value["reviews"].append(dict(author=dict(login="maintainer"), state="CHANGES_REQUESTED", commit=dict(oid=head)))
         self.assertFalse(pipeline.approved_review(value))
+
+    def test_external_approval_cannot_override_configured_review_requirement(self):
+        review = dict(author=dict(login="outside-user"), state="APPROVED", commit=dict(oid="a" * 40))
+        value = dict(headRefOid="a" * 40, reviewDecision="REVIEW_REQUIRED", reviews=[review])
+        authority = Mock(return_value=True)
+        self.assertFalse(pipeline.approved_review(value, authority))
+        authority.assert_not_called()
+        value["reviewDecision"] = ""
+        self.assertFalse(pipeline.approved_review(value, lambda _: False))
+        self.assertTrue(pipeline.approved_review(value, lambda _: True))
+        for permission, expected in (("read", False), ("triage", False), ("write", True), ("maintain", True), ("admin", True)):
+            self.runner.return_value = json.dumps(dict(permission=permission))
+            self.assertEqual(self.p.authorized_reviewer("outside-user"), expected)
+
+    def test_partial_rerun_uses_selected_models_last_successful_attempt(self):
+        build = dict(databaseId=123)
+        detail = dict(attempt=2)
+        success = dict(name="qwen worker image (build, push) (2b)", status="completed", conclusion="success")
+        with patch.object(self.p, "gh", side_effect=[json.dumps(dict(jobs=[dict(name="qwen worker image (build, push) (8b)", status="completed", conclusion="success")])), json.dumps(dict(jobs=[success]))]) as gh:
+            self.assertEqual(pipeline.Pipeline.successful_attempt(self.p, build, detail, "qwen-2b"), 1)
+        self.assertEqual([c.args[c.args.index("--attempt") + 1] for c in gh.call_args_list], ["2", "1"])
+        with patch.object(self.p, "gh", return_value=json.dumps(dict(jobs=[{**success, "conclusion": "failure"}]))):
+            with self.assertRaisesRegex(pipeline.PipelineError, "latest job attempt did not succeed"):
+                pipeline.Pipeline.successful_attempt(self.p, build, detail, "qwen-2b")
+
+    def test_partial_rerun_downloads_selected_models_successful_receipt_attempt(self):
+        self.config.update(app="usnm_qwen", plan_class="docker_mt_2b")
+        del self.p.successful_attempt
+        build = dict(databaseId=123, headSha="a" * 40)
+        detail = {**build, "attempt": 2, "status": "completed", "conclusion": "success"}
+        directory = self.directory / "worker-receipt-123-1"
+        directory.mkdir()
+        image = settings()["images"]["worker"]
+        (directory / "final.json").write_text(json.dumps(dict(schema=1, run_id="123", run_attempt="1", commit=build["headSha"], model="qwen-2b", image=image)))
+        def jobs(model):
+            return json.dumps(dict(jobs=[dict(name="qwen worker image (build, push) (" + model + ")", status="completed", conclusion="success")]))
+        with patch.object(self.p, "gh", side_effect=[json.dumps(detail), jobs("8b"), jobs("2b")]), patch.object(pipeline, "public_worker", return_value=image):
+            self.assertEqual(self.p.worker_image(build), image)
+        self.assertEqual(self.p.state["worker_attempt"], 1)
 
     def test_findings_query_fails_closed_on_unresolved_or_paginated_threads(self):
         for nodes, more, expected in (([], False, False), ([{"isResolved": True}], False, False),
@@ -326,6 +367,15 @@ class PipelineTests(unittest.TestCase):
                 self.p.acceptance(self.work)
 
     def test_end_to_end_real_git_with_fake_provision_sign_publish_and_acceptance(self):
+        self.full_pipeline()
+
+    def test_qwen_end_to_end_preserves_ocr_default_and_reviews_app_specific_pin(self):
+        self.config.update(app="usnm_qwen", plan_class="docker_mt_2b")
+        self.p = pipeline.Pipeline(self.args, self.config, "identity", self.runner)
+        self.p.has_open_findings = Mock(return_value=False)
+        self.full_pipeline(qwen=True)
+
+    def full_pipeline(self, qwen=False):
         repo = self.directory / "fixture-repo"
         repo.mkdir()
         def git(*argv, cwd=repo):
@@ -350,6 +400,8 @@ name = Path(sys.argv[0]).name
 keys = ['server', 'bridge'] if name == 'build-boinc-images.sh' else ['appver'] if name == 'boinc-app-release.sh' else []
 if name == 'boinc-app-release.sh':
     assert '--prepare-only' in sys.argv
+    if sys.argv[sys.argv.index('--app') + 1] == 'usnm_qwen':
+        assert sys.argv[sys.argv.index('--worker-image') + 1] == 'ghcr.io/tgoodyear/usnm-boinc-worker@sha256:' + 'c' * 64
 for key in keys:
     value['images'][key] = 'example.azurecr.io/usnm-boinc-' + key + '@sha256:' + 'b' * 64
 if keys:
@@ -378,12 +430,16 @@ if '--dry-run' not in args:
         def gh(*argv):
             nonlocal dispatched
             if argv[:2] == ("run", "list"):
-                return json.dumps([dict(databaseId=123, displayTitle="boinc-worker (bootstrap-" + self.p.state["id"] + ")", headSha=git("rev-parse", "main"), status="completed", conclusion="success")] if dispatched else [])
+                workflow = "boinc-qwen" if qwen else "boinc-worker"
+                return json.dumps([dict(databaseId=123, displayTitle=workflow + " (bootstrap-" + self.p.state["id"] + ")", headSha=git("rev-parse", "main"), status="completed", conclusion="success")] if dispatched else [])
             if argv[:2] == ("run", "view"):
+                if "--attempt" in argv:
+                    job_name = "qwen worker image (build, push) (2b)" if qwen else "worker image (publish multi-architecture index)"
+                    return json.dumps(dict(jobs=[dict(name=job_name, status="completed", conclusion="success")]))
                 return json.dumps(dict(databaseId=123, headSha=git("rev-parse", "main"), attempt=1, status="completed", conclusion="success"))
             if argv[:2] == ("run", "download"):
                 directory = Path(argv[argv.index("--dir") + 1])
-                (directory / "final.json").write_text(json.dumps(dict(schema=1, run_id="123", run_attempt="1", commit=git("rev-parse", "main"), model="worker", image="ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "c" * 64)))
+                (directory / "final.json").write_text(json.dumps(dict(schema=1, run_id="123", run_attempt="1", commit=git("rev-parse", "main"), model="qwen-2b" if qwen else "worker", image="ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "c" * 64)))
                 return ""
             if argv[:2] == ("workflow", "run"):
                 dispatched = True
@@ -413,6 +469,12 @@ if '--dry-run' not in args:
         self.assertEqual(self.p.state["done"], list(pipeline.PHASES))
         self.assertEqual(len(created), 2)
         self.assertTrue(json.loads((self.directory / "acceptance.json").read_text())["accepted"])
+        if qwen:
+            final = json.loads((repo / self.p.settings).read_text())
+            self.assertEqual(final["images"]["worker"], settings()["images"]["worker"])
+            pin = json.loads((repo / self.p.worker_pin).read_text())
+            self.assertEqual(pin["image"], "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "c" * 64)
+            self.assertEqual(pin["plan_class"], "docker_mt_2b")
 
     def test_completed_run_revalidates_immutable_durable_evidence(self):
         value = {"accepted": True, "cleanup_complete": True, "release": {

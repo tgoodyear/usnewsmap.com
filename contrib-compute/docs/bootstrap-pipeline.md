@@ -60,24 +60,34 @@ of this implementation's acceptance evidence.
 
 ## Durable phases
 
-| Phase            | Action and completion gate                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `base`           | Invoke `provision-boinc.sh` only when server/bridge are both absent. Existing immutable runtime pins skip this phase; they are never erased to force bootstrap. Existing script owns safe initialization, secret isolation and partial-project refusal.                                                                                                                                      |
-| `server`         | `build-boinc-images.sh` builds server/bridge from a clean, main-pinned isolated worktree. Existing content-key build caches are retained.                                                                                                                                                                                                                                                    |
-| `worker`         | Dispatch existing main-only `boinc-worker.yml` or `boinc-qwen.yml` with a unique durable correlation; resume by that run, require terminal success, download the immutable final-digest receipt for that exact run/attempt/model/source, verify its public GHCR digest, and record that identity. Mutable commit tags are never promotion inputs. CPU/GPU Qwen tags are selected explicitly. |
-| `review-runtime` | Commit only allowed server/bridge/worker pin changes, push a deterministic candidate branch, create a PR, then block. No deployment until that PR is merged into main, has recorded approval and successful CI, and the entire main settings document still equals the candidate.                                                                                                            |
-| `runtime`        | Provision from a fresh main-pinned checkout with exactly those reviewed settings.                                                                                                                                                                                                                                                                                                            |
-| `sign`           | Invoke `boinc-app-release.sh --prepare-only` against the configured signing host, pinned worker and exact app/version/platform/plan. The existing isolated SSH/network-disabled signing implementation owns keys. Any signing failure, including locked/unreachable storage, is fatal. It is never bypassed or unlocked. No publication occurs here.                                         |
-| `review-app`     | Open the second immutable pin PR; require the same reviewed-main/CI gates for `images.appver`. Only that field may change.                                                                                                                                                                                                                                                                   |
-| `publish`        | Run the existing provisioner from the reviewed main settings; immutable app version replay/registration/public-health checks remain its responsibility.                                                                                                                                                                                                                                      |
-| `acceptance`     | Invoke #548 with exact release identity and a private evidence path. Require accepted canonical client execution **and** completed cleanup; registration alone cannot complete this pipeline.                                                                                                                                                                                                |
+| Phase            | Action and completion gate                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base`           | Invoke `provision-boinc.sh` only when server/bridge are both absent. Existing immutable runtime pins skip this phase; they are never erased to force bootstrap. Existing script owns safe initialization, secret isolation and partial-project refusal.                                                                                                                                                                                                        |
+| `server`         | `build-boinc-images.sh` builds server/bridge from a clean, main-pinned isolated worktree. Existing content-key build caches are retained.                                                                                                                                                                                                                                                                                                                      |
+| `worker`         | Dispatch existing main-only `boinc-worker.yml` or `boinc-qwen.yml` with a unique durable correlation; resume by that run, require terminal success, download the immutable final-digest receipt for that exact run/attempt/model/source, verify its public GHCR digest, and record that identity. Mutable commit tags are never promotion inputs. Partial reruns resolve the selected model's latest successful job attempt, not an unrelated model's attempt. |
+| `review-runtime` | Commit only allowed server/bridge/worker pin changes, push a deterministic candidate branch, create a PR, then block. No deployment until that PR is merged into main, has recorded approval and successful CI, and the entire main settings document still equals the candidate.                                                                                                                                                                              |
+| `runtime`        | Provision from a fresh main-pinned checkout with exactly those reviewed settings.                                                                                                                                                                                                                                                                                                                                                                              |
+| `sign`           | Invoke `boinc-app-release.sh --prepare-only` against the configured signing host, pinned worker and exact app/version/platform/plan. The existing isolated SSH/network-disabled signing implementation owns keys. Any signing failure, including locked/unreachable storage, is fatal. It is never bypassed or unlocked. No publication occurs here.                                                                                                           |
+| `review-app`     | Open the second immutable pin PR; require the same reviewed-main/CI gates for `images.appver`. Only that field may change; the reviewed app-specific worker pin is immutable during signing.                                                                                                                                                                                                                                                                   |
+| `publish`        | Run the existing provisioner from the reviewed main settings; immutable app version replay/registration/public-health checks remain its responsibility.                                                                                                                                                                                                                                                                                                        |
+| `acceptance`     | Invoke #548 with exact release identity and a private evidence path. Require accepted canonical client execution **and** completed cleanup; registration alone cannot complete this pipeline.                                                                                                                                                                                                                                                                  |
+
+Qwen CPU/GPU digests are reviewed in app/plan-specific manifests under
+`contrib-compute/infra/boinc/releases/<env>-<app>-<plan_class>.json`. Their runtime
+PR preserves the shared `images.worker` Tesseract default; signing uses the
+reviewed app-specific digest explicitly. The runtime review allowlist permits
+only server/bridge changes plus that app pin for Qwen, or server/bridge/default
+worker pins for OCR.
 
 Candidate PRs deliberately require review outside the automation; the pipeline
 requests their initial Copilot review but never approves or auto-merges its own
 artifacts. Promotion accepts recorded GitHub approval, an exact-head explicit
-approval event, or an exact-head Copilot GREEN/BLUE outcome under the repository
-policy, always with no unresolved review threads and successful CI. This does not
-assume GitHub's aggregate review decision is configured on the repository. An open PR, running worker build
+approval event from a verified write/maintain/admin reviewer, or an exact-head
+Copilot GREEN/BLUE outcome under the repository policy when no aggregate review
+requirement is configured. `REVIEW_REQUIRED`/`CHANGES_REQUESTED` cannot be
+overridden by fallback approval. Promotion always requires no unresolved review
+threads and successful CI. This does not assume GitHub's aggregate review decision
+is configured on the repository. An open PR, running worker build
 or pending CI is durable `blocked` status (exit **3**). A scheduler can repeat the
 same invocation to advance after these gates without by-hand build/sign/publish
 handoffs. Successful completion exits **0**; missing inputs, locked signing,
@@ -85,7 +95,8 @@ unexpected dirty files, changed reviewed settings and failed operations exit
 **1** with fixed diagnostics. Subprocess output is suppressed to prevent secret
 leakage. Cancellation forwards SIGTERM and allows bounded child cleanup before
 SIGKILL; acceptance receives its explicit 600-second cleanup budget plus a
-60-second grace margin, with repeated parent interrupts masked during teardown. Inspect the upstream build/PR runs through their normal protected
+60-second grace margin, with repeated parent interrupts masked during teardown.
+Inspect the upstream build/PR runs through their normal protected
 interfaces; this pipeline does not copy their logs into its receipts.
 
 ## State and recovery
@@ -99,7 +110,8 @@ State must live below this checkout's ignored `target/`. The private directory
 contains atomically written `state.json`, a process lock, managed Git worktrees,
 and #548 evidence. Keep it between invocations. The successful acceptance receipt
 is checksum-bound to state and revalidated even when resuming a completed run;
-missing or altered evidence cannot produce another complete claim. State binds the complete pipeline
+missing or altered evidence cannot produce another complete claim. State binds
+the complete pipeline
 config and acceptance-config checksum; changing either cannot silently resume an
 old run. It records phase intent **before** side effects and commits successful
 completion **after** gates pass. A completed phase is not rerun. The state lock

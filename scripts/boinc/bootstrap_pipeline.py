@@ -115,7 +115,10 @@ def check_images(images, keys):
             raise PipelineError("missing immutable " + key + " artifact")
 
 
-def approved_review(value):
+def approved_review(value, authorized=lambda _: False):
+    decision = value.get("reviewDecision") or ""
+    if decision not in ("", "APPROVED"):
+        return False
     latest = {}
     for review in value.get("reviews") or []:
         if review["state"] != "COMMENTED" or review["author"]["login"] == "copilot-pull-request-reviewer":
@@ -128,7 +131,7 @@ def approved_review(value):
     for author, review in latest.items():
         if not head or review.get("commit", {}).get("oid") != head:
             continue
-        if review["state"] == "APPROVED":
+        if review["state"] == "APPROVED" and authorized(author):
             return True
         if author == "copilot-pull-request-reviewer" and re.search(
                 r"^### (?:🟢 Approval recommended|🔵 Needs a closer look)$", review.get("body", ""), re.MULTILINE):
@@ -147,6 +150,8 @@ class Pipeline:
         if self.state.get("schema") != 1 or self.state.get("identity") != identity:
             raise PipelineError("state/config identity mismatch; recovery never resets existing state")
         self.settings = f"contrib-compute/infra/boinc/env/{config['env']}.json"
+        self.worker_pin = (f"contrib-compute/infra/boinc/releases/{config['env']}-{config['app']}-{config['plan_class']}.json"
+                           if config["app"] == "usnm_qwen" else None)
 
     def save(self):
         atomic(self.path, self.state)
@@ -201,7 +206,8 @@ class Pipeline:
         self.git("merge-base", "--is-ancestor", entry["commit"], "HEAD", cwd=path)
         changed = self.git("diff", "--name-only", entry["commit"], "HEAD", cwd=path).splitlines()
         dirty = self.git("status", "--porcelain", "--untracked-files=all", cwd=path).splitlines()
-        if any(name != self.settings for name in changed) or any(line[3:] != self.settings for line in dirty):
+        allowed = {self.settings, self.worker_pin}
+        if any(name not in allowed for name in changed) or any(line[3:] not in allowed for line in dirty):
             raise PipelineError("workspace code differs from its reviewed main source")
         return path
 
@@ -273,9 +279,18 @@ class Pipeline:
             raise PipelineError("worker publication workflow failed")
         image = self.worker_image(build)
         settings = self.read_settings(work)
-        settings["images"]["worker"] = image
-        check_images(settings["images"], ("server", "bridge", "worker"))
-        atomic(work / self.settings, settings)
+        if self.worker_pin:
+            pin = dict(schema=1, env=self.config["env"], app=self.config["app"],
+                       platform=self.config["platform"], plan_class=self.config["plan_class"],
+                       image=image, source_commit=build["headSha"], workflow_run=build["databaseId"],
+                       workflow_attempt=self.state["worker_attempt"])
+            path = work / self.worker_pin
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic(path, pin)
+        else:
+            settings["images"]["worker"] = image
+            atomic(work / self.settings, settings)
+        check_images(settings["images"], self.image_keys())
         self.state["worker_build"] = build["databaseId"]
         self.state["worker_commit"] = build["headSha"]
         self.save()
@@ -289,7 +304,7 @@ class Pipeline:
             raise Blocked("worker run attempt is not terminal successful")
         model = "worker" if self.config["app"] == "usnm_ocr" else (
             "qwen-2b" if self.config["plan_class"] == "docker_mt_2b" else "qwen-8b")
-        attempt = detail["attempt"]
+        attempt = self.successful_attempt(build, detail, model)
         directory = self.directory / f"worker-receipt-{build['databaseId']}-{attempt}"
         directory.mkdir(mode=0o700, exist_ok=True)
         receipt = directory / "final.json"
@@ -310,40 +325,80 @@ class Pipeline:
         self.save()
         return image
 
+    def successful_attempt(self, build, detail, model):
+        job_name = ("worker image (publish multi-architecture index)" if model == "worker" else
+                    "qwen worker image (build, push) (" + model.removeprefix("qwen-") + ")")
+        for attempt in range(detail["attempt"], 0, -1):
+            jobs = json.loads(self.gh("run", "view", str(build["databaseId"]), "--attempt", str(attempt), "--json", "jobs"))["jobs"]
+            selected = [job for job in jobs if job["name"] == job_name]
+            if not selected:
+                continue
+            if len(selected) != 1 or selected[0]["status"] != "completed" or selected[0]["conclusion"] != "success":
+                raise PipelineError("selected worker model's latest job attempt did not succeed")
+            return attempt
+        raise PipelineError("successful selected worker job attempt is missing")
+
+    def image_keys(self, appver=False):
+        return ("server", "bridge") + (() if self.worker_pin else ("worker",)) + (("appver",) if appver else ())
+
+    def read_worker_pin(self, work):
+        if not self.worker_pin:
+            return None
+        value = json.loads((work / self.worker_pin).read_text())
+        expected = {"schema", "env", "app", "platform", "plan_class", "image", "source_commit", "workflow_run", "workflow_attempt"}
+        if set(value) != expected or any(value[k] != self.config[k] for k in ("env", "app", "platform", "plan_class")) or value["schema"] != 1:
+            raise PipelineError("app-specific worker pin identity mismatch")
+        check_images({"worker": value["image"]}, ("worker",))
+        if not re.fullmatch(r"[0-9a-f]{40}", value["source_commit"]) or any(
+                not isinstance(value[k], int) or value[k] < 1 for k in ("workflow_run", "workflow_attempt")):
+            raise PipelineError("app-specific worker provenance is invalid")
+        return value
+
+    def worker_for_signing(self, work):
+        return self.read_worker_pin(work)["image"] if self.worker_pin else self.read_settings(work)["images"]["worker"]
+
     def review(self, label, work, keys):
         settings = self.read_settings(work)
         check_images(settings["images"], keys)
         source = self.state["workspaces"]["artifacts" if label == "runtime" else "signing"]["commit"]
         baseline = json.loads(self.git("show", source + ":" + self.settings, cwd=work))
-        allowed = {"server", "bridge", "worker"} if label == "runtime" else {"appver"}
+        allowed = ({"server", "bridge"} | (set() if self.worker_pin else {"worker"})) if label == "runtime" else {"appver"}
         expected = json.loads(json.dumps(baseline))
         for key in allowed:
             expected["images"][key] = settings["images"][key]
         if expected != settings:
             raise PipelineError("preparation modified configuration outside allowed artifact pins")
+        worker_pin = self.read_worker_pin(work)
+        if label == "app" and self.worker_pin:
+            original = json.loads(self.git("show", source + ":" + self.worker_pin, cwd=work))
+            if original != worker_pin:
+                raise PipelineError("signing changed the reviewed app-specific worker pin")
         reviews = self.state["reviews"]
         if label not in reviews:
             reviews[label] = {"branch": "boinc-bootstrap-" + self.state["id"] + "-" + label,
-                              "settings": settings}
+                              "settings": settings, "worker_pin": worker_pin}
             self.save()
         review = reviews[label]
-        if review["settings"] != settings:
+        if review["settings"] != settings or review.get("worker_pin") != worker_pin:
             raise PipelineError("candidate changed after review intent was persisted")
         branch = review["branch"]
-        dirty = self.git("status", "--porcelain", "--untracked-files=normal", cwd=work).splitlines()
-        if any(line[3:] != self.settings for line in dirty):
+        dirty = self.git("status", "--porcelain", "--untracked-files=all", cwd=work).splitlines()
+        allowed_paths = {self.settings} | ({self.worker_pin} if label == "runtime" and self.worker_pin else set())
+        if any(line[3:] not in allowed_paths for line in dirty):
             raise PipelineError("artifact preparation changed files outside the settings allowlist")
         if dirty:
             if self.git("branch", "--show-current", cwd=work) != branch:
                 self.git("switch", "-c", branch, cwd=work)
-            self.git("add", "--", self.settings, cwd=work)
+            self.git("add", "--", *sorted(allowed_paths), cwd=work)
             message = ("chore(boinc): review bootstrap " + label + " pins\n\nRefs #551.\n\n"
                        "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>")
             self.git("commit", "-m", message, cwd=work)
         elif self.git("branch", "--show-current", cwd=work) != branch:
             # Existing settings need no candidate PR, but still must match reviewed main.
-            current = json.loads(self.git("show", self.main() + ":" + self.settings))
-            if current != settings:
+            main_sha = self.main()
+            current = json.loads(self.git("show", main_sha + ":" + self.settings))
+            current_pin = json.loads(self.git("show", main_sha + ":" + self.worker_pin)) if self.worker_pin else None
+            if current != settings or current_pin != worker_pin:
                 raise PipelineError("candidate is missing its review commit")
             return
         prs = json.loads(self.gh("pr", "list", "--head", branch, "--state", "all", "--json", "number,state"))
@@ -362,17 +417,25 @@ class Pipeline:
         approval = json.loads(self.gh("pr", "view", str(prs[0]["number"]), "--json",
                                       "baseRefName,headRefOid,reviewDecision,reviews,statusCheckRollup"))
         checks = approval.get("statusCheckRollup") or []
-        if (approval.get("baseRefName") != "main" or not approved_review(approval)
+        if (approval.get("baseRefName") != "main" or not approved_review(approval, self.authorized_reviewer)
                 or not checks or any(check.get("conclusion", check.get("state")) not in
                                      ("SUCCESS", "SKIPPED", "NEUTRAL") for check in checks)):
             raise Blocked("merged candidate lacks recorded approval and successful CI")
         if self.has_open_findings(prs[0]["number"]):
             raise Blocked("artifact review has unresolved findings")
-        current = json.loads(self.git("show", self.main() + ":" + self.settings))
-        if current != review["settings"]:
+        main_sha = self.main()
+        current = json.loads(self.git("show", main_sha + ":" + self.settings))
+        main_pin = json.loads(self.git("show", main_sha + ":" + self.worker_pin)) if self.worker_pin else None
+        if current != review["settings"] or main_pin != review.get("worker_pin"):
             raise PipelineError("reviewed main pins/config differ from the candidate; refusing stale rollout")
         self.state["reviews"][label]["pr"] = prs[0]["number"]
         self.save()
+
+    def authorized_reviewer(self, login):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", login):
+            return False
+        value = json.loads(self.run(["gh", "api", f"repos/{REPO}/collaborators/{login}/permission"], timeout=120))
+        return value.get("permission") in ("admin", "maintain", "write")
 
     def request_review(self, review, branch):
         if not review.get("review_requested"):
@@ -407,7 +470,7 @@ class Pipeline:
             elif phase == "worker":
                 self.worker(work)
             else:
-                self.review("runtime", work, ("server", "bridge", "worker"))
+                self.review("runtime", work, self.image_keys())
         elif phase == "runtime":
             work = self.workspace("runtime")
             self.assert_reviewed(work, "runtime")
@@ -419,7 +482,7 @@ class Pipeline:
                 if self.git("status", "--porcelain", cwd=work):
                     raise PipelineError("signing requires a clean reviewed checkout")
                 args = ["--prepare-only", "--signing-host", self.config["signing_host"],
-                        "--worker-image", self.read_settings(work)["images"]["worker"]]
+                        "--worker-image", self.worker_for_signing(work)]
                 for key in ("app", "version", "platform", "plan_class"):
                     args.extend(["--" + key.replace("_", "-"), self.config[key]])
                 try:
@@ -427,7 +490,7 @@ class Pipeline:
                 except PipelineError as exc:
                     raise PipelineError("isolated signing failed (including locked/unreachable signing service); never unlock or bypass") from exc
             else:
-                self.review("app", work, ("server", "bridge", "worker", "appver"))
+                self.review("app", work, self.image_keys(appver=True))
         elif phase in ("publish", "acceptance"):
             work = self.workspace("release")
             self.assert_reviewed(work, "app")
@@ -443,8 +506,12 @@ class Pipeline:
 
     def assert_reviewed(self, work, label):
         expected = self.state["reviews"][label]["settings"]
-        current = json.loads(self.git("show", self.main() + ":" + self.settings))
-        if self.read_settings(work) != expected or current != expected:
+        main_sha = self.main()
+        current = json.loads(self.git("show", main_sha + ":" + self.settings))
+        expected_pin = self.state["reviews"][label].get("worker_pin")
+        main_pin = json.loads(self.git("show", main_sha + ":" + self.worker_pin)) if self.worker_pin else None
+        if (self.read_settings(work) != expected or current != expected
+                or self.read_worker_pin(work) != expected_pin or main_pin != expected_pin):
             raise PipelineError("reviewed settings changed; refusing stale or unreviewed deployment")
 
     def execute(self):
