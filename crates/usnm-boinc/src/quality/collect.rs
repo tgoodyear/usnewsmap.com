@@ -912,9 +912,18 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 got.result.pages.len(),
                 job.pages.len()
             );
-            let bundle_page = read(&unit.join(PAGE_FILE), MAX_BUNDLE_SCAN)?;
-            let bundle_alto = read(&unit.join(ALTO_FILE), MAX_BUNDLE_ALTO)?;
-            let bundle_texts = read(&unit.join(TEXTS_FILE), MAX_BUNDLE_TEXTS)?;
+            let has_qwen = job.pages.iter().any(|bp| qwen.contains_key(&bp.doc_id));
+            let bundle_page = if has_qwen {
+                Some(read(&unit.join(PAGE_FILE), MAX_BUNDLE_SCAN)?)
+            } else {
+                None
+            };
+            let bundle_alto = if has_qwen {
+                Some(read(&unit.join(ALTO_FILE), MAX_BUNDLE_ALTO)?)
+            } else {
+                None
+            };
+            let bundle_texts = read(&unit.join(TEXTS_FILE), MAX_BUNDLE_TEXTS).ok();
             for (bp, pr) in job.pages.iter().zip(&got.result.pages) {
                 anyhow::ensure!(
                     bp.doc_id == pr.doc_id,
@@ -935,16 +944,23 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     got.result.host.plan_class.clone(),
                     readings.is_some(),
                 );
-                if let Ok(t_bytes) = bp.inputs.texts.extract(&bundle_texts, "texts") {
-                    if let Ok(page_texts) = serde_json::from_slice::<Texts>(t_bytes) {
-                        enrich_rows_with_damage(&mut unit_rows, &page_texts, None);
+                if let Some(ref bt) = bundle_texts {
+                    if let Ok(t_bytes) = bp.inputs.texts.extract(bt, "texts") {
+                        if let Ok(page_texts) = serde_json::from_slice::<Texts>(t_bytes) {
+                            enrich_rows_with_damage(&mut unit_rows, &page_texts, None);
+                        }
                     }
                 }
                 pages.extend(unit_rows);
-                if let Some(q) = q {
-                    let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
-                    let a_bytes = bp.inputs.alto.extract(&bundle_alto, "alto")?;
-                    let t_bytes = bp.inputs.texts.extract(&bundle_texts, "texts")?;
+                if let (Some(q), Some(bp_page), Some(bp_alto)) =
+                    (q, bundle_page.as_ref(), bundle_alto.as_ref())
+                {
+                    let bt = bundle_texts
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("{wu}: missing {TEXTS_FILE}"))?;
+                    let p_bytes = bp.inputs.page.extract(bp_page, "page")?;
+                    let a_bytes = bp.inputs.alto.extract(bp_alto, "alto")?;
+                    let t_bytes = bp.inputs.texts.extract(bt, "texts")?;
                     let (w, h) = image::load_from_memory(p_bytes)
                         .with_context(|| format!("{wu} ({}): page.jpg", bp.doc_id))?
                         .dimensions();
