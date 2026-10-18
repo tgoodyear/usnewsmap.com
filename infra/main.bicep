@@ -107,6 +107,8 @@ param browsePages bool = false
 
 @description('Give each ingest release the Congress pages curated under curated/congress/ (#229, the ingest job\'s --congress): an index set of their own, rebuilt when the curated pages change and kept otherwise. Clearing it makes the next release publish a version without them (docs/operations.md, "Congress pages").')
 param congress bool = false
+@description('Include manually imported Annals and Register in releases; requires congress and stays off until an operator enables it after OCR QA.')
+param congressManual bool = false
 
 @description('Deploy the Congress fetch job, usnm-cong-caj-<env> (#229): manual, one replica of `usnm-ingest congress-globe`, which fetches the Congressional Globe from UNT at its crawl delay into curated/congress/. Set archiveAccountId first so every response is kept (docs/operations.md, "Congress pages").')
 param congressJob bool = false
@@ -889,6 +891,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     jaLatin: jaLatin
     ocrLocal: ocrLocal
     congress: congress
+    congressManual: congressManual
     congressJob: congressJob
     congressJobName: n.congressJob
     serialSetJob: serialSetJob

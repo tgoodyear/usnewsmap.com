@@ -253,6 +253,7 @@ impl Env {
             ja_latin: false,
             ocr_local: false,
             congress: false,
+            congress_manual: false,
             partition_decade: false,
             single_text_field: false,
             page_language: false,
@@ -296,6 +297,7 @@ impl Env {
             ja_latin,
             ocr_local: false,
             congress: false,
+            congress_manual: false,
             partition_decade: false,
             single_text_field: false,
             page_language: false,
@@ -586,6 +588,7 @@ async fn index_storage_stages_a_fresh_base_without_changing_the_serving_version(
     let release = Release {
         stage_index_storage: true,
         congress: true,
+        congress_manual: false,
         ..e.releaser(2, false)
     };
     let mut sink = JsonlSink::new(e.root.join("new-account"));
@@ -855,6 +858,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,
@@ -914,6 +918,7 @@ async fn releases_into_a_quickwit_writer_node() {
             ja_latin: false,
             ocr_local: false,
             congress: false,
+            congress_manual: false,
             partition_decade: false,
             single_text_field: false,
             page_language: false,
@@ -1570,6 +1575,7 @@ async fn a_backend_switch_forces_a_full_release() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,
@@ -1615,6 +1621,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,
@@ -1704,6 +1711,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,
@@ -2133,6 +2141,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,
@@ -2196,6 +2205,7 @@ async fn a_failed_release_records_when_it_failed() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,
@@ -2472,6 +2482,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             ja_latin: false,
             ocr_local: false,
             congress: false,
+            congress_manual: false,
             partition_decade: false,
             single_text_field: false,
             page_language: false,
@@ -3621,6 +3632,7 @@ async fn our_latin_text_follows_the_decade_layout() {
         ja_latin: true,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         ..e.releaser(day, full)
     };
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -4341,6 +4353,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             ja_latin: false,
             ocr_local: false,
             congress: false,
+            congress_manual: false,
             partition_decade: false,
             single_text_field: false,
             page_language: false,
@@ -5979,6 +5992,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
             ja_latin: true,
             ocr_local: true,
             congress: false,
+            congress_manual: false,
             ..e.releaser(day, full)
         };
         let root = e.root.clone();
@@ -6573,6 +6587,7 @@ async fn congress_pages_are_indexed_in_a_quickwit_writer_node() {
         .unwrap();
     let r = Release {
         congress: true,
+        congress_manual: false,
         ..e.releaser(1, false)
     };
     let mut sink = QuickwitSink::new(&node.url, &root)
