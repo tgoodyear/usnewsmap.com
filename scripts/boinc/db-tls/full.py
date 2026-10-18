@@ -334,6 +334,53 @@ def stop_services():
     PROCESSES.clear()
 
 
+def rehearse_code_migration():
+    global PROJECT
+    original = PROJECT
+    copied = ROOT / "migration-copy"
+    shutil.copytree(original, copied, symlinks=True)
+    for name in ("stop", "status"):
+        link = copied / "bin" / name
+        if link.is_symlink():
+            link.unlink()
+            link.symlink_to(copied / "bin/start")
+    try:
+        PROJECT = copied
+        # Simulate stale copied libraries without replacing their connection implementation.
+        stale = copied / "py/Boinc/db_base.py"
+        stale.write_bytes(stale.read_bytes() + b"\n# copied-project stale version fixture\n")
+        binary = copied / "bin/transitioner"
+        binary.write_bytes(binary.read_bytes() + b"\nstale copied binary fixture\n")
+        before = {str(p.relative_to(copied)): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for tree in ("bin", "cgi-bin", "py", "html/inc")
+                  for p in (copied / tree).rglob("*") if p.is_file() and not p.is_symlink()}
+        state = {name: hashlib.sha256((copied / name).read_bytes()).hexdigest()
+                 for name in ("config.xml", "project.xml", "plan_class_spec.xml")}
+        backup = ROOT / "migration-code-backup"
+        helper = str(TEMPLATES / "refresh-project-code.py")
+        run("python3", helper, "apply", "--project", str(copied), "--backup", str(backup), "--ack-server-stopped")
+        copied_consumers("migration-copied-consumers", True)
+        start_services()
+        web()
+        connections()
+        stop_services()
+        manifest = json.loads((backup / "manifest.json").read_text())
+        assert all(hashlib.sha256((copied / row["path"]).read_bytes()).hexdigest() == row["after"]
+                   for row in manifest["files"] if "after" in row)
+        run("python3", helper, "rollback", "--project", str(copied), "--backup", str(backup), "--ack-server-stopped")
+        assert all(hashlib.sha256((copied / rel).read_bytes()).hexdigest() == value for rel, value in before.items())
+        assert all(hashlib.sha256((copied / name).read_bytes()).hexdigest() == value for name, value in state.items())
+        copied_consumers("rollback-copied-consumers", True)
+        start_services()
+        web()
+        connections()
+        stop_services()
+        emit("copied-project-code-migration-rollback", inventoried=len(manifest["files"]), unchanged_state=len(state))
+    finally:
+        stop_services()
+        PROJECT = original
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", required=True, choices=("init", "restart"))
@@ -348,6 +395,7 @@ def main():
     try:
         if args.phase == "init":
             init_project()
+            rehearse_code_migration()
             hashes = {str(p.relative_to(PROJECT)): hashlib.sha256(p.read_bytes()).hexdigest()
                       for p in (PROJECT / "html/inc/db.inc", PROJECT / "html/inc/db_conn.inc",
                                 PROJECT / "py/Boinc/db_base.py", PROJECT / "bin/feeder")}
