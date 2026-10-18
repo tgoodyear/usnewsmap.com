@@ -23,6 +23,16 @@ JPEG = b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\xc8\x00\x64\x01\x01\x11\x00\xff\xd9"
 
 
 class AlignTests(unittest.TestCase):
+    def test_invalid_provenance_is_a_value_error(self):
+        sample = {"provenance": {"page_url": "https://example.org/page", "page_image_sha256": "a" * 64}}
+        binding = {"source_page_url": "https://example.org/page", "source_image_sha256": "a" * 64,
+                   "registration_evidence": "verified", "artifact_url": "https://example.org/alto",
+                   "retrieved_at": "2026-10-18", "version_evidence": "unknown"}
+        for field in ("registration_evidence", "artifact_url", "retrieved_at", "version_evidence"):
+            for value in (None, 123, [], {}, ""):
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, field):
+                    loc.adapt(sample, {**binding, field: value})
+
     def test_explicit_scale_and_boundary_policy(self):
         result = loc.align(ALTO, 100, 200, [10, 0, 95, 30], .25)
         self.assertEqual(result["text"], "inside")

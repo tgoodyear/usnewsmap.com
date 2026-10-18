@@ -42,6 +42,17 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(loc.candidates(loc.coverage(guide("Title (sn12345678)")),
                                         "sn12345678", 1921), ["test_one_ver02"])
 
+    def test_disjoint_years_do_not_include_gap(self):
+        result = loc.coverage(guide("Title (sn12345678) 1845, 1852-1854"))
+        for year in (1845, 1852, 1853, 1854):
+            self.assertEqual(loc.candidates(result, "sn12345678", year), ["test_one_ver02"])
+        self.assertEqual(loc.candidates(result, "sn12345678", 1850), [])
+        # A batch-base match remains a candidate, independent of title-year hints.
+        self.assertEqual(loc.candidates(result, "sn12345678", 1850, "test_one"), ["test_one_ver02"])
+        for separator in ("\u2013", "\u2014"):
+            result = loc.coverage(guide("Title (sn12345678) 1852" + separator + "1854"))
+            self.assertEqual(loc.candidates(result, "sn12345678", 1853), ["test_one_ver02"])
+
     def test_batch_version_change_is_only_candidate(self):
         inventory = loc.coverage(guide())
         pages = [{"doc_id": "page-1", "lccn": "sn00000000", "date": "1920-01-01",

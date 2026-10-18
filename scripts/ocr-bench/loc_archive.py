@@ -12,6 +12,14 @@ import xml.etree.ElementTree as ET
 PAGE = re.compile(r"(sn\d+)/(\d{4})/(\d{2})/(\d{2})/ed-(\d+)/seq-(\d+)/ocr\.(xml|txt)\Z")
 
 
+def software_summary(pages):
+    counts = Counter((entry.get("softwareName"), entry.get("softwareVersion"))
+                     for page in pages for entry in page["software"])
+    return [{"name": name, "version": version, "pages": count}
+            for (name, version), count in sorted(
+                counts.items(), key=lambda item: tuple(value or "" for value in item[0]))]
+
+
 def inspect(path, expected_sha256):
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -90,18 +98,15 @@ def main():
     with args.out.open("x") as output:
         json.dump(result, output, indent=2, sort_keys=True)
         output.write("\n")
-    software = Counter((entry.get("softwareName"), entry.get("softwareVersion"))
-                       for page in result["pages"] for entry in page["software"])
+    software = software_summary(result["pages"])
     if args.summary_out:
         result["page_inventory_sha256"] = hashlib.sha256(
             json.dumps(result.pop("pages"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        result["software_counts"] = [
-            {"name": name, "version": version, "pages": count} for (name, version), count in sorted(software.items())]
+        result["software_counts"] = software
         with args.summary_out.open("x") as output:
             json.dump(result, output, indent=2, sort_keys=True)
             output.write("\n")
-    print(json.dumps({"pages": result["page_count"], "software": [
-        {"name": name, "version": version, "pages": count} for (name, version), count in software.items()]}))
+    print(json.dumps({"pages": result["page_count"], "software": software}))
 
 
 if __name__ == "__main__":

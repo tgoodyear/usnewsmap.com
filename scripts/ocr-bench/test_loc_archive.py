@@ -19,6 +19,14 @@ PREFIX = "sn12345678/1900/01/01/ed-1/seq-2/ocr."
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_missing_software_metadata_remains_explicit(self):
+        result = loc.software_summary([{"software": [
+            {}, {"softwareName": "ndnp-open-ocr"}, {"softwareName": "ndnp-open-ocr",
+                                                   "softwareVersion": "1.2.0"}]}])
+        self.assertEqual(result, [{"name": None, "version": None, "pages": 1},
+                                  {"name": "ndnp-open-ocr", "version": None, "pages": 1},
+                                  {"name": "ndnp-open-ocr", "version": "1.2.0", "pages": 1}])
+
     def archive(self, root, members):
         path = Path(root) / "ocr.tar.bz2"
         with tarfile.open(path, "w:bz2") as archive:

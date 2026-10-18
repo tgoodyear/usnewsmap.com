@@ -120,10 +120,9 @@ def adapt(sample, binding):
         raise ValueError("source page URL differs from benchmark")
     if binding["source_image_sha256"] != provenance["page_image_sha256"]:
         raise ValueError("source image identity differs from benchmark")
-    if not binding["registration_evidence"].strip():
-        raise ValueError("explicit same-scan, orientation and zero-offset registration evidence required")
-    if not all(binding[key].strip() for key in ("artifact_url", "retrieved_at", "version_evidence")):
-        raise ValueError("missing artifact provenance")
+    for key in ("registration_evidence", "artifact_url", "retrieved_at", "version_evidence"):
+        if not isinstance(binding[key], str) or not binding[key].strip():
+            raise ValueError("nonempty string provenance required: " + key)
     image = checked_file(Path(binding["source_image"]), binding["source_image_sha256"], 128 << 20)
     width, height = jpeg_dimensions(image)
     xml = checked_file(Path(binding["alto"]), binding["alto_sha256"], 16 << 20)

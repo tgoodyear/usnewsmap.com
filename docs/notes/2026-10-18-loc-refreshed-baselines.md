@@ -12,15 +12,15 @@ modified 1 October, lists the following coverage. The
 [machine-readable snapshot](../data/loc-refreshed-2026-10-18.json) contains every
 listed batch, its publication date, title/year hints, denominators and source hashes.
 
-| Measurement | Result |
-| --- | --- |
-| Reprocessed batches in guide | 107 |
-| Reported pages, summed and checked against guide total | 472,768 |
-| Latest batch-added date | 2026-09-30 |
-| Guide HTML SHA-256 | `30d7343ee5b4d2393f8fa9f26786e933cad95f37eb79177bd162b06ba18a1f44` |
-| NDNP-Open-OCR latest software release | `v1.2.1`, published 2026-07-24T17:20:42Z |
-| Release commit | `03533f5fa79518d1750421633e593dc722ad06f6` |
-| Upstream main at inspection | `cbe0ca5321a5f61c2b664ebba3cf8faf7ac1f494`, 2026-09-10 |
+| Measurement                                            | Result                                                             |
+| ------------------------------------------------------ | ------------------------------------------------------------------ |
+| Reprocessed batches in guide                           | 107                                                                |
+| Reported pages, summed and checked against guide total | 472,768                                                            |
+| Latest batch-added date                                | 2026-09-30                                                         |
+| Guide HTML SHA-256                                     | `30d7343ee5b4d2393f8fa9f26786e933cad95f37eb79177bd162b06ba18a1f44` |
+| NDNP-Open-OCR latest software release                  | `v1.2.1`, published 2026-07-24T17:20:42Z                           |
+| Release commit                                         | `03533f5fa79518d1750421633e593dc722ad06f6`                         |
+| Upstream main at inspection                            | `cbe0ca5321a5f61c2b664ebba3cf8faf7ac1f494`, 2026-09-10             |
 
 The datasets portal returned HTTP 403. It was not bypassed. The independently
 documented public [bulk data endpoint](https://chroniclingamerica.loc.gov/data/)
@@ -41,18 +41,18 @@ The archive was inspected without extracting its paths.
 The [sample summary](../data/loc-refreshed-sample-2026-10-18.json) pins the metadata,
 archive, per-page inventory digest and exact repair-page matches.
 
-| Measurement | Result |
-| --- | --- |
-| Guide-added date | 2026-09-30 |
-| Archive creation | 2026-10-05T16:52:42.586285+00:00 |
-| Archive SHA-256 | `f547144b56208253548135d24127a9c2fee8c30c255b07e51417a31eb6d1b91a` |
-| Metadata SHA-256 | `34474a697809ff9123a47a473b0f5d77416e05e4fcd40465ace3ebd23643a14f` |
-| ALTO/text pairs actually present | 675 |
-| Guide's batch page count | 708 |
-| Embedded recognition software, all 675 ALTO files | Tesseract 5.4.1 |
-| Embedded post-processing software, all 675 ALTO files | NDNP-Open-OCR 1.2.0 |
-| Exact canonical page-ID matches in repair manifest | 4 |
-| Exact source-scan registration proved | 0 |
+| Measurement                                           | Result                                                             |
+| ----------------------------------------------------- | ------------------------------------------------------------------ |
+| Guide-added date                                      | 2026-09-30                                                         |
+| Archive creation                                      | 2026-10-05T16:52:42.586285+00:00                                   |
+| Archive SHA-256                                       | `f547144b56208253548135d24127a9c2fee8c30c255b07e51417a31eb6d1b91a` |
+| Metadata SHA-256                                      | `34474a697809ff9123a47a473b0f5d77416e05e4fcd40465ace3ebd23643a14f` |
+| ALTO/text pairs actually present                      | 675                                                                |
+| Guide's batch page count                              | 708                                                                |
+| Embedded recognition software, all 675 ALTO files     | Tesseract 5.4.1                                                    |
+| Embedded post-processing software, all 675 ALTO files | NDNP-Open-OCR 1.2.0                                                |
+| Exact canonical page-ID matches in repair manifest    | 4                                                                  |
+| Exact source-scan registration proved                 | 0                                                                  |
 
 The 708/675 discrepancy is retained, not reconciled by assumption. An OCR archive's
 page count need not equal all pages in an NDNP batch. No claim is made about the
@@ -79,14 +79,14 @@ Original 100-sample subset digest
 `e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04`.
 The release was fetched with verification; no members or references were changed.
 
-| Set | Denominator | Published title/year candidates | Interpretation |
-| --- | --- | --- | --- |
-| Original English acceptance | 100 crops / 18 source pages | 0 | Not listed, not a proof of global absence |
-| All English benchmark | 300 crops / 18 source pages | 0 | Same coverage gap |
-| German benchmark | 700 line pairs / 20 source pages | Outside NDNP | Not eligible for an English LoC comparison |
-| Repair manifest `pages-v20261010-2` | 1,922,826 unique pages | 55,585 unique pages | Candidates only; no automatic coverage assertion |
-| Current keep set | 224,848 pages | 0 | No change to fetcher/queue policy |
-| One downloaded refreshed archive | 675 published page IDs | 4 exact repair matches | OCR available by ID; source-image identity unverified |
+| Set                                 | Denominator                      | Published title/year candidates | Interpretation                                        |
+| ----------------------------------- | -------------------------------- | ------------------------------- | ----------------------------------------------------- |
+| Original English acceptance         | 100 crops / 18 source pages      | 0                               | Not listed, not a proof of global absence             |
+| All English benchmark               | 300 crops / 18 source pages      | 0                               | Same coverage gap                                     |
+| German benchmark                    | 700 line pairs / 20 source pages | Outside NDNP                    | Not eligible for an English LoC comparison            |
+| Repair manifest `pages-v20261010-2` | 1,922,826 unique pages           | 55,585 unique pages             | Candidates only; no automatic coverage assertion      |
+| Current keep set                    | 224,848 pages                    | 0                               | No change to fetcher/queue policy                     |
+| One downloaded refreshed archive    | 675 published page IDs           | 4 exact repair matches          | OCR available by ID; source-image identity unverified |
 
 Repair Parquet SHA-256:
 `ddc1fb2520cbea24ca9633e19da32fcce25f8ec010e473e77195f83462fc5140`.

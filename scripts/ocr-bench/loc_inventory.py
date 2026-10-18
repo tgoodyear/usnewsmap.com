@@ -71,8 +71,14 @@ def coverage(data):
         matches = list(re.finditer(r"\((sn\d+)\)", content))
         for number, match in enumerate(matches):
             end = matches[number + 1].start() if number + 1 < len(matches) else len(content)
-            years = [int(year) for year in re.findall(r"\b(?:17|18|19|20)\d{2}\b", content[match.end():end])]
-            titles.append({"lccn": match[1], "years": sorted(set(years))})
+            ranges = []
+            for years in re.finditer(r"\b((?:17|18|19|20)\d{2})(?:\s*[-\u2013\u2014]\s*((?:17|18|19|20)\d{2}))?\b",
+                                     content[match.end():end]):
+                first, last = int(years[1]), int(years[2] or years[1])
+                if last < first:
+                    raise ValueError("reversed published year range")
+                ranges.append([first, last])
+            titles.append({"lccn": match[1], "year_ranges": ranges})
         if not titles:
             raise ValueError("reprocessed batch has no title identifiers")
         batches[name] = {"batch": name, "added": added, "pages_reported": pages,
@@ -98,8 +104,8 @@ def candidates(inventory, lccn, year, batch=None):
             result.append(row["batch"])
             continue
         for title in row["titles"]:
-            years = title["years"]
-            if title["lccn"] == lccn and (not years or min(years) <= year <= max(years)):
+            ranges = title["year_ranges"]
+            if title["lccn"] == lccn and (not ranges or any(first <= year <= last for first, last in ranges)):
                 result.append(row["batch"])
                 break
     return sorted(set(result))
