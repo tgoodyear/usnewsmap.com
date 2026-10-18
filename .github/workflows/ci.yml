@@ -157,6 +157,7 @@ jobs:
           python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
           python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
+          python3 -m unittest -v scripts/boinc/test_patch_server_intel_proc_type.py
           python3 -m unittest -v scripts/boinc/test_patch_server_gold_routing.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
           python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
