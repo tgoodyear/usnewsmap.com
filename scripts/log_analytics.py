@@ -75,6 +75,10 @@ class QueryError(RuntimeError):
         self.history = history or []
 
 
+class DeadlineExpired(Exception):
+    pass
+
+
 def retryable(status, body):
     return (status == 429 or 500 <= status <= 599
             or (status == 403 and isinstance(body, dict)
@@ -122,7 +126,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def absolute_timeout(seconds):
     """CLI runs on the main thread on macOS/Linux; bound DNS and streaming reads too."""
     def expired(signum, frame):
-        raise TimeoutError("Logs deadline expired")
+        raise DeadlineExpired()
 
     previous = signal.getsignal(signal.SIGALRM)
     signal.signal(signal.SIGALRM, expired)
@@ -147,7 +151,7 @@ def query(workspace, kql, timespan="P1D", *, token=None, identity="az",
     try:
         with absolute_timeout(budget):
             return _query(workspace, kql, timespan, token, attempts, budget, history, hosts)
-    except TimeoutError:
+    except DeadlineExpired:
         raise QueryError("Logs query absolute deadline expired", history) from None
 
 
@@ -192,6 +196,9 @@ def _query(workspace, kql, timespan, token, attempts, budget, history, hosts):
         try:
             with response:
                 raw = response.read()
+        except DeadlineExpired:
+            record["error"] = "deadline-expired"
+            raise
         except (OSError, http.client.HTTPException):
             record["error"] = "response-read-failed"
             raise QueryError("Logs response read failed", history) from None

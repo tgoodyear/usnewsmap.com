@@ -371,11 +371,33 @@ class LogsFrontendRetry(unittest.TestCase):
             opener.return_value.open.return_value = response
             self.client.query(SUB, "print 1", token="fake", budget=0.1)
         self.assertLess(time.monotonic() - started, 2)
-        self.assertEqual(caught.exception.history[0]["error"], "response-read-failed")
+        self.assertEqual(caught.exception.history[0]["error"], "deadline-expired")
 
     def test_retry_cap(self):
         with self.assertRaisesRegex(self.client.QueryError, "12 attempts"):
             self.run_query([self.response(403, {"error": {"code": "InsufficientAccessError"}})] * 12)
+
+    def test_absolute_deadline_is_not_retried_as_connect_timeout(self):
+        dumps = self.client.json.dumps
+        def delayed_dump(*args, **kwargs):
+            time.sleep(0.08)
+            return dumps(*args, **kwargs)
+        def slow_connect(*args, **kwargs):
+            time.sleep(0.2)
+            return self.response(200, {"tables": [{"columns": [], "rows": []}]})
+        started = time.monotonic()
+        with mock.patch.object(self.client.json, "dumps", side_effect=delayed_dump), \
+                mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                self.assertRaisesRegex(self.client.QueryError, "absolute deadline"):
+            opener.return_value.open.side_effect = slow_connect
+            self.client.query(SUB, "print 1", token="fake", budget=0.12)
+        self.assertLess(time.monotonic() - started, 0.25)
+        self.assertEqual(opener.return_value.open.call_count, 1)
+
+    def test_socket_timeout_still_fails_over(self):
+        result = self.run_query([TimeoutError("socket inactivity"),
+                                 self.response(200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual(result[1][1]["host"], "westus.api.loganalytics.io")
 
     def test_nonretryable_http_error_stops_once(self):
         for status in (400, 401, 403):

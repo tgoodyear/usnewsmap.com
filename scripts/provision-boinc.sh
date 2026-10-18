@@ -240,7 +240,9 @@ else
   workbook_query_hosts=$(boinc_output logAnalyticsQueryHosts | jq -r 'if type == "array" then join(",") else empty end') || workbook_query_hosts=""
   if ! (umask 077
     export LOG_ANALYTICS_QUERY_HOST="${workbook_query_host:-${LOG_ANALYTICS_QUERY_HOST:-}}"
-    if [ -n "$workbook_query_hosts" ]; then export LOG_ANALYTICS_QUERY_HOSTS="$workbook_query_hosts"; fi
+    if [ "${LOG_ANALYTICS_QUERY_HOSTS+x}" != x ] && [ -n "$workbook_query_hosts" ]; then
+      export LOG_ANALYTICS_QUERY_HOSTS="$workbook_query_hosts"
+    fi
     python3 scripts/validate-boinc-workbook.py \
     --workspace "$workspace" --subscription "$SUBSCRIPTION" > "$workbook_receipt_dir/workbook-validation.json"); then
     echo "warning: workbook live validation incomplete; inspect the retained receipt" >&2

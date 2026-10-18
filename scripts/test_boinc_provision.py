@@ -89,6 +89,35 @@ class Provision(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(call.startswith("stack group create") for call in self.calls()))
 
+    def test_workbook_smoke_serializes_hosts_and_preserves_operator_override(self):
+        script = (ROOT / "scripts/provision-boinc.sh").read_text()
+        smoke = script[script.index("workspace=$(baz monitor log-analytics workspace list"):]
+        setup = """
+set -eu
+BOINC_RG=fixture SUBSCRIPTION=fixture
+baz() { echo fixture; }
+boinc_workdir() { echo "$FIXTURE_DIR"; }
+boinc_output() {
+  if [ "$1" = logAnalyticsQueryHosts ]; then
+    echo '["westus.api.loganalytics.io","eastus.api.loganalytics.io"]'
+  else echo westus2.api.loganalytics.io; fi
+}
+python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; echo '{}'; }
+"""
+        for override in (None, "eastus.api.loganalytics.io", ""):
+            env = {**self.env, "FIXTURE_DIR": self.tmp.name}
+            env.pop("LOG_ANALYTICS_QUERY_HOSTS", None)
+            if override is not None:
+                env["LOG_ANALYTICS_QUERY_HOSTS"] = override
+            result = subprocess.run(["bash", "-c", setup + smoke], cwd=ROOT,
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((Path(self.tmp.name) / "hosts").read_text(),
+                             override if override is not None else
+                             "westus.api.loganalytics.io,eastus.api.loganalytics.io")
+        self.assertIn("output LOG_ANALYTICS_QUERY_HOSTS string = join(",
+                      (ROOT / "infra/main.bicep").read_text())
+
     def test_automates_lifecycle_in_order_and_checks_public_configuration(self):
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
