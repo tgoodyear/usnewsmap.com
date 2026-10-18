@@ -103,6 +103,14 @@ Plan classes are defined in `contrib-compute/boinc/plan_class_spec.xml`:
 | `usnm_qwen`    | `container` | `docker_mt_2b`          | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-cpu.toml`: 2B only, `--cpus` from the thread count (4–8), 6 GiB, no swap                                                                                                                |
 | `usnm_qwen`    | `container` | `docker_nvidia_cuda_8b` | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-gpu.toml`: 8B only, `--gpus all`, 2 CPUs, >= 7,000 MB GPU RAM, compute capability >= 6.0, 6 GiB, no swap                                                                                |
 
+The native Intel and NVIDIA Vulkan classes share batch-8 inputs, not the container batch-18
+queue. Publish signed Linux versions with the same locked Vulkan bundle first. To open a
+shared dispatch window, use `scripts/boinc/native-qwen-cohort.php --project PATH
+--plan-class shared_8b --workunit FIRST --workunit-end LAST` (preview, then `--apply`).
+The helper requires at most ten contiguous Qwen native-8B workunits, each unaccepted with
+two unsent replicas and quorum two; it closes the other native classes. `--stop --apply`
+closes all native classes. This changes eligibility only, not distinct-host validation.
+
 `scripts/boinc/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
 
 Register the apps and platforms on the server (`scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15`), then release the container or native versions with `scripts/boinc-app-release.sh` (see [contrib-compute/docs/app-release.md](../contrib-compute/docs/app-release.md)):
