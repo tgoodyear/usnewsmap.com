@@ -27,6 +27,12 @@ authorization):
   "database": "usnmocr",
   "trust": "/approved/gold/trust.json",
   "prepared": "/approved/gold/prepared-campaign",
+  "scope": {
+    "language": "eng",
+    "profile": "eng",
+    "psm": 3,
+    "dpi": 300
+  },
   "engine": {
     "base": "docker.io/example/tesseract@sha256:REPLACE_WITH_64_HEX",
     "dpi": 300,
@@ -53,11 +59,12 @@ changed.
 original-file set** from the existing `gold prepare` command. Each prepared remote
 must be present under `cache/<remotes[*].name>` and match its size, MD5 and SHA-256.
 Metadata and the bundle alone are not sufficient for mirrored gold submission.
-`trust` is the existing calibrated v5 list: no default CER or
-new approval is invented. Only `onboard` accepts a missing list or the
-uncalibrated v1-v4 list, and treats either as trusting no host: issuing gold
+`trust` is the existing calibrated v4/v5 list: no default CER or
+new approval is invented. Only `onboard` accepts a missing list or an
+uncalibrated v1-v3 (or unscoped v4) list, and treats either as trusting no host: issuing gold
 publishes nothing, and its reports are what calibrates the first threshold.
-Spot checks and publication still require a valid v5 list. `jobs_root` is the server-local root containing the
+Spot checks and publication require a calibrated scoped v4 or v5 list and evaluate
+host eligibility within the sampled job's exact `(language, profile)` scope. `jobs_root` is the server-local root containing the
 exported OCR job journals and staged inputs, not the controller root.
 
 ## Automatically discover and issue first gold
@@ -69,7 +76,8 @@ usnm-boinc host-trust onboard --config controller.json --execute
 ```
 
 Each pass reads BOINC's `host.id` inventory and skips hosts already trusted for
-this exact immutable image. It issues one targeted gold unit per remaining host,
+this prepared campaign's exact `(language, profile, psm, dpi)` scope, calibrated
+`manifest_sha256`, and immutable worker image. It issues one targeted gold unit per remaining host,
 up to `max_hosts` (1–100). Repeated invocations discover later hosts without an
 operator supplying host IDs. Inventory is bounded to 100,000 hosts; larger
 projects fail closed instead of silently skipping hosts.
@@ -128,6 +136,7 @@ own database credentials, the campaign's prepared inputs and
 
 ```sh
 scripts/start-boinc-bridge.sh --env prod --step gold-onboard --var GOLD_CAMPAIGN=v1-tess550 \
+  --var GOLD_LANGUAGE=eng --var GOLD_PROFILE=eng \
   --var GOLD_ENGINE_IMAGE=sha256:<worker> --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
 ```
 

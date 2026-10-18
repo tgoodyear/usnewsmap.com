@@ -1219,6 +1219,7 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
             dpi: 300,
         }),
         max_cer: 0.1,
+        policies: Vec::new(),
         v: usnm_boinc::trust::TRUST_VERSION,
     };
     let run = |t: Trust| {
@@ -1279,9 +1280,79 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
         }
         assert!(trust.refuse_job(&job, Some(42)).is_some(), "{field}");
     }
-    run(trust).await.unwrap();
+    run(trust.clone()).await.unwrap();
     assert_eq!(
         usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Published
+    );
+
+    // Coexisting eng/eng + deu/frak2021 policy: a host trusted only for eng/eng (42) is refused
+    // when collecting a deu/frak2021 job, while a host trusted for deu/frak2021 (77) succeeds.
+    let fx_deu = Fixture::new("ger").await;
+    let id_deu = fx_deu.export().await;
+    let record_deu = usnm_boinc::load(&fx_deu.options.root, &id_deu).unwrap();
+    assert_eq!(record_deu.job.message.language, "deu");
+    assert_eq!(record_deu.job.engine.profile, "frak2021");
+    let files_deu = fx_deu.result(&id_deu);
+    let spool_deu = fx_deu.tmp.path().join("spool-deu");
+    std::fs::create_dir_all(&spool_deu).unwrap();
+    for (source, logical) in [
+        (&files_deu.0, "result.json"),
+        (&files_deu.1, "text.txt"),
+        (&files_deu.2, "layout.xml"),
+    ] {
+        std::fs::copy(
+            source,
+            spool_deu.join(format!("{}__file_{logical}", record_deu.job.workunit())),
+        )
+        .unwrap();
+    }
+    let deu_trust = Trust {
+        hosts: [(record_deu.job.engine.image.clone(), [77].into())].into(),
+        manifest_sha256: Some("c".repeat(64)),
+        scope: Some(usnm_boinc::trust::Scope {
+            language: "deu".into(),
+            profile: "frak2021".into(),
+            psm: 3,
+            dpi: 300,
+        }),
+        max_cer: 0.08,
+        policies: Vec::new(),
+        v: usnm_boinc::trust::TRUST_VERSION,
+    };
+    let coexisting = trust.merge(&deu_trust).unwrap();
+    assert!(usnm_boinc::trust::collect(
+        &fx_deu.options.root,
+        &spool_deu,
+        &id_deu,
+        &coexisting,
+        Some(42),
+        fx_deu.stores.curated.as_ref(),
+        fx_deu.stores.out.as_ref(),
+    )
+    .await
+    .is_err());
+    assert_ne!(
+        usnm_boinc::load(&fx_deu.options.root, &id_deu)
+            .unwrap()
+            .stage,
+        Stage::Published
+    );
+    usnm_boinc::trust::collect(
+        &fx_deu.options.root,
+        &spool_deu,
+        &id_deu,
+        &coexisting,
+        Some(77),
+        fx_deu.stores.curated.as_ref(),
+        fx_deu.stores.out.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::load(&fx_deu.options.root, &id_deu)
+            .unwrap()
+            .stage,
         Stage::Published
     );
 }
@@ -1501,6 +1572,7 @@ async fn remote_handoff_round_trip_through_the_container() {
             dpi: 300,
         }),
         max_cer: 0.1,
+        policies: Vec::new(),
         v: usnm_boinc::trust::TRUST_VERSION,
     };
     let trust_path = fx.tmp.path().join("gold/trust.json");

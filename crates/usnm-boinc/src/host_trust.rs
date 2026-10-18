@@ -21,6 +21,8 @@ pub struct Config {
     pub database: String,
     pub trust: PathBuf,
     pub prepared: PathBuf,
+    #[serde(default)]
+    pub scope: Option<crate::trust::Scope>,
     pub engine: gold::job::Engine,
     pub max_hosts: usize,
     pub max_spots: usize,
@@ -67,6 +69,13 @@ impl Config {
                 .is_some_and(boinc::is_sha256),
             "immutable worker image required"
         );
+        if let Some(scope) = &c.scope {
+            scope.validate()?;
+            ensure!(
+                scope.psm == c.engine.psm && scope.dpi == c.engine.dpi,
+                "campaign scope scoring configuration must match engine"
+            );
+        }
         let defaults = std::fs::symlink_metadata(&c.mysql_defaults)?;
         ensure!(defaults.is_file(), "mysql defaults must be a regular file");
         #[cfg(unix)]
@@ -301,11 +310,73 @@ async fn next_attempt(
     }
 }
 
-/// Discover hosts centrally, skip same-image trusted hosts, and keep one gold unit
-/// outstanding per untrusted host and campaign: a host whose attempt failed gets a new one.
-/// Native gold submission journals handle uncertain dispatch.
+async fn legacy_blocks_attempt(
+    c: &Config,
+    legacy_host_root: &Path,
+    active_host_root: &Path,
+    execute: bool,
+) -> anyhow::Result<bool> {
+    if legacy_host_root == active_host_root || std::fs::symlink_metadata(legacy_host_root).is_err()
+    {
+        return Ok(false);
+    }
+    let mut attempt = 0;
+    while attempt_root(legacy_host_root, attempt + 1)
+        .join("units/0000")
+        .is_dir()
+    {
+        attempt += 1;
+        ensure!(attempt < MAX_ATTEMPTS, "too many gold attempts");
+    }
+    let root = attempt_root(legacy_host_root, attempt);
+    let unit = gold::submit::units_dir(&root).join("0000");
+    if !unit.join("submitted").is_file() {
+        ensure!(
+            std::fs::symlink_metadata(unit.join("submitting")).is_err(),
+            "uncertain gold submission in {}; reconcile native campaign markers",
+            unit.display()
+        );
+        return Ok(false);
+    }
+    if std::fs::symlink_metadata(active_host_root).is_ok() {
+        return Ok(false);
+    }
+    let job: gold::job::Job =
+        serde_json::from_slice(&read(&unit.join(gold::job::JOB_FILE), gold::job::MAX_JSON)?)?;
+    let workunit = job.workunit();
+    match query_gold_status(c, &workunit).await? {
+        GoldStatus::Failed(results) => {
+            if execute {
+                let failure = serde_json::json!({ "workunit": workunit, "results": results });
+                atomic(
+                    &root.join("failure.json"),
+                    &serde_json::to_vec_pretty(&failure)?,
+                )?;
+                eprintln!(
+                    "legacy gold attempt {attempt} ({workunit}) failed; diagnostics in {}; issuing another",
+                    root.join("failure.json").display()
+                );
+            }
+            Ok(false)
+        }
+        GoldStatus::Unknown => {
+            eprintln!("{workunit} is not in the database; not reissuing");
+            Ok(true)
+        }
+        GoldStatus::Pending | GoldStatus::Succeeded => Ok(true),
+    }
+}
+
+/// Discover hosts centrally, skip hosts already trusted for this prepared campaign's exact
+/// `(language, profile, psm, dpi)`, `manifest_sha256`, and immutable worker image, and keep one
+/// gold unit outstanding per untrusted host and campaign: a host whose attempt failed gets a new
+/// one. Native gold submission journals handle uncertain dispatch.
 pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     c.validate()?;
+    let scope = c
+        .scope
+        .as_ref()
+        .context("prepared campaign scope is required for onboarding")?;
     let trust = Trust::load_or_none_trusted(&c.trust)?;
     let prepared = gold::prepare::read(&c.prepared)?;
     gold::submit::job(&prepared, &c.engine, 0)?;
@@ -315,17 +386,28 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
         inventory.len() <= 100000,
         "host inventory exceeds safety bound"
     );
+    let trusted_hosts =
+        trust.campaign_trusted_hosts(&c.engine.image, &prepared.manifest_sha256, scope);
     let pending: Vec<_> = inventory
         .into_iter()
-        .filter(|h| trust.refuse(&c.engine.image, Some(*h)).is_some())
+        .filter(|h| !trusted_hosts.is_some_and(|hosts| hosts.contains(h)))
         .collect();
-    let campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &c.engine))?);
+    let legacy_campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &c.engine))?);
+    let legacy_root = c.root.join("onboard").join(&legacy_campaign);
+    let campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &c.engine, scope))?);
     let campaign_root = c.root.join("onboard").join(&campaign);
     // Hosts are visited in id order and the pass stops at max_hosts, so hosts with an
     // outstanding unit never starve newly discovered ones.
     let mut plans = Vec::new();
     for host in pending {
-        if let Some(root) = next_attempt(c, &campaign_root.join(host.to_string()), execute).await? {
+        let host_str = host.to_string();
+        let active_host_root = campaign_root.join(&host_str);
+        if legacy_blocks_attempt(c, &legacy_root.join(&host_str), &active_host_root, execute)
+            .await?
+        {
+            continue;
+        }
+        if let Some(root) = next_attempt(c, &active_host_root, execute).await? {
             plans.push((host, root));
             if plans.len() == c.max_hosts {
                 break;
@@ -465,6 +547,7 @@ fn sample(id: &str, every: u64) -> anyhow::Result<bool> {
     Ok(u64::from_str_radix(&id[..16], 16)? % every == 0)
 }
 
+#[cfg(test)]
 fn plan(id: &str, image: &str, host: u64, trust: &Trust) -> anyhow::Result<Spot> {
     ensure!(boinc::is_sha256(id), "invalid job id");
     ensure!(
@@ -482,6 +565,27 @@ fn plan(id: &str, image: &str, host: u64, trust: &Trust) -> anyhow::Result<Spot>
     Ok(Spot {
         job: id.into(),
         image: image.into(),
+        source_host: host,
+        target_host: target,
+        workunit: format!("usnm_spot_{id}_{host}_{target}"),
+        stage: "planned".into(),
+    })
+}
+
+fn plan_job(id: &str, job: &boinc::Job, host: u64, trust: &Trust) -> anyhow::Result<Spot> {
+    ensure!(boinc::is_sha256(id), "invalid job id");
+    ensure!(
+        trust.refuse_job(job, Some(host)).is_none(),
+        "source job is outside calibrated host trust"
+    );
+    let target = trust
+        .trusted_hosts_for_job(job)
+        .into_iter()
+        .find(|h| *h != host && *h > 0)
+        .context("a second trusted host for this exact image is required")?;
+    Ok(Spot {
+        job: id.into(),
+        image: job.engine.image.clone(),
         source_host: host,
         target_host: target,
         workunit: format!("usnm_spot_{id}_{host}_{target}"),
@@ -555,7 +659,7 @@ pub async fn spot_submit(c: &Config, jobs: &Path, execute: bool) -> anyhow::Resu
             trust.refuse_job(&record.job, Some(host)).is_none(),
             "source job is outside calibrated host trust"
         );
-        let mut spot = plan(&id, &record.job.engine.image, host, &trust)?;
+        let mut spot = plan_job(&id, &record.job, host, &trust)?;
         let path = c.root.join("spots").join(&id).join("submission.json");
         if path.exists() {
             let old: Spot = serde_json::from_slice(&read(&path, 4096)?)?;
@@ -829,6 +933,7 @@ mod tests {
                 dpi: 300,
             }),
             max_cer: 0.1,
+            policies: Vec::new(),
             v: crate::trust::TRUST_VERSION,
         }
     }
@@ -867,5 +972,57 @@ mod tests {
         let mut t = t;
         t.hosts.get_mut(&image).unwrap().remove(&2);
         assert!(plan(&id, &image, 1, &t).is_err());
+
+        // Scoped coexistence: spot-check planning for deu/frak2021 selects only a host trusted in
+        // that scope, never a host trusted only for eng/eng.
+        let eng = trust();
+        let deu = Trust {
+            hosts: [(image.clone(), [2, 5].into())].into(),
+            manifest_sha256: Some("c".repeat(64)),
+            scope: Some(crate::trust::Scope {
+                language: "deu".into(),
+                profile: "frak2021".into(),
+                psm: 3,
+                dpi: 300,
+            }),
+            max_cer: 0.08,
+            policies: Vec::new(),
+            v: crate::trust::TRUST_VERSION,
+        };
+        let coexisting = eng.merge(&deu).unwrap();
+        let deu_job = boinc::Job {
+            v: 1,
+            id: id.clone(),
+            message: usnm_ocr_contract::message::OcrMessage {
+                v: 1,
+                page: "sn83030214/1900-01-01/ed-1/seq-1".into(),
+                batch: "batch_test_ver01".into(),
+                language: "deu".into(),
+                reason: usnm_ocr_contract::message::Reason::Bulk,
+                score: Some(0.5),
+                queued_at: "2026-10-18T00:00:00Z".into(),
+            },
+            batch_version: 1,
+            scan: boinc::Scan {
+                url: "https://tile.loc.gov/image-services/iiif/service:ndnp:test/full/full/0/default.jpg".into(),
+                iiif_base: "https://tile.loc.gov/image-services/iiif/service:ndnp:test".into(),
+                bytes: 100,
+                sha256: "d".repeat(64),
+                md5: None,
+            },
+            engine: boinc::Engine {
+                kind: usnm_ocr_contract::routing::EngineKind::Tesseract,
+                image: image.clone(),
+                version: "tesseract 5.5.0".into(),
+                profile: "frak2021".into(),
+                models: "sha256:001122334455".into(),
+                psm: 3,
+                dpi: 300,
+                timeout_secs: 600,
+            },
+        };
+        assert!(plan_job(&id, &deu_job, 1, &coexisting).is_err());
+        let deu_spot = plan_job(&id, &deu_job, 2, &coexisting).unwrap();
+        assert_eq!(deu_spot.target_host, 5);
     }
 }

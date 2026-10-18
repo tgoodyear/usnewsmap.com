@@ -88,10 +88,16 @@ Broader image-backed evidence remains unavailable through that path until
 the source service recovers or a verified alternate source is established.
 
 Do not promote a German host or replace the shared English policy from these
-diagnostics. Remaining requirements include broader reference coverage,
-revised criteria frozen before fresh evaluation, partial-omission/wrong-model
-controls, canonical exact-image BOINC Gold evidence and reviewed coexistence
-of language-scoped trust. The two reserve issues remain unexecuted.
+diagnostics. Scoped policy coexistence (`policies` in `trust.json`) now allows
+the shared `/project/gold/trust.json` artifact to retain existing calibrated v4/v5
+`eng/eng` trust while merging a separately calibrated `(language, profile)`
+scope (`usnm-boinc gold trust ... --out /project/gold/trust.json`), and both
+collection and spot-check planning enforce the workunit's exact
+`(language, profile, psm, dpi)` against its matching scoped entry without
+authorizing cross-scope collection. Remaining requirements before promoting a
+German scope include broader reference coverage, revised criteria frozen before
+fresh evaluation, partial-omission/wrong-model controls, and canonical
+exact-image BOINC Gold evidence. The two reserve issues remain unexecuted.
 
 ## Issue-disjoint current-worker calibration (17 October 2026)
 

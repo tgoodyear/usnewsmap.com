@@ -535,11 +535,14 @@ case "$step" in
     (umask 077; jq -n --arg root "$SHARE_DIR/host-trust" --arg project "$PROJ" \
       --arg jobs "$HANDOFF_DIR" --arg mycnf "$mycnf" --arg ca /usr/local/share/usnm/mysql-ca.pem \
       --arg db "$DB_NAME" --arg trust "$SHARE_DIR/gold/trust.json" --arg prepared "$GOLD" \
+      --arg language "${GOLD_LANGUAGE:?set GOLD_LANGUAGE to the calibrated source language}" \
+      --arg profile "${GOLD_PROFILE:?set GOLD_PROFILE to the calibrated model profile}" \
       --arg image "${GOLD_ENGINE_IMAGE:?set GOLD_ENGINE_IMAGE}" \
       --arg base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
       --arg version "${GOLD_ENGINE_VERSION:-5.5.0}" --argjson max "${GOLD_MAX_HOSTS:-10}" \
       '{root:$root, project:$project, jobs_root:$jobs, mysql_defaults:$mycnf, mysql_ca:$ca,
         database:$db, trust:$trust, prepared:$prepared,
+        scope:{language:$language, profile:$profile, psm:3, dpi:300},
         engine:{base:$base, dpi:300, image:$image, psm:3, timeout_secs:300, version:$version},
         max_hosts:$max, max_spots:1, sample_every:1}' > "$controller")
     stamp="$(mktemp)"

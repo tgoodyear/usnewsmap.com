@@ -627,6 +627,9 @@ enum Gold {
         /// The calibrated model profile; Gold uses PSM 3 / 300 DPI.
         #[arg(long)]
         profile: String,
+        /// Optional existing trust.json to merge this calibrated scope into.
+        #[arg(long)]
+        merge: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -1710,9 +1713,10 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
             manifest_sha256,
             language,
             profile,
+            merge,
             out,
         } => {
-            let t = usnm_boinc::trust::Trust::build_with_outcomes(
+            let built = usnm_boinc::trust::Trust::build_with_outcomes(
                 &reports,
                 &outcomes,
                 max_cer,
@@ -1724,14 +1728,16 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
                     dpi: 300,
                 },
             )?;
-            let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
-                std::path::Path::new(".").join(out)
-            } else {
-                out
-            };
-            usnm_boinc::atomic(&out, &serde_json::to_vec_pretty(&t)?)?;
-            for (image, hosts) in &t.hosts {
-                eprintln!("{image}: {} trusted hosts", hosts.len());
+            let t = built.promote_to(&out, merge.as_deref())?;
+            for policy in t.effective_policies()? {
+                for (image, hosts) in &policy.hosts {
+                    eprintln!(
+                        "{}/{}: {image}: {} trusted hosts",
+                        policy.scope.language,
+                        policy.scope.profile,
+                        hosts.len()
+                    );
+                }
             }
         }
     }
