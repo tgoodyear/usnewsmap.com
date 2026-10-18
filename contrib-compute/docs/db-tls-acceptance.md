@@ -487,6 +487,45 @@ released while this compatibility gate is unmet. This is a code compatibility
 gate, not a global all-idle requirement; #856 resource-specific deferrals still
 apply to all later production operations.
 
+## Code-only persisted-project migration and rollback
+
+`/usr/local/lib/usnm-boinc/refresh-project-code.py` inventories every installed
+file in `bin`, `cgi-bin`, `py`, and `html/inc` before writing anything. It maps
+installed files to the immutable image source, rejects unknown/ambiguous files
+and escaping links, preserves generated project paths and validator links, and
+backs up changed code with hashes, modes and ownership. It does not run upstream
+`tools/upgrade` (which also invokes schema upgrade), touch the database, copy
+credentials, or restore queues, applications, uploads or scientific state.
+
+Under the #529 claim and documented controller lease, stop only the server app
+revisions during the short shared-code replacement (never stop a job execution).
+Keep every active job template unchanged. Through a complete-template,
+execution-only lifecycle-job override using the reviewed bridge image (built from the reviewed
+server image, so validator link targets and the migration helper are both present), run:
+
+```sh
+python3 /usr/local/lib/usnm-boinc/refresh-project-code.py inventory --project /project/usnmocr
+python3 /usr/local/lib/usnm-boinc/refresh-project-code.py apply --project /project/usnmocr --backup /project/tls-code-backup-UNIQUE --ack-server-stopped
+```
+
+The acknowledgement records an operator prerequisite, not automatic proof that
+other containers stopped. Verify all server revisions are inactive before it.
+Never restore an entire project/database while jobs are active. A failed write
+attempt rolls back already changed code; reconcile any failed rollback before
+restarting. For a failed acceptance, first persistently restore TLS enforcement
+OFF if it was enabled, stop server revisions, then run the same reviewed helper
+with `rollback` and the same project/backup arguments and restore prior app/job
+images (excluding busy job templates). The helper refuses concurrent code drift
+or corrupt backup hashes. Start the prior app revision and verify baseline.
+
+The full server-image CI fixture now copies its synthetic project, marks a copied
+Python module and transitioner binary stale, applies the helper, verifies all
+mapped hashes plus real copied Python/PHP, web/CGI and four daemon TLS sessions,
+then rolls back, verifies every original code hash and unchanged configuration,
+and repeats those real consumers. This is a copied-project code rehearsal,
+not a production rehearsal, production schema migration, or proof of Azure Files
+rename semantics; repeat safely on a production project copy before live apply.
+
 ### Revision 69 scheduler settings adoption
 
 The maintainer adopted revision 69's live scheduler settings on 2026-10-18:

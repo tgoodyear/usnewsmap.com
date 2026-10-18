@@ -749,11 +749,15 @@ class QueueModeTests(unittest.TestCase):
             for change in ({"claim_queues": ["ocr-deadletter"]}, {"claim_queues": []},
                            {"claim_queues": ["ocr-bulk", "ocr-bulk"]}, {"lease_hours": 169},
                            {"lease_hours": 0}, {"batch": "test_batch"}, {"pages": [message(1)]},
-                           {"source": "other"}):
+                           {"source": "other"}, {"claim_languages": []},
+                           {"claim_languages": ["en"]}, {"claim_languages": ["eng", "eng"]},
+                           {"claim_languages": "eng"}):
                 with self.subTest(change=change):
                     path.write_text(json.dumps({**good, **change}))
                     with self.assertRaises((ValueError, KeyError)):
                         batch.load_config(path)
+            path.write_text(json.dumps({**good, "claim_languages": ["eng"]}))
+            self.assertEqual(batch.load_config(path)["claim_languages"], ["eng"])
             missing = {k: v for k, v in good.items() if k != "lease_hours"}
             path.write_text(json.dumps(missing))
             with self.assertRaises(ValueError):
@@ -796,10 +800,26 @@ class QueueTransportTests(unittest.TestCase):
         self.assertEqual((sent["CLAIM_MAX"], sent["CLAIM_QUEUES"], sent["CLAIM_LEASE_HOURS"]),
                          (3, "ocr-bulk", 96))
         self.assertEqual(sent["HANDOFF_MANIFEST"], "v1/manifest.parquet")
+        self.assertNotIn("CLAIM_LANGUAGES", sent)
         with patch.object(self.transport, "step"), \
                 patch.object(self.transport, "blob", return_value={**summary, "nonce": "other"}), \
                 self.assertRaisesRegex(ValueError, "stale/concurrent"):
             self.transport.claim(1)
+
+    def test_claim_languages_reach_the_claim_step(self):
+        sent = {}
+        self.transport.config["claim_languages"] = ["eng", "fra"]
+
+        def step(target, name, **variables):
+            sent.update(variables)
+
+        def blob(name):
+            return {"schema_version": 1, "nonce": sent["CLAIM_NONCE"], "claims": []}
+
+        with patch.object(self.transport, "step", side_effect=step), \
+                patch.object(self.transport, "blob", side_effect=blob):
+            self.assertEqual(self.transport.claim(2), [])
+        self.assertEqual(sent["CLAIM_LANGUAGES"], "eng,fra")
 
     def test_a_failed_claim_step_still_returns_the_claims_it_made(self):
         def step(*args, **kwargs):

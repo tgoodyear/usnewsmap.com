@@ -1604,7 +1604,7 @@ async fn pull_refuses_a_changed_page_or_another_jobs_record() {
 
 mod queue_feed {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{BTreeSet, HashSet};
     use std::time::Duration;
     use usnm_boinc::claim;
     use usnm_ingest::ocr_local::{boinc::Snapshot, seed::newest_fetched};
@@ -1687,6 +1687,15 @@ mod queue_feed {
     }
 
     async fn pull(f: &Fed, dir: &Path, lease: Duration) -> claim::Report {
+        pull_languages(f, dir, lease, None).await
+    }
+
+    async fn pull_languages(
+        f: &Fed,
+        dir: &Path,
+        lease: Duration,
+        languages: Option<&BTreeSet<String>>,
+    ) -> claim::Report {
         let snapshot = Snapshot::load(&f.fx.state, f.fx.stores.reference.as_ref())
             .await
             .unwrap();
@@ -1702,6 +1711,7 @@ mod queue_feed {
                 ledger: &ledger,
                 fetched: &list,
                 installed: &usnm_boinc::installed_models(),
+                languages,
             },
             &claim::Options {
                 queues: vec![BULK.into()],
@@ -1831,6 +1841,50 @@ mod queue_feed {
                 .unwrap()
                 .unwrap();
         assert_eq!(m.dequeue_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_outside_the_trusted_languages_is_left_for_the_nodes() {
+        // The fixture page is German; trust calibrated for English only must not claim it,
+        // or collect would hold it back and the message would stay hidden for the lease.
+        let f = fed(true).await;
+        let eng: BTreeSet<String> = ["eng".to_string()].into();
+        let report = pull_languages(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            Duration::from_secs(3600),
+            Some(&eng),
+        )
+        .await;
+        assert_eq!(
+            (report.claims.len(), report.received, report.released),
+            (0, 0, 0)
+        );
+        let m =
+            f.fx.stores
+                .queue
+                .receive(BULK, Duration::from_secs(60))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(m.dequeue_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_in_a_trusted_language_is_claimed() {
+        let f = fed(true).await;
+        let deu: BTreeSet<String> = ["deu".to_string(), "eng".to_string()].into();
+        let report = pull_languages(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            Duration::from_secs(3600),
+            Some(&deu),
+        )
+        .await;
+        assert_eq!(
+            (report.claims.len(), report.released, report.stale),
+            (1, 0, 0)
+        );
     }
 
     #[tokio::test]

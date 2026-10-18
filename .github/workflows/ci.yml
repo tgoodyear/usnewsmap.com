@@ -285,7 +285,7 @@ jobs:
       - name: The actual server installs and restarts a full private TLS-required project
         timeout-minutes: 15
         run: |
-          python3 -m unittest -v scripts/boinc/test_full_db_tls.py
+          python3 -m unittest -v scripts/boinc/test_full_db_tls.py contrib-compute/images/server/test_refresh_project_code.py
           shellcheck -x -S warning scripts/boinc/check-full-db-tls.sh
           scripts/boinc/check-full-db-tls.sh --local-server-image usnm-boinc-server:check
       # crates/usnm-boinc arrives with PR #441; until then there is no bridge binary to build.
