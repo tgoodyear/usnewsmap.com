@@ -392,7 +392,9 @@ Per-unit consequences, using the unit prices above:
   hardware), so one core completes roughly 11 to 22 tasks an hour, and downloads about 50 to
   100 MB an hour. Scheduler contacts are about one per task.
 - Files holds the staged scans for `delete_delay_hours` (168 in the template) after
-  assimilation. The share quota is a parameter (`shareQuotaGb`, 200).
+  assimilation. The share quota is a parameter (`shareQuotaGb`, 200 GiB by default;
+  production explicitly permits 250 GiB). Check actual share usage before staging:
+  retained assessment inputs exhausted the former 200 GiB production limit.
 - The bridge job runs for seconds to minutes per cohort at 0.5 vCPU and 1 GiB, billed at the
   active rate for that time only.
 
