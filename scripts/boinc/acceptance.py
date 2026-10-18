@@ -209,7 +209,9 @@ class Runner:
         time.sleep(min(self.args.poll_interval, remaining))
 
     def finish(self):
-        self.deadline = time.monotonic() + self.args.cleanup_timeout
+        cleanup_end = time.monotonic() + self.args.cleanup_timeout
+        # Azure may consume only its share; always leave time to contact the fixture server.
+        self.deadline = time.monotonic() + self.args.cleanup_timeout * .75 if self.vm_owned else cleanup_end
         errors = []
         # Ignore a second interrupt during bounded teardown, not during inference.
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -221,6 +223,7 @@ class Runner:
                     self.pause()
             except Exception:
                 errors.append('ephemeral client deletion unconfirmed: ' + self.group)
+        self.deadline = cleanup_end
         if self.reserved:
             try:
                 if self.server('release').get('released') is not True:

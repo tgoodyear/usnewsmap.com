@@ -9,6 +9,32 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
+def directory_usage(root):
+    used = 0
+    def failed(error):
+        raise error
+    for directory, _names, files in os.walk(root, followlinks=False, onerror=failed):
+        for name in files:
+            path = Path(directory) / name
+            try:
+                if not path.is_symlink():
+                    info = path.stat()
+                    used += max(info.st_size, getattr(info, 'st_blocks', 0) * 512)
+            except FileNotFoundError:
+                # BOINC can retire a completed slot while preflight is reading it.
+                continue
+    return used
+
+
+def disk_allowance(total, free, used, prefs):
+    available = [free - float(prefs.get('disk_min_free_gb', .1)) * 1e9,
+                 total * float(prefs.get('disk_max_used_pct', 90)) / 100 - used]
+    absolute = float(prefs.get('disk_max_used_gb', 0))
+    if absolute > 0:
+        available.append(absolute * 1e9 - used)
+    return max(0, int(min(available)))
+
+
 def probe(root, url):
     state = ET.parse(root / 'client_state.xml').getroot()
     project = next((p for p in state.findall('project') if p.findtext('master_url') == url), None)
@@ -30,9 +56,8 @@ def probe(root, url):
     memory_fraction = min(float(prefs.get('ram_max_used_busy_pct', 50)),
                           float(prefs.get('ram_max_used_idle_pct', 90))) / 100
     memory = int(float(host.findtext('m_nbytes', '0')) * memory_fraction)
-    disk = shutil.disk_usage(root).free
-    disk = min(disk, int(float(prefs.get('disk_max_used_gb', 1000000)) * 1e9))
-    disk = max(0, disk - int(float(prefs.get('disk_min_free_gb', .1)) * 1e9))
+    filesystem = shutil.disk_usage(root)
+    disk = disk_allowance(filesystem.total, filesystem.free, directory_usage(root), prefs)
     gpus = []
     gpu_memory = {}
     for tag, vendor in [('coproc_cuda', 'nvidia'), ('coproc_intel_gpu', 'intel'), ('coproc_apple_gpu', 'apple')]:
@@ -51,8 +76,9 @@ def probe(root, url):
     return dict(ready=True, project_url=url, host_id=int(project.findtext('hostid')),
                 platform=state.findtext('platform_name'), cpus=usable,
                 memory_bytes=memory, disk_bytes=disk, gpus=gpus, gpu_memory_bytes=gpu_memory,
-                client_version=sum(int(state.findtext('core_client_' + key + '_version', '0')) * factor
-                                   for key, factor in [('major', 10000), ('minor', 100), ('release', 1)]),
+                client_version=sum(int(state.findtext(tag, '0')) * factor for tag, factor in
+                                   [('core_client_major_version', 10000), ('core_client_minor_version', 100),
+                                    ('core_client_release', 1)]),
                 container_runtime=runtime)
 
 

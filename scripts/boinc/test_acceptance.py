@@ -190,6 +190,28 @@ class Lifecycle(Workspace):
                 self.assertEqual(runner.report['accepted'], failure is None)
                 self.assertTrue(runner.report['cleanup_complete'])
 
+    def test_slow_azure_deletion_cannot_exhaust_fixture_release_budget(self):
+        config = {**CONFIG, 'client': dict(mode='ephemeral', sku='Standard_D8s_v5')}
+        runner = self.runner(config)
+        runner.vm_owned = runner.reserved = True
+        clock = [100.0]
+        contacted = []
+        def azure(argv):
+            if argv[:2] == ['group', 'exists']:
+                clock[0] += .8
+                return 'true'
+            return ''
+        def server(action):
+            self.assertGreater(runner.deadline - clock[0], 0)
+            contacted.append(action)
+            return {'released': True}
+        with patch.object(A.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(A.time, 'sleep'), patch.object(runner, 'az', side_effect=azure), \
+                patch.object(runner, 'server', side_effect=server):
+            self.assertFalse(runner.finish())
+        self.assertEqual(contacted, ['release'])
+        self.assertFalse(runner.report['cleanup_complete'])
+
     def test_uncertain_reservation_is_released_and_no_client_is_created(self):
         runner, calls = self.simulate('reserve', ephemeral=True)
         self.assertFalse(runner.report['accepted'])
@@ -310,13 +332,14 @@ class ReleaseIntegration(Workspace):
         stub = self.root / 'python3'
         stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\nexit "$ACCEPTANCE_RC"\n')
         stub.chmod(0o700)
+        (self.root / 'build').mkdir()
         settings = self.root / 'settings.json'
         settings.write_text('{"images":{"appver":"old"}}')
         for code in ('0', '7'):
             env = {**os.environ, 'PATH': str(self.root) + os.pathsep + os.environ['PATH'],
                    'PREPARE_ONLY': 'false', 'ENV_NAME': 'prod', 'APP': 'usnm_qwen', 'VERSION': '1.0',
                    'PLATFORM': RELEASE['platform'], 'PLAN_CLASS': RELEASE['plan_class'],
-                   'appver_image': 'example@sha256:abc', 'work': str(self.root),
+                   'appver_image': 'example@sha256:abc', 'work': str(self.root / 'build'),
                    'BOINC_SETTINGS': str(settings), 'ACCEPTANCE_CONFIG': 'config.json',
                    'COORDINATION_CLAIM': 'claim-url', 'ACCEPTANCE_RC': code, 'CALLS': str(self.root / 'calls')}
             shell = 'set -euo pipefail; die() { echo "$*" >&2; exit 1; }; acceptance_args=(--config config.json);\n' + tail
@@ -342,7 +365,7 @@ class ClientProbe(Workspace):
         values.update(changes)
         (self.root / 'client_state.xml').write_text(f'''<client_state>
         <platform_name>{values['platform']}</platform_name><core_client_major_version>8</core_client_major_version>
-        <core_client_minor_version>2</core_client_minor_version><core_client_release_version>13</core_client_release_version>
+        <core_client_minor_version>2</core_client_minor_version><core_client_release>13</core_client_release>
         <host_info><p_ncpus>{values['cpus']}</p_ncpus><m_nbytes>{16 * 1024**3}</m_nbytes></host_info>
         <project><master_url>{URL}</master_url><hostid>{values['hostid']}</hostid><authenticator>SECRET</authenticator></project>
         </client_state>''')
@@ -358,6 +381,21 @@ class ClientProbe(Workspace):
         self.assertEqual(probe['memory_bytes'], 4 * 1024**3)
         self.assertEqual(probe['client_version'], 80213)
         self.assertNotIn('SECRET', json.dumps(probe))
+
+    def test_disk_quota_subtracts_existing_usage_and_zero_absolute_is_unlimited(self):
+        total, free, used = 100_000_000_000, 60_000_000_000, 20_000_000_000
+        self.assertEqual(C.disk_allowance(total, free, used, {'disk_max_used_pct': 25,
+                         'disk_max_used_gb': 50, 'disk_min_free_gb': 10}), 5_000_000_000)
+        self.assertEqual(C.disk_allowance(total, free, used, {'disk_max_used_pct': 90,
+                         'disk_max_used_gb': 25, 'disk_min_free_gb': 10}), 5_000_000_000)
+        self.assertEqual(C.disk_allowance(total, free, used, {'disk_max_used_gb': 0}), 59_900_000_000)
+        self.assertEqual(C.disk_allowance(total, free, used, {'disk_max_used_pct': 10}), 0)
+        data = self.root / 'cached-model'
+        data.write_bytes(b'fixture data')
+        usage = C.directory_usage(self.root)
+        self.assertGreaterEqual(usage, data.stat().st_size)
+        (self.root / 'slot-link').symlink_to(data)
+        self.assertEqual(C.directory_usage(self.root), usage)
 
     def test_real_boinccmd_update_argv_is_mocked_and_has_no_authenticator(self):
         stub = self.root / 'boinccmd'
@@ -404,6 +442,16 @@ class Server(Workspace):
                      b'{"transcription":"text", "unit_error":"failure"}'):
             with self.assertRaises((ValueError, KeyError)):
                 S.output_check(data, rule)
+
+    def test_scheduler_minima_never_lower_stricter_fixture_requirements(self):
+        (self.root / 'plan_class_spec.xml').write_text('<plan_classes><plan_class><name>docker_mt_2b</name>'
+            '<min_core_client_version>80213</min_core_client_version><gpu_type>none</gpu_type>'
+            '<min_gpu_ram_mb>7000</min_gpu_ram_mb></plan_class></plan_classes>')
+        manifest = self.manifest()
+        manifest['profile'] = {**PROFILE, 'gpu_memory_bytes': 12 * 1024**3, 'client_version': 80400}
+        profile = S.scheduler_profile(self.root, manifest)
+        self.assertEqual(profile['gpu_memory_bytes'], 12 * 1024**3)
+        self.assertEqual(profile['client_version'], 80400)
 
     def test_live_plan_batch_and_closed_cohort_guards(self):
         (self.root / 'plan_class_spec.xml').write_bytes((ROOT / 'contrib-compute/boinc/plan_class_spec.xml').read_bytes())

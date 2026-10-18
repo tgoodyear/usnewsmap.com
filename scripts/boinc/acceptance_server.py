@@ -131,8 +131,10 @@ def scheduler_profile(project, manifest):
     profile['cpus'] = max(profile['cpus'], float(node.findtext('min_ncpus', '1')),
                           float(node.findtext('avg_ncpus', '1')))
     profile['memory_bytes'] = max(profile['memory_bytes'], int(float(node.findtext('mem_usage_base_mb', '0')) * 1e6))
-    profile['gpu_memory_bytes'] = int(float(node.findtext('min_gpu_ram_mb', '0')) * 1e6)
-    profile['client_version'] = int(node.findtext('min_core_client_version', '0'))
+    profile['gpu_memory_bytes'] = max(profile.get('gpu_memory_bytes', 0),
+                                      int(float(node.findtext('min_gpu_ram_mb', '0')) * 1e6))
+    profile['client_version'] = max(profile.get('client_version', 0),
+                                    int(node.findtext('min_core_client_version', '0')))
     expected_gpu = node.findtext('gpu_type', 'none')
     if profile['gpu'] != expected_gpu:
         raise ValueError('fixture GPU differs from scheduler plan')
