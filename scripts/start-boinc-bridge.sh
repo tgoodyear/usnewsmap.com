@@ -167,6 +167,7 @@ got=$(baz containerapp job execution show --name "$job" --resource-group "$JOB_R
 if ! boinc_start_guard_confirm; then
   die "$execution start visibility is uncertain; reconcile it before another launch"
 fi
+boinc_start_guard_release || exit 1
 if [ -z "$WAIT_MINS" ]; then
   echo "$execution"
   exit 0

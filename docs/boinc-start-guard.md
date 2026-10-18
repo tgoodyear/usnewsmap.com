@@ -23,9 +23,11 @@ remains read-only and does not acquire or create a lease.
 After starting, the helper keeps its lease until settings match and the new
 execution is visible as nonterminal in the execution list, or has already
 ended. It waits up to 120 seconds for visibility. The execution check rejects
-all nonterminal statuses, not just `Running` and `Processing`. With
-`--wait-mins`, the lease remains held while the launcher waits. Without it,
-the next caller's execution check rejects the still-active run.
+all nonterminal statuses, not just `Running` and `Processing`. Once visibility
+is confirmed, the transaction lease is released before any `--wait-mins` poll
+so nonconflicting deployments on another host can inspect the active execution,
+while the next launcher or conflicting template update still sees the running
+execution in the execution list.
 
 ## Coordination boundaries
 

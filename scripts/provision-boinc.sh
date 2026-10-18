@@ -182,6 +182,8 @@ bridge_job_template_matches() {
     (.volumes | length) == 1 and
     .volumes[0].name == "project" and
     .volumes[0].storageType == "AzureFile" and
+    .volumes[0].storageName == "project" and
+    .volumes[0].mountOptions == "mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict" and
     ((.containers[0].env // []) | all(((keys - ["name", "value"]) | length) == 0 and (.value | type == "string" and length > 0))) and
     (
       ([(.containers[0].env // [])[] | select(.name == "AZURE_CLIENT_ID" or .name == "KEY_VAULT_NAME" or .name == "DB_HOST") | .name] | sort)

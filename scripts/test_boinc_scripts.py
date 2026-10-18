@@ -1635,6 +1635,18 @@ esac
         self.assertLess(lists[-1], release)
         self.assertFalse((self.remote / "held").exists())
 
+    def test_wait_mins_releases_remote_lease_before_status_poll(self):
+        result = self.run_script("--step", "register-apps", "--wait-mins", "5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        release = next(i for i, c in enumerate(calls) if c.startswith("storage blob lease release"))
+        status_polls = [i for i, c in enumerate(calls) if "--query properties.status" in c]
+        self.assertEqual(len(status_polls), 2)
+        self.assertLess(status_polls[0], release)
+        self.assertLess(release, status_polls[1])
+        self.assertEqual(sum(c.startswith("storage blob lease release") for c in calls), 1)
+        self.assertFalse((self.remote / "held").exists())
+
     def test_release_failure_is_reported_and_local_mutex_is_cleaned(self):
         result = self.run_script("--step", "register-apps", STUB_RELEASE_FAILURE="1")
         self.assertEqual(result.returncode, 1)
