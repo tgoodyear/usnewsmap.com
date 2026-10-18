@@ -500,7 +500,8 @@ credentials, or restore queues, applications, uploads or scientific state.
 Under the #529 claim and documented controller lease, stop only the server app
 revisions during the short shared-code replacement (never stop a job execution).
 Keep every active job template unchanged. Through a complete-template,
-execution-only lifecycle-job override using the reviewed server image, run:
+execution-only lifecycle-job override using the reviewed bridge image (built from the reviewed
+server image, so validator link targets and the migration helper are both present), run:
 
 ```sh
 python3 /usr/local/lib/usnm-boinc/refresh-project-code.py inventory --project /project/usnmocr

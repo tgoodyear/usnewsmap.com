@@ -83,7 +83,7 @@ def changed(rows):
     return [row for row in rows if "after" in row and row["before"] != row["after"]]
 
 
-def rollback(project, backup):
+def rollback(project, backup, only=None):
     manifest = json.loads((backup / "manifest.json").read_text())
     if str(project.resolve()) != manifest["project"]:
         raise ValueError("rollback project mismatch")
@@ -94,17 +94,27 @@ def rollback(project, backup):
         target = project / rel
         if any(parent.is_symlink() for parent in target.parents if parent != project and project in parent.parents):
             raise ValueError("linked rollback parent")
-    rows = changed(manifest["files"])
+    rows = [row for row in changed(manifest["files"]) if only is None or row["path"] in only]
+    failures = []
+    restore = []
     for row in rows:
         target, saved = project / row["path"], backup / "files" / row["path"]
         if target.is_symlink() or digest(target) not in (row["before"], row["after"]):
-            raise ValueError(f"rollback conflict: {row['path']}")
+            failures.append(f"rollback conflict: {row['path']}")
+            continue
         if digest(saved) != row["before"]:
-            raise ValueError("backup hash mismatch")
-    for row in reversed(rows):
+            failures.append(f"backup hash mismatch: {row['path']}")
+            continue
+        restore.append(row)
+    for row in reversed(restore):
         if digest(project / row["path"]) == row["before"]:
             continue
-        replace(backup / "files" / row["path"], project / row["path"], row["mode"], row["uid"], row["gid"])
+        try:
+            replace(backup / "files" / row["path"], project / row["path"], row["mode"], row["uid"], row["gid"])
+        except OSError:
+            failures.append(f"rollback replacement failed: {row['path']}")
+    if failures:
+        raise ValueError("; ".join(failures))
     if any(digest(project / row["path"]) != row["before"] for row in rows):
         raise ValueError("rollback verification failed")
     return {"case": "project-code-rollback", "restored": len(rows)}
@@ -123,16 +133,18 @@ def apply(project, source, templates, backup):
         if digest(saved) != row["before"]:
             raise ValueError("backup verification failed")
     (backup / "manifest.json").write_text(json.dumps({"project": str(project), "files": rows}, indent=2) + "\n")
+    completed = []
     try:
         for row in changed(rows):
             target = project / row["path"]
             if target.is_symlink() or digest(target) != row["before"] or digest(Path(row["source"])) != row["after"]:
                 raise ValueError("runtime code changed after inventory")
             replace(Path(row["source"]), target, row["mode"], row["uid"], row["gid"])
+            completed.append(row["path"])
         if any(digest(project / row["path"]) != row["after"] for row in changed(rows)):
             raise ValueError("migration verification failed")
     except Exception:
-        rollback(project, backup)
+        rollback(project, backup, only=completed)
         raise
     return {"case": "project-code-refresh", "inventoried": len(rows), "replaced": len(changed(rows))}
 

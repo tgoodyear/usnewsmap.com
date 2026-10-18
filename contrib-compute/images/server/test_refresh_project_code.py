@@ -110,3 +110,24 @@ class RefreshProjectCode(unittest.TestCase):
                 code.apply(self.project, self.source, self.templates, self.backup)
         self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
         self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "old cgi-bin/cgi")
+
+    def test_later_unwritten_drift_does_not_block_recovery(self):
+        original = code.replace
+        def drift_later(source, target, mode, *owner):
+            result = original(source, target, mode, *owner)
+            if str(target).endswith("bin/create_work") and str(source).startswith(str(self.source)):
+                (self.project / "cgi-bin/cgi").write_text("concurrent owner code")
+            return result
+        with patch.object(code, "replace", side_effect=drift_later):
+            with self.assertRaises(ValueError):
+                code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "concurrent owner code")
+
+    def test_rollback_recovers_nonconflicting_files_before_reporting_drift(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        (self.project / "cgi-bin/cgi").write_text("concurrent owner code")
+        with self.assertRaisesRegex(ValueError, "rollback conflict"):
+            code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "concurrent owner code")

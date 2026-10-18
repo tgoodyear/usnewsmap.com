@@ -356,7 +356,7 @@ def rehearse_code_migration():
         binary.write_bytes(binary.read_bytes() + b"\nstale copied binary fixture\n")
         before = {str(p.relative_to(copied)): hashlib.sha256(p.read_bytes()).hexdigest()
                   for tree in ("bin", "cgi-bin", "py", "html/inc")
-                  for p in (copied / tree).rglob("*") if p.is_file() and not p.is_symlink()}
+                  for p in (copied / tree).rglob("*") if p.is_file() and not p.is_symlink() and p.suffix != ".pyc" and "__pycache__" not in p.parts}
         state = {name: hashlib.sha256((copied / name).read_bytes()).hexdigest()
                  for name in ("config.xml", "project.xml", "plan_class_spec.xml")}
         backup = ROOT / "migration-code-backup"
