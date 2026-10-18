@@ -467,3 +467,22 @@ complete bridge template, protected by the existing per-job start lease. Only th
 execution receives `BRIDGE_STEP=register-apps`; persisted Iris defaults, secret
 references, resources, and project mounts remain unchanged. Legacy quality results
 that lack the added image measurements export null, not fabricated numeric zero.
+
+## Mixed-schema collector rollout gate
+
+**Do not deploy the reconciled collector until its assessment-database consumer
+supports mixed old and new campaign schemas.** The additional page metrics add
+Parquet columns. `read_parquet(..., union_by_name=true)` within each campaign does
+not make a positional `UNION ALL` across campaigns compatible: missing columns
+must be filled with null by a name-based union across campaign queries as well.
+
+The compatibility change and regression belong to the assessment-database owner
+in PR #777, not this reconciliation. Before collector rollout, require a merged
+fix for both page and crop campaign unions in
+`scripts/build-quality-assessment-db.py` and a passing regression consolidating
+old and new campaign files, with the older campaign's new measurements null.
+Record the merged commit and test evidence in the #464/#529 rollout receipt.
+Image builds may proceed, but neither the collector nor TLS activation may be
+released while this compatibility gate is unmet. This is a code compatibility
+gate, not a global all-idle requirement; #856 resource-specific deferrals still
+apply to all later production operations.
