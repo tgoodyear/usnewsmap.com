@@ -167,6 +167,7 @@ module storage 'modules/storage.bicep' = {
     filesAccountName: names.files
     endpointName: names.filesEndpoint
     location: location
+    shareQuotaGb: env == 'prod' ? 250 : 200
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.filesDnsZoneId
   }
