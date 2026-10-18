@@ -1021,7 +1021,7 @@ fn ms(since: Instant) -> u64 {
 }
 
 /// How long the computation may run before the unit returns `timeout`.
-pub const DEADLINE: Duration = Duration::from_secs(1800);
+pub const DEADLINE: Duration = Duration::from_secs(7200);
 
 /// The process's peak resident set in KiB (`VmHWM`), where `/proc` has it.
 pub fn peak_rss_kib() -> Option<u64> {
@@ -1283,35 +1283,50 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
     let job_path = resolve_slot_file(work, JOB_FILE);
     let job: Job = serde_json::from_slice(&read_bounded(&job_path, MAX_JOB_JSON)?)?;
     job.validate()?;
-    let (max_scan, max_alto, max_texts) = if job.pages.is_empty() {
-        (MAX_SCAN, MAX_ALTO, MAX_TEXTS)
-    } else {
-        (MAX_BUNDLE_SCAN, MAX_BUNDLE_ALTO, MAX_BUNDLE_TEXTS)
-    };
-    let page = read_bounded(&resolve_slot_file(work, PAGE_FILE), max_scan)?;
-    ensure!(
-        job.inputs.page.matches(&page),
-        "input page checksum mismatch"
-    );
-    let alto = read_bounded(&resolve_slot_file(work, ALTO_FILE), max_alto)?;
-    ensure!(
-        job.inputs.alto.matches(&alto),
-        "input ALTO checksum mismatch"
-    );
-    let texts_bytes = read_bounded(&resolve_slot_file(work, TEXTS_FILE), max_texts)?;
-    ensure!(
-        job.inputs.texts.matches(&texts_bytes),
-        "input texts checksum mismatch"
-    );
-    let (texts, bundle_texts) = if job.pages.is_empty() {
+    let page_path = resolve_slot_file(work, PAGE_FILE);
+    let alto_path = resolve_slot_file(work, ALTO_FILE);
+    let texts_path = resolve_slot_file(work, TEXTS_FILE);
+    let (page, alto, texts, bundle_texts) = if job.pages.is_empty() {
+        let page = read_bounded(&page_path, MAX_SCAN)?;
+        ensure!(
+            job.inputs.page.matches(&page),
+            "input page checksum mismatch"
+        );
+        let alto = read_bounded(&alto_path, MAX_ALTO)?;
+        ensure!(
+            job.inputs.alto.matches(&alto),
+            "input ALTO checksum mismatch"
+        );
+        let texts_bytes = read_bounded(&texts_path, MAX_TEXTS)?;
+        ensure!(
+            job.inputs.texts.matches(&texts_bytes),
+            "input texts checksum mismatch"
+        );
         let t: Texts = serde_json::from_slice(&texts_bytes).context("texts.json")?;
         t.validate(&job)?;
-        (t, vec![])
+        (page, alto, t, vec![])
     } else {
+        let page_slices: Vec<_> = job.pages.iter().map(|p| &p.inputs.page).collect();
+        job.inputs.page.verify_stream_and_slices(
+            &page_path,
+            MAX_BUNDLE_SCAN,
+            &page_slices,
+            "page",
+        )?;
+        let alto_slices: Vec<_> = job.pages.iter().map(|p| &p.inputs.alto).collect();
+        job.inputs.alto.verify_stream_and_slices(
+            &alto_path,
+            MAX_BUNDLE_ALTO,
+            &alto_slices,
+            "ALTO",
+        )?;
+        let texts_bytes = read_bounded(&texts_path, MAX_BUNDLE_TEXTS)?;
+        ensure!(
+            job.inputs.texts.matches(&texts_bytes),
+            "input texts checksum mismatch"
+        );
         let mut b_texts = Vec::with_capacity(job.pages.len());
         for p in &job.pages {
-            p.inputs.page.extract(&page, "page")?;
-            p.inputs.alto.extract(&alto, "alto")?;
             let tb = p.inputs.texts.extract(&texts_bytes, "texts")?;
             let t: Texts = serde_json::from_slice(tb)
                 .with_context(|| format!("texts.json for {}", p.doc_id))?;
@@ -1322,7 +1337,7 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
             page: None,
             readers: vec![],
         });
-        (first, b_texts)
+        (Vec::new(), Vec::new(), first, b_texts)
     };
     let places_bytes = read_bounded(&resolve_slot_file(work, PLACES_FILE), MAX_PLACES)?;
     ensure!(
@@ -1462,7 +1477,7 @@ fn compute_with_deadline(
     let started = Instant::now();
     let job = l.job.clone();
     let total_pages = job.pages.len();
-    let places = Places::parse(&l.places);
+    let places = Arc::new(Places::parse(&l.places));
     let mut cp = match QualityCheckpoint::load_valid(work, &job) {
         Some(existing) => {
             if !existing.pages.is_empty() {
@@ -1489,8 +1504,30 @@ fn compute_with_deadline(
         },
     };
 
+    let page_path = resolve_slot_file(work, PAGE_FILE);
+    let alto_path = resolve_slot_file(work, ALTO_FILE);
+    let mut page_file = if l.page.is_empty() {
+        Some(
+            std::fs::File::open(&page_path)
+                .with_context(|| format!("opening {}", page_path.display()))
+                .map_err(|e| Box::new((job.clone(), e)))?,
+        )
+    } else {
+        None
+    };
+    let mut alto_file = if l.alto.is_empty() {
+        Some(
+            std::fs::File::open(&alto_path)
+                .with_context(|| format!("opening {}", alto_path.display()))
+                .map_err(|e| Box::new((job.clone(), e)))?,
+        )
+    } else {
+        None
+    };
+
     for idx in cp.pages.len()..total_pages {
         if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+            let _ = cp.save(work);
             return Err(Box::new((
                 job,
                 anyhow::anyhow!("boinc control requested exit ({reason})"),
@@ -1498,19 +1535,32 @@ fn compute_with_deadline(
         }
         let remaining = deadline.saturating_sub(started.elapsed());
         if remaining.is_zero() {
+            let _ = cp.save(work);
             return Err(Box::new((
                 job,
                 anyhow::anyhow!("computation exceeded {} s", deadline.as_secs()),
             )));
         }
         let bp = job.pages[idx].clone();
-        let page_bytes = match bp.inputs.page.extract(&l.page, "page") {
-            Ok(s) => s.to_vec(),
-            Err(e) => return Err(Box::new((job, e))),
+        let page_bytes = match &mut page_file {
+            Some(f) => match bp.inputs.page.read_from_file(f, "page") {
+                Ok(s) => s,
+                Err(e) => return Err(Box::new((job, e))),
+            },
+            None => match bp.inputs.page.extract(&l.page, "page") {
+                Ok(s) => s.to_vec(),
+                Err(e) => return Err(Box::new((job, e))),
+            },
         };
-        let alto_bytes = match bp.inputs.alto.extract(&l.alto, "alto") {
-            Ok(s) => s.to_vec(),
-            Err(e) => return Err(Box::new((job, e))),
+        let alto_bytes = match &mut alto_file {
+            Some(f) => match bp.inputs.alto.read_from_file(f, "alto") {
+                Ok(s) => s,
+                Err(e) => return Err(Box::new((job, e))),
+            },
+            None => match bp.inputs.alto.extract(&l.alto, "alto") {
+                Ok(s) => s.to_vec(),
+                Err(e) => return Err(Box::new((job, e))),
+            },
         };
         let page_texts = l.bundle_texts[idx].clone();
         let fw = if bp.function_words.is_empty() {
@@ -1518,10 +1568,10 @@ fn compute_with_deadline(
         } else {
             bp.function_words.clone()
         };
-        let places_clone = places.clone();
+        let places_clone = Arc::clone(&places);
         let doc_id = bp.doc_id.clone();
         let readers_spec = bp.readers.clone();
-        let (pr, conf_map) = run_on_worker_thread(&job, remaining, control, move || {
+        let (pr, conf_map) = match run_on_worker_thread(&job, remaining, control, move || {
             compute_page_record(
                 &doc_id,
                 &readers_spec,
@@ -1531,12 +1581,20 @@ fn compute_with_deadline(
                 &page_texts,
                 &places_clone,
             )
-        })?;
+        }) {
+            Ok(res) => res,
+            Err(e) => {
+                let _ = cp.save(work);
+                return Err(e);
+            }
+        };
         for (k, v) in conf_map {
             cp.confusions.insert(format!("{}:{k}", bp.doc_id), v);
         }
         cp.pages.push(pr);
-        let _ = cp.save(work);
+        if cp.pages.len() % 16 == 0 || cp.pages.len() == total_pages {
+            let _ = cp.save(work);
+        }
         let frac = cp.pages.len() as f64 / total_pages.max(1) as f64;
         let _ = write_atomic(&work.join(FRACTION_FILE), format!("{frac:.6}\n").as_bytes());
     }

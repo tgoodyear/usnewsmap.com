@@ -104,6 +104,31 @@ pub struct Findability {
     pub places: Option<f64>,
 }
 
+/// `consensus` and `reader` are folded token sequences, with consensus sets precomputed.
+pub fn of_precomputed(
+    want_content: &BTreeSet<String>,
+    want_places: &BTreeSet<String>,
+    reader: &[String],
+    places: &Places,
+) -> Findability {
+    let have: std::collections::HashSet<&str> = reader.iter().map(String::as_str).collect();
+    let content_found = want_content
+        .iter()
+        .filter(|w| have.contains(w.as_str()))
+        .count();
+    let have_places = places.found(reader);
+    let places_found = want_places.intersection(&have_places).count();
+    Findability {
+        content_total: want_content.len(),
+        content_found,
+        content: (!want_content.is_empty())
+            .then(|| content_found as f64 / want_content.len() as f64),
+        places_total: want_places.len(),
+        places_found,
+        places: (!want_places.is_empty()).then(|| places_found as f64 / want_places.len() as f64),
+    }
+}
+
 /// `consensus` and `reader` are folded token sequences.
 pub fn of(
     consensus: &[String],
@@ -112,19 +137,8 @@ pub fn of(
     places: &Places,
 ) -> Findability {
     let want = content_words(consensus, function_words);
-    let have: BTreeSet<&String> = reader.iter().collect();
-    let content_found = want.iter().filter(|w| have.contains(w)).count();
     let want_places = places.found(consensus);
-    let have_places = places.found(reader);
-    let places_found = want_places.intersection(&have_places).count();
-    Findability {
-        content_total: want.len(),
-        content_found,
-        content: (!want.is_empty()).then(|| content_found as f64 / want.len() as f64),
-        places_total: want_places.len(),
-        places_found,
-        places: (!want_places.is_empty()).then(|| places_found as f64 / want_places.len() as f64),
-    }
+    of_precomputed(&want, &want_places, reader, places)
 }
 
 #[cfg(test)]

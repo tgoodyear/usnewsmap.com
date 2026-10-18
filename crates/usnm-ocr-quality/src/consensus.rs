@@ -119,6 +119,20 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
         .iter()
         .map(|r| r.iter().map(|t| fold(t)).collect())
         .collect();
+    let total: usize = readers.iter().map(Vec::len).sum();
+    let mut intern_map: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::with_capacity(total.min(8192));
+    let mut folded_ids: Vec<Vec<u32>> = Vec::with_capacity(readers.len());
+    for r in &folded {
+        let mut ids = Vec::with_capacity(r.len());
+        for t in r {
+            let next_id = intern_map.len() as u32;
+            let id = *intern_map.entry(t.as_str()).or_insert(next_id);
+            ids.push(id);
+        }
+        folded_ids.push(ids);
+    }
+    let vocab_size = intern_map.len() + 1;
     let offsets: Vec<usize> = readers
         .iter()
         .scan(0, |acc, r| {
@@ -127,7 +141,6 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
             Some(o)
         })
         .collect();
-    let total: usize = readers.iter().map(Vec::len).sum();
     let reader_of = |occ: usize| -> (usize, usize) {
         let r = offsets.partition_point(|o| *o <= occ) - 1;
         (r, occ - offsets[r])
@@ -137,30 +150,70 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
     // Substitutions and omissions per pair, resolved against the components afterwards.
     let mut subs: Vec<(usize, usize, usize, usize)> = Vec::new();
     let mut omissions: Vec<(usize, usize, usize)> = Vec::new();
+    let mut pair_indices = Vec::new();
     for i in 0..readers.len() {
         for j in i + 1..readers.len() {
-            let ops = align::align(&folded[i], &folded[j]);
-            let (mut a, mut b) = (0, 0);
-            for op in ops {
-                match op {
-                    Op::Match => {
-                        matches.push((offsets[i] + a, offsets[j] + b));
-                        a += 1;
-                        b += 1;
-                    }
-                    Op::Sub => {
-                        subs.push((i, a, j, b));
-                        a += 1;
-                        b += 1;
-                    }
-                    Op::Ins => {
-                        omissions.push((i, j, b));
-                        b += 1;
-                    }
-                    Op::Del => {
-                        omissions.push((j, i, a));
-                        a += 1;
-                    }
+            pair_indices.push((i, j));
+        }
+    }
+    let threads = crate::features::worker_threads();
+    let pair_ops: Vec<((usize, usize), Vec<Op>)> = if threads <= 1 || pair_indices.len() <= 1 {
+        pair_indices
+            .iter()
+            .map(|&(i, j)| {
+                (
+                    (i, j),
+                    align::align_u32(&folded_ids[i], &folded_ids[j], vocab_size),
+                )
+            })
+            .collect()
+    } else {
+        let chunk_size = pair_indices.len().div_ceil(threads);
+        std::thread::scope(|s| {
+            let handles: Vec<_> = pair_indices
+                .chunks(chunk_size)
+                .map(|chunk| {
+                    let f_ref = &folded_ids;
+                    s.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|&(i, j)| {
+                                ((i, j), align::align_u32(&f_ref[i], &f_ref[j], vocab_size))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let mut out = Vec::with_capacity(pair_indices.len());
+            for h in handles {
+                if let Ok(mut part) = h.join() {
+                    out.append(&mut part);
+                }
+            }
+            out
+        })
+    };
+    for ((i, j), ops) in pair_ops {
+        let (mut a, mut b) = (0, 0);
+        for op in ops {
+            match op {
+                Op::Match => {
+                    matches.push((offsets[i] + a, offsets[j] + b));
+                    a += 1;
+                    b += 1;
+                }
+                Op::Sub => {
+                    subs.push((i, a, j, b));
+                    a += 1;
+                    b += 1;
+                }
+                Op::Ins => {
+                    omissions.push((i, j, b));
+                    b += 1;
+                }
+                Op::Del => {
+                    omissions.push((j, i, a));
+                    a += 1;
                 }
             }
         }
@@ -193,14 +246,14 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
         let root = dsu.find(occ);
         groups.entry(root).or_default().push(reader_of(occ));
     }
-    let mut root_of_word: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut root_of_word: Vec<u32> = vec![u32::MAX; total];
     let mut words = Vec::new();
     for (root, mut members) in groups {
         members.sort();
         let distinct = members.windows(2).filter(|w| w[0].0 != w[1].0).count() + 1;
         if members.len() >= 2 && distinct >= 2 {
             let (r, p) = members[0];
-            root_of_word.insert(root, words.len());
+            root_of_word[root] = words.len() as u32;
             words.push(Word {
                 token: folded[r][p].clone(),
                 members,
@@ -212,9 +265,10 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
         let mut seen: Vec<bool> = vec![false; words.len()];
         let mut in_consensus = 0;
         for p in 0..toks.len() {
-            if let Some(&w) = root_of_word.get(&dsu.find(offsets[r] + p)) {
+            let w = root_of_word[dsu.find(offsets[r] + p)];
+            if w != u32::MAX {
                 in_consensus += 1;
-                seen[w] = true;
+                seen[w as usize] = true;
             }
         }
         let have = seen.iter().filter(|s| **s).count();
@@ -258,13 +312,16 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
     }
     for (idx, &r) in reader_order.iter().enumerate() {
         let occs: Vec<(usize, usize)> = (0..readers[r].len())
-            .filter_map(|p| root_of_word.get(&dsu.find(offsets[r] + p)).map(|&w| (p, w)))
+            .filter_map(|p| {
+                let w = root_of_word[dsu.find(offsets[r] + p)];
+                (w != u32::MAX).then_some((p, w as usize))
+            })
             .collect();
         let mut runs: Vec<Vec<usize>> = Vec::new();
-        for &(p, w) in &occs {
+        for (k, &(p, w)) in occs.iter().enumerate() {
             let continues = runs.last().is_some_and(|run| {
                 let prev_w = *run.last().unwrap();
-                let prev_p = occs[runs.iter().map(Vec::len).sum::<usize>() - 1].0;
+                let prev_p = occs[k - 1].0;
                 p == prev_p + 1 && is_adjacent(prev_w, w)
             });
             if continues {
@@ -298,7 +355,6 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
     // occurrence is a consensus word the reader has no occurrence in; one
     // per reader and word.
     let mut disagreements = Vec::new();
-    let mut taken: Vec<(usize, usize)> = Vec::new();
     let mut has: Vec<Vec<bool>> = vec![vec![false; words.len()]; readers.len()];
     for (w, word) in words.iter().enumerate() {
         for &(r, _) in &word.members {
@@ -307,13 +363,15 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
     }
     for (i, a, j, b) in subs {
         for (reader, pos, other, opos) in [(i, a, j, b), (j, b, i, a)] {
-            let Some(&w) = root_of_word.get(&dsu.find(offsets[other] + opos)) else {
-                continue;
-            };
-            if has[reader][w] || taken.contains(&(reader, w)) {
+            let w_u32 = root_of_word[dsu.find(offsets[other] + opos)];
+            if w_u32 == u32::MAX {
                 continue;
             }
-            taken.push((reader, w));
+            let w = w_u32 as usize;
+            if has[reader][w] {
+                continue;
+            }
+            has[reader][w] = true;
             disagreements.push((
                 reader,
                 readers[other][opos].clone(),
@@ -322,13 +380,15 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
         }
     }
     for (reader, other, opos) in omissions {
-        let Some(&w) = root_of_word.get(&dsu.find(offsets[other] + opos)) else {
-            continue;
-        };
-        if has[reader][w] || taken.contains(&(reader, w)) {
+        let w_u32 = root_of_word[dsu.find(offsets[other] + opos)];
+        if w_u32 == u32::MAX {
             continue;
         }
-        taken.push((reader, w));
+        let w = w_u32 as usize;
+        if has[reader][w] {
+            continue;
+        }
+        has[reader][w] = true;
         disagreements.push((reader, readers[other][opos].clone(), String::new()));
     }
     disagreements.sort();

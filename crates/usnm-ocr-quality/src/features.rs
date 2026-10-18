@@ -22,6 +22,44 @@ pub const MAX_SIDE: u32 = 1024;
 /// Skew search: `-SKEW_STEPS..=SKEW_STEPS` tenths of a degree.
 pub const SKEW_STEPS: i32 = 30;
 
+/// Returns whether the host CPU supports wide SIMD (AVX2 on `x86_64`, NEON on `aarch64`).
+#[inline]
+pub fn has_wide_simd() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("avx2")
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        true
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        false
+    }
+}
+
+/// Returns the number of intra-page worker threads to use:
+/// - `USNM_QUALITY_THREADS` if set (`>= 1`);
+/// - otherwise, if the CPU does not support wide vectorization (`!has_wide_simd()`),
+///   gracefully falls back to multicore execution (`available_parallelism().clamp(1, 4)`);
+/// - otherwise `1` when wide SIMD is active (leaving outer BOINC slot parallelism in charge).
+pub fn worker_threads() -> usize {
+    if let Ok(val) = std::env::var("USNM_QUALITY_THREADS") {
+        if let Ok(n) = val.parse::<usize>() {
+            if n >= 1 {
+                return n.min(16);
+            }
+        }
+    }
+    if !has_wide_simd() {
+        return std::thread::available_parallelism()
+            .map(|n| n.get().clamp(1, 4))
+            .unwrap_or(1);
+    }
+    1
+}
+
 /// A grey copy with its long side at most [`MAX_SIDE`], each pixel the
 /// mean of a `scale` by `scale` block (truncated to the pixels inside the
 /// image). Returns the copy and the factor.
@@ -33,27 +71,100 @@ pub fn downscale(img: &GrayImage) -> (GrayImage, u32) {
     }
     let (ow, oh) = (w.div_ceil(scale), h.div_ceil(scale));
     let mut out = GrayImage::new(ow, oh);
-    for oy in 0..oh {
-        for ox in 0..ow {
-            let (mut sum, mut n) = (0u64, 0u64);
-            for y in oy * scale..((oy + 1) * scale).min(h) {
-                for x in ox * scale..((ox + 1) * scale).min(w) {
-                    sum += u64::from(img.get_pixel(x, y).0[0]);
-                    n += 1;
-                }
-            }
-            out.put_pixel(ox, oy, image::Luma([(sum / n.max(1)) as u8]));
+    let raw = img.as_raw();
+    let out_raw = out.as_mut();
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: guarded by runtime `is_x86_feature_detected!("avx2")`.
+        unsafe {
+            downscale_inner_avx2(raw, out_raw, w, h, ow, oh, scale);
         }
+        return (out, scale);
     }
+    downscale_inner_portable(raw, out_raw, w, h, ow, oh, scale);
     (out, scale)
 }
 
-pub fn histogram(img: &GrayImage) -> [u64; 256] {
-    let mut h = [0u64; 256];
-    for p in img.pixels() {
-        h[usize::from(p.0[0])] += 1;
+#[inline(always)]
+fn downscale_inner_portable(
+    raw: &[u8],
+    out_raw: &mut [u8],
+    w: u32,
+    h: u32,
+    ow: u32,
+    oh: u32,
+    scale: u32,
+) {
+    let w_usize = w as usize;
+    let ow_usize = ow as usize;
+    let scale_usize = scale as usize;
+    let mut row_sums = vec![0u64; ow_usize];
+    let mut row_counts = vec![0u64; ow_usize];
+    for oy in 0..oh as usize {
+        row_sums.fill(0);
+        row_counts.fill(0);
+        let y0 = oy * scale_usize;
+        let y1 = ((oy + 1) * scale_usize).min(h as usize);
+        let dy_count = (y1 - y0) as u64;
+        for (ox, count_slot) in row_counts.iter_mut().enumerate() {
+            let x0 = ox * scale_usize;
+            let x1 = ((ox + 1) * scale_usize).min(w_usize);
+            *count_slot = dy_count * (x1 - x0) as u64;
+        }
+        for y in y0..y1 {
+            let row = &raw[y * w_usize..(y + 1) * w_usize];
+            for (ox, sum_slot) in row_sums.iter_mut().enumerate() {
+                let x0 = ox * scale_usize;
+                let x1 = ((ox + 1) * scale_usize).min(w_usize);
+                let mut s = 0u32;
+                for &px in &row[x0..x1] {
+                    s += u32::from(px);
+                }
+                *sum_slot += u64::from(s);
+            }
+        }
+        let out_row = &mut out_raw[oy * ow_usize..(oy + 1) * ow_usize];
+        for ox in 0..ow_usize {
+            out_row[ox] = (row_sums[ox] / row_counts[ox].max(1)) as u8;
+        }
     }
-    h
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[target_feature(enable = "avx2")]
+unsafe fn downscale_inner_avx2(
+    raw: &[u8],
+    out_raw: &mut [u8],
+    w: u32,
+    h: u32,
+    ow: u32,
+    oh: u32,
+    scale: u32,
+) {
+    downscale_inner_portable(raw, out_raw, w, h, ow, oh, scale);
+}
+
+pub fn histogram(img: &GrayImage) -> [u64; 256] {
+    let mut h0 = [0u64; 256];
+    let mut h1 = [0u64; 256];
+    let mut h2 = [0u64; 256];
+    let mut h3 = [0u64; 256];
+    let raw = img.as_raw();
+    let (chunks, rem) = raw.as_chunks::<4>();
+    for &[c0, c1, c2, c3] in chunks {
+        h0[usize::from(c0)] += 1;
+        h1[usize::from(c1)] += 1;
+        h2[usize::from(c2)] += 1;
+        h3[usize::from(c3)] += 1;
+    }
+    for &b in rem {
+        h0[usize::from(b)] += 1;
+    }
+    for i in 0..256 {
+        h0[i] += h1[i] + h2[i] + h3[i];
+    }
+    h0
 }
 
 /// Otsu's threshold: the grey level that maximises between-class
@@ -109,29 +220,53 @@ fn percentile(hist: &[u64; 256], p: f64) -> u8 {
 
 fn skew(img: &GrayImage, threshold: u8) -> f64 {
     let (w, h) = img.dimensions();
-    let dark: Vec<(f64, f64)> = img
-        .enumerate_pixels()
-        .filter(|(_, _, p)| p.0[0] < threshold)
-        .map(|(x, y, _)| (f64::from(x), f64::from(y)))
-        .collect();
-    if dark.is_empty() || h == 0 {
+    if w == 0 || h == 0 {
+        return 0.0;
+    }
+    let raw = img.as_raw();
+    let w_usize = w as usize;
+    let h_usize = h as usize;
+    let mut dark_xs: Vec<u16> = Vec::new();
+    let mut row_bounds: Vec<(u32, usize, usize)> = Vec::with_capacity(h_usize);
+    for y in 0..h_usize {
+        let start = dark_xs.len();
+        let row = &raw[y * w_usize..(y + 1) * w_usize];
+        for (x, &px) in row.iter().enumerate() {
+            if px < threshold {
+                dark_xs.push(x as u16);
+            }
+        }
+        if dark_xs.len() > start {
+            row_bounds.push((y as u32, start, dark_xs.len()));
+        }
+    }
+    if dark_xs.is_empty() {
         return 0.0;
     }
     let cx = f64::from(w) / 2.0;
     let margin =
         (f64::from(w) * (f64::from(SKEW_STEPS) / 10.0).to_radians().tan()).ceil() as usize + 2;
-    let rows = h as usize + 2 * margin;
+    let rows = h_usize + 2 * margin;
+    let margin_i64 = margin as i64;
+    let mut profile = vec![0u32; rows];
+    let mut dx_t = vec![0.0f64; w_usize];
     let mut best = (f64::NEG_INFINITY, 0i32);
+    let n = rows as f64;
     for step in -SKEW_STEPS..=SKEW_STEPS {
         let t = (f64::from(step) / 10.0).to_radians().tan();
-        let mut profile = vec![0u32; rows];
-        for &(x, y) in &dark {
-            let r = (y - (x - cx) * t).round() as i64 + margin as i64;
-            if let Some(cell) = usize::try_from(r).ok().and_then(|r| profile.get_mut(r)) {
-                *cell += 1;
+        for (x, slot) in dx_t.iter_mut().enumerate() {
+            *slot = (f64::from(x as u32) - cx) * t;
+        }
+        profile.fill(0);
+        for &(y, start, end) in &row_bounds {
+            let y_f64 = f64::from(y);
+            for &x in &dark_xs[start..end] {
+                let r = (y_f64 - dx_t[usize::from(x)]).round() as i64 + margin_i64;
+                if let Some(cell) = usize::try_from(r).ok().and_then(|r| profile.get_mut(r)) {
+                    *cell += 1;
+                }
             }
         }
-        let n = profile.len() as f64;
         let mean = profile.iter().map(|v| f64::from(*v)).sum::<f64>() / n;
         let var = profile
             .iter()
@@ -154,16 +289,95 @@ fn laplacian_variance(img: &GrayImage) -> f64 {
     if w < 3 || h < 3 {
         return 0.0;
     }
-    let at = |x: u32, y: u32| f64::from(img.get_pixel(x, y).0[0]);
-    let mut vals = Vec::with_capacity(((w - 2) * (h - 2)) as usize);
-    for y in 1..h - 1 {
-        for x in 1..w - 1 {
-            vals.push(4.0 * at(x, y) - at(x - 1, y) - at(x + 1, y) - at(x, y - 1) - at(x, y + 1));
+    let w_usize = w as usize;
+    let h_usize = h as usize;
+    let raw = img.as_raw();
+    let inner_w = w_usize - 2;
+    let total = inner_w * (h_usize - 2);
+    let mut vals = vec![0.0f64; total];
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: guarded by runtime `is_x86_feature_detected!("avx2")`.
+        unsafe {
+            laplacian_rows_avx2(raw, &mut vals, w_usize, h_usize, inner_w);
         }
+    } else {
+        laplacian_rows_portable(raw, &mut vals, w_usize, h_usize, inner_w);
     }
+    #[cfg(not(target_arch = "x86_64"))]
+    laplacian_rows_portable(raw, &mut vals, w_usize, h_usize, inner_w);
     let n = vals.len() as f64;
     let mean = vals.iter().sum::<f64>() / n;
     vals.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n
+}
+
+#[inline(always)]
+fn laplacian_rows_portable(
+    raw: &[u8],
+    vals: &mut [f64],
+    w_usize: usize,
+    h_usize: usize,
+    inner_w: usize,
+) {
+    for y in 1..h_usize - 1 {
+        let prev = &raw[(y - 1) * w_usize..y * w_usize];
+        let curr = &raw[y * w_usize..(y + 1) * w_usize];
+        let next = &raw[(y + 1) * w_usize..(y + 2) * w_usize];
+        let out_row = &mut vals[(y - 1) * inner_w..y * inner_w];
+        for x in 1..w_usize - 1 {
+            let lap = 4 * i32::from(curr[x])
+                - i32::from(curr[x - 1])
+                - i32::from(curr[x + 1])
+                - i32::from(prev[x])
+                - i32::from(next[x]);
+            out_row[x - 1] = f64::from(lap);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[target_feature(enable = "avx2")]
+unsafe fn laplacian_rows_avx2(
+    raw: &[u8],
+    vals: &mut [f64],
+    w_usize: usize,
+    h_usize: usize,
+    inner_w: usize,
+) {
+    laplacian_rows_portable(raw, vals, w_usize, h_usize, inner_w);
+}
+
+#[inline(always)]
+fn sort2_u8(a: u8, b: u8) -> (u8, u8) {
+    (a.min(b), a.max(b))
+}
+
+#[inline(always)]
+fn sort3_u8(a: u8, b: u8, c: u8) -> (u8, u8, u8) {
+    let (a, b) = sort2_u8(a, b);
+    let (b, c) = sort2_u8(b, c);
+    let (a, b) = sort2_u8(a, b);
+    (a, b, c)
+}
+
+#[inline(always)]
+fn median3_u8(a: u8, b: u8, c: u8) -> u8 {
+    let (a, b) = sort2_u8(a, b);
+    let (_, b) = sort2_u8(a, b.min(c));
+    b
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn median9_u8(a0: u8, a1: u8, a2: u8, b0: u8, b1: u8, b2: u8, c0: u8, c1: u8, c2: u8) -> u8 {
+    let (lo0, mid0, hi0) = sort3_u8(a0, a1, a2);
+    let (lo1, mid1, hi1) = sort3_u8(b0, b1, b2);
+    let (lo2, mid2, hi2) = sort3_u8(c0, c1, c2);
+    let max_lo = lo0.max(lo1).max(lo2);
+    let min_hi = hi0.min(hi1).min(hi2);
+    let med_mid = median3_u8(mid0, mid1, mid2);
+    median3_u8(max_lo, med_mid, min_hi)
 }
 
 fn median_residual(img: &GrayImage) -> f64 {
@@ -171,25 +385,54 @@ fn median_residual(img: &GrayImage) -> f64 {
     if w < 3 || h < 3 {
         return 0.0;
     }
-    let mut sum = 0f64;
-    let mut n = 0u64;
-    let mut win = [0u8; 9];
-    for y in 1..h - 1 {
-        for x in 1..w - 1 {
-            let mut k = 0;
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    win[k] = img.get_pixel(x + dx - 1, y + dy - 1).0[0];
-                    k += 1;
-                }
-            }
-            win.sort_unstable();
-            let c = i32::from(img.get_pixel(x, y).0[0]);
-            sum += f64::from((c - i32::from(win[4])).abs());
-            n += 1;
+    let w_usize = w as usize;
+    let h_usize = h as usize;
+    let raw = img.as_raw();
+    let n = ((w_usize - 2) * (h_usize - 2)) as u64;
+    #[cfg(target_arch = "x86_64")]
+    let sum = if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: guarded by runtime `is_x86_feature_detected!("avx2")`.
+        unsafe { median_residual_sum_avx2(raw, w_usize, h_usize) }
+    } else {
+        median_residual_sum_portable(raw, w_usize, h_usize)
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let sum = median_residual_sum_portable(raw, w_usize, h_usize);
+    sum as f64 / n.max(1) as f64
+}
+
+#[inline(always)]
+fn median_residual_sum_portable(raw: &[u8], w_usize: usize, h_usize: usize) -> u64 {
+    let mut sum = 0u64;
+    for y in 1..h_usize - 1 {
+        let r0 = &raw[(y - 1) * w_usize..y * w_usize];
+        let r1 = &raw[y * w_usize..(y + 1) * w_usize];
+        let r2 = &raw[(y + 1) * w_usize..(y + 2) * w_usize];
+        let mut row_sum = 0u32;
+        for x in 1..w_usize - 1 {
+            let med = median9_u8(
+                r0[x - 1],
+                r0[x],
+                r0[x + 1],
+                r1[x - 1],
+                r1[x],
+                r1[x + 1],
+                r2[x - 1],
+                r2[x],
+                r2[x + 1],
+            );
+            row_sum += u32::from(r1[x].abs_diff(med));
         }
+        sum += u64::from(row_sum);
     }
-    sum / n.max(1) as f64
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[target_feature(enable = "avx2")]
+unsafe fn median_residual_sum_avx2(raw: &[u8], w_usize: usize, h_usize: usize) -> u64 {
+    median_residual_sum_portable(raw, w_usize, h_usize)
 }
 
 fn bleed_through(hist: &[u64; 256], threshold: u8) -> f64 {
