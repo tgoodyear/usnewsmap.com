@@ -292,3 +292,11 @@ active unrelated tasks to force a refresh. If safe CPU eligibility cannot be
 established, restore the original memory and report CPU measurements unavailable
 rather than fabricate cross-device acceptance. Any subsequent change needs its
 own authorization and rollback receipt.
+
+Scoped app-version publication does not recursively change ownership of the live
+`download/` tree. Stock registration creates the new public, readable downloads;
+walking unrelated historical downloads on Azure Files can outlast the publisher
+timeout after successful registration. Scoped ownership normalization covers only
+the released payload and templates; ordinary full publication retains its prior
+ownership behavior. Always reconcile exact DB registration and downloaded signed
+payloads before retrying an execution that times out after registration.

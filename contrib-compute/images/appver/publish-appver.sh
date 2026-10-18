@@ -200,6 +200,11 @@ echo "Verified $name $version $platformName $plan (app_version ".$versions[0]->i
 PHP
 )
 touch "$PROJ/reread_db"
-chown -R boincadm:boincadm "$dst" "$PROJ/templates" "$PROJ/download" 2> /dev/null ||
+ownership_paths=("$dst" "$PROJ/templates")
+# Scoped publication must not walk the unrelated live download tree on Azure Files.
+if [ "${APPVER_REUSE_PROJECT:-0}" = 0 ]; then
+  ownership_paths+=("$PROJ/download")
+fi
+chown -R boincadm:boincadm "${ownership_paths[@]}" 2> /dev/null ||
   log "chown on the share failed (UNVERIFIED semantics, design.md 2.3)"
 log "published $APPVER_APP $APPVER_VERSION"
