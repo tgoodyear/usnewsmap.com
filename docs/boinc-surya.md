@@ -300,3 +300,8 @@ timeout after successful registration. Scoped ownership normalization covers onl
 the released payload and templates; ordinary full publication retains its prior
 ownership behavior. Always reconcile exact DB registration and downloaded signed
 payloads before retrying an execution that times out after registration.
+
+Actual validator-kept directories include BOINC's optional output-template
+random token, for example `HOST_SUFFIX_r2014260292_3`. Collection accepts that
+numeric `r` token after the exact host/job and PID/timestamp/sequence prefix;
+it does not broaden matching to another host or arbitrary suffix text.
