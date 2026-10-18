@@ -71,14 +71,22 @@ class MeasuresV1Tests(unittest.TestCase):
     def test_human_adjudication_requires_two_qualified_readers(self):
         refs = [{"id": "x", "reference": "long s", "page_id": "p"}]
         outs = {"engine": [{"id": "x", "text": "long f"}]}
-        review = [{"id": "x", "decision": "human-adjudicated", "qualified_readers": [{"id": "r1", "qualification": "historical transcription"}, {"id": "r2", "qualification": "paleography"}],
+        review = [{"id": "x", "system": "baseline", "decision": "human-adjudicated",
+                   "qualified_readers": [{"id": "r1", "qualification": "historical transcription"},
+                                         {"id": "r2", "qualification": "paleography"}],
                    "categories": ["historical-glyph"]}]
-        result = measures.compare_transcriptions(refs, outs, adjudications=review, bootstrap_samples=5)
-        report = result["human_adjudication"]["engine"]
-        self.assertEqual(report["categories"]["historical-glyph"]["count"], 1)
-        self.assertEqual(report["error_review_coverage"], 1)
+        systems = {"baseline": outs["engine"], "candidate": [{"id": "x", "text": "long s"}]}
+        result = measures.compare_transcriptions(refs, systems, adjudications=review, bootstrap_samples=5)
+        baseline_review = result["human_adjudication"]["baseline"]
+        candidate_review = result["human_adjudication"]["candidate"]
+        self.assertEqual(baseline_review["categories"]["historical-glyph"]["count"], 1)
+        self.assertEqual(baseline_review["error_review_coverage"], 1)
+        self.assertEqual(candidate_review["categories"]["historical-glyph"]["count"], 0)
+        self.assertEqual(candidate_review["sample_ids"], [])
+        invalid = [{**review[0], "system": "engine",
+                    "qualified_readers": [{"id": "r1", "qualification": "historical transcription"}]}]
         with self.assertRaisesRegex(ValueError, "two qualified readers"):
-            measures.compare_transcriptions(refs, outs, adjudications=[{**review[0], "qualified_readers": [{"id": "r1", "qualification": "historical transcription"}]}], bootstrap_samples=5)
+            measures.compare_transcriptions(refs, outs, adjudications=invalid, bootstrap_samples=5)
 
     def test_strata_page_bootstrap_and_good_page_regression(self):
         refs = [{"id": "a", "reference": "good", "page_id": "p1", "title_id": "t1", "language": ["en"]},
@@ -107,6 +115,24 @@ class MeasuresV1Tests(unittest.TestCase):
         self.assertEqual(result["results"]["candidate"]["recall@1"], 1)
         self.assertEqual(set(result["results"]["candidate"]["by_kind"]), {"name", "place", "date"})
         self.assertEqual(result["results"]["candidate"]["analyzer"], "nfkc-casefold-word-v1")
+
+    def test_search_does_not_credit_documents_without_query_matches(self):
+        queries = [{"id": "q", "query": "Mercy", "relevance": {"only": 1}}]
+        result = measures.score_search({"system": [{"id": "only", "text": "Marcy"}]}, queries, k=5)
+        score = result["results"]["system"]
+        self.assertEqual(score["recall@5"], 0)
+        self.assertEqual(score["reciprocal_rank"], 0)
+        self.assertEqual(score["ndcg@5"], 0)
+
+    def test_identical_region_text_is_not_cross_region_contamination(self):
+        refs = [{"id": "p", "reference": "same same", "regions": [
+            {"box": [0, 0, 10, 10], "order": 0, "text": "same"},
+            {"box": [0, 20, 10, 10], "order": 1, "text": "same"}]}]
+        outputs = {"engine": [{"id": "p", "text": "same same", "regions": [
+            {"box": [0, 0, 10, 10], "order": 0, "text": "same"},
+            {"box": [0, 20, 10, 10], "order": 1, "text": "same"}]}]}
+        result = measures.compare_transcriptions(refs, outputs, bootstrap_samples=5)
+        self.assertEqual(result["systems"]["engine"]["page_regions"]["reconstruction"]["cross_region_contamination_count"], 0)
 
     def test_review_sample_is_stable_and_independent_of_order(self):
         first = measures.deterministic_review_sample(["c", "a", "b"], 2, "fixed-run")

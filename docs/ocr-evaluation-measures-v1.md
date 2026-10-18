@@ -46,22 +46,24 @@ as immutable inputs alongside the report; the scorer never rewrites them.
   tokenization is language/script dependent. Run both rules separately if both views are needed;
   preserve their separately versioned reports.
 - Historical modernization and glyph confusions are **human-adjudicated labels**, not guessed by
-  the scorer. The optional adjudication JSONL contains `id`, `decision:"human-adjudicated"`, at
-  least two pseudonymous `qualified_readers` records (`id`, `qualification`), and `categories`
+  the scorer. The optional adjudication JSONL contains `system`, `id`,
+  `decision:"human-adjudicated"`, at least two pseudonymous `qualified_readers` records (`id`,
+  `qualification`), and `categories`
   chosen from `historical-modernization`, `historical-glyph`, `cross-region-contamination`, and
   `other`. The report gives counts/rates and error-review coverage. The tool validates the record
   shape, not a reader's credentials; keep the qualification basis and adjudication notes with the
   review artifact. Do not use the OCR system or another model as its own judge. Freeze the review
-  IDs before comparing systems; `deterministic_review_sample(ids, count, seed)` makes a reproducible
-  output-independent sample.
+  IDs before comparing systems; submit one blinded review row per reviewed system/sample pair.
+  `deterministic_review_sample(ids, count, seed)` makes a reproducible output-independent sample.
 - Full-page results keep three measures distinct: `page_regions.transcription` is text edit
   accuracy over reference regions (unmatched reference regions count as omissions); `segmentation`
   reports region recall/coverage, precision and F1; `reconstruction` reports pairwise reading-order
   accuracy plus a cross-region contamination indicator. Geometry matching is deterministic
   maximum-cardinality one-to-one matching at IoU >= 0.5, with overlap and IDs as stable tie-breaks.
-  The contamination indicator counts a geometrically matched region whose text is closer by
-  normalized edit distance to another reference region than to its assigned region. It is a
-  screening measure, not ground truth; inspect and human-adjudicate a fixed sample. Full-page text
+  The contamination indicator counts a geometrically matched region only when another reference
+  region has strictly smaller normalized edit distance than its assigned region (equal-distance
+  ties do not count). It is a screening measure, not ground truth; inspect and human-adjudicate a
+  fixed sample. Full-page text
   CER, region geometry and reading order must come from independent verified annotations.
 - Per-system CER and missing/error counts are reported overall and by the available language,
   script, damage and layout labels. Paired candidate-minus-baseline CER uncertainty is a seeded

@@ -249,8 +249,8 @@ def _region_metrics(refs, hyps, ids, rule, threshold=0.5):
             if ht and any(_normalize(candidate["text"], rule) for candidate in reference):
                 distances = [sum(edit_counts(_normalize(candidate["text"], rule), ht).values()) /
                              max(1, len(_normalize(candidate["text"], rule))) for candidate in reference]
-                best_region = min(range(len(distances)), key=lambda index: (distances[index], index))
-                contamination += best_region != i
+                other_distances = [distance for index, distance in enumerate(distances) if index != i]
+                contamination += bool(other_distances and min(other_distances) < distances[i])
         for i, region in enumerate(reference):
             if i not in matched_refs:
                 rt = _normalize(region["text"], rule)
@@ -276,11 +276,22 @@ def _region_metrics(refs, hyps, ids, rule, threshold=0.5):
                                "cross_region_contamination_rate": _ratio(contamination, matched)}}
 
 
-def _reviews(adjudications, ids, items):
-    rows = _unique_rows(adjudications, "adjudication")
-    unknown = set(rows) - set(ids)
-    if unknown:
-        raise ValueError(f"adjudication outside reference set: {min(unknown)}")
+def _reviews(adjudications, ids, items, system_name, system_names):
+    rows, seen = {}, set()
+    for row in adjudications:
+        if not isinstance(row, dict):
+            raise ValueError("adjudication rows must be objects")
+        identity, system = row.get("id"), row.get("system")
+        if not isinstance(identity, str) or identity not in ids:
+            raise ValueError(f"adjudication outside reference set: {identity}")
+        if not isinstance(system, str) or system not in system_names:
+            raise ValueError(f"adjudication has unknown system: {system}")
+        key = (system, identity)
+        if key in seen:
+            raise ValueError(f"duplicate adjudication for {system}/{identity}")
+        seen.add(key)
+        if system == system_name:
+            rows[identity] = row
     counts = Counter()
     for identity, row in rows.items():
         readers, categories = row.get("qualified_readers"), row.get("categories")
@@ -292,7 +303,7 @@ def _reviews(adjudications, ids, items):
         if (row.get("decision") != "human-adjudicated" or not valid_readers or
                 not isinstance(categories, list) or not all(isinstance(category, str) for category in categories) or
                 not set(categories) <= set(REVIEW_CATEGORIES)):
-            raise ValueError(f"{identity}: requires human adjudication by at least two qualified readers")
+            raise ValueError(f"{system_name}/{identity}: requires human adjudication by at least two qualified readers")
         counts["adjudicated_samples"] += 1
         counts["reviewed_error_samples"] += bool(categories)
         for category in set(categories):
@@ -373,7 +384,8 @@ def compare_transcriptions(references, systems, *, rule="diplomatic-v1", adjudic
             "good_page_regression_rate": _ratio(len(regressions), len(good_pages)),
             "paired_uncertainty_by_page": _cluster_uncertainty(refs, base_items, candidate_items, "page_id", seed, bootstrap_samples),
             "paired_uncertainty_by_title": _cluster_uncertainty(refs, base_items, candidate_items, "title_id", seed, bootstrap_samples)}
-    review_results = {name: _reviews(adjudications, ids, list(details[name].values())) for name in systems} if adjudications else {}
+    review_results = {name: _reviews(adjudications, ids, list(details[name].values()), name, set(systems))
+                      for name in systems} if adjudications else {}
     return {"format": FORMAT, "measure_version": "1.0.0", "transcription_rule": rule,
             "systems": scored, "comparisons": comparisons, "human_adjudication": review_results}
 
@@ -418,7 +430,7 @@ def _search_metrics(documents, queries, k):
                     norm = tf + 1.2 * (1 - 0.75 + 0.75 * lengths[doc_id] / average_length)
                     score += idf * tf * 2.2 / norm
             scores[doc_id] = score
-        ranked = sorted(docs, key=lambda doc: (-scores[doc], doc))[:k]
+        ranked = sorted((doc for doc in docs if scores[doc] > 0), key=lambda doc: (-scores[doc], doc))[:k]
         positives = [doc for doc, grade in relevance.items() if grade > 0]
         first = next((rank for rank, doc in enumerate(ranked, 1) if relevance.get(doc, 0) > 0), None)
         dcg = sum((2 ** relevance.get(doc, 0) - 1) / math.log2(rank + 1) for rank, doc in enumerate(ranked, 1))
@@ -441,8 +453,8 @@ def _search_metrics(documents, queries, k):
 def score_search(systems, queries, *, k=5):
     """Compare retrieval systems on a fixed relevance set with a pinned analyzer and ranker."""
     query_rows = list(_unique_rows(queries, "query").values())
-    if not systems:
-        raise ValueError("at least one search system is required")
+    if not systems or any(not isinstance(name, str) or not name for name in systems):
+        raise ValueError("at least one named search system is required")
     document_sets = [set(_unique_rows(documents, "search document")) for documents in systems.values()]
     if any(doc_ids != document_sets[0] for doc_ids in document_sets[1:]):
         raise ValueError("search systems must use the same document IDs")
@@ -510,6 +522,8 @@ def main(argv=None):
             if "=" not in value:
                 parser.error("--search-documents must be NAME=JSONL")
             name, path = value.split("=", 1)
+            if not name or name in search_systems:
+                parser.error("search system names must be nonempty and unique")
             search_systems[name] = _jsonl(path)
         if not search_systems:
             parser.error("--queries requires --search-documents")
