@@ -154,3 +154,115 @@ To add a release:
 1. Write `ocr/bench/<version>/spec.json` and `inputs.sha256`, and stage the inputs tar.
 2. Open a pull request. The check job prints the release's `releases.json` entry.
 3. Review the entry, commit it and merge.
+
+## LoC published baselines
+
+Legacy and refreshed LoC OCR are **separate pinned baselines**, not human
+references. The [18 October inventory](notes/2026-10-18-loc-refreshed-baselines.md)
+records current coverage, the original benchmark's coverage gap and unresolved
+rights/history checks. Neither code release dates nor matching title names prove
+which OCR artifact or scan a page uses.
+
+Save the public guide HTML and fetch the benchmark with `--verify` above, then:
+
+```sh
+python3 scripts/ocr-bench/loc_inventory.py \
+  --coverage-html improved-text.html --benchmark RELEASE/manifest.json \
+  --retrieved-at 2026-10-18 --out inventory.json \
+  --summary-out inventory-summary.json
+```
+
+Optionally add `--repair-pages repair-pages.jsonl`; its explicit export schema and
+the measured manifest checksum are in the note. The full output contains
+per-sample statuses and title/language/decade repair strata. The compact summary
+omits these rows but preserves coverage, denominators and hashes. Candidate
+title/year ranges and batch-base matches are **not confirmed page coverage**.
+`not-listed-in-guide` is not proof of global absence; `outside-ndnp` distinguishes
+non-LoC sources.
+
+Use only the official public bulk endpoints, respecting the published request
+budget (10 bulk requests per 10 minutes per IP), `Retry-After`, and access blocks.
+Do not run parallel collection-wide retrievals or work around HTTP 403. The
+sample can be retrieved as two bounded requests (metadata, then archive):
+
+```sh
+curl --fail --max-filesize 10000 --output metadata.json \
+  https://chroniclingamerica.loc.gov/data/ocr/metadata/fu_eleven_ver02.tar.bz2.json
+sleep 61
+curl --fail --max-filesize 60000000 --output sample.tar.bz2 \
+  https://chroniclingamerica.loc.gov/data/ocr/fu_eleven_ver02.tar.bz2
+python3 scripts/ocr-bench/loc_archive.py \
+  --archive sample.tar.bz2 --metadata metadata.json --retrieved-at 2026-10-18 \
+  --out artifacts.json --summary-out artifacts-summary.json
+```
+
+Coordinate pacing with other users of the same IP. These commands do not retry
+failed requests. Pin metadata SHA-256 as well as its archive SHA-256; the sample's
+measured values are in the note. `loc_archive.py` checks archive bytes and page
+count against metadata, bounds uncompressed content, never extracts paths and
+records each ALTO/text hash, canonical page ID, coordinate units and embedded
+software versions. An optional `--repair-pages` joins the actual archive page IDs
+against the same repair export. It does **not** prove source-image registration.
+All output paths are create-only.
+
+### Registered crop adapter
+
+`loc_align.py` emits the existing scorer's `{"id","text"}` JSONL plus a
+checksummed alignment report. Choose `--baseline loc-legacy-v1` or
+`--baseline loc-refreshed-v1` and a **new output directory for each artifact set**.
+Keep historical baseline files and scores untouched.
+
+For each available sample, supply one JSONL binding with the following fields:
+
+```json
+{
+  "id": "SAMPLE-ID",
+  "source_page_url": "EXACT-BENCHMARK-PAGE-URL",
+  "source_image": "/local/full-resolution-page.jpg",
+  "source_image_sha256": "EXACT-BENCHMARK-SOURCE-PAGE-HASH",
+  "alto": "/local/pinned-page.alto.xml",
+  "alto_sha256": "PINNED-ALTO-HASH",
+  "scale": 0.25,
+  "artifact_url": "PUBLIC-ARTIFACT-URL",
+  "retrieved_at": "ISO-RETRIEVAL-DATE",
+  "version_evidence": "Actual embedded version or explicit unknown; not latest software tag",
+  "registration_evidence": "Evidence of same scan, orientation, no translation or deskew, and scale"
+}
+```
+
+The example scale is **not a default**. Registration is an operator-reviewed
+input, not something the adapter proves from a URL. Do not create a binding from
+title/year overlap alone. The adapter verifies source-image bytes against the
+benchmark's original full-page hash, crop/reference hashes, actual JPEG
+dimensions, unresized crop geometry, supported ALTO units, explicit isotropic
+scale and page extent agreement within one pixel. Rotated, offset, deskewed or
+otherwise uncertain pairs require a separately validated registration policy;
+omit their bindings here and retain the missing status.
+
+Policy `loc-word-centres-xml-order-v1` reuses the survey ALTO helper, but supplies
+the scale explicitly after validating all word/line coordinates. It selects
+Strings whose centres are inside the exact crop, keeps XML line/word order,
+counts intersecting boundary lines and excludes HYP elements. It never guesses
+DPI, silently drops malformed coordinates or substitutes whole-page text for
+a crop. This is a crop transcription adapter, **not whole-page reading-order
+evaluation**. OCR inference cost is `unknown`, not zero.
+
+```sh
+python3 scripts/ocr-bench/loc_align.py \
+  --release RELEASE --subset SUBSET --baseline loc-refreshed-v1 \
+  --bindings refreshed-bindings.jsonl --out-dir refreshed-aligned &&
+usnm-ocr-survey bench-score \
+  --release RELEASE --subset SUBSET --outputs refreshed-aligned/outputs.jsonl \
+  --rule legacy-ws-v1 --report refreshed-ws.json &&
+usnm-ocr-survey bench-score \
+  --release RELEASE --subset SUBSET --outputs refreshed-aligned/outputs.jsonl \
+  --rule raw-v1 --report refreshed-raw.json
+```
+
+Inspect `alignment.json` **before either score**. Every selected sample has an
+aligned, missing or error status. Missing bindings stay in the denominator;
+alignment errors also produce a nonzero exit, rather than a success-shaped
+fallback. Do not rank engines on different successful subsets. Use a common
+verified paired subset and report all missing outputs and errors alongside it.
+WER remains unavailable until the shared benchmark defines its tokenization
+policy; no second scorer is introduced here.
