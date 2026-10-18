@@ -369,10 +369,12 @@ fn run_inner(
         {
             if native.is_some() {
                 anyhow::ensure!(
-                    native_by_workunit
-                        .get(&wu)
-                        .is_some_and(|results| !results.is_empty()),
-                    "{wu}: terminal assimilator marker has no authoritative BOINC result"
+                    native_by_workunit.get(&wu).is_some_and(|results| {
+                        results
+                            .iter()
+                            .any(|result| result.server_state == BOINC_SERVER_STATE_OVER)
+                    }),
+                    "{wu}: terminal assimilator marker has no terminal authoritative BOINC result"
                 );
             }
             summary.failed += 1;
@@ -799,6 +801,33 @@ mod tests {
         assert!(
             !lost_out.exists(),
             "incomplete evidence must not be written"
+        );
+        let stale_out = tmp.path().join("stale-terminal-out");
+        std::fs::create_dir_all(&stale_out).unwrap();
+        let mut stale_snapshot = eng_native.clone();
+        stale_snapshot[1].server_state = 4;
+        stale_snapshot[1].outcome = 0;
+        stale_snapshot[1].received_at = None;
+        let stale_contents = stale_snapshot
+            .iter()
+            .map(|row| serde_json::to_string(row).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stale_path = stale_out.join("native-outcomes.jsonl");
+        std::fs::write(&stale_path, format!("{stale_contents}\n")).unwrap();
+        assert!(
+            run_with_native(
+                &options(eng_root.clone(), eng_spool.clone(), stale_out.clone()),
+                &missing_old_row,
+                &eng_config,
+            )
+            .is_err(),
+            "a stale in-progress snapshot cannot satisfy a terminal marker"
+        );
+        assert_eq!(
+            std::fs::read_to_string(stale_path).unwrap(),
+            format!("{stale_contents}\n"),
+            "unresolved terminal evidence must not replace the prior snapshot"
         );
         run_with_native(
             &options(eng_root.clone(), eng_spool.clone(), eng_out.clone()),
