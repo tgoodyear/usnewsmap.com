@@ -107,8 +107,10 @@ choose it now. Notes:
   copied-project migration and Azure-chain acceptance. The pinned image's clients now
   require verified TLS; this does not prove old persistent project copies were upgraded.
   BOINC's root template and MySQL module expose `requireSecureTransport`, defaulting
-  to `false` (OFF). Explicit `true` maps to ON; normal provisioning omits the parameter
-  and cannot activate it implicitly. The server has private VNet access only. Enable
+  to `false` (OFF). Normal provisioning forwards the committed environment setting
+  `requireSecureTransport` (absent means false); production explicitly remains false.
+  A separately reviewed true setting maps to ON; activation is never implicit.
+  The server has private VNet access only. Enable
   enforcement only after the gates below and a separately coordinated #529 deployment.
   `scripts/boinc/patch-server-db-tls.py` patches the pinned source's Python
   `db_base`, **both** PHP connection paths, and C++ `DB_CONN`; CLI consumers pass
