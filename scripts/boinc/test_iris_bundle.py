@@ -65,11 +65,39 @@ class BundleCampaignTest(unittest.TestCase):
             args = bc.create_work_args(campaign["bundles"][0]["id"], 16)
             self.assertIn("templates/usnm_iris_bundle_in", args)
             self.assertEqual(args[args.index("--target_host") + 1], "9")
+            # The scheduler sends docker_intel_opencl_4b work only from batch 104.
+            self.assertEqual(args[args.index("--batch") + 1], "104")
+            identity = campaign["bundles"][0]["id"]
+            self.assertEqual(args[args.index("--wu_name") + 1], f"usnm_iris_{identity}_b104")
+            self.assertEqual(args[-2:], [f"iris_{identity}_pack_b104", f"iris_{identity}_job_b104"])
             (out / "units" / campaign["bundles"][0]["id"] / "pages.pack").write_bytes(b"x")
             with self.assertRaises(c.ContractError):
                 bc.load(out)
             with self.assertRaises(ValueError):
                 bc.prepare(root / "v1", root / "b2", t.IMAGE, b.MAX_CROPS + 1)
+
+
+class CancelStrandedTest(unittest.TestCase):
+    def test_only_batch_105_units_are_cancelled(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, project = Path(d) / "c", Path(d) / "p"
+            (project / "bin").mkdir(parents=True)
+            identity = "a" * 64
+            unit = root / "units" / identity
+            unit.mkdir(parents=True)
+            (unit / "submitted").write_text(json.dumps({"workunit": f"usnm_iris_{identity}"}))
+            campaign = {"v": 2, "batch": 105, "host_id": 9, "bundles": [{"id": identity}]}
+            (root / "campaign.json").write_text(json.dumps(campaign))
+            self.assertEqual(bc.cancel_stranded(root, project)["workunits"], [f"usnm_iris_{identity}"])
+            calls = []
+            with patch.object(bc.subprocess, "run", side_effect=lambda cmd, **_: calls.append(cmd)):
+                self.assertEqual(bc.cancel_stranded(root, project, apply=True), {"cancelled": 1})
+                self.assertEqual(bc.cancel_stranded(root, project, apply=True), {"cancelled": 0})
+            self.assertEqual(calls, [[str(project.resolve() / "bin/cancel_jobs"), "--name", f"usnm_iris_{identity}"]])
+            campaign["batch"] = 104
+            (root / "campaign.json").write_text(json.dumps(campaign))
+            with self.assertRaises(ValueError):
+                bc.cancel_stranded(root, project)
 
 
 class BundleContractTest(unittest.TestCase):
