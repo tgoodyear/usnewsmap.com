@@ -170,6 +170,8 @@ else
 fi
 # shellcheck source=scripts/lib/boinc.sh disable=SC1091
 . scripts/lib/boinc.sh
+# shellcheck source=scripts/lib/acr-build.sh
+. scripts/lib/acr-build.sh
 boinc_load_settings
 boinc_az_check
 [ -z "$WORKER_OVERRIDE" ] || WORKER_IMAGE=$WORKER_OVERRIDE
@@ -239,16 +241,16 @@ build_worker_in_acr() {
     echo "usnm-boinc-tesseract:$engine_key is in $registry"
   else
     echo "building usnm-boinc-tesseract:$engine_key in $registry"
-    baz acr build --registry "$registry" --image "usnm-boinc-tesseract:$engine_key" --platform linux/amd64 \
-      --timeout 7200 --file ocr/engines/tesseract/Containerfile ocr/engines/tesseract || die "the engine image build failed"
+    acr_build_verified baz "$registry" "usnm-boinc-tesseract:$engine_key" 7200 --platform linux/amd64 \
+      --file ocr/engines/tesseract/Containerfile ocr/engines/tesseract || die "the engine image build failed"
   fi
   engine_ref="$registry.azurecr.io/usnm-boinc-tesseract@$(digest usnm-boinc-tesseract "$engine_key")"
   if have usnm-boinc-worker "$worker_key"; then
     echo "usnm-boinc-worker:$worker_key is in $registry"
   else
     echo "building usnm-boinc-worker:$worker_key in $registry (usnm-boinc release build: about 10 minutes)"
-    baz acr build --registry "$registry" --image "usnm-boinc-worker:$worker_key" --platform linux/amd64 \
-      --timeout 7200 --build-arg "TESSERACT_IMAGE=$engine_ref" --file ocr/boinc/Containerfile . ||
+    acr_build_verified baz "$registry" "usnm-boinc-worker:$worker_key" 7200 --platform linux/amd64 \
+      --build-arg "TESSERACT_IMAGE=$engine_ref" --file ocr/boinc/Containerfile . ||
       die "the worker image build failed"
   fi
   echo "worker image builds: $registry.azurecr.io/usnm-boinc-worker@$(digest usnm-boinc-worker "$worker_key") (ACR, not pullable by volunteers)"
@@ -425,8 +427,7 @@ elif [ -f "$work/wrapper" ]; then
   appver_wrapper_pin=/opt/usnm-appver-build/wrapper-candidate/wrapper.pin
 fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
-baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
-  --no-logs --query '{runId:runId,status:status}' -o json \
+acr_build_verified baz "$registry" "$APPVER_REPO:$APPVER_TAG" 1800 --platform linux/amd64 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
   --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \
   --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin" \
