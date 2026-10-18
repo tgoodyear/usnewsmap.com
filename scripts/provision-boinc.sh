@@ -163,7 +163,49 @@ if $WHAT_IF; then
   exit 0
 fi
 
-for lifecycle_output in secretsJobName initJobName publishJobName goldBundleJobName; do
+bridge_job_template_matches() {
+  local template_json=$1 cpu=$2 memory=$3 extra_env_json=$4
+  local expected_kv expected_db_host
+  expected_kv=$(boinc_output keyVaultName)
+  expected_db_host=$(boinc_output mysqlHost)
+  jq -e --arg img "$BRIDGE_IMAGE" --arg master_host "$MASTER_HOST" \
+    --arg kv "$expected_kv" --arg db_host "$expected_db_host" \
+    --argjson cpu "$cpu" --arg memory "$memory" \
+    --argjson extra_env "$extra_env_json" '
+    (.containers | length) == 1 and
+    .containers[0].name == "bridge" and
+    .containers[0].image == $img and
+    ((.containers[0].command // ["/usr/local/bin/bridge-job"]) == ["/usr/local/bin/bridge-job"]) and
+    .containers[0].resources.cpu == $cpu and
+    .containers[0].resources.memory == $memory and
+    .containers[0].volumeMounts == [{"volumeName": "project", "mountPath": "/project"}] and
+    (.volumes | length) == 1 and
+    .volumes[0].name == "project" and
+    .volumes[0].storageType == "AzureFile" and
+    ((.containers[0].env // []) | all(((keys - ["name", "value"]) | length) == 0 and (.value | type == "string" and length > 0))) and
+    (
+      ([(.containers[0].env // [])[] | select(.name == "AZURE_CLIENT_ID" or .name == "KEY_VAULT_NAME" or .name == "DB_HOST") | .name] | sort)
+      == ["AZURE_CLIENT_ID", "DB_HOST", "KEY_VAULT_NAME"]
+    ) and
+    (if $kv != "" then ([(.containers[0].env // [])[] | select(.name == "KEY_VAULT_NAME") | .value] == [$kv]) else true end) and
+    (if $db_host != "" then ([(.containers[0].env // [])[] | select(.name == "DB_HOST") | .value] == [$db_host]) else true end) and
+    (
+      [(.containers[0].env // [])[] | select(.name != "AZURE_CLIENT_ID" and .name != "KEY_VAULT_NAME" and .name != "DB_HOST") | {name, value}]
+      | sort_by(.name)
+    ) == (
+      (
+        [
+          {"name": "DB_NAME", "value": "usnmocr"},
+          {"name": "HANDOFF_DIR", "value": "/project/handoff"},
+          {"name": "MASTER_HOST", "value": $master_host},
+          {"name": "PROJECT_DIR", "value": "/project"}
+        ] + $extra_env
+      ) | sort_by(.name)
+    )
+  ' <<< "$template_json" > /dev/null
+}
+
+for lifecycle_output in secretsJobName initJobName publishJobName; do
   existing_job=$(boinc_output "$lifecycle_output")
   if [ -n "$existing_job" ]; then
     active_job=$(baz containerapp job execution list --name "$existing_job" --resource-group "$BOINC_RG" \
@@ -173,6 +215,22 @@ for lifecycle_output in secretsJobName initJobName publishJobName goldBundleJobN
       die "$existing_job already has an active execution (${active_job//$'\n'/ }); wait for it to finish before mutating $existing_job"
   fi
 done
+existing_gold=$(boinc_output goldBundleJobName)
+if [ -n "$existing_gold" ]; then
+  active_gold=$(baz containerapp job execution list --name "$existing_gold" --resource-group "$BOINC_RG" \
+    --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv) ||
+    die "could not list the executions of $existing_gold"
+  if [ -n "$active_gold" ]; then
+    $GOLD_BUNDLE ||
+      die "$existing_gold already has an active execution (${active_gold//$'\n'/ }) and goldBundle=false would remove it; wait for it to finish before disabling goldBundle"
+    gold_template=$(baz containerapp job show --name "$existing_gold" --resource-group "$BOINC_RG" --query properties.template -o json) ||
+      die "could not read $existing_gold template while active execution (${active_gold//$'\n'/ }) is running"
+    if ! bridge_job_template_matches "$gold_template" 1 2Gi \
+      '[{"name":"BRIDGE_STEP","value":"gold-bundle"},{"name":"GOLD_CAMPAIGN","value":"v1-tess550"}]'; then
+      die "$existing_gold already has an active execution (${active_gold//$'\n'/ }) and its template would change; wait for it to finish before updating the gold-bundle template"
+    fi
+  fi
+fi
 active_bridge=""
 existing_bridge=$(boinc_output bridgeJobName)
 if [ -n "$existing_bridge" ]; then
@@ -185,48 +243,11 @@ if [ -n "$existing_bridge" ]; then
   if [ -n "$active_bridge" ]; then
     bridge_template=$(baz containerapp job show --name "$existing_bridge" --resource-group "$BOINC_RG" --query properties.template -o json) ||
       die "could not read $existing_bridge template while active execution (${active_bridge//$'\n'/ }) is running"
-    expected_kv=$(boinc_output keyVaultName)
-    expected_db_host=$(boinc_output mysqlHost)
-    if ! jq -e --arg img "$BRIDGE_IMAGE" --arg env "$ENV_NAME" --arg master_host "$MASTER_HOST" \
-      --arg kv "$expected_kv" --arg db_host "$expected_db_host" '
-      (.containers | length) == 1 and
-      .containers[0].name == "bridge" and
-      .containers[0].image == $img and
-      ((.containers[0].command // ["/usr/local/bin/bridge-job"]) == ["/usr/local/bin/bridge-job"]) and
-      .containers[0].resources.cpu == 0.5 and
-      .containers[0].resources.memory == "1Gi" and
-      .containers[0].volumeMounts == [{"volumeName": "project", "mountPath": "/project"}] and
-      (.volumes | length) == 1 and
-      .volumes[0].name == "project" and
-      .volumes[0].storageType == "AzureFile" and
-      ((.containers[0].env // []) | all(((keys - ["name", "value"]) | length) == 0 and (.value | type == "string" and length > 0))) and
-      (
-        ([(.containers[0].env // [])[] | select(.name == "AZURE_CLIENT_ID" or .name == "KEY_VAULT_NAME" or .name == "DB_HOST") | .name] | sort)
-        == ["AZURE_CLIENT_ID", "DB_HOST", "KEY_VAULT_NAME"]
-      ) and
-      (if $kv != "" then ([(.containers[0].env // [])[] | select(.name == "KEY_VAULT_NAME") | .value] == [$kv]) else true end) and
-      (if $db_host != "" then ([(.containers[0].env // [])[] | select(.name == "DB_HOST") | .value] == [$db_host]) else true end) and
-      (
-        [(.containers[0].env // [])[] | select(.name != "AZURE_CLIENT_ID" and .name != "KEY_VAULT_NAME" and .name != "DB_HOST") | {name, value}]
-        | sort_by(.name)
-      ) == (
-        (
-          [
-            {"name": "DB_NAME", "value": "usnmocr"},
-            {"name": "HANDOFF_DIR", "value": "/project/handoff"},
-            {"name": "MASTER_HOST", "value": $master_host},
-            {"name": "PROJECT_DIR", "value": "/project"}
-          ] + (
-            if $env == "prod" then
-              [
-                {"name": "BRIDGE_STEP", "value": "iris-bundle-collect"},
-                {"name": "IRIS_CAMPAIGN", "value": "overproof-100-v12"}
-              ]
-            else [] end
-          )
-        ) | sort_by(.name)
-      )
-    ' <<< "$bridge_template" > /dev/null; then
+    bridge_extra_env='[]'
+    if [ "$ENV_NAME" = prod ]; then
+      bridge_extra_env='[{"name":"BRIDGE_STEP","value":"iris-bundle-collect"},{"name":"IRIS_CAMPAIGN","value":"overproof-100-v12"}]'
+    fi
+    if ! bridge_job_template_matches "$bridge_template" 0.5 1Gi "$bridge_extra_env"; then
       die "$existing_bridge already has an active execution (${active_bridge//$'\n'/ }) and its template would change; wait for it to finish before updating the bridge template"
     fi
   fi

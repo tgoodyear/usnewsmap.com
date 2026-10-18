@@ -18,7 +18,7 @@ case "$*" in
   "stack sub show"*) echo '{"OCR_EXCHANGE_ACCOUNT":{"value":"exchangeprod"}}' ;;
   "storage blob exists"*) echo true ;;
   "storage blob lease acquire"* | "storage blob lease release"*) ;;
-  "stack group show"*) echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"}}' ;;
+  "stack group show"*) echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"},"goldBundleJobName":{"value":"gold"}}' ;;
   "containerapp env certificate list"*) echo Succeeded ;;
   "stack-whatif group create"*"--help"*) ;;
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
@@ -28,6 +28,8 @@ case "$*" in
       [ "${STUB_QUALITY_ACTIVE:-0}" != 1 ] || echo quality-existing-execution
     elif [[ "$*" == *"--name publish "* ]]; then
       [ "${STUB_PUBLISH_ACTIVE:-0}" != 1 ] || echo publish-existing-execution
+    elif [[ "$*" == *"--name gold "* ]]; then
+      [ "${STUB_GOLD_ACTIVE:-0}" != 1 ] || echo gold-existing-execution
     elif [[ "$*" == *"--name bridge "* ]]; then
       [ "${STUB_REGISTRATION_LIST_FAIL:-0}" != 1 ] || exit 1
       if [ "${STUB_REGISTRATION_ACTIVE:-0}" = 1 ] || [ "${STUB_BRIDGE_ACTIVE:-0}" = 1 ]; then
@@ -37,7 +39,11 @@ case "$*" in
   "containerapp job show"*)
     extra_secret='{"name":"PRIVATE_SETTING","secretRef":"runtime-secret"},'
     [ "${STUB_BRIDGE_CLEAN_ENV:-0}" != 1 ] || extra_secret=""
-    echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"project\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_BRIDGE_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":0.5,\"memory\":\"1Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_BRIDGE_STEP:-iris-bundle-collect}\"},{\"name\":\"IRIS_CAMPAIGN\",\"value\":\"overproof-100-v12\"},${extra_secret}{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}" ;;
+    if [[ "$*" == *"--name gold "* ]]; then
+      echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"project\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_GOLD_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":1,\"memory\":\"2Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_GOLD_STEP:-gold-bundle}\"},{\"name\":\"GOLD_CAMPAIGN\",\"value\":\"v1-tess550\"},${extra_secret}{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}"
+    else
+      echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"project\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_BRIDGE_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":0.5,\"memory\":\"1Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_BRIDGE_STEP:-iris-bundle-collect}\"},{\"name\":\"IRIS_CAMPAIGN\",\"value\":\"overproof-100-v12\"},${extra_secret}{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}"
+    fi ;;
   "containerapp job update"*) ;;
   "containerapp job start"*)
     if [[ "$*" == *"--yaml"* ]] && [ "${STUB_REGISTRATION_START_FAIL:-0}" = 1 ]; then exit 1; fi
@@ -259,6 +265,29 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
         self.assertIn("publish already has an active execution", result_publish.stderr)
         self.assertFalse(any(call.startswith(("stack group create", "containerapp job start"))
                              for call in self.calls()))
+
+        self.log.write_text("")
+        result_gold_ok = self.run_script("--publish-image", appver, STUB_GOLD_ACTIVE="1",
+                                         STUB_BRIDGE_CLEAN_ENV="1",
+                                         STUB_DEPLOYED_GOLD_IMAGE=committed_bridge)
+        self.assertEqual(result_gold_ok.returncode, 0, result_gold_ok.stderr)
+        starts = [call.split("--name ")[1].split()[0]
+                  for call in self.calls() if call.startswith("containerapp job start")]
+        self.assertEqual(starts, ["secrets", "init", "bridge", "publish"])
+
+        for gold_env in (
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_GOLD_IMAGE": "fixture@sha256:stale"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_GOLD_IMAGE": committed_bridge,
+             "STUB_DEPLOYED_GOLD_STEP": "submit"},
+            {"STUB_DEPLOYED_GOLD_IMAGE": committed_bridge},
+        ):
+            with self.subTest(conflicting_gold_env=gold_env):
+                self.log.write_text("")
+                result_gold_conflict = self.run_script("--publish-image", appver, STUB_GOLD_ACTIVE="1", **gold_env)
+                self.assertNotEqual(result_gold_conflict.returncode, 0)
+                self.assertIn("gold already has an active execution", result_gold_conflict.stderr)
+                self.assertFalse(any(call.startswith(("stack group create", "containerapp job start"))
+                                     for call in self.calls()))
 
     def test_rejects_placeholder_foreign_or_stopped_project(self):
         for health in [
