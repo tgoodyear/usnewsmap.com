@@ -114,16 +114,17 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
 }
 
 function native_qwen_cohort_main() {
-    $options = getopt("", ["project:", "plan-class:", "workunit:", "workunit-end:", "stop", "apply"]);
+    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "apply"]);
     $project = isset($options["project"]) ? realpath($options["project"]) : false;
+    $db_project = isset($options["db-project"]) ? realpath($options["db-project"]) : $project;
     $plan_class = $options["plan-class"] ?? "nvidia_cuda_2b";
     $stop = array_key_exists("stop", $options);
-    if (!$project || !is_file("$project/config.xml")
+    if (!$project || !is_dir($project) || !$db_project || !is_file("$db_project/config.xml")
         || (!in_array($plan_class, NATIVE_QWEN_CLASSES, true) && $plan_class !== "shared_8b")
         || (!$stop && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
         || (isset($options["workunit-end"]) && !preg_match('/^[1-9][0-9]*$/', $options["workunit-end"]))
         || ($stop && (isset($options["workunit"]) || isset($options["workunit-end"])))) {
-        throw new RuntimeException("usage: --project PATH [--stop | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
     }
     $id = $stop ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;
@@ -133,7 +134,7 @@ function native_qwen_cohort_main() {
     }
     if (!$stop) {
         if ($id <= 1) throw new RuntimeException("Use a newly staged workunit ID greater than 1");
-        chdir("$project/html/inc");
+        chdir("$db_project/html/inc");
         require_once("boinc_db.inc");
         for ($current = $id; $current <= $last_id; $current++) {
             $wu = BoincWorkunit::lookup_id($current);
