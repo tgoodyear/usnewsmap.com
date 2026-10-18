@@ -166,8 +166,8 @@ fi
 bridge_job_template_matches() {
   local template_json=$1 cpu=$2 memory=$3 extra_env_json=$4
   local expected_kv expected_db_host
-  expected_kv=$(boinc_output keyVaultName)
-  expected_db_host=$(boinc_output mysqlHost)
+  expected_kv=$(boinc_output keyVaultName) || return 1
+  expected_db_host=$(boinc_output mysqlHost) || return 1
   jq -e --arg img "$BRIDGE_IMAGE" --arg master_host "$MASTER_HOST" \
     --arg kv "$expected_kv" --arg db_host "$expected_db_host" \
     --argjson cpu "$cpu" --arg memory "$memory" \

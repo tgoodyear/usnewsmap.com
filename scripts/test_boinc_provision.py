@@ -18,7 +18,14 @@ case "$*" in
   "stack sub show"*) echo '{"OCR_EXCHANGE_ACCOUNT":{"value":"exchangeprod"}}' ;;
   "storage blob exists"*) echo true ;;
   "storage blob lease acquire"* | "storage blob lease release"*) ;;
-  "stack group show"*) echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"},"goldBundleJobName":{"value":"gold"}}' ;;
+  "stack group show"*)
+    if [ "${STUB_STACK_SHOW_FAIL_AFTER:-0}" -gt 0 ]; then
+      count=$(cat "$STUB_LOG.stack_show_count" 2>/dev/null || echo 0)
+      count=$((count + 1))
+      echo "$count" > "$STUB_LOG.stack_show_count"
+      [ "$count" -lt "$STUB_STACK_SHOW_FAIL_AFTER" ] || { echo "transient stack show error" >&2; exit 1; }
+    fi
+    echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"},"goldBundleJobName":{"value":"gold"},"keyVaultName":{"value":"vault"},"mysqlHost":{"value":"db.example.org"}}' ;;
   "containerapp env certificate list"*) echo Succeeded ;;
   "stack-whatif group create"*"--help"*) ;;
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
@@ -253,10 +260,13 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
              "STUB_DEPLOYED_STORAGE_NAME": "other-project"},
             {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge,
              "STUB_DEPLOYED_MOUNT_OPTIONS": "mfsymlinks,uid=1000,gid=1000"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge,
+             "STUB_STACK_SHOW_FAIL_AFTER": "7"},
             {"STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge},
         ):
             with self.subTest(conflicting_env=env):
                 self.log.write_text("")
+                Path(str(self.log) + ".stack_show_count").unlink(missing_ok=True)
                 result = self.run_script(STUB_BRIDGE_ACTIVE="1", **env)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("bridge already has an active execution", result.stderr)
