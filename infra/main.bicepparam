@@ -33,6 +33,7 @@ param congressSearch = bool(readEnvironmentVariable('USNM_CONGRESS_SEARCH', 'tru
 param pageLanguageFilter = readEnvironmentVariable('USNM_PAGE_LANGUAGE_FILTER', '')
 param browsePages = bool(readEnvironmentVariable('USNM_BROWSE_PAGES', 'false'))
 param congress = bool(readEnvironmentVariable('USNM_CONGRESS', 'false'))
+param congressManual = bool(readEnvironmentVariable('USNM_CONGRESS_MANUAL', 'false'))
 param congressJob = bool(readEnvironmentVariable('USNM_CONGRESS_JOB', 'false'))
 param serialSetJob = bool(readEnvironmentVariable('USNM_SERIALSET_JOB', 'false'))
 param serialSetOnPrem = bool(readEnvironmentVariable('USNM_SERIALSET_ONPREM', 'false'))

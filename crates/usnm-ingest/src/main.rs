@@ -269,6 +269,10 @@ enum Command {
         /// curated units changed and kept otherwise. Off: no Congress set.
         #[arg(long, env = "USNM_CONGRESS")]
         congress: bool,
+        /// Include manually acquired Annals and Register units. Off by
+        /// default; enable only after an operator reviewed the archived PDFs.
+        #[arg(long, env = "USNM_CONGRESS_MANUAL", requires = "congress")]
+        congress_manual: bool,
         /// Lay a full base out by decade (#123, 05 §5.5.5), so date-limited
         /// searches skip the other decades' splits. Only a full base takes
         /// it; deltas follow the published version.
@@ -618,6 +622,35 @@ enum Command {
         #[arg(long, conflicts_with_all = ["years", "serials"])]
         done_file: Option<PathBuf>,
     },
+    /// Curate Annals or Register PDFs an operator downloaded in a browser.
+    /// Reads only the matching manifest/PDFs from USNM_RAW_URL; it never
+    /// contacts Congress.gov. Each complete PDF becomes one curated unit.
+    CongressManual {
+        /// `annals` or `register`.
+        #[arg(long, value_enum)]
+        series: usnm_ingest::congress::manual::Series,
+        /// Only these unit ids from the manifest, comma separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<String>,
+        /// Reprocess units even when their manifest fingerprint is unchanged.
+        #[arg(long)]
+        refetch: bool,
+        /// Stop after this many units.
+        #[arg(long)]
+        max_units: Option<usize>,
+        /// Stop between volumes by this deadline; the manual job uses 22 h.
+        #[arg(long, required = true)]
+        max_runtime_secs: u64,
+        /// Poppler and Tesseract executables.
+        #[arg(long, env = "USNM_PDFTOTEXT", default_value = "pdftotext")]
+        pdftotext: PathBuf,
+        #[arg(long, env = "USNM_PDFINFO", default_value = "pdfinfo")]
+        pdfinfo: PathBuf,
+        #[arg(long, env = "USNM_PDFTOPPM", default_value = "pdftoppm")]
+        pdftoppm: PathBuf,
+        #[arg(long, env = "USNM_TESSERACT", default_value = "tesseract")]
+        tesseract: PathBuf,
+    },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
         /// As for `enqueue`: LoC's listing unless another list is given.
@@ -642,6 +675,9 @@ enum Command {
         /// As for `release`.
         #[arg(long, env = "USNM_CONGRESS")]
         congress: bool,
+        /// Include manually downloaded Annals and Register after operator QA.
+        #[arg(long, env = "USNM_CONGRESS_MANUAL", requires = "congress")]
+        congress_manual: bool,
         /// As for `release`.
         #[arg(long)]
         partition_decade: bool,
@@ -884,6 +920,7 @@ async fn release(
     ja_latin: bool,
     ocr_local: bool,
     congress: bool,
+    congress_manual: bool,
     partition_decade: bool,
     single_text_field: bool,
     page_language: bool,
@@ -906,6 +943,7 @@ async fn release(
         ja_latin,
         ocr_local,
         congress,
+        congress_manual,
         partition_decade,
         single_text_field,
         page_language,
@@ -1184,6 +1222,7 @@ impl Command {
             Command::OcrRequeue { .. } => "ocr-requeue",
             Command::CongressGlobe { .. } => "congress-globe",
             Command::CongressSerialset { .. } => "congress-serialset",
+            Command::CongressManual { .. } => "congress-manual",
             Command::Run { .. } => "run",
         }
     }
@@ -1217,7 +1256,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
         | Command::CongressGlobe { .. }
-        | Command::CongressSerialset { .. } => None,
+        | Command::CongressSerialset { .. }
+        | Command::CongressManual { .. } => None,
     }
 }
 
@@ -1731,6 +1771,7 @@ async fn command(
             ja_latin,
             ocr_local,
             congress,
+            congress_manual,
             partition_decade,
             single_text_field,
             page_language,
@@ -1746,6 +1787,7 @@ async fn command(
                 *ja_latin,
                 *ocr_local,
                 *congress,
+                *congress_manual,
                 *partition_decade,
                 *single_text_field,
                 *page_language,
@@ -1756,6 +1798,52 @@ async fn command(
             )
             .await
         }
+        Command::CongressManual {
+            series,
+            units,
+            refetch,
+            max_units,
+            max_runtime_secs,
+            pdftotext,
+            pdfinfo,
+            pdftoppm,
+            tesseract,
+        } => {
+            use usnm_ingest::congress::manual;
+            let raw_url = cli.stores.raw.as_deref().context(
+                "congress-manual requires USNM_RAW_URL with the manually downloaded PDFs",
+            )?;
+            let raw = usnm_store::open(raw_url)?;
+            let curated = usnm_store::open(&cli.stores.curated)?;
+            let scratch = cli.stores.work_dir.join("congress-lcg");
+            std::fs::create_dir_all(&scratch)
+                .with_context(|| format!("creating {}", scratch.display()))?;
+            let pdf = manual::TesseractPdf::new(
+                pdftotext.clone(),
+                pdfinfo.clone(),
+                pdftoppm.clone(),
+                tesseract.clone(),
+            )
+            .await?;
+            let opts = manual::Options {
+                series: *series,
+                units: units.clone(),
+                refetch: *refetch,
+                max_units: *max_units,
+                deadline: deadline(start, Some(*max_runtime_secs)),
+                work_dir: scratch,
+            };
+            let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let report = manual::locked(
+                &state,
+                &owner_id(),
+                manual::run(raw.as_ref(), curated.as_ref(), &pdf, &opts, lost.as_ref()),
+                lost.clone(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(None)
+        }
         Command::Run {
             list,
             batches,
@@ -1765,6 +1853,7 @@ async fn command(
             ja_latin,
             ocr_local,
             congress,
+            congress_manual,
             partition_decade,
             single_text_field,
             page_language,
@@ -1814,6 +1903,7 @@ async fn command(
                 *ja_latin,
                 *ocr_local,
                 *congress,
+                *congress_manual,
                 *partition_decade,
                 *single_text_field,
                 *page_language,
@@ -1910,6 +2000,33 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn run_manual_series_requires_congress_and_is_explicit() {
+        let base = [
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "run",
+            "--congress",
+        ];
+        let mut with_manual = base.to_vec();
+        with_manual.push("--congress-manual");
+        let cli = Cli::try_parse_from(with_manual).unwrap();
+        let Command::Run {
+            congress_manual, ..
+        } = cli.command
+        else {
+            panic!("not a run command");
+        };
+        assert!(congress_manual);
+
+        let mut without_congress = base[..6].to_vec();
+        without_congress.push("--congress-manual");
+        assert!(Cli::try_parse_from(without_congress).is_err());
     }
 
     #[test]
@@ -2194,6 +2311,7 @@ mod tests {
             ja_latin,
             ocr_local,
             congress,
+            congress_manual,
             partition_decade,
             single_text_field,
             page_language,
@@ -2208,6 +2326,7 @@ mod tests {
         assert!(!ja_latin, "off unless asked for");
         assert!(!ocr_local, "off unless asked for");
         assert!(!congress, "off unless asked for");
+        assert!(!congress_manual, "manual debates remain opt-in");
         assert!(!partition_decade, "off unless asked for");
         assert!(!single_text_field, "off unless asked for");
         assert!(!page_language, "off unless asked for");

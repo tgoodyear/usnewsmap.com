@@ -145,6 +145,9 @@ pub struct Release {
     /// a published set is removed then (or when no curated pages with text
     /// are left), by a release of its own if there are no new batches.
     pub congress: bool,
+    /// Include the manually downloaded Annals and Register only when an
+    /// operator opts in; the scheduled release leaves them out otherwise.
+    pub congress_manual: bool,
 }
 
 /// What a release does with the Congress set (`Release::congress`).
@@ -1977,6 +1980,10 @@ impl Release {
         switching: bool,
     ) -> anyhow::Result<CongressPlan> {
         let published = pointer.and_then(|p| p.congress.as_ref());
+        anyhow::ensure!(
+            !self.congress_manual || self.congress,
+            "--congress-manual requires --congress"
+        );
         if !self.congress {
             if published.is_some() {
                 tracing::warn!(
@@ -1986,9 +1993,12 @@ impl Release {
             }
             return Ok(CongressPlan::Off);
         }
-        let listing = congress::release::Listing::load(self.curated.as_ref()).await?;
+        let listing =
+            congress::release::Listing::load_enabled(self.curated.as_ref(), self.congress_manual)
+                .await?;
         tracing::info!(
             units = listing.units.len(),
+            manual_debates = self.congress_manual,
             indexable = listing.indexable(),
             left_out = ?listing.left_out,
             "Congress pages"

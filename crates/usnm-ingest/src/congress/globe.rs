@@ -420,6 +420,13 @@ impl Dating {
         })
     }
 
+    /// Forget the carried date at a known source-specific chronology boundary.
+    /// Globe callers do not use this; manual debate import resets only when its
+    /// printed chamber heading starts a new section.
+    pub fn reset_carried_date(&mut self) {
+        self.carried = None;
+    }
+
     /// The next page's facts.
     ///
     /// - The appendix starts at its title page and runs to the item's end;

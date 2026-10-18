@@ -1,1 +1,3 @@
 ocr/bench/serialset-pilot/source/alto/*.xml whitespace=cr-at-eol
+
+fixtures/congress/lcg/manual/annals/*.pdf binary

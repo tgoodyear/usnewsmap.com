@@ -107,6 +107,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_CONGRESS_MANUAL": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Opt in to indexing manually downloaded Annals and Register volumes after an operator verifies OCR and provenance. Requires USNM_CONGRESS."
+    },
     "USNM_CONGRESS_SEARCH": {
       "x-usnm-visibility": "public",
       "type": "boolean"
