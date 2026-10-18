@@ -667,6 +667,17 @@ pub(crate) fn gpu_mem_used(index: u32) -> Option<u64> {
 /// llama-server's log lines that say which device it used, and the
 /// "offloaded N/M layers to GPU" count.
 pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
+    // Qwen's existing result contract rejects `none` on successful runs.
+    let (device, layers, lines) = surya_llama_device(log);
+    let device = if device == "none" {
+        "cpu".into()
+    } else {
+        device
+    };
+    (device, layers, lines)
+}
+
+fn surya_llama_device(log: &str) -> (String, Option<String>, String) {
     let mut lines = String::new();
     let mut offload = None;
     let mut offloaded_layers = None;
@@ -863,7 +874,7 @@ fn run_mode(
     let log_text = std::fs::read(&log)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
-    let (mut device, gpu_layers, device_lines) = llama_device(&log_text);
+    let (mut device, gpu_layers, device_lines) = surya_llama_device(&log_text);
     if device == "cuda" && matches!(gpu, Some(GpuDevice::Vulkan(_))) {
         device = "vulkan".into();
     }
@@ -1123,36 +1134,37 @@ pub(crate) mod tests {
 
     #[test]
     fn llama_log_device() {
+        assert_eq!(llama_device("main: server is listening\n").0, "cpu");
         let log = "ggml_cuda_init: found 1 CUDA devices:\n  Device 0: NVIDIA GeForce RTX 3060, compute capability 8.6\nload_tensors: offloaded 29/29 layers to GPU\n";
-        let (d, o, lines) = llama_device(log);
+        let (d, o, lines) = surya_llama_device(log);
         assert_eq!(d, "cuda");
         assert_eq!(o.as_deref(), Some("29/29 layers to GPU"));
         assert!(lines.contains("RTX 3060"));
         let vk_log = "ggml_vulkan: Found 1 Vulkan devices:\nggml_vulkan: 0 = Intel(R) Iris(R) Xe Graphics (TGL GT2) (Mesa) | uma: 1\nload_backend: loaded Vulkan backend from /app/libggml-vulkan.so\nload_tensors: offloaded 37/37 layers to GPU\n";
-        let (vd, vo, vlines) = llama_device(vk_log);
+        let (vd, vo, vlines) = surya_llama_device(vk_log);
         assert_eq!(vd, "vulkan");
         assert_eq!(vo.as_deref(), Some("37/37 layers to GPU"));
         assert!(vlines.contains("Iris(R) Xe"));
         assert_eq!(
-            llama_device("load_tensors: offloaded 0/29 layers to GPU\n").0,
+            surya_llama_device("load_tensors: offloaded 0/29 layers to GPU\n").0,
             "cpu"
         );
-        assert_eq!(llama_device("main: server is listening\n").0, "none");
+        assert_eq!(surya_llama_device("main: server is listening\n").0, "none");
         assert_eq!(
-            llama_device("1.01.512.448 I srv llama_server: model loaded\n").0,
+            surya_llama_device("1.01.512.448 I srv llama_server: model loaded\n").0,
             "none"
         );
         assert_eq!(
-            llama_device("ggml_cuda_init: found 1 CUDA devices\n").0,
+            surya_llama_device("ggml_cuda_init: found 1 CUDA devices\n").0,
             "none"
         );
         assert_eq!(
-            llama_device("load_tensors: OFFLOADED 29/29 layers to GPU\n").0,
+            surya_llama_device("load_tensors: OFFLOADED 29/29 layers to GPU\n").0,
             "cuda"
         );
         for count in ["invalid", "-1/29", "30/29", "0/0"] {
             assert_eq!(
-                llama_device(&format!("load_tensors: offloaded {count} layers to GPU\n")).0,
+                surya_llama_device(&format!("load_tensors: offloaded {count} layers to GPU\n")).0,
                 "none"
             );
         }
