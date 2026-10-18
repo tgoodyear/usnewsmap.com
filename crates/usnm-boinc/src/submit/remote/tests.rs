@@ -78,6 +78,7 @@ impl Fixture {
                 stage: Stage::Reserved,
                 stamp: "test".into(),
                 error: None,
+                ledger: None,
             },
         )
         .unwrap();
