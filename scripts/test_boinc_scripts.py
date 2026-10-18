@@ -110,6 +110,148 @@ python3() {
             self.assertNotIn("/var/tmp", text)
 
 
+class AcrBuildVerification(unittest.TestCase):
+    """Queue/poll/digest regression tests: no Azure calls or paid builds."""
+
+    DIGEST = "sha256:" + "a" * 64
+    STUB = r"""#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+log = pathlib.Path(os.environ["STUB_LOG"])
+with log.open("a") as out:
+    out.write(json.dumps(args) + "\n")
+if args[:2] == ["acr", "build"]:
+    print(os.environ["STUB_RUN_ID"])
+    sys.exit(int(os.environ.get("STUB_SUBMIT_EXIT", "0")))
+if args[:3] == ["acr", "task", "show-run"]:
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    count = sum(call[:3] == ["acr", "task", "show-run"] for call in calls)
+    runs = json.loads(os.environ["STUB_RUNS"])
+    run = runs[min(count - 1, len(runs) - 1)]
+    if run == "error":
+        sys.exit(3)
+    print(run if isinstance(run, str) else json.dumps(run))
+    sys.exit(0)
+if args[:3] == ["acr", "repository", "show"]:
+    print(os.environ["STUB_DIGEST"])
+    sys.exit(int(os.environ.get("STUB_DIGEST_EXIT", "0")))
+sys.exit("unexpected az command: " + repr(args))
+"""
+
+    def succeeded(self, **changes):
+        return {"status": "Succeeded", "outputImages": [
+            {"repository": "nested/image", "tag": "test", "digest": self.DIGEST, **changes}]}
+
+    def invoke(self, runs=None, **env):
+        with tempfile.TemporaryDirectory(prefix=".acr-test-", dir=ROOT) as work:
+            stub = Path(work, "az")
+            stub.write_text(self.STUB)
+            stub.chmod(0o700)
+            log = Path(work, "calls.jsonl")
+            values = {**os.environ, "STUB_AZ": str(stub), "STUB_LOG": str(log),
+                      "STUB_RUN_ID": "ch2c", "STUB_RUNS": json.dumps(runs or [self.succeeded()]),
+                      "STUB_DIGEST": self.DIGEST, "ACR_WAIT_SECONDS": "5", "ACR_POLL_INTERVAL": "0",
+                      **env}
+            command = r"""
+set -euo pipefail
+. scripts/lib/acr-build.sh
+scoped_az() { "$STUB_AZ" "$@" --subscription test-sub; }
+acr_build_verified scoped_az test-registry nested/image:test 7200 \
+  --platform linux/amd64 --build-arg 'BASE_IMAGE=some image' --file 'a context/Containerfile' 'a context'
+echo verified
+"""
+            result = subprocess.run(["bash", "-c", command], cwd=ROOT, env=values,
+                                    capture_output=True, text=True, timeout=10)
+            calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            return result, calls
+
+    def assert_failed(self, runs=None, **env):
+        result, calls = self.invoke(runs, **env)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("verified", result.stdout)
+        self.assertEqual(sum(call[:2] == ["acr", "build"] for call in calls), 1)
+        return result, calls
+
+    def test_nonzero_cli_exit_does_not_override_successful_remote_run(self):
+        result, calls = self.invoke(STUB_SUBMIT_EXIT="17")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Succeeded; verified", result.stderr)
+        self.assertEqual(result.stdout.strip(), "verified")
+        self.assertEqual(len(calls), 3)
+        self.assertIn("--no-wait", calls[0])
+        self.assertNotIn("--no-logs", calls[0])
+        self.assertEqual(calls[0][-2:], ["--subscription", "test-sub"])
+        self.assertIn("BASE_IMAGE=some image", calls[0])
+        self.assertIn("a context/Containerfile", calls[0])
+        self.assertEqual(calls[0][-3], "a context")
+        self.assertEqual(calls[0][calls[0].index("--timeout") + 1], "7200")
+        for call in calls:
+            self.assertEqual(call[-2:], ["--subscription", "test-sub"])
+        self.assertEqual(calls[1][calls[1].index("--run-id") + 1], "ch2c")
+
+    def test_waits_through_queued_started_running_and_transient_read_failures(self):
+        runs = [{"status": status} for status in ("Queued", "Started", "Running")]
+        result, calls = self.invoke([*runs, "error", "not json", self.succeeded()])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sum(call[:2] == ["acr", "build"] for call in calls), 1)
+        self.assertEqual(sum(call[:3] == ["acr", "task", "show-run"] for call in calls), 6)
+
+    def test_failed_terminal_run_rejects_even_an_existing_valid_tag(self):
+        for status in ("Failed", "Canceled", "Cancelled", "Error", "Timeout", "Unknown"):
+            with self.subTest(status=status):
+                result, calls = self.assert_failed([{"status": status}])
+                self.assertIn(status, result.stderr)
+                self.assertFalse(any(call[:2] == ["acr", "repository"] for call in calls))
+
+    def test_submission_without_valid_run_id_never_falls_back_to_old_tag(self):
+        for run_id in ("", "null", "two runs", "ch2c\nch2d", "../ch2c"):
+            for exit_code in ("0", "1"):
+                with self.subTest(run_id=run_id, exit_code=exit_code):
+                    result, calls = self.invoke(STUB_RUN_ID=run_id, STUB_SUBMIT_EXIT=exit_code,
+                                                STUB_RUNS=json.dumps([{"status": "Failed"}]))
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(len(calls), 1)
+
+    def test_polling_timeout_never_reads_an_old_tag(self):
+        for run in ({"status": "Running"}, "error", "invalid json", {}, {"status": None}):
+            with self.subTest(run=run):
+                result, calls = self.assert_failed([run], ACR_WAIT_SECONDS="0")
+                self.assertIn("timed out", result.stderr)
+                self.assertEqual(len(calls), 2)
+
+    def test_success_requires_valid_matching_run_output_and_registry_digest(self):
+        invalid_runs = [
+            {"status": "Succeeded"},
+            self.succeeded(digest="sha256:bad"),
+            self.succeeded(repository="other/image"),
+            self.succeeded(tag="other"),
+            {"status": "Succeeded", "outputImages": []},
+            {"status": "Succeeded", "outputImages": self.succeeded()["outputImages"] * 2},
+        ]
+        for run in invalid_runs:
+            with self.subTest(run=run):
+                self.assert_failed([run])
+        for env in ({"STUB_DIGEST": ""}, {"STUB_DIGEST": "sha256:" + "b" * 64},
+                    {"STUB_DIGEST_EXIT": "1"}):
+            with self.subTest(env=env):
+                self.assert_failed(**env)
+
+    def test_all_build_wrappers_use_shared_helper(self):
+        expected = {"build-boinc-images.sh": 4, "boinc-app-release.sh": 3,
+                    "build-quickwit.sh": 1, "stand-up.sh": 1}
+        for name, count in expected.items():
+            text = Path(HERE, name).read_text()
+            self.assertIn(". scripts/lib/acr-build.sh", text)
+            self.assertEqual(text.count("acr_build_verified "), count, name)
+        # Prevent a new shell/workflow caller from reintroducing direct streaming builds/runs.
+        for path in [*Path(ROOT).rglob("*.sh"), *Path(ROOT, ".github/workflows").glob("*.yml")]:
+            if path.name == "acr-build.sh":
+                continue
+            commands = "\n".join(line for line in path.read_text().splitlines()
+                                 if not line.lstrip().startswith("#"))
+            self.assertNotRegex(commands, r"\b(?:az|baz)\s+acr\s+(?:build|run)\b", str(path))
+
+
 class LogsFrontendRetry(unittest.TestCase):
     def setUp(self):
         patch = mock.patch.dict(os.environ, {"LOG_ANALYTICS_QUERY_HOST": "westus2.api.loganalytics.io"})

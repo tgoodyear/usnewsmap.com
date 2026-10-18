@@ -1023,6 +1023,22 @@ scripts/titles-seed.sh --env dev                       # again, or after turning
 scripts/logs.sh --env dev --query-name titles-archive --span 1h
 ```
 
+**ACR build verification.** All build wrappers (`stand-up.sh`, `build-quickwit.sh`,
+`build-boinc-images.sh`, and `boinc-app-release.sh`) use `scripts/lib/acr-build.sh`.
+It queues once with `--no-wait`, polls that run's canonical `az acr task show-run`
+status, and requires `Succeeded` plus the requested output image's SHA-256 digest
+matching the registry tag. A nonzero submission exit is recoverable only when a
+valid run ID was returned; no run ID, a failed/canceled run, an unreadable run at
+the deadline, or a missing/mismatched digest fails closed. An existing tag cannot
+prove that a new build succeeded. Polling defaults to every 10 seconds, bounded
+by the build timeout plus 600 seconds (`ACR_POLL_INTERVAL` / `ACR_WAIT_SECONDS`
+override these in seconds). A local timeout does not cancel the remote run; use
+the printed registry/run ID to inspect it before deciding whether to rebuild.
+These checks do not deploy images. For manual builds, source the helper in Bash
+and call `acr_build_verified az REGISTRY REPOSITORY:TAG TIMEOUT [build arguments]`
+as in the examples below; do not infer remote success or failure from the log
+streaming CLI exit status (#549).
+
 **Cost of standing up:** two provisions and two or three `az acr build` runs, a few cents. Reading the 1% set back from Cold is about $0.71 ($0.03 per GB retrieved) plus about $0.24 of private endpoint processing. Then the idle floor (about $2 a day) and whatever the experiment runs. **Time:** about 40 to 60 minutes to a running environment with images. Data takes minutes for a set, about an hour to curate the 1% from the archive, and a few minutes to seed the titles from the archive (up to 8 hours for a titles-sync when there is no copy yet, or the catalog needs titles the copy lacks).
 
 **Tear it down** once the results are saved: reports copied out of `qw-bench/runs/`, logs queried, and, if titles-sync ran with the archival account, its copy in the archive. Save that copy first, and don't start the teardown until the command below exits 0:
@@ -1083,8 +1099,9 @@ scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --value "$ARCHIVE_ID"  
 scripts/provision.sh --env dev --allow-dirty    # the experiment's settings, before they're committed
 RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD)
-az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
-az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+. scripts/lib/acr-build.sh
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
+acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f Dockerfile .
 scripts/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
 scripts/settings.sh --env dev --key USNM_USE_ACR --value true
 scripts/provision.sh --env dev --allow-dirty
@@ -1151,10 +1168,11 @@ Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; 
 cd ~/code/usnewsmap.com-qwcluster
 RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD); SHA=$(git rev-parse HEAD)
+. scripts/lib/acr-build.sh
 NIGHTLY=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
-az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
-az acr build -r "$ACR" -t usnewsmap-ingest:$TAG-qw2509 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
-az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG-qw2509" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
+acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f Dockerfile .
 ```
 
 **Smoke test** on an index the cluster already holds (`s1ixb`, the 1% without American Stories, 58 splits): cluster nodes off, so nothing writes while they search; both searchers at the sidecar's 4 vCPU.
