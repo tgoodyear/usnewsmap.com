@@ -667,9 +667,20 @@ pub(crate) fn gpu_mem_used(index: u32) -> Option<u64> {
 /// llama-server's log lines that say which device it used, and the
 /// "offloaded N/M layers to GPU" count.
 pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
+    // Qwen's existing result contract rejects `none` on successful runs.
+    let (device, layers, lines) = surya_llama_device(log);
+    let device = if device == "none" {
+        "cpu".into()
+    } else {
+        device
+    };
+    (device, layers, lines)
+}
+
+fn surya_llama_device(log: &str) -> (String, Option<String>, String) {
     let mut lines = String::new();
     let mut offload = None;
-    let mut gpu_offloaded = false;
+    let mut offloaded_layers = None;
     let mut saw_vulkan = false;
     let mut saw_cuda = false;
     for l in log.lines() {
@@ -686,13 +697,23 @@ pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
             saw_cuda = true;
         }
         if low.contains("offloaded") && low.contains("layers to gpu") {
-            offload = l
-                .split("offloaded")
-                .nth(1)
-                .map(|s| s.trim().chars().take(64).collect::<String>());
-            if let Some(o) = &offload {
-                gpu_offloaded = !o.starts_with("0/");
-            }
+            let detail = low.split_once("offloaded").map(|(_, detail)| detail.trim());
+            offloaded_layers = detail.and_then(|detail| {
+                let count = detail.split_whitespace().next()?;
+                let (used, total) = count.split_once('/')?;
+                let used = used.parse::<u32>().ok()?;
+                let total = total.parse::<u32>().ok()?;
+                (total > 0 && used <= total).then_some(used)
+            });
+            offload = offloaded_layers.and_then(|_| {
+                l.to_ascii_lowercase().find("offloaded").map(|index| {
+                    l[index + "offloaded".len()..]
+                        .trim()
+                        .chars()
+                        .take(64)
+                        .collect::<String>()
+                })
+            });
         }
         let shown = [
             "cuda",
@@ -712,16 +733,27 @@ pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
             lines.push('\n');
         }
     }
-    let device = if gpu_offloaded {
+    let device = if offloaded_layers.is_some_and(|layers| layers > 0) {
         if saw_vulkan && !saw_cuda {
             "vulkan"
         } else {
             "cuda"
         }
-    } else {
+    } else if offloaded_layers == Some(0) {
         "cpu"
+    } else {
+        // Missing/quiet startup logs do not prove that inference fell back to CPU.
+        "none"
     };
     (device.into(), offload, lines)
+}
+
+fn surya_llama_args(threads: u32, gpu: Option<GpuDevice>) -> String {
+    match gpu {
+        Some(GpuDevice::Vulkan(i)) => format!("--threads {threads} --device Vulkan{i}"),
+        // b11610 maps llama-library INFO (including offload counts) to trace level 4.
+        _ => format!("--threads {threads} -lv 4"),
+    }
 }
 
 struct ModeRun {
@@ -751,17 +783,12 @@ fn run_mode(
     };
     let gpu_before = cuda_gpu.and_then(gpu_mem_used);
     let mut cmd = Command::new("python3");
-    let extra_args = match gpu {
-        Some(GpuDevice::Cuda(i)) => {
-            // Only BOINC's GPU, as nvidia-smi numbers them (llama.cpp's CUDA
-            // order is the same with CUDA_DEVICE_ORDER=PCI_BUS_ID).
-            cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-                .env("CUDA_VISIBLE_DEVICES", i.to_string());
-            format!("--threads {threads}")
-        }
-        Some(GpuDevice::Vulkan(i)) => format!("--threads {threads} --device Vulkan{i}"),
-        None => format!("--threads {threads}"),
-    };
+    if let Some(GpuDevice::Cuda(i)) = gpu {
+        // Keep BOINC's assigned CUDA device selection unchanged.
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+            .env("CUDA_VISIBLE_DEVICES", i.to_string());
+    }
+    let extra_args = surya_llama_args(threads, gpu);
     let mut child = cmd
         .arg(RUNNER)
         .args(["--image", &work.join(PAGE_FILE).to_string_lossy()])
@@ -850,7 +877,7 @@ fn run_mode(
     let log_text = std::fs::read(&log)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
-    let (mut device, gpu_layers, device_lines) = llama_device(&log_text);
+    let (mut device, gpu_layers, device_lines) = surya_llama_device(&log_text);
     if device == "cuda" && matches!(gpu, Some(GpuDevice::Vulkan(_))) {
         device = "vulkan".into();
     }
@@ -1109,22 +1136,54 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn surya_cuda_logs_include_library_offload_evidence() {
+        assert_eq!(
+            surya_llama_args(2, Some(GpuDevice::Cuda(0))),
+            "--threads 2 -lv 4"
+        );
+        assert_eq!(surya_llama_args(8, None), "--threads 8 -lv 4");
+        assert_eq!(
+            surya_llama_args(2, Some(GpuDevice::Vulkan(1))),
+            "--threads 2 --device Vulkan1"
+        );
+    }
+
+    #[test]
     fn llama_log_device() {
+        assert_eq!(llama_device("main: server is listening\n").0, "cpu");
         let log = "ggml_cuda_init: found 1 CUDA devices:\n  Device 0: NVIDIA GeForce RTX 3060, compute capability 8.6\nload_tensors: offloaded 29/29 layers to GPU\n";
-        let (d, o, lines) = llama_device(log);
+        let (d, o, lines) = surya_llama_device(log);
         assert_eq!(d, "cuda");
         assert_eq!(o.as_deref(), Some("29/29 layers to GPU"));
         assert!(lines.contains("RTX 3060"));
         let vk_log = "ggml_vulkan: Found 1 Vulkan devices:\nggml_vulkan: 0 = Intel(R) Iris(R) Xe Graphics (TGL GT2) (Mesa) | uma: 1\nload_backend: loaded Vulkan backend from /app/libggml-vulkan.so\nload_tensors: offloaded 37/37 layers to GPU\n";
-        let (vd, vo, vlines) = llama_device(vk_log);
+        let (vd, vo, vlines) = surya_llama_device(vk_log);
         assert_eq!(vd, "vulkan");
         assert_eq!(vo.as_deref(), Some("37/37 layers to GPU"));
         assert!(vlines.contains("Iris(R) Xe"));
         assert_eq!(
-            llama_device("load_tensors: offloaded 0/29 layers to GPU\n").0,
+            surya_llama_device("load_tensors: offloaded 0/29 layers to GPU\n").0,
             "cpu"
         );
-        assert_eq!(llama_device("main: server is listening\n").0, "cpu");
+        assert_eq!(surya_llama_device("main: server is listening\n").0, "none");
+        assert_eq!(
+            surya_llama_device("1.01.512.448 I srv llama_server: model loaded\n").0,
+            "none"
+        );
+        assert_eq!(
+            surya_llama_device("ggml_cuda_init: found 1 CUDA devices\n").0,
+            "none"
+        );
+        assert_eq!(
+            surya_llama_device("load_tensors: OFFLOADED 29/29 layers to GPU\n").0,
+            "cuda"
+        );
+        for count in ["invalid", "-1/29", "30/29", "0/0"] {
+            assert_eq!(
+                surya_llama_device(&format!("load_tensors: offloaded {count} layers to GPU\n")).0,
+                "none"
+            );
+        }
     }
 
     #[test]
