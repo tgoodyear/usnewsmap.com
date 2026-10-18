@@ -48,19 +48,9 @@ pub fn create_work_args(job: &Job) -> Vec<String> {
         format!("{n_pages}e14")
     };
     let disk_bound = if job.pages.is_empty() {
-        "1073741824".to_owned()
+        "1073741824"
     } else {
-        let total_input = job
-            .inputs
-            .page
-            .bytes
-            .saturating_add(job.inputs.alto.bytes)
-            .saturating_add(job.inputs.texts.bytes)
-            .saturating_add(job.inputs.places.bytes);
-        let needed = total_input
-            .saturating_add(512 * 1024 * 1024)
-            .max(2 * 1024 * 1024 * 1024);
-        needed.to_string()
+        "2147483648"
     };
     let mut args: Vec<String> = [
         "--appname",
@@ -88,7 +78,7 @@ pub fn create_work_args(job: &Job) -> Vec<String> {
         "--rsc_memory_bound",
         MEMORY_BOUND,
         "--rsc_disk_bound",
-        &disk_bound,
+        disk_bound,
         "--delay_bound",
         "259200",
     ]

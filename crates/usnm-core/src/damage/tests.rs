@@ -334,7 +334,10 @@ fn numeric_short_line_and_fraktur_analytic_identities() {
     let dr = sf.damage_rate.unwrap();
     let fs = sf.fraktur_score.unwrap();
     assert!(dr > 0.15);
-    assert!((fs - dr).abs() < 1e-12, "fraktur_score {fs} != damage_rate {dr}");
+    assert!(
+        (fs - dr).abs() < 1e-12,
+        "fraktur_score {fs} != damage_rate {dr}"
+    );
 
     // Explicit Unicode long-s ('ſ') also raises fraktur_score even when casefolded words match head words.
     let long_s_de = GERMAN_TEXT.replace("sich", "ſich").replace("ist", "iſt");

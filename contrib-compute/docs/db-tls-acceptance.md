@@ -430,13 +430,15 @@ this empty-client operational hold blindly to a client running other projects.
 
 The source of the live lifecycle server/bridge (`9323a0d2…` / `b8fb643e…`)
 was `09987e4732d631292031a4b82b82be8a194b72a7`, outside main. Its quality
-metrics and streaming/vectorized prerequisites are now reconciled into main;
+metrics are now reconciled into main without importing unrelated resource-limit,
+threading or alignment changes;
 this does not adopt the separately proposed damage router (#777).
 The additive web image `508a9256…` adds only the already-merged
 `contrib-compute/boinc/html/user/work_summary.php`. Optional `images.web`
 preserves this web/daemon binding independently of lifecycle `server`/`bridge`.
 A normal image build replaces an existing web override with the new bridge image,
-which includes that endpoint and the reconciled metrics. Thus the override cannot
+which includes that endpoint and the reconciled metrics. Existing main bundle and
+upload limits, linear-space alignment and single-threaded execution are unchanged. Thus the override cannot
 silently strand production on the old additive image after a rebuild.
 
 The existing production bridge default is `BRIDGE_STEP=iris-bundle-collect`,
