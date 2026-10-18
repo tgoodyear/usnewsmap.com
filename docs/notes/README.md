@@ -10,17 +10,18 @@ They sit between the other two kinds of document:
 
 ## Notes
 
-| Date       | Note                                                                                                           | Topic                | Measured on                                            |
-| ---------- | -------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------ |
-| 2026-10-16 | [BOINC OCR quality and vision-language crop pilot and calibration](2026-10-16-boinc-quality-qwen-pilot.md)     | ocr, operations      | 5 BOINC quality waves, Overproof-CA/BLN600/Fraktur cal |
-| 2026-10-15 | [Historical-newspaper transcription pilot](2026-10-15-transcription-pilot.md)                                  | ocr, operations      | Synthetic fixtures and public Overproof-CA preparation |
-| 2026-10-14 | [Native ARM64 BOINC worker on the Mac](2026-10-14-buda-native-arm64.md)                                        | ocr, operations      | Native ARM engine/worker; wrapper 22                   |
-| 2026-10-14 | [BUDA Mac tests without a project server](2026-10-14-buda-mac-offline-tests.md)                                | ocr, operations      | BOINC 8.2.15, Podman 5.5.2, wrapper 22                 |
-| 2026-10-14 | [BUDA evaluation: validation, worker identity and Mac support](2026-10-14-buda-evaluation.md)                  | ocr, operations      | Pinned BOINC source; Mac wrapper 22 launch             |
-| 2026-10-05 | [Corpus coverage: what is searchable, what is counted, what is missing](2026-10-05-corpus-coverage.md)         | coverage             | pages-v20260929-4, pages-v20261003-1                   |
-| 2026-10-05 | [Japanese pages: OCR of the pages LoC ships without text](2026-10-05-japanese-ocr.md)                          | ocr                  | sample of 23 crops, 1942–45                            |
-| 2026-10-05 | [Phrases with common words, and the index layout around them](2026-10-05-phrases-through-common-word-pairs.md) | indexing             | 90,745 pages (11 batches); pages-v20261003-1           |
-| 2026-10-05 | [Index versions: what built each one, and comparing them](2026-10-05-index-versions-and-what-built-them.md)    | indexing, operations | pages-v20260928-1 to pages-v20261005-1                 |
+| Date       | Note                                                                                                           | Topic                | Measured on                                             |
+| ---------- | -------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------- |
+| 2026-10-18 | [Latest LoC OCR inventory and fixed benchmark coverage gap](2026-10-18-loc-refreshed-baselines.md)             | ocr, coverage        | Public LoC guide, 675-page archive, immutable benchmark |
+| 2026-10-16 | [BOINC OCR quality and vision-language crop pilot and calibration](2026-10-16-boinc-quality-qwen-pilot.md)     | ocr, operations      | 5 BOINC quality waves, Overproof-CA/BLN600/Fraktur cal  |
+| 2026-10-15 | [Historical-newspaper transcription pilot](2026-10-15-transcription-pilot.md)                                  | ocr, operations      | Synthetic fixtures and public Overproof-CA preparation  |
+| 2026-10-14 | [Native ARM64 BOINC worker on the Mac](2026-10-14-buda-native-arm64.md)                                        | ocr, operations      | Native ARM engine/worker; wrapper 22                    |
+| 2026-10-14 | [BUDA Mac tests without a project server](2026-10-14-buda-mac-offline-tests.md)                                | ocr, operations      | BOINC 8.2.15, Podman 5.5.2, wrapper 22                  |
+| 2026-10-14 | [BUDA evaluation: validation, worker identity and Mac support](2026-10-14-buda-evaluation.md)                  | ocr, operations      | Pinned BOINC source; Mac wrapper 22 launch              |
+| 2026-10-05 | [Corpus coverage: what is searchable, what is counted, what is missing](2026-10-05-corpus-coverage.md)         | coverage             | pages-v20260929-4, pages-v20261003-1                    |
+| 2026-10-05 | [Japanese pages: OCR of the pages LoC ships without text](2026-10-05-japanese-ocr.md)                          | ocr                  | sample of 23 crops, 1942–45                             |
+| 2026-10-05 | [Phrases with common words, and the index layout around them](2026-10-05-phrases-through-common-word-pairs.md) | indexing             | 90,745 pages (11 batches); pages-v20261003-1            |
+| 2026-10-05 | [Index versions: what built each one, and comparing them](2026-10-05-index-versions-and-what-built-them.md)    | indexing, operations | pages-v20260928-1 to pages-v20261005-1                  |
 
 Topics: `indexing` (index schema, splits, the search engine), `ocr` (text we produce ourselves), `coverage` (what is in the corpus, the baselines and the no-data layer), `operations` (the pipeline, deploys, cost).
 

@@ -1,0 +1,2487 @@
+{
+  "batch_count": 107,
+  "batches": [
+    {
+      "added": "2024-12-09",
+      "batch": "dlc_alice_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1860-1861",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5276,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1860,
+              1861
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2024-12-09",
+      "batch": "dlc_basic_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1862-1863",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5177,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1862,
+              1863
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2024-12-09",
+      "batch": "dlc_cobol_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1864-1865",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5166,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1864,
+              1865
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2024-12-09",
+      "batch": "dlc_delphi_ver03",
+      "content": "New-York Daily Tribune (sn83030213) 1866 , New-York Tribune (sn83030214) 1866-1867",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5035,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1866,
+              1866
+            ]
+          ]
+        },
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1866,
+              1867
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2024-12-09",
+      "batch": "dlc_euclid_ver04",
+      "content": "New-York Tribune (sn83030214) 1866-1869",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5332,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1866,
+              1869
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2024-12-09",
+      "batch": "dlc_grass_ver02",
+      "content": "New-York Tribune (sn83030214) 1872-1873",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5436,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1872,
+              1873
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2024-12-09",
+      "batch": "dlc_hugo_ver02",
+      "content": "New-York Tribune (sn83030214) 1874-1875",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4861,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1874,
+              1875
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2024-12-09",
+      "batch": "dlc_inform_ver02",
+      "content": "New-York Tribune (sn83030214) 1875-1877",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5155,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1875,
+              1877
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_java_ver02",
+      "content": "New-York Tribune (sn83030214) 1877-1879",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5286,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1877,
+              1879
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_lisp_ver02",
+      "content": "New-York Tribune (sn83030214) 1879",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 930,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1879,
+              1879
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_kite_ver04",
+      "content": "New-York Tribune (sn83030214) 1877",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 910,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1877,
+              1877
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_airy_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1845, 1852-1854",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 6236,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1845,
+              1845
+            ],
+            [
+              1852,
+              1854
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_buttery_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1847-1850",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4614,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1847,
+              1850
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_crunchy_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1849-1852",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4340,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1849,
+              1852
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_dry_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1854-1856",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5278,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1854,
+              1856
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_eggy_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1852, 1856-1858",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5276,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1852,
+              1852
+            ],
+            [
+              1856,
+              1858
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_flavory_ver02",
+      "content": "New-York Daily Tribune (sn83030213) 1842, 1858-1859",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4182,
+      "titles": [
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1842,
+              1842
+            ],
+            [
+              1858,
+              1859
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-01-08",
+      "batch": "dlc_gritty_ver02",
+      "content": "New-York Tribune (sn83030212) 1841-1842 , New-York Daily Tribune (sn83030213) 1842-1846",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 6395,
+      "titles": [
+        {
+          "lccn": "sn83030212",
+          "year_ranges": [
+            [
+              1841,
+              1842
+            ]
+          ]
+        },
+        {
+          "lccn": "sn83030213",
+          "year_ranges": [
+            [
+              1842,
+              1846
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_avanti_ver02",
+      "content": "New-York Tribune (sn83030214) 1880",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 2374,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1880,
+              1880
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_buick_ver02",
+      "content": "New-York Tribune (sn83030214) 1882",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 2376,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1882,
+              1882
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_chrysler_ver02",
+      "content": "New-York Tribune (sn83030214) 1880, 1883, 1884",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5646,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1880,
+              1880
+            ],
+            [
+              1883,
+              1883
+            ],
+            [
+              1884,
+              1884
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_dodge_ver02",
+      "content": "New-York Tribune (sn83030214) 1889-1890",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 7426,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1889,
+              1890
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_eagle_ver02",
+      "content": "New-York Tribune (sn83030214) 1890-1891",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5030,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1890,
+              1891
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_ford_ver03",
+      "content": "New-York Tribune (sn83030214) 1884, 1886, 1888",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5352,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1884,
+              1884
+            ],
+            [
+              1886,
+              1886
+            ],
+            [
+              1888,
+              1888
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_geo_ver03",
+      "content": "New-York Tribune (sn83030214) 1882, 1885",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4048,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1882,
+              1882
+            ],
+            [
+              1885,
+              1885
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_honda_ver02",
+      "content": "New-York Tribune (sn83030214) 1881",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 780,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1881,
+              1881
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_isuzu_ver02",
+      "content": "New-York Tribune (sn83030214) 1888, 1893",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 2916,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1888,
+              1888
+            ],
+            [
+              1893,
+              1893
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_jaguar_ver02",
+      "content": "New-York Tribune (sn83030214) 1891, 1892, 1895, 1896",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 9960,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1891,
+              1891
+            ],
+            [
+              1892,
+              1892
+            ],
+            [
+              1895,
+              1895
+            ],
+            [
+              1896,
+              1896
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_kaiser_ver02",
+      "content": "New-York Tribune (sn83030214) 1896, 1899",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 9059,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1896,
+              1896
+            ],
+            [
+              1899,
+              1899
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_lotus_ver02",
+      "content": "New-York Tribune (sn83030214) 1897, 1899",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5281,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1897,
+              1897
+            ],
+            [
+              1899,
+              1899
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_mazda_ver02",
+      "content": "New-York Tribune (sn83030214) 1883, 1888, 1893",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5516,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1883,
+              1883
+            ],
+            [
+              1888,
+              1888
+            ],
+            [
+              1893,
+              1893
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_nash_ver02",
+      "content": "New-York Tribune (sn83030214) 1894",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4210,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1894,
+              1894
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_olds_ver02",
+      "content": "New-York Tribune (sn83030214) 1897",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 1110,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1897,
+              1897
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_rolls_ver02",
+      "content": "New-York Tribune (sn83030214) 1881, 1887",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5038,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1881,
+              1881
+            ],
+            [
+              1887,
+              1887
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_triumph_ver02",
+      "content": "New-York Tribune (sn83030214) 1892, 1898",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4622,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1892,
+              1892
+            ],
+            [
+              1898,
+              1898
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2025-04-11",
+      "batch": "dlc_universal_ver02",
+      "content": "New-York Tribune (sn83030214) 1898",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5212,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1898,
+              1898
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_heart_ver03",
+      "content": "Richmond Dispatch (sn85038614) 1888-1895",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 6739,
+      "titles": [
+        {
+          "lccn": "sn85038614",
+          "year_ranges": [
+            [
+              1888,
+              1895
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_journey_ver03",
+      "content": "The Daily Dispatch (sn84024738) 1880-1884",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 5862,
+      "titles": [
+        {
+          "lccn": "sn84024738",
+          "year_ranges": [
+            [
+              1880,
+              1884
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_kiss_ver03",
+      "content": "Richmond Dispatch (sn85038614) 1895,1899",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 3313,
+      "titles": [
+        {
+          "lccn": "sn85038614",
+          "year_ranges": [
+            [
+              1895,
+              1895
+            ],
+            [
+              1899,
+              1899
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_styx_ver04",
+      "content": "Highland Recorder (sn95079246) 1893-1896",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 813,
+      "titles": [
+        {
+          "lccn": "sn95079246",
+          "year_ranges": [
+            [
+              1893,
+              1896
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_yes_ver04",
+      "content": "Richmond Planet (sn84025841) 1889-1899",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 1490,
+      "titles": [
+        {
+          "lccn": "sn84025841",
+          "year_ranges": [
+            [
+              1889,
+              1899
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_ledzeppelin_ver03",
+      "content": "The Times (sn85034438) 1890-1891",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 2209,
+      "titles": [
+        {
+          "lccn": "sn85034438",
+          "year_ranges": [
+            [
+              1890,
+              1891
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_metallica_ver03",
+      "content": "The Times (sn85034438) 1896-1898",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 6492,
+      "titles": [
+        {
+          "lccn": "sn85034438",
+          "year_ranges": [
+            [
+              1896,
+              1898
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_ironmaiden_ver04",
+      "content": "Richmond Dispatch (sn85038614) 1889-1892",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 4916,
+      "titles": [
+        {
+          "lccn": "sn85038614",
+          "year_ranges": [
+            [
+              1889,
+              1892
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_ozzyosbourne_ver03",
+      "content": "Shenandoah Herald (sn85026941) 1878-1899",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 4422,
+      "titles": [
+        {
+          "lccn": "sn85026941",
+          "year_ranges": [
+            [
+              1878,
+              1899
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-02",
+      "batch": "vi_pinkfloyd_ver03",
+      "content": "The Daily Times (sn86071854) 1886-1889",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 5170,
+      "titles": [
+        {
+          "lccn": "sn86071854",
+          "year_ranges": [
+            [
+              1886,
+              1889
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-06",
+      "batch": "vi_queen_ver03",
+      "content": "The Times (sn85034438) 1891-1893",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 4578,
+      "titles": [
+        {
+          "lccn": "sn85034438",
+          "year_ranges": [
+            [
+              1891,
+              1893
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-06",
+      "batch": "vi_vanhalen_ver03",
+      "content": "The Times (sn85034438) 1893-1894,1898-1899",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 6090,
+      "titles": [
+        {
+          "lccn": "sn85034438",
+          "year_ranges": [
+            [
+              1893,
+              1894
+            ],
+            [
+              1898,
+              1899
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-06",
+      "batch": "vi_whitesnake_ver03",
+      "content": "The Times (sn85034438) 1894-1896",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 5556,
+      "titles": [
+        {
+          "lccn": "sn85034438",
+          "year_ranges": [
+            [
+              1894,
+              1896
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-06",
+      "batch": "vi_rollingstone_ver03",
+      "content": "Richmond Dispatch (sn85038614) 1897-1899",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 4828,
+      "titles": [
+        {
+          "lccn": "sn85038614",
+          "year_ranges": [
+            [
+              1897,
+              1899
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-06",
+      "batch": "vi_tesla_ver03",
+      "content": "Richmond Dispatch (sn85038614) 1884-1888,1896",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 6469,
+      "titles": [
+        {
+          "lccn": "sn85038614",
+          "year_ranges": [
+            [
+              1884,
+              1888
+            ],
+            [
+              1896,
+              1896
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-06",
+      "batch": "vi_u2_ver03",
+      "content": "Richmond Dispatch (sn85038614) 1895-1897",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 5158,
+      "titles": [
+        {
+          "lccn": "sn85038614",
+          "year_ranges": [
+            [
+              1895,
+              1897
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_alpha_ver03",
+      "content": "The Washington Times (sn84026749) 1904-1905",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3551,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1904,
+              1905
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_bravo_ver03",
+      "content": "The Washington Times (sn84026749) 1905 The National Forum (sn82015056) 1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3223,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1905,
+              1905
+            ]
+          ]
+        },
+        {
+          "lccn": "sn82015056",
+          "year_ranges": [
+            [
+              1910,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_charlie_ver03",
+      "content": "The Washington Times (sn84026749) 1906 The Evening Times (sn84024441) 1900",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3498,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1906,
+              1906
+            ]
+          ]
+        },
+        {
+          "lccn": "sn84024441",
+          "year_ranges": [
+            [
+              1900,
+              1900
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_delta_ver02",
+      "content": "The Washington Times (sn84026749) 1906",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 2876,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1906,
+              1906
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_echo_ver02",
+      "content": "The Washington Sentinel (sn82016354) 1898-1901 The Suburban Citizen (sn82016357) 1900-1902 The Washington Weekly Post (sn87062234) 1899-1900 The Washington Times (sn84026749) 1906 Sunday Washington Globe (sn82016353) 1901-1902 The Colored American (sn83027091) 1904 Sunday Morning Globe (sn82016352) 1901 The Sunday Globe (sn82016351) 1901",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4351,
+      "titles": [
+        {
+          "lccn": "sn82016354",
+          "year_ranges": [
+            [
+              1898,
+              1901
+            ]
+          ]
+        },
+        {
+          "lccn": "sn82016357",
+          "year_ranges": [
+            [
+              1900,
+              1902
+            ]
+          ]
+        },
+        {
+          "lccn": "sn87062234",
+          "year_ranges": [
+            [
+              1899,
+              1900
+            ]
+          ]
+        },
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1906,
+              1906
+            ]
+          ]
+        },
+        {
+          "lccn": "sn82016353",
+          "year_ranges": [
+            [
+              1901,
+              1902
+            ]
+          ]
+        },
+        {
+          "lccn": "sn83027091",
+          "year_ranges": [
+            [
+              1904,
+              1904
+            ]
+          ]
+        },
+        {
+          "lccn": "sn82016352",
+          "year_ranges": [
+            [
+              1901,
+              1901
+            ]
+          ]
+        },
+        {
+          "lccn": "sn82016351",
+          "year_ranges": [
+            [
+              1901,
+              1901
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_foxtrot_ver02",
+      "content": "The Colored American (sn83027091) 1899-1904 The Washington Bee (sn84025891) 1908-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4207,
+      "titles": [
+        {
+          "lccn": "sn83027091",
+          "year_ranges": [
+            [
+              1899,
+              1904
+            ]
+          ]
+        },
+        {
+          "lccn": "sn84025891",
+          "year_ranges": [
+            [
+              1908,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_golf_ver02",
+      "content": "The Washington Bee (sn84025891) 1901-1903 The Washington Herald (sn83045433) 1907",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3133,
+      "titles": [
+        {
+          "lccn": "sn84025891",
+          "year_ranges": [
+            [
+              1901,
+              1903
+            ]
+          ]
+        },
+        {
+          "lccn": "sn83045433",
+          "year_ranges": [
+            [
+              1907,
+              1907
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_hotel_ver02",
+      "content": "The Washington Herald (sn83045433) 1906-1907",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3123,
+      "titles": [
+        {
+          "lccn": "sn83045433",
+          "year_ranges": [
+            [
+              1906,
+              1907
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_india_ver02",
+      "content": "The Washington Bee (sn84025891) 1906-1912 The Washington Herald (sn83045433) 1907-1908",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5352,
+      "titles": [
+        {
+          "lccn": "sn84025891",
+          "year_ranges": [
+            [
+              1906,
+              1912
+            ]
+          ]
+        },
+        {
+          "lccn": "sn83045433",
+          "year_ranges": [
+            [
+              1907,
+              1908
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_kilo_ver02",
+      "content": "The Washington Herald (sn83045433) 1908-1909",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5012,
+      "titles": [
+        {
+          "lccn": "sn83045433",
+          "year_ranges": [
+            [
+              1908,
+              1909
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_mike_ver02",
+      "content": "The Washington Herald (sn83045433) 1910 The Washington Times (sn84026749) 1902 The Evening Times (sn84024441) 1900",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3497,
+      "titles": [
+        {
+          "lccn": "sn83045433",
+          "year_ranges": [
+            [
+              1910,
+              1910
+            ]
+          ]
+        },
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1902,
+              1902
+            ]
+          ]
+        },
+        {
+          "lccn": "sn84024441",
+          "year_ranges": [
+            [
+              1900,
+              1900
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_november_ver02",
+      "content": "The Evening Times (sn84024441) 1900-1902",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3592,
+      "titles": [
+        {
+          "lccn": "sn84024441",
+          "year_ranges": [
+            [
+              1900,
+              1902
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_oscar_ver02",
+      "content": "The Washington Times (sn84026749) 1903 The Evening Times (sn84024441) 1902",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3365,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1903,
+              1903
+            ]
+          ]
+        },
+        {
+          "lccn": "sn84024441",
+          "year_ranges": [
+            [
+              1902,
+              1902
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_papa_ver02",
+      "content": "The Washington Times (sn84026749) 1903-1904",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3460,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1903,
+              1904
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_quebec_ver03",
+      "content": "The Washington Times (sn84026749) 1904-1907",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3930,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1904,
+              1907
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_sierra_ver02",
+      "content": "The Washington Times (sn84026749) 1904-1909 The Evening Times (sn84024441) 1902",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4828,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1904,
+              1909
+            ]
+          ]
+        },
+        {
+          "lccn": "sn84024441",
+          "year_ranges": [
+            [
+              1902,
+              1902
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_uniform_ver02",
+      "content": "The Hatchet (sn82014159) 1900 The Washington Times (sn84026749) 1908-1909 The Weekly News (sn82016441) 1909",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3116,
+      "titles": [
+        {
+          "lccn": "sn82014159",
+          "year_ranges": [
+            [
+              1900,
+              1900
+            ]
+          ]
+        },
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1908,
+              1909
+            ]
+          ]
+        },
+        {
+          "lccn": "sn82016441",
+          "year_ranges": [
+            [
+              1909,
+              1909
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-06-14",
+      "batch": "dlc_victor_ver02",
+      "content": "The Washington Times (sn84026749) 1909-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3707,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1909,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_lima_ver02",
+      "content": "The Washington Herald (sn83045433) 1909-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4836,
+      "titles": [
+        {
+          "lccn": "sn83045433",
+          "year_ranges": [
+            [
+              1909,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_romeo_ver02",
+      "content": "The Washington Times (sn84026749) 1904-1907",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5615,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1904,
+              1907
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_tango_ver02",
+      "content": "The Washington Times (sn84026749) 1903-1908",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3773,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1903,
+              1908
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_whiskey_ver02",
+      "content": "The Washington Times (sn84026749) 1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3748,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1910,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_xray_ver02",
+      "content": "The Washington Times (sn84026749) 1904-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3082,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1904,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_yankee_ver02",
+      "content": "The Washington Times (sn84026749) 1906",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 705,
+      "titles": [
+        {
+          "lccn": "sn84026749",
+          "year_ranges": [
+            [
+              1906,
+              1906
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_austria_ver03",
+      "content": "New-York Tribune (sn83030214) 1900-1901",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 6107,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1900,
+              1901
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_brazil_ver03",
+      "content": "New-York Tribune (sn83030214) 1906-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3592,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1906,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_canada_ver02",
+      "content": "New-York Tribune (sn83030214) 1906-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5600,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1906,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_denmark_ver02",
+      "content": "New-York Tribune (sn83030214) 1906-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4461,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1906,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_egypt_ver02",
+      "content": "New-York Tribune (sn83030214) 1902-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 6246,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1902,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_fiji_ver02",
+      "content": "New-York Tribune (sn83030214) 1900-1908",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 6309,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1900,
+              1908
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_greece_ver02",
+      "content": "New-York Tribune (sn83030214) 1900-1907",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 7535,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1900,
+              1907
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_haiti_ver02",
+      "content": "New-York Tribune (sn83030214) 1902-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 7705,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1902,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_iceland_ver02",
+      "content": "New-York Tribune (sn83030214) 1900-1909",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 8020,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1900,
+              1909
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_jamaica_ver02",
+      "content": "New-York Tribune (sn83030214) 1903-1908",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 6255,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1903,
+              1908
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_kenya_ver02",
+      "content": "New-York Tribune (sn83030214) 1900-1907",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 4377,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1900,
+              1907
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_liberia_ver02",
+      "content": "New-York Tribune (sn83030214) 1904-1906",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 8102,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1904,
+              1906
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_mexico_ver02",
+      "content": "New-York Tribune (sn83030214) 1903-1905",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 2442,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1903,
+              1905
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-06",
+      "batch": "dlc_norway_ver02",
+      "content": "New-York Tribune (sn83030214) 1903-1910",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 3089,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1903,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-17",
+      "batch": "dlc_volvo_ver03",
+      "content": "New-York Tribune (sn83030214) 1898",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 614,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1898,
+              1898
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-17",
+      "batch": "dlc_willys_ver03",
+      "content": "New-York Tribune (sn83030214) 1881-1897",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5906,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1881,
+              1897
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-07-17",
+      "batch": "dlc_fortran_ver02",
+      "content": "New-York Tribune (sn83030214) 1870-1871",
+      "contributor": "LC- Library of Congress, Washington, DC",
+      "pages_reported": 5218,
+      "titles": [
+        {
+          "lccn": "sn83030214",
+          "year_ranges": [
+            [
+              1870,
+              1871
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-09",
+      "batch": "vi_adams_ver02",
+      "content": "Clarke Courier (sn85025371) 1899-1910",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 2452,
+      "titles": [
+        {
+          "lccn": "sn85025371",
+          "year_ranges": [
+            [
+              1899,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-09",
+      "batch": "vi_berlioz_ver02",
+      "content": "The Mathews Journal (sn95067647) 1905-1912",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 1990,
+      "titles": [
+        {
+          "lccn": "sn95067647",
+          "year_ranges": [
+            [
+              1905,
+              1912
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-09",
+      "batch": "vi_chopin_ver02",
+      "content": "Virginia Gazette (sn86071985) 1897-1913",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 5080,
+      "titles": [
+        {
+          "lccn": "sn86071985",
+          "year_ranges": [
+            [
+              1897,
+              1913
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-09",
+      "batch": "vi_delius_ver02",
+      "content": "The Big Stone Gap Post (sn88061179) 1898-1910",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 2647,
+      "titles": [
+        {
+          "lccn": "sn88061179",
+          "year_ranges": [
+            [
+              1898,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-23",
+      "batch": "vi_elgar_ver02",
+      "content": "Peninsula Enterprise (sn94060041) 1900-1908",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 1623,
+      "titles": [
+        {
+          "lccn": "sn94060041",
+          "year_ranges": [
+            [
+              1900,
+              1908
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-23",
+      "batch": "vi_franck_ver02",
+      "content": "Lexington Gazette (sn84024716) 1898-1912",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 3747,
+      "titles": [
+        {
+          "lccn": "sn84024716",
+          "year_ranges": [
+            [
+              1898,
+              1912
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-23",
+      "batch": "vi_glass_ver02",
+      "content": "The Free Lance (sn87060165) 1899-1911",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 8216,
+      "titles": [
+        {
+          "lccn": "sn87060165",
+          "year_ranges": [
+            [
+              1899,
+              1911
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-23",
+      "batch": "vi_handel_ver02",
+      "content": "The Times Dispatch (sn85038615) 1906-1907",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 2566,
+      "titles": [
+        {
+          "lccn": "sn85038615",
+          "year_ranges": [
+            [
+              1906,
+              1907
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-08-23",
+      "batch": "vi_nickleback_ver02",
+      "content": "Clinch Valley News (sn85034357) 1896-1910",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 2932,
+      "titles": [
+        {
+          "lccn": "sn85034357",
+          "year_ranges": [
+            [
+              1896,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-06",
+      "batch": "vi_xyz_ver02",
+      "content": "The Farmville Herald (sn94059373) 1899-1910",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 2916,
+      "titles": [
+        {
+          "lccn": "sn94059373",
+          "year_ranges": [
+            [
+              1899,
+              1910
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-06",
+      "batch": "vi_zztop_ver02",
+      "content": "Tazewell Republican (sn95079154) 1900-1912",
+      "contributor": "VA - Library of Virginia; Richmond, VA",
+      "pages_reported": 2590,
+      "titles": [
+        {
+          "lccn": "sn95079154",
+          "year_ranges": [
+            [
+              1900,
+              1912
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-30",
+      "batch": "fu_eleven_ver02",
+      "content": "The Ocala Evening Star (sn84027621) 1905",
+      "contributor": "FL - University of Florida",
+      "pages_reported": 708,
+      "titles": [
+        {
+          "lccn": "sn84027621",
+          "year_ranges": [
+            [
+              1905,
+              1905
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-30",
+      "batch": "fu_ten_ver02",
+      "content": "The Ocala Evening Star (sn84027621) 1900-1901 , The Morning Sun (sn95047371) 1907-1909 , The Pensacola Journal (sn87062268) 1906",
+      "contributor": "FL - University of Florida",
+      "pages_reported": 2429,
+      "titles": [
+        {
+          "lccn": "sn84027621",
+          "year_ranges": [
+            [
+              1900,
+              1901
+            ]
+          ]
+        },
+        {
+          "lccn": "sn95047371",
+          "year_ranges": [
+            [
+              1907,
+              1909
+            ]
+          ]
+        },
+        {
+          "lccn": "sn87062268",
+          "year_ranges": [
+            [
+              1906,
+              1906
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "added": "2026-09-30",
+      "batch": "fu_fifteen_ver02",
+      "content": "The Ocala Evening Star (sn84027621) 1902-1909 , The Pensacola Journal (sn87062268) 1906-1908 , The Florida star (sn96027111) 1908-1910 , The Ocala banner (sn88074815) 1905",
+      "contributor": "FL - University of Florida",
+      "pages_reported": 6768,
+      "titles": [
+        {
+          "lccn": "sn84027621",
+          "year_ranges": [
+            [
+              1902,
+              1909
+            ]
+          ]
+        },
+        {
+          "lccn": "sn87062268",
+          "year_ranges": [
+            [
+              1906,
+              1908
+            ]
+          ]
+        },
+        {
+          "lccn": "sn96027111",
+          "year_ranges": [
+            [
+              1908,
+              1910
+            ]
+          ]
+        },
+        {
+          "lccn": "sn88074815",
+          "year_ranges": [
+            [
+              1905,
+              1905
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "benchmark": {
+    "subsets": {
+      "all-1000": {
+        "samples": 1000,
+        "source_pages": 38,
+        "statuses": {
+          "not-listed-in-guide": 300,
+          "outside-ndnp": 700
+        }
+      },
+      "legacy/overproof-en-100": {
+        "samples": 100,
+        "source_pages": 18,
+        "statuses": {
+          "not-listed-in-guide": 100
+        }
+      },
+      "legacy/overproof-en-paired-a-100": {
+        "samples": 100,
+        "source_pages": 17,
+        "statuses": {
+          "not-listed-in-guide": 100
+        }
+      },
+      "legacy/overproof-en-paired-b-100": {
+        "samples": 100,
+        "source_pages": 12,
+        "statuses": {
+          "not-listed-in-guide": 100
+        }
+      },
+      "legacy/reichsanzeiger-de-lines-000": {
+        "samples": 100,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 100
+        }
+      },
+      "legacy/reichsanzeiger-de-lines-100": {
+        "samples": 100,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 100
+        }
+      },
+      "legacy/reichsanzeiger-de-lines-200": {
+        "samples": 100,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 100
+        }
+      },
+      "legacy/reichsanzeiger-de-lines-300": {
+        "samples": 100,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 100
+        }
+      },
+      "legacy/reichsanzeiger-de-lines-400": {
+        "samples": 100,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 100
+        }
+      },
+      "legacy/reichsanzeiger-de-lines-500": {
+        "samples": 100,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 100
+        }
+      },
+      "legacy/reichsanzeiger-de-lines-600": {
+        "samples": 100,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 100
+        }
+      },
+      "overproof-en/all-300": {
+        "samples": 300,
+        "source_pages": 18,
+        "statuses": {
+          "not-listed-in-guide": 300
+        }
+      },
+      "overproof-en/smoke-10": {
+        "samples": 10,
+        "source_pages": 9,
+        "statuses": {
+          "not-listed-in-guide": 10
+        }
+      },
+      "reichsanzeiger-de/acceptance-100": {
+        "samples": 100,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 100
+        }
+      },
+      "reichsanzeiger-de/all-700": {
+        "samples": 700,
+        "source_pages": 20,
+        "statuses": {
+          "outside-ndnp": 700
+        }
+      },
+      "reichsanzeiger-de/smoke-10": {
+        "samples": 10,
+        "source_pages": 8,
+        "statuses": {
+          "outside-ndnp": 10
+        }
+      }
+    },
+    "warning": "not-listed is not proof of no reprocessing; candidates are not confirmed page coverage"
+  },
+  "benchmark_manifest_sha256": "ffd1d54147966c562d1f6e13c0fe2c2badb12c726406cbd50d61d8f8a395fe29",
+  "format": "usnm-loc-reprocessed-inventory/1",
+  "latest_added": "2026-09-30",
+  "pages_reported": 472768,
+  "repair": {
+    "candidate_batch_counts": {
+      "dlc_airy_ver02": 1713,
+      "dlc_alice_ver02": 603,
+      "dlc_alpha_ver03": 665,
+      "dlc_austria_ver03": 808,
+      "dlc_avanti_ver02": 890,
+      "dlc_basic_ver02": 2224,
+      "dlc_bravo_ver03": 361,
+      "dlc_brazil_ver03": 3234,
+      "dlc_buick_ver02": 623,
+      "dlc_buttery_ver02": 1870,
+      "dlc_canada_ver02": 3234,
+      "dlc_charlie_ver03": 545,
+      "dlc_chrysler_ver02": 2535,
+      "dlc_cobol_ver02": 1668,
+      "dlc_crunchy_ver02": 1664,
+      "dlc_delphi_ver03": 934,
+      "dlc_delta_ver02": 356,
+      "dlc_denmark_ver02": 3234,
+      "dlc_dodge_ver02": 2924,
+      "dlc_dry_ver02": 1155,
+      "dlc_eagle_ver02": 2931,
+      "dlc_echo_ver02": 379,
+      "dlc_eggy_ver02": 1074,
+      "dlc_egypt_ver02": 5383,
+      "dlc_euclid_ver04": 1286,
+      "dlc_fiji_ver02": 4800,
+      "dlc_flavory_ver02": 788,
+      "dlc_ford_ver03": 2436,
+      "dlc_fortran_ver02": 421,
+      "dlc_foxtrot_ver02": 130,
+      "dlc_geo_ver03": 1335,
+      "dlc_golf_ver02": 26,
+      "dlc_grass_ver02": 575,
+      "dlc_greece_ver02": 4231,
+      "dlc_gritty_ver02": 1372,
+      "dlc_haiti_ver02": 5383,
+      "dlc_honda_ver02": 836,
+      "dlc_hotel_ver02": 44,
+      "dlc_hugo_ver02": 1354,
+      "dlc_iceland_ver02": 5401,
+      "dlc_india_ver02": 109,
+      "dlc_inform_ver02": 2561,
+      "dlc_isuzu_ver02": 2008,
+      "dlc_jaguar_ver02": 4595,
+      "dlc_jamaica_ver02": 3505,
+      "dlc_java_ver02": 1867,
+      "dlc_kaiser_ver02": 2850,
+      "dlc_kenya_ver02": 4231,
+      "dlc_kilo_ver02": 239,
+      "dlc_kite_ver04": 812,
+      "dlc_liberia_ver02": 1811,
+      "dlc_lima_ver02": 312,
+      "dlc_lisp_ver02": 610,
+      "dlc_lotus_ver02": 2736,
+      "dlc_mazda_ver02": 2556,
+      "dlc_mexico_ver02": 1662,
+      "dlc_mike_ver02": 302,
+      "dlc_nash_ver02": 1269,
+      "dlc_norway_ver02": 4896,
+      "dlc_november_ver02": 1167,
+      "dlc_olds_ver02": 957,
+      "dlc_oscar_ver02": 321,
+      "dlc_papa_ver02": 451,
+      "dlc_quebec_ver03": 1390,
+      "dlc_rolls_ver02": 1504,
+      "dlc_romeo_ver02": 1390,
+      "dlc_sierra_ver02": 1988,
+      "dlc_tango_ver02": 1863,
+      "dlc_triumph_ver02": 2980,
+      "dlc_uniform_ver02": 425,
+      "dlc_universal_ver02": 1527,
+      "dlc_victor_ver02": 356,
+      "dlc_volvo_ver03": 1527,
+      "dlc_whiskey_ver02": 258,
+      "dlc_willys_ver03": 16908,
+      "dlc_xray_ver02": 2072,
+      "dlc_yankee_ver02": 356,
+      "fu_eleven_ver02": 5,
+      "fu_fifteen_ver02": 523,
+      "fu_ten_ver02": 93,
+      "vi_adams_ver02": 2,
+      "vi_berlioz_ver02": 22,
+      "vi_chopin_ver02": 11,
+      "vi_delius_ver02": 91,
+      "vi_elgar_ver02": 1,
+      "vi_franck_ver02": 7,
+      "vi_glass_ver02": 10,
+      "vi_handel_ver02": 5509,
+      "vi_heart_ver03": 47,
+      "vi_ironmaiden_ver04": 15,
+      "vi_journey_ver03": 23,
+      "vi_kiss_ver03": 4,
+      "vi_ledzeppelin_ver03": 37,
+      "vi_metallica_ver03": 101,
+      "vi_nickleback_ver02": 103,
+      "vi_ozzyosbourne_ver03": 52,
+      "vi_pinkfloyd_ver03": 49,
+      "vi_queen_ver03": 41,
+      "vi_rollingstone_ver03": 12,
+      "vi_styx_ver04": 21,
+      "vi_tesla_ver03": 120,
+      "vi_u2_ver03": 18,
+      "vi_vanhalen_ver03": 59,
+      "vi_whitesnake_ver03": 29,
+      "vi_xyz_ver02": 36,
+      "vi_yes_ver04": 2
+    },
+    "keep_statuses": {
+      "not-listed-in-guide": 224848
+    },
+    "pages": 1922826,
+    "reference_status": "not-in-manifest",
+    "statuses": {
+      "candidate-needs-page-verification": 55585,
+      "not-listed-in-guide": 1867241
+    },
+    "strata_count_in_full_report": 7321
+  },
+  "repair_input_sha256": "19eb0e9a0594d958ef3c05fab74a9b30e9a6e3f9731b93f2e7dd23485b7777ab",
+  "retrieved_at": "2026-10-18",
+  "scope": "published guide snapshot, not exhaustive page-level or engine-version proof",
+  "source_sha256": "30d7343ee5b4d2393f8fa9f26786e933cad95f37eb79177bd162b06ba18a1f44",
+  "source_url": "https://guides.loc.gov/chronicling-america/improved-text"
+}
