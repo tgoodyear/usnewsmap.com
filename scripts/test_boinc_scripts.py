@@ -819,7 +819,7 @@ class TestClient(unittest.TestCase):
         self.assertEqual(params["env"]["value"], "prod")
         self.assertEqual(params["vmSize"]["value"], "Standard_NC4as_T4_v3")
         self.assertIs(params["spot"]["value"], True)
-        self.assertEqual(params["projectUrl"]["value"], "https://boinc.usnewsmap.com/usnmocr/")
+        self.assertEqual(params["projectUrl"]["value"], "https://boinc.usnewsmap.com/")
         self.assertEqual(params["projectAuthenticator"]["value"], "")
 
     def test_create_supports_paygo_custom_sku_and_authenticator_file(self):

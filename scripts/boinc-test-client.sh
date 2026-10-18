@@ -103,7 +103,7 @@ fi
 vault=$(boinc_output keyVaultName)
 [ -n "$vault" ] || die "stack $BOINC_STACK has no keyVaultName output: run scripts/provision-boinc.sh --env $ENV_NAME first"
 
-master_url="${PROJECT_URL}usnmocr/"
+master_url="$PROJECT_URL"
 
 if [ -n "$WORK_DIR" ]; then
   python3 - --path "$WORK_DIR" <<'PYWORK' || die "--work-dir must be an empty caller-owned private directory beneath this checkout"
