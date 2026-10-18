@@ -150,7 +150,7 @@ class Runner:
                            coordination_claim=getattr(args, 'coordination_claim', None))
         settings = json.loads((ROOT / f'contrib-compute/infra/boinc/env/{args.env}.json').read_text())
         self.subscription = settings['subscriptionId']
-        self.url = settings['projectUrl'] + 'usnmocr/'
+        self.url = settings['projectUrl']
         self.group = f'usnm-boinc-test-rg-{args.env}-{self.run_id}'
         self.vm = f'usnm-boinc-test-vm-{args.env}'
 
