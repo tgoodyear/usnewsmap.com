@@ -33,3 +33,12 @@ resource readers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 output id string = workspace.id
 output customerId string = workspace.properties.customerId
 output logAnalyticsQueryHost string = '${location}.api.loganalytics.io'
+output logAnalyticsQueryHosts array = union([
+  '${location}.api.loganalytics.io'
+], [
+  'westus.api.loganalytics.io'
+  'eastus.api.loganalytics.io'
+  'northcentralus.api.loganalytics.io'
+  'westcentralus.api.loganalytics.io'
+  'api.loganalytics.io'
+])

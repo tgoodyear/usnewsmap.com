@@ -130,12 +130,16 @@ Live verification requires a recent BOINC log sample and an in-VNet runtime chec
 The intermittent `InsufficientAccessError` in #528 was isolated to a faulty Traffic
 Manager query frontend, not missing Reader permissions. Resource-context constant
 queries with no visible workspace sources did not prove absence of ingestion.
-Global DNS later selected only that bad frontend, so retries alone could not
-recover. The workspace-region host `westus2.api.loganalytics.io` uses healthy
-regional Traffic Manager routing and the same `https://api.loganalytics.io`
-audience: controlled real-table checks returned HTTP200 8/8 for both the Mac
-user and Node5 Arc identity. The shared client now prefers this regional route,
-with bounded global fallback, without IP pinning or permission changes.
+Later A/B evidence showed a changing subset of pods deny this workspace while
+serving other workspaces successfully; deny assignments and the resource-ID
+route were ruled out. Even the initially healthy workspace-region host later
+failed. The shared client now tries independent hosts in order: workspace
+region, westus, eastus, northcentralus, westcentralus, global. Retryable denial,
+throttling, server or connect errors advance immediately, with at most one extra
+pass and a 90s cap. Configure the order with `LOG_ANALYTICS_QUERY_HOSTS` CSV.
+All use the same `https://api.loganalytics.io` audience, without IP pinning,
+resolver changes or permission changes. Earlier regional 9/9 acceptance remains
+historical evidence, not a guarantee of continued single-host health.
 Use `scripts/validate-boinc-workbook.py --workspace <customer-GUID> --location westus2` for the nine
 panels; see [query routing and retries](../../docs/boinc.md#workbook-query-validation).
 Successful empty panels do not establish status/filter or recent-sample acceptance.

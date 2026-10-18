@@ -10,7 +10,6 @@ import pathlib
 import random
 import re
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -21,6 +20,29 @@ import uuid
 
 AUDIENCE = "https://api.loganalytics.io"
 GLOBAL_HOST = "api.loganalytics.io"
+FAILOVER_REGIONS = ("westus", "eastus", "northcentralus", "westcentralus")
+
+
+def query_hosts(workspace, *, hosts=None, host=None, location=None, identity="az",
+                subscription=None):
+    configured = hosts if hosts is not None else os.environ.get("LOG_ANALYTICS_QUERY_HOSTS")
+    if configured is not None:
+        values = configured.split(",") if isinstance(configured, str) else configured
+    else:
+        primary = query_host(workspace, host=host, location=location, identity=identity,
+                             subscription=subscription)
+        values = [primary, *(f"{region}.api.loganalytics.io" for region in FAILOVER_REGIONS),
+                  GLOBAL_HOST]
+    result = []
+    for value in values:
+        value = value.strip()
+        if not re.fullmatch(r"(?:[a-z0-9]+[.])?api[.]loganalytics[.]io", value):
+            raise QueryError("Query hosts must be regional or global api.loganalytics.io hostnames")
+        if value not in result:
+            result.append(value)
+    if not result:
+        raise QueryError("At least one query host is required")
+    return result
 
 
 def query_host(workspace, *, host=None, location=None, identity="az", subscription=None):
@@ -113,31 +135,35 @@ def absolute_timeout(seconds):
 
 
 def query(workspace, kql, timespan="P1D", *, token=None, identity="az",
-          subscription=None, attempts=6, budget=60, host=None, location=None):
+          subscription=None, attempts=None, budget=90, host=None, hosts=None, location=None):
     if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", workspace):
         raise QueryError("workspace must be its customer GUID, not an ARM resource ID")
     if token is None:
         token = access_token(identity, subscription)
-    host = query_host(workspace, host=host, location=location, identity=identity,
-                      subscription=subscription)
+    hosts = query_hosts(workspace, hosts=hosts, host=host, location=location, identity=identity,
+                        subscription=subscription)
+    attempts = min(attempts if attempts is not None else len(hosts) * 2, len(hosts) * 2)
     history = []
     try:
         with absolute_timeout(budget):
-            return _query(workspace, kql, timespan, token, attempts, budget, history, host)
+            return _query(workspace, kql, timespan, token, attempts, budget, history, hosts)
     except TimeoutError:
         raise QueryError("Logs query absolute deadline expired", history) from None
 
 
-def _query(workspace, kql, timespan, token, attempts, budget, history, host):
+def _query(workspace, kql, timespan, token, attempts, budget, history, hosts):
     data = json.dumps({"query": kql, "timespan": timespan}).encode()
     deadline = time.monotonic() + budget
-    regional_limit = max(1, attempts - 1)
     for attempt in range(1, attempts + 1):
+        if attempt == len(hosts) + 1:
+            delay = random.uniform(3, 6)
+            if time.monotonic() + delay >= deadline:
+                break
+            time.sleep(delay)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        if attempt > regional_limit:
-            host = GLOBAL_HOST
+        host = hosts[(attempt - 1) % len(hosts)]
         url = f"https://{host}/v1/workspaces/{workspace}/query"
         request = urllib.request.Request(url, data=data, headers={
             "Authorization": "Bearer " + token, "Content-Type": "application/json",
@@ -149,23 +175,19 @@ def _query(workspace, kql, timespan, token, attempts, budget, history, host):
             response = opener.open(request, timeout=min(20, remaining))
         except urllib.error.HTTPError as error:
             response = error
-        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+        except (urllib.error.URLError, OSError, http.client.HTTPException):
             history.append({"attempt": attempt, "status": "transport-error",
                             "via": "", "requestId": None, "host": host})
-            if (host != GLOBAL_HOST and isinstance(
-                    error.reason if isinstance(error, urllib.error.URLError) else error,
-                    socket.gaierror)):
-                print(f"Logs attempt {attempt}/{attempts}: DNS failed; host={host}; global fallback",
-                      file=sys.stderr)
-                host = GLOBAL_HOST
-                continue
-            raise QueryError("Logs query transport failed", history) from None
+            print(f"Logs attempt {attempt}/{attempts}: connect failed; host={host}; "
+                  "via=-; request-id=-", file=sys.stderr)
+            continue
         status = response.status
         via = re.sub(r"[\r\n]", " ", response.headers.get("via", ""))[:240]
         record = {"attempt": attempt, "status": status, "via": via, "host": host,
                   "requestId": response.headers.get("x-ms-request-id")}
         history.append(record)
-        print(f"Logs attempt {attempt}/{attempts}: HTTP {status}; host={host}; via={via or '-'}",
+        print(f"Logs attempt {attempt}/{attempts}: HTTP {status}; host={host}; "
+              f"via={via or '-'}; request-id={record['requestId'] or '-'}",
               file=sys.stderr)
         try:
             with response:
@@ -185,10 +207,6 @@ def _query(workspace, kql, timespan, token, attempts, budget, history, host):
             return body, history
         if not retryable(status, body):
             raise QueryError(f"Logs query denied/failed (HTTP {status}; non-retryable)", history)
-        delay = random.uniform(3, 6)
-        if attempt == attempts or time.monotonic() + delay >= deadline:
-            break
-        time.sleep(delay)
     raise QueryError(f"Logs query exhausted bounded retry ({len(history)} attempts)", history)
 
 
@@ -200,12 +218,13 @@ def main():
     parser.add_argument("--identity", choices=["az", "arc"], default="az")
     parser.add_argument("--subscription")
     parser.add_argument("--host")
+    parser.add_argument("--hosts", help="Ordered comma-separated API hostnames")
     parser.add_argument("--location")
     args = parser.parse_args()
     try:
         body, _ = query(args.workspace, args.query, args.timespan,
                         identity=args.identity, subscription=args.subscription,
-                        host=args.host, location=args.location)
+                        host=args.host, hosts=args.hosts, location=args.location)
         print(json.dumps(body))
     except (QueryError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         # Authentication/HTTP exception payloads may contain credentials; never dump them.

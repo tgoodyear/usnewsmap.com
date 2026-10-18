@@ -44,14 +44,16 @@ accepts `--location`, `LOG_ANALYTICS_WORKSPACE_LOCATION`, or an explicit
 location or host; they do not need Azure CLI. For the BOINC workspace use
 `--location westus2`. Host overrides accept only global/regional `.io` API hosts.
 
-#528 isolated authorization failures to a faulty **global** Traffic Manager
-frontend. When global DNS sends this location exclusively there, reconnecting
-cannot recover. The workspace-region endpoint uses regional Traffic Manager
-routing with valid TLS and the same audience. Controlled real-table queries
-returned HTTP200 8/8 for both the Mac user and Node5 Arc identity before this
-change. No RBAC change is needed. The client never pins IPs, changes resolvers,
-or sends tokens to arbitrary hosts. Portal Workbooks use Azure's own routing;
-their queries do not need endpoint changes.
+#528 subsequently isolated **workspace-specific** authorization failures on a
+changing subset of Azure frontend pods: a pod can deny the BOINC workspace while
+serving another workspace successfully. Deny-assignment A/B tests and the
+resource-ID route did not explain or avoid the failure. Both global and regional
+hosts can select affected pods. At 01:5x UTC on 2026-10-18 westus2, eastus2 and
+northeurope failed, while westus, eastus, northcentralus and westcentralus served
+successful queries. A single healthy regional host is therefore not durable.
+No RBAC change is needed. The client never pins IPs, changes resolvers, or sends
+tokens to arbitrary hosts. Portal Workbooks use Azure's own routing; their
+queries do not need endpoint changes.
 
 Live source-panel acceptance on 2026-10-18 at 00:51–00:52 UTC returned HTTP200
 on the first attempt for all nine panels and the positive control from both
@@ -60,15 +62,19 @@ state/latest/chart rows were 1/12/5; job activity/events, revisions, warnings
 and console panels also returned data. This validates query execution, not
 an assurance that the system has no operational warnings.
 
-Only HTTP403 **InsufficientAccessError**, HTTP429 and HTTP5xx are retried.
-Every attempt uses a new connection so DNS re-resolves, with 3–6s jitter,
-at most six attempts and an absolute 60s query budget (token acquisition and
-metadata lookup are separate). Five retryable regional failures exhaust the
-regional allocation, reserving the final attempt for global `api.loganalytics.io`.
-A regional DNS resolution failure switches to global immediately within the
-same total attempt/time budget. Non-retryable denials never trigger fallback.
-Other 403s, 401, 400, transport failures and partial-success error responses
-fail closed. Attempt/status/`via` diagnostics go to stderr, never tokens.
+The ordered default hosts are the workspace region, westus, eastus,
+northcentralus, westcentralus, then global `api.loganalytics.io`, deduplicated.
+`--hosts` or `LOG_ANALYTICS_QUERY_HOSTS` overrides the complete order as CSV.
+The existing singular host option/env remains a compatible primary-host override;
+the default alternatives follow it. All hosts use valid TLS and the same `.io`
+audience; this is normal API routing, not IP pinning.
+
+HTTP403 **InsufficientAccessError**, HTTP429, HTTP5xx and connect/DNS failures
+advance immediately to the next host with a new connection. At most one extra
+pass is allowed, preceded by 3–6s jitter, within an absolute 90s query budget
+(token acquisition and metadata lookup are separate). Other 403s, 401, 400,
+response-body read failures and partial-success responses fail closed.
+Attempt/status/host/`via`/request-ID diagnostics go to stderr, never tokens.
 A persistent authorization error still fails; retries do not confer permission.
 The BOINC execution-log reader, saved-query CLI, cluster report and quality-row
 reader share this implementation.
@@ -80,9 +86,11 @@ are excluded. A failed/partial response is never represented as zero rows.
 Empty successful panels do not establish actual status/filter coverage or fresh
 work-volume telemetry. The normal BOINC post-deploy health step runs validation
 as a warning-level check; it does not redeploy resources to query them.
-The monitoring modules expose the regional query host as Bicep outputs; the
-BOINC stack passes its `logAnalyticsQueryHost` output to this smoke step.
-Older stacks without that output use workspace metadata discovery.
+The monitoring modules expose `logAnalyticsQueryHosts` arrays as Bicep outputs;
+the BOINC stack passes its ordered array as CSV to this smoke step. The main
+stack also exports `LOG_ANALYTICS_QUERY_HOSTS`. Singular outputs remain for
+backward compatibility. Older stacks use workspace metadata discovery and the
+same default alternatives; no provision is required merely to query.
 Its receipt is retained in a separate private `.boinc-work-*` directory beneath
 the checkout (path printed to stderr), outside the deployment scratch cleanup.
 Remove that directory manually after inspecting the receipt.

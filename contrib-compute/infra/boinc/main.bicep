@@ -358,6 +358,7 @@ output initJobName string = withApp ? initJob!.outputs.name : ''
 output keyVaultName string = vault.outputs.name
 output mysqlHost string = mysql.outputs.host
 output logAnalyticsQueryHost string = monitor.outputs.logAnalyticsQueryHost
+output logAnalyticsQueryHosts array = monitor.outputs.logAnalyticsQueryHosts
 output publishJobName string = withApp && !empty(publishImage) ? publishJob!.outputs.name : ''
 output registryName string = registryName
 output registryServer string = registryServer

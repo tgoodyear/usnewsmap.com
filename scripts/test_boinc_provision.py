@@ -59,6 +59,7 @@ class Provision(unittest.TestCase):
         self.env = {
             **os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
             "STUB_LOG": str(self.log), "STUB_SUB": SUB,
+            "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
             "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
                            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
         }
