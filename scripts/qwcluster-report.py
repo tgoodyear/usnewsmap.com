@@ -99,9 +99,10 @@ def log_query(workspace, query, span):
     result = subprocess.run(
         ["python3", os.path.join(ROOT, "scripts/log_analytics.py"),
          "--workspace", workspace, "--query", query, "--timespan", span],
-        check=True, capture_output=True, text=True)
+        capture_output=True, text=True)
     if result.stderr:
         print(result.stderr, file=sys.stderr, end="")
+    result.check_returncode()
     v = json.loads(result.stdout)
     return rows_of(v)
 

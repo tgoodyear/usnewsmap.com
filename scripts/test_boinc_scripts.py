@@ -158,6 +158,28 @@ class LogsFrontendRetry(unittest.TestCase):
         with self.assertRaises(self.client.QueryError):
             self.run_query([self.response(200, {"tables": [], "error": {"code": "PartialError"}})])
 
+    def test_real_http_error_is_classified(self):
+        error = self.client.urllib.error.HTTPError(
+            "https://api.loganalytics.io/query", 403, "Forbidden",
+            {"via": "frontend"}, io.BytesIO(b'{"error":{"code":"InsufficientAccessError"}}'))
+        result = self.run_query([error, self.response(
+            200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual(result[2:4], (2, 1))
+
+    def test_transport_error_preserves_attempts_without_secret(self):
+        error = self.client.urllib.error.URLError("sensitive transport payload")
+        opener = mock.Mock()
+        opener.open.side_effect = [self.response(
+            403, {"error": {"code": "InsufficientAccessError"}}), error]
+        with mock.patch.object(self.client.urllib.request, "build_opener", return_value=opener), \
+                mock.patch.object(self.client.time, "sleep"), \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            self.client.query(SUB, "print 1", token="fake")
+        self.assertEqual(len(caught.exception.history), 2)
+        self.assertEqual(caught.exception.history[-1]["status"], "transport-error")
+        self.assertNotIn("sensitive", str(caught.exception))
+
     def test_retry_cap(self):
         with self.assertRaisesRegex(self.client.QueryError, "6 attempts"):
             self.run_query([self.response(403, {"error": {"code": "InsufficientAccessError"}})] * 6)
