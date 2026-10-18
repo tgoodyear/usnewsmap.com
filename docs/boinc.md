@@ -278,6 +278,13 @@ cargo test --locked -p usnm-boinc
 python3 -m unittest discover -s scripts/boinc -p 'test_*.py'
 ```
 
+The bridge explicitly unlocks its state-directory `flock` before closing it;
+otherwise an unrelated fork's inherited descriptor can briefly retain the lock.
+The gold command tests publish closed, synced executable fixtures by rename,
+retry only fixture-spawn `ETXTBSY` (never an executed command), and verify worker
+termination through a dedicated FIFO rather than sampling `ps`. The timeout
+clock advances only after that worker announces its PID.
+
 ## Connect a stock BOINC project
 
 Create your own Linux BOINC project server using the upstream setup
