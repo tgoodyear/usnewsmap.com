@@ -530,7 +530,7 @@ record (`USNM-HANDOFF-RECORD` lines), since a lost reservation's record can't be
 
 ### The scan fetcher's identity (scan-fetch container)
 
-The scan fetcher (CT 211 on pve-big, `scripts/ocr-node/scanfetch-ct.sh`) holds the prefetch
+The scan fetcher (deployed by infrastructure tooling) holds the prefetch
 manifest and the scans under `/tank/ocr` and pushes them with `push-boinc-scan.sh`. It is an
 unprivileged Debian 12 LXC; the Azure Connected Machine agent runs in it like on a VM. Its
 Arc machine, `usnm-ocr-node5-arcs-prod` in the environment's group, gives it a

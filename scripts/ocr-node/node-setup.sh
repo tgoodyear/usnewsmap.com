@@ -7,20 +7,16 @@
 #     [--tags K=V,K=V] [--identity-key-store default|tpm] [--scratch-size SIZE] \
 #     [--reboot-day Mon|Tue|Wed|Thu|Fri|Sat|Sun] [--force-unsupported] < credentials
 #
-# Reads up to five lines from stdin. The first three are the onboarding
+# Reads up to three lines from stdin. They are the onboarding
 # service principal: tenant id, app id, secret. onboard.sh makes that
 # principal for the run, with only Azure Connected Machine Onboarding on the
 # group, and deletes it after. The secret never goes on a command line or to
 # persistent disk: it waits in a 0600 file under /run (tmpfs) while
 # `azcmagent connect --config` reads it, and is deleted straight after. A
-# node that's already connected needs none (three empty lines). The next two
-# are, on RHEL, the Red Hat organization id and activation key, which
-# onboard.sh reads from the nodes' Key Vault; they stay in this script's
-# memory, never on disk. RHEL is registered first, before anything is
-# installed, since its repositories need it; a registered node needs neither.
+# node that's already connected needs none.
 #
-# On RHEL, registers with Red Hat (skipped if registered) and enables
-# BaseOS, AppStream and CodeReady Builder (for EPEL).
+# RHEL must already be registered with BaseOS, AppStream and CodeReady
+# Builder enabled by the host's infrastructure operator.
 # Keeps the journal on disk; installs python3, podman, chrony, cron and
 # rsyslog, and htop, iftop and screen from EPEL; turns on dnf-automatic,
 # which installs every update daily and never reboots, and a weekly reboot
@@ -47,7 +43,7 @@
 # agent itself, from Azure, after this. Safe to run again, on a connected
 # node too: it applies the lockdown and the unit as they are now.
 #
-# The node mounts nothing from pve-big: the worker reads prefetched scans
+# The node mounts nothing from the hypervisor: the worker reads prefetched scans
 # from the scan server over HTTP (#368, ADR-0015 decision 9). A mount at
 # /srv/ocr-data left by an earlier version of this script is removed.
 #
@@ -98,13 +94,11 @@ conn_re='^[A-Za-z0-9=;:/._-]+$'
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
 
 # The credentials first, before anything else can read stdin.
-TENANT="" SP_ID="" SP_SECRET="" RH_ORG="" RH_KEY=""
+TENANT="" SP_ID="" SP_SECRET=""
 if [ ! -t 0 ]; then
   IFS= read -r TENANT || true
   IFS= read -r SP_ID || true
   IFS= read -r SP_SECRET || true
-  IFS= read -r RH_ORG || true
-  IFS= read -r RH_KEY || true
 fi
 if [ -n "$TENANT$SP_ID$SP_SECRET" ]; then
   uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -114,13 +108,6 @@ if [ -n "$TENANT$SP_ID$SP_SECRET" ]; then
   [[ -n $SP_SECRET && $SP_SECRET =~ ^[[:graph:]]+$ && $SP_SECRET != *[\\\"]* ]] ||
     die "the third line on stdin isn't a client secret"
 fi
-# Both or neither. They go to subscription-manager as separate arguments,
-# never through a shell, so only printable characters are checked for.
-if [ -n "$RH_ORG$RH_KEY" ]; then
-  [[ $RH_ORG =~ ^[[:graph:]]+$ ]] || die "the fourth line on stdin isn't a Red Hat organization id"
-  [[ $RH_KEY =~ ^[[:graph:]]+$ ]] || die "the fifth line on stdin isn't a Red Hat activation key"
-fi
-
 step "Checking the OS"
 # Read os-release in a subshell: sourcing it here would overwrite NAME (the
 # Arc machine name) with the distro's NAME, as happened on node 1 (#296).
@@ -141,51 +128,11 @@ echo "${PRETTY_NAME:-unknown}, $(uname -m), $(nproc) CPUs"
 # CPU type hides them, and speed measurements are then wrong (#296).
 grep -qw avx2 /proc/cpuinfo || echo "warning: no AVX2: on Proxmox, set the VM's CPU type to host"
 
-step "Red Hat registration"
-# RHEL's repositories (and so dnf below) need the system registered. With
-# an activation key, subscription-manager takes the organization id and key
-# as arguments, so for the few seconds it runs they're in its entry in the
-# process list, readable by local users; on a new node that's root and the
-# admin account (which has sudo), since the usnm user doesn't exist yet. A
-# registered node is skipped, so a re-run never needs them.
-if [ "$OS_ID" != rhel ]; then
-  echo "not RHEL; nothing to register"
-else
+step "Checking host prerequisites"
+if [ "$OS_ID" = rhel ]; then
   command -v subscription-manager > /dev/null || die "RHEL without subscription-manager"
-  if subscription-manager identity > /dev/null 2>&1; then
-    echo "already registered with Red Hat"
-  else
-    [ -n "$RH_KEY" ] ||
-      die "RHEL isn't registered and no Red Hat organization id and activation key came on stdin" \
-        "(onboard.sh reads rhel-org-id and rhel-activation-key from the nodes' Key Vault)"
-    subscription-manager register --org "$RH_ORG" --activationkey "$RH_KEY"
-  fi
-  # Enabling an enabled repository changes nothing. CodeReady Builder is
-  # for EPEL, below.
-  arch=$(uname -m)
-  subscription-manager repos --enable "rhel-10-for-$arch-baseos-rpms" \
-    --enable "rhel-10-for-$arch-appstream-rpms" --enable "codeready-builder-for-rhel-10-$arch-rpms"
-fi
-RH_ORG="" RH_KEY=""
-
-step "Red Hat Lightspeed (insights-client)"
-# A registered RHEL node also reports to Red Hat Lightspeed (Insights) for
-# its advisories, vulnerabilities and compliance (the maintainer's request,
-# 12 October 2026). insights-client uses the RHSM registration above, so it
-# needs no credentials of its own, and enables its own daily upload timer.
-# A node already registered with Insights is left alone.
-if [ "$OS_ID" != rhel ]; then
-  echo "not RHEL; no insights-client"
-else
-  dnf install -y insights-client
-  if insights-client --status > /dev/null 2>&1; then
-    echo "already registered with Red Hat Lightspeed"
-  else
-    insights-client --register
-  fi
-  # Either way, make sure the daily upload runs: offboard.sh disables it,
-  # and a re-run of this script should leave a registered node reporting.
-  systemctl enable --now insights-client.timer
+  subscription-manager identity > /dev/null ||
+    die "RHEL isn't registered; ask the infrastructure operator to prepare this host before application onboarding"
 fi
 
 step "Installing packages"
@@ -556,7 +503,7 @@ else
   # Microsoft.HybridCompute/HybridComputePreview feature is registered, which
   # needs Microsoft's approval; onboard.sh asks for tpm only then. The key
   # store is chosen at connect; changing it later means reconnecting, which
-  # makes a new machine and identity. proxmox-create-vm.sh gives VMs a vTPM 2.0.
+  # makes a new machine and identity. Provision a vTPM separately if needed.
   if [ "$KEY_STORE" = tpm ]; then
     [ -c /dev/tpmrm0 ] || die "--identity-key-store tpm, but this node has no TPM (/dev/tpmrm0)"
     connect_args+=(--identity-key-store tpm)

@@ -51,7 +51,7 @@ cat > "$notes" <<NOTES
 The on-prem OCR worker (#296) for AlmaLinux 9 and RHEL 10 (x86_64, glibc 2.34 or later), built from $GITHUB_SHA.
 
 - \`usnm-ocr-worker\`: the worker binary.
-- \`usnm-ocrdash\`: the LAN dashboard (\`scripts/ocr-node/ocrdash-ct.sh --install\`).
+- \`usnm-ocrdash\`: the dashboard executable; deploy it using your infrastructure tooling.
 - \`usnm-ocr-tesseract.oci.tar.gz\`: the Tesseract image it runs (\`ocr/engines/tesseract/\`), image id \`$image\`.
 - \`usnm-ocr-tesseract.image-id\`: that id.
 - \`SHA256SUMS\`: the sha256 of each file.

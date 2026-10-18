@@ -1,9 +1,7 @@
 """ADR-0017 names outside ARM: no Azure or Proxmox calls."""
 
 import os
-import shutil
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -34,28 +32,11 @@ class NodeNames(unittest.TestCase):
     def test_entrypoints_refuse_legacy_names_before_external_calls(self):
         for script, args in (
             ("onboard.sh", ["--env", "prod", "--host", "node.example.org", "--name", "usnm-ocr-node1"]),
-            ("proxmox-create-vm.sh", ["--vmid", "120", "--name", "usnm-ocr-node1", "--ssh-key", "ssh-ed25519 test"]),
         ):
             run = subprocess.run(["bash", str(ROOT / "scripts/ocr-node" / script), *args],
                                  capture_output=True, text=True)
             self.assertEqual(run.returncode, 1, run.stderr)
             self.assertIn("ADR-0017", run.stderr)
-
-    def test_standalone_proxmox_copy_uses_adjacent_names_helper(self):
-        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
-            directory = Path(directory)
-            shutil.copy(ROOT / "scripts/ocr-node/proxmox-create-vm.sh", directory)
-            shutil.copy(ROOT / "scripts/lib/names.sh", directory)
-            (directory / "id").write_text("#!/bin/sh\necho 1000\n")
-            (directory / "id").chmod(0o755)
-            run = subprocess.run(["bash", str(directory / "proxmox-create-vm.sh"), "--vmid", "120",
-                                  "--name", "usnm-ocr-node1-arcs-prod", "--ssh-key", "ssh-ed25519 test"],
-                                 env={**os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"]},
-                                 capture_output=True, text=True)
-            self.assertEqual(run.returncode, 1, run.stderr)
-            self.assertIn("run as root", run.stderr)
-            self.assertNotIn("ADR-0017", run.stderr)
-
 
 class NodeGroup(Stubbed):
     def setUp(self):
