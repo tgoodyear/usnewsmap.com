@@ -1264,7 +1264,7 @@ pub fn select(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn jpeg(seed: u8) -> Vec<u8> {
@@ -1340,12 +1340,12 @@ mod tests {
         write_sums(&sums)
     }
 
-    struct Fixture {
-        _tmp: tempfile::TempDir,
-        opts: BuildOptions,
+    pub(crate) struct Fixture {
+        pub(crate) _tmp: tempfile::TempDir,
+        pub(crate) opts: BuildOptions,
     }
 
-    fn fixture(expect_cer: Option<f64>) -> Fixture {
+    pub(crate) fn fixture(expect_cer: Option<f64>) -> Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let inputs = tmp.path().join("inputs");
         let (a_sha, a_report) = campaign(

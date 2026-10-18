@@ -319,8 +319,9 @@ pub enum Outcome {
     Timeout,
     /// llama-server did not start or answer, or died.
     Failed,
-    /// The GPU version ran, but no usable NVIDIA GPU was visible in the
-    /// container, so nothing was read.
+    /// The GPU version ran, but no usable GPU was visible (no NVIDIA GPU for
+    /// a CUDA class; no hardware Vulkan device, or too little free device
+    /// memory for the model, for a Vulkan class), so nothing was read.
     NoGpu,
     /// The unit could not run at all (bad input, an engine that differs
     /// from the job).

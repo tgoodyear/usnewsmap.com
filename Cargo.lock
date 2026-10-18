@@ -3125,6 +3125,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "usnm-ocr-contract",
  "usnm-ocr-quality",
  "zip",
 ]
