@@ -23,10 +23,15 @@ case "$*" in
   "stack-whatif group create"*"--help"*) ;;
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
   "stack group create"*) ;;
-  "containerapp job execution list"*) ;;
+  "containerapp job execution list"*)
+    if [[ "$*" == *"--name bridge "* ]] && grep -q '^storage blob lease acquire' "$STUB_LOG"; then
+      [ "${STUB_REGISTRATION_LIST_FAIL:-0}" != 1 ] || exit 1
+      [ "${STUB_REGISTRATION_ACTIVE:-0}" != 1 ] || echo bridge-existing-execution
+    fi ;;
   "containerapp job show"*) echo '{"volumes":[{"name":"project","storageType":"AzureFile","storageName":"project"}],"containers":[{"name":"bridge","image":"fixture@sha256:unchanged","resources":{"cpu":0.5,"memory":"1Gi"},"volumeMounts":[{"volumeName":"project","mountPath":"/project"}],"env":[{"name":"BRIDGE_STEP","value":"iris-bundle-collect"},{"name":"IRIS_CAMPAIGN","value":"overproof-100-v12"},{"name":"PRIVATE_SETTING","secretRef":"runtime-secret"},{"name":"AZURE_CLIENT_ID","value":"client"},{"name":"KEY_VAULT_NAME","value":"vault"},{"name":"DB_HOST","value":"db.example.org"},{"name":"DB_NAME","value":"usnmocr"},{"name":"MASTER_HOST","value":"boinc.usnewsmap.com"},{"name":"PROJECT_DIR","value":"/project"},{"name":"HANDOFF_DIR","value":"/project/handoff"}]}]}' ;;
   "containerapp job update"*) ;;
   "containerapp job start"*)
+    if [[ "$*" == *"--yaml"* ]] && [ "${STUB_REGISTRATION_START_FAIL:-0}" = 1 ]; then exit 1; fi
     if [[ "$*" == *"--yaml"* ]]; then
       for ((i=1; i<=$#; i++)); do
         if [ "${!i}" = --yaml ]; then
@@ -160,6 +165,26 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
         self.assertEqual(len(releases), 1)
         self.assertLess(acquires[0], starts[0])
         self.assertLess(starts[0], releases[0])
+
+    def test_registration_preflight_failures_release_lease_without_starting(self):
+        for variable in ("STUB_REGISTRATION_LIST_FAIL", "STUB_REGISTRATION_ACTIVE"):
+            with self.subTest(variable=variable):
+                self.log.write_text("")
+                result = self.run_script(**{variable: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(call.startswith("containerapp job start") and "--name bridge" in call
+                                     for call in self.calls()))
+                self.assertEqual(sum(call.startswith("storage blob lease acquire") for call in self.calls()), 1)
+                self.assertEqual(sum(call.startswith("storage blob lease release") for call in self.calls()), 1)
+                self.assertNotIn("lease retained", result.stderr)
+
+    def test_uncertain_registration_start_retains_lease_for_reconciliation(self):
+        result = self.run_script(STUB_REGISTRATION_START_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue(any(call.startswith("containerapp job start") and "--yaml" in call
+                            for call in self.calls()))
+        self.assertFalse(any(call.startswith("storage blob lease release") for call in self.calls()))
 
     def test_failed_init_or_publish_never_reports_readiness(self):
         for variable in ["STUB_INIT_STATUS", "STUB_PUBLISH_STATUS"]:

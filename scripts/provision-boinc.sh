@@ -206,6 +206,7 @@ run_job() {
     --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv) ||
     die "could not list the executions of $job"
   [ -z "$running" ] || die "$job already has an active execution ($running); refusing concurrent lifecycle changes"
+  [ -z "$template" ] || BOINC_START_SAFE_TO_RELEASE=false
   execution=$(baz containerapp job start --name "$job" --resource-group "$BOINC_RG" ${start_args[@]+"${start_args[@]}"} --query name -o tsv) ||
     die "could not start $job"
   [ -n "$execution" ] || die "$job returned no execution"
@@ -239,7 +240,6 @@ register_apps() {
       .containers[0].env = ((.containers[0].env // [] | map(select(.name != "BRIDGE_STEP"))) +
         [{name: "BRIDGE_STEP", value: "register-apps"}])' > "$template" ||
     die "cannot prepare the complete registration execution template"
-  BOINC_START_SAFE_TO_RELEASE=false
   run_job "$job" "$template"
   boinc_start_guard_release || die "cannot release the registration start lease"
 }
