@@ -319,6 +319,11 @@ pub fn benchmark(
 pub fn verify_benchmark(root: &Path) -> anyhow::Result<()> {
     let manifest = root.join("benchmark-inputs.json");
     if !manifest.exists() {
+        ensure!(
+            !root.join("benchmark-ready").exists()
+                && !root.join("benchmark-inputs.sha256").exists(),
+            "benchmark manifest missing with stale verification markers"
+        );
         return Ok(());
     }
     let raw = crate::read(&manifest, 1024 * 1024)?;
@@ -385,6 +390,9 @@ mod benchmark_tests {
         assert!(benchmark(&manifest, &sha256(&raw), &root, engine.clone()).is_err());
         std::fs::write(root.join("units/overproof-1/reference.txt"), b"changed").unwrap();
         assert!(verify_benchmark(&root).is_err());
+        std::fs::remove_file(root.join("benchmark-inputs.json")).unwrap();
+        assert!(verify_benchmark(&root).is_err());
+
         let mut bad = row;
         bad["image"] = serde_json::json!("../escape");
         let raw = serde_json::to_vec(&vec![bad]).unwrap();

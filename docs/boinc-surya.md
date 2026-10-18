@@ -218,7 +218,7 @@ Export only validator-kept results for the existing scorers:
 
 ```sh
 python3 scripts/boinc/surya-benchmark.py collect --root CAMPAIGN \
-  --seen PROJECT/surya/seen --out collected --binary usnm-boinc
+  --seen PROJECT/surya/seen --out collected --binary usnm-boinc --intended-device cuda
 usnm-ocr-survey bench-score --release RELEASE --subset overproof-en/smoke-10 \
   --outputs collected/cuda-tiled-english.jsonl --rule legacy-ws-v1
 usnm-ocr-survey bench-score --release RELEASE --subset overproof-en/smoke-10 \
@@ -232,3 +232,9 @@ The receipt retains every failure, timing, measured RSS/GPU peak and missing
 sample. Use scorer missing-as-empty metrics as well as successful-output CER.
 LoC outputs are baseline comparisons, not independent gold CER. No routing,
 queue, volunteer preference, trust, or account policy is changed by this probe.
+
+The authorized current-worker probe version pair is **1.2 (`docker_mt`) and
+1.3 (`docker_nvidia_cuda`)**, subject to a fresh unused-version check. The old
+1.0/1.1 payloads remain retired/unregistered and immutable; do not publish or
+replace them. Use the same normal `boinc-app-release.sh` commands above with
+these new version numbers and the requested worker digest.

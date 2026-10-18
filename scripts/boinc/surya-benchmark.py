@@ -86,7 +86,7 @@ def prepare(release, out):
     return receipt
 
 
-def collect(root, seen, out, binary):
+def collect(root, seen, out, binary, intended_device):
     manifest = (root / "benchmark-inputs.json").read_bytes()
     expected = (root / "benchmark-inputs.sha256").read_text()
     if digest(manifest) != expected or (root / "benchmark-ready").read_text() != expected:
@@ -101,8 +101,13 @@ def collect(root, seen, out, binary):
         checked(unit, "page.jpg", row["image_sha256"])
         checked(unit, "reference.txt", row["reference_sha256"])
         jobs[job["id"]] = (row, job)
-    outputs, records, returned = {}, [], set()
-    for directory in sorted(seen.iterdir()):
+    if intended_device not in ("cpu", "cuda"):
+        raise ValueError("intended device must be cpu or cuda")
+    outputs = {(intended_device, mode, row["group"]): {}
+               for row, job in jobs.values()
+               for mode in job["gpu_modes" if intended_device == "cuda" else "cpu_modes"]}
+    records, returned = [], set()
+    for directory in sorted(seen.iterdir()) if seen.exists() else []:
         path = directory / "result.json"
         if not path.is_file() or path.stat().st_size > 16384:
             continue
@@ -128,7 +133,7 @@ def collect(root, seen, out, binary):
             if run["outcome"] == "ok":
                 if row["sample_id"] in group:
                     raise ValueError("duplicate successful output; select one campaign/host rather than silently averaging")
-                group[row["sample_id"]] = (directory / f"text-{mode}.txt").read_text()
+                group[row["sample_id"]] = (directory / f"text-{mode}.txt").read_bytes().decode("utf-8")
     out.mkdir(parents=True, exist_ok=False)
     for (device, mode, group), texts in outputs.items():
         # One JSON object per line, compatible with the existing bench-score command.
@@ -153,8 +158,9 @@ def main():
     export.add_argument("--seen", type=Path, required=True)
     export.add_argument("--out", type=Path, required=True)
     export.add_argument("--binary", default="usnm-boinc")
+    export.add_argument("--intended-device", choices=("cpu", "cuda"), required=True)
     args = parser.parse_args()
-    result = prepare(args.release, args.out) if args.command == "prepare" else collect(args.root, args.seen, args.out, args.binary)
+    result = prepare(args.release, args.out) if args.command == "prepare" else collect(args.root, args.seen, args.out, args.binary, args.intended_device)
     print(json.dumps(result, indent=2))
 
 

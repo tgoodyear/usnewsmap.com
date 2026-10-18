@@ -37,7 +37,7 @@ class SuryaBenchmarkTests(unittest.TestCase):
             (unit / "page.jpg").write_bytes(b"image")
             (unit / "reference.txt").write_bytes(b"reference")
             job = {"id": "job", "doc_id": "sample-1", "engine": {"image": "pinned"},
-                   "input": {"sha256": row["image_sha256"]}}
+                   "input": {"sha256": row["image_sha256"]}, "cpu_modes": ["tiled"], "gpu_modes": list(module.MODES)}
             (unit / "surya.json").write_bytes(module.encode(job))
             seen = Path(directory) / "seen"
             result_dir = seen / "result"
@@ -46,24 +46,30 @@ class SuryaBenchmarkTests(unittest.TestCase):
                 {"mode": "tiled", "device": "cuda", "outcome": "ok", "engine_ms": 123},
                 {"mode": "whole", "device": "cuda", "outcome": "timeout"}]}
             (result_dir / "result.json").write_bytes(module.encode(result))
-            (result_dir / "text-tiled.txt").write_text("text\nwith newline")
+            (result_dir / "text-tiled.txt").write_bytes(b"text\r\nwith\rnewline")
             with patch.object(module.subprocess, "run") as validator:
                 out = Path(directory) / "out"
-                receipt = module.collect(root, seen, out, "usnm-boinc")
+                receipt = module.collect(root, seen, out, "usnm-boinc", "cuda")
                 validator.assert_called_once()
                 self.assertEqual(receipt["returned"], 1)
                 exported = json.loads((out / "cuda-tiled-english.jsonl").read_text())
-                self.assertEqual(exported, {"id": "sample-1", "text": "text\nwith newline"})
+                self.assertEqual(exported, {"id": "sample-1", "text": "text\r\nwith\rnewline"})
                 self.assertEqual((out / "cuda-whole-english.jsonl").read_bytes(), b"")
                 saved = json.loads((out / "receipt.json").read_text())
                 self.assertEqual(saved["records"][1]["outcome"], "timeout")
             with patch.object(module.subprocess, "run", side_effect=RuntimeError("validator rejected")):
                 with self.assertRaises(RuntimeError):
-                    module.collect(root, seen, Path(directory) / "rejected", "usnm-boinc")
+                    module.collect(root, seen, Path(directory) / "rejected", "usnm-boinc", "cuda")
             self.assertFalse((Path(directory) / "rejected").exists())
+            (result_dir / "result.json").unlink()
+            empty = Path(directory) / "empty"
+            receipt = module.collect(root, seen, empty, "usnm-boinc", "cuda")
+            self.assertEqual(receipt["missing"], ["sample-1"])
+            for mode in module.MODES:
+                self.assertEqual((empty / f"cuda-{mode}-english.jsonl").read_bytes(), b"")
             (root / "benchmark-ready").unlink()
             with self.assertRaises(FileNotFoundError):
-                module.collect(root, seen, Path(directory) / "partial", "usnm-boinc")
+                module.collect(root, seen, Path(directory) / "partial", "usnm-boinc", "cuda")
 
 
 if __name__ == "__main__":
