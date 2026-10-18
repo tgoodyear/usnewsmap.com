@@ -13,6 +13,10 @@
   "pages": [
     {
       "annotation_status": "human-verified",
+      "coverage_strata": [
+        "single-column prose",
+        "pages with visible scan irregularities"
+      ],
       "gap_reason": null,
       "id": "serialset/00033-009-0042-p03",
       "image": {
@@ -39,6 +43,10 @@
     },
     {
       "annotation_status": "needs-human-verification",
+      "coverage_strata": [
+        "comparative or multi-column tables",
+        "pages with visible scan irregularities"
+      ],
       "gap_reason": "No reference is committed: the dense two-sided tables and small vertical headings require independent human verification.",
       "id": "serialset/00033-020-0053-p04",
       "image": {
@@ -62,6 +70,10 @@
     },
     {
       "annotation_status": "human-verified",
+      "coverage_strata": [
+        "comparative or multi-column tables",
+        "pages with visible scan irregularities"
+      ],
       "gap_reason": null,
       "id": "serialset/00033-020-0053-p05",
       "image": {
@@ -81,14 +93,17 @@
       "package_id": "SERIALSET-00033_00_00-020-0053-0000",
       "pdf_page": 5,
       "reference": {
-        "bytes": 1554,
+        "bytes": 1560,
         "path": "references/doc53-p05.txt",
-        "sha256": "661fcb4fbadcf72f73a6034e28a79e7a0fb85c337415f13f449c0bef26953225"
+        "sha256": "6d4de2d6a49e4217f3fc5c9dff079d50983018df3d006108db8f0f58cf529aa6"
       },
       "source_page_id": "govinfo:SERIALSET-00033_00_00-020-0053-0000:pdf-page-5"
     },
     {
       "annotation_status": "human-verified",
+      "coverage_strata": [
+        "single-column prose"
+      ],
       "gap_reason": null,
       "id": "serialset/13993-021-0183-p03",
       "image": {
@@ -107,9 +122,9 @@
       "package_id": "SERIALSET-13993_00_00-021-0183-0000",
       "pdf_page": 3,
       "reference": {
-        "bytes": 2949,
+        "bytes": 2946,
         "path": "references/doc183-p03.txt",
-        "sha256": "2fcd64908b2faed9ad1e3182b538942f37f68161a5dfacbca83147163f39081c"
+        "sha256": "f61bb8ccf311b52e26a8fe3843b5a29ed9c2415c3036a43f2dc3a3f2e0e4ef6a"
       },
       "source_page_id": "govinfo:SERIALSET-13993_00_00-021-0183-0000:pdf-page-3"
     }
@@ -125,9 +140,9 @@
       "pages": 2
     },
     "pages with visible scan irregularities": {
-      "human_verified": 1,
+      "human_verified": 2,
       "needs_human_verification": 1,
-      "pages": 2
+      "pages": 3
     },
     "single-column prose": {
       "human_verified": 2,

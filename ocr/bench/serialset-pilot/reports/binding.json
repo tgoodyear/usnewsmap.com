@@ -1,0 +1,33 @@
+{
+  "format": "usnm-serialset-ocr-pilot-score-binding/1",
+  "manifest_inputs_sha256": "5e85025b7bebc538028bbac0f6dd070c83449012c3ac3a395ae826c667b8f897",
+  "outputs_sha256": {
+    "source-ocr": "df6195dc10d6e5125e9481be96385742ba4f2a415326efbd4fccf80fe2abeafd",
+    "tesseract-5.5.1": "fe9051a1ddbdea8fed8130c60f34fb62ce6924e931a9a75baad13240d6ff29b8"
+  },
+  "reports": {
+    "source-ocr-legacy-ws-v1.json": {
+      "engine": "source-ocr",
+      "rule": "legacy-ws-v1",
+      "sha256": "118c55d1db123e4edcda92e8c5e1129a5b5073a7c42c44a0ef80c3e6c0f1487f"
+    },
+    "source-ocr-raw-v1.json": {
+      "engine": "source-ocr",
+      "rule": "raw-v1",
+      "sha256": "9a1e37323c81456e8e86292e8cd5d5e1e68318594d291b662c3020784c9b6097"
+    },
+    "tesseract-5.5.1-legacy-ws-v1.json": {
+      "engine": "tesseract-5.5.1",
+      "rule": "legacy-ws-v1",
+      "sha256": "77cab1d143083cfc48784e64ccb0ed857aac1310ffb2cf10883875edd320bd0e"
+    },
+    "tesseract-5.5.1-raw-v1.json": {
+      "engine": "tesseract-5.5.1",
+      "rule": "raw-v1",
+      "sha256": "869563e6951a81d738fa5d8ce5d43004aa2b7faf983b92feab5df6bee0b208f8"
+    }
+  },
+  "score_implementation_sha256": "c43d83e7bb9c6e315b03566df7fdffbc38f29db5b4f88b348acb7cfb2ff38e67",
+  "subset": "serialset/verified-3",
+  "subset_digest": "8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382"
+}

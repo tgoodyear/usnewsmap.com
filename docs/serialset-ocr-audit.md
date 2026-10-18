@@ -47,8 +47,9 @@ Sources checked (2026-10-18):
   package metadata, PDF/ALTO SHA-256 values, sizes and OCR provenance are in
   [`selection.json`](../ocr/bench/serialset-pilot/selection.json). Full PDFs are not committed.
 - The fixed purposive selection has four page-disjoint pages from three documents and two serial
-  numbers: two prose pages, two table/layout pages, and two pages noted to show scan irregularities
-  (overlapping descriptive strata, not prevalence estimates). Three pages have image-checked
+  numbers: two prose pages, two table/layout pages, and three pages noted to show scan irregularities
+  (overlapping descriptive strata, not prevalence estimates). Coverage strata are 2 prose, 2 tables,
+  and 3 with visible scan irregularities; counts are generated from the selection tags. Three pages have image-checked
   references; the dense comparative table on p. 4 remains unscored and has no reference. Coverage,
   fixture checksums, and the reason for the gap are in
   [`coverage.json`](../ocr/bench/serialset-pilot/coverage.json) and
@@ -67,23 +68,23 @@ Sources checked (2026-10-18):
 
 The comparison uses the existing #738 `bench-score` implementation and its two rules on the same
 three verified full pages. Both systems produced all three outputs. The human reference subset
-has digest `3014af25a9432ed93aa8dd668f43593d4bf4e8409b56995dc6163c20f0cb4fc2`; the complete
-pilot file-set digest is `1cd6a0f4867b642b74747f947d1a72f937207ed78492ee759e36454c18225dd3`.
+has digest `8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382`; the complete
+pilot file-set digest is `1d6567cb7efb375ed0a3eb39609c80479cf8bf0b43e6ffa4aa37dd72b0c07a3d`.
 
 | OCR output | Rule | Edits / reference chars | CER | Missing |
 | --- | --- | ---: | ---: | ---: |
-| GovInfo PDF text layer | `legacy-ws-v1` | 617 / 6,402 | 9.64% | 0 / 3 |
-| GovInfo PDF text layer | `raw-v1` | 777 / 6,426 | 12.09% | 0 / 3 |
-| Local Tesseract 5.5.1 | `legacy-ws-v1` | 788 / 6,402 | 12.31% | 0 / 3 |
-| Local Tesseract 5.5.1 | `raw-v1` | 836 / 6,426 | 13.01% | 0 / 3 |
+| GovInfo PDF text layer | `legacy-ws-v1` | 611 / 6,405 | 9.54% | 0 / 3 |
+| GovInfo PDF text layer | `raw-v1` | 766 / 6,429 | 11.91% | 0 / 3 |
+| Local Tesseract 5.5.1 | `legacy-ws-v1` | 785 / 6,405 | 12.26% | 0 / 3 |
+| Local Tesseract 5.5.1 | `raw-v1` | 836 / 6,429 | 13.00% | 0 / 3 |
 
 Per-page `legacy-ws-v1` results show why the aggregate is not a re-OCR decision:
 
 | Page | GovInfo PDF text layer | Tesseract 5.5.1 | Notes |
 | --- | ---: | ---: | --- |
 | H. Doc. 16-42, p. 3 (1820 prose) | 12 / 1,928 (0.62%) | 20 / 1,928 (1.04%) | Existing text layer has fewer edits. |
-| H. Doc. 16-53, p. 5 (1820 tables) | 458 / 1,544 (29.66%) | 755 / 1,544 (48.90%) | Both struggle with dense table layout/order; dominates errors. |
-| H. Doc. 101-183, p. 3 (1990 prose) | 147 / 2,930 (5.02%) | 13 / 2,930 (0.44%) | Local Tesseract has fewer edits. |
+| H. Doc. 16-53, p. 5 (1820 tables) | 455 / 1,550 (29.35%) | 755 / 1,550 (48.71%) | Both struggle with dense table layout/order; dominates errors. |
+| H. Doc. 101-183, p. 3 (1990 prose) | 144 / 2,927 (4.92%) | 10 / 2,927 (0.34%) | Local Tesseract has fewer edits. |
 
 The 1820 page's top table is transcribed left region then right region, and its lower table row by
 row; scorer CER is character-level and reading-order-sensitive. The high p. 5 scores therefore
@@ -91,7 +92,10 @@ include layout/order mismatch as well as recognition errors, and are not a clean
 engine comparison. No masks or alternate layout metric were introduced. Page 4's OCR outputs are
 retained for inspection but excluded from scoring because no ground truth was verified.
 The four exact score reports are committed next to the pilot outputs; they record page-level edits
-and denominators. Whitespace-normalized versus raw scores are both retained per #738 convention.
+and denominators. `reports/binding.json` pins the input manifest, subset, scorer implementation,
+OCR output hashes, and report hashes; `--build` invalidates stale reports and `--verify` rejects
+results that do not bind to the current references and outputs. Whitespace-normalized versus raw
+scores are both retained per #738 convention.
 
 ### Runtime and resource evidence
 
@@ -115,7 +119,7 @@ layout/order, scan damage, omissions, and rights would be required before a prod
 
 The p. 4 table page remains a human-verification gap. The transcription policy and coarse layout
 labels are pilot-level, not a complete line/region annotation protocol; page damage is descriptive,
-not formally severity-annotated. The literary search was scoped and non-exhaustive; the absence of
+not formally severity-annotated. The literature search was scoped and non-exhaustive; the absence of
 a located Serial Set-specific publication is not a first-ever claim. The existing BOINC/download
 state and parent issue #229's operations were not touched; no downloader was started, no on-prem
 fetch or infrastructure work was performed, and no benchmark release was published.
@@ -130,8 +134,10 @@ python3 scripts/ocr-bench/serialset-pilot.py --score
 ```
 
 `--score` invokes the repository's `usnm-ocr-survey bench-score` with both #738 rules on only
-`serialset/verified-3`, stores score reports under the pilot, rebuilds its hashes and removes its
-own work directory. The scorer requires a directory named `usnm-ocr-bench-<version>`, so the
+`serialset/verified-3`, stores score reports and input bindings under the pilot, rebuilds its hashes
+and removes its own work directory. `--build` invalidates reports when their references, OCR outputs,
+selection, or scorer implementation no longer match; run `--score` again before `--verify`. The
+scorer requires a directory named `usnm-ocr-bench-<version>`, so the
 runner creates that name only in `work/serialset-814/score-run` using manifest sentinel `v0.0.0`.
 That local compatibility copy is deleted after scoring; `v0.0.0` is not a release, there is no
 release tag/archive/index entry, and `ocr/bench/releases.json` is unchanged.

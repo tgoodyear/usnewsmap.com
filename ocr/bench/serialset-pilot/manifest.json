@@ -10,11 +10,28 @@
     ],
     "page_disjoint": true,
     "sample_pages": 4,
-    "source_documents": 3
+    "source_documents": 3,
+    "strata": {
+      "comparative or multi-column tables": {
+        "human_verified": 1,
+        "needs_human_verification": 1,
+        "pages": 2
+      },
+      "pages with visible scan irregularities": {
+        "human_verified": 2,
+        "needs_human_verification": 1,
+        "pages": 3
+      },
+      "single-column prose": {
+        "human_verified": 2,
+        "needs_human_verification": 0,
+        "pages": 2
+      }
+    }
   },
   "examples": [],
   "format": "usnm-ocr-bench",
-  "inputs_sha256": "9e663f6d695aaa0e6b17346ef101180f323ccec79e9d74ebd2a259feea3bff6e",
+  "inputs_sha256": "5e85025b7bebc538028bbac0f6dd070c83449012c3ac3a395ae826c667b8f897",
   "limitations": [
     "A purposive four-page pilot, not a representative estimate of all GovInfo Serial Set OCR.",
     "Only three pages have human-verified references; the fourth remains an explicit annotation gap.",
@@ -132,9 +149,9 @@
         ]
       },
       "reference": {
-        "bytes": 1554,
+        "bytes": 1560,
         "path": "references/doc53-p05.txt",
-        "sha256": "661fcb4fbadcf72f73a6034e28a79e7a0fb85c337415f13f449c0bef26953225"
+        "sha256": "6d4de2d6a49e4217f3fc5c9dff079d50983018df3d006108db8f0f58cf529aa6"
       },
       "reference_status": "human-verified",
       "scripts": [
@@ -191,9 +208,9 @@
         ]
       },
       "reference": {
-        "bytes": 2949,
+        "bytes": 2946,
         "path": "references/doc183-p03.txt",
-        "sha256": "2fcd64908b2faed9ad1e3182b538942f37f68161a5dfacbca83147163f39081c"
+        "sha256": "f61bb8ccf311b52e26a8fe3843b5a29ed9c2415c3036a43f2dc3a3f2e0e4ef6a"
       },
       "reference_status": "human-verified",
       "scripts": [
@@ -222,12 +239,12 @@
       "unit": "full-page"
     }
   },
-  "spec_sha256": "6a46337dd881f239433a33ed694363f56f3b20bba718e9175da0bd157db31d91",
+  "spec_sha256": "f3d9f07d4e56e28abc2c197f16cb9d5f9707d80524177bc21595886bc7744f74",
   "subsets": {
     "serialset/verified-3": {
       "count": 3,
       "description": "All and only the full-page samples whose references were checked against their page images.",
-      "digest": "3014af25a9432ed93aa8dd668f43593d4bf4e8409b56995dc6163c20f0cb4fc2",
+      "digest": "8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382",
       "members": [
         "serialset/00033-009-0042-p03",
         "serialset/00033-020-0053-p05",

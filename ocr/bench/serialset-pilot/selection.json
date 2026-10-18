@@ -124,7 +124,11 @@
       "observed_visual_features": [
         "light speckle and uneven scan tone; text remains legible"
       ],
-      "source_ocr_engine": "ABBYY FineReader Engine 11"
+      "source_ocr_engine": "ABBYY FineReader Engine 11",
+      "coverage_strata": [
+        "single-column prose",
+        "pages with visible scan irregularities"
+      ]
     },
     {
       "id": "serialset/00033-020-0053-p04",
@@ -143,7 +147,11 @@
         "irregular or clipped upper-left sheet edge; small print and narrow table columns"
       ],
       "source_ocr_engine": "ABBYY FineReader Engine 11",
-      "gap_reason": "No reference is committed: the dense two-sided tables and small vertical headings require independent human verification."
+      "gap_reason": "No reference is committed: the dense two-sided tables and small vertical headings require independent human verification.",
+      "coverage_strata": [
+        "comparative or multi-column tables",
+        "pages with visible scan irregularities"
+      ]
     },
     {
       "id": "serialset/00033-020-0053-p05",
@@ -161,7 +169,11 @@
       "observed_visual_features": [
         "visible central seam or gutter shadow and uneven tone; tabular text remains legible"
       ],
-      "source_ocr_engine": "ABBYY FineReader Engine 11"
+      "source_ocr_engine": "ABBYY FineReader Engine 11",
+      "coverage_strata": [
+        "comparative or multi-column tables",
+        "pages with visible scan irregularities"
+      ]
     },
     {
       "id": "serialset/13993-021-0183-p03",
@@ -178,7 +190,10 @@
       "observed_visual_features": [
         "no obvious text-obscuring scan defect in this page"
       ],
-      "source_ocr_engine": "Tesseract 5.1.0"
+      "source_ocr_engine": "Tesseract 5.1.0",
+      "coverage_strata": [
+        "single-column prose"
+      ]
     }
   ]
 }

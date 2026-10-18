@@ -1,12 +1,12 @@
 {
   "by_source": {
     "govinfo": {
-      "cer": 0.09637613245860668,
-      "cer_missing_as_empty": 0.09637613245860668,
-      "edits": 617,
+      "cer": 0.09539422326307573,
+      "cer_missing_as_empty": 0.09539422326307573,
+      "edits": 611,
       "missing": 0,
       "missing_chars": 0,
-      "reference_chars": 6402,
+      "reference_chars": 6405,
       "samples": 3,
       "scored": 3
     }
@@ -19,26 +19,26 @@
       "reference_chars": 1928
     },
     {
-      "edits": 458,
+      "edits": 455,
       "id": "serialset/00033-020-0053-p05",
-      "reference_chars": 1544
+      "reference_chars": 1550
     },
     {
-      "edits": 147,
+      "edits": 144,
       "id": "serialset/13993-021-0183-p03",
-      "reference_chars": 2930
+      "reference_chars": 2927
     }
   ],
   "rule": "legacy-ws-v1",
   "subset": "serialset/verified-3",
-  "subset_digest": "3014af25a9432ed93aa8dd668f43593d4bf4e8409b56995dc6163c20f0cb4fc2",
+  "subset_digest": "8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382",
   "total": {
-    "cer": 0.09637613245860668,
-    "cer_missing_as_empty": 0.09637613245860668,
-    "edits": 617,
+    "cer": 0.09539422326307573,
+    "cer_missing_as_empty": 0.09539422326307573,
+    "edits": 611,
     "missing": 0,
     "missing_chars": 0,
-    "reference_chars": 6402,
+    "reference_chars": 6405,
     "samples": 3,
     "scored": 3
   }

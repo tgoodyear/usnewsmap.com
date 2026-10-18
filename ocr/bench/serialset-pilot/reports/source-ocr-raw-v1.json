@@ -1,12 +1,12 @@
 {
   "by_source": {
     "govinfo": {
-      "cer": 0.12091503267973856,
-      "cer_missing_as_empty": 0.12091503267973856,
-      "edits": 777,
+      "cer": 0.11914761238139679,
+      "cer_missing_as_empty": 0.11914761238139679,
+      "edits": 766,
       "missing": 0,
       "missing_chars": 0,
-      "reference_chars": 6426,
+      "reference_chars": 6429,
       "samples": 3,
       "scored": 3
     }
@@ -19,26 +19,26 @@
       "reference_chars": 1938
     },
     {
-      "edits": 505,
+      "edits": 498,
       "id": "serialset/00033-020-0053-p05",
-      "reference_chars": 1551
+      "reference_chars": 1557
     },
     {
-      "edits": 251,
+      "edits": 247,
       "id": "serialset/13993-021-0183-p03",
-      "reference_chars": 2937
+      "reference_chars": 2934
     }
   ],
   "rule": "raw-v1",
   "subset": "serialset/verified-3",
-  "subset_digest": "3014af25a9432ed93aa8dd668f43593d4bf4e8409b56995dc6163c20f0cb4fc2",
+  "subset_digest": "8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382",
   "total": {
-    "cer": 0.12091503267973856,
-    "cer_missing_as_empty": 0.12091503267973856,
-    "edits": 777,
+    "cer": 0.11914761238139679,
+    "cer_missing_as_empty": 0.11914761238139679,
+    "edits": 766,
     "missing": 0,
     "missing_chars": 0,
-    "reference_chars": 6426,
+    "reference_chars": 6429,
     "samples": 3,
     "scored": 3
   }

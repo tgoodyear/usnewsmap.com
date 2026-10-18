@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build or verify the bounded GovInfo Serial Set pilot (#814)."""
+"""Build, verify and score the bounded GovInfo Serial Set pilot (#814)."""
 import argparse
 import hashlib
 import json
@@ -13,6 +13,23 @@ PILOT = ROOT / "ocr/bench/serialset-pilot"
 SELECTION = PILOT / "selection.json"
 FORMAT = "usnm-serialset-ocr-pilot-selection/1"
 SUBSET = "serialset/verified-3"
+SCORE_BINDING_FORMAT = "usnm-serialset-ocr-pilot-score-binding/1"
+COVERAGE_STRATA = (
+    "single-column prose",
+    "comparative or multi-column tables",
+    "pages with visible scan irregularities",
+)
+SCORE_OUTPUTS = {
+    "source-ocr": "outputs/source-ocr.jsonl",
+    "tesseract-5.5.1": "outputs/tesseract-5.5.1.jsonl",
+}
+SCORE_REPORTS = {
+    f"{engine}-{rule}.json": (engine, output, rule)
+    for engine, output in SCORE_OUTPUTS.items()
+    for rule in ("legacy-ws-v1", "raw-v1")
+}
+REPORTS_DIR = PILOT / "reports"
+SCORE_BINDING = REPORTS_DIR / "binding.json"
 INPUT_PREFIXES = ("images/", "references/", "source/alto/", "outputs/")
 INPUT_FILES = {"selection.json", "tesseract-runtime.json", "LICENSES/govinfo/NOTICE.txt"}
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -137,7 +154,7 @@ def expected_manifest(selection, inputs_sha):
         f"{sample['id']} {sample['image']['sha256']} {sample['reference']['sha256']}\n"
         for sample in samples
     )
-    coverage = coverage_data(selection, samples)
+    coverage = coverage_data(selection)
     return {
         "coverage": {
             "sample_pages": coverage["sample_pages"],
@@ -145,6 +162,7 @@ def expected_manifest(selection, inputs_sha):
             "annotation_gap_pages": coverage["annotation_gap_pages"],
             "source_documents": coverage["source_documents"],
             "page_disjoint": coverage["page_disjoint"],
+            "strata": coverage["strata"],
             "limitations": coverage["limitations"],
         },
         "examples": [],
@@ -185,12 +203,14 @@ def expected_manifest(selection, inputs_sha):
     }
 
 
-def coverage_data(selection, verified_samples=None):
-    verified_samples = verified_samples or []
+def coverage_data(selection):
     page_rows = []
     for page in selection["pages"]:
         image = file_ref(page["image"])
         dims = jpeg_dimensions((PILOT / page["image"]).read_bytes(), page["image"])
+        strata = page.get("coverage_strata", [])
+        if len(set(strata)) != len(strata) or set(strata) - set(COVERAGE_STRATA):
+            raise ValueError(f"{page['id']}: invalid coverage strata")
         row = {
             "id": page["id"],
             "source_page_id": page["source_page_id"],
@@ -201,6 +221,7 @@ def coverage_data(selection, verified_samples=None):
             "image_height": dims[1],
             "annotation_status": page["annotation_status"],
             "layout": page["layout"],
+            "coverage_strata": strata,
             "observed_visual_features": page["observed_visual_features"],
             "reference": file_ref(page["reference"]) if page["reference"] else None,
             "gap_reason": page.get("gap_reason"),
@@ -208,6 +229,14 @@ def coverage_data(selection, verified_samples=None):
         page_rows.append(row)
     verified = sum(p["annotation_status"] == "human-verified" for p in selection["pages"])
     gap = len(page_rows) - verified
+    strata_counts = {}
+    for name in COVERAGE_STRATA:
+        tagged = [p for p in selection["pages"] if name in p.get("coverage_strata", [])]
+        strata_counts[name] = {
+            "pages": len(tagged),
+            "human_verified": sum(p["annotation_status"] == "human-verified" for p in tagged),
+            "needs_human_verification": sum(p["annotation_status"] == "needs-human-verification" for p in tagged),
+        }
     return {
         "format": "usnm-serialset-ocr-pilot-coverage/1",
         "selection": "selection.json",
@@ -219,11 +248,7 @@ def coverage_data(selection, verified_samples=None):
         "page_disjoint": len({p["source_page_id"] for p in selection["pages"]}) == len(page_rows),
         "damage_taxonomy_status": "not formally annotated; observed visual features are descriptive only",
         "pages": page_rows,
-        "strata": {
-            "single-column prose": {"pages": 2, "human_verified": 2, "needs_human_verification": 0},
-            "comparative or multi-column tables": {"pages": 2, "human_verified": 1, "needs_human_verification": 1},
-            "pages with visible scan irregularities": {"pages": 2, "human_verified": 1, "needs_human_verification": 1},
-        },
+        "strata": strata_counts,
         "limitations": [
             "Selection is purposive and very small; counts are not estimates of corpus prevalence.",
             "One dense comparative table page has no reference and is excluded from accuracy scoring.",
@@ -248,6 +273,76 @@ def expected_sums():
     return "".join(f"{sha((PILOT / name).read_bytes())}  {name}\n" for name in files_under(PILOT))
 
 
+def score_implementation_sha256():
+    paths = [ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "crates/usnm-ocr-survey/Cargo.toml"]
+    paths.extend(sorted((ROOT / "crates/usnm-ocr-survey/src").rglob("*.rs")))
+    rows = "".join(
+        f"{sha(path.read_bytes())}  {path.relative_to(ROOT).as_posix()}\n"
+        for path in paths
+    )
+    return sha(rows.encode("utf-8"))
+
+
+def expected_score_binding(manifest):
+    reports = {}
+    for filename, (engine, output, rule) in SCORE_REPORTS.items():
+        path = REPORTS_DIR / filename
+        if not path.is_file():
+            return None
+        reports[filename] = {"engine": engine, "rule": rule, "sha256": sha(path.read_bytes())}
+    return {
+        "format": SCORE_BINDING_FORMAT,
+        "manifest_inputs_sha256": manifest["inputs_sha256"],
+        "outputs_sha256": {
+            engine: sha((PILOT / output).read_bytes())
+            for engine, output in SCORE_OUTPUTS.items()
+        },
+        "score_implementation_sha256": score_implementation_sha256(),
+        "subset": SUBSET,
+        "subset_digest": manifest["subsets"][SUBSET]["digest"],
+        "reports": reports,
+    }
+
+
+def invalidate_stale_score_reports(manifest):
+    expected = expected_score_binding(manifest)
+    if expected is not None and SCORE_BINDING.is_file():
+        try:
+            if read_json(SCORE_BINDING) == expected:
+                return False
+        except (OSError, json.JSONDecodeError):
+            pass
+    stale = False
+    for filename in (*SCORE_REPORTS, SCORE_BINDING.name):
+        path = REPORTS_DIR / filename
+        if path.exists():
+            path.unlink()
+            stale = True
+    return stale
+
+
+def verify_score_reports(manifest):
+    expected = expected_score_binding(manifest)
+    if expected is None or not SCORE_BINDING.is_file():
+        raise ValueError("score reports are missing or stale; run with --score")
+    if read_json(SCORE_BINDING) != expected:
+        raise ValueError("score reports are not bound to the current inputs; run with --score")
+    expected_ids = manifest["subsets"][SUBSET]["members"]
+    for filename, (_, _, rule) in SCORE_REPORTS.items():
+        report = read_json(REPORTS_DIR / filename)
+        if (report.get("release") != manifest["release"] or report.get("subset") != SUBSET
+                or report.get("subset_digest") != manifest["subsets"][SUBSET]["digest"]
+                or report.get("rule") != rule):
+            raise ValueError(f"reports/{filename}: score metadata differs from the current pilot")
+        rows = report.get("rows", [])
+        if [row.get("id") for row in rows] != expected_ids:
+            raise ValueError(f"reports/{filename}: score rows differ from the verified subset")
+        total = report.get("total", {})
+        if (total.get("samples") != len(expected_ids) or total.get("scored") != len(expected_ids)
+                or total.get("missing") != 0):
+            raise ValueError(f"reports/{filename}: incomplete score results")
+
+
 def build():
     selection = read_json(SELECTION)
     if selection.get("format") != FORMAT:
@@ -259,11 +354,14 @@ def build():
     coverage = coverage_data(selection)
     (PILOT / "manifest.json").write_text(canonical(manifest), encoding="utf-8")
     (PILOT / "coverage.json").write_text(canonical(coverage), encoding="utf-8")
+    invalidated = invalidate_stale_score_reports(manifest)
     (PILOT / "SHA256SUMS").write_text(expected_sums(), encoding="utf-8")
-    verify(quiet=True)
+    verify(quiet=True, check_reports=False)
+    if invalidated:
+        print("invalidated stale score reports; rerun with --score")
 
 
-def verify(quiet=False):
+def verify(quiet=False, check_reports=True):
     selection = read_json(SELECTION)
     if selection.get("format") != FORMAT:
         raise ValueError("unexpected selection format")
@@ -288,15 +386,17 @@ def verify(quiet=False):
             raise ValueError(f"{page['id']}: unknown annotation status")
         if not (PILOT / page["image"]).is_file():
             raise ValueError(f"{page['id']}: image is missing")
+        if not page.get("coverage_strata") or set(page["coverage_strata"]) - set(COVERAGE_STRATA):
+            raise ValueError(f"{page['id']}: coverage strata are missing or unknown")
     expected_ids = sorted(p["id"] for p in selection["pages"]
                           if p["annotation_status"] == "human-verified")
-    for name in ("source-ocr.jsonl", "tesseract-5.5.1.jsonl"):
-        rows = [json.loads(line) for line in (PILOT / "outputs" / name).read_text(encoding="utf-8").splitlines()]
+    for name in SCORE_OUTPUTS.values():
+        rows = [json.loads(line) for line in (PILOT / name).read_text(encoding="utf-8").splitlines()]
         ids = [row.get("id") for row in rows]
         if ids != expected_ids:
-            raise ValueError(f"outputs/{name}: IDs differ from verified subset")
+            raise ValueError(f"{name}: IDs differ from verified subset")
         if any(not isinstance(row.get("text"), str) for row in rows):
-            raise ValueError(f"outputs/{name}: output text is missing")
+            raise ValueError(f"{name}: output text is missing")
     gap = read_json(PILOT / "outputs/annotation-gap.json")
     pending = [p for p in selection["pages"] if p["annotation_status"] == "needs-human-verification"]
     if len(pending) != 1 or gap.get("id") != pending[0]["id"] or gap.get("reference") is not None:
@@ -305,21 +405,24 @@ def verify(quiet=False):
     if (PILOT / "inputs.sha256").read_text(encoding="utf-8") != inputs:
         raise ValueError("inputs.sha256 differs from the selected inputs")
     input_digest = sha(inputs.encode("utf-8"))
-    if (PILOT / "manifest.json").read_text(encoding="utf-8") != canonical(expected_manifest(selection, input_digest)):
+    manifest = expected_manifest(selection, input_digest)
+    if (PILOT / "manifest.json").read_text(encoding="utf-8") != canonical(manifest):
         raise ValueError("manifest.json is stale; run with --build")
     if (PILOT / "coverage.json").read_text(encoding="utf-8") != canonical(coverage_data(selection)):
         raise ValueError("coverage.json is stale; run with --build")
     sums = (PILOT / "SHA256SUMS").read_text(encoding="utf-8")
     if sums != expected_sums():
         raise ValueError("SHA256SUMS differs from the pilot files")
+    if check_reports:
+        verify_score_reports(manifest)
     if not quiet:
         digest = sha(sums.encode("utf-8"))
-        print(f"verified {len(selection['pages'])} pages; {len(expected_ids)} references; 1 annotation gap")
+        print(f"verified {len(selection['pages'])} pages; {len(expected_ids)} references; {len(pending)} annotation gap")
         print(f"serialset pilot digest: {digest}")
 
 
 def score():
-    verify(quiet=True)
+    build()
     manifest = read_json(PILOT / "manifest.json")
     scratch = ROOT / "work/serialset-814/score-run"
     if scratch.exists():
@@ -330,21 +433,20 @@ def score():
     try:
         results.mkdir()
         shutil.copytree(PILOT, harness, dirs_exist_ok=True)
-        for engine, output in (
-            ("source-ocr", "outputs/source-ocr.jsonl"),
-            ("tesseract-5.5.1", "outputs/tesseract-5.5.1.jsonl"),
-        ):
-            for rule in ("legacy-ws-v1", "raw-v1"):
-                name = f"{engine}-{rule}.json"
-                command = [
-                    "cargo", "run", "--quiet", "-p", "usnm-ocr-survey", "--",
-                    "bench-score", "--release", str(harness), "--subset", SUBSET,
-                    "--outputs", str(PILOT / output), "--rule", rule,
-                    "--report", str(results / name),
-                ]
-                subprocess.run(command, cwd=ROOT, check=True)
+        for filename, (_, output, rule) in SCORE_REPORTS.items():
+            command = [
+                "cargo", "run", "--quiet", "-p", "usnm-ocr-survey", "--",
+                "bench-score", "--release", str(harness), "--subset", SUBSET,
+                "--outputs", str(PILOT / output), "--rule", rule,
+                "--report", str(results / filename),
+            ]
+            subprocess.run(command, cwd=ROOT, check=True)
         for report in sorted(results.glob("*.json")):
-            (PILOT / "reports" / report.name).write_bytes(report.read_bytes())
+            (REPORTS_DIR / report.name).write_bytes(report.read_bytes())
+        binding = expected_score_binding(manifest)
+        if binding is None:
+            raise ValueError("score reports were not fully generated")
+        SCORE_BINDING.write_text(canonical(binding), encoding="utf-8")
         build()
     finally:
         shutil.rmtree(scratch)
@@ -353,8 +455,8 @@ def score():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
-    action.add_argument("--build", action="store_true", help="regenerate manifest, coverage and checksums")
-    action.add_argument("--verify", action="store_true", help="verify selection, fixtures, outputs and checksums")
+    action.add_argument("--build", action="store_true", help="regenerate manifests and invalidate stale score reports")
+    action.add_argument("--verify", action="store_true", help="verify selection, fixtures, outputs, score bindings and checksums")
     action.add_argument("--score", action="store_true", help="run #738 CER rules and save checked score reports")
     args = parser.parse_args()
     try:
