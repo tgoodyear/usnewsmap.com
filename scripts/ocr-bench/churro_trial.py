@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import math
 import os
@@ -56,23 +57,28 @@ def score_text(raw: str) -> tuple[str, str]:
         return raw.strip(), "unparsed-raw-fallback"
     chunks: list[str] = []
 
-    def append_text(value: str | None) -> None:
-        if value and value.strip():
+    def append_text(value: str | None, *, preserve_spaces: bool = False) -> None:
+        preserve_whitespace = preserve_spaces and value and value.isspace() and "\n" not in value and "\r" not in value
+        if value and (value.strip() or preserve_whitespace):
             chunks.append(value)
 
     def append_newline() -> None:
         if chunks and chunks[-1] != "\n":
             chunks.append("\n")
 
-    def walk(node: ET.Element) -> None:
-        append_text(node.text)
+    def walk(node: ET.Element, *, inside_line: bool = False) -> None:
+        local_name = node.tag.rsplit("}", 1)[-1].lower()
+        if local_name == "metadata":
+            return
+        inside_line = inside_line or local_name == "line"
+        append_text(node.text, preserve_spaces=inside_line)
         for child in node:
-            local_name = child.tag.rsplit("}", 1)[-1].lower()
-            if local_name != "metadata":
-                walk(child)
-                if local_name in BLOCK_ELEMENTS:
+            child_name = child.tag.rsplit("}", 1)[-1].lower()
+            if child_name != "metadata":
+                walk(child, inside_line=inside_line)
+                if child_name in BLOCK_ELEMENTS:
                     append_newline()
-            append_text(child.tail)
+            append_text(child.tail, preserve_spaces=inside_line)
 
     walk(root)
     return "".join(chunks).strip(), "xml-page-text-metadata-excluded-lines-v2"
@@ -95,6 +101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-manifest", type=Path, required=True)
     parser.add_argument("--image-dir", type=Path, required=True)
     parser.add_argument("--model-cache", type=Path, required=True)
+    parser.add_argument("--churro-source-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -152,6 +159,27 @@ def run() -> None:
     from churro_ocr.ocr import OCRClient
     from churro_ocr.providers import HuggingFaceOptions, OCRBackendSpec, build_ocr_backend
     from churro_ocr.providers import hf as hf_module
+
+    source_dir = args.churro_source_dir.resolve()
+    runtime_source_root = command_output(["git", "-C", str(source_dir), "rev-parse", "--show-toplevel"])
+    if runtime_source_root != str(source_dir):
+        raise SystemExit(f"CHURRO source directory is not the Git checkout root: {source_dir}")
+    runtime_code_revision = command_output(["git", "-C", str(source_dir), "rev-parse", "HEAD"])
+    if runtime_code_revision != CODE_REVISION:
+        raise SystemExit(
+            f"CHURRO source checkout revision mismatch: expected {CODE_REVISION}, got {runtime_code_revision}"
+        )
+    if command_output(["git", "-C", str(source_dir), "status", "--porcelain"]) != "":
+        raise SystemExit("CHURRO source checkout is dirty; use the exact clean pinned revision")
+    try:
+        Path(inspect.getfile(OCRClient)).resolve().relative_to(source_dir)
+    except ValueError as error:
+        raise SystemExit("CHURRO runtime was not imported from the pinned source checkout; install it editable") from error
+    churro_package_version = importlib.metadata.version("churro-ocr")
+    if churro_package_version != lock["runtime_version"]:
+        raise SystemExit(
+            f"CHURRO package version mismatch: lock={lock['runtime_version']} installed={churro_package_version}"
+        )
 
     max_new_tokens = int(lock["max_new_tokens"])
     options = HuggingFaceOptions(
@@ -249,8 +277,12 @@ def run() -> None:
         "model_tree_sha256": digest,
         "model_files": files,
         "code_repo": "stanford-oval/Churro",
-        "code_revision": CODE_REVISION,
-        "churro_package_version": importlib.metadata.version("churro-ocr"),
+        "code_revision": runtime_code_revision,
+        "runtime_code_revision_verified": True,
+        "runtime_source_repo_root_verified": True,
+        "runtime_import_path_verified": True,
+        "runtime_source_tree_clean": True,
+        "churro_package_version": churro_package_version,
         "python": platform.python_version(),
         "torch": torch.__version__,
         "torch_cuda_runtime": torch.version.cuda,

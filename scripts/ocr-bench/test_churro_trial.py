@@ -12,14 +12,23 @@ class ChurroScoreTextTests(unittest.TestCase):
         raw = (
             '<HistoricalDocument xmlns="urn:test">\n'
             '  <Metadata><Language>English</Language><Description>not OCR</Description></Metadata>\n'
-            '  <Page><Body><Paragraph><Line>Tom &amp; Jerry</Line><Line>Second line</Line></Paragraph>'
+            '  <Page><Body><Paragraph><Line>Tom &amp; Jerry</Line><Line>Second line</Line>'
+            '<Line><Word>and</Word> <Word>friends</Word></Line></Paragraph>'
             '<Footer><PageNumber>8</PageNumber></Footer></Body></Page>\n'
             '</HistoricalDocument>'
         )
 
         self.assertEqual(
             score_text(raw),
-            ("Tom & Jerry\nSecond line\n8", "xml-page-text-metadata-excluded-lines-v2"),
+            ("Tom & Jerry\nSecond line\nand friends\n8", "xml-page-text-metadata-excluded-lines-v2"),
+        )
+
+    def test_preserves_whitespace_between_inline_xml_elements(self) -> None:
+        raw = "<Document><Page><Line><Word>Tom</Word> <Word>Jerry</Word></Line></Page></Document>"
+
+        self.assertEqual(
+            score_text(raw),
+            ("Tom Jerry", "xml-page-text-metadata-excluded-lines-v2"),
         )
 
     def test_invalid_xml_uses_trimmed_raw_output(self) -> None:

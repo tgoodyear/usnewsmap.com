@@ -57,7 +57,7 @@ The exact checkpoint is `stanford-oval/churro-3B` revision `ca2150ea465d5a3d6781
 
 A single bounded GPU trial ran on 2026-10-18 after #559's explicit handoff and fresh host/CT214 idle checks. The exact model tree has digest `0136091efd1189d23893f04b9118c9f6ecb98793c108b36655e9894ac72c2603`; CHURRO code was pinned to `stanford-oval/Churro` commit `23c3ac65781443b18d87c8cdac5f77445c3319e6`. It used the official 0.3.0 Hugging Face profile `CHURRO_3B_XML_TEMPLATE`, deterministic decoding, FP16 without quantization, a 6-GiB GPU/9-GiB CPU placement cap, and `max_new_tokens=4096`. Runtime was Python 3.13.5, PyTorch 2.14.1+cu126, Transformers 5.20.1, and Accelerate 1.15.0. The RTX 2060 SUPER has 8 GiB VRAM; layers 0–27 were placed on GPU and layers 28–35 plus normalization on CPU. The trial did not modify BOINC tasks, queues, preferences, caches, or services; the GPU was idle again immediately after completion.
 
-The OCR loop took 926.040 s for ten images (0.65 images/min); first image 97.404 s, warm median 88.878 s and p95 107.916 s. Runtime import, processor load, and model load took 7.125 s, 1.070 s, and 12.287 s. Every output was nonblank; no sample reached the token cap (largest generation 316 tokens). PyTorch peak allocated/reserved GPU memory was 6,404,122,624 / 6,455,033,856 bytes. The process peak RSS was 9,285,700 KiB (8.85 GiB); there was no cgroup memory limit. The exact generated XML is preserved separately; scoring text excludes the non-OCR `<Metadata>` subtree, ignores formatting-only XML whitespace, unescapes XML text, and preserves line breaks. There is no OCR post-correction.
+The OCR loop took 926.040 s for ten images (0.65 images/min); first image 97.404 s, warm median 88.878 s and p95 107.916 s. Runtime import, processor load, and model load took 7.125 s, 1.070 s, and 12.287 s. Every output was nonblank; no sample reached the token cap (largest generation 316 tokens). PyTorch peak allocated/reserved GPU memory was 6,404,122,624 / 6,455,033,856 bytes. The process peak RSS was 9,285,700 KiB (8.85 GiB); there was no cgroup memory limit. The exact generated XML is preserved separately; scoring text excludes the non-OCR `<Metadata>` subtree, ignores formatting-only XML indentation, preserves whitespace between inline OCR elements, unescapes XML text, and preserves line breaks. There is no OCR post-correction. The original receipt names the intended CHURRO source revision but does not attest the installed import path or checkout cleanliness; those fields are marked unverified. The runner now verifies Git HEAD, a clean checkout, import path under the checkout, and the locked `churro-ocr` version before inference.
 
 | Candidate | Rule           |     CER | Edits / reference chars | Scored / missing / blank | Output JSONL SHA-256                                               |       OCR loop / throughput |
 | --------- | -------------- | ------: | ----------------------: | -----------------------: | ------------------------------------------------------------------ | --------------------------: |
@@ -68,11 +68,16 @@ On this same smoke subset, Tesseract `eng` previously scored 2.4027% (`legacy-ws
 
 The adapter, checksum lock, input manifest, raw/transformed outputs, per-sample scorer reports, and run receipt are committed under `scripts/ocr-bench/churro_trial.py`, `scripts/ocr-bench/test_churro_trial.py`, `ocr/bench/adapters/churro/`, and `ocr/bench/results/churro-overproof-en-smoke-10-v1/`. The transformed output SHA-256 is `57eab5ead48d125a5049621d3d834d744cde9757a56665a1f701181db865612c`; exact raw XML SHA-256 is `a103f719071ef48efadf04f4f2cc4cc421d119caa11c78bc41f63012230bbb66`.
 
-After fetching/verifying the release and installing the versions recorded in `run.json`, rerun from the repository root with:
+After fetching/verifying the release and installing the versions recorded in `run.json`, create an editable checkout at the locked source revision, then rerun from the repository root with:
 
 ```sh
+git clone https://github.com/stanford-oval/Churro.git .local/churro-src
+git -C .local/churro-src checkout 23c3ac65781443b18d87c8cdac5f77445c3319e6
+python3.13 -m venv .local/churro-venv
+.local/churro-venv/bin/pip install -e .local/churro-src
 scripts/ocr-bench/fetch --version v1.0.0 --verify --dest .local/bench-v1.0.0
-python3 scripts/ocr-bench/churro_trial.py \
+.local/churro-venv/bin/python scripts/ocr-bench/churro_trial.py \
+  --churro-source-dir .local/churro-src \
   --adapter-lock ocr/bench/adapters/churro/overproof-en-smoke-10-v1.json \
   --input-manifest ocr/bench/results/churro-overproof-en-smoke-10-v1/input-manifest.json \
   --image-dir .local/bench-v1.0.0/usnm-ocr-bench-v1.0.0/images \
