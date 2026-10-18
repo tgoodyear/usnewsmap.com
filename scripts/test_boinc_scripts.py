@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import importlib.util
 import io
@@ -191,6 +192,21 @@ class LogsFrontendRetry(unittest.TestCase):
         self.assertEqual(caught.exception.history[0]["requestId"], "request")
         self.assertEqual(caught.exception.history[0]["error"], "response-read-failed")
         self.assertNotIn("sensitive", str(caught.exception))
+
+    def test_absolute_deadline_interrupts_continuously_slow_read(self):
+        response = self.response(200, {})
+        def slow_read():
+            while True:
+                time.sleep(0.01)
+        response.read.side_effect = slow_read
+        started = time.monotonic()
+        with mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            opener.return_value.open.return_value = response
+            self.client.query(SUB, "print 1", token="fake", budget=0.1)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(caught.exception.history[0]["error"], "response-read-failed")
 
     def test_retry_cap(self):
         with self.assertRaisesRegex(self.client.QueryError, "6 attempts"):

@@ -2,11 +2,13 @@
 """Read-only Logs API client with bounded, DNS-refreshing frontend retries."""
 
 import argparse
+import contextlib
 import http.client
 import json
 import pathlib
 import random
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -67,16 +69,40 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+@contextlib.contextmanager
+def absolute_timeout(seconds):
+    """CLI runs on the main thread on macOS/Linux; bound DNS and streaming reads too."""
+    def expired(signum, frame):
+        raise TimeoutError("Logs deadline expired")
+
+    previous = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def query(workspace, kql, timespan="P1D", *, token=None, identity="az",
           subscription=None, attempts=6, budget=60):
     if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", workspace):
         raise QueryError("workspace must be its customer GUID, not an ARM resource ID")
     if token is None:
         token = access_token(identity, subscription)
+    history = []
+    try:
+        with absolute_timeout(budget):
+            return _query(workspace, kql, timespan, token, attempts, budget, history)
+    except TimeoutError:
+        raise QueryError("Logs query absolute deadline expired", history) from None
+
+
+def _query(workspace, kql, timespan, token, attempts, budget, history):
     url = f"{AUDIENCE}/v1/workspaces/{workspace}/query"
     data = json.dumps({"query": kql, "timespan": timespan}).encode()
     deadline = time.monotonic() + budget
-    history = []
     for attempt in range(1, attempts + 1):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
