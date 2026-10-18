@@ -25,6 +25,76 @@ cached pages with bounded queue backpressure; operators activate it separately.
 The [post-training pilot](boinc-transcription.md) evaluates public-gold
 baselines and adapted models with `usnm_qwen`.
 
+## Workbook query validation
+
+Run `python3 scripts/validate-boinc-workbook.py --workspace <customer-GUID>`
+with the Mac's existing Azure CLI user credential. On an authorized Arc host use
+`--identity arc`; the standard localhost:40342 challenge and token stay on that
+host, and its existing identity must already have workspace Reader access.
+Arc membership alone does not grant query access. No login, grant, workload or
+resource is created by validation. `--subscription <id>` selects the existing
+Azure CLI account without changing global CLI configuration.
+
+The shared `scripts/log_analytics.py` client defaults to
+`https://<workspace-location>.api.loganalytics.io/v1/workspaces/<customer-GUID>/query`
+with the unchanged token audience `https://api.loganalytics.io`. It derives the
+location from workspace metadata using the existing Azure CLI subscription, or
+accepts `--location`, `LOG_ANALYTICS_WORKSPACE_LOCATION`, or an explicit
+`--host` / `LOG_ANALYTICS_QUERY_HOST` hostname. Arc-only hosts must configure the
+location or host; they do not need Azure CLI. For the BOINC workspace use
+`--location westus2`. Host overrides accept only global/regional `.io` API hosts.
+
+#528 subsequently isolated **workspace-specific** authorization failures on a
+changing subset of Azure frontend pods: a pod can deny the BOINC workspace while
+serving another workspace successfully. Deny-assignment A/B tests and the
+resource-ID route did not explain or avoid the failure. Both global and regional
+hosts can select affected pods. At 01:5x UTC on 2026-10-18 westus2, eastus2 and
+northeurope failed, while westus, eastus, northcentralus and westcentralus served
+successful queries. A single healthy regional host is therefore not durable.
+No RBAC change is needed. The client never pins IPs, changes resolvers, or sends
+tokens to arbitrary hosts. Portal Workbooks use Azure's own routing; their
+queries do not need endpoint changes.
+
+Live source-panel acceptance on 2026-10-18 at 00:51–00:52 UTC returned HTTP200
+on the first attempt for all nine panels and the positive control from both
+the Mac Azure CLI user and Node5 Arc identity. All panels were populated:
+state/latest/chart rows were 1/12/5; job activity/events, revisions, warnings
+and console panels also returned data. This validates query execution, not
+an assurance that the system has no operational warnings.
+
+The ordered default hosts are the workspace region, westus, eastus,
+northcentralus, westcentralus, then global `api.loganalytics.io`, deduplicated.
+`--hosts` or `LOG_ANALYTICS_QUERY_HOSTS` overrides the complete order as CSV.
+The existing singular host option/env remains a compatible primary-host override;
+the default alternatives follow it. All hosts use valid TLS and the same `.io`
+audience; this is normal API routing, not IP pinning.
+
+HTTP403 **InsufficientAccessError**, HTTP429, HTTP5xx and connect/DNS failures
+advance immediately to the next host with a new connection. At most one extra
+pass is allowed, preceded by 3–6s jitter, within an absolute 90s query budget
+(token acquisition and metadata lookup are separate). Other 403s, 401, 400,
+response-body read failures and partial-success responses fail closed.
+Attempt/status/host/`via`/request-ID diagnostics go to stderr, never tokens.
+A persistent authorization error still fails; retries do not confer permission.
+The BOINC execution-log reader, saved-query CLI, cluster report and quality-row
+reader share this implementation.
+
+Validation runs a constant positive control and all nine source workbook KQL
+queries (default seven days, grain one hour), emitting per-panel status, actual
+row counts, query hashes, attempts and aggregate-only samples. Raw log messages
+are excluded. A failed/partial response is never represented as zero rows.
+Empty successful panels do not establish actual status/filter coverage or fresh
+work-volume telemetry. The normal BOINC post-deploy health step runs validation
+as a warning-level check; it does not redeploy resources to query them.
+The monitoring modules expose `logAnalyticsQueryHosts` arrays as Bicep outputs;
+the BOINC stack passes its ordered array as CSV to this smoke step. The main
+stack also exports `LOG_ANALYTICS_QUERY_HOSTS`. Singular outputs remain for
+backward compatibility. Older stacks use workspace metadata discovery and the
+same default alternatives; no provision is required merely to query.
+Its receipt is retained in a separate private `.boinc-work-*` directory beneath
+the checkout (path printed to stderr), outside the deployment scratch cleanup.
+Remove that directory manually after inspecting the receipt.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">
   <img alt="OCR and search pipeline with BOINC: LoC scans go through the on-prem scan fetcher and OCR nodes to ocr-out, ocr-sync, the curated lake, release, index and API. The scan fetcher pushes cached scans to a hand-off container; a hand-off job in the main environment reserves pages and later collects results; the BOINC bridge pulls each job from the container, volunteers run the pinned worker, and the result spool and gold trust list go back through the container, so collect publishes to the same ocr-out as the OCR nodes for trusted hosts and holds an untrusted host's result in quarantine." src="images/pipeline-boinc.svg" width="960">
@@ -213,6 +283,13 @@ cargo test --locked -p usnm-boinc
 python3 -m unittest discover -s scripts/boinc -p 'test_*.py'
 ```
 
+The bridge explicitly unlocks its state-directory `flock` before closing it;
+otherwise an unrelated fork's inherited descriptor can briefly retain the lock.
+The gold command tests publish closed, synced executable fixtures by rename,
+retry only fixture-spawn `ETXTBSY` (never an executed command), and verify worker
+termination through a dedicated FIFO rather than sampling `ps`. The timeout
+clock advances only after that worker announces its PID.
+
 ## Connect a stock BOINC project
 
 Create your own Linux BOINC project server using the upstream setup
@@ -291,6 +368,70 @@ to the installed app. Then submit each exported job:
 target/debug/usnm-boinc submit --root /srv/usnm/boinc-state \
   --project /srv/boinc/newspapers --job JOB_ID
 ```
+
+#### Optional local page hosting (native OCR pilot only, #783)
+
+The native `usnm-boinc submit` command alone accepts
+`--download-base-url https://downloads.example.org/ocr-pages/` for an
+independently published origin. The Azure submitting process does not need an
+origin mount: the trusted local producer must first publish the exact staged
+page as `<origin-root>/<sha256>`, atomically and immutably. Default submission is
+unchanged. This does **not** migrate gold, Qwen, quality, Surya, NDLOCR, model,
+application, upload or result files; the scheduler, application and database
+remain in Azure.
+
+Two-host flow (no origin filesystem mount on Azure):
+
+```sh
+# Trusted local producer: receipt records publication, NOT HTTPS readiness.
+usnm-boinc prepare-download --page /srv/local/staged-page \
+  --download-root /srv/usnm/immutable-ocr-pages
+# Azure project server: retains the existing verified staged job/request.
+usnm-boinc submit --root /srv/usnm/boinc-state \
+  --project /srv/boinc/newspapers --job JOB_ID \
+  --download-base-url https://downloads.example.org/ocr-pages/
+```
+
+When the submitter also runs on the producer, optional
+`--download-root /srv/usnm/immutable-ocr-pages` adds create-only publication
+before the same mandatory public probe (and requires `--download-base-url`).
+Provision the existing absolute local directory without symlinks in any path
+component and without group/world write access. This must be the trusted
+producer's writable path, **not** a web-server container's read-only bind mount.
+Map that directory exactly to
+the public HTTPS prefix, with a valid certificate, anonymous GET and no redirects
+or rewriting. In this mode submission verifies the staged SHA-256, publishes a create-only
+`<root>/<sha256>` file as read-only `0444`, and fsyncs the file and directory.
+An existing object must be identical and read-only; conflicts are never replaced.
+Keep the directory operator-controlled and its content immutable; retain files
+for outstanding work, retries and rollback, with backup and disk headroom.
+
+Before writing `Submitting`, every attempt streams a fresh HTTP 200 GET,
+checking exact size and SHA-256 with the existing scan-size cap and a 120-second
+request timeout. DNS resolution has a separate 10-second timeout and runs
+outside Tokio's blocking pool so stalled system DNS cannot delay CLI shutdown;
+only public
+addresses are allowed and pinned, proxies and redirects are disabled. Local
+existence is not readiness proof. Unavailable/mismatched downloads leave the
+job reserved without invoking stock tools.
+
+Only tiny `request.json` is then staged on the project share. Stock
+`create_work --remote_file URL nbytes md5` occupies input position 0; the
+request filename remains position 1. At pinned BOINC commit
+`22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`,
+[`tools/create_work.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/tools/create_work.cpp)
+appends remote descriptors in argument order and
+[`tools/process_input_template.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/tools/process_input_template.cpp)
+names them `jf_<md5>` while preserving the supplied URL verbatim (the URL
+basename need not equal that physical name). The unchanged `usnm_ocr_in`
+template maps them to logical `page` and `request.json`. Any failure after
+write-ahead remains uncertain and requires existing explicit reconciliation.
+Allocation, trust, validation, acceptance and publication gates are unchanged.
+Before enabling this opt-in, verify ingress from outside the LAN and adequate
+upload bandwidth; no service or deployment change is included here. Public
+HTTPS ingress is not yet established: the local origin is LAN-only, so
+production volunteer submission/cutover remains blocked pending an approved,
+persistent public ingress path. Do not relax the HTTPS probe to enable it.
 
 Attach one friend's stock BOINC client to the project. Configure idle-only
 processing and conservative preferences, and update the project. After the task
@@ -647,7 +788,7 @@ work](boinc-batch-scheduler.md#queue-fed-work).
 
 ### The scan fetcher's identity (scan-fetch container)
 
-The scan fetcher (CT 211 on pve-big, `scripts/ocr-node/scanfetch-ct.sh`) holds the prefetch
+The scan fetcher (deployed by infrastructure tooling) holds the prefetch
 manifest and the scans under `/tank/ocr` and pushes them with `push-boinc-scan.sh`. It is an
 unprivileged Debian 12 LXC; the Azure Connected Machine agent runs in it like on a VM. Its
 Arc machine, `usnm-ocr-node5-arcs-prod` in the environment's group, gives it a

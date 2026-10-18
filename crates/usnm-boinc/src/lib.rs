@@ -171,6 +171,34 @@ impl Lock {
         Ok(Self { _file: f })
     }
 }
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain this open file description until exec.
+        // Closing only our descriptor would leave its lock held in that child.
+        let _ = rustix::fs::flock(&self._file, rustix::fs::FlockOperation::Unlock);
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_owner_unlocks_even_with_an_inherited_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = Lock::take(dir.path()).unwrap();
+        // dup and fork share the same open file description and flock lifetime.
+        let inherited = owner._file.try_clone().unwrap();
+        assert!(Lock::take(dir.path()).is_err());
+        drop(owner);
+        let next = Lock::take(dir.path()).unwrap();
+        drop(inherited);
+        assert!(Lock::take(dir.path()).is_err());
+        drop(next);
+        assert!(Lock::take(dir.path()).is_ok());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {

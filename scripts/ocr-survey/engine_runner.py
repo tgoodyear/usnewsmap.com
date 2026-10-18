@@ -354,7 +354,116 @@ class AmericanStories:
                                                   encoding="utf-8")
 
 
-ENGINES = {"americanstories": AmericanStories, "tesseract": Tesseract, "doctr": Doctr, "surya": Surya, "ndnp-open-ocr": NdnpOpenOcr}
+class Kraken:
+    """Kraken 5+/7+ baseline segmenter (blla) + recognition model, producing ALTO v4 XML and text."""
+
+    name = "kraken"
+
+    def __init__(self):
+        import importlib.metadata
+        import torch
+
+        self.version = f"kraken {importlib.metadata.version('kraken')}, torch {torch.__version__}"
+        self.threads = torch.get_num_threads()
+        self.models_dir = Path(os.environ.get("KRAKEN_MODELS", "/opt/models/kraken"))
+
+    def resolve_model(self, variant: str) -> str:
+        cand = self.models_dir / (variant if variant.endswith(".mlmodel") else f"{variant}.mlmodel")
+        return str(cand) if cand.exists() else variant
+
+    def run(self, job: dict, out: Path) -> None:
+        import subprocess
+        import tempfile
+
+        import altotext
+
+        with tempfile.TemporaryDirectory() as tmp:
+            img = job["image"]
+            if job.get("scale", 1.0) != 1.0:
+                img = os.path.join(tmp, "scaled.png")
+                load_image(job["image"], job["scale"]).save(img)
+            alto_out = out / f"{job['job_id']}.xml"
+            model_arg = self.resolve_model(job["variant"])
+            cmd = [
+                "kraken",
+                "-i",
+                str(img),
+                str(alto_out),
+                "--alto",
+                "segment",
+                "-bl",
+                "ocr",
+                "-m",
+                model_arg,
+            ]
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                _, stderr = p.communicate()
+            except BaseException:
+                p.kill()
+                p.wait()
+                raise
+            if p.returncode != 0 or not alto_out.exists():
+                raise RuntimeError(f"kraken exit {p.returncode}: {stderr[-2000:]}")
+            text, _ = altotext.parse(alto_out.read_bytes())
+            (out / f"{job['job_id']}.txt").write_text(text, encoding="utf-8")
+
+
+class PaddleOcr:
+    """PaddleOCR (PP-OCRv4/v5/v6 CPU/ONNX) run over overlapping page tiles like docTR."""
+
+    name = "paddleocr"
+
+    def __init__(self):
+        import importlib.metadata
+
+        self.version = f"paddleocr {importlib.metadata.version('paddleocr')}"
+        self.threads = int(os.environ.get("OMP_THREAD_LIMIT", "0") or 0) or os.cpu_count()
+        self.predictors = {}
+
+    def predictor(self, variant: str):
+        if variant not in self.predictors:
+            from paddleocr import PaddleOCR
+
+            lang = variant.split("+")[-1] if "+" in variant else variant
+            self.predictors[variant] = PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=False, show_log=False)
+        return self.predictors[variant]
+
+    def run(self, job: dict, out: Path) -> None:
+        import numpy as np
+
+        pred = self.predictor(job["variant"])
+        im = load_image(job["image"], job.get("scale", 1.0))
+        arr = np.asarray(im)
+        h, w = arr.shape[:2]
+        lines_out, words_out = [], []
+        for x0, y0, x1, y1, core in tiles(w, h):
+            tile_arr = arr[y0:y1, x0:x1]
+            res = pred.ocr(tile_arr, cls=False) or []
+            for page_res in res:
+                if not page_res:
+                    continue
+                for item in page_res:
+                    box, (text, conf) = item[0], item[1]
+                    xs = [pt[0] for pt in box]
+                    ys = [pt[1] for pt in box]
+                    wx0, wy0, wx1, wy1 = x0 + min(xs), y0 + min(ys), x0 + max(xs), y0 + max(ys)
+                    if text and inside(core, (wx0 + wx1) / 2, (wy0 + wy1) / 2):
+                        lines_out.append(text)
+                        words_out.append([round(wx0), round(wy0), round(wx1), round(wy1), text, round(float(conf), 3)])
+        (out / f"{job['job_id']}.txt").write_text("\n".join(lines_out), encoding="utf-8")
+        (out / f"{job['job_id']}.words.json").write_text(json.dumps(words_out, ensure_ascii=False))
+
+
+ENGINES = {
+    "americanstories": AmericanStories,
+    "tesseract": Tesseract,
+    "doctr": Doctr,
+    "surya": Surya,
+    "ndnp-open-ocr": NdnpOpenOcr,
+    "kraken": Kraken,
+    "paddleocr": PaddleOcr,
+}
 
 
 # ------------------------------------------------------------------ the loop

@@ -72,8 +72,11 @@ upload secrets only when absent, without routing their values through the mainta
 
 The VNet includes the private Key Vault DNS zone `privatelink.vaultcore.azure.net` and its link.
 The Azure Files share mounts over SMB with `mfsymlinks` plus explicit uid/gid, mode and cache
-options. The MySQL server's `require_secure_transport` is OFF: BOINC's clients do not request TLS,
-and #464 tracks the gated migration to required TLS. The database is private to the VNet.
+options. The MySQL server's `require_secure_transport` remains OFF pending #464's
+Azure-chain and copied-project migration/rollback gates. New images require verified TLS,
+but persisted project files need separate acceptance. The BOINC template's explicit
+`requireSecureTransport` parameter defaults to `false`; do not opt in until those gates
+pass and deployment is coordinated under #529. The database is private to the VNet.
 
 To record a work-volume sample, run
 `scripts/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record
@@ -126,14 +129,23 @@ Keep #510 acceptance open until an authorized operator can:
    drift checks, and verify the latest tiles, state table and time chart consume
    that event.
 
-Live verification requires a recent BOINC log sample and an in-VNet runtime check. Read-only
-ARM metadata confirms both table schemas. The current workspace-context query identity gets
-`InsufficientAccessError` when querying tables, while the authorized resource-context Logs API
-route to the BOINC Container Apps environment succeeds. That route returned no rows from
-`ContainerAppSystemLogs` or `ContainerAppConsoleLogs` over the last 30 days, so actual status
-values, app and job filter hits, a deployed work-volume sample, and workbook output against
-data remain unverified. No Azure grants or configuration were changed. Keep live acceptance
-open until an authorized operator can verify a recent sample and the workbook results.
+Live verification requires a recent BOINC log sample and an in-VNet runtime check.
+The intermittent `InsufficientAccessError` in #528 was isolated to a faulty Traffic
+Manager query frontend, not missing Reader permissions. Resource-context constant
+queries with no visible workspace sources did not prove absence of ingestion.
+Later A/B evidence showed a changing subset of pods deny this workspace while
+serving other workspaces successfully; deny assignments and the resource-ID
+route were ruled out. Even the initially healthy workspace-region host later
+failed. The shared client now tries independent hosts in order: workspace
+region, westus, eastus, northcentralus, westcentralus, global. Retryable denial,
+throttling, server or connect errors advance immediately, with at most one extra
+pass and a 90s cap. Configure the order with `LOG_ANALYTICS_QUERY_HOSTS` CSV.
+All use the same `https://api.loganalytics.io` audience, without IP pinning,
+resolver changes or permission changes. Earlier regional 9/9 acceptance remains
+historical evidence, not a guarantee of continued single-host health.
+Use `scripts/validate-boinc-workbook.py --workspace <customer-GUID> --location westus2` for the nine
+panels; see [query routing and retries](../../docs/boinc.md#workbook-query-validation).
+Successful empty panels do not establish status/filter or recent-sample acceptance.
 
 `scripts/build-boinc-images.sh` builds and pins the server and bridge artifacts.
 `scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the

@@ -1107,15 +1107,21 @@ fn compute_page_record(
     };
     let features_ms = ms(t);
     let t = Instant::now();
+    let alto_text = usnm_alto::text(&alto);
     let readers: Vec<ReaderInput> = readers_spec
         .iter()
         .map(|spec| {
-            let text = texts
+            let mut text = texts
                 .readers
                 .iter()
                 .find(|r| r.name == spec.name)
                 .map(|r| r.text.clone())
                 .unwrap_or_default();
+            if (spec.name == "loc" || spec.name == "loc-hist")
+                && (text.trim().is_empty() || text.trim().eq_ignore_ascii_case("none"))
+            {
+                text = alto_text.clone();
+            }
             ReaderInput {
                 name: spec.name.clone(),
                 source: spec.source.clone(),

@@ -424,31 +424,57 @@ async fn a_search_that_finds_the_queue_full_gets_503_busy_at_once() {
     assert_eq!(get(&state, SILVER).await.2["ahead"], 0);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_search_queued_past_the_cap_is_busy_and_one_that_ran_gets_its_full_time() {
     let backend = Slow::new(Duration::from_secs(30));
     let mut cfg = config();
     cfg.compute_concurrency = 1;
     cfg.compute_cap = Duration::from_millis(500);
+    // Keep each visitor watching through the result. Polling with gaps can miss
+    // an uncached error and accidentally start a new computation instead.
+    cfg.search_timeout = Duration::from_secs(5);
     let state = state_with(cfg, backend.clone()).await;
 
-    // Gold runs 0–500 ms; silver queues from ~100 ms and runs 500–1000 ms,
-    // its full time although it waited; copper queues from ~200 ms and is
+    // Poll each request once to register its flight without advancing time,
+    // then yield so the detached computation takes its slot or queue position.
+    let gold = get(&state, GOLD);
+    tokio::pin!(gold);
+    assert!(futures::poll!(&mut gold).is_pending());
+    tokio::task::yield_now().await;
+    assert_eq!(backend.calls(), 1);
+    assert_eq!(state.flights.free_slots(), 0);
+
+    // Gold runs 0–500 ms; silver queues from 100 ms and runs 500–1000 ms,
+    // its full time although it waited; copper queues from 200 ms and is
     // still waiting at 700 ms.
-    assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
-    assert_eq!(get(&state, SILVER).await.2["status"], "queued");
-    assert_eq!(get(&state, COPPER).await.2["ahead"], 1);
-    let started = Instant::now();
-    let (gold, silver, copper) = tokio::join!(
-        poll(&state, GOLD),
-        poll(&state, SILVER),
-        poll(&state, COPPER)
-    );
-    assert_eq!(gold.1["type"], "/errors/backend-timeout", "{}", gold.1);
-    assert_eq!(silver.1["type"], "/errors/backend-timeout", "{}", silver.1);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let silver = get(&state, SILVER);
+    tokio::pin!(silver);
+    assert!(futures::poll!(&mut silver).is_pending());
+    tokio::task::yield_now().await;
+    assert_eq!(state.flights.queued(), 1);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let copper = get(&state, COPPER);
+    tokio::pin!(copper);
+    assert!(futures::poll!(&mut copper).is_pending());
+    tokio::task::yield_now().await;
+    assert_eq!(state.flights.queued(), 2);
+
+    // Deadlines and elapsed time must use the same paused clock, so scheduler
+    // delays cannot consume the interval being asserted.
+    let started = tokio::time::Instant::now();
+    let (gold, silver, copper) = tokio::join!(gold, silver, copper);
+    assert_eq!(gold.2["type"], "/errors/backend-timeout", "{}", gold.2);
+    assert_eq!(silver.2["type"], "/errors/backend-timeout", "{}", silver.2);
     assert!(started.elapsed() >= Duration::from_millis(600));
     assert_eq!(copper.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(copper.1["type"], "/errors/busy", "{}", copper.1);
+    assert_eq!(copper.2["type"], "/errors/busy", "{}", copper.2);
+    assert_eq!(
+        backend.calls(),
+        2,
+        "only gold and silver reached the backend"
+    );
     settled(&state).await;
     assert_eq!(state.flights.queued(), 0);
     assert_eq!(state.flights.free_slots(), 1);

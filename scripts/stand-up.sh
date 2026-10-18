@@ -55,6 +55,8 @@ step() { printf '\n==> %s\n' "$*"; }
 cd "$(dirname "$0")/.."
 ENV_NAME=$TARGET
 . scripts/lib/env.sh
+# shellcheck source=scripts/lib/acr-build.sh
+. scripts/lib/acr-build.sh
 need_stack_az
 for tool in az git jq; do command -v "$tool" > /dev/null || die "$tool is not installed"; done
 az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
@@ -151,7 +153,7 @@ build() {
     echo "$repo:$TAG is there already"
     return 0
   fi
-  az acr build -r "$ACR" -t "$repo:$TAG" "$@" .
+  acr_build_verified az "$ACR" "$repo:$TAG" 3600 "$@" .
 }
 build usnewsmap-api -f Dockerfile
 build usnewsmap-ingest -f Dockerfile.ingest --build-arg "USNM_GIT_SHA=$SHA" \

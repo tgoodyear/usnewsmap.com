@@ -30,8 +30,7 @@
 #      if the agent is configured (connected or not), runs
 #      `azcmagent disconnect --force-local-only`,
 #      which clears the agent's local state without signing in to Azure
-#      (so no onboarding credential is needed), and on RHEL unregisters
-#      it from Red Hat (`subscription-manager unregister`); without --host,
+#      (so no onboarding credential is needed); without --host,
 #      prints those commands instead;
 #   4. deletes the Arc machine with your own az sign-in, which deletes its
 #      identity.
@@ -270,22 +269,7 @@ else
     echo "agent not configured"
   fi
 fi
-# A RHEL node leaves Red Hat too; onboard.sh registers it again.
-if [ "$(. /etc/os-release && printf %s "${ID:-}")" = rhel ] && command -v subscription-manager > /dev/null; then
-  if command -v insights-client > /dev/null && insights-client --status > /dev/null 2>&1; then
-    insights-client --unregister || echo "warning: insights-client --unregister failed"
-  fi
-  # Stop the daily upload too, registered or not, so a node kept or reused
-  # after offboarding does not run an unregistered client every day.
-  if systemctl list-unit-files insights-client.timer > /dev/null 2>&1; then
-    systemctl disable --now insights-client.timer || echo "warning: could not disable insights-client.timer"
-  fi
-  if subscription-manager identity > /dev/null 2>&1; then
-    subscription-manager unregister || echo "warning: subscription-manager unregister failed"
-  else
-    echo "not registered with Red Hat"
-  fi
-fi'
+'
 if [ -z "$HOST" ]; then
   echo "no --host; if the node still exists, run on it as root:"
   printf '%s\n' "$UPDATES_REMOVE" | while IFS= read -r line; do echo "  $line"; done
@@ -295,9 +279,6 @@ if [ -z "$HOST" ]; then
   echo "  systemctl stop extd"
   echo "  azcmagent extension remove --all"
   echo "  azcmagent disconnect --force-local-only"
-  echo "  insights-client --unregister      # RHEL only"
-  echo "  systemctl disable --now insights-client.timer   # RHEL only"
-  echo "  subscription-manager unregister   # RHEL only"
 elif [ "$DRY_RUN" = true ]; then
   echo "would run on $HOST with sudo:"
   printf '%s\n' "$REMOTE" | while IFS= read -r line; do echo "  $line"; done

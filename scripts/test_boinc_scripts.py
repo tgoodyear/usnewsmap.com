@@ -11,7 +11,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
+import importlib.util
+import io
+from unittest import mock
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +28,9 @@ printf '%s\n' "$*" >> "$STUB_LOG"
 case "$*" in
   "account show"*) echo "$STUB_SUB" ;;
   "group show"*) ;;
+  "stack sub show"*) echo '{"OCR_EXCHANGE_ACCOUNT":{"value":"exchangeprod"}}' ;;
+  "storage blob exists"*) echo true ;;
+  "storage blob lease acquire"* | "storage blob lease release"*) ;;
   "stack group show"*)
     if [ -n "${STUB_NO_JOB:-}" ]; then echo '{}'
     else echo '{"bridgeJobName": {"type": "String", "value": "usnm-boinc-bridge-caj-prod"}}'; fi ;;
@@ -79,8 +86,10 @@ class OperatorWorkspace(unittest.TestCase):
 az() {
   case "$*" in
     *"workspace list"*) echo ws-id ;;
-    *"log-analytics query"*) [[ "$*" == *"'bad-exec-'"* ]] && echo '[{"TimeGenerated":"t1","Log_s":"Error: boom"}]' || echo '[]' ;;
   esac
+}
+python3() {
+  [[ "$*" == *"'bad-exec-'"* ]] && echo '{"tables":[{"rows":[["t1","Error: boom"]]}]}' || echo '{"tables":[{"rows":[]}]}'
 }
 """
         command = (stub + "set -euo pipefail; ENV_NAME=prod; SUBSCRIPTION=s; die() { exit 1; }; "
@@ -102,6 +111,488 @@ az() {
             text = Path(ROOT, "scripts", name).read_text()
             self.assertNotIn("mktemp", text)
             self.assertNotIn("/var/tmp", text)
+
+
+class AcrBuildVerification(unittest.TestCase):
+    """Queue/poll/digest regression tests: no Azure calls or paid builds."""
+
+    DIGEST = "sha256:" + "a" * 64
+    STUB = r"""#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+args = sys.argv[1:]
+log = pathlib.Path(os.environ["STUB_LOG"])
+with log.open("a") as out:
+    out.write(json.dumps(args) + "\n")
+if args[:2] == ["acr", "build"]:
+    if os.environ.get("STUB_STDERR"):
+        print(os.environ["STUB_STDERR"], file=sys.stderr)
+    print(os.environ["STUB_RUN_ID"])
+    sys.exit(int(os.environ.get("STUB_SUBMIT_EXIT", "0")))
+if args[:3] == ["acr", "task", "show-run"]:
+    time.sleep(float(os.environ.get("STUB_RUN_DELAY", "0")))
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    count = sum(call[:3] == ["acr", "task", "show-run"] for call in calls)
+    runs = json.loads(os.environ["STUB_RUNS"])
+    run = runs[min(count - 1, len(runs) - 1)]
+    if run == "error":
+        sys.exit(3)
+    print(run if isinstance(run, str) else json.dumps(run))
+    sys.exit(0)
+if args[:3] == ["acr", "repository", "show"]:
+    time.sleep(float(os.environ.get("STUB_DIGEST_DELAY", "0")))
+    print(os.environ["STUB_DIGEST"])
+    sys.exit(int(os.environ.get("STUB_DIGEST_EXIT", "0")))
+sys.exit("unexpected az command: " + repr(args))
+"""
+
+    def succeeded(self, **changes):
+        return {"status": "Succeeded", "outputImages": [
+            {"repository": "nested/image", "tag": "test", "digest": self.DIGEST, **changes}]}
+
+    def invoke(self, runs=None, **env):
+        with tempfile.TemporaryDirectory(prefix=".acr-test-", dir=ROOT) as work:
+            stub = Path(work, "az")
+            stub.write_text(self.STUB)
+            stub.chmod(0o700)
+            log = Path(work, "calls.jsonl")
+            values = {**os.environ, "STUB_AZ": str(stub), "STUB_LOG": str(log),
+                      "STUB_RUN_ID": "ch2c", "STUB_RUNS": json.dumps(runs or [self.succeeded()]),
+                      "STUB_DIGEST": self.DIGEST, "ACR_WAIT_SECONDS": "5", "ACR_POLL_INTERVAL": "0",
+                      **env}
+            command = r"""
+set -euo pipefail
+. scripts/lib/acr-build.sh
+scoped_az() { "$STUB_AZ" "$@" --subscription test-sub; }
+acr_build_verified scoped_az test-registry nested/image:test 7200 \
+  --platform linux/amd64 --build-arg 'BASE_IMAGE=some image' --file 'a context/Containerfile' 'a context'
+echo verified
+"""
+            result = subprocess.run(["bash", "-c", command], cwd=ROOT, env=values,
+                                    capture_output=True, text=True, timeout=10)
+            calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            return result, calls
+
+    def assert_failed(self, runs=None, **env):
+        result, calls = self.invoke(runs, **env)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("verified", result.stdout)
+        self.assertEqual(sum(call[:2] == ["acr", "build"] for call in calls), 1)
+        return result, calls
+
+    def test_nonzero_cli_exit_does_not_override_successful_remote_run(self):
+        result, calls = self.invoke(STUB_SUBMIT_EXIT="17")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Succeeded; verified", result.stderr)
+        self.assertEqual(result.stdout.strip(), "verified")
+        self.assertEqual(len(calls), 3)
+        self.assertIn("--no-wait", calls[0])
+        self.assertNotIn("--no-logs", calls[0])
+        self.assertEqual(calls[0][-2:], ["--subscription", "test-sub"])
+        self.assertIn("BASE_IMAGE=some image", calls[0])
+        self.assertIn("a context/Containerfile", calls[0])
+        self.assertEqual(calls[0][-3], "a context")
+        self.assertEqual(calls[0][calls[0].index("--timeout") + 1], "7200")
+        for call in calls:
+            self.assertEqual(call[-2:], ["--subscription", "test-sub"])
+        self.assertEqual(calls[1][calls[1].index("--run-id") + 1], "ch2c")
+
+    def test_waits_through_queued_started_running_and_transient_read_failures(self):
+        runs = [{"status": status} for status in ("Queued", "Started", "Running")]
+        result, calls = self.invoke([*runs, "error", "not json", self.succeeded()])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sum(call[:2] == ["acr", "build"] for call in calls), 1)
+        self.assertEqual(sum(call[:3] == ["acr", "task", "show-run"] for call in calls), 6)
+
+    def test_failed_terminal_run_rejects_even_an_existing_valid_tag(self):
+        for status in ("Failed", "Canceled", "Cancelled", "Error", "Timeout", "Unknown"):
+            with self.subTest(status=status):
+                result, calls = self.assert_failed([{"status": status}])
+                self.assertIn(status, result.stderr)
+                self.assertFalse(any(call[:2] == ["acr", "repository"] for call in calls))
+
+    def test_submission_without_valid_run_id_never_falls_back_to_old_tag(self):
+        for run_id in ("", "null", "two runs", "ch2c\nch2d", "../ch2c"):
+            for exit_code in ("0", "1"):
+                with self.subTest(run_id=run_id, exit_code=exit_code):
+                    result, calls = self.invoke(STUB_RUN_ID=run_id, STUB_SUBMIT_EXIT=exit_code,
+                                                STUB_RUNS=json.dumps([{"status": "Failed"}]))
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(len(calls), 1)
+
+    def test_run_id_acknowledged_only_on_stderr_is_polled(self):
+        # Azure CLI 2.90: --no-wait --query runId prints nothing; stderr names the queued run.
+        result, calls = self.invoke(STUB_RUN_ID="", STUB_STDERR="WARNING: Queued a build with ID: ch80")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Queued a build with ID: ch80", result.stderr)
+        self.assertEqual(calls[1][calls[1].index("--run-id") + 1], "ch80")
+        result, calls = self.invoke(STUB_RUN_ID="ch80", STUB_STDERR="WARNING: Queued a build with ID: ch80")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_disagreeing_or_malformed_acknowledgements_are_rejected(self):
+        for run_id, stderr in (("ch2c", "WARNING: Queued a build with ID: ch80"),
+                               ("", "WARNING: Queued a build with ID: ../ch80"),
+                               ("", "WARNING: Queued a build with ID: ch80 and ch81"),
+                               ("", "Queued a build with ID: ch80\nQueued a build with ID: ch81")):
+            with self.subTest(run_id=run_id, stderr=stderr):
+                result, calls = self.invoke(STUB_RUN_ID=run_id, STUB_STDERR=stderr)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(calls), 1)
+
+    def test_polling_timeout_never_reads_an_old_tag(self):
+        for run in ({"status": "Running"}, "error", "invalid json", {}, {"status": None}):
+            with self.subTest(run=run):
+                result, calls = self.assert_failed([run], ACR_WAIT_SECONDS="0")
+                self.assertIn("timed out", result.stderr)
+                self.assertEqual(len(calls), 1)
+
+    def test_slow_successful_and_failed_status_requests_are_bounded(self):
+        for run in (self.succeeded(), {"status": "Failed"}, "error"):
+            with self.subTest(run=run):
+                start = time.monotonic()
+                result, calls = self.assert_failed([run], ACR_WAIT_SECONDS="1", STUB_RUN_DELAY="30")
+                self.assertLess(time.monotonic() - start, 4)
+                self.assertIn("timed out", result.stderr)
+                self.assertEqual(len(calls), 2)
+
+    def test_slow_digest_verification_is_bounded(self):
+        start = time.monotonic()
+        self.assert_failed(ACR_WAIT_SECONDS="1", STUB_DIGEST_DELAY="30")
+        self.assertLess(time.monotonic() - start, 4)
+
+    def test_success_requires_valid_matching_run_output_and_registry_digest(self):
+        invalid_runs = [
+            {"status": "Succeeded"},
+            self.succeeded(digest="sha256:bad"),
+            self.succeeded(repository="other/image"),
+            self.succeeded(tag="other"),
+            {"status": "Succeeded", "outputImages": []},
+            {"status": "Succeeded", "outputImages": self.succeeded()["outputImages"] * 2},
+        ]
+        for run in invalid_runs:
+            with self.subTest(run=run):
+                self.assert_failed([run])
+        for env in ({"STUB_DIGEST": ""}, {"STUB_DIGEST": "sha256:" + "b" * 64},
+                    {"STUB_DIGEST_EXIT": "1"}):
+            with self.subTest(env=env):
+                self.assert_failed(**env)
+
+    def test_all_build_wrappers_use_shared_helper(self):
+        expected = {"build-boinc-images.sh": 4, "boinc-app-release.sh": 3,
+                    "build-quickwit.sh": 1, "stand-up.sh": 1}
+        for name, count in expected.items():
+            text = Path(HERE, name).read_text()
+            self.assertIn(". scripts/lib/acr-build.sh", text)
+            self.assertEqual(text.count("acr_build_verified "), count, name)
+            # --only-show-errors would hide the queued run id (Azure CLI 2.90).
+            self.assertNotIn("acr_build_verified baz ", text, name)
+        # Prevent a new shell/workflow caller from reintroducing direct streaming builds/runs.
+        for path in [*Path(ROOT).rglob("*.sh"), *Path(ROOT, ".github/workflows").glob("*.yml")]:
+            if path.name == "acr-build.sh":
+                continue
+            commands = "\n".join(line for line in path.read_text().splitlines()
+                                 if not line.lstrip().startswith("#"))
+            self.assertNotRegex(commands, r"\b(?:az|baz)\s+acr\s+(?:build|run)\b", str(path))
+
+
+class LogsFrontendRetry(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.dict(os.environ, {"LOG_ANALYTICS_QUERY_HOST": "westus2.api.loganalytics.io"})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("logs_client", Path(HERE, "log_analytics.py"))
+        cls.client = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.client)
+
+    def test_retry_classification(self):
+        error = {"error": {"code": "InsufficientAccessError"}}
+        for status in (403, 429, 500, 502, 503):
+            self.assertTrue(self.client.retryable(status, error))
+        for status, body in [(401, error), (400, error), (403, {}),
+                             (403, {"error": {"code": "AuthorizationFailedError"}}),
+                             (403, {"error": "InsufficientAccessError"}), (200, error)]:
+            self.assertFalse(self.client.retryable(status, body))
+
+    @staticmethod
+    def response(status, body):
+        response = mock.MagicMock()
+        response.status = status
+        response.headers = {"via": "frontend", "x-ms-request-id": "request"}
+        response.read.return_value = json.dumps(body).encode()
+        response.__enter__.return_value = response
+        return response
+
+    def run_query(self, responses):
+        opener = mock.Mock()
+        opener.open.side_effect = responses
+        with mock.patch.object(self.client.urllib.request, "build_opener", return_value=opener) as fresh, \
+                mock.patch.object(self.client.time, "sleep") as sleep, \
+                mock.patch.object(self.client.random, "uniform", return_value=3), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            body, history = self.client.query(SUB, "print 1", token="not-a-real-token")
+        return body, history, fresh.call_count, sleep.call_count, stderr.getvalue()
+
+    def test_fresh_connection_then_success(self):
+        success = {"tables": [{"columns": [], "rows": []}]}
+        result = self.run_query([
+            self.response(403, {"error": {"code": "InsufficientAccessError"}}),
+            self.response(200, success)])
+        self.assertEqual(result[:4], (success, [
+            {"attempt": 1, "status": 403, "via": "frontend", "requestId": "request",
+             "host": "westus2.api.loganalytics.io"},
+            {"attempt": 2, "status": 200, "via": "frontend", "requestId": "request",
+             "host": "westus.api.loganalytics.io"}], 2, 0))
+        self.assertNotIn("not-a-real-token", result[4])
+
+    def test_partial_response_is_not_success(self):
+        with self.assertRaises(self.client.QueryError):
+            self.run_query([self.response(200, {"tables": [], "error": {"code": "PartialError"}})])
+
+    def test_real_http_error_is_classified(self):
+        error = self.client.urllib.error.HTTPError(
+            "https://api.loganalytics.io/query", 403, "Forbidden",
+            {"via": "frontend"}, io.BytesIO(b'{"error":{"code":"InsufficientAccessError"}}'))
+        result = self.run_query([error, self.response(
+            200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual(result[2:4], (2, 0))
+
+    def test_transport_error_preserves_attempts_without_secret(self):
+        error = self.client.urllib.error.URLError("sensitive transport payload")
+        opener = mock.Mock()
+        opener.open.side_effect = [self.response(
+            403, {"error": {"code": "InsufficientAccessError"}})] + [error] * 11
+        with mock.patch.object(self.client.urllib.request, "build_opener", return_value=opener), \
+                mock.patch.object(self.client.time, "sleep"), \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            self.client.query(SUB, "print 1", token="fake")
+        self.assertEqual(len(caught.exception.history), 12)
+        self.assertEqual(caught.exception.history[-1]["status"], "transport-error")
+        self.assertNotIn("sensitive", str(caught.exception))
+
+    def test_response_read_failure_preserves_request_metadata(self):
+        response = self.response(200, {})
+        response.read.side_effect = self.client.http.client.IncompleteRead(b"sensitive")
+        with mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            opener.return_value.open.return_value = response
+            self.client.query(SUB, "print 1", token="fake")
+        self.assertEqual(caught.exception.history[0]["requestId"], "request")
+        self.assertEqual(caught.exception.history[0]["error"], "response-read-failed")
+        self.assertNotIn("sensitive", str(caught.exception))
+
+    def test_absolute_deadline_interrupts_continuously_slow_read(self):
+        response = self.response(200, {})
+        def slow_read():
+            while True:
+                time.sleep(0.01)
+        response.read.side_effect = slow_read
+        started = time.monotonic()
+        with mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(self.client.QueryError) as caught:
+            opener.return_value.open.return_value = response
+            self.client.query(SUB, "print 1", token="fake", budget=0.1)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(caught.exception.history[0]["error"], "deadline-expired")
+
+    def test_retry_cap(self):
+        with self.assertRaisesRegex(self.client.QueryError, "12 attempts"):
+            self.run_query([self.response(403, {"error": {"code": "InsufficientAccessError"}})] * 12)
+
+    def test_absolute_deadline_is_not_retried_as_connect_timeout(self):
+        dumps = self.client.json.dumps
+        def delayed_dump(*args, **kwargs):
+            time.sleep(0.08)
+            return dumps(*args, **kwargs)
+        def slow_connect(*args, **kwargs):
+            time.sleep(0.2)
+            return self.response(200, {"tables": [{"columns": [], "rows": []}]})
+        started = time.monotonic()
+        with mock.patch.object(self.client.json, "dumps", side_effect=delayed_dump), \
+                mock.patch.object(self.client.urllib.request, "build_opener") as opener, \
+                self.assertRaisesRegex(self.client.QueryError, "absolute deadline"):
+            opener.return_value.open.side_effect = slow_connect
+            self.client.query(SUB, "print 1", token="fake", budget=0.12)
+        self.assertLess(time.monotonic() - started, 0.25)
+        self.assertEqual(opener.return_value.open.call_count, 1)
+
+    def test_socket_timeout_still_fails_over(self):
+        result = self.run_query([TimeoutError("socket inactivity"),
+                                 self.response(200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual(result[1][1]["host"], "westus.api.loganalytics.io")
+
+    def test_nonretryable_http_error_stops_once(self):
+        for status in (400, 401, 403):
+            with self.subTest(status=status), self.assertRaisesRegex(self.client.QueryError, "non-retryable"):
+                self.run_query([self.response(status, {"error": {"code": "OtherError"}})])
+
+    def test_time_budget_stops_before_backoff(self):
+        with mock.patch.object(self.client.time, "monotonic", side_effect=[0] + [0] * 6 + [89]), \
+                mock.patch.object(self.client.time, "sleep") as sleep, \
+                mock.patch.object(self.client.random, "uniform", return_value=3), \
+                mock.patch.object(self.client.urllib.request, "build_opener") as opener:
+            opener.return_value.open.return_value = self.response(
+                403, {"error": {"code": "InsufficientAccessError"}})
+            with self.assertRaises(self.client.QueryError):
+                self.client.query(SUB, "print 1", token="fake")
+            sleep.assert_not_called()
+
+    def test_host_derivation_from_workspace_metadata(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(self.client.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout='["westus2"]')
+            self.assertEqual(self.client.query_host(SUB.upper(), subscription=SUB),
+                             "westus2.api.loganalytics.io")
+            self.assertIn(f"[?customerId=='{SUB}'].location", run.call_args.args[0])
+            self.assertIn("--subscription", run.call_args.args[0])
+
+    def test_explicit_host_and_location_and_arc_without_az(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(self.client.subprocess, "run") as run:
+            self.assertEqual(self.client.query_host(SUB, location="westus2", identity="arc"),
+                             "westus2.api.loganalytics.io")
+            self.assertEqual(self.client.query_host(SUB, host="eastus.api.loganalytics.io"),
+                             "eastus.api.loganalytics.io")
+            for host in ("evil.example", "https://westus2.api.loganalytics.io", "api.loganalytics.io/"):
+                with self.assertRaises(self.client.QueryError):
+                    self.client.query_host(SUB, host=host)
+            with self.assertRaises(self.client.QueryError):
+                self.client.query_host(SUB, identity="arc")
+            run.assert_not_called()
+
+    def test_ordered_hosts_then_global_and_one_extra_pass(self):
+        failure = self.response(403, {"error": {"code": "InsufficientAccessError"}})
+        result = self.run_query([failure] * 6 + [
+            self.response(200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual([x["host"] for x in result[1]],
+                         [f"{x}.api.loganalytics.io" for x in
+                          ("westus2", "westus", "eastus", "northcentralus", "westcentralus")]
+                         + ["api.loganalytics.io", "westus2.api.loganalytics.io"])
+        self.assertEqual(result[2:4], (7, 1))
+
+    def test_regional_dns_failure_falls_back_immediately(self):
+        error = self.client.urllib.error.URLError("connect failed")
+        result = self.run_query([error, self.response(
+            200, {"tables": [{"columns": [], "rows": []}]})])
+        self.assertEqual([x["host"] for x in result[1]],
+                         ["westus2.api.loganalytics.io", "westus.api.loganalytics.io"])
+        self.assertEqual(result[3], 0)
+
+    def test_configured_host_order_deduplicated_and_validated(self):
+        hosts = "eastus.api.loganalytics.io, westus.api.loganalytics.io,eastus.api.loganalytics.io"
+        with mock.patch.dict(os.environ, {"LOG_ANALYTICS_QUERY_HOSTS": hosts}):
+            self.assertEqual(self.client.query_hosts(SUB),
+                             ["eastus.api.loganalytics.io", "westus.api.loganalytics.io"])
+            self.assertEqual(self.client.query_hosts(SUB, hosts="api.loganalytics.io"),
+                             ["api.loganalytics.io"])
+        for hosts in ("", "westus.api.loganalytics.io,", "evil.example"):
+            with self.assertRaises(self.client.QueryError):
+                self.client.query_hosts(SUB, hosts=hosts)
+
+    def test_all_retryable_statuses_move_to_next_host(self):
+        for status in (403, 429, 500, 503):
+            with self.subTest(status=status):
+                result = self.run_query([
+                    self.response(status, {"error": {"code": "InsufficientAccessError"}}),
+                    self.response(200, {"tables": [{"columns": [], "rows": []}]})])
+                self.assertEqual([x["host"] for x in result[1]],
+                                 ["westus2.api.loganalytics.io", "westus.api.loganalytics.io"])
+                self.assertEqual(result[3], 0)
+
+
+class WorkbookValidation(unittest.TestCase):
+    def load_validator(self):
+        client_spec = importlib.util.spec_from_file_location(
+            "log_analytics", Path(HERE, "log_analytics.py"))
+        client = importlib.util.module_from_spec(client_spec)
+        client_spec.loader.exec_module(client)
+        spec = importlib.util.spec_from_file_location(
+            "workbook_validation", Path(HERE, "validate-boinc-workbook.py"))
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict("sys.modules", {"log_analytics": client}):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_exact_nine_queries_are_extracted_and_raw_messages_excluded(self):
+        validator = self.load_validator()
+        result = {"tables": [{"columns": [{"name": "Log_s"}, {"name": "Count"}],
+                              "rows": [["private log contents", 7]]}]}
+        positive = {"tables": [{"columns": [{"name": "QueryRouteControl"}], "rows": [[1]]}]}
+        with mock.patch("sys.argv", ["validator", "--workspace", SUB, "--location", "westus2"]), \
+                mock.patch.object(validator.log_analytics, "access_token", return_value="fake"), \
+                mock.patch.object(validator.log_analytics, "query",
+                                  side_effect=[(positive, [])] + [(result, [])] * 9) as query, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(validator.main(), 0)
+        receipt = json.loads(out.getvalue())
+        self.assertEqual(len(receipt["panels"]), 10)
+        self.assertEqual(query.call_count, 10)
+        self.assertNotIn("private log contents", out.getvalue())
+        self.assertEqual(receipt["panels"][1]["tables"][0]["rowCount"], 1)
+        source = json.loads(Path(ROOT, "infra/workbooks/boinc.json").read_text())
+        expected = [x["content"]["query"].replace("{TimeRange:grain}", "1h")
+                    for x in source["items"] if x["type"] == 3]
+        self.assertEqual([call.args[1] for call in query.call_args_list[1:]], expected)
+
+    def test_failure_is_not_zero_rows(self):
+        validator = self.load_validator()
+        with mock.patch("sys.argv", ["validator", "--workspace", SUB, "--location", "westus2"]), \
+                mock.patch.object(validator.log_analytics, "access_token", return_value="fake"), \
+                mock.patch.object(validator.log_analytics, "query",
+                                  side_effect=validator.log_analytics.QueryError("denied")), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(validator.main(), 1)
+        receipt = json.loads(out.getvalue())
+        self.assertTrue(all(row["status"] == "failed" and "tables" not in row
+                            for row in receipt["panels"]))
+
+
+class LogsCallerSubscriptions(unittest.TestCase):
+    def test_environment_shell_callers_forward_subscription(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("scripts/lib", "scripts/ja-ocr", "ops/queries", "bin"):
+                (root / name).mkdir(parents=True)
+            (root / "settings.env").write_text("fixture\n")
+            (root / "ops/queries/fixture.kql").write_text("print 1")
+            (root / "scripts/lib/env.sh").write_text(
+                'ENV_FILE=settings.env\n'
+                'aget() { case "$1" in AZURE_SUBSCRIPTION_ID) echo selected-subscription ;; '
+                '*) echo workspace-guid ;; esac; }\n')
+            stub = root / "bin/python3"
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CALLER_LOG"\n'
+                            'echo \'{"tables":[{"columns":[],"rows":[]}]}\'\n')
+            stub.chmod(0o755)
+            for script, args in (
+                ("logs.sh", ["--env", "prod", "--query-name", "fixture"]),
+                ("ja-ocr/quality-rows.sh", ["--env", "prod", "--execution",
+                                          "usnm-jaocr-caj-prod-fixture"])):
+                target = root / "scripts" / script
+                shutil.copy(Path(HERE, script), target)
+                log = root / "arguments"
+                result = subprocess.run(
+                    ["bash", str(target), *args], cwd=root, text=True, capture_output=True,
+                    env={**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
+                         "CALLER_LOG": str(log), "AZURE_SUBSCRIPTION_ID": "wrong-default"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                values = log.read_text().splitlines()
+                self.assertEqual(values[values.index("--subscription") + 1], "selected-subscription")
+
+    def test_cluster_report_forwards_selected_subscription(self):
+        spec = importlib.util.spec_from_file_location("cluster_report", Path(HERE, "qwcluster-report.py"))
+        report = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(report)
+        with mock.patch.object(report.subprocess, "run") as run:
+            run.return_value = mock.Mock(stdout='{"tables":[{"columns":[],"rows":[]}]}', stderr="")
+            report.log_query(SUB, "print 1", "P1D", "selected-subscription")
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("--subscription") + 1], "selected-subscription")
 
 
 class StartBridge(unittest.TestCase):
@@ -149,7 +640,7 @@ class StartBridge(unittest.TestCase):
         for flag in ("--env-vars", "--image", "--args", "--command", "--container-name"):
             self.assertNotIn(flag, start)
         order = [c.split(" ")[2] for c in self.calls() if c.startswith("containerapp job ")]
-        self.assertEqual(order, ["show", "execution", "update", "start", "execution"])
+        self.assertEqual(order, ["show", "execution", "update", "start", "execution", "execution"])
 
     def test_drops_a_previous_runs_settings(self):
         r = self.run_script("--step", "register-apps",
@@ -932,6 +1423,176 @@ class QualityCampaignCli(unittest.TestCase):
         for s in range(4):
             self.assertTrue((out_dir / "shards" / f"shard-s{s}.tar.gz").is_file())
 
+
+class CrossHostStartGuard(StartBridge):
+    # Reuse launcher fixtures; the remote lease is an atomic directory in the
+    # private test tree, shared by processes with different host-local locks.
+    def setUp(self):
+        super().setUp()
+        self.remote = Path(self.tmp, "remote")
+        self.remote.mkdir()
+        self.env["STUB_REMOTE_STATE"] = str(self.remote)
+        az = Path(self.tmp, "bin", "az")
+        az.write_text(r"""#!/usr/bin/env bash
+case "$*" in
+  "storage blob exists"*)
+    if [ -d "$STUB_REMOTE_STATE/blob" ]; then echo true; else echo false; fi
+    exit ;;
+  "storage blob upload"*)
+    printf '%s\n' "$*" >> "$STUB_LOG"
+    mkdir "$STUB_REMOTE_STATE/blob" || exit 9
+    [ -z "${STUB_UPLOAD_RACE:-}" ]; exit ;;
+  "storage blob lease acquire"*)
+    printf '%s\n' "$*" >> "$STUB_LOG"
+    mkdir "$STUB_REMOTE_STATE/held" 2>/dev/null; exit ;;
+  "storage blob lease release"*)
+    printf '%s\n' "$*" >> "$STUB_LOG"
+    [ -z "${STUB_RELEASE_FAILURE:-}" ] || exit 9
+    rmdir "$STUB_REMOTE_STATE/held"; exit ;;
+  "stack sub show"*)
+    [ -z "${STUB_NO_EXCHANGE:-}" ] || { echo '{}'; exit; } ;;
+  "containerapp job update"*)
+    [ -z "${STUB_UPDATE_FAILURE:-}" ] || exit 9 ;;
+  "containerapp job execution list"*)
+    if [ -n "${STUB_ACTIVE_VISIBLE:-}" ] && [ -f "$STUB_REMOTE_STATE/started" ]; then
+      printf '%s\n' "$*" >> "$STUB_LOG"
+      echo usnm-boinc-bridge-caj-prod-abc12
+      exit
+    fi ;;
+  "containerapp job start"*)
+    touch "$STUB_REMOTE_STATE/started"
+    [ -z "${STUB_START_FAILURE:-}" ] || exit 9
+    if [ -n "${STUB_PAUSE_START:-}" ]; then
+      touch "$STUB_REMOTE_STATE/starting"
+      while [ ! -f "$STUB_REMOTE_STATE/continue" ]; do sleep 0.02; done
+    fi ;;
+  "containerapp job execution show"*"--query properties.status"*)
+    [ -z "${STUB_STATUS_FAILURE:-}" ] || exit 9 ;;
+esac
+""" + STUB_AZ.partition("\n")[2])
+
+    def test_cross_host_lease_denies_second_starter_before_template_write(self):
+        first = subprocess.Popen(
+            [SCRIPT, "--env", "prod", "--step", "register-apps"], cwd=ROOT,
+            env={**self.env, "STUB_PAUSE_START": "1"},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 10
+            while not (self.remote / "starting").exists() and time.monotonic() < deadline:
+                self.assertIsNone(first.poll(), "first launcher exited before start barrier")
+                time.sleep(0.02)
+            self.assertTrue((self.remote / "starting").exists())
+            second = self.run_script("--step", "submit",
+                                     USNM_BOINC_LOCK_DIR=str(Path(self.tmp, "other-host.lock")))
+            self.assertEqual(second.returncode, 1, second.stderr)
+            self.assertIn("cross-host start guard", second.stderr)
+            self.assertEqual(sum(c.startswith("containerapp job update") for c in self.calls()), 1)
+            (self.remote / "continue").touch()
+            out, err = first.communicate(timeout=10)
+            self.assertEqual(first.returncode, 0, err)
+            self.assertIn("abc12", out)
+            self.assertFalse((self.remote / "held").exists())
+            self.assertFalse(Path(self.lock_dir).exists())
+        finally:
+            if first.poll() is None:
+                first.terminate()
+                first.communicate(timeout=10)
+
+    def test_busy_remote_lease_refuses_handoff_too(self):
+        (self.remote / "blob").mkdir()
+        (self.remote / "held").mkdir()
+        settings = Path(self.tmp, "settings", "prod")
+        settings.mkdir(parents=True)
+        (settings / ".env").write_text(
+            f'AZURE_SUBSCRIPTION_ID="{SUB}"\nAZURE_RESOURCE_GROUP="rg-prod"\n'
+            'BOINC_HANDOFF_JOB="handoff-prod"\n')
+        values = dict(AZURE_CLIENT_ID="client", HANDOFF_URL="https://exchangeprod.blob.core.windows.net/boinc-handoff",
+                      COSMOS_ENDPOINT="https://cosmos", CURATED_URL="https://curated",
+                      REFERENCE_URL="https://reference", OUT_URL="https://out")
+        tmpl = json.dumps({"containers": [{"name": "handoff", "env": [
+            {"name": k, "value": v} for k, v in values.items()]}]})
+        result = self.run_script("--target", "handoff", "--step", "collect",
+                                 STUB_TEMPLATE=tmpl, USNM_SETTINGS_HOME=str(settings.parent))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cross-host start guard", result.stderr)
+        self.assertFalse(any("job update" in c or "job start" in c for c in self.calls()))
+
+    def test_missing_storage_discovery_fails_closed(self):
+        result = self.run_script("--step", "register-apps", STUB_NO_EXCHANGE="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no OCR_EXCHANGE_ACCOUNT", result.stderr)
+        self.assertFalse(any("job update" in c or "job start" in c for c in self.calls()))
+        self.assertFalse(Path(self.lock_dir).exists())
+
+    def test_unknown_nonterminal_status_is_checked_before_update(self):
+        result = self.run_script("--step", "register-apps", STUB_RUNNING="pending-execution")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("still running pending-execution", result.stderr)
+        [query] = [c for c in self.calls() if c.startswith("containerapp job execution list")]
+        self.assertIn("properties.status!='Succeeded'", query)
+        self.assertNotIn("status=='Running'", query)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_ambiguous_update_start_and_failed_readback_retain_remote_lease(self):
+        for failure in ({"STUB_UPDATE_FAILURE": "1"}, {"STUB_START_FAILURE": "1"},
+                        {"STUB_STATUS_FAILURE": "1"},
+                        {"STUB_EXEC_ENV": '[{"name":"BRIDGE_STEP","value":"wrong"}]'}):
+            with self.subTest(failure=failure):
+                result = self.run_script("--step", "register-apps", **failure)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("lease retained", result.stderr)
+                self.assertTrue((self.remote / "held").exists())
+                self.assertFalse(Path(self.lock_dir).exists())
+                self.assertFalse(list(Path(ROOT).glob(".boinc-start-*")))
+                (self.remote / "held").rmdir()  # Test-only operator reconciliation.
+
+    def test_simultaneous_marker_creation_is_safe(self):
+        result = self.run_script("--step", "register-apps", STUB_UPLOAD_RACE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [upload] = [c for c in self.calls() if c.startswith("storage blob upload")]
+        self.assertIn("--overwrite false", upload)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_unobservable_execution_times_out_without_unlocking(self):
+        clock = Path(self.tmp, "bin", "date")
+        clock.write_text('#!/usr/bin/env bash\n'
+                         'if [ -f "$STUB_REMOTE_STATE/clock" ]; then echo 121; '
+                         'else touch "$STUB_REMOTE_STATE/clock"; echo 0; fi\n')
+        clock.chmod(0o755)
+        result = self.run_script("--step", "register-apps", STUB_EXEC_STATUS="Running")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("start visibility is uncertain", result.stderr)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertFalse(Path(self.lock_dir).exists())
+
+    def test_active_execution_is_visible_before_unlocking_without_wait(self):
+        result = self.run_script("--step", "register-apps", STUB_EXEC_STATUS="Running",
+                                 STUB_ACTIVE_VISIBLE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        lists = [i for i, c in enumerate(calls) if c.startswith("containerapp job execution list")]
+        release = next(i for i, c in enumerate(calls) if c.startswith("storage blob lease release"))
+        self.assertEqual(len(lists), 2)
+        self.assertLess(lists[-1], release)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_release_failure_is_reported_and_local_mutex_is_cleaned(self):
+        result = self.run_script("--step", "register-apps", STUB_RELEASE_FAILURE="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("lease release failed", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertFalse(Path(self.lock_dir).exists())
+
+    def test_controller_lease_is_never_recursively_acquired(self):
+        result = self.run_script("--step", "register-apps")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lease_calls = [c for c in self.calls() if c.startswith("storage blob lease")]
+        self.assertEqual(len(lease_calls), 2)
+        self.assertTrue(all("scheduler/starts/" in c for c in lease_calls))
+        self.assertFalse(any("scheduler/controller.lock" in c for c in lease_calls))
+        self.assertIn("--lease-duration -1", lease_calls[0])
+        self.assertFalse(list(Path(ROOT).glob(".boinc-start-*")))
 
 if __name__ == "__main__":
     unittest.main()

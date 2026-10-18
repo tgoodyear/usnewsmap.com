@@ -103,8 +103,6 @@ jobs:
         options: >-
           --health-cmd="mysqladmin ping --silent"
           --health-interval=5s --health-timeout=5s --health-retries=30
-    env:
-      BICEP_VERSION: v0.47.16
     defaults:
       run:
         working-directory: contrib-compute
@@ -157,6 +155,7 @@ jobs:
           python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
           python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
+          python3 -m unittest -v scripts/boinc/test_patch_server_intel_proc_type.py
           python3 -m unittest -v scripts/boinc/test_patch_server_gold_routing.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
           python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
@@ -164,10 +163,8 @@ jobs:
         working-directory: .
         run: scripts/ci/install-bicep.sh
       - name: Bicep builds
-        run: |
-          for f in $(git ls-files 'infra/*.bicep'); do
-            bicep build "$f" --stdout > /dev/null
-          done
+        working-directory: .
+        run: scripts/ci/build-bicep.sh
 
   # The BOINC project's web pages: a PHP syntax check, no image build.
   boinc-pages:
@@ -194,6 +191,20 @@ jobs:
       - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py
       - run: shellcheck -x -S warning scripts/boinc/check-db-tls.sh
       - run: scripts/boinc/check-db-tls.sh
+
+  boinc-mysql84-db-tls:
+    name: BOINC actual database TLS (private MySQL 8.4)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py scripts/boinc/test_mysql84_db_tls.py
+      - run: shellcheck -x -S warning scripts/boinc/check-mysql84-db-tls.sh
+      - run: scripts/boinc/check-mysql84-db-tls.sh
 
   boinc-node-client:
     name: BOINC stable node client (EL9 build, no host installation)
@@ -612,8 +623,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    env:
-      BICEP_VERSION: v0.47.16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -631,7 +640,7 @@ jobs:
       - name: changes.sh runs the Quickwit job only for what its tests build
         run: python3 -m unittest -v scripts/ci/test_changes.py
       - name: The bounded local corpus catalog's tests pass
-        run: python3 -m unittest -v scripts/test_data_catalog.py
+        run: python3 -m unittest -v scripts/test_data_catalog.py scripts/test_scan_cache_inventory.py scripts/test_worker_evidence_sync.py
       - name: Read-only corpus flow observations preserve scope and freshness
         run: python3 -m unittest -v scripts/test_data_flow_observer.py
       - name: Pinned model downloads retry TLS failures without bypassing verification
@@ -696,10 +705,8 @@ jobs:
           scripts/ci/check-workbooks.py
           scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
           python3 -m unittest -v scripts/ci/test_check_workbooks.py
-      - run: bicep build infra/main.bicep --stdout > /dev/null
-      - run: bicep build infra/guardrails.bicep --stdout > /dev/null
-      - run: bicep build infra/archive/main.bicep --stdout > /dev/null
-      - run: bicep build infra/settings/main.bicep --stdout > /dev/null
+      - name: Build every Bicep template
+        run: scripts/ci/build-bicep.sh
       # The parameters bootstrap deploys the stack with (settings from the
       # environment; unset ones take their defaults). The VNet block has no
       # default; this sample is from RFC 5737's documentation range.

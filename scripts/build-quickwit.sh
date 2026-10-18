@@ -38,6 +38,9 @@ done
 [ -n "$TARGET" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/acr-build.sh
+. scripts/lib/acr-build.sh
+quickwit_az() { az "$@" --subscription "$SUB"; }
 command -v jq > /dev/null || die "jq is needed to record the digest"
 PINS=infra/quickwit-image.json
 DOCKERFILE=Dockerfile.quickwit-patched
@@ -101,9 +104,9 @@ else
   ctx=$(mktemp -d)
   trap 'rm -rf "$ctx"' EXIT
   cp "$DOCKERFILE" "$ctx/Dockerfile"
-  echo "building $REPO:$tag in $ACR (about an hour; the log follows)"
-  az acr build -r "$ACR" --subscription "$SUB" -t "$REPO:$tag" \
-    --platform linux/amd64 --timeout 28800 "$ctx"
+  echo "building $REPO:$tag in $ACR (about an hour; polling ACR run status)"
+  acr_build_verified quickwit_az "$ACR" "$REPO:$tag" 28800 \
+    --platform linux/amd64 "$ctx"
 fi
 digest=$(az acr repository show -n "$ACR" --subscription "$SUB" --image "$REPO:$tag" --query digest -o tsv)
 [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "no digest for $REPO:$tag in $ACR"

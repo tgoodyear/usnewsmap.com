@@ -4,10 +4,11 @@
 
 American Stories (Dell et al. 2023, arXiv:2308.12477; CC BY 4.0) is a re-OCR
 of Chronicling America: one JSON file per scan in one tarball per year on
-Hugging Face. This streams each year once (nothing is kept on disk), places
-every scan on our page by its file name (american_stories.parse and place:
-the page in the name, or the image's place in the issue for "pNone"
-scans), and writes one row per page to
+Hugging Face. This streams each year twice (nothing is kept on disk), first
+to resolve scan identity using american_stories.place, then for text. Repeated
+page labels and unnumbered scans require authoritative LoC issue images;
+unresolved scan names/physical keys are retained in american-stories/unresolved/<year>.json,
+not silently deduplicated or assigned guessed sequences. It writes one row per resolved page to
 
     american-stories/pages/<lccn>/<year>-<nnn>.parquet
 
@@ -131,7 +132,7 @@ class Parts:
         self.held -= len(rows)
         n = self.numbers.get(lccn, 0)
         self.numbers[lccn] = n + 1
-        schema = pa.schema([("doc_id", pa.string()), ("lccn", pa.string()), ("date", pa.date32()),
+        schema = pa.schema([("scan_key", pa.string()), ("source_name", pa.string()), ("doc_id", pa.string()), ("lccn", pa.string()), ("date", pa.date32()),
                             ("text", pa.large_string()), ("articles", pa.large_string()),
                             ("legibility", pa.string()), ("width", pa.int32()), ("height", pa.int32())])
         buf = io.BytesIO()
@@ -147,44 +148,46 @@ class Parts:
 
 def write_year(curated, year: int, opener=None, keep=lambda: None) -> dict:
     """Stream one year and write its pages; the year's counts."""
-    names: list[str] = []
-    seen: set[str] = set()
-    unnumbered: list[tuple[str, dict]] = []  # placed once every name of the year is known
+    placement_path = f"{PREFIX}/placements/{year}.json"
+    if curated.exists(placement_path):
+        placement = json.loads(curated.read(placement_path))
+        if placement.get("identity_version") != 2:
+            raise ValueError(f"unsupported American Stories placement: {placement_path}")
+    else:
+        names: list[str] = []
+        with ams.tar_stream(year, opener) as tar:
+            for member in tar:
+                keep()
+                if member.isfile() and member.name.endswith(".json"):
+                    names.append(member.name)
+        unresolved: list[dict] = []
+        ids, stats = ams.place(names, ams.issue_lookup(), unresolved, keep)
+        placement = {"identity_version": 2, "ids": ids, "unresolved_scans": unresolved,
+                     "counts": {"scans": len(names), **stats}}
+        # Freeze placement BEFORE any text parts: retries/resumes must not change
+        # part boundaries when LoC metadata availability changes between attempts.
+        curated.write(placement_path, json.dumps(placement, sort_keys=True).encode())
+    ids = placement["ids"]
+    unresolved = placement["unresolved_scans"]
     parts = Parts(curated, year)
-    counts = {"scans": 0, "unparsed": 0, "duplicates": 0, "page_from_image": 0}
+    written: set[str] = set()
     with ams.tar_stream(year, opener) as tar:
         for member in tar:
             keep()
-            if not (member.isfile() and member.name.endswith(".json")):
+            doc_id = ids.get(member.name) if member.isfile() else None
+            if doc_id is None or doc_id in written:
                 continue
-            names.append(member.name)
-            counts["scans"] += 1
-            got = ams.parse(member.name)
-            if got is None:
-                counts["unparsed"] += 1
-                continue
-            lccn, day, ed, _image, page = got
-            row = {"lccn": lccn, "date": date.fromisoformat(day), **page_row(json.load(tar.extractfile(member)))}
-            if page is None:
-                unnumbered.append((member.name, row))
-                continue
-            doc_id = f"{lccn}_{day}_ed-{ed}_seq-{page}"
-            if doc_id in seen:
-                counts["duplicates"] += 1
-                continue
-            seen.add(doc_id)
-            parts.add({"doc_id": doc_id, **row})
-    ids, _ = ams.place(names)
-    for name, row in unnumbered:
-        doc_id = ids.get(name)
-        if doc_id is None or doc_id in seen:
-            counts["duplicates"] += 1
-            continue
-        seen.add(doc_id)
-        counts["page_from_image"] += 1
-        parts.add({"doc_id": doc_id, **row})
+            lccn, day, _ed, _image, _page = ams.parse(member.name)
+            row = {"doc_id": doc_id, "lccn": lccn, "date": date.fromisoformat(day),
+                   "scan_key": json.dumps(ams.scan_key(member.name), separators=(",", ":")),
+                   "source_name": member.name, **page_row(json.load(tar.extractfile(member)))}
+            parts.add(row)
+            written.add(doc_id)
+    if written != set(ids.values()):
+        raise ValueError(f"American Stories {year} archive no longer matches its frozen placement")
     parts.flush_all()
-    return {**counts, **parts.written}
+    curated.write(f"{PREFIX}/unresolved/{year}.json", json.dumps(unresolved, sort_keys=True).encode())
+    return {**placement["counts"], **parts.written, "identity_version": 2}
 
 
 def write_year_retrying(curated, year: int, opener=None, keep=lambda: None) -> dict:

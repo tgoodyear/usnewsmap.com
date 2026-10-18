@@ -1179,6 +1179,8 @@ output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 // The workspace's customer id, for the Log Analytics query API (scripts/logs.sh).
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceCustomerId
+output LOG_ANALYTICS_QUERY_HOST string = monitoring.outputs.logAnalyticsQueryHost
+output LOG_ANALYTICS_QUERY_HOSTS string = join(monitoring.outputs.logAnalyticsQueryHosts, ',')
 output OCR_ENDPOINT string = ocr ? ocrService!.outputs.endpoint : ''
 // The search cluster's apps, bench job and root URL (inside the environment); empty when off.
 output SEARCH_CLUSTER_APPS string = searchClusterOn ? join(searchClusterModule!.outputs.nodeApps, ' ') : ''

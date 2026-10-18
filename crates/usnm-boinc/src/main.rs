@@ -61,6 +61,13 @@ enum Commands {
         #[arg(long, default_value = "/work")]
         dir: PathBuf,
     },
+    /// Publish a page on the local producer; this is NOT public readiness proof.
+    PrepareDownload {
+        #[arg(long)]
+        page: PathBuf,
+        #[arg(long)]
+        download_root: PathBuf,
+    },
     /// Stage and submit one reserved job with stock create_work.
     Submit {
         #[arg(long)]
@@ -69,6 +76,12 @@ enum Commands {
         project: PathBuf,
         #[arg(long)]
         job: String,
+        /// Public HTTPS prefix serving immutable content-addressed page bytes.
+        #[arg(long)]
+        download_base_url: Option<String>,
+        /// Existing local directory mapped to download-base-url (no symlinks).
+        #[arg(long, requires = "download_base_url")]
+        download_root: Option<PathBuf>,
     },
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile {
@@ -1152,8 +1165,33 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Work { dir } => usnm_boinc::worker::run(&dir).await?,
-        Commands::Submit { root, project, job } => {
-            usnm_boinc::submit::submit(&root, &project, &job).await?
+        Commands::PrepareDownload {
+            page,
+            download_root,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string(&usnm_boinc::submit::prepare_download(
+                    &page,
+                    &download_root
+                )?)?
+            );
+        }
+        Commands::Submit {
+            root,
+            project,
+            job,
+            download_base_url,
+            download_root,
+        } => {
+            let download = match (download_base_url, download_root) {
+                (Some(base), Some(root)) => Some(usnm_boinc::submit::Download::new(&base, &root)?),
+                (Some(base), None) => Some(usnm_boinc::submit::Download::remote(&base)?),
+                (None, None) => None,
+                (None, Some(_)) => anyhow::bail!("download-root requires download-base-url"),
+            };
+            usnm_boinc::submit::submit_with_download(&root, &project, &job, download.as_ref())
+                .await?
         }
         Commands::Reconcile { root, job, found } => {
             usnm_boinc::submit::reconcile(&root, &job, matches!(found, Found::Present))?

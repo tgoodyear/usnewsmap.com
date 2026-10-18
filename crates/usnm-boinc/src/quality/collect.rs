@@ -263,6 +263,18 @@ pub struct PageRow {
     pub content_total: usize,
     pub places_found: usize,
     pub places_total: usize,
+    pub cer_vs_loc: Option<f64>,
+    pub wer_vs_loc: Option<f64>,
+    pub dice_vs_loc: Option<f64>,
+    pub word_ratio_vs_loc: Option<f64>,
+    pub damage_rate: Option<f64>,
+    pub function_share: Option<f64>,
+    pub garbage_share: Option<f64>,
+    pub head_words: Option<u64>,
+    pub near_words: Option<u64>,
+    pub known_words: Option<u64>,
+    pub detected_lang: Option<String>,
+    pub lang_decision: Option<String>,
     pub pairs_json: String,
     pub hat_determined: Option<bool>,
     pub hat_residual: Option<f64>,
@@ -287,54 +299,132 @@ pub struct PageRow {
     pub with_readings: bool,
 }
 
+fn loc_pair_metrics(
+    x: &usnm_ocr_contract::quality::ReaderReport,
+) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
+    if x.name == "loc" || x.name == "loc-hist" {
+        return (
+            Some(0.0),
+            Some(0.0),
+            Some(1.0),
+            (x.words > 0).then_some(1.0),
+        );
+    }
+    if let Some(p) = x.pairs.get("loc").or_else(|| x.pairs.get("loc-hist")) {
+        let ratio = (p.words_b > 0).then(|| round6(p.words_a as f64 / p.words_b as f64));
+        (Some(p.cer_a), Some(p.wer_a), Some(p.dice), ratio)
+    } else {
+        (None, None, None, None)
+    }
+}
+
+/// Enriches `PageRow` entries with intrinsic single-reader lexical and garbage
+/// damage metrics (`usnm_core::damage`) computed from each reader's text in `texts`.
+pub fn enrich_rows_with_damage(rows: &mut [PageRow], texts: &Texts, loc_fallback: Option<&str>) {
+    for row in rows {
+        let mut text_opt = texts
+            .readers
+            .iter()
+            .find(|r| r.name == row.reader)
+            .map(|r| r.text.as_str());
+        if (row.reader == "loc" || row.reader == "loc-hist")
+            && text_opt.is_none_or(|t| t.trim().is_empty() || t.trim().eq_ignore_ascii_case("none"))
+        {
+            if let Some(fb) = loc_fallback {
+                text_opt = Some(fb);
+            }
+        }
+        let Some(text) = text_opt else {
+            continue;
+        };
+        let marc = usnm_core::lang::iso3_to_marc(&row.language).unwrap_or(row.language.as_str());
+        let iso3 = usnm_core::lang::marc_to_iso3(&row.language).unwrap_or(row.language.as_str());
+        let scored = usnm_core::damage::score(text, &[marc]);
+        let forced = usnm_core::damage::score_forced(text, iso3);
+        row.damage_rate = forced
+            .and_then(|f| f.damage_rate)
+            .or(scored.damage_rate)
+            .map(round6);
+        row.function_share = forced
+            .and_then(|f| f.function_share)
+            .or(scored.function_share)
+            .map(round6);
+        row.garbage_share = scored.garbage_share.map(round6);
+        row.head_words = forced
+            .map(|f| f.damage.head)
+            .or_else(|| scored.damage.map(|d| d.head));
+        row.near_words = forced
+            .map(|f| f.damage.near)
+            .or_else(|| scored.damage.map(|d| d.near));
+        row.known_words = forced.map(|f| f.known_words);
+        row.detected_lang = Some(scored.lang);
+        row.lang_decision = Some(scored.decision.as_str().to_owned());
+    }
+}
+
 /// The rows of `pages.parquet` for one result.
 pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<PageRow> {
     let img = r.page.as_ref().and_then(|p| p.image.as_ref());
     let lay = r.page.as_ref().and_then(|p| p.layout.as_ref());
     r.readers
         .iter()
-        .map(|x| PageRow {
-            doc_id: job.doc_id.clone(),
-            group: job.group.clone(),
-            language: job.language.clone(),
-            job_id: job.id.clone(),
-            outcome: format!("{:?}", r.outcome).to_lowercase(),
-            reader: x.name.clone(),
-            source: x.source.clone(),
-            chars: x.chars,
-            words: x.words,
-            est_cer: x.est_cer,
-            est_cer_raw: x.est_cer_raw,
-            completeness: x.completeness,
-            precision: x.precision,
-            findable_content: x.findable_content,
-            findable_places: x.findable_places,
-            content_found: x.content_found,
-            content_total: x.content_total,
-            places_found: x.places_found,
-            places_total: x.places_total,
-            pairs_json: serde_json::to_string(&x.pairs).unwrap_or_default(),
-            hat_determined: r.hat.as_ref().map(|h| h.determined),
-            hat_residual: r.hat.as_ref().and_then(|h| h.residual),
-            legibility_ceiling: r.legibility.as_ref().and_then(|l| l.ceiling_est),
-            consensus_words: r.legibility.as_ref().map(|l| l.consensus_words),
-            width: img.map(|i| i.width),
-            height: img.map(|i| i.height),
-            skew_deg: img.map(|i| i.skew_deg),
-            blur: img.map(|i| i.blur),
-            contrast: img.map(|i| i.contrast),
-            noise: img.map(|i| i.noise),
-            bleed_through: img.map(|i| i.bleed_through),
-            ink_density: img.map(|i| i.ink_density),
-            blocks: lay.map(|l| l.blocks),
-            lines: lay.map(|l| l.lines),
-            line_words: lay.map(|l| l.words),
-            line_height_px: lay.and_then(|l| l.line_height_px),
-            columns: lay.map(|l| l.columns),
-            mean_word_conf: lay.and_then(|l| l.mean_word_conf),
-            total_ms: r.timings.total_ms,
-            plan_class: r.host.plan_class.clone(),
-            with_readings,
+        .map(|x| {
+            let (cer_vs_loc, wer_vs_loc, dice_vs_loc, word_ratio_vs_loc) = loc_pair_metrics(x);
+            PageRow {
+                doc_id: job.doc_id.clone(),
+                group: job.group.clone(),
+                language: job.language.clone(),
+                job_id: job.id.clone(),
+                outcome: format!("{:?}", r.outcome).to_lowercase(),
+                reader: x.name.clone(),
+                source: x.source.clone(),
+                chars: x.chars,
+                words: x.words,
+                est_cer: x.est_cer,
+                est_cer_raw: x.est_cer_raw,
+                completeness: x.completeness,
+                precision: x.precision,
+                findable_content: x.findable_content,
+                findable_places: x.findable_places,
+                content_found: x.content_found,
+                content_total: x.content_total,
+                places_found: x.places_found,
+                places_total: x.places_total,
+                cer_vs_loc,
+                wer_vs_loc,
+                dice_vs_loc,
+                word_ratio_vs_loc,
+                damage_rate: None,
+                function_share: None,
+                garbage_share: None,
+                head_words: None,
+                near_words: None,
+                known_words: None,
+                detected_lang: None,
+                lang_decision: None,
+                pairs_json: serde_json::to_string(&x.pairs).unwrap_or_default(),
+                hat_determined: r.hat.as_ref().map(|h| h.determined),
+                hat_residual: r.hat.as_ref().and_then(|h| h.residual),
+                legibility_ceiling: r.legibility.as_ref().and_then(|l| l.ceiling_est),
+                consensus_words: r.legibility.as_ref().map(|l| l.consensus_words),
+                width: img.map(|i| i.width),
+                height: img.map(|i| i.height),
+                skew_deg: img.map(|i| i.skew_deg),
+                blur: img.map(|i| i.blur),
+                contrast: img.map(|i| i.contrast),
+                noise: img.map(|i| i.noise),
+                bleed_through: img.map(|i| i.bleed_through),
+                ink_density: img.map(|i| i.ink_density),
+                blocks: lay.map(|l| l.blocks),
+                lines: lay.map(|l| l.lines),
+                line_words: lay.map(|l| l.words),
+                line_height_px: lay.and_then(|l| l.line_height_px),
+                columns: lay.map(|l| l.columns),
+                mean_word_conf: lay.and_then(|l| l.mean_word_conf),
+                total_ms: r.timings.total_ms,
+                plan_class: r.host.plan_class.clone(),
+                with_readings,
+            }
         })
         .collect()
 }
@@ -351,48 +441,63 @@ pub fn bundle_page_rows(
     let lay = pr.page.as_ref().and_then(|p| p.layout.as_ref());
     pr.readers
         .iter()
-        .map(|x| PageRow {
-            doc_id: bp.doc_id.clone(),
-            group: bp.group.clone(),
-            language: bp.language.clone(),
-            job_id: job.id.clone(),
-            outcome: format!("{:?}", pr.outcome).to_lowercase(),
-            reader: x.name.clone(),
-            source: x.source.clone(),
-            chars: x.chars,
-            words: x.words,
-            est_cer: x.est_cer,
-            est_cer_raw: x.est_cer_raw,
-            completeness: x.completeness,
-            precision: x.precision,
-            findable_content: x.findable_content,
-            findable_places: x.findable_places,
-            content_found: x.content_found,
-            content_total: x.content_total,
-            places_found: x.places_found,
-            places_total: x.places_total,
-            pairs_json: serde_json::to_string(&x.pairs).unwrap_or_default(),
-            hat_determined: pr.hat.as_ref().map(|h| h.determined),
-            hat_residual: pr.hat.as_ref().and_then(|h| h.residual),
-            legibility_ceiling: pr.legibility.as_ref().and_then(|l| l.ceiling_est),
-            consensus_words: pr.legibility.as_ref().map(|l| l.consensus_words),
-            width: img.map(|i| i.width),
-            height: img.map(|i| i.height),
-            skew_deg: img.map(|i| i.skew_deg),
-            blur: img.map(|i| i.blur),
-            contrast: img.map(|i| i.contrast),
-            noise: img.map(|i| i.noise),
-            bleed_through: img.map(|i| i.bleed_through),
-            ink_density: img.map(|i| i.ink_density),
-            blocks: lay.map(|l| l.blocks),
-            lines: lay.map(|l| l.lines),
-            line_words: lay.map(|l| l.words),
-            line_height_px: lay.and_then(|l| l.line_height_px),
-            columns: lay.map(|l| l.columns),
-            mean_word_conf: lay.and_then(|l| l.mean_word_conf),
-            total_ms: pr.timings.total_ms,
-            plan_class: plan_class.clone(),
-            with_readings,
+        .map(|x| {
+            let (cer_vs_loc, wer_vs_loc, dice_vs_loc, word_ratio_vs_loc) = loc_pair_metrics(x);
+            PageRow {
+                doc_id: bp.doc_id.clone(),
+                group: bp.group.clone(),
+                language: bp.language.clone(),
+                job_id: job.id.clone(),
+                outcome: format!("{:?}", pr.outcome).to_lowercase(),
+                reader: x.name.clone(),
+                source: x.source.clone(),
+                chars: x.chars,
+                words: x.words,
+                est_cer: x.est_cer,
+                est_cer_raw: x.est_cer_raw,
+                completeness: x.completeness,
+                precision: x.precision,
+                findable_content: x.findable_content,
+                findable_places: x.findable_places,
+                content_found: x.content_found,
+                content_total: x.content_total,
+                places_found: x.places_found,
+                places_total: x.places_total,
+                cer_vs_loc,
+                wer_vs_loc,
+                dice_vs_loc,
+                word_ratio_vs_loc,
+                damage_rate: None,
+                function_share: None,
+                garbage_share: None,
+                head_words: None,
+                near_words: None,
+                known_words: None,
+                detected_lang: None,
+                lang_decision: None,
+                pairs_json: serde_json::to_string(&x.pairs).unwrap_or_default(),
+                hat_determined: pr.hat.as_ref().map(|h| h.determined),
+                hat_residual: pr.hat.as_ref().and_then(|h| h.residual),
+                legibility_ceiling: pr.legibility.as_ref().and_then(|l| l.ceiling_est),
+                consensus_words: pr.legibility.as_ref().map(|l| l.consensus_words),
+                width: img.map(|i| i.width),
+                height: img.map(|i| i.height),
+                skew_deg: img.map(|i| i.skew_deg),
+                blur: img.map(|i| i.blur),
+                contrast: img.map(|i| i.contrast),
+                noise: img.map(|i| i.noise),
+                bleed_through: img.map(|i| i.bleed_through),
+                ink_density: img.map(|i| i.ink_density),
+                blocks: lay.map(|l| l.blocks),
+                lines: lay.map(|l| l.lines),
+                line_words: lay.map(|l| l.words),
+                line_height_px: lay.and_then(|l| l.line_height_px),
+                columns: lay.map(|l| l.columns),
+                mean_word_conf: lay.and_then(|l| l.mean_word_conf),
+                total_ms: pr.timings.total_ms,
+                plan_class: plan_class.clone(),
+                with_readings,
+            }
         })
         .collect()
 }
@@ -701,7 +806,14 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             if readings.is_some() {
                 summary.with_readings += 1;
             }
-            pages.extend(page_rows(&job, &got.result, readings.is_some()));
+            let texts_opt: Option<Texts> = read(&unit.join(TEXTS_FILE), MAX_TEXTS)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok());
+            let mut unit_rows = page_rows(&job, &got.result, readings.is_some());
+            if let Some(ref texts) = texts_opt {
+                enrich_rows_with_damage(&mut unit_rows, texts, None);
+            }
+            pages.extend(unit_rows);
             if let Some(q) = q {
                 let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
                 let (w, h) = image::load_from_memory(&page)
@@ -721,8 +833,10 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 } else {
                     None
                 };
-                let texts: Texts =
-                    serde_json::from_slice(&read(&unit.join(TEXTS_FILE), MAX_TEXTS)?)?;
+                let texts = match texts_opt {
+                    Some(t) => t,
+                    None => serde_json::from_slice(&read(&unit.join(TEXTS_FILE), MAX_TEXTS)?)?,
+                };
                 let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
                 crop_table.extend(crop_rows(&CropInputs {
                     doc_id: &job.doc_id,
@@ -757,13 +871,19 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 if readings.is_some() {
                     summary.with_readings += 1;
                 }
-                pages.extend(bundle_page_rows(
+                let mut unit_rows = bundle_page_rows(
                     &job,
                     bp,
                     pr,
                     got.result.host.plan_class.clone(),
                     readings.is_some(),
-                ));
+                );
+                if let Ok(t_bytes) = bp.inputs.texts.extract(&bundle_texts, "texts") {
+                    if let Ok(page_texts) = serde_json::from_slice::<Texts>(t_bytes) {
+                        enrich_rows_with_damage(&mut unit_rows, &page_texts, None);
+                    }
+                }
+                pages.extend(unit_rows);
                 if let Some(q) = q {
                     let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
                     let a_bytes = bp.inputs.alto.extract(&bundle_alto, "alto")?;
@@ -969,5 +1089,36 @@ mod tests {
         assert!(rows.iter().all(|r| r.vlm_text.is_none()));
         assert!(overlaps([0, 0, 10, 10], [5, 5, 20, 20]));
         assert!(!overlaps([0, 0, 10, 10], [10, 0, 20, 20]));
+    }
+
+    #[test]
+    fn page_rows_enrich_lexical_damage_and_loc_pairwise_metrics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut job = crate::quality::work::tests::unit(tmp.path());
+        let l = crate::quality::work::prepare(tmp.path()).unwrap();
+        let c = crate::quality::work::compute(&crate::quality::work::Inputs {
+            job: &job,
+            page: &l.page,
+            alto: &l.alto,
+            texts: &l.texts,
+            places: &l.places,
+        })
+        .unwrap();
+        job.language = "eng".into();
+        let mut rows = page_rows(&job, &c.result, false);
+        enrich_rows_with_damage(&mut rows, &l.texts, None);
+        let loc_row = rows.iter().find(|r| r.reader == "loc").unwrap();
+        assert_eq!(loc_row.cer_vs_loc, Some(0.0));
+        assert_eq!(loc_row.dice_vs_loc, Some(1.0));
+        assert_eq!(loc_row.word_ratio_vs_loc, Some(1.0));
+        assert!(loc_row.function_share.is_some());
+        assert!(loc_row.garbage_share.is_some());
+        let ours_row = rows.iter().find(|r| r.reader == "ours-tesseract").unwrap();
+        assert!(ours_row.cer_vs_loc.is_some());
+        assert!(ours_row.wer_vs_loc.is_some());
+        assert!(ours_row.dice_vs_loc.is_some());
+        assert!(ours_row.word_ratio_vs_loc.is_some());
+        assert!(ours_row.function_share.is_some());
+        assert!(ours_row.known_words.is_some());
     }
 }

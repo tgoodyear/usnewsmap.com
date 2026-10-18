@@ -15,6 +15,9 @@ case "$*" in
   "account show"*) echo "$STUB_SUB" ;;
   "group show"*) ;;
   "identity list"*) echo '[{"name":"usnm-boinc-id-prod","principalId":"11111111-1111-1111-1111-111111111111"},{"name":"usnm-boinc-secrets-id-prod","principalId":"22222222-2222-2222-2222-222222222222"}]' ;;
+  "stack sub show"*) echo '{"OCR_EXCHANGE_ACCOUNT":{"value":"exchangeprod"}}' ;;
+  "storage blob exists"*) echo true ;;
+  "storage blob lease acquire"* | "storage blob lease release"*) ;;
   "stack group show"*) echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"}}' ;;
   "containerapp env certificate list"*) echo Succeeded ;;
   "stack-whatif group create"*"--help"*) ;;
@@ -59,6 +62,7 @@ class Provision(unittest.TestCase):
         self.env = {
             **os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
             "STUB_LOG": str(self.log), "STUB_SUB": SUB,
+            "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
             "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
                            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
         }
@@ -87,6 +91,35 @@ class Provision(unittest.TestCase):
         result = self.run_script(STUB_PREVIEW_STATUS="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(call.startswith("stack group create") for call in self.calls()))
+
+    def test_workbook_smoke_serializes_hosts_and_preserves_operator_override(self):
+        script = (ROOT / "scripts/provision-boinc.sh").read_text()
+        smoke = script[script.index("workspace=$(baz monitor log-analytics workspace list"):]
+        setup = """
+set -eu
+BOINC_RG=fixture SUBSCRIPTION=fixture
+baz() { echo fixture; }
+boinc_workdir() { echo "$FIXTURE_DIR"; }
+boinc_output() {
+  if [ "$1" = logAnalyticsQueryHosts ]; then
+    echo '["westus.api.loganalytics.io","eastus.api.loganalytics.io"]'
+  else echo westus2.api.loganalytics.io; fi
+}
+python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; echo '{}'; }
+"""
+        for override in (None, "eastus.api.loganalytics.io", ""):
+            env = {**self.env, "FIXTURE_DIR": self.tmp.name}
+            env.pop("LOG_ANALYTICS_QUERY_HOSTS", None)
+            if override is not None:
+                env["LOG_ANALYTICS_QUERY_HOSTS"] = override
+            result = subprocess.run(["bash", "-c", setup + smoke], cwd=ROOT,
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((Path(self.tmp.name) / "hosts").read_text(),
+                             override if override is not None else
+                             "westus.api.loganalytics.io,eastus.api.loganalytics.io")
+        self.assertIn("output LOG_ANALYTICS_QUERY_HOSTS string = join(",
+                      (ROOT / "infra/main.bicep").read_text())
 
     def test_automates_lifecycle_in_order_and_checks_public_configuration(self):
         result = self.run_script()

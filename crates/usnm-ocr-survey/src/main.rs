@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use usnm_ocr_survey::{bundle, score};
+use usnm_ocr_survey::{bench, bundle, qwen_bench, score};
 
 #[derive(Parser)]
 #[command(
@@ -62,6 +62,97 @@ enum Commands {
         /// Where a tar is unpacked (default: a temporary directory).
         #[arg(long)]
         work: Option<PathBuf>,
+    },
+    /// Builds an OCR benchmark release (#738) from its spec, input inventory and input root, then
+    /// verifies it. Prints the release's entry for ocr/bench/releases.json.
+    BenchBuild {
+        /// ocr/bench/<release>/spec.json
+        #[arg(long)]
+        spec: PathBuf,
+        /// ocr/bench/<release>/inputs.sha256: every input file and its sha256.
+        #[arg(long)]
+        inventory: PathBuf,
+        /// The directory the inventory's paths are relative to.
+        #[arg(long)]
+        inputs: PathBuf,
+        /// Where the release directory and its tar are written.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verifies a benchmark release directory or tar: SHA256SUMS, the manifest's rules and the
+    /// example scores; with --index, also its entry in ocr/bench/releases.json.
+    BenchVerify {
+        #[arg(long)]
+        release: PathBuf,
+        #[arg(long)]
+        index: Option<PathBuf>,
+        /// Where a tar is unpacked (default: a temporary directory).
+        #[arg(long)]
+        work: Option<PathBuf>,
+    },
+    /// Lists a subset's samples as JSONL (id, image path and sha256) for an engine runner.
+    BenchSelect {
+        /// A verified release directory.
+        #[arg(long)]
+        release: PathBuf,
+        #[arg(long)]
+        subset: String,
+        /// Also list each reference's path. Keep references out of model prompts.
+        #[arg(long)]
+        with_references: bool,
+    },
+    /// Scores engine outputs (JSONL rows {"id", "text"}) on a subset; missing outputs are counted.
+    BenchScore {
+        /// A verified release directory.
+        #[arg(long)]
+        release: PathBuf,
+        #[arg(long)]
+        subset: String,
+        #[arg(long)]
+        outputs: PathBuf,
+        /// legacy-ws-v1 (the Iris pilot's whitespace-collapsed CER) or raw-v1.
+        #[arg(long, default_value = "legacy-ws-v1")]
+        rule: String,
+        /// Write the per-sample report here; stdout gets the totals.
+        #[arg(long)]
+        report: Option<PathBuf>,
+    },
+    /// Writes usnm_qwen slots (qwen.json, bundled page.jpg, weights.lock) for a benchmark subset,
+    /// so a host can read the exact crops with the production app outside BOINC (#787).
+    QwenBenchStage {
+        /// A verified release directory.
+        #[arg(long)]
+        release: PathBuf,
+        #[arg(long)]
+        subset: String,
+        /// JSON Engine (image, llama and weights digests) with exactly one model.
+        #[arg(long)]
+        engine: PathBuf,
+        /// ocr/boinc/qwen/weights.lock, copied into each slot.
+        #[arg(long)]
+        weights_lock: PathBuf,
+        #[arg(long, default_value_t = 25)]
+        pages_per_slot: usize,
+        #[arg(long, default_value_t = 14400)]
+        timeout_secs: u32,
+        /// The plan class written to each slot's init_data.xml (e.g. intel_vulkan_8b); the app
+        /// picks its device from it.
+        #[arg(long)]
+        plan_class: String,
+        /// The gpu_type for init_data.xml (e.g. intel_gpu, NVIDIA); omit for CPU classes.
+        #[arg(long)]
+        gpu_type: Option<String>,
+        /// A new directory for the slots.
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Reads the slots' readings into bench-score outputs (JSONL) and prints a timing summary.
+    QwenBenchCollect {
+        #[arg(long)]
+        root: PathBuf,
+        /// Where the outputs JSONL is written.
+        #[arg(long)]
+        outputs: PathBuf,
     },
     /// Downloads the original files a bundle refers to into a cache, checking each sha256.
     BundleStage {
@@ -174,6 +265,101 @@ async fn main() -> anyhow::Result<()> {
                     "verified": true,
                 })
             );
+        }
+        Commands::BenchBuild {
+            spec,
+            inventory,
+            inputs,
+            out,
+        } => {
+            let b = bench::build(&bench::BuildOptions {
+                spec,
+                inventory,
+                inputs,
+                out,
+            })?;
+            eprintln!("built {} and {}", b.dir.display(), b.archive.display());
+            println!("{}", serde_json::to_string_pretty(&b.index)?);
+        }
+        Commands::BenchVerify {
+            release,
+            index,
+            work,
+        } => {
+            let tmp = tempfile::tempdir()?;
+            let dir = if release.is_file() {
+                bench::unpack(&release, work.as_deref().unwrap_or(tmp.path()))?
+            } else {
+                release
+            };
+            let v = bench::verify(&dir)?;
+            if let Some(index) = index {
+                let idx: serde_json::Value = serde_json::from_slice(&std::fs::read(&index)?)
+                    .context("parsing the release index")?;
+                bench::check_index(&idx, &v, &bench::load(&dir)?)?;
+            }
+            println!("{}", serde_json::to_string(&v)?);
+        }
+        Commands::BenchSelect {
+            release,
+            subset,
+            with_references,
+        } => {
+            let m = bench::load(&release)?;
+            for row in bench::select(&release, &m, &subset, with_references)? {
+                println!("{}", serde_json::to_string(&row)?);
+            }
+        }
+        Commands::BenchScore {
+            release,
+            subset,
+            outputs,
+            rule,
+            report,
+        } => {
+            let m = bench::load(&release)?;
+            let outputs = bench::read_outputs(&std::fs::read_to_string(&outputs)?)?;
+            let (_, r) = bench::score(&release, &m, &subset, &outputs, &rule)?;
+            if let Some(p) = report {
+                std::fs::write(&p, serde_json::to_string_pretty(&r)? + "\n")?;
+            }
+            let mut totals = r;
+            totals.as_object_mut().map(|o| o.remove("rows"));
+            println!("{}", serde_json::to_string_pretty(&totals)?);
+        }
+        Commands::QwenBenchStage {
+            release,
+            subset,
+            engine,
+            weights_lock,
+            pages_per_slot,
+            timeout_secs,
+            plan_class,
+            gpu_type,
+            root,
+        } => {
+            let engine = serde_json::from_slice(&std::fs::read(&engine)?)
+                .context("parsing the engine JSON")?;
+            let s = qwen_bench::stage(&qwen_bench::StageOptions {
+                release,
+                subset,
+                engine,
+                weights_lock,
+                pages_per_slot,
+                timeout_secs,
+                plan_class,
+                gpu_type,
+                root,
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({"samples": s.crops.len(), "slots": s.slots.keys().collect::<Vec<_>>()})
+            );
+        }
+        Commands::QwenBenchCollect { root, outputs } => {
+            let (text, summary) = qwen_bench::collect(&root)?;
+            std::fs::write(&outputs, text)?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::BundleStage {
             bundle: dir,
