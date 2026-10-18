@@ -1187,7 +1187,8 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
                     "--server-status-file", str(status_path),
                 ]), 0)
             self.assertEqual(mock_tick.call_args.kwargs["max_global_pending"], 800)
-            self.assertEqual(mock_tick.call_args.kwargs["server_status"]["apps"]["usnm_qwen"]["unsent"], 456)
+            transport_arg = mock_tick.call_args.args[2]
+            self.assertEqual(transport_arg.server_status()["apps"]["usnm_qwen"]["unsent"], 456)
         finally:
             for item in directory.iterdir():
                 item.unlink()
@@ -1290,6 +1291,113 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
                 with self.assertRaisesRegex(batch.ConfigError, "only dispatches usnm_ocr"):
                     batch.resolve_watermarks({**self.config, "app": bad_app},
                                              self.fake.inventory())
+
+    def test_missing_or_aggregate_only_status_conservatively_uses_sql_backlog(self):
+        # Regression for comment 4309021102: when explicit watermarks enable cohort_mode without
+        # per-app status (or with aggregate-only status / status omitting usnm_ocr), unattributed
+        # SQL workunits in pending_workunits must be counted conservatively toward cohort_pending.
+        aggregate_only_xml = (
+            "<server_status><database_file_states>"
+            "<results_ready_to_send>3</results_ready_to_send>"
+            "<results_in_progress>0</results_in_progress>"
+            "</database_file_states></server_status>"
+        )
+        omitting_ocr_xml = (
+            "<server_status><database_file_states>"
+            "<results_ready_to_send>3</results_ready_to_send>"
+            "<results_in_progress>0</results_in_progress>"
+            "<tasks_by_app><app><name>usnm_qwen</name><unsent>0</unsent><in_progress>0</in_progress></app></tasks_by_app>"
+            "</database_file_states></server_status>"
+        )
+        for label, status_input in (
+            ("missing_status", None),
+            ("aggregate_only_xml", aggregate_only_xml),
+            ("omitting_ocr_xml", omitting_ocr_xml),
+        ):
+            with self.subTest(case=label):
+                self.setUp()
+                self.fake.other = 3
+                # With low=1, high=4 and 3 unattributed workunits in SQL, cohort_pending=3 enters
+                # hysteresis and admits 0 pages (not 2).
+                held_by_hysteresis = self.tick(
+                    low_watermark=1, high_watermark=4, max_global_pending=10,
+                    server_status=status_input,
+                )
+                self.assertEqual(held_by_hysteresis["cohort_pending"], 3)
+                self.assertEqual(held_by_hysteresis["other_app_pending"], 0)
+                self.assertEqual(held_by_hysteresis["selected"], 0)
+                self.assertEqual(len(self.fake.jobs), 0)
+
+                # With low=3, high=4 and 3 unattributed workunits in SQL, cohort_pending=3 admits
+                # only 1 page (not batch_size=2) to reach high=4.
+                refilled_one = self.tick(
+                    low_watermark=3, high_watermark=4, max_global_pending=10,
+                    server_status=status_input,
+                )
+                self.assertEqual(refilled_one["cohort_pending"], 3)
+                self.assertEqual(refilled_one["selected"], 1)
+                self.assertEqual(len(self.fake.jobs), 1)
+
+    def test_healthy_ocr_queue_with_zero_work_replies_does_not_alert(self):
+        # Regression for comment 4309021122: when usnm_ocr has a healthy queue (unsent=3,
+        # in_progress=1, low_watermark=1), zero-work scheduler replies (e.g. from earlier or
+        # another app/incompatible host) must not trigger zero_work_starvation.
+        self.fake.other = 228
+        self.fake.scheduler_log = (
+            "2026-10-17 19:09:01 [PID=12] Sending reply to [HOST#8]: 0 results\n"
+            "2026-10-17 19:09:01 [PID=12] No tasks sent\n"
+            "2026-10-17 19:09:15 [PID=14] Got 0 new tasks\n"
+        )
+        healthy_xml = status_xml(ocr_unsent=3, ocr_in_progress=1, qwen_unsent=456)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                          server_status=healthy_xml)
+        self.assertEqual(event["zero_work_requests"], 3)
+        self.assertFalse(event["starvation_alert"])
+        self.assertEqual(event["alerts"], [])
+
+    def test_status_failure_does_not_prevent_drain_collection(self):
+        # Regression for comment 4309021131: --apply --drain with an unavailable or malformed
+        # server status file/endpoint must still collect available results and succeed.
+        self.tick(low_watermark=1, high_watermark=4, max_global_pending=10)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+
+        directory = Path(__file__).parent.resolve() / (".drain-status-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            cfg_path = directory / "config.json"
+            cfg_path.write_text(json.dumps(self.config))
+            bad_status = directory / "corrupt_status.xml"
+            bad_status.write_text("<!DOCTYPE html><broken")
+            batch.save(directory / "state.json", {
+                "config_sha256": batch.digest(self.config),
+                **self.state,
+            })
+
+            def fake_transport(cfg, state_dir, *, status_url=None, status_file=None):
+                self.fake.lock = lambda: contextlib.nullcontext()
+                self.fake.server_status = lambda: batch.Transport(
+                    cfg, state_dir, status_url=status_url, status_file=status_file,
+                ).server_status()
+                return self.fake
+
+            out = io.StringIO()
+            with patch.object(batch, "Transport", side_effect=fake_transport), \
+                    patch.object(batch.time, "time", return_value=NOW), \
+                    contextlib.redirect_stdout(out):
+                rc = batch.main([
+                    "--config", str(cfg_path), "--state-dir", str(directory),
+                    "--apply", "--drain", "--server-status-file", str(bad_status),
+                ])
+            self.assertEqual(rc, 0)
+            drained = json.loads(out.getvalue())
+            self.assertTrue(drained["draining"])
+            self.assertEqual(drained["published"], 2)
+            self.assertEqual(drained["newly_published"], 2)
+        finally:
+            for item in directory.iterdir():
+                item.unlink()
+            directory.rmdir()
 
 
 if __name__ == "__main__":

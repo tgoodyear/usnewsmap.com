@@ -341,9 +341,11 @@ class ClaimFailed(RuntimeError):
 
 
 class Transport:
-    def __init__(self, config, directory):
+    def __init__(self, config, directory, *, status_url=None, status_file=None):
         self.config = config
         self.directory = directory
+        self.status_url = status_url
+        self.status_file = status_file
 
     def run(self, argv, label, timeout=2100, ok=(0,)):
         try:
@@ -521,10 +523,14 @@ class Transport:
         self.step("handoff", "collect", JOB_ID=job_id)
 
     def server_status(self, url=None, path=None):
+        path = self.status_file if path is None else path
         if path is not None:
-            raw = Path(path).read_bytes()
+            try:
+                raw = Path(path).read_bytes()
+            except OSError as error:
+                raise RuntimeError("server status file read failed; inspect the path privately") from error
             return parse_server_status(raw)
-        target_url = url or self.config.get("server_status_url")
+        target_url = url or self.status_url or self.config.get("server_status_url")
         if not target_url:
             return None
         _validate_status_url(target_url)
@@ -734,24 +740,29 @@ def resolve_watermarks(config, snapshot, status=None, *,
     }
 
 
-def _extract_status(snapshot, transport, server_status=None):
-    raw = server_status
-    if raw is None:
-        for key in ("server_status", "server_status_xml"):
-            if snapshot.get(key) is not None:
-                raw = snapshot[key]
-                break
-        if raw is None and ("apps" in snapshot or "tasks_by_app" in snapshot):
-            raw = snapshot
-    if raw is None:
-        xml_attr = getattr(transport, "server_status_xml", None)
-        if xml_attr is not None:
-            raw = xml_attr() if callable(xml_attr) else xml_attr
-    if raw is None:
-        status_attr = getattr(transport, "server_status", None)
-        if status_attr is not None:
-            raw = status_attr() if callable(status_attr) else status_attr
-    return parse_server_status(raw) if raw is not None else None
+def _extract_status(snapshot, transport, server_status=None, *, drain=False):
+    try:
+        raw = server_status() if callable(server_status) else server_status
+        if raw is None:
+            for key in ("server_status", "server_status_xml"):
+                if snapshot.get(key) is not None:
+                    raw = snapshot[key]
+                    break
+            if raw is None and ("apps" in snapshot or "tasks_by_app" in snapshot):
+                raw = snapshot
+        if raw is None:
+            xml_attr = getattr(transport, "server_status_xml", None)
+            if xml_attr is not None:
+                raw = xml_attr() if callable(xml_attr) else xml_attr
+        if raw is None:
+            status_attr = getattr(transport, "server_status", None)
+            if status_attr is not None:
+                raw = status_attr() if callable(status_attr) else status_attr
+        return parse_server_status(raw) if raw is not None else None
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError):
+        if drain:
+            return None
+        raise
 
 
 def tick(config, state, transport, persist, now=None, *, drain=False,
@@ -813,7 +824,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         owned = owned_records(config, records)
     require(not any(record["stage"] == "failed" for record in owned.values()),
             "terminal BOINC failure; no replacement workload will be manufactured")
-    status = _extract_status(snapshot, transport, server_status=server_status)
+    status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
     cohort_info = resolve_watermarks(
         config, snapshot, status,
         low_watermark=low_watermark, high_watermark=high_watermark,
@@ -832,22 +843,27 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         for record in records
     )
     missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned]
-    if status is not None:
-        app_counts = status["apps"].get(ocr_app, {"unsent": 0, "in_progress": 0, "runnable": 0})
+    global_in_flight = max(snapshot["pending_workunits"], len(pending_jobs))
+    has_ocr_attribution = status is not None and ocr_app in status["apps"]
+    if has_ocr_attribution:
+        app_counts = status["apps"][ocr_app]
         ocr_unsent = app_counts["unsent"]
         ocr_in_progress = app_counts["in_progress"]
         ocr_status_results = app_counts["runnable"]
         other_status_results = sum(
             item["runnable"] for name, item in status["apps"].items() if name != ocr_app
         )
+        ocr_in_flight = min(global_in_flight, max(len(pending_jobs), ocr_status_results))
     else:
-        ocr_unsent = len(pending_jobs)
+        ocr_unsent = global_in_flight
         ocr_in_progress = 0
-        ocr_status_results = len(pending_jobs)
-        other_status_results = max(0, snapshot["pending_workunits"] - len(pending_jobs))
+        ocr_status_results = global_in_flight
+        other_status_results = sum(
+            item["runnable"] for name, item in (status["apps"].items() if status is not None else ())
+            if name != ocr_app
+        )
+        ocr_in_flight = global_in_flight
 
-    global_in_flight = max(snapshot["pending_workunits"], len(pending_jobs))
-    ocr_in_flight = min(global_in_flight, max(len(pending_jobs), ocr_status_results))
     other_pending = max(0, global_in_flight - ocr_in_flight)
     cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
     global_pending = global_in_flight + uncollected_not_pending + len(missing)
@@ -954,10 +970,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         parse_zero_work_replies(getattr(transport, "zero_work_requests", None)),
         parse_zero_work_replies(getattr(transport, "scheduler_log", None)),
     )
-    effective_unsent = ocr_unsent if status is not None else len(pending_jobs)
+    effective_unsent = ocr_unsent if has_ocr_attribution else global_in_flight
+    cohort_queue_empty_or_low = (effective_unsent == 0 or cohort_pending <= low_target)
     starvation_alert = bool(
-        (active_hosts > 0 and (effective_unsent == 0 or cohort_pending <= low_target)) or
-        zero_work_requests > 0
+        cohort_queue_empty_or_low and (active_hosts > 0 or zero_work_requests > 0)
     )
     alerts = [{
         "code": "zero_work_starvation" if zero_work_requests > 0 else "cohort_starvation",
@@ -1083,7 +1099,10 @@ def main(argv=None):
             state = json.loads(path.read_text()) if path.exists() else {"config_sha256": digest(config)}
             require(state["config_sha256"] == digest(config),
                     "immutable allocation changed; drain/reconcile before an operator migration")
-            transport = Transport(config, args.state_dir)
+            transport = Transport(
+                config, args.state_dir,
+                status_url=args.server_status_url, status_file=args.server_status_file,
+            )
             tick_kwargs = {"drain": args.drain}
             if args.low_watermark is not None:
                 tick_kwargs["low_watermark"] = args.low_watermark
@@ -1091,10 +1110,6 @@ def main(argv=None):
                 tick_kwargs["high_watermark"] = args.high_watermark
             if args.max_global_pending is not None:
                 tick_kwargs["max_global_pending"] = args.max_global_pending
-            if args.server_status_file is not None or args.server_status_url is not None:
-                tick_kwargs["server_status"] = transport.server_status(
-                    url=args.server_status_url, path=args.server_status_file,
-                )
             with transport.lock():
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             print(json.dumps(event, sort_keys=True))
