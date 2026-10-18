@@ -86,7 +86,9 @@ interfaces; this pipeline does not copy their logs into its receipts.
 
 State must live below this checkout's ignored `target/`. The private directory
 contains atomically written `state.json`, a process lock, managed Git worktrees,
-and #548 evidence. Keep it between invocations. State binds the complete pipeline
+and #548 evidence. Keep it between invocations. The successful acceptance receipt
+is checksum-bound to state and revalidated even when resuming a completed run;
+missing or altered evidence cannot produce another complete claim. State binds the complete pipeline
 config and acceptance-config checksum; changing either cannot silently resume an
 old run. It records phase intent **before** side effects and commits successful
 completion **after** gates pass. A completed phase is not rerun. The state lock

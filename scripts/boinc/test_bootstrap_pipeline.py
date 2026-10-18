@@ -109,7 +109,7 @@ class PipelineTests(unittest.TestCase):
             actions.append(phase)
             if phase == "review-runtime" and actions.count(phase) == 1:
                 raise pipeline.Blocked("review pending")
-        with patch.object(self.p, "preflight"), patch.object(self.p, "phase", side_effect=action):
+        with patch.object(self.p, "preflight"), patch.object(self.p, "receipt"), patch.object(self.p, "phase", side_effect=action):
             with self.assertRaises(pipeline.Blocked):
                 self.p.execute()
             self.assertEqual(self.p.state["status"], "blocked")
@@ -130,7 +130,7 @@ class PipelineTests(unittest.TestCase):
                     self.p.execute()
                 action.assert_not_called()
         self.args.approve_retry = "base"
-        with patch.object(self.p, "preflight"), patch.object(self.p, "phase"):
+        with patch.object(self.p, "preflight"), patch.object(self.p, "receipt"), patch.object(self.p, "phase"):
             self.assertTrue(self.p.execute()["complete"])
 
     def test_running_intent_after_crash_requires_approval(self):
@@ -357,6 +357,22 @@ if '--dry-run' not in args:
         self.assertEqual(self.p.state["done"], list(pipeline.PHASES))
         self.assertEqual(len(created), 2)
         self.assertTrue(json.loads((self.directory / "acceptance.json").read_text())["accepted"])
+
+    def test_completed_run_revalidates_immutable_durable_evidence(self):
+        value = {"accepted": True, "cleanup_complete": True, "release": {
+            "app": "usnm_ocr", "version_num": 100, "platform": self.config["platform"], "plan_class": "docker"}}
+        evidence = self.directory / "acceptance.json"
+        evidence.write_text(json.dumps(value))
+        self.p.state["acceptance_sha256"] = self.p.receipt()
+        self.p.state["done"] = list(pipeline.PHASES)
+        with patch.object(self.p, "preflight"):
+            self.assertTrue(self.p.execute()["complete"])
+            evidence.write_text(json.dumps({**value, "unexpected": "changed"}))
+            with self.assertRaisesRegex(pipeline.PipelineError, "changed after completion"):
+                self.p.execute()
+            evidence.unlink()
+            with self.assertRaisesRegex(pipeline.PipelineError, "missing or unreadable"):
+                self.p.execute()
 
     def test_subprocess_preserves_git_porcelain_leading_columns(self):
         process = Mock(returncode=0)

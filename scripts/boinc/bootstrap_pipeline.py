@@ -188,12 +188,24 @@ class Pipeline:
             argv.extend(["--coordination-claim", self.args.coordination_claim])
         self.run(argv, cwd=work)
         if not dry_run:
-            evidence = json.loads((self.directory / "acceptance.json").read_text())
-            major, minor = self.config["version"].split(".")
-            release = {"app": self.config["app"], "version_num": int(major) * 100 + int(minor),
-                       "platform": self.config["platform"], "plan_class": self.config["plan_class"]}
-            if evidence.get("accepted") is not True or evidence.get("cleanup_complete") is not True or evidence.get("release") != release:
-                raise PipelineError("canonical acceptance or cleanup evidence failed")
+            self.state["acceptance_sha256"] = self.receipt()
+            self.save()
+
+    def receipt(self):
+        try:
+            raw = (self.directory / "acceptance.json").read_bytes()
+            evidence = json.loads(raw)
+        except (OSError, ValueError) as exc:
+            raise PipelineError("durable acceptance evidence missing or unreadable") from exc
+        major, minor = self.config["version"].split(".")
+        release = {"app": self.config["app"], "version_num": int(major) * 100 + int(minor),
+                   "platform": self.config["platform"], "plan_class": self.config["plan_class"]}
+        if evidence.get("accepted") is not True or evidence.get("cleanup_complete") is not True or evidence.get("release") != release:
+            raise PipelineError("canonical acceptance or cleanup evidence failed")
+        digest = hashlib.sha256(raw).hexdigest()
+        if self.state.get("acceptance_sha256", digest) != digest:
+            raise PipelineError("durable acceptance evidence changed after completion")
+        return digest
 
     def worker(self, work):
         workflow = "boinc-qwen.yml" if self.config["app"] == "usnm_qwen" else "boinc-worker.yml"
@@ -368,6 +380,7 @@ class Pipeline:
             self.state["done"].append(phase)
             self.state.update(active=None, status="ready")
             self.save()
+        self.receipt()
         return {"complete": True, "evidence": str(self.directory / "acceptance.json")}
 
 
