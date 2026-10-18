@@ -111,6 +111,7 @@
   "preprocessor_version": "1.0.0",
   "preprocessor_commit": "940773e0810bb166155c0d5cc47a8027a25d9531",
   "preprocessor_license": "Apache-2.0",
+  "preprocessor_provenance_status": "upstream installation identity unverified; executable hash was not captured for this completed run",
   "preprocessing_wall_seconds": 1.192,
   "segmentation_wall_seconds": 0.111,
   "calamari_version": "2.3.1",

@@ -9,6 +9,7 @@ from importlib.metadata import version as package_version
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -16,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
+
+
+EXPECTED_MODEL_TREE_SHA256 = "c8d3b6e7819f8300e308016bf4e959fdaefd71836ee3b9d7d2f164ca9412d628"
 
 
 def sha256(path: Path) -> str:
@@ -86,6 +90,18 @@ def run() -> None:
             model_files.append({"path": path.relative_to(checkpoint_dir).as_posix(), "sha256": sha256(path)})
     if not model_files or any(not (checkpoint_dir / f"{voter}.ckpt.json").is_file() for voter in range(5)):
         raise SystemExit("expected the five-voter fraktur_historical checkpoint")
+    model_tree = "".join(f"{row['path']} {row['sha256']}\n" for row in model_files).encode()
+    model_tree_sha256 = hashlib.sha256(model_tree).hexdigest()
+    if model_tree_sha256 != EXPECTED_MODEL_TREE_SHA256:
+        raise SystemExit(
+            f"model tree digest mismatch: expected {EXPECTED_MODEL_TREE_SHA256}, got {model_tree_sha256}"
+        )
+
+    nlbin_executable = shutil.which(args.nlbin)
+    if nlbin_executable is None:
+        raise SystemExit(f"nlbin executable not found: {args.nlbin}")
+    nlbin_path = Path(nlbin_executable).resolve()
+    nlbin_executable_sha256 = sha256(nlbin_path)
 
     for sample_id in member_ids:
         sample = samples[sample_id]
@@ -251,7 +267,6 @@ def run() -> None:
         "".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in outputs),
         encoding="utf-8",
     )
-    model_tree = "".join(f"{row['path']} {row['sha256']}\n" for row in model_files).encode()
     write_json(
         out_dir / "run.json",
         {
@@ -267,13 +282,16 @@ def run() -> None:
             "model_training_data": "GT4HistOCR",
             "model_training_data_license": "CC BY 4.0",
             "engine_license": "GPL-3.0",
-            "model_tree_sha256": hashlib.sha256(model_tree).hexdigest(),
+            "model_tree_sha256": model_tree_sha256,
             "model_files": model_files,
             "benchmark_source_licenses": manifest["sources"][samples[member_ids[0]]["source"]],
             "preprocessor": "jahtz/nlbin",
             "preprocessor_version": "1.0.0",
             "preprocessor_commit": "940773e0810bb166155c0d5cc47a8027a25d9531",
             "preprocessor_license": "Apache-2.0",
+            "preprocessor_provenance_status": "upstream installation identity unverified; executable hash recorded only",
+            "preprocessor_executable_name": nlbin_path.name,
+            "preprocessor_executable_sha256": nlbin_executable_sha256,
             "preprocessing_wall_seconds": round(preprocessing_wall_seconds, 3),
             "segmentation_wall_seconds": round(segmentation_wall_seconds, 3),
             "calamari_version": package_version("calamari-ocr"),
