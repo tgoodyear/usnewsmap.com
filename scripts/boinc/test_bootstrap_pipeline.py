@@ -40,11 +40,14 @@ class PipelineTests(unittest.TestCase):
                                        approve_retry=None, coordination_claim="https://github.com/tgoodyear/usnewsmap.com/issues/529#issuecomment-123")
         self.runner = Mock(return_value="")
         self.p = pipeline.Pipeline(self.args, self.config, "identity", self.runner)
+        self.p.has_open_findings = Mock(return_value=False)
         self.work = self.directory / "work"
         self.work.mkdir()
         self.file = self.work / self.p.settings
         self.file.parent.mkdir(parents=True)
         self.file.write_text(json.dumps(settings()))
+        self.p.state["workspaces"].update({label: {"path": str(self.work), "commit": "reviewed-source"}
+                                           for label in ("artifacts", "signing")})
 
     def test_configuration_rejects_missing_or_unknown_inputs(self):
         for change in ({"env": "wrong"}, {"signing_host": "-unsafe"}, {"version": "1.001"},
@@ -144,15 +147,27 @@ class PipelineTests(unittest.TestCase):
             action.assert_not_called()
 
     def test_base_skips_existing_resources_and_never_clears_pins(self):
-        with patch.object(self.p, "workspace", return_value=self.work), patch.object(self.p, "script") as script:
+        with patch.object(self.p, "workspace", return_value=self.work), patch.object(self.p, "assert_main_settings"), patch.object(self.p, "script") as script:
             self.p.phase("base")
         script.assert_not_called()
         value = settings()
         value["images"]["server"] = value["images"]["bridge"] = ""
         self.file.write_text(json.dumps(value))
-        with patch.object(self.p, "workspace", return_value=self.work), patch.object(self.p, "script") as script:
+        with patch.object(self.p, "workspace", return_value=self.work), patch.object(self.p, "assert_main_settings"), patch.object(self.p, "script") as script:
             self.p.phase("base")
         script.assert_called_once_with(self.work, "provision-boinc.sh")
+
+    def test_base_and_server_reject_clean_but_unreviewed_settings_on_resume(self):
+        reviewed = settings()
+        reviewed["images"]["server"] = reviewed["images"]["bridge"] = ""
+        changed = json.loads(json.dumps(reviewed))
+        changed["projectUrl"] = "https://unreviewed.invalid/"
+        self.file.write_text(json.dumps(changed))
+        for phase in ("base", "server"):
+            with patch.object(self.p, "workspace", return_value=self.work), patch.object(self.p, "main", return_value="main"), patch.object(self.p, "git", return_value=json.dumps(reviewed)), patch.object(self.p, "script") as script:
+                with self.assertRaisesRegex(pipeline.PipelineError, "settings differ from reviewed main"):
+                    self.p.phase(phase)
+                script.assert_not_called()
 
     def test_all_lifecycle_commands_reject_dirty_workspace(self):
         with patch.object(self.p, "git", return_value=" M unreviewed.bicep"):
@@ -229,11 +244,12 @@ class PipelineTests(unittest.TestCase):
         return ""
 
     def test_review_opens_pr_then_blocks_without_auto_merge(self):
-        with patch.object(self.p, "git", side_effect=self.review_git) as git, patch.object(self.p, "gh", side_effect=["[]", "created"]) as gh:
+        with patch.object(self.p, "git", side_effect=self.review_git) as git, patch.object(self.p, "gh", side_effect=["[]", "created", "requested"]) as gh:
             with self.assertRaisesRegex(pipeline.Blocked, "PR created"):
                 self.p.review("runtime", self.work, ("server", "bridge", "worker"))
         self.assertTrue(any(c.args[0] == "push" for c in git.call_args_list))
-        self.assertEqual(gh.call_args.args[:2], ("pr", "create"))
+        self.assertTrue(any(c.args[:2] == ("pr", "create") for c in gh.call_args_list))
+        self.assertEqual(gh.call_args.args[:2], ("pr", "edit"))
         self.assertFalse(any("merge" in c.args for c in gh.call_args_list))
 
     def test_merged_review_verifies_pins_without_recreating_deleted_branch(self):
@@ -241,6 +257,34 @@ class PipelineTests(unittest.TestCase):
             self.p.review("runtime", self.work, ("server", "bridge", "worker"))
         self.assertEqual(self.p.state["reviews"]["runtime"]["pr"], 99)
         self.assertFalse(any(c.args[0] == "push" for c in git.call_args_list))
+
+    def test_review_policy_accepts_exact_head_green_blue_or_approval_not_stale_yellow(self):
+        head = "a" * 40
+        for body, expected in (("### 🟢 Approval recommended", True), ("### 🔵 Needs a closer look", True), ("### 🟡 Changes recommended", False)):
+            value = dict(reviewDecision="", headRefOid=head, reviews=[dict(author=dict(login="copilot-pull-request-reviewer"), state="COMMENTED", commit=dict(oid=head), body=body)])
+            self.assertEqual(pipeline.approved_review(value), expected)
+            value["reviews"][0]["commit"]["oid"] = "b" * 40
+            self.assertFalse(pipeline.approved_review(value))
+        value = dict(reviewDecision="", headRefOid=head, reviews=[dict(author=dict(login="maintainer"), state="APPROVED", commit=dict(oid=head))])
+        self.assertTrue(pipeline.approved_review(value))
+        value["reviews"].append(dict(author=dict(login="maintainer"), state="CHANGES_REQUESTED", commit=dict(oid=head)))
+        self.assertFalse(pipeline.approved_review(value))
+
+    def test_findings_query_fails_closed_on_unresolved_or_paginated_threads(self):
+        for nodes, more, expected in (([], False, False), ([{"isResolved": True}], False, False),
+                                      ([{"isResolved": False}], False, True), ([], True, True)):
+            self.runner.return_value = json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "nodes": nodes, "pageInfo": {"hasNextPage": more}}}}}})
+            self.assertEqual(pipeline.Pipeline.has_open_findings(self.p, 99), expected)
+        argv = self.runner.call_args.args[0]
+        self.assertEqual(argv[:3], ["gh", "api", "graphql"])
+        self.assertNotIn("-R", argv)
+
+    def test_merged_review_with_unresolved_findings_blocks(self):
+        self.p.has_open_findings.return_value = True
+        with patch.object(self.p, "git", side_effect=self.review_git), patch.object(self.p, "gh", side_effect=['[{"number": 99, "state": "MERGED"}]', json.dumps({"baseRefName": "main", "reviewDecision": "APPROVED", "statusCheckRollup": [{"conclusion": "SUCCESS"}]})]):
+            with self.assertRaisesRegex(pipeline.Blocked, "unresolved findings"):
+                self.p.review("runtime", self.work, ("server", "bridge", "worker"))
 
     def test_merged_without_approval_or_green_ci_never_promotes(self):
         for changes in ({"reviewDecision": "REVIEW_REQUIRED"}, {"baseRefName": "dev"},
@@ -328,6 +372,7 @@ if '--dry-run' not in args:
         git("add", ".")
         git("commit", "-m", "offline fixture")
         self.p.run = pipeline.run
+        self.p.state["workspaces"] = {}
         dispatched = False
         created = {}
         def gh(*argv):
@@ -351,6 +396,8 @@ if '--dry-run' not in args:
                 created[branch] = len(created) + 1
                 git("merge", "--ff-only", branch)
                 return "fake PR created and independently approved/merged"
+            if argv[:2] == ("pr", "edit"):
+                return "review requested"
             if argv[:2] == ("pr", "view"):
                 return json.dumps(dict(baseRefName="main", reviewDecision="APPROVED", statusCheckRollup=[dict(conclusion="SUCCESS")]))
             self.fail("unexpected external command: " + str(argv))

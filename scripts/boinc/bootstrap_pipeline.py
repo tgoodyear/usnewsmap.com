@@ -115,6 +115,27 @@ def check_images(images, keys):
             raise PipelineError("missing immutable " + key + " artifact")
 
 
+def approved_review(value):
+    latest = {}
+    for review in value.get("reviews") or []:
+        if review["state"] != "COMMENTED" or review["author"]["login"] == "copilot-pull-request-reviewer":
+            latest[review["author"]["login"]] = review
+    if any(r["state"] == "CHANGES_REQUESTED" for r in latest.values()):
+        return False
+    if value.get("reviewDecision") == "APPROVED":
+        return True
+    head = value.get("headRefOid")
+    for author, review in latest.items():
+        if not head or review.get("commit", {}).get("oid") != head:
+            continue
+        if review["state"] == "APPROVED":
+            return True
+        if author == "copilot-pull-request-reviewer" and re.search(
+                r"^### (?:🟢 Approval recommended|🔵 Needs a closer look)$", review.get("body", ""), re.MULTILINE):
+            return True
+    return False
+
+
 class Pipeline:
     def __init__(self, args, config, identity, runner=run):
         self.args, self.config, self.identity, self.run = args, config, identity, runner
@@ -292,7 +313,8 @@ class Pipeline:
     def review(self, label, work, keys):
         settings = self.read_settings(work)
         check_images(settings["images"], keys)
-        baseline = json.loads(self.git("show", "HEAD:" + self.settings, cwd=work))
+        source = self.state["workspaces"]["artifacts" if label == "runtime" else "signing"]["commit"]
+        baseline = json.loads(self.git("show", source + ":" + self.settings, cwd=work))
         allowed = {"server", "bridge", "worker"} if label == "runtime" else {"appver"}
         expected = json.loads(json.dumps(baseline))
         for key in allowed:
@@ -331,25 +353,47 @@ class Pipeline:
                     "--title", "chore(boinc): review bootstrap " + label + " pins",
                     "--body", "Refs #551. Immutable pipeline candidate; no auto-merge or deployment. "
                     "Maintainer review and required CI must pass before merging.")
+            self.request_review(review, branch)
             raise Blocked("artifact review PR created; awaiting reviewed merge")
         if len(prs) != 1 or prs[0]["state"] != "MERGED":
+            if len(prs) == 1 and prs[0]["state"] == "OPEN":
+                self.request_review(review, branch)
             raise Blocked("artifact review has not merged; no deployment permitted")
         approval = json.loads(self.gh("pr", "view", str(prs[0]["number"]), "--json",
-                                      "baseRefName,reviewDecision,statusCheckRollup"))
+                                      "baseRefName,headRefOid,reviewDecision,reviews,statusCheckRollup"))
         checks = approval.get("statusCheckRollup") or []
-        if (approval.get("baseRefName") != "main" or approval.get("reviewDecision") != "APPROVED"
+        if (approval.get("baseRefName") != "main" or not approved_review(approval)
                 or not checks or any(check.get("conclusion", check.get("state")) not in
                                      ("SUCCESS", "SKIPPED", "NEUTRAL") for check in checks)):
             raise Blocked("merged candidate lacks recorded approval and successful CI")
+        if self.has_open_findings(prs[0]["number"]):
+            raise Blocked("artifact review has unresolved findings")
         current = json.loads(self.git("show", self.main() + ":" + self.settings))
         if current != review["settings"]:
             raise PipelineError("reviewed main pins/config differ from the candidate; refusing stale rollout")
         self.state["reviews"][label]["pr"] = prs[0]["number"]
         self.save()
 
+    def request_review(self, review, branch):
+        if not review.get("review_requested"):
+            # Persist intent first; an ambiguous API failure must not silently request another round.
+            review["review_requested"] = True
+            self.save()
+            self.gh("pr", "edit", branch, "--add-reviewer", "@copilot")
+
+    def has_open_findings(self, number):
+        query = ('query($number:Int!){repository(owner:"tgoodyear",name:"usnewsmap.com")'
+                 '{pullRequest(number:$number){reviewThreads(first:100)'
+                 '{pageInfo{hasNextPage} nodes{isResolved}}}}}')
+        value = json.loads(self.run(["gh", "api", "graphql", "-f", "query=" + query,
+                                     "-F", "number=" + str(int(number))], timeout=120))
+        threads = value["data"]["repository"]["pullRequest"]["reviewThreads"]
+        return threads["pageInfo"]["hasNextPage"] or any(not t["isResolved"] for t in threads["nodes"])
+
     def phase(self, phase):
         if phase == "base":
             work = self.workspace("base")
+            self.assert_main_settings(work)
             images = self.read_settings(work)["images"]
             if not images.get("server") and not images.get("bridge"):
                 self.script(work, "provision-boinc.sh")
@@ -358,6 +402,7 @@ class Pipeline:
         elif phase in ("server", "worker", "review-runtime"):
             work = self.workspace("artifacts")
             if phase == "server":
+                self.assert_main_settings(work)
                 self.script(work, "build-boinc-images.sh")
             elif phase == "worker":
                 self.worker(work)
@@ -390,6 +435,11 @@ class Pipeline:
                 self.script(work, "provision-boinc.sh")
             else:
                 self.acceptance(work)
+
+    def assert_main_settings(self, work):
+        current = json.loads(self.git("show", self.main() + ":" + self.settings))
+        if self.read_settings(work) != current:
+            raise PipelineError("workspace settings differ from reviewed main; no base provisioning or build permitted")
 
     def assert_reviewed(self, work, label):
         expected = self.state["reviews"][label]["settings"]

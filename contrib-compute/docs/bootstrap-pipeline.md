@@ -73,7 +73,11 @@ of this implementation's acceptance evidence.
 | `acceptance`     | Invoke #548 with exact release identity and a private evidence path. Require accepted canonical client execution **and** completed cleanup; registration alone cannot complete this pipeline.                                                                                                                                                                                                |
 
 Candidate PRs deliberately require review outside the automation; the pipeline
-never approves or auto-merges its own artifacts. An open PR, running worker build
+requests their initial Copilot review but never approves or auto-merges its own
+artifacts. Promotion accepts recorded GitHub approval, an exact-head explicit
+approval event, or an exact-head Copilot GREEN/BLUE outcome under the repository
+policy, always with no unresolved review threads and successful CI. This does not
+assume GitHub's aggregate review decision is configured on the repository. An open PR, running worker build
 or pending CI is durable `blocked` status (exit **3**). A scheduler can repeat the
 same invocation to advance after these gates without by-hand build/sign/publish
 handoffs. Successful completion exits **0**; missing inputs, locked signing,
@@ -85,6 +89,11 @@ SIGKILL; acceptance receives its explicit 600-second cleanup budget plus a
 interfaces; this pipeline does not copy their logs into its receipts.
 
 ## State and recovery
+
+Base provisioning and server builds compare the entire workspace settings with
+freshly fetched main before any operation, even if local settings edits were
+committed cleanly. Promotion's field allowlist is anchored to the original
+reviewed source, not a later local settings commit.
 
 State must live below this checkout's ignored `target/`. The private directory
 contains atomically written `state.json`, a process lock, managed Git worktrees,
