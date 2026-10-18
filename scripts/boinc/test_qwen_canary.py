@@ -89,6 +89,35 @@ class SchedulerRefresh(unittest.TestCase):
 
 
 class CanaryPreferences(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("php"), "PHP required")
+    def test_operator_db_context_can_stay_off_the_shared_project(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        plans = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
+        with tempfile.TemporaryDirectory(prefix=".qwen-db-context-", dir=ROOT) as folder:
+            shared = Path(folder, "shared")
+            private = Path(folder, "private")
+            shared.mkdir()
+            private.mkdir()
+            (private / "config.xml").write_text("<boinc/>")
+            original = plans.read_text().replace("<min_wu_id>2</min_wu_id>",
+                                                 "<min_wu_id>100</min_wu_id>")
+            policy = shared / "plan_class_spec.xml"
+            policy.write_text(original)
+            args = ["php", str(helper), "--project", str(shared), "--stop", "--apply"]
+            missing = subprocess.run(args, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertEqual(policy.read_text(), original)
+            result = subprocess.run(args + ["--db-project", str(private)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotEqual(policy.read_text(), original)
+            self.assertFalse((shared / "config.xml").exists())
+            self.assertFalse((private / "plan_class_spec.xml").exists())
+            self.assertEqual(len(list((shared / "ops-issue-559/native-cohort").glob("*.json"))), 1)
+            (shared / "config.xml").write_text("<boinc/>")
+            legacy = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(legacy.returncode, 0, legacy.stderr)
+
     def test_all_shipped_user_surfaces_describe_one_project_participation_policy(self):
         for name in (
             "scripts/boinc/setup_windows_volunteer.ps1",

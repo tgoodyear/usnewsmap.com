@@ -110,6 +110,11 @@ shared dispatch window, use `scripts/boinc/native-qwen-cohort.php --project PATH
 The helper requires at most ten contiguous Qwen native-8B workunits, each unaccepted with
 two unsent replicas and quorum two; it closes the other native classes. `--stop --apply`
 closes all native classes. This changes eligibility only, not distinct-host validation.
+When DB credentials are rendered into a separate tmpfs project, pass `--db-project PATH`
+with its `config.xml` and private `html/inc` copy. The policy and journal stay under
+`--project`; credentials must not be copied to the shared project filesystem.
+Run one-off queue operators with the committed single-replica bridge configuration,
+not replica settings left by a parallel assessment submission.
 
 `scripts/boinc/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
 
