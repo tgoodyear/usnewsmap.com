@@ -275,9 +275,20 @@ The NVIDIA-only exact-host variant also sets `SURYA_GPU_PROBE=1` (CLI
 `--gpu-probe`): it pins `--app_version_num 103` (1.3) and reduces the shared
 memory admission bound to **8 GiB**, matching `job-gpu.toml`. This cannot fall
 back to CPU version 1.2. Untargeted/CPU campaigns retain the 12 GiB CPU bound.
-CT214 reports 12 GiB RAM and two CPUs; the CPU plan needs four usable CPUs,
-while CT100 has only 8 GiB RAM, below the CPU contract. Neither is an eligible
-CPU probe host without resource changes, which this trial does not authorize.
-Do not raise their limits or lower the CPU bound to force a result. If no existing
-eligible CPU host is available, run the GPU-only bounded probe and report CPU
-measurements unavailable rather than fabricate cross-device acceptance.
+CT214 reports 12 GiB RAM and two CPUs; the CPU plan needs four usable CPUs.
+On 18 October at 14:10 EDT the maintainer explicitly authorized temporarily
+raising CT100 from 8 to 12 GiB for this probe, with restoration afterwards;
+its original configuration is memory 8192 MiB, swap 1024 MiB and 12 cores.
+Record the original configuration and verify both the cgroup and BOINC client's
+reported memory before dispatch. This authorization does not lower the CPU
+workunit bound or change BOINC memory preferences. CT100 currently allows BOINC
+90% of RAM, so even 12 GiB physical memory provides only 10.8 GiB for admission,
+below the unchanged 12 GiB bound. Stock targeted delivery skips ordinary server
+feasibility checks, but does not bypass the client's memory gate: for a new app
+version with no RSS history, `cpu_sched.cpp` uses the workunit memory bound as
+its initial estimated RSS. A running client may also retain its original
+8 GiB host-info cache after a live cgroup increase. Never restart a client with
+active unrelated tasks to force a refresh. If safe CPU eligibility cannot be
+established, restore the original memory and report CPU measurements unavailable
+rather than fabricate cross-device acceptance. Any subsequent change needs its
+own authorization and rollback receipt.

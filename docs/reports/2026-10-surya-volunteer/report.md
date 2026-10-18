@@ -163,3 +163,64 @@ were produced. The corrected 1.2/1.3 signed artifacts remain prepared candidates
 retired 1.0/1.1 and all live routing/settings are unchanged. No production claim,
 controller/start lease or GPU reservation is held. The observed existing quality
 job was preserved, not stopped to manufacture an idle publication window.
+
+
+### Post-merge authorized execution preflight, 18 October
+
+The maintainer approved continuation at 14:10 EDT; PR #848 merged as
+`ff795cb4`, followed by the independent CHURRO report PR #838. This supersedes
+the earlier review-disposition gate, not the production serialization protocol.
+The actual post-merge runs **both completed successfully**: `39153022399`
+(CI, verified at 18:21 UTC) and `39153022490` (CodeQL, verified at 18:22 UTC).
+Pre-merge CI success was not substituted for these outcomes.
+
+The corrected, normally signed app-version candidates ch98/ch99 above remain
+the intended 1.2/1.3 artifacts. A fresh normal release preflight verified the
+public worker pull and unlocked signer/key/Podman. No signing bypass is needed.
+An additive **operator tooling** artifact, ch9d,
+`sha256:19e22c93f68857dacf225876e5f855b5612b03dee75927e473548d13a4ba94a8`,
+preserves the exact live `b8fb643e…` bridge base and adds the reviewed Surya
+binary/collector. It is prepared only, not deployed or selected in persisted
+settings. Its Surya Rust/contract sources match merged #848; its pinned scorer
+is the existing v1.0.0 legacy/raw scorer, predating #738's additional rules.
+
+The locally prepared immutable campaign allocation is 20 GPU smoke inputs plus
+three CPU repeats (the first two pinned English smoke members and first German
+member), 23 units total if host eligibility and publication pass. The CPU-only
+manifest SHA256 is
+`03d80fc7cc9229bb6cfb143ab6d98a7249db219c113afbdd7e2ef1bdcc760396`.
+The reviewed staging CLI successfully staged all three repeats locally; original
+image/reference hashes and the completion marker were independently rechecked.
+This is not production staging or inference.
+The full-page LoC HOLD remains in place; no retries or subsequent full-page
+fetches were made. The maintainer permits the pinned benchmark subset alone.
+
+The original CT100 configuration was recorded before mutation: memory 8192 MiB,
+swap 1024 MiB, 12 cores. The explicitly authorized `pct set 100 --memory 12288`
+succeeded, and the container saw 12288 MiB, but BOINC retained cached host memory
+8589934592 bytes. It then naturally received two unrelated quality tasks at
+18:17 UTC. The client and tasks were not restarted, suspended or preempted.
+Memory was promptly restored with `pct set 100 --memory 8192`; cgroup and
+configuration verification confirmed 8192 MiB, swap 1024 MiB and 12 cores.
+**CT100 reverted: yes.** Even after refreshing the client cache, its unchanged
+90% BOINC memory preferences leave only 10.8 GiB usable at a 12 GiB host limit,
+below the unchanged 12 GiB Surya CPU workunit bound. Pinned upstream
+`client/cpu_sched.cpp` uses that bound as the initial estimated RSS for a new app
+version with no RSS history; `sched/sched_assign.cpp`'s targeted delivery does
+not bypass this client-side gate. No preference or admission bound was silently
+changed, and no Surya CPU work was submitted.
+
+The fresh all-six-idle check found quality execution
+`usnm-boinc-quality-caj-prod-t8yp9m0` running since 16:43:04 UTC (24-hour timeout).
+The other five lifecycle jobs were idle. Scoped publication must wait for its
+natural completion; no job was stopped or queue changed to manufacture a window.
+The #529 request is coordinated with the separately authorized #464 TLS work;
+neither request is evidence of a held controller lease. CT214's GPU was idle
+with an empty BOINC task list at preflight; no Surya GPU window was claimed while
+publication remained pending. An ACA exec HTTP 429 at 18:20 UTC specified
+Retry-After 600; that hold is respected rather than bypassing the transport.
+
+At this preflight receipt there is still **no published version, production
+campaign ID, validator/assimilator inference output or scored result**. The
+unpopulated results table remains intentional. #812 remains open and historical
+#516/#515 closure is not new acceptance.

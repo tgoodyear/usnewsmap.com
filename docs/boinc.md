@@ -807,10 +807,10 @@ it has none of the queue grants.
 
 Its grants go to the object id in the private setting `USNM_BOINC_HANDOFF_RUNNER`:
 
-| Scope                            | Role                                                       | For                        |
-| -------------------------------- | ---------------------------------------------------------- | -------------------------- |
-| exchange `boinc-handoff`         | the OCR nodes' writer role (list, read, create; no delete) | the scans and the manifest |
-| `usnm-boinc-log-<env>` workspace | Log Analytics Reader (`boinc-handoff-logs.bicep`)          | the bridge jobs' logs      |
+| Scope                            | Role                                                       | For                                                       |
+| -------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------- |
+| exchange `boinc-handoff`         | the OCR nodes' writer role (list, read, create; no delete) | the scans, the manifest and the quality wave's page JPEGs |
+| `usnm-boinc-log-<env>` workspace | Log Analytics Reader (`boinc-handoff-logs.bicep`)          | the bridge jobs' logs                                     |
 
 Until the hand-off job existed, `export` and `collect` ran here too, with Cosmos, ledger,
 reference and `ocr-out` grants (#514); the job took those over and they are gone.
@@ -843,6 +843,45 @@ identity has data-plane roles only, no subscription role).
 
 The grant opens no network path: the exchange account takes the home IP through
 `USNM_OCR_NODE_IPS`.
+
+### The quality wave's page JPEG cache
+
+A quality wave's runner turns each archived page into the worker's `page.jpg`: grayscale,
+JPEG quality 75, and a JPEG2000 master over 4000 px decoded at half resolution. Decoding
+JPEG2000 is most of its CPU, and its Container Apps job has 2 vCPUs (#850). The scan-fetch
+container holds the masters, so `scripts/ocr-node/quality-jpeg-cache.py` does the same
+conversion there and puts each page in the hand-off container as
+`quality-jpeg/l-q75-r1/<blob name>.jpg`. Blob metadata carries the master's sha256, the
+recipe, the Pillow version, the size and the JPEG's sha256. The runner takes the cached page
+when it is there and converts the master otherwise. A grayscale JPEG master under 40 Mpx and
+20 MB goes to workers as it is, so the cache skips it.
+
+The output must be byte for byte what the runner would make, so the script runs only on
+Pillow 11.3.0 from the same pinned wheel as the bridge image
+(`contrib-compute/images/bridge/Containerfile`). It checks each master against its fetcher
+sidecar, never replaces a blob (one there with another size stops the run), and lists done
+pages in `/var/lib/usnm-quality-jpeg-cache/done.txt`. `usnm-quality-jpeg-cache.service`
+runs it under a dynamic user in the `himds` group, for the Arc token. It runs at low CPU
+and I/O priority, so the prefetcher and the scan server go first. In CT 211 (2 cores) it
+converts about 1.5 pages a second.
+
+```sh
+# On the operator's machine: the page list, one blob name per line, in the runner's order
+# (each shard's batches in turn), from the wave's manifest. Copy it and the script into
+# CT 211 (pct push).
+# In CT 211, as root: the pinned Pillow wheel, as the bridge image installs it.
+d=/usr/local/lib/usnm-quality-jpeg-cache
+mkdir -p "$d/py" && cd "$d"
+curl -fsSLo pillow.whl https://files.pythonhosted.org/packages/f2/2f/d7675ecae6c43e9f12aa8d58b6012683b20b6edfbdac7abcb4e6af7a3784/pillow-11.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+echo "106064daa23a745510dabce1d84f29137a37224831d88eb4ce94bb187b1d7e5f  pillow.whl" | sha256sum -c
+python3 -m zipfile -e pillow.whl py && rm pillow.whl
+install -m 0755 /root/quality-jpeg-cache.py "$d/"
+install -m 0644 /root/usnm-quality-jpeg-cache.service /etc/systemd/system/
+printf 'ACCOUNT=<exchange account>\nLIST=%s/pages.txt\nWORKERS=2\n' "$d" > /etc/usnm/quality-jpeg-cache.env
+install -m 0644 /root/pages.txt "$d/"
+systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache
+journalctl -fu usnm-quality-jpeg-cache
+```
 
 ## Allocation and recovery
 
