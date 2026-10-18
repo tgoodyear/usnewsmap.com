@@ -8,6 +8,7 @@ import os
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 import american_stories as ams
 import jaocr
@@ -44,8 +45,77 @@ def tarball(scans) -> bytes:
     return buf.getvalue()
 
 
+def issue(lccn, day, ed, pages):
+    """Small LoC issue JSON: each page lists one or more physical scan copies."""
+    return {"resources": [{"files": [[
+        {"mimetype": "image/jp2", "url": f"https://tile.loc.gov/data/{lccn}/{reel}/{day.replace('-', '')}{ed:02d}/{image:04d}.jp2"}
+        for reel, image in copies] for copies in pages]}]}
+
+
+class PhysicalIdentity(unittest.TestCase):
+    def names(self, images=(123, 117, 120), reel="0038334881A", ed=1):
+        return [f"1925-01-10_p1_sn82015313_{reel}_19250110{ed:02d}_{i:04d}.json" for i in images]
+
+    def lookup(self, lccn, day, ed):
+        # Non-monotonic physical image order is intentional (never sort or offset).
+        return issue(lccn, day, ed, [[("0038334881A", i)] for i in (117, 123, 119, 120)])
+
+    def test_collision_repairs_missing_and_previously_misassigned_pages(self):
+        names = self.names()
+        ids, stats = ams.place(names, self.lookup)
+        self.assertEqual([ids[n] for n in names], [f"sn82015313_1925-01-10_ed-1_seq-{s}" for s in (2, 1, 4)])
+        self.assertEqual((stats["duplicates"], stats["unresolved"]), (0, 0))
+        # Archive order must not select a different physical image for seq-1.
+        self.assertEqual(ams.place(list(reversed(names)), self.lookup)[0], ids)
+        self.assertNotEqual(ams.scan_key(names[0]), ams.scan_key(names[1]))
+        self.assertEqual(ams.scan_key("elsewhere/" + names[0].replace("_p1_", "_pNone_")), ams.scan_key(names[0]))
+
+    def test_missing_first_image_is_not_renumbered_and_unmatched_is_retained(self):
+        names = self.names((120, 999))
+        unresolved = []
+        ids, stats = ams.place(names, self.lookup, unresolved)
+        self.assertEqual(ids, {names[0]: "sn82015313_1925-01-10_ed-1_seq-4"})
+        self.assertEqual((stats["unresolved"], stats["duplicates"]), (1, 0))
+        self.assertEqual(unresolved[0]["name"], names[1])
+        self.assertEqual(tuple(unresolved[0]["scan_key"]), ams.scan_key(names[1]))
+        # Metadata unavailable: no first-wins p1 match is allowed.
+        self.assertEqual(ams.place(names, lambda *args: {})[0], {})
+
+    def test_reel_and_edition_are_part_of_identity_and_copies_dedup(self):
+        a = self.names((117,))[0]
+        b = self.names((117,), reel="other")[0]
+        c = self.names((117,), ed=2)[0]
+        copy = "copy/" + a
+        def lookup(lccn, day, ed):
+            return issue(lccn, day, ed, [[("0038334881A", 117)], [("other", 117)]])
+        ids, stats = ams.place([a, b, c, copy], lookup)
+        self.assertEqual([ids[n] for n in (a, b, c)], ["sn82015313_1925-01-10_ed-1_seq-1",
+                         "sn82015313_1925-01-10_ed-1_seq-2", "sn82015313_1925-01-10_ed-2_seq-1"])
+        self.assertNotIn(copy, ids)
+        self.assertEqual(stats["duplicates"], 1)
+
+    def test_ambiguous_physical_image_is_not_placed(self):
+        names = self.names((117, 120))
+        def lookup(lccn, day, ed):
+            return issue(lccn, day, ed, [[("0038334881A", 117)], [("0038334881A", 117)]])
+        ids, stats = ams.place(names, lookup)
+        self.assertEqual(ids, {})
+        self.assertEqual(stats["unresolved"], 2)
+
+    def test_unnumbered_scan_requires_metadata_even_without_collision(self):
+        name = self.names((120,))[0].replace("_p1_", "_pNone_")
+        self.assertEqual(ams.place([name])[0], {})
+        self.assertEqual(ams.place([name], self.lookup)[0][name], "sn82015313_1925-01-10_ed-1_seq-4")
+
+
 @unittest.skipIf(pa is None, "pyarrow or wordfreq not installed")
 class AmericanStories(unittest.TestCase):
+    def setUp(self):
+        lookup = lambda lccn, day, ed: issue(lccn, day, ed, [[("00000000000", i)] for i in range(1, 5)])
+        patcher = mock.patch.object(ams, "issue_lookup", return_value=lookup)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def fixture(self, d):
         ref, cur = jaocr.LocalStore(os.path.join(d, "ref")), jaocr.LocalStore(os.path.join(d, "cur"))
         ref.write("current.json", json.dumps({"reference": "v1"}).encode())
@@ -81,7 +151,7 @@ class AmericanStories(unittest.TestCase):
             got = ams.american_stories(ref, cur, [1865], sample_pct=100, run="exec-2",
                                        opener=lambda req: contextlib.closing(io.BytesIO(tgz)))
             s = got["summary"][0]
-            self.assertEqual((s["with_american_stories"], s["scans_page_from_image"]), (2, 1))
+            self.assertEqual((s["with_american_stories"], s["scans_page_from_image"]), (2, 2))
 
     def test_compare(self):
         with tempfile.TemporaryDirectory() as d:
@@ -141,13 +211,21 @@ class AmericanStories(unittest.TestCase):
             "1793-07-01_p2_sn1_0300_1793070101_0018.json",
             "junk.json",
         ]
-        ids, stats = ams.place(names)
+        def lookup(lccn, day, ed):
+            pages = {
+                ("sn1", "1793-07-01"): [[("0100", 17)], [("0100", 18), ("0300", 18)], [("0100", 19)]],
+                ("sn2", "1865-07-31"): [[("no_reel", 1)], [("no_reel", 2)]],
+                ("sn2", "1865-08-01"): ([[("0200", 50)]] if ed == 2 else
+                                         [[], [("0200", 41)], [], [("0200", 43)]]),
+            }
+            return issue(lccn, day, ed, pages[(lccn, day)])
+        ids, stats = ams.place(names, lookup)
         self.assertEqual(ids["1793-07-01_p3_sn1_0100_1793070101_0019.json"], "sn1_1793-07-01_ed-1_seq-3")
         self.assertEqual(ids["1865-07-31_pNone_sn2_no_reel_1865073101_0002.json"], "sn2_1865-07-31_ed-1_seq-2")
         self.assertEqual(ids["1865-08-01_pNone_sn2_0200_1865080101_0043.json"], "sn2_1865-08-01_ed-1_seq-4")
         self.assertEqual(ids["1865-08-01_pNone_sn2_0200_1865080102_0050.json"], "sn2_1865-08-01_ed-2_seq-1")
         self.assertEqual((stats["unparsed"], stats["page_named"], stats["page_from_image"], stats["duplicates"]),
-                         (1, 5, 4, 1))
+                         (1, 5, 8, 1))
         self.assertEqual(ids["1793-07-01_p2_sn1_0100_1793070101_0018.json"], "sn1_1793-07-01_ed-1_seq-2")
         self.assertNotIn("1793-07-01_p2_sn1_0300_1793070101_0018.json", ids)
         self.assertEqual(len(ids), 8)  # 9 names parse, one is a second copy

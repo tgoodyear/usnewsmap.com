@@ -11,6 +11,7 @@ from unittest import mock
 
 import american_stories_write as asw
 import jaocr
+from test_american_stories import issue
 
 try:
     import pyarrow.parquet as pq
@@ -48,6 +49,11 @@ def tarball(scans) -> bytes:
 @unittest.skipIf(pq is None, "pyarrow not installed")
 class Write(unittest.TestCase):
     def setUp(self):
+        lookup = lambda lccn, day, ed: issue(lccn, day, ed,
+                                          [[("0100", 11)], [("0100", 12), ("0200", 12)], [("0100", 13)]])
+        patcher = mock.patch.object(asw.ams, "issue_lookup", return_value=lookup)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.ref, self.cur = jaocr.LocalStore(os.path.join(d, "ref")), jaocr.LocalStore(os.path.join(d, "cur"))
@@ -103,7 +109,31 @@ class Write(unittest.TestCase):
         self.assertEqual(rows["sn2_1865-03-04_ed-1_seq-1"]["text"], "")
         marker = json.loads(self.cur.read(f"{asw.YEARS}/1865.json"))
         self.assertEqual({k: marker[k] for k in ("scans", "unparsed", "duplicates", "page_from_image", "pages")},
-                         {"scans": 6, "unparsed": 1, "duplicates": 1, "page_from_image": 1, "pages": 4})
+                         {"scans": 6, "unparsed": 1, "duplicates": 1, "page_from_image": 3, "pages": 4})
+
+    def test_repeated_labels_do_not_collapse_or_misassign_physical_scans(self):
+        scans = []
+        for image, text in ((123, "Page seven"), (117, "Page one"), (120, "Page four"), (999, "Unknown")):
+            name, body = scan("sn82015313", "1925-01-10", 1, [("", text)])
+            scans.append((name.replace("_0100_", "_0038334881A_").replace("_0011.json", f"_{image:04d}.json"), body))
+        scans.append(scans[1])  # exact physical copy, not another p1
+        self.tgz = tarball(scans)
+        metadata = issue("sn82015313", "1925-01-10", 1, [[("0038334881A", i)] for i in range(117, 129)])
+        with mock.patch.object(asw.ams, "issue_lookup", return_value=lambda *args: metadata):
+            got = asw.write_year(self.cur, 1925, self.opener)
+            audit, stats = asw.ams.stream_year(1925, 10000, self.opener)
+        rows = self.rows()
+        expected = {f"sn82015313_1925-01-10_ed-1_seq-{seq}": text
+                    for seq, text in ((7, "Page seven"), (1, "Page one"), (4, "Page four"))}
+        self.assertEqual({d: r["text"] for d, r in rows.items()}, expected)
+        self.assertEqual({d: r["text"] for d, r in audit.items()}, expected)
+        self.assertEqual((got["pages"], got["duplicates"], got["unresolved"]), (3, 1, 1))
+        self.assertEqual(stats["duplicates"], 1)
+        unresolved = json.loads(self.cur.read(f"{asw.PREFIX}/unresolved/1925.json"))
+        self.assertEqual(unresolved[0]["name"], scans[3][0])
+        self.assertEqual(stats["unresolved_scans"], unresolved)
+        self.assertEqual(json.loads(rows[next(iter(expected))]["scan_key"])[-1], 123)
+        self.assertEqual(rows[next(iter(expected))]["source_name"], scans[0][0])
 
     def test_boxes_as_mappings_or_lists(self):
         self.assertEqual(asw.box({"x0": 1, "y0": 2, "x1": 3, "y1": 4}), [1, 2, 3, 4])
@@ -154,14 +184,14 @@ class Write(unittest.TestCase):
             if req.full_url == asw.TREE:
                 return self.opener(req)
             tries["n"] += 1
-            return contextlib.closing(io.BytesIO(self.tgz[:-8] if tries["n"] == 1 else self.tgz))
+            return contextlib.closing(io.BytesIO(self.tgz[:-8] if tries["n"] == 2 else self.tgz))
 
         writes = []
         write = self.cur.write
 
         def counted(path, data):
             if path.startswith(asw.PAGES):
-                writes.append((tries["n"], path))
+                writes.append((tries["n"] - 1, path))
             return write(path, data)
 
         with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw, "FLUSH_ROWS", 1), \
@@ -169,12 +199,28 @@ class Write(unittest.TestCase):
             got = asw.write(self.ref, self.cur, run="exec-6", opener=cut)
         first = sorted(p for t, p in writes if t == 1)
         second = sorted(p for t, p in writes if t == 2)
-        self.assertEqual((tries["n"], got["pages"]), (2, 4))
-        self.assertEqual(len(first), 3)  # the failed try wrote parts (the "pNone" page is placed after the read)
+        self.assertEqual((tries["n"], got["pages"]), (3, 4))
+        self.assertEqual(len(first), 4)  # all resolved pages were written before the missing trailer
         self.assertLessEqual(set(first), set(second))  # and the retry wrote the same names again
         self.assertEqual(sorted(self.cur.list(asw.PAGES)), second)
         self.assertEqual(sum(pq.read_table(io.BytesIO(self.cur.read(p))).num_rows for p in second), 4)
         self.assertEqual(len(self.rows()), 4)
+
+    def test_resume_uses_frozen_placement_when_metadata_changes(self):
+        tries = {"n": 0}
+        def broken_second_pass(req):
+            tries["n"] += 1
+            return contextlib.closing(io.BytesIO(self.tgz[:-8] if tries["n"] == 2 else self.tgz))
+        with mock.patch.object(asw, "FLUSH_ROWS", 1), self.assertRaises(EOFError):
+            asw.write_year(self.cur, 1865, broken_second_pass)
+        self.assertTrue(self.cur.exists(f"{asw.PREFIX}/placements/1865.json"))
+        # A new invocation must not produce fewer/different parts after a metadata outage.
+        with mock.patch.object(asw.ams, "issue_lookup", side_effect=AssertionError("must reuse placement")), \
+                mock.patch.object(asw, "FLUSH_ROWS", 1):
+            got = asw.write_year(self.cur, 1865, self.opener)
+        self.assertEqual(got["pages"], 4)
+        self.assertEqual(sum(pq.read_table(io.BytesIO(self.cur.read(p))).num_rows
+                             for p in self.cur.list(asw.PAGES)), 4)
 
     def test_a_download_cut_at_a_member_boundary_is_retried(self):
         # Every member arrives, but the gzip trailer doesn't: tar alone would read this as a whole archive.
@@ -188,7 +234,7 @@ class Write(unittest.TestCase):
 
         with mock.patch.object(asw, "RETRY_SECONDS", 0):
             got = asw.write(self.ref, self.cur, run="exec-8", opener=no_trailer)
-        self.assertEqual((tries["n"], got["pages"]), (2, 4))
+        self.assertEqual((tries["n"], got["pages"]), (3, 4))
 
     def test_a_body_shorter_than_its_content_length_is_retried(self):
         tries = {"n": 0}
@@ -206,7 +252,7 @@ class Write(unittest.TestCase):
 
         with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw.jaocr, "log") as log:
             got = asw.write(self.ref, self.cur, run="exec-9", opener=short)
-        self.assertEqual((tries["n"], got["pages"]), (2, 4))
+        self.assertEqual((tries["n"], got["pages"]), (3, 4))
         errors = [c.kwargs.get("error", "") for c in log.call_args_list if c.args[0].endswith("retrying")]
         self.assertTrue(errors and errors[0].startswith("IncompleteDownload"), errors)
 

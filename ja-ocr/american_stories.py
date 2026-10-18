@@ -6,13 +6,13 @@ American Stories (Dell et al. 2023, arXiv:2308.12477; CC BY 4.0) re-read
 Chronicling America with layout detection, a legibility classifier and
 EfficientOCR. Each year is one tarball on Hugging Face of one JSON file per
 scan, named <date>_p<page>_<lccn>_<reel>_<date><edition>_<image>.json, whose
-p<page> is our seq-<n>. Some have no page ("pNone", often with reel
-"no_reel"); their page is their image's place in the issue: an issue's images
-are numbered consecutively, so a page's seq is its image number less the
-issue's first, plus one, or set by the issue's named pages when it has any
-(the report says how often this rule agrees with the named pages). This
-streams each year's tarball twice (nothing is kept on disk): once for the
-names, to place every scan, and once for the text of the scans in our usual
+p<page> is normally our seq-<n>, but is not a physical scan identity.
+Distinct scans are keyed by (LCCN, date, edition, reel, image). Issues with
+repeated/conflicting labels or unnumbered scans are joined using LoC's
+ordered issue image metadata, never an offset from the first observed image.
+Unresolved scans are reported explicitly rather than assigned to guessed pages.
+This streams each year's tarball twice (nothing is kept on disk): once for
+the names, to place every scan, and once for the text of the scans in our usual
 fixed sample (quality.sampled: a hash of
 the doc_id, so the same pages as the OCR quality audit), reads LoC's text for
 the sampled pages of those years from the curated store, and measures, for
@@ -84,40 +84,104 @@ def parse(name: str) -> tuple[str, str, int, int, int | None] | None:
     return lccn, date, int(ed), int(image), int(page) if page.isdigit() else None
 
 
-def place(names: list[str]) -> tuple[dict[str, str], dict[str, int]]:
-    """Each scan's doc_id by file name, and counts: pages named, placed by image, unparsed, duplicates, and
-    the named pages the image rule (image less the issue's first, plus one) would have got right."""
-    issues: dict[tuple, list[tuple[int, int | None, str]]] = {}
+def scan_key(name: str) -> tuple[str, str, int, str, int] | None:
+    """Physical scan identity, independent of archive directory and printed page label."""
+    got = parse(name)
+    if got is None:
+        return None
+    lccn, day, ed, image, _ = got
+    reel = NAME.match(os.path.basename(name)).group(4)
+    return lccn, day, ed, reel, image
+
+
+def issue_images(lccn: str, day: str, ed: int, item: dict) -> dict[tuple[str, int], int]:
+    """(reel, image) -> authoritative sequence; file order, NOT image-number order."""
+    files = (item.get("resources") or [{}])[0].get("files") or []
+    found: dict[tuple[str, int], set[int]] = {}
+    pattern = re.compile(rf"/data/{re.escape(lccn)}/([^/]+)/{day.replace('-', '')}{ed:02d}/(\d+)\.jp2$")
+    for seq, page in enumerate(files, 1):
+        for f in page:
+            if f.get("mimetype") != "image/jp2":
+                continue
+            m = pattern.search(f.get("url") or "")
+            if m:
+                found.setdefault((m.group(1), int(m.group(2))), set()).add(seq)
+    # A physical image listed at multiple sequences is ambiguous, not a first-wins join.
+    return {key: next(iter(seqs)) for key, seqs in found.items() if len(seqs) == 1}
+
+
+def issue_lookup():
+    """One rate-limited metadata fetch per affected issue (place groups by issue)."""
+    pacer = jaocr.Pacer(float(os.environ.get("JAOCR_API_GAP", "3.5")))
+
+    def lookup(lccn, day, ed):
+        url = f"https://www.loc.gov/item/{lccn}/{day}/ed-{ed}/?fo=json"
+        try:
+            return json.loads(jaocr.fetch(url, pacer))
+        except (OSError, RuntimeError, ValueError) as e:
+            jaocr.log("american stories issue unresolved", lccn=lccn, date=day, edition=ed,
+                      error=type(e).__name__)
+            return {}
+
+    return lookup
+
+
+def place(names: list[str], lookup=None, unresolved: list[dict] | None = None,
+          keep=lambda: None) -> tuple[dict[str, str], dict[str, int]]:
+    """Shared audit/writer placement. Only verified physical copies are deduplicated.
+
+    Unambiguous numbered issues retain their existing joins. For an affected issue,
+    ALL labels are ignored, including the first p1 that might actually be sequence 7.
+    A missing metadata match is retained in `unresolved`, never guessed or called a duplicate.
+    """
+    issues: dict[tuple, list[tuple]] = {}
     stats = {"unparsed": 0, "page_named": 0, "page_from_image": 0, "duplicates": 0,
-             "image_rule_checked": 0, "image_rule_agrees": 0}
+             "unresolved": 0, "issues_resolved": 0, "image_rule_checked": 0, "image_rule_agrees": 0}
     for name in names:
         got = parse(name)
         if got is None:
             stats["unparsed"] += 1
             continue
-        lccn, date, ed, image, page = got
-        issues.setdefault((lccn, date, ed), []).append((image, page, name))
+        lccn, day, ed, image, page = got
+        issues.setdefault((lccn, day, ed), []).append((scan_key(name), page, name))
     out: dict[str, str] = {}
-    taken: set[str] = set()
-    for (lccn, date, ed), scans in issues.items():
-        first = min(image for image, _, _ in scans)
-        offsets = [page - image for image, page, _ in scans if page is not None]
-        # The named pages set the offset when there are any (the most common one), else the first image is p1.
-        offset = max(set(offsets), key=offsets.count) if offsets else 1 - first
-        for image, page, name in scans:
+    for (lccn, day, ed), scans in issues.items():
+        keep()
+        by_label: dict[int, set[tuple]] = {}
+        by_scan: dict[tuple, set[int | None]] = {}
+        offsets: dict[str, set[int]] = {}
+        for key, page, _ in scans:
+            by_scan.setdefault(key, set()).add(page)
+            if page is not None:
+                by_label.setdefault(page, set()).add(key)
+                offsets.setdefault(key[3], set()).add(page - key[4])
+        affected = (any(page is None or page < 1 for _, page, _ in scans)
+                    or any(len(keys) > 1 for keys in by_label.values())
+                    or any(len(pages) > 1 for pages in by_scan.values())
+                    or any(len(values) > 1 for values in offsets.values()))
+        images = issue_images(lccn, day, ed, lookup(lccn, day, ed)) if affected and lookup else {}
+        stats["issues_resolved"] += bool(images)
+        taken_scans, taken_pages = set(), set()
+        first = min(key[4] for key, _, _ in scans)
+        for key, page, name in scans:
             if page is not None:
                 stats["page_named"] += 1
                 stats["image_rule_checked"] += 1
-                stats["image_rule_agrees"] += image - first + 1 == page
-            else:
-                stats["page_from_image"] += 1
-            seq = page if page is not None else image + offset
-            d = f"{lccn}_{date}_ed-{ed}_seq-{seq}"
-            if d in taken:
+                stats["image_rule_agrees"] += key[4] - first + 1 == page
+            seq = images.get((key[3], key[4])) if affected else page
+            if seq is None:
+                stats["unresolved"] += 1
+                if unresolved is not None:
+                    unresolved.append({"name": name, "scan_key": list(key), "reason": "no_unique_issue_image"})
+                continue
+            doc_id = f"{lccn}_{day}_ed-{ed}_seq-{seq}"
+            if key in taken_scans or doc_id in taken_pages:
                 stats["duplicates"] += 1
                 continue
-            taken.add(d)
-            out[name] = d
+            taken_scans.add(key)
+            taken_pages.add(doc_id)
+            stats["page_from_image"] += affected
+            out[name] = doc_id
     return out, stats
 
 
@@ -191,20 +255,21 @@ def stream_year(year: int, cut: int, opener=None, keep=lambda: None) -> tuple[di
             keep()  # each pass reads the whole tarball: renew the lock throughout
             if member.isfile() and member.name.endswith(".json"):
                 names.append(member.name)
-    ids, stats = place(names)
+    unresolved: list[dict] = []
+    ids, stats = place(names, issue_lookup(), unresolved, keep)
     wanted = {n: d for n, d in ids.items() if quality.sampled(d, cut)}
     out: dict[str, dict] = {}
     with tar_stream(year, opener) as tar:
         for member in tar:
             keep()
             d = wanted.get(member.name)
-            if d is None:
+            if d is None or d in out:
                 continue
             scan = json.load(tar.extractfile(member))
             m = BATCH.search((scan.get("scan") or {}).get("raw_data_loc") or "")
             text, legibility = scan_text(scan)
             out[d] = {"batch": m.group(1) if m else None, "text": text, "legibility": legibility}
-    totals = {"scans": len(names), **stats, "sampled": len(out),
+    totals = {"scans": len(names), **stats, "sampled": len(out), "unresolved_scans": unresolved,
               "image_rule_agreement": share(stats["image_rule_agrees"], stats["image_rule_checked"])}
     return out, totals
 
