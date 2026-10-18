@@ -917,7 +917,9 @@ Requests use the existing rate limiter (`JAOCR_API_GAP`, default 3.5 seconds).
 Unavailable/ambiguous metadata and unmatched scans are **unresolved**, not
 `duplicates`. They receive no guessed `doc_id`/indexed text. The writer retains
 names, physical keys and reasons in `american-stories/unresolved/<year>.json`;
-the audit retains the same records in its summary's `scans_unresolved_scans`.
+the audit retains the same records in its saved summary's `scans_unresolved_scans`.
+Console logs include only their counts, not the unbounded inventory, so large
+unresolved cohorts cannot truncate the log-based coverage summaries.
 `page_from_image` now counts every resolved scan using authoritative issue
 metadata, including numbered scans whose labels were ignored. Year markers
 include `identity_version: 2`. The writer freezes the IDs, counts and unresolved

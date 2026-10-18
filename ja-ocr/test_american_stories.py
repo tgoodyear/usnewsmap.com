@@ -153,6 +153,30 @@ class AmericanStories(unittest.TestCase):
             s = got["summary"][0]
             self.assertEqual((s["with_american_stories"], s["scans_page_from_image"]), (2, 2))
 
+    def test_large_unresolved_inventory_is_saved_but_not_logged(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur, _ = self.fixture(d)
+            scans = []
+            for image in range(100, 1100):
+                name, body = scan("sn1", "1865-01-01", image, "unresolved text")
+                scans.append((name.replace(f"_p{image}_", "_p1_"), body))
+            tgz = tarball(scans)
+            with mock.patch.object(jaocr, "log") as log:
+                got = ams.american_stories(ref, cur, [1865], sample_pct=100, run="unresolved",
+                                           opener=lambda req: contextlib.closing(io.BytesIO(tgz)))
+            summary = got["summary"][0]
+            self.assertEqual(summary["scans_unresolved"], 1000)
+            self.assertEqual(len(summary["scans_unresolved_scans"]), 1000)
+            saved = json.loads(cur.read("audit/american-stories-v1-unresolved.json"))
+            self.assertEqual(saved["summary"][0]["scans_unresolved_scans"], summary["scans_unresolved_scans"])
+            year_log = next(c.kwargs for c in log.call_args_list if c.args[0] == "american stories year read")
+            summary_log = next(c.kwargs for c in log.call_args_list if c.kwargs.get("table") == "summary")
+            self.assertNotIn("unresolved_scans", year_log)
+            self.assertNotIn("scans_unresolved_scans", summary_log)
+            self.assertEqual((year_log["unresolved"], summary_log["scans_unresolved"]), (1000, 1000))
+            for call in log.call_args_list:
+                self.assertLess(len(json.dumps(call.kwargs).encode()), 16 * 1024)
+
     def test_compare(self):
         with tempfile.TemporaryDirectory() as d:
             ref, cur, tgz = self.fixture(d)

@@ -747,7 +747,8 @@ def american_stories(reference, curated, years: list[int], sample_pct: float = 1
     for y in years:
         got, totals[y] = stream_year(y, cut, opener, solo.keep)
         theirs.update(got)
-        jaocr.log("american stories year read", year=y, **totals[y])
+        jaocr.log("american stories year read", year=y,
+                  **{k: v for k, v in totals[y].items() if k != "unresolved_scans"})
     ours = loc_pages(curated, json.loads(reference.read(f"{version}/batches.json")), set(years), cut, solo.keep)
     models = quality.Models(loader)
     tables: dict[str, list] = {"summary": [], "recall": [], "legibility": [], "only_american_stories": []}
@@ -775,7 +776,8 @@ def american_stories(reference, curated, years: list[int], sample_pct: float = 1
     curated.write(f"{base}.json", json.dumps(report, ensure_ascii=False, indent=1).encode())
     for name, rows in tables.items():
         for r in rows:
-            jaocr.log("american stories", table=name, version=version, **r)
+            jaocr.log("american stories", table=name, version=version,
+                      **{k: v for k, v in r.items() if k != "scans_unresolved_scans"})
     solo.finish()
     jaocr.log("american stories finished", version=version, years=years, outputs=[f"{base}.json"])
     return report
