@@ -122,6 +122,9 @@ param serialSetRunner string = ''
 
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
+
+@description('Let boincHandoffRunner run the BOINC batch controller on-prem (#866, docs/boinc-batch-scheduler.md): Reader on the subscription and a custom role that updates and starts the hand-off and bridge jobs (modules/boinc-controller.bicep). Needs the hand-off job and boincHandoffRunner. Off removes the grants.')
+param boincControllerOnPrem bool = false
 @description('The BOINC hand-off job\'s image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json, <registry>.azurecr.io/usnm-boinc-bridge@sha256:<digest>. Empty: no hand-off job. Needs the exchange account (ocrNodes), the registry (useAcr) and the BOINC group (deployBoincGroup).')
 param boincHandoffImage string = ''
 
@@ -518,6 +521,17 @@ module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGrou
   params: {
     workspaceName: n.boincWorkspace
     principalId: trim(boincHandoffRunner)
+  }
+}
+
+// The on-prem BOINC batch controller (#866): the runner starts the hand-off and bridge jobs.
+module boincController 'modules/boinc-controller.bicep' = if (boincHandoff && boincControllerOnPrem && !empty(trim(boincHandoffRunner))) {
+  name: 'boinc-controller'
+  dependsOn: [rg, boincRg]
+  params: {
+    principalId: trim(boincHandoffRunner)
+    roleLabel: n.boincControllerRole
+    groups: [n.rg, n.boincRg]
   }
 }
 

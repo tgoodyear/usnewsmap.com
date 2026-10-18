@@ -20,6 +20,7 @@
   "backfillReplicaSilentAlert": "usnm-backfill-replica-silent-alert-prod",
   "backfillStalledAlert": "usnm-backfill-stalled-alert-prod",
   "boincBridgeIdentity": "usnm-boinc-id-prod",
+  "boincControllerRole": "usnm-boinc-controller-role-prod",
   "boincHandoffIdentity": "usnm-boinc-handoff-id-prod",
   "boincHandoffJob": "usnm-boinc-handoff-caj-prod",
   "boincLedgerRole": "usnm-boinc-ledger-role-prod",
