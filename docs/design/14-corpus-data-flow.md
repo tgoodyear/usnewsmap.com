@@ -365,4 +365,3 @@ release selection and published `/v1/hits` replacement provenance are observed.
 When `/v1/hits` returns a page without replacement `ocr` metadata, `ingest-search`
 records `decision="unchanged_baseline"` and `selected_source="loc"` with a
 checksummed `search_receipt` and no raw OCR text.
-

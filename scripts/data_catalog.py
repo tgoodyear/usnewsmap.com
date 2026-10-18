@@ -411,13 +411,14 @@ def validate_event(event):
             elif data["decision"] == "revoked":
                 require(data["state"] in ("blocked", "missing"),
                         "revoked decision requires blocked or missing state")
+                require(data["run_id"] is not None, "revoked decision requires run_id")
         if data.get("search_receipt") is not None:
             require(data["stage"] == "indexed", "search_receipt is only valid on indexed stage")
             receipt = data["search_receipt"]
             obj(receipt, SEARCH_RECEIPT_FIELDS)
             token(receipt["index_version"])
-            require(type(receipt["hit_present"]) is bool,
-                    "search_receipt hit_present must be boolean")
+            require(receipt["hit_present"] is True,
+                    "search_receipt requires a matched target hit (hit_present=true)")
             if receipt["ocr_source"] is not None:
                 token(receipt["ocr_source"])
             if receipt["ocr_engine"] is not None:
@@ -433,7 +434,10 @@ def validate_event(event):
                 require(data["index_id"] == receipt["index_version"],
                         "search_receipt index_version must match index_id")
             data["search_receipt"] = receipt
-        identity = [event["page_id"], p["stage"], p["run_id"]]
+        # Current publication state in search is page-scoped per source so a newer baseline
+        # or replacement verification supersedes earlier run-scoped indexed state in latest.
+        identity = ([event["page_id"], p["stage"]] if p["stage"] == "indexed"
+                    else [event["page_id"], p["stage"], p["run_id"]])
         invariant = ""
     else:
         raise CatalogError("unsupported observation kind")
@@ -549,7 +553,8 @@ def ingest(db, batch):
                 conn.execute("""INSERT INTO latest VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(key) DO UPDATE SET event_id=excluded.event_id,
                     observed_at=excluded.observed_at,data=excluded.data,
-                    engine=excluded.engine,status=excluded.status,state=excluded.state""",
+                    engine=excluded.engine,status=excluded.status,
+                    run_id=excluded.run_id,stage=excluded.stage,state=excluded.state""",
                              (event["key"], event["invariant"], event["kind"], event["source"],
                               event["page_id"], event["event_id"], event["observed_at"], canonical(data),
                               data.get("engine_id"), data.get("status") or data.get("decision"),
@@ -706,6 +711,20 @@ def ingest_worker(db, input_path, evidence_out, batch_id, source):
     return ingest(db, write_atomic_evidence(evidence_out, db, events))
 
 
+IMPORT_PART_RE = re.compile(
+    r"pages/([A-Za-z0-9-]+_\d{4}-\d\d-\d\d_ed-[1-9]\d*)\.([A-Za-z0-9-]{1,32})\.(\d{8}T\d{12}Z)\.parquet\Z"
+)
+IMPORT_ALTO_RE = re.compile(
+    r"alto/([A-Za-z0-9-]+_\d{4}-\d\d-\d\d_ed-[1-9]\d*_seq-[1-9]\d*)\.([A-Za-z0-9-]{1,32})\.(\d{8}T\d{12}Z)\.xml\Z"
+)
+IMPORT_RUNS_RE = re.compile(
+    r"runs/([A-Za-z0-9-]+_\d{4}-\d\d-\d\d_ed-[1-9]\d*)\.([A-Za-z0-9-]{1,32})\.(\d{8}T\d{12}Z)\.parquet\Z"
+)
+HITS_RESPONSE_FIELDS = {
+    "index_version", "synthetic", "place", "title", "total", "days", "items", "next_cursor",
+}
+
+
 def ingest_import(db, input_path, evidence_out, batch_id, source):
     """ocr-sync committed ImportRecord JSON -> structural imported page_state evidence (never acceptance)."""
     token(batch_id)
@@ -716,22 +735,79 @@ def ingest_import(db, input_path, evidence_out, batch_id, source):
     require(0 < len(raw) <= MAX_BATCH, "import record exceeds 16 MiB")
     record = load_json(raw)
     require(isinstance(record, dict), "import record must be an object")
-    obj({k: v for k, v in record.items() if k != "pages"},
-        ("run", "committed_at", "part", "rows", "imported"))
+    obj({k: v for k, v in record.items() if k != "outcomes"},
+        ("run", "at", "index_version", "sources", "pages"))
     import_id = token(record["run"])
-    committed_at = timestamp(record["committed_at"])
-    safe_reference(record["part"])
-    require(type(record["rows"]) is int and 0 <= record["rows"] <= 10**12, "invalid import row count")
-    imported = record["imported"]
-    require(isinstance(imported, list) and 0 < len(imported) <= MAX_EVENTS,
-            "import record requires 1..10000 imported rows")
-    require(record["rows"] >= len(imported), "import rows count smaller than imported entries")
+    committed_at = timestamp(record["at"])
+    token(record["index_version"])
+    outcomes_ref = record.get("outcomes")
+    if outcomes_ref is not None:
+        safe_reference(outcomes_ref)
+        require(re.fullmatch(
+            r"ocr-local/outcomes/\d{4}-\d\d-\d\d/" + re.escape(import_id) + r"\.parquet",
+            outcomes_ref) is not None, "invalid ImportRecord outcomes path")
+    pages = record["pages"]
+    require(isinstance(pages, list) and len(pages) <= MAX_EVENTS,
+            "invalid ImportRecord pages list")
+    page_lccns = set()
+    page_path_re = re.compile(r"ocr-local/pages/([A-Za-z0-9-]+)/" + re.escape(import_id) + r"\.parquet\Z")
+    for page_ref in pages:
+        safe_reference(page_ref)
+        m = page_path_re.fullmatch(page_ref)
+        require(m is not None and m[1] not in page_lccns, "invalid or duplicate ImportRecord pages entry")
+        page_lccns.add(m[1])
+    sources = record["sources"]
+    require(isinstance(sources, list) and 0 < len(sources) <= MAX_EVENTS,
+            "ImportRecord requires 1..10000 sources")
+    imported_parts, imported_altos, imported_order, imported_runs, seen_paths = {}, {}, [], set(), set()
+    for entry in sources:
+        require(isinstance(entry, dict), "ImportRecord source entry must be an object")
+        obj({k: v for k, v in entry.items() if k != "reason"}, ("path", "etag", "outcome"))
+        path = safe_reference(entry["path"])
+        require(path not in seen_paths, "duplicate source path in ImportRecord")
+        seen_paths.add(path)
+        require(isinstance(entry["etag"], str) and bool(entry["etag"].strip()),
+                "ImportRecord source etag cannot be blank")
+        short_text(entry["etag"], 256)
+        outcome = entry["outcome"]
+        require(outcome in ("imported", "quarantined"), "invalid ImportRecord source outcome")
+        if outcome == "quarantined":
+            require(entry.get("reason") is not None, "quarantined source requires reason")
+            token(entry["reason"])
+            continue
+        require(entry.get("reason") is None, "imported source must not have quarantine reason")
+        part_m = IMPORT_PART_RE.fullmatch(path)
+        alto_m = IMPORT_ALTO_RE.fullmatch(path)
+        runs_m = IMPORT_RUNS_RE.fullmatch(path)
+        if part_m is not None:
+            issue, node, stamp = part_m.groups()
+            require((node, stamp) not in imported_parts, "duplicate imported part for run")
+            imported_parts[(node, stamp)] = issue
+        elif alto_m is not None:
+            doc_id, node, stamp = alto_m.groups()
+            require((node, stamp) not in imported_altos, "duplicate imported ALTO for run")
+            imported_altos[(node, stamp)] = doc_id
+            imported_order.append((node, stamp))
+        elif runs_m is not None:
+            issue, node, stamp = runs_m.groups()
+            require((issue, node, stamp) not in imported_runs, "duplicate imported runs record for run")
+            imported_runs.add((issue, node, stamp))
+        else:
+            raise CatalogError("unrecognized imported source path in ImportRecord")
+    require(bool(imported_order) and set(imported_parts) == set(imported_altos),
+            "ImportRecord requires matching imported part and ALTO sources")
+    for issue, node, stamp in imported_runs:
+        require(imported_parts.get((node, stamp)) == issue,
+                "imported runs source does not match imported part")
+    imported_lccns = set()
     events = []
-    for entry in imported:
-        obj(entry, ("doc_id", "run_id", "node"))
-        doc_id = token(entry["doc_id"])
-        run_id = token(entry["run_id"])
-        short_text(entry["node"], 256)
+    for node, stamp in imported_order:
+        issue = imported_parts[(node, stamp)]
+        doc_id = token(imported_altos[(node, stamp)])
+        require(doc_id.startswith(issue + "_seq-"),
+                "imported ALTO doc_id does not match part issue")
+        imported_lccns.add(issue.split("_", 1)[0])
+        run_id = token(node + "." + stamp)
         payload = {"stage": "imported", "state": "present", "run_id": run_id,
                    "import_id": import_id, "committed_at": committed_at}
         event = {"schema_version": 1, "batch_id": batch_id,
@@ -741,6 +817,9 @@ def ingest_import(db, input_path, evidence_out, batch_id, source):
         validate_event(event)
         require(len(canonical(event).encode()) <= MAX_LINE, "projected import event exceeds 64 KiB")
         events.append(canonical(event) + "\n")
+    require(imported_lccns == page_lccns,
+            "ImportRecord pages list does not match imported source LCCNs")
+    require(outcomes_ref is not None, "ImportRecord with imported pages requires outcomes path")
     return ingest(db, write_atomic_evidence(evidence_out, db, events))
 
 
@@ -789,6 +868,8 @@ def ingest_release(db, input_path, evidence_out, batch_id, source):
                     "accepted replacement decision requires selected_engine")
             short_text(selected_engine, 256)
         else:
+            if decision == "revoked":
+                require(run_id is not None, "revoked release decision requires run_id")
             state = "blocked" if decision == "revoked" else "missing"
             selected_source = token(entry.get("selected_source") or "loc")
             selected_engine = entry.get("selected_engine")
@@ -831,49 +912,41 @@ def ingest_search_provenance(db, input_path, evidence_out, batch_id, source, pag
     require(0 < len(raw) <= MAX_LINE, "search response exceeds 64 KiB")
     response_sha256 = hashlib.sha256(raw).hexdigest()
     body = load_json(raw)
-    require(isinstance(body, dict) and "index_version" in body and isinstance(body.get("hits"), list),
+    require(isinstance(body, dict) and set(body) <= HITS_RESPONSE_FIELDS and
+            "index_version" in body and isinstance(body.get("items"), list),
             "invalid /v1/hits search response")
     index_version = token(body["index_version"])
     doc_id = page_id.split(":", 1)[1]
     matches = []
-    for hit in body["hits"]:
+    for hit in body["items"]:
         require(isinstance(hit, dict) and isinstance(hit.get("doc_id"), str), "invalid search hit")
         token(hit["doc_id"])
         if hit["doc_id"] == doc_id:
             matches.append(hit)
-    require(len(matches) <= 1, "duplicate doc_id in /v1/hits response")
-    if matches:
-        hit = matches[0]
-        hit_present = True
-        ocr = hit.get("ocr")
-        if ocr is not None:
-            obj(ocr, ("source", "engine"))
-            ocr_source = token(ocr["source"])
-            require(isinstance(ocr["engine"], str) and ocr["engine"].strip(),
-                    "search hit ocr.engine cannot be blank")
-            ocr_engine = short_text(ocr["engine"], 256)
-            require(run_id is not None, "published replacement OCR provenance requires run_id")
-            decision = "accepted"
-            decision_reason = "published_replacement"
-            state = "present"
-            selected_source = ocr_source
-            selected_engine = ocr_engine
-        else:
-            ocr_source = None
-            ocr_engine = None
-            decision = "unchanged_baseline"
-            decision_reason = "unchanged_baseline"
-            state = "missing"
-            selected_source = "loc"
-            selected_engine = None
+    require(len(matches) == 1, "/v1/hits response must contain exactly one matching item for page_id")
+    hit = matches[0]
+    hit_present = True
+    ocr = hit.get("ocr")
+    if ocr is not None:
+        obj(ocr, ("source", "engine"))
+        ocr_source = token(ocr["source"])
+        require(ocr_source != "loc", "replacement ocr.source cannot be loc")
+        require(isinstance(ocr["engine"], str) and ocr["engine"].strip(),
+                "search hit ocr.engine cannot be blank")
+        ocr_engine = short_text(ocr["engine"], 256)
+        require(run_id is not None, "published replacement OCR provenance requires run_id")
+        decision = "accepted"
+        decision_reason = "published_replacement"
+        state = "present"
+        selected_source = ocr_source
+        selected_engine = ocr_engine
     else:
-        hit_present = False
         ocr_source = None
         ocr_engine = None
         decision = "unchanged_baseline"
-        decision_reason = "hit_absent"
+        decision_reason = "unchanged_baseline"
         state = "missing"
-        selected_source = None
+        selected_source = "loc"
         selected_engine = None
     receipt = {"index_version": index_version, "hit_present": hit_present,
                "ocr_source": ocr_source, "ocr_engine": ocr_engine,
@@ -974,10 +1047,27 @@ def trace(db, page_id, run_id=None):
         artifact_state = ("verified" if "verified" in artifact_states else
                           "present" if "present" in artifact_states else
                           "missing" if "missing" in artifact_states else "unknown")
+
+        resolved_run_id = run_id
+        if resolved_run_id is None:
+            all_accepted = [i for i in items if i["kind"] == "page_state" and i["data"].get("stage") == "accepted"]
+            present_accepted = [i for i in all_accepted if i["data"].get("state") == "present"]
+            all_imported = [i for i in items if i["kind"] == "page_state" and i["data"].get("stage") == "imported"]
+            all_runs = [i for i in items if i["kind"] == "run"]
+            all_executions = [i for i in items if i["kind"] == "execution"]
+            all_indexed = [i for i in items if i["kind"] == "page_state" and i["data"].get("stage") == "indexed"]
+            for group in (present_accepted, all_accepted, all_imported, all_runs, all_executions, all_indexed):
+                for candidate in reversed(group):
+                    if candidate["data"].get("run_id") is not None:
+                        resolved_run_id = candidate["data"]["run_id"]
+                        break
+                if resolved_run_id is not None:
+                    break
+
         executions = [i for i in items if i["kind"] == "execution" and
-                      (run_id is None or i["data"].get("run_id") == run_id)]
+                      (resolved_run_id is None or i["data"].get("run_id") == resolved_run_id)]
         runs = [i for i in items if i["kind"] == "run" and
-                (run_id is None or i["data"].get("run_id") == run_id)]
+                (resolved_run_id is None or i["data"].get("run_id") == resolved_run_id)]
 
         def stage_items(stage_name, allow_unscoped_baseline=False):
             matched = []
@@ -985,23 +1075,16 @@ def trace(db, page_id, run_id=None):
                 if item["kind"] != "page_state" or item["data"].get("stage") != stage_name:
                     continue
                 item_run = item["data"].get("run_id")
-                if run_id is None or item_run == run_id or (allow_unscoped_baseline and item_run is None):
+                is_baseline = allow_unscoped_baseline and (
+                    item_run is None or item["data"].get("decision") == "unchanged_baseline"
+                )
+                if resolved_run_id is None or item_run == resolved_run_id or is_baseline:
                     matched.append(item)
             return matched
 
         imported_rows = stage_items("imported")
-        accepted_rows = stage_items("accepted")
+        accepted_rows = stage_items("accepted", allow_unscoped_baseline=True)
         indexed_rows = stage_items("indexed", allow_unscoped_baseline=True)
-
-        resolved_run_id = run_id
-        if resolved_run_id is None:
-            for group in (accepted_rows, imported_rows, runs, executions, indexed_rows):
-                for candidate in reversed(group):
-                    if candidate["data"].get("run_id") is not None:
-                        resolved_run_id = candidate["data"]["run_id"]
-                        break
-                if resolved_run_id is not None:
-                    break
 
         if imported_rows:
             latest_imp = imported_rows[-1]
@@ -1115,11 +1198,68 @@ def trace(db, page_id, run_id=None):
                 "items": [],
             }
 
+        def release_matches_index(rel_id, idx_id):
+            return (isinstance(rel_id, str) and isinstance(idx_id, str) and
+                    (idx_id == rel_id or idx_id == "pages-" + rel_id or rel_id == "pages-" + idx_id))
+
+        receipt = search_provenance["search_receipt"]
+        has_verified_or_present_artifact = artifact_state in ("present", "verified")
+        has_ok_execution = any(
+            e["data"].get("run_id") == resolved_run_id and e["data"].get("status") == "ok"
+            for e in executions
+        )
+        has_selected_ok_run = any(
+            r["data"].get("run_id") == resolved_run_id and r["data"].get("status") == "ok" and
+            r["data"].get("selected") is True
+            for r in runs
+        )
+        has_matching_import = (
+            imported_summary["imported"] is True and
+            imported_summary["run_id"] == resolved_run_id and
+            imported_summary["import_id"] is not None and
+            imported_summary["committed_at"] is not None
+        )
+        has_matching_acceptance = (
+            release_decision["accepted"] is True and
+            release_decision["run_id"] == resolved_run_id and
+            release_decision["release_id"] is not None and
+            release_decision["import_id"] in (None, imported_summary["import_id"]) and
+            release_decision["selected_source"] not in (None, "loc") and
+            isinstance(release_decision["selected_engine"], str) and
+            bool(release_decision["selected_engine"].strip())
+        )
+        has_matching_publication = (
+            search_provenance["published"] is True and
+            search_provenance["run_id"] == resolved_run_id and
+            search_provenance["import_id"] in (None, imported_summary["import_id"]) and
+            release_matches_index(release_decision["release_id"], search_provenance["release_id"]) and
+            release_matches_index(release_decision["release_id"], search_provenance["index_id"]) and
+            release_matches_index(search_provenance["release_id"], search_provenance["index_id"]) and
+            isinstance(receipt, dict) and
+            receipt.get("hit_present") is True and
+            receipt.get("index_version") == search_provenance["index_id"] and
+            receipt.get("ocr_source") not in (None, "loc") and
+            receipt.get("ocr_source") == release_decision["selected_source"] == search_provenance["selected_source"] and
+            isinstance(receipt.get("ocr_engine"), str) and
+            bool(receipt.get("ocr_engine").strip()) and
+            receipt.get("ocr_engine") == release_decision["selected_engine"] == search_provenance["selected_engine"]
+        )
+        publication_proof_complete = bool(
+            resolved_run_id is not None and
+            has_verified_or_present_artifact and
+            has_ok_execution and
+            has_selected_ok_run and
+            has_matching_import and
+            has_matching_acceptance and
+            has_matching_publication
+        )
+
         return {
             "page_id": page_id,
             "run_id": resolved_run_id,
             "accepted": release_decision["accepted"],
             "published": search_provenance["published"],
+            "publication_proof_complete": publication_proof_complete,
             "artifact": {"state": artifact_state, "items": artifacts},
             "execution": {"state": "observed" if (executions or runs) else "unknown",
                           "executions": executions, "runs": runs},
