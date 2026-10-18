@@ -785,6 +785,352 @@ class CatalogTests(unittest.TestCase):
                        "page_id", "batch_id", "stage_id", "underlying cache age unknown"):
             self.assertIn(phrase, result.stdout)
 
+    def test_mere_worker_success_or_imported_never_implies_accepted_or_published(self):
+        worker_file = ROOT / "scripts/fixtures/data_catalog/worker-success.json"
+        worker_meta = json.loads(worker_file.read_text())
+        doc_id = worker_meta["doc_id"]
+        page_id = "loc:" + doc_id
+        run_id = worker_meta["run_id"]
+        self.cli("ingest-worker", "--input", str(worker_file),
+                 "--evidence-out", str(self.work / "worker.jsonl"),
+                 "--batch-id", "worker-ok", "--source", "worker-capture")
+        after_worker = c.trace(self.db, page_id)
+        self.assertEqual(after_worker["execution"]["state"], "observed")
+        self.assertEqual(after_worker["imported"]["state"], "unknown")
+        self.assertFalse(after_worker["imported"]["imported"])
+        self.assertEqual(after_worker["release_decision"]["state"], "unknown")
+        self.assertEqual(after_worker["release_decision"]["decision"], "unknown")
+        self.assertFalse(after_worker["accepted"])
+        self.assertEqual(after_worker["search_provenance"]["state"], "unknown")
+        self.assertEqual(after_worker["search_provenance"]["decision"], "unknown")
+        self.assertFalse(after_worker["published"])
+
+        import_id = "20261016T210000000000Z-11111111-0000"
+        committed_at = "2026-10-16T21:00:05.123456789Z"
+        import_file = self.work / "import.json"
+        import_file.write_text(c.canonical({
+            "run": import_id,
+            "committed_at": committed_at,
+            "part": "ocr-local/pages/part-" + import_id + ".parquet",
+            "rows": 1,
+            "imported": [{"doc_id": doc_id, "run_id": run_id, "node": "never-persist-node-name"}],
+        }) + "\n")
+        import_evidence = self.work / "import-evidence.jsonl"
+        res = self.cli("ingest-import", "--input", str(import_file),
+                       "--evidence-out", str(import_evidence),
+                       "--batch-id", "import-1", "--source", "ocr-sync")
+        self.assertEqual(res["inserted"], 1)
+        self.assertNotIn("never-persist-node-name", import_evidence.read_text())
+        self.assertNotIn(b"never-persist-node-name", self.db.read_bytes())
+
+        after_import = c.trace(self.db, page_id)
+        self.assertEqual(after_import["run_id"], run_id)
+        self.assertEqual(after_import["imported"]["state"], "present")
+        self.assertTrue(after_import["imported"]["imported"])
+        self.assertEqual(after_import["imported"]["import_id"], import_id)
+        self.assertEqual(after_import["imported"]["committed_at"], committed_at)
+        self.assertEqual(after_import["release_decision"]["state"], "unknown")
+        self.assertEqual(after_import["release_decision"]["decision"], "unknown")
+        self.assertFalse(after_import["release_decision"]["accepted"])
+        self.assertFalse(after_import["accepted"])
+        self.assertEqual(after_import["search_provenance"]["state"], "unknown")
+        self.assertEqual(after_import["search_provenance"]["decision"], "unknown")
+        self.assertFalse(after_import["search_provenance"]["published"])
+        self.assertFalse(after_import["published"])
+
+        stages = {s["id"]: s for s in c.snapshot(self.db)["stages"]}
+        self.assertEqual(stages["imported"]["state"], "observed")
+        self.assertEqual(stages["imported"]["count"], 1)
+        self.assertEqual(stages["accepted"]["state"], "unknown")
+        self.assertIsNone(stages["accepted"]["count"])
+        self.assertEqual(stages["indexed"]["state"], "unknown")
+        self.assertIsNone(stages["indexed"]["count"])
+
+    def test_release_decisions_accepted_rejected_revoked_and_published_provenance_roundtrip(self):
+        doc_a = "sn83045462_1890-05-03_ed-1_seq-7"
+        page_a = "loc:" + doc_a
+        run_a = "node1.20261016T201020618734Z"
+        doc_b = "sn83045462_1890-05-03_ed-1_seq-8"
+        page_b = "loc:" + doc_b
+        run_b = "node1.20261016T201500000000Z"
+        import_id = "20261017T181722229390Z-0ce09259-0000"
+        committed_at = "2026-10-17T18:17:37.870842308Z"
+        decided_at = "2026-10-18T01:00:00.000000000Z"
+        published_at = "2026-10-18T02:00:00.000000000Z"
+        verified_at = "2026-10-18T02:05:00.000000000Z"
+
+        release_file = self.work / "release-v1.json"
+        release_file.write_text(c.canonical({
+            "schema": 1,
+            "release_id": "v20261018-1",
+            "decided_at": decided_at,
+            "decisions": [
+                {
+                    "doc_id": doc_a,
+                    "run_id": run_a,
+                    "import_id": import_id,
+                    "committed_at": committed_at,
+                    "decision": "accepted",
+                    "decision_reason": "rule_v1",
+                    "selected_source": "usnm-tesseract",
+                    "selected_engine": "tesseract/5.5.1 deu_latf+deu",
+                },
+                {
+                    "doc_id": doc_b,
+                    "run_id": run_b,
+                    "import_id": import_id,
+                    "committed_at": committed_at,
+                    "decision": "rejected",
+                    "decision_reason": "margin",
+                    "selected_source": "loc",
+                    "selected_engine": None,
+                },
+            ],
+        }) + "\n")
+        res = self.cli("ingest-release", "--input", str(release_file),
+                       "--evidence-out", str(self.work / "release-v1.jsonl"),
+                       "--batch-id", "release-v1", "--source", "release-builder")
+        self.assertEqual(res["inserted"], 2)
+
+        trace_a = c.trace(self.db, page_a)
+        self.assertTrue(trace_a["accepted"])
+        self.assertFalse(trace_a["published"])
+        self.assertEqual(trace_a["release_decision"]["decision"], "accepted")
+        self.assertEqual(trace_a["release_decision"]["decision_reason"], "rule_v1")
+        self.assertEqual(trace_a["release_decision"]["release_id"], "v20261018-1")
+        self.assertEqual(trace_a["release_decision"]["run_id"], run_a)
+        self.assertEqual(trace_a["release_decision"]["import_id"], import_id)
+        self.assertEqual(trace_a["release_decision"]["selected_source"], "usnm-tesseract")
+        self.assertEqual(trace_a["release_decision"]["selected_engine"], "tesseract/5.5.1 deu_latf+deu")
+        self.assertEqual(trace_a["release_decision"]["decided_at"], decided_at)
+        self.assertEqual(trace_a["release_decision"]["committed_at"], committed_at)
+
+        trace_b = c.trace(self.db, page_b)
+        self.assertFalse(trace_b["accepted"])
+        self.assertFalse(trace_b["published"])
+        self.assertEqual(trace_b["release_decision"]["state"], "missing")
+        self.assertEqual(trace_b["release_decision"]["decision"], "rejected")
+        self.assertEqual(trace_b["release_decision"]["decision_reason"], "margin")
+        self.assertEqual(trace_b["release_decision"]["selected_source"], "loc")
+        self.assertIsNone(trace_b["release_decision"]["selected_engine"])
+
+        stages = {s["id"]: s for s in c.snapshot(self.db)["stages"]}
+        self.assertEqual(stages["accepted"]["state"], "observed")
+        self.assertEqual(stages["accepted"]["count"], 1)
+        self.assertEqual(len(c.query(self.db, "page_state", {"status": "accepted"})["items"]), 1)
+        self.assertEqual(len(c.query(self.db, "page_state", {"status": "rejected"})["items"]), 1)
+
+        hits_file = self.work / "hits-v20261018-1.json"
+        hits_raw = c.canonical({
+            "index_version": "pages-v20261018-1",
+            "hits": [{
+                "doc_id": doc_a,
+                "lccn": "sn83045462",
+                "date": "1890-05-03",
+                "ed": 1,
+                "seq": 7,
+                "title": "never-persist-newspaper-title",
+                "snippet": "never-persist-ocr-snippet-text",
+                "ocr": {
+                    "source": "usnm-tesseract",
+                    "engine": "tesseract/5.5.1 deu_latf+deu",
+                },
+            }],
+        }) + "\n"
+        hits_file.write_text(hits_raw)
+        search_ev = self.work / "search-v1.jsonl"
+        self.cli("ingest-search", "--input", str(hits_file),
+                 "--evidence-out", str(search_ev),
+                 "--batch-id", "search-v1", "--source", "public-hits-verifier",
+                 "--page-id", page_a, "--verified-at", verified_at,
+                 "--run-id", run_a, "--release-id", "v20261018-1",
+                 "--import-id", import_id, "--published-at", published_at)
+        self.assertNotIn("never-persist", search_ev.read_text())
+        self.assertNotIn(b"never-persist", self.db.read_bytes())
+
+        trace_a = c.trace(self.db, page_a)
+        self.assertTrue(trace_a["accepted"])
+        self.assertTrue(trace_a["published"])
+        sp = trace_a["search_provenance"]
+        self.assertEqual(sp["state"], "present")
+        self.assertEqual(sp["decision"], "accepted")
+        self.assertEqual(sp["release_id"], "v20261018-1")
+        self.assertEqual(sp["index_id"], "pages-v20261018-1")
+        self.assertEqual(sp["run_id"], run_a)
+        self.assertEqual(sp["import_id"], import_id)
+        self.assertEqual(sp["selected_source"], "usnm-tesseract")
+        self.assertEqual(sp["selected_engine"], "tesseract/5.5.1 deu_latf+deu")
+        self.assertEqual(sp["published_at"], published_at)
+        self.assertEqual(sp["verified_at"], verified_at)
+        self.assertEqual(sp["search_receipt"], {
+            "index_version": "pages-v20261018-1",
+            "hit_present": True,
+            "ocr_source": "usnm-tesseract",
+            "ocr_engine": "tesseract/5.5.1 deu_latf+deu",
+            "response_sha256": c.hashlib.sha256(hits_raw.encode()).hexdigest(),
+            "verified_at": verified_at,
+        })
+
+        # Explicit revocation supersedes prior acceptance in latest while preserving event history.
+        revoked_at = "2026-10-18T03:00:00.000000000Z"
+        revoke_file = self.work / "release-revoke.json"
+        revoke_file.write_text(c.canonical({
+            "schema": 1,
+            "release_id": "v20261018-2",
+            "decided_at": revoked_at,
+            "decisions": [{
+                "doc_id": doc_a,
+                "run_id": run_a,
+                "import_id": import_id,
+                "committed_at": committed_at,
+                "decision": "revoked",
+                "decision_reason": "revoked",
+                "selected_source": "loc",
+                "selected_engine": None,
+            }],
+        }) + "\n")
+        self.cli("ingest-release", "--input", str(revoke_file),
+                 "--evidence-out", str(self.work / "release-revoke.jsonl"),
+                 "--batch-id", "release-revoke", "--source", "release-builder")
+        trace_after_revoke = c.trace(self.db, page_a)
+        self.assertFalse(trace_after_revoke["accepted"])
+        self.assertEqual(trace_after_revoke["release_decision"]["state"], "blocked")
+        self.assertEqual(trace_after_revoke["release_decision"]["decision"], "revoked")
+        self.assertEqual(trace_after_revoke["release_decision"]["decision_reason"], "revoked")
+        self.assertEqual(trace_after_revoke["release_decision"]["release_id"], "v20261018-2")
+        self.assertEqual(trace_after_revoke["release_decision"]["selected_source"], "loc")
+        self.assertIsNone(trace_after_revoke["release_decision"]["selected_engine"])
+        self.assertEqual(trace_after_revoke["release_decision"]["decided_at"], revoked_at)
+        stages = {s["id"]: s for s in c.snapshot(self.db)["stages"]}
+        self.assertEqual(stages["accepted"]["state"], "blocked")
+        self.assertEqual(stages["accepted"]["count"], 0)
+
+        # Invalid decision/state combinations fail closed.
+        for bad_payload in (
+            {"stage": "accepted", "state": "missing", "run_id": run_a, "decision": "accepted"},
+            {"stage": "accepted", "state": "present", "run_id": None, "decision": "accepted"},
+            {"stage": "accepted", "state": "present", "run_id": run_a, "decision": "rejected"},
+            {"stage": "accepted", "state": "present", "run_id": run_a, "decision": "revoked"},
+            {"stage": "accepted", "state": "present", "run_id": run_a, "decision": "unchanged_baseline"},
+            {"stage": "imported", "state": "present", "run_id": run_a, "decision": "accepted"},
+        ):
+            with self.subTest(payload=bad_payload), self.assertRaises(c.CatalogError):
+                c.validate_event(event("bad-ps", "page_state", payload=bad_payload))
+
+    def test_issue_780_page_trace_committed_import_and_baseline_search_provenance(self):
+        doc_id = "sn83045582_1884-06-01_ed-1_seq-6"
+        page_id = "loc:" + doc_id
+        run_id = "usnm-ocr-node3-arcs-prod.20261017T171358276982Z"
+        import_id = "20261017T181722229390Z-0ce09259-0000"
+        committed_at = "2026-10-17T18:17:37.870842308Z"
+        verified_at = "2026-10-18T12:00:00.000000000Z"
+
+        # 1. Verified scan artifact
+        self.ingest(event("scan-780", "artifact", when="2026-10-17T17:00:00Z",
+                          page_id=page_id, source="scan-inventory",
+                          payload={"artifact_id": "scan", "sha256": HASH, "version": "v1",
+                                   "location": "cached-scans",
+                                   "reference": "keep/nbu_1884/sn83045582/1884-06-01/1/6.jpg",
+                                   "state": "verified", "observed_sha256": HASH}))
+
+        # 2. Worker execution & RunRecord for sn83045582_1884-06-01_ed-1_seq-6
+        worker_meta = json.loads((ROOT / "scripts/fixtures/data_catalog/worker-success.json").read_text())
+        worker_meta.update(run_id=run_id, doc_id=doc_id, language="deu",
+                           damage_before=0.268639,
+                           started_at="2026-10-17T17:13:58.276982Z",
+                           finished_at="2026-10-17T17:14:01.100000Z")
+        worker_meta["run_record"].update(run_id=run_id, doc_id=doc_id, language="deu",
+                                         damage_before=0.268639, damage_after=0.099350,
+                                         words=970, node_finished_at="2026-10-17T17:14:01.050000Z")
+        worker_path = self.work / "worker-780.json"
+        worker_path.write_text(c.canonical(worker_meta) + "\n")
+        self.cli("ingest-worker", "--input", str(worker_path),
+                 "--evidence-out", str(self.work / "worker-780.jsonl"),
+                 "--batch-id", "worker-780", "--source", "worker-capture")
+
+        # 3. Committed structural import 20261017T181722229390Z-0ce09259-0000
+        import_path = self.work / "import-780.json"
+        import_path.write_text(c.canonical({
+            "run": import_id,
+            "committed_at": committed_at,
+            "part": "ocr-local/pages/part-20261017T181722229390Z-0ce09259-0000.parquet",
+            "rows": 32,
+            "imported": [{"doc_id": doc_id, "run_id": run_id, "node": "worker-node-3"}],
+        }) + "\n")
+        self.cli("ingest-import", "--input", str(import_path),
+                 "--evidence-out", str(self.work / "import-780.jsonl"),
+                 "--batch-id", "import-780", "--source", "ocr-sync-import")
+
+        # 4. Read-only public /v1/hits response in pages-v20261010-2 without replacement ocr field
+        hits_path = self.work / "hits-780.json"
+        hits_raw = c.canonical({
+            "index_version": "pages-v20261010-2",
+            "hits": [{
+                "doc_id": doc_id,
+                "lccn": "sn83045582",
+                "date": "1884-06-01",
+                "ed": 1,
+                "seq": 6,
+            }],
+        }) + "\n"
+        hits_path.write_text(hits_raw)
+        self.cli("ingest-search", "--input", str(hits_path),
+                 "--evidence-out", str(self.work / "search-780.jsonl"),
+                 "--batch-id", "search-780", "--source", "public-hits-check",
+                 "--page-id", page_id, "--verified-at", verified_at,
+                 "--run-id", run_id, "--import-id", import_id)
+
+        traced = self.cli("trace", "--page-id", page_id)
+        self.assertEqual(traced, self.cli("query", "trace", "--page-id", page_id))
+        with c.make_server(self.db) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                url = ("http://127.0.0.1:" + str(server.server_address[1]) +
+                       "/trace?" + urllib.parse.urlencode({"page_id": page_id}))
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    self.assertEqual(json.load(response), traced)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
+        self.assertEqual(traced["page_id"], page_id)
+        self.assertEqual(traced["run_id"], run_id)
+        self.assertFalse(traced["accepted"])
+        self.assertFalse(traced["published"])
+        self.assertEqual(traced["artifact"]["state"], "verified")
+        self.assertEqual(traced["execution"]["state"], "observed")
+        self.assertEqual(traced["execution"]["runs"][0]["data"]["damage_before"], 0.268639)
+        self.assertEqual(traced["execution"]["runs"][0]["data"]["damage_after"], 0.099350)
+        self.assertEqual(traced["imported"]["state"], "present")
+        self.assertTrue(traced["imported"]["imported"])
+        self.assertEqual(traced["imported"]["import_id"], import_id)
+        self.assertEqual(traced["imported"]["run_id"], run_id)
+        self.assertEqual(traced["imported"]["committed_at"], committed_at)
+        self.assertEqual(traced["release_decision"]["state"], "unknown")
+        self.assertEqual(traced["release_decision"]["decision"], "unknown")
+        self.assertFalse(traced["release_decision"]["accepted"])
+        self.assertEqual(traced["search_provenance"]["state"], "missing")
+        self.assertEqual(traced["search_provenance"]["decision"], "unchanged_baseline")
+        self.assertEqual(traced["search_provenance"]["decision_reason"], "unchanged_baseline")
+        self.assertFalse(traced["search_provenance"]["published"])
+        self.assertEqual(traced["search_provenance"]["index_id"], "pages-v20261010-2")
+        self.assertEqual(traced["search_provenance"]["selected_source"], "loc")
+        self.assertIsNone(traced["search_provenance"]["selected_engine"])
+        self.assertEqual(traced["search_provenance"]["search_receipt"], {
+            "index_version": "pages-v20261010-2",
+            "hit_present": True,
+            "ocr_source": None,
+            "ocr_engine": None,
+            "response_sha256": c.hashlib.sha256(hits_raw.encode()).hexdigest(),
+            "verified_at": verified_at,
+        })
+        stages = {s["id"]: s for s in c.snapshot(self.db)["stages"]}
+        self.assertEqual(stages["imported"]["count"], 1)
+        self.assertIsNone(stages["accepted"]["count"])
+        self.assertEqual(stages["indexed"]["state"], "observed")
+        self.assertEqual(stages["indexed"]["count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

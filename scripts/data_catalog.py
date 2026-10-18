@@ -29,6 +29,16 @@ QUERY_SECONDS = 2
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 STAGES = ("queued", "allocated", "outcome", "accepted", "imported", "indexed")
+DECISIONS = ("accepted", "rejected", "revoked", "unchanged_baseline")
+PAGE_STATE_OPT = {
+    "import_id", "release_id", "index_id", "decision", "decision_reason",
+    "selected_source", "selected_engine", "committed_at", "decided_at",
+    "published_at", "verified_at", "search_receipt",
+}
+SEARCH_RECEIPT_FIELDS = (
+    "index_version", "hit_present", "ocr_source", "ocr_engine",
+    "response_sha256", "verified_at",
+)
 
 # RunRecord v1 in crates/usnm-ocr-contract/src/runs.rs, not an engine-run replacement.
 RUN_STR = set("""run_id doc_id node worker_version ocr_engine engine_id family
@@ -370,14 +380,61 @@ def validate_event(event):
         identity = [event["page_id"], data["run_id"], data["candidate_rank"], data["engine_id"]]
         invariant = digest([data["config_sha256"], data["image_sha256"]])
     elif kind == "page_state":
-        obj(p, ("stage", "state", "run_id"))
+        require(isinstance(p, dict), "page_state payload must be an object")
+        obj({k: v for k, v in p.items() if k not in PAGE_STATE_OPT},
+            ("stage", "state", "run_id"))
         require(p["stage"] in STAGES, "invalid independent page stage")
         require(p["state"] in ("present", "missing", "blocked"), "invalid page state")
         if p["run_id"] is not None:
             token(p["run_id"])
+        data = dict(p)
+        for key in ("import_id", "release_id", "index_id", "decision_reason", "selected_source"):
+            if data.get(key) is not None:
+                token(data[key])
+        if data.get("selected_engine") is not None:
+            require(isinstance(data["selected_engine"], str) and data["selected_engine"].strip(),
+                    "selected_engine cannot be blank")
+            short_text(data["selected_engine"], 256)
+        for key in ("committed_at", "decided_at", "published_at", "verified_at"):
+            if data.get(key) is not None:
+                data[key] = timestamp(data[key])
+        if data.get("decision") is not None:
+            require(data["stage"] in ("accepted", "indexed"),
+                    "decision is only valid for accepted or indexed stages")
+            require(data["decision"] in DECISIONS, "invalid release/publication decision")
+            if data["decision"] == "accepted":
+                require(data["state"] == "present", "accepted decision requires present state")
+                require(data["run_id"] is not None, "accepted decision requires run_id")
+            elif data["decision"] in ("rejected", "unchanged_baseline"):
+                require(data["state"] == "missing",
+                        "rejected or unchanged_baseline decision requires missing state")
+            elif data["decision"] == "revoked":
+                require(data["state"] in ("blocked", "missing"),
+                        "revoked decision requires blocked or missing state")
+        if data.get("search_receipt") is not None:
+            require(data["stage"] == "indexed", "search_receipt is only valid on indexed stage")
+            receipt = data["search_receipt"]
+            obj(receipt, SEARCH_RECEIPT_FIELDS)
+            token(receipt["index_version"])
+            require(type(receipt["hit_present"]) is bool,
+                    "search_receipt hit_present must be boolean")
+            if receipt["ocr_source"] is not None:
+                token(receipt["ocr_source"])
+            if receipt["ocr_engine"] is not None:
+                require(isinstance(receipt["ocr_engine"], str) and receipt["ocr_engine"].strip(),
+                        "search_receipt ocr_engine cannot be blank")
+                short_text(receipt["ocr_engine"], 256)
+            sha(receipt["response_sha256"])
+            receipt = dict(receipt, verified_at=timestamp(receipt["verified_at"]))
+            if not receipt["hit_present"] or receipt["ocr_source"] is None:
+                require(data["state"] != "present" and data.get("decision") != "accepted",
+                        "search_receipt without replacement ocr_source cannot claim present/accepted indexed state")
+            if data.get("index_id") is not None:
+                require(data["index_id"] == receipt["index_version"],
+                        "search_receipt index_version must match index_id")
+            data["search_receipt"] = receipt
         identity = [event["page_id"], p["stage"], p["run_id"]]
         invariant = ""
-        data = dict(p)
     else:
         raise CatalogError("unsupported observation kind")
     return {"key": digest([event["source"], kind, identity]), "invariant": invariant,
@@ -495,8 +552,8 @@ def ingest(db, batch):
                     engine=excluded.engine,status=excluded.status,state=excluded.state""",
                              (event["key"], event["invariant"], event["kind"], event["source"],
                               event["page_id"], event["event_id"], event["observed_at"], canonical(data),
-                              data.get("engine_id"), data.get("status"), data.get("run_id"),
-                              data.get("stage"), data.get("state")))
+                              data.get("engine_id"), data.get("status") or data.get("decision"),
+                              data.get("run_id"), data.get("stage"), data.get("state")))
             conn.execute("INSERT INTO batches VALUES(?,?,?)", (batch_id, batch_hash, len(parsed)))
         return {"batch_id": batch_id, "inserted": inserted, "replayed": False}
     finally:
@@ -599,6 +656,28 @@ def write_cached_scan_evidence(db, index, scan_root, evidence_out, batch_id, sou
         os.fsync(stream.fileno())
 
 
+def write_atomic_evidence(evidence_out, db, events):
+    require(0 < len(events) <= MAX_EVENTS, "batch exceeds 10000 observations")
+    raw = "".join(events).encode()
+    require(0 < len(raw) <= MAX_BATCH, "projected batch exceeds 16 MiB")
+    out = Path(evidence_out)
+    protect_catalog_output(out, db)
+    require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
+    with tempfile.NamedTemporaryFile(dir=out.parent, prefix="." + out.name + ".",
+                                     suffix=".pending") as stream:
+        os.chmod(stream.name, 0o600)
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+        os.link(stream.name, out)
+        directory = os.open(out.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    return out
+
+
 def ingest_worker(db, input_path, evidence_out, batch_id, source):
     """One real atomic worker metadata JSON file -> immutable catalog evidence batch."""
     token(batch_id)
@@ -624,22 +703,195 @@ def ingest_worker(db, input_path, evidence_out, batch_id, source):
         validate_event(event)
         require(len(canonical(event).encode()) <= MAX_LINE, "projected worker event exceeds 64 KiB")
         events.append(canonical(event) + "\n")
-    out = Path(evidence_out)
-    protect_catalog_output(out, db)
-    require(not out.exists() and not out.is_symlink(), "evidence output must be a new file")
-    with tempfile.NamedTemporaryFile(dir=out.parent, prefix="." + out.name + ".",
-                                     suffix=".pending") as stream:
-        os.chmod(stream.name, 0o600)
-        stream.write("".join(events).encode())
-        stream.flush()
-        os.fsync(stream.fileno())
-        os.link(stream.name, out)
-        directory = os.open(out.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    return ingest(db, out)
+    return ingest(db, write_atomic_evidence(evidence_out, db, events))
+
+
+def ingest_import(db, input_path, evidence_out, batch_id, source):
+    """ocr-sync committed ImportRecord JSON -> structural imported page_state evidence (never acceptance)."""
+    token(batch_id)
+    token(source)
+    with Path(input_path).open("rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "import input must be a regular file")
+        raw = stream.read(MAX_BATCH + 1)
+    require(0 < len(raw) <= MAX_BATCH, "import record exceeds 16 MiB")
+    record = load_json(raw)
+    require(isinstance(record, dict), "import record must be an object")
+    obj({k: v for k, v in record.items() if k != "pages"},
+        ("run", "committed_at", "part", "rows", "imported"))
+    import_id = token(record["run"])
+    committed_at = timestamp(record["committed_at"])
+    safe_reference(record["part"])
+    require(type(record["rows"]) is int and 0 <= record["rows"] <= 10**12, "invalid import row count")
+    imported = record["imported"]
+    require(isinstance(imported, list) and 0 < len(imported) <= MAX_EVENTS,
+            "import record requires 1..10000 imported rows")
+    require(record["rows"] >= len(imported), "import rows count smaller than imported entries")
+    events = []
+    for entry in imported:
+        obj(entry, ("doc_id", "run_id", "node"))
+        doc_id = token(entry["doc_id"])
+        run_id = token(entry["run_id"])
+        short_text(entry["node"], 256)
+        payload = {"stage": "imported", "state": "present", "run_id": run_id,
+                   "import_id": import_id, "committed_at": committed_at}
+        event = {"schema_version": 1, "batch_id": batch_id,
+                 "event_id": "import-" + digest([import_id, doc_id, run_id]),
+                 "kind": "page_state", "source": source, "observed_at": committed_at,
+                 "page_id": "loc:" + doc_id, "payload": payload}
+        validate_event(event)
+        require(len(canonical(event).encode()) <= MAX_LINE, "projected import event exceeds 64 KiB")
+        events.append(canonical(event) + "\n")
+    return ingest(db, write_atomic_evidence(evidence_out, db, events))
+
+
+def ingest_release(db, input_path, evidence_out, batch_id, source):
+    """Authoritative release selection/rejection/revocation decisions -> accepted-stage page_state evidence."""
+    token(batch_id)
+    token(source)
+    with Path(input_path).open("rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "release input must be a regular file")
+        raw = stream.read(MAX_BATCH + 1)
+    require(0 < len(raw) <= MAX_BATCH, "release decision file exceeds 16 MiB")
+    record = load_json(raw)
+    require(isinstance(record, dict), "release record must be an object")
+    obj(record, ("schema", "release_id", "decided_at", "decisions"))
+    require(type(record["schema"]) is int and record["schema"] == 1, "unsupported release schema")
+    release_id = token(record["release_id"])
+    default_decided_at = timestamp(record["decided_at"])
+    decisions = record["decisions"]
+    require(isinstance(decisions, list) and 0 < len(decisions) <= MAX_EVENTS,
+            "release record requires 1..10000 page decisions")
+    events = []
+    allowed_entry = {"doc_id", "page_id", "run_id", "import_id", "committed_at", "decided_at",
+                     "decision", "decision_reason", "selected_source", "selected_engine"}
+    for entry in decisions:
+        require(isinstance(entry, dict) and set(entry) <= allowed_entry, "invalid release decision entry")
+        for req in ("run_id", "decision", "decision_reason"):
+            require(req in entry, f"release decision entry missing {req}")
+        require(("doc_id" in entry) ^ ("page_id" in entry),
+                "release decision entry requires exactly one of doc_id or page_id")
+        page_id = entry["page_id"] if "page_id" in entry else "loc:" + token(entry["doc_id"])
+        token(page_id)
+        decision = entry["decision"]
+        require(decision in DECISIONS, "invalid release decision")
+        reason = token(entry["decision_reason"])
+        decided_at = timestamp(entry["decided_at"]) if entry.get("decided_at") is not None else default_decided_at
+        committed_at = timestamp(entry["committed_at"]) if entry.get("committed_at") is not None else None
+        import_id = token(entry["import_id"]) if entry.get("import_id") is not None else None
+        run_id = token(entry["run_id"]) if entry["run_id"] is not None else None
+        if decision == "accepted":
+            state = "present"
+            require(run_id is not None, "accepted release decision requires run_id")
+            selected_source = token(entry.get("selected_source"))
+            require(selected_source != "loc", "accepted replacement decision requires non-loc selected_source")
+            selected_engine = entry.get("selected_engine")
+            require(isinstance(selected_engine, str) and selected_engine.strip(),
+                    "accepted replacement decision requires selected_engine")
+            short_text(selected_engine, 256)
+        else:
+            state = "blocked" if decision == "revoked" else "missing"
+            selected_source = token(entry.get("selected_source") or "loc")
+            selected_engine = entry.get("selected_engine")
+            require(selected_engine is None,
+                    "non-accepted release decision must not claim a replacement selected_engine")
+        payload = {"stage": "accepted", "state": state, "run_id": run_id,
+                   "release_id": release_id, "import_id": import_id,
+                   "decision": decision, "decision_reason": reason,
+                   "selected_source": selected_source, "selected_engine": selected_engine,
+                   "decided_at": decided_at, "committed_at": committed_at}
+        event = {"schema_version": 1, "batch_id": batch_id,
+                 "event_id": "release-" + digest([release_id, page_id, run_id, decision, decided_at]),
+                 "kind": "page_state", "source": source, "observed_at": decided_at,
+                 "page_id": page_id, "payload": payload}
+        validate_event(event)
+        require(len(canonical(event).encode()) <= MAX_LINE, "projected release event exceeds 64 KiB")
+        events.append(canonical(event) + "\n")
+    return ingest(db, write_atomic_evidence(evidence_out, db, events))
+
+
+def ingest_search_provenance(db, input_path, evidence_out, batch_id, source, page_id, verified_at,
+                             run_id=None, release_id=None, import_id=None, published_at=None):
+    """Public /v1/hits JSON response -> indexed-stage search provenance without persisting text."""
+    token(batch_id)
+    token(source)
+    token(page_id)
+    require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:.+", page_id) is not None,
+            "page_id must be source-qualified, e.g. loc:sn..._seq-1")
+    verified = timestamp(verified_at)
+    if run_id is not None:
+        token(run_id)
+    if release_id is not None:
+        token(release_id)
+    if import_id is not None:
+        token(import_id)
+    published = timestamp(published_at) if published_at is not None else None
+    with Path(input_path).open("rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "search input must be a regular file")
+        raw = stream.read(MAX_LINE + 1)
+    require(0 < len(raw) <= MAX_LINE, "search response exceeds 64 KiB")
+    response_sha256 = hashlib.sha256(raw).hexdigest()
+    body = load_json(raw)
+    require(isinstance(body, dict) and "index_version" in body and isinstance(body.get("hits"), list),
+            "invalid /v1/hits search response")
+    index_version = token(body["index_version"])
+    doc_id = page_id.split(":", 1)[1]
+    matches = []
+    for hit in body["hits"]:
+        require(isinstance(hit, dict) and isinstance(hit.get("doc_id"), str), "invalid search hit")
+        token(hit["doc_id"])
+        if hit["doc_id"] == doc_id:
+            matches.append(hit)
+    require(len(matches) <= 1, "duplicate doc_id in /v1/hits response")
+    if matches:
+        hit = matches[0]
+        hit_present = True
+        ocr = hit.get("ocr")
+        if ocr is not None:
+            obj(ocr, ("source", "engine"))
+            ocr_source = token(ocr["source"])
+            require(isinstance(ocr["engine"], str) and ocr["engine"].strip(),
+                    "search hit ocr.engine cannot be blank")
+            ocr_engine = short_text(ocr["engine"], 256)
+            require(run_id is not None, "published replacement OCR provenance requires run_id")
+            decision = "accepted"
+            decision_reason = "published_replacement"
+            state = "present"
+            selected_source = ocr_source
+            selected_engine = ocr_engine
+        else:
+            ocr_source = None
+            ocr_engine = None
+            decision = "unchanged_baseline"
+            decision_reason = "unchanged_baseline"
+            state = "missing"
+            selected_source = "loc"
+            selected_engine = None
+    else:
+        hit_present = False
+        ocr_source = None
+        ocr_engine = None
+        decision = "unchanged_baseline"
+        decision_reason = "hit_absent"
+        state = "missing"
+        selected_source = None
+        selected_engine = None
+    receipt = {"index_version": index_version, "hit_present": hit_present,
+               "ocr_source": ocr_source, "ocr_engine": ocr_engine,
+               "response_sha256": response_sha256, "verified_at": verified}
+    payload = {"stage": "indexed", "state": state, "run_id": run_id,
+               "release_id": release_id or index_version, "index_id": index_version,
+               "import_id": import_id, "decision": decision,
+               "decision_reason": decision_reason,
+               "selected_source": selected_source, "selected_engine": selected_engine,
+               "published_at": published, "verified_at": verified,
+               "search_receipt": receipt}
+    event = {"schema_version": 1, "batch_id": batch_id,
+             "event_id": "search-" + digest([index_version, page_id, run_id, response_sha256, verified]),
+             "kind": "page_state", "source": source, "observed_at": verified,
+             "page_id": page_id, "payload": payload}
+    validate_event(event)
+    require(len(canonical(event).encode()) <= MAX_LINE, "projected search event exceeds 64 KiB")
+    return ingest(db, write_atomic_evidence(evidence_out, db, [canonical(event) + "\n"]))
 
 
 def bounded_query(db, action):
@@ -696,6 +948,186 @@ def page(db, page_id, limit=50, after=""):
                  | {"data": load_json(row["data"])} for row in found[:limit]]
         return {"page_id": page_id, "items": items,
                 "next_cursor": found[limit - 1]["key"] if len(found) > limit else None}
+    return bounded_query(db, read)
+
+
+def trace(db, page_id, run_id=None):
+    """Reconcile one page across artifact, execution, import, release decision and search provenance."""
+    token(page_id)
+    require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:.+", page_id) is not None,
+            "page_id must be source-qualified, e.g. loc:sn..._seq-1")
+    if run_id is not None:
+        token(run_id)
+
+    def read(conn):
+        found = conn.execute("""SELECT latest.*,events.batch_id,events.line_number,
+                             events.sha256 AS event_sha256 FROM latest
+                             JOIN events USING(source,event_id)
+                             WHERE page_id=? ORDER BY observed_at,event_id,key LIMIT ?""",
+                             (page_id, MAX_LIMIT + 1)).fetchall()
+        require(len(found) <= MAX_LIMIT, "page trace exceeds 100 latest observations")
+        items = [{k: row[k] for k in ("key", "kind", "source", "page_id", "event_id", "observed_at",
+                                      "batch_id", "line_number", "event_sha256")}
+                 | {"data": load_json(row["data"])} for row in found]
+        artifacts = [i for i in items if i["kind"] == "artifact"]
+        artifact_states = {i["data"]["state"] for i in artifacts}
+        artifact_state = ("verified" if "verified" in artifact_states else
+                          "present" if "present" in artifact_states else
+                          "missing" if "missing" in artifact_states else "unknown")
+        executions = [i for i in items if i["kind"] == "execution" and
+                      (run_id is None or i["data"].get("run_id") == run_id)]
+        runs = [i for i in items if i["kind"] == "run" and
+                (run_id is None or i["data"].get("run_id") == run_id)]
+
+        def stage_items(stage_name, allow_unscoped_baseline=False):
+            matched = []
+            for item in items:
+                if item["kind"] != "page_state" or item["data"].get("stage") != stage_name:
+                    continue
+                item_run = item["data"].get("run_id")
+                if run_id is None or item_run == run_id or (allow_unscoped_baseline and item_run is None):
+                    matched.append(item)
+            return matched
+
+        imported_rows = stage_items("imported")
+        accepted_rows = stage_items("accepted")
+        indexed_rows = stage_items("indexed", allow_unscoped_baseline=True)
+
+        resolved_run_id = run_id
+        if resolved_run_id is None:
+            for group in (accepted_rows, imported_rows, runs, executions, indexed_rows):
+                for candidate in reversed(group):
+                    if candidate["data"].get("run_id") is not None:
+                        resolved_run_id = candidate["data"]["run_id"]
+                        break
+                if resolved_run_id is not None:
+                    break
+
+        if imported_rows:
+            latest_imp = imported_rows[-1]
+            imp_data = latest_imp["data"]
+            imported_summary = {
+                "state": imp_data["state"],
+                "imported": imp_data["state"] == "present",
+                "run_id": imp_data.get("run_id"),
+                "import_id": imp_data.get("import_id"),
+                "committed_at": imp_data.get("committed_at"),
+                "observed_at": latest_imp["observed_at"],
+                "source": latest_imp["source"],
+                "items": imported_rows,
+            }
+        else:
+            imported_summary = {
+                "state": "unknown",
+                "imported": False,
+                "run_id": None,
+                "import_id": None,
+                "committed_at": None,
+                "observed_at": None,
+                "source": None,
+                "items": [],
+            }
+
+        if accepted_rows:
+            latest_acc = accepted_rows[-1]
+            acc_data = latest_acc["data"]
+            acc_decision = acc_data.get("decision") or (
+                "accepted" if acc_data["state"] == "present" else
+                "revoked" if acc_data["state"] == "blocked" else "rejected"
+            )
+            release_decision = {
+                "state": acc_data["state"],
+                "decision": acc_decision,
+                "accepted": acc_data["state"] == "present" and acc_decision == "accepted",
+                "release_id": acc_data.get("release_id"),
+                "run_id": acc_data.get("run_id"),
+                "import_id": acc_data.get("import_id"),
+                "decision_reason": acc_data.get("decision_reason"),
+                "selected_source": acc_data.get("selected_source"),
+                "selected_engine": acc_data.get("selected_engine"),
+                "decided_at": acc_data.get("decided_at"),
+                "committed_at": acc_data.get("committed_at"),
+                "observed_at": latest_acc["observed_at"],
+                "source": latest_acc["source"],
+                "items": accepted_rows,
+            }
+        else:
+            release_decision = {
+                "state": "unknown",
+                "decision": "unknown",
+                "accepted": False,
+                "release_id": None,
+                "run_id": None,
+                "import_id": None,
+                "decision_reason": None,
+                "selected_source": None,
+                "selected_engine": None,
+                "decided_at": None,
+                "committed_at": None,
+                "observed_at": None,
+                "source": None,
+                "items": [],
+            }
+
+        if indexed_rows:
+            latest_idx = indexed_rows[-1]
+            idx_data = latest_idx["data"]
+            receipt = idx_data.get("search_receipt")
+            idx_decision = idx_data.get("decision") or (
+                "accepted" if idx_data["state"] == "present" else
+                "revoked" if idx_data["state"] == "blocked" else "unchanged_baseline"
+            )
+            search_provenance = {
+                "state": idx_data["state"],
+                "decision": idx_decision,
+                "published": idx_data["state"] == "present" and idx_decision == "accepted",
+                "release_id": idx_data.get("release_id"),
+                "index_id": idx_data.get("index_id") or (receipt or {}).get("index_version"),
+                "run_id": idx_data.get("run_id"),
+                "import_id": idx_data.get("import_id"),
+                "decision_reason": idx_data.get("decision_reason"),
+                "selected_source": idx_data.get("selected_source"),
+                "selected_engine": idx_data.get("selected_engine"),
+                "published_at": idx_data.get("published_at"),
+                "verified_at": idx_data.get("verified_at") or (receipt or {}).get("verified_at"),
+                "search_receipt": receipt,
+                "observed_at": latest_idx["observed_at"],
+                "source": latest_idx["source"],
+                "items": indexed_rows,
+            }
+        else:
+            search_provenance = {
+                "state": "unknown",
+                "decision": "unknown",
+                "published": False,
+                "release_id": None,
+                "index_id": None,
+                "run_id": None,
+                "import_id": None,
+                "decision_reason": None,
+                "selected_source": None,
+                "selected_engine": None,
+                "published_at": None,
+                "verified_at": None,
+                "search_receipt": None,
+                "observed_at": None,
+                "source": None,
+                "items": [],
+            }
+
+        return {
+            "page_id": page_id,
+            "run_id": resolved_run_id,
+            "accepted": release_decision["accepted"],
+            "published": search_provenance["published"],
+            "artifact": {"state": artifact_state, "items": artifacts},
+            "execution": {"state": "observed" if (executions or runs) else "unknown",
+                          "executions": executions, "runs": runs},
+            "imported": imported_summary,
+            "release_decision": release_decision,
+            "search_provenance": search_provenance,
+        }
+
     return bounded_query(db, read)
 
 
@@ -825,6 +1257,11 @@ def make_server(db, host="127.0.0.1", port=0):
                         "observed_at": conn.execute("SELECT max(observed_at) FROM latest").fetchone()[0]})
                     self.send_json(200, result)
                     return
+                if uri.path == "/trace":
+                    require("page_id" in params and set(params) <= {"page_id", "run_id"},
+                            "trace accepts page_id and optional run_id")
+                    self.send_json(200, trace(db, params["page_id"], params.get("run_id")))
+                    return
                 allowed = {"limit", "after"}
                 if uri.path in ("/runs", "/executions"):
                     allowed |= {"page_id", "source", "engine", "status", "run_id"}
@@ -919,11 +1356,19 @@ Artifact hash/reference and run config/input are immutable within their identiti
 Use new artifact version or run identity for changes. Sources remain independent.
 
 Adapters provided: actual worker metadata capture JSON, RunRecord JSON projection,
-bounded local cached-scan index/stat and explicit artifact/page-state/stage evidence.
+bounded local cached-scan index/stat, committed ocr-sync ImportRecord JSON
+(ingest-import), authoritative release selection/rejection/revocation decisions
+(ingest-release), public /v1/hits search provenance receipts (ingest-search),
+page provenance reconciliation (trace / query trace / GET /trace) and explicit
+artifact/page-state/stage evidence.
 NOT provided: Parquet/Blob inventory or queue/outcomes Parquet, ocr-local/pages import
-ledger, BOINC allocation journal, acceptance or search index exporters. Export those
+ledger, BOINC allocation journal, or live Quickwit index pointer mutation. Export those
 authoritative sources independently; do not label a local catalog ingest as page import.
 Missing adapters/sources produce unknown coverage (no fabricated BOINC-ready counts).
+Mere worker ok/selected or imported status NEVER implies accepted or published search
+inclusion. Release decisions keep accepted, rejected, revoked and unchanged_baseline
+outcomes explicit alongside release_id, run_id, import_id, selected_source,
+selected_engine, decision_reason, original timestamps and /v1/hits search_receipt.
 Snapshot observed_at is newest source observation; null with no evidence, never generation
 time. Each stage also has observed_at (null if absent); per-page stage freshness is the
 oldest latest observation among its independent sources, never a different stage's clock.
@@ -978,9 +1423,33 @@ def main(argv=None):
     p.add_argument("--evidence-out", required=True)
     p.add_argument("--batch-id", required=True)
     p.add_argument("--source", required=True)
+    p = subs.add_parser("ingest-import", help="import committed ocr-sync ImportRecord JSON as imported stage")
+    p.add_argument("--input", required=True)
+    p.add_argument("--evidence-out", required=True)
+    p.add_argument("--batch-id", required=True)
+    p.add_argument("--source", required=True)
+    p = subs.add_parser("ingest-release", help="import authoritative release selection/rejection/revocation JSON")
+    p.add_argument("--input", required=True)
+    p.add_argument("--evidence-out", required=True)
+    p.add_argument("--batch-id", required=True)
+    p.add_argument("--source", required=True)
+    p = subs.add_parser("ingest-search", help="import public /v1/hits JSON response as indexed search provenance")
+    p.add_argument("--input", required=True)
+    p.add_argument("--evidence-out", required=True)
+    p.add_argument("--batch-id", required=True)
+    p.add_argument("--source", required=True)
+    p.add_argument("--page-id", required=True)
+    p.add_argument("--verified-at", required=True)
+    p.add_argument("--run-id")
+    p.add_argument("--release-id")
+    p.add_argument("--import-id")
+    p.add_argument("--published-at")
+    p = subs.add_parser("trace", help="reconcile page artifact, execution, import, release decision and search provenance")
+    p.add_argument("--page-id", required=True)
+    p.add_argument("--run-id")
     subs.add_parser("init", help="create an empty local catalog; snapshot coverage remains unknown")
     p = subs.add_parser("query", help="bounded page detail or filtered metadata (keyset pagination)")
-    p.add_argument("kind", choices=("page", "run", "execution", "artifact", "page_state", "stage", "missing"))
+    p.add_argument("kind", choices=("page", "trace", "run", "execution", "artifact", "page_state", "stage", "missing"))
     for name in ("page-id", "source", "engine", "status", "run-id"):
         p.add_argument("--" + name)
     p.add_argument("--limit", type=int, default=50)
@@ -1003,10 +1472,25 @@ def main(argv=None):
                                          args.evidence_out, args.batch_id, args.source, args.cache_set)
         elif args.command == "ingest-worker":
             result = ingest_worker(args.db, args.input, args.evidence_out, args.batch_id, args.source)
+        elif args.command == "ingest-import":
+            result = ingest_import(args.db, args.input, args.evidence_out, args.batch_id, args.source)
+        elif args.command == "ingest-release":
+            result = ingest_release(args.db, args.input, args.evidence_out, args.batch_id, args.source)
+        elif args.command == "ingest-search":
+            result = ingest_search_provenance(
+                args.db, args.input, args.evidence_out, args.batch_id, args.source,
+                args.page_id, args.verified_at, args.run_id, args.release_id,
+                args.import_id, args.published_at)
+        elif args.command == "trace":
+            result = trace(args.db, args.page_id, args.run_id)
         elif args.command == "query":
             filters = {key: getattr(args, key) for key in
                        ("page_id", "source", "engine", "status", "run_id") if getattr(args, key)}
-            if args.kind in ("page", "missing"):
+            if args.kind == "trace":
+                require("page_id" in filters and set(filters) <= {"page_id", "run_id"},
+                        "trace requires --page-id and optional --run-id")
+                result = trace(args.db, args.page_id, args.run_id)
+            elif args.kind in ("page", "missing"):
                 require(set(filters) == {"page_id"}, "page/missing requires only --page-id")
                 result = (page if args.kind == "page" else plan_missing)(
                     args.db, args.page_id, args.limit, args.after)
