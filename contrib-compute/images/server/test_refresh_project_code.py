@@ -1,0 +1,201 @@
+import importlib.util
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+SPEC = importlib.util.spec_from_file_location("refresh_code", Path(__file__).with_name("refresh-project-code.py"))
+code = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(code)
+
+
+class RefreshProjectCode(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.project, self.source, self.templates = [self.root / n for n in ("project", "image", "templates")]
+        self.templates.mkdir()
+        for rel in ("bin/create_work", "cgi-bin/cgi", "py/Boinc/db_base.py", "html/inc/boinc_db.inc"):
+            dest = self.project / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text("old " + rel)
+            os.chmod(dest, 0o755)
+            src = self.source / ("tools/create_work" if rel == "bin/create_work" else "sched/cgi" if rel == "cgi-bin/cgi" else rel)
+            src.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text("new " + rel)
+        (self.project / "config.xml").write_text("private unchanged config")
+        (self.project / "upload").mkdir()
+        (self.project / "upload/result").write_text("ongoing work")
+        (self.project / "bin/boinc_path_config.py").write_text("project local path")
+        self.backup = self.root / "backup"
+
+    def test_copy_migrate_rollback_preserves_state_and_modes(self):
+        result = code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual(result["replaced"], 4)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "new bin/create_work")
+        self.assertEqual((self.project / "bin/create_work").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((self.project / "upload/result").read_text(), "ongoing work")
+        code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertEqual((self.project / "config.xml").read_text(), "private unchanged config")
+        self.assertEqual((self.project / "bin/boinc_path_config.py").read_text(), "project local path")
+        manifest = (self.backup / "manifest.json").read_text()
+        self.assertNotIn("private unchanged", manifest)
+        self.assertNotIn("upload/result", manifest)
+
+    def test_unknown_file_fails_before_any_backup_or_write(self):
+        (self.project / "bin/unknown").write_text("unknown")
+        with self.assertRaises(ValueError):
+            code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertFalse(self.backup.exists())
+
+    def test_runtime_symlink_escape_rejected(self):
+        (self.project / "py/escape").symlink_to(self.source)
+        with self.assertRaises(ValueError):
+            code.apply(self.project, self.source, self.templates, self.backup)
+
+    def test_partial_failure_restores_already_replaced_files(self):
+        original = code.replace
+        calls = 0
+        def fail_once(source, target, mode, *owner):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("fixture SMB busy file")
+            return original(source, target, mode, *owner)
+        with patch.object(code, "replace", side_effect=fail_once):
+            with self.assertRaises(OSError):
+                code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+
+    def test_rollback_refuses_new_concurrent_code_change(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        (self.project / "bin/create_work").write_text("concurrent deployment")
+        with self.assertRaises(ValueError):
+            code.rollback(self.project, self.backup)
+
+    def test_rollback_refuses_corrupted_backup(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        (self.backup / "files/bin/create_work").write_text("bad")
+        with self.assertRaises(ValueError):
+            code.rollback(self.project, self.backup)
+
+    def test_rollback_refuses_manifest_path_escape(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        p = self.backup / "manifest.json"
+        m = json.loads(p.read_text())
+        m["files"][0]["path"] = "../outside"
+        p.write_text(json.dumps(m))
+        with self.assertRaises(ValueError):
+            code.rollback(self.project, self.backup)
+
+    def test_validator_link_with_parent_traversal_rejected(self):
+        outside = self.root / "outside"
+        outside.write_text("not a validator")
+        (self.project / "bin/usnm_escape").symlink_to(str(self.templates) + "/../outside")
+        with self.assertRaises(ValueError):
+            code.apply(self.project, self.source, self.templates, self.backup)
+
+    def test_persistent_busy_target_does_not_prevent_restoring_written_files(self):
+        original = code.replace
+        def busy(source, target, mode, *owner):
+            if str(target).endswith("cgi-bin/cgi"):
+                raise OSError("fixture persistent SMB busy target")
+            return original(source, target, mode, *owner)
+        with patch.object(code, "replace", side_effect=busy):
+            with self.assertRaises(OSError):
+                code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "old cgi-bin/cgi")
+
+    def test_later_unwritten_drift_does_not_block_recovery(self):
+        original = code.replace
+        def drift_later(source, target, mode, *owner):
+            result = original(source, target, mode, *owner)
+            if str(target).endswith("bin/create_work") and str(source).startswith(str(self.source)):
+                (self.project / "cgi-bin/cgi").write_text("concurrent owner code")
+            return result
+        with patch.object(code, "replace", side_effect=drift_later):
+            with self.assertRaises(ValueError):
+                code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "concurrent owner code")
+
+    def test_rollback_recovers_nonconflicting_files_before_reporting_drift(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        (self.project / "cgi-bin/cgi").write_text("concurrent owner code")
+        with self.assertRaisesRegex(ValueError, "rollback conflict"):
+            code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "concurrent owner code")
+
+    def test_missing_target_does_not_block_other_recovery(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        (self.project / "cgi-bin/cgi").unlink()
+        with self.assertRaisesRegex(ValueError, "validation read failed"):
+            code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+        self.assertFalse((self.project / "cgi-bin/cgi").exists())
+
+    def test_missing_backup_does_not_block_other_recovery(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        (self.backup / "files/cgi-bin/cgi").unlink()
+        with self.assertRaisesRegex(ValueError, "validation read failed"):
+            code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+
+    def test_replacement_rechecks_drift_after_staging(self):
+        target = self.project / "bin/create_work"
+        expected = code.digest(target)
+        original = code.os.fchmod
+        def change_after_stage(path, mode):
+            original(path, mode)
+            target.write_text("concurrent edit after validation")
+        with patch.object(code.os, "fchmod", side_effect=change_after_stage):
+            with self.assertRaisesRegex(ValueError, "target drift"):
+                code.replace(self.source / "tools/create_work", target, 0o755, expected=expected)
+        self.assertEqual(target.read_text(), "concurrent edit after validation")
+        self.assertFalse(target.with_name(target.name + ".usnm-tls-stage").exists())
+
+    def test_drift_during_earlier_restoration_is_preserved_and_reported(self):
+        code.apply(self.project, self.source, self.templates, self.backup)
+        original = code.replace
+        def edit_pending(source, target, mode, *owner):
+            result = original(source, target, mode, *owner)
+            if str(target).endswith("py/Boinc/db_base.py"):
+                (self.project / "bin/create_work").write_text("edit during rollback")
+            return result
+        with patch.object(code, "replace", side_effect=edit_pending):
+            with self.assertRaisesRegex(ValueError, "rollback replacement failed"):
+                code.rollback(self.project, self.backup)
+        self.assertEqual((self.project / "bin/create_work").read_text(), "edit during rollback")
+        self.assertEqual((self.project / "cgi-bin/cgi").read_text(), "old cgi-bin/cgi")
+
+    def test_parent_link_drift_never_writes_external_cgi(self):
+        original = code.replace
+        outside = self.root / "external-cgi"
+        outside.mkdir()
+        external = outside / "cgi"
+        external.write_text("old cgi-bin/cgi")
+        def swap_parent(source, target, mode, *owner):
+            result = original(source, target, mode, *owner)
+            if str(target).endswith("bin/create_work") and str(source).startswith(str(self.source)):
+                (self.project / "cgi-bin").rename(self.project / "cgi-bin-original")
+                (self.project / "cgi-bin").symlink_to(outside)
+            return result
+        with patch.object(code, "replace", side_effect=swap_parent):
+            with self.assertRaises(OSError):
+                code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual(external.read_text(), "old cgi-bin/cgi")
+        self.assertEqual((self.project / "bin/create_work").read_text(), "old bin/create_work")
+
+    def test_setgid_mode_is_restored_after_ownership(self):
+        target = self.project / "bin/create_work"
+        os.chmod(target, 0o2755)
+        code.apply(self.project, self.source, self.templates, self.backup)
+        self.assertEqual(target.stat().st_mode & 0o7777, 0o2755)
+        code.rollback(self.project, self.backup)
+        self.assertEqual(target.stat().st_mode & 0o7777, 0o2755)

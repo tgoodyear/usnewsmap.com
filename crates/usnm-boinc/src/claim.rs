@@ -108,6 +108,11 @@ pub struct Sources<'a> {
     pub fetched: &'a fetched::List,
     /// The Tesseract models the worker image holds.
     pub installed: &'a BTreeSet<String>,
+    /// The source languages BOINC results can be trusted for (the gold calibration's
+    /// scope, #866). A page in any other language would be held back at collect and
+    /// stay hidden for the lease, so it stays with the nodes. `None` takes any
+    /// routable language.
+    pub languages: Option<&'a BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +170,9 @@ fn judge(text: &str, src: &Sources<'_>) -> Verdict {
     }
     if engine::route(&msg.language, src.installed).is_none() {
         return Verdict::Skip("unroutable");
+    }
+    if src.languages.is_some_and(|l| !l.contains(&msg.language)) {
+        return Verdict::Skip("untrusted_language");
     }
     if !src.fetched.contains(&msg.batch, &doc_id) {
         return Verdict::Skip("no_cached_scan");

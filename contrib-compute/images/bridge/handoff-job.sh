@@ -22,13 +22,14 @@
 #                         back the journal entries it touched; prints the job ids
 #   HANDOFF_STEP=claim    HANDOFF_MANIFEST=<as for export> CLAIM_NONCE=<8 to 64 letters or digits>
 #                         [CLAIM_MAX=<1 to 100, default 10>] [CLAIM_QUEUES=ocr-bulk[,ocr-priority]]
-#                         [CLAIM_LEASE_HOURS=<1 to 168, default 96>]
+#                         [CLAIM_LEASE_HOURS=<1 to 168, default 96>] [CLAIM_LANGUAGES=eng[,...]]
 #                         takes usable pages off the work queues, as a second consumer beside
 #                         the on-prem nodes (docs/boinc-batch-scheduler.md#queue-fed-work):
 #                         writes claims/<doc_id>.json, then scheduler/claims.json, which names
 #                         the pages and their scans and echoes the nonce. Messages it can't use
 #                         here go back to the queue for the nodes. Only pages on the newest
-#                         fetched-scans list for the manifest's version are taken
+#                         fetched-scans list for the manifest's version are taken, and with
+#                         CLAIM_LANGUAGES only pages in those source languages (#866)
 #   HANDOFF_STEP=release  HANDOFF_DOCS=<doc_id>[,<doc_id>...]
 #                         gives claimed pages back to their queue, for the nodes (a scan that
 #                         wasn't on the scan server after all)
@@ -156,6 +157,13 @@ case "${HANDOFF_STEP:-}" in
       [ "$q" = ocr-bulk ] || [ "$q" = ocr-priority ] || fail "CLAIM_QUEUES is ocr-bulk and/or ocr-priority"
       queue_args+=(--queue "$q")
     done
+    if [ -n "${CLAIM_LANGUAGES:-}" ]; then
+      IFS=, read -r -a languages <<< "$CLAIM_LANGUAGES"
+      for l in "${languages[@]}"; do
+        [[ $l =~ ^[a-z]{3}$ ]] || fail "CLAIM_LANGUAGES is a comma-separated list of three-letter codes"
+        queue_args+=(--language "$l")
+      done
+    fi
     mkdir -p "$work/claims" "$work/summary"
     rc=0
     usnm-boinc claim pull --queue-url "$QUEUE_URL" --out-url "$OUT_URL" --curated-url "$CURATED_URL" \
