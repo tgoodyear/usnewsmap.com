@@ -1172,6 +1172,69 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
                 item.unlink()
             directory.rmdir()
 
+    def test_interrupted_export_recovers_at_global_safety_cap(self):
+        # Regression for comment 4308880789: with batch_size=2, high_watermark=2, and
+        # max_global_pending=2, an interruption after persisting two selections leaves
+        # global_pending=2 (via missing) and global_free=0 on retry; existing allocations
+        # must still export and submit so work reaches BOINC.
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        self.fake.crash_export = True
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            self.tick(low_watermark=1, high_watermark=2, max_global_pending=2, server_status=xml)
+        self.assertEqual(len(self.state["selected"]), 2)
+        self.assertNotIn("refilling", self.state)
+        self.assertEqual(self.fake.jobs, {})
+
+        recovered = self.tick(low_watermark=1, high_watermark=2, max_global_pending=2,
+                              server_status=xml)
+        self.assertEqual(recovered["selected"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+        self.assertEqual(
+            [action[0] for action in self.fake.actions],
+            ["export", "submit", "submit"],
+        )
+
+    def test_interrupted_first_refill_resumes_under_hysteresis(self):
+        # Regression for comment 4308880809: with low=1, high=4 and batch_size=2, interruption
+        # after persisting selections but before completing export leaves two allocated pages
+        # and no saved refilling flag; retry enters hysteresis (pending=2) for fresh allocation
+        # but must still export and submit the recovered reservations.
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        self.fake.crash_export = True
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            self.tick(low_watermark=1, high_watermark=4, max_global_pending=10, server_status=xml)
+        self.assertEqual(len(self.state["selected"]), 2)
+        self.assertNotIn("refilling", self.state)
+        self.assertEqual(self.fake.jobs, {})
+
+        recovered = self.tick(low_watermark=1, high_watermark=4, max_global_pending=10,
+                              server_status=xml)
+        self.assertEqual(recovered["selected"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+        self.assertEqual(
+            [action[0] for action in self.fake.actions],
+            ["export", "submit", "submit"],
+        )
+
+    def test_non_canonical_ocr_workunits_are_not_double_counted_in_global_pending(self):
+        # Regression for comment 4308880830: batch-inventory counts all unassimilated workunits
+        # in pending_workunits, but pending_jobs only lists usnm_[0-9a-f]{64}. Three OCR workunits
+        # with other names (pending_workunits=3, pending_jobs=[], ocr_unsent=3) must report
+        # global_pending=3 (not 6) and allow 1 page to refill under a cap of 4.
+        self.fake.other = 3
+        xml = status_xml(ocr_unsent=3, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=3, high_watermark=4, max_global_pending=4,
+                          server_status=xml)
+        self.assertEqual(event["cohort_pending"], 3)
+        self.assertEqual(event["other_app_pending"], 0)
+        self.assertEqual(event["global_pending"], 3)
+        self.assertFalse(event["backpressure"])
+        self.assertEqual(event["selected"], 1)
+        self.assertEqual(len(self.fake.jobs), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -147,7 +147,7 @@ pages rather than overwriting them, including for historical cohorts.
    `low_watermark` (`backpressure_reason: "cohort_hysteresis"`) until the runnable
    queue drains back to `low_watermark`. When the global backlog reaches
    `max_global_pending`, refilling halts with `backpressure_reason:
-   "global_safety_cap"` (distinct from `"cohort_high_watermark"`,
+"global_safety_cap"` (distinct from `"cohort_high_watermark"`,
    `"cohort_hysteresis"`, `"collection_backlog"`, `"no_active_hosts"`, and
    `"draining"`). Assimilated jobs with missing or partial outputs still count
    toward `collection_backlog`; a stalled collector cannot create unbounded

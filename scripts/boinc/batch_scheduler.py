@@ -825,10 +825,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         other_status_pending = 0
 
     ocr_in_flight = max(len(pending_jobs), ocr_status_active)
+    global_in_flight = max(snapshot["pending_workunits"], ocr_in_flight + other_status_pending)
+    other_pending = global_in_flight - ocr_in_flight
     cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
-    unattributed_other = max(0, snapshot["pending_workunits"] - len(pending_jobs))
-    other_pending = max(unattributed_other, other_status_pending)
-    global_pending = cohort_pending + other_pending
+    global_pending = global_in_flight + uncollected_not_pending + len(missing)
     pending = cohort_pending if cohort_mode else global_pending
 
     uncertain = any(job["stage"] == "submitting" for job in server.values())
@@ -860,7 +860,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
             persist()
         export = [page for page in config["pages"] if page["page"] in selected and
                   (page["page"] not in owned or owned[page["page"]]["stage"] == "prepared")]
-        if export and global_free > 0:
+        if export:
             export = export[:config["batch_size"]]
             pages = {page["page"] for page in export}
             journals = [record["job"]["id"] for record in records
@@ -876,9 +876,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - backlog)
-        global_submit_room = max(0, global_cap - (ocr_in_flight + other_pending + backlog))
-        submit_limit = (min(config["batch_size"], cohort_submit_room, global_submit_room)
-                        if (refilling or pending >= high_target) else 0)
+        global_submit_room = max(0, global_cap - global_in_flight - backlog)
+        submit_limit = min(config["batch_size"], cohort_submit_room, global_submit_room)
         for record in owned.values():
             job_id = record["job"]["id"]
             if record["stage"] == "reserved" and \
