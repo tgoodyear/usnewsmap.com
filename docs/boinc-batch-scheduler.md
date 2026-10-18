@@ -191,10 +191,14 @@ there is no separate list to keep in step with them.
 ```
 
 There is no `batch` or `pages`: the pages are whatever the queue gives, from any
-number of batches. `claim_queues` is `ocr-bulk` by default and should stay so
-until a volunteer's turnaround is measured: a volunteer may take up to the
-workunits' three-day `delay_bound`, and a page someone was just shown should not
-wait for that. The on-prem node reads `ocr-priority` first either way.
+number of batches. `claim_queues` is `ocr-bulk` by default. A bulk workunit's
+`delay_bound` is three days. A page someone was shown (`reason` `user`, from
+`ocr-priority`) is submitted with a one-day `delay_bound` and workunit priority 10
+(#866), so a host that sits on it hands it on within a day. The priority takes
+effect only if the feeder orders by priority; the default feeder does not. A
+controller that claims `ocr-priority` should set `lease_hours` to cover that
+deadline plus a collect (36 hours), so a lost page returns to the queue sooner.
+The on-prem node reads `ocr-priority` first when it runs.
 
 ```
 ocr-bulk (and ocr-priority) --claim--> claims/<doc_id>.json in boinc-handoff
