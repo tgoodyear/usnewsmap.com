@@ -144,7 +144,11 @@ Do not mirror the worker into private ACR: anonymous volunteers cannot pull it.
 versions. An older app's artifact need not equal that pin. Anonymous `apps.php`
 redirects to login; an empty 302 body is not evidence that an app is absent.
 Check the production `app`/`app_version` rows and their signed Dockerfile downloads
-before releasing either version. Use the normal signer; stop if locked or absent.
+before releasing either version. Also inspect existing version/platform directories:
+absence from the DB does not permit overwriting an immutable signed payload.
+On 18 October both Surya 1.0/1.1 directories existed with the older `84c1069f…`
+worker while neither version was registered. A new worker requires an unused,
+reviewed version pair; do not delete or replace the old signed directories. Use the normal signer; stop if locked or absent.
 
 `surya-benchmark-stage` accepts a pinned bundle, without fetching or transforming
 its images. Prepare the same two v1.0.0 smoke subsets used by the candidate trials:

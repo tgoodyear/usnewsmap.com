@@ -1,11 +1,10 @@
 # Surya 2 on BOINC volunteers
 
-**Status: pilot not run; this is not a results report.** The project owner's
-14 October update says the CPU app version was published, but the GPU app
-version was not: production publishing was blocked by a deployment permission
-check. No probe units had been staged or submitted. CI's CPU smoke test and
-the worker's GPU diagnostics do not demonstrate that a volunteer's Docker or
-Podman runtime can pass through an NVIDIA GPU.
+**Status: pilot not run; this is not a results report.** An authoritative
+18 October production DB query found the `usnm_surya` app but no registered app
+versions. Existing signed 1.0/1.1 directories point at a different, older worker;
+they cannot be overwritten with the requested digest through the immutable
+release path. CI's CPU smoke and GPU diagnostics are not volunteer acceptance.
 
 Do not widen the sample or draw a production-routing conclusion from this
 document. First publish the GPU app through the normal signed release process,
@@ -83,3 +82,24 @@ covers 15:15–17:15 UTC; it was preserved, not preempted. No Surya GPU slot was
 claimed. No Surya app was published, BOINC work dispatched, or routing changed
 by this follow-up at this report revision. The results table remains unpopulated
 until real validator/assimilator outputs exist; #812 remains open for #810 too.
+
+
+### Authoritative release gate, 18 October 15:35–15:38 UTC
+
+A TLS-protected production DB query returned `usnm_surya` with NULL app-version
+fields: the app exists, neither 1.0 nor 1.1 is registered. Read-only payload
+inspection then found both immutable version directories already on the share,
+with `Dockerfile_1` pointing to the older worker
+`ghcr.io/tgoodyear/usnm-boinc-worker@sha256:84c1069f844e0c46e357dca0078ffb1f809340e36523ab5950294f82feeb66b2`.
+The real `enable_assignment` setting is 1 and both Surya validator scripts exist.
+
+This is a **signed-version identity collision**, not a worker-registry mismatch.
+The normal publisher refuses a different payload in an existing version/platform
+directory, even if registration previously failed. The requested worker digest
+cannot safely replace either directory. No directories, signed files, registry
+tags, app rows, account flags, or live queues were changed. Safe continuation
+requires a separately reviewed unused version pair (or maintainer-directed
+recovery preserving old signed artifacts), followed by normal signing and scoped
+publication. This receipt does not authorize removal/re-signing of old versions,
+a full-stack production redeploy, or use of the older worker as the requested
+engine. No production campaign ID or per-mode inference measurements exist.

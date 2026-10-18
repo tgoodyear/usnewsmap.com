@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import subprocess
 
 SUBSETS = ("overproof-en/smoke-10", "reichsanzeiger-de/smoke-10")
@@ -35,6 +34,16 @@ def prepare(release, out):
     raw = (release / "manifest.json").read_bytes()
     if digest(raw) != lock["manifest_sha256"]:
         raise ValueError("release manifest differs from committed v1.0.0 lock")
+    inventory = (release / "SHA256SUMS").read_bytes()
+    if digest(inventory) != lock["content_digest"]:
+        raise ValueError("release checksum inventory differs from committed lock")
+    licenses = {}
+    for line in inventory.decode().splitlines():
+        expected, name = line.split("  ", 1)
+        if name.startswith("LICENSES/"):
+            licenses[name] = checked(release, name, expected)
+    if not licenses:
+        raise ValueError("benchmark source licenses are missing")
     manifest = json.loads(raw)
     samples = {row["id"]: row for row in manifest["samples"]}
     rows, files = [], {}
@@ -63,7 +72,10 @@ def prepare(release, out):
         path = out / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    shutil.copytree(release / "LICENSES", out / "LICENSES")
+    for name, data in licenses.items():
+        path = out / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
     (out / "upstream-manifest.json").write_bytes(raw)
     data = encode(rows)
     (out / "inputs.json").write_bytes(data)
