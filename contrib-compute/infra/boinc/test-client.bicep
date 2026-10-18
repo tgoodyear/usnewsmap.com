@@ -20,7 +20,7 @@ param vmSize string = 'Standard_NC4as_T4_v3'
 @description('Run as an Azure Spot VM with Delete eviction policy.')
 param spot bool = true
 
-@description('BOINC project master URL, for example https://boinc.usnewsmap.com/usnmocr/.')
+@description('BOINC project master URL, for example https://boinc.usnewsmap.com/.')
 param projectUrl string
 
 @secure()

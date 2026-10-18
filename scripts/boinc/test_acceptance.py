@@ -32,7 +32,7 @@ S = module('acceptance_server')
 C = module('acceptance_client')
 RELEASE = dict(app='usnm_qwen', version_num=100, platform='x86_64-pc-linux-gnu', plan_class='docker_mt_2b')
 PROFILE = dict(cpus=4, memory_bytes=6 * 1024**3, disk_bytes=40 * 1024**3, gpu='none', client_version=80213)
-URL = 'https://boinc.usnewsmap.com/usnmocr/'
+URL = 'https://boinc.usnewsmap.com/'
 PROBE = dict(ready=True, project_url=URL, host_id=2, platform=RELEASE['platform'], cpus=4,
              memory_bytes=8 * 1024**3, disk_bytes=60 * 1024**3, gpus=[], client_version=80213,
              container_runtime=True)
@@ -78,6 +78,9 @@ elif args[:3]==['deployment','group','create'] and os.environ.get('AZ_HANG'): ti
 
 
 class Eligibility(Workspace):
+    def test_runner_uses_configured_master_url_verbatim(self):
+        self.assertEqual(self.runner().url, URL)
+
     def test_cpu_effective_resources_and_platform_fail_closed(self):
         A.eligible(PROBE, PROFILE, RELEASE, URL)
         for key, bad in [('cpus', 2), ('memory_bytes', 5 * 1024**3), ('disk_bytes', 2 * 1024**3),

@@ -345,8 +345,9 @@ Ubuntu, BOINC (`https://boinc.berkeley.edu/dl/linux/stable/noble`), and NVIDIA p
 repositories. Cloud-init installs Docker, `boinc-client` (>= 8.2.13 from the upstream BOINC
 noble repository, using `/var/lib/boinc`), and (when an NVIDIA GPU is present) the NVIDIA
 driver and `nvidia-container-toolkit`, adds `boinc` to the `docker` group, starts the client,
-creates a disposable account when `projectAuthenticator` is empty, and runs
-`boinccmd --project_attach https://<masterHost>/usnmocr/ <authenticator>`.
+creates a disposable account when `projectAuthenticator` is empty, and attaches to the exact
+configured BOINC master URL (for production, `https://boinc.usnewsmap.com/`). The project's
+filesystem path `/project/usnmocr` is not part of that URL.
 
 UNVERIFIED against a live deployment: cloud-init package installation, GPU detection by
 `boinc-client`, workunit execution on the VM, and end-to-end result assimilation.
