@@ -58,8 +58,11 @@ def score_text(raw: str) -> tuple[str, str]:
     chunks: list[str] = []
 
     def append_text(value: str | None, *, preserve_spaces: bool = False) -> None:
-        preserve_whitespace = preserve_spaces and value and value.isspace() and "\n" not in value and "\r" not in value
-        if value and (value.strip() or preserve_whitespace):
+        if not value:
+            return
+        if preserve_spaces and value.isspace():
+            chunks.append(" ")
+        elif value.strip():
             chunks.append(value)
 
     def append_newline() -> None:
@@ -171,10 +174,16 @@ def run() -> None:
         )
     if command_output(["git", "-C", str(source_dir), "status", "--porcelain"]) != "":
         raise SystemExit("CHURRO source checkout is dirty; use the exact clean pinned revision")
+    imported_source = Path(inspect.getfile(OCRClient)).resolve()
     try:
-        Path(inspect.getfile(OCRClient)).resolve().relative_to(source_dir)
+        imported_source_relative = imported_source.relative_to(source_dir).as_posix()
     except ValueError as error:
         raise SystemExit("CHURRO runtime was not imported from the pinned source checkout; install it editable") from error
+    tracked_import_path = command_output(
+        ["git", "-C", str(source_dir), "ls-files", "--error-unmatch", "--", imported_source_relative]
+    )
+    if tracked_import_path != imported_source_relative:
+        raise SystemExit("CHURRO runtime import is not a tracked file in the pinned source checkout")
     churro_package_version = importlib.metadata.version("churro-ocr")
     if churro_package_version != lock["runtime_version"]:
         raise SystemExit(

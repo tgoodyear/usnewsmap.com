@@ -31,6 +31,14 @@ class ChurroScoreTextTests(unittest.TestCase):
             ("Tom Jerry", "xml-page-text-metadata-excluded-lines-v2"),
         )
 
+    def test_normalizes_multiline_whitespace_between_inline_xml_elements(self) -> None:
+        raw = "<Document><Page><Line><Word>Tom</Word>\n  <Word>Jerry</Word></Line></Page></Document>"
+
+        self.assertEqual(
+            score_text(raw),
+            ("Tom Jerry", "xml-page-text-metadata-excluded-lines-v2"),
+        )
+
     def test_invalid_xml_uses_trimmed_raw_output(self) -> None:
         self.assertEqual(score_text("  not XML  "), ("not XML", "unparsed-raw-fallback"))
 
