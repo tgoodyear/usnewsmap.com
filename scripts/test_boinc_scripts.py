@@ -239,7 +239,7 @@ class LogsFrontendRetry(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True), \
                 mock.patch.object(self.client.subprocess, "run") as run:
             run.return_value = mock.Mock(returncode=0, stdout='["westus2"]')
-            self.assertEqual(self.client.query_host(SUB, subscription=SUB),
+            self.assertEqual(self.client.query_host(SUB.upper(), subscription=SUB),
                              "westus2.api.loganalytics.io")
             self.assertIn(f"[?customerId=='{SUB}'].location", run.call_args.args[0])
             self.assertIn("--subscription", run.call_args.args[0])

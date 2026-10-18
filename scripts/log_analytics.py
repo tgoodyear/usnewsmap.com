@@ -32,7 +32,7 @@ def query_host(workspace, *, host=None, location=None, identity="az", subscripti
     location = location or os.environ.get("LOG_ANALYTICS_WORKSPACE_LOCATION")
     if not location and identity == "az":
         args = ["az", "monitor", "log-analytics", "workspace", "list",
-                "--query", f"[?customerId=='{workspace}'].location", "-o", "json",
+                "--query", f"[?customerId=='{workspace.lower()}'].location", "-o", "json",
                 "--only-show-errors"]
         if subscription:
             args += ["--subscription", subscription]
