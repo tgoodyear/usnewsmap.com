@@ -39,6 +39,12 @@ SEARCH_RECEIPT_FIELDS = (
     "index_version", "hit_present", "ocr_source", "ocr_engine",
     "response_sha256", "verified_at",
 )
+ENGINE_SHORT_RE = re.compile(
+    r"([a-z0-9][a-z0-9_.+-]{0,63})/([0-9A-Za-z][0-9A-Za-z.+-]{0,63}) ([a-z0-9][a-z0-9_.+-]{0,63})\Z"
+)
+ENGINE_LEGACY_RE = re.compile(
+    r"([a-z0-9][a-z0-9_.+-]{0,63})-([0-9A-Za-z][0-9A-Za-z.+-]{0,63})/([a-z0-9][a-z0-9_.+-]{0,63})\Z"
+)
 
 # RunRecord v1 in crates/usnm-ocr-contract/src/runs.rs, not an engine-run replacement.
 RUN_STR = set("""run_id doc_id node worker_version ocr_engine engine_id family
@@ -153,6 +159,37 @@ def load_json(raw):
         raise CatalogError("invalid JSON") from exc
 
 
+def canonical_engine_key(value):
+    """Normalize a 13 §13.8.1 tag, short key, or legacy <family>-<ver>/<profile> tag to <family>/<ver> <profile>."""
+    require(isinstance(value, str) and bool(value.strip()), "engine identity cannot be blank")
+    short_text(value, 256)
+    short_m = ENGINE_SHORT_RE.fullmatch(value)
+    if short_m is not None:
+        family, version, profile = short_m.groups()
+        return f"{family}/{version} {profile}"
+    legacy_m = ENGINE_LEGACY_RE.fullmatch(value)
+    if legacy_m is not None:
+        family, version, profile = legacy_m.groups()
+        return f"{family}/{version} {profile}"
+    parts = value.split(" ")
+    if len(parts) > 1 and any("=" in field for field in parts[1:]):
+        head = parts[0]
+        require("/" in head, "structured ocr_engine tag requires <family>/<version>")
+        family, version = head.split("/", 1)
+        seen = {}
+        for field in parts[1:]:
+            require("=" in field, "structured ocr_engine field must be key=value")
+            k, v = field.split("=", 1)
+            require(k not in seen, "duplicate structured ocr_engine field")
+            seen[k] = v
+        require("profile" in seen, "structured ocr_engine tag requires profile")
+        profile = seen["profile"]
+        require(ENGINE_SHORT_RE.fullmatch(f"{family}/{version} {profile}") is not None,
+                "invalid structured ocr_engine family/version/profile")
+        return f"{family}/{version} {profile}"
+    return value
+
+
 def adapt_run(record, page_id):
     """Accept actual to_json_line RunRecord v1; persist only an allowlisted projection."""
     require(isinstance(record, dict), "run_record must be an object")
@@ -200,6 +237,10 @@ def adapt_run(record, page_id):
                 "route_id", "status", "language"):
         token(record[key])
     require(not record["selected"] or record["status"] == "ok", "selected read must be ok")
+    selected_engine = f"{record['family']}/{record['engine_version']} {record['profile']}"
+    if "/" in record["ocr_engine"] or " " in record["ocr_engine"]:
+        require(canonical_engine_key(record["ocr_engine"]) == selected_engine,
+                "RunRecord ocr_engine does not match family/engine_version/profile")
     config = {key: record[key] for key in (
         "engine_id", "engine_version", "image_digest", "models_digest", "models_json",
         "profile", "options_json", "scale", "tiles", "route_id", "routing_version",
@@ -209,7 +250,8 @@ def adapt_run(record, page_id):
         "status", "selected", "candidate_rank", "image_sha256", "image_digest",
         "models_digest", "language", "seconds_wall", "seconds_cpu", "peak_mem_mb",
         "oom", "mean_conf", "damage_before", "damage_after")}
-    result.update(config_sha256=digest(config),
+    result.update(selected_engine=selected_engine,
+                  config_sha256=digest(config),
                   node_finished_at=timestamp(record["node_finished_at"]))
     return result
 
@@ -469,6 +511,41 @@ CREATE INDEX by_stage ON latest(kind,stage,state);
 """
 
 
+def migrate_indexed_keys(conn, writable):
+    """Collapse legacy run-scoped indexed keys in latest to page-scoped keys per (source, page_id)."""
+    found = conn.execute(
+        "SELECT * FROM latest WHERE kind='page_state' AND stage='indexed'"
+    ).fetchall()
+    if not found:
+        return
+    groups = {}
+    needs_migration = False
+    for row in found:
+        expected_key = digest([row["source"], "page_state", [row["page_id"], "indexed"]])
+        if row["key"] != expected_key:
+            needs_migration = True
+        groups.setdefault((row["source"], row["page_id"], expected_key), []).append(row)
+    if not needs_migration:
+        return
+    require(writable,
+            "catalog has legacy run-scoped indexed keys; reopen with init or ingest to migrate")
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for (_source, _page_id, expected_key), group in groups.items():
+            if len(group) == 1 and group[0]["key"] == expected_key:
+                continue
+            winner = max(group, key=lambda r: (r["observed_at"], r["event_id"]))
+            for row in group:
+                conn.execute("DELETE FROM latest WHERE key=?", (row["key"],))
+            conn.execute(
+                "INSERT INTO latest VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (expected_key, winner["invariant"], winner["kind"], winner["source"],
+                 winner["page_id"], winner["event_id"], winner["observed_at"],
+                 winner["data"], winner["engine"], winner["status"],
+                 winner["run_id"], winner["stage"], winner["state"]),
+            )
+
+
 def connect(path, writable=False):
     path = Path(path)
     require(not path.is_symlink(), "catalog cannot be a symlink")
@@ -493,6 +570,8 @@ def connect(path, writable=False):
         if not writable:
             require(conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete",
                     "catalog must use DELETE journaling; reopen with init to migrate")
+        migrate_indexed_keys(conn, writable)
+        if not writable:
             conn.execute("PRAGMA query_only=ON")
         return conn
     except Exception:
@@ -915,6 +994,10 @@ def ingest_search_provenance(db, input_path, evidence_out, batch_id, source, pag
     require(isinstance(body, dict) and set(body) <= HITS_RESPONSE_FIELDS and
             "index_version" in body and isinstance(body.get("items"), list),
             "invalid /v1/hits search response")
+    if "synthetic" in body:
+        require(type(body["synthetic"]) is bool, "invalid /v1/hits synthetic flag")
+        require(body["synthetic"] is False,
+                "synthetic /v1/hits responses cannot record publication provenance")
     index_version = token(body["index_version"])
     doc_id = page_id.split(":", 1)[1]
     matches = []
@@ -1203,16 +1286,57 @@ def trace(db, page_id, run_id=None):
                     (idx_id == rel_id or idx_id == "pages-" + rel_id or rel_id == "pages-" + idx_id))
 
         receipt = search_provenance["search_receipt"]
-        has_verified_or_present_artifact = artifact_state in ("present", "verified")
-        has_ok_execution = any(
-            e["data"].get("run_id") == resolved_run_id and e["data"].get("status") == "ok"
-            for e in executions
-        )
-        has_selected_ok_run = any(
-            r["data"].get("run_id") == resolved_run_id and r["data"].get("status") == "ok" and
-            r["data"].get("selected") is True
-            for r in runs
-        )
+        present_artifact_shas = {
+            a["data"].get("sha256")
+            for a in artifacts
+            if a["data"].get("state") in ("present", "verified") and
+            isinstance(a["data"].get("sha256"), str)
+        }
+        rel_engine = (canonical_engine_key(release_decision["selected_engine"])
+                      if isinstance(release_decision["selected_engine"], str) and
+                      release_decision["selected_engine"].strip() else None)
+        idx_engine = (canonical_engine_key(search_provenance["selected_engine"])
+                      if isinstance(search_provenance["selected_engine"], str) and
+                      search_provenance["selected_engine"].strip() else None)
+        rec_engine = (canonical_engine_key(receipt["ocr_engine"])
+                      if isinstance(receipt, dict) and isinstance(receipt.get("ocr_engine"), str) and
+                      receipt.get("ocr_engine").strip() else None)
+
+        def run_matches_proof(r_item):
+            r_data = r_item["data"]
+            if (r_data.get("run_id") != resolved_run_id or
+                    r_data.get("status") != "ok" or
+                    r_data.get("selected") is not True):
+                return False
+            img_sha = r_data.get("image_sha256")
+            if not isinstance(img_sha, str) or img_sha not in present_artifact_shas:
+                return False
+            if not any(
+                e["data"].get("run_id") == resolved_run_id and
+                e["data"].get("status") == "ok" and
+                any(obs.get("status") == "ok" and obs.get("image_sha256") == img_sha
+                    for obs in e["data"].get("observations", []))
+                for e in executions
+            ):
+                return False
+            r_engine_raw = r_data.get("selected_engine")
+            if isinstance(r_engine_raw, str) and r_engine_raw.strip():
+                r_engine = canonical_engine_key(r_engine_raw)
+            else:
+                fam, ver, prof = r_data.get("family"), r_data.get("engine_version"), r_data.get("profile")
+                if not all(isinstance(x, str) and x for x in (fam, ver, prof)):
+                    return False
+                r_engine = f"{fam}/{ver} {prof}"
+            if rel_engine is None or r_engine != rel_engine:
+                return False
+            fam = r_data.get("family")
+            sel_src = release_decision["selected_source"]
+            if isinstance(fam, str) and isinstance(sel_src, str) and sel_src.startswith("usnm-"):
+                if sel_src != "usnm-" + fam:
+                    return False
+            return True
+
+        has_matching_execution_and_run = any(run_matches_proof(r) for r in runs)
         has_matching_import = (
             imported_summary["imported"] is True and
             imported_summary["run_id"] == resolved_run_id and
@@ -1225,8 +1349,7 @@ def trace(db, page_id, run_id=None):
             release_decision["release_id"] is not None and
             release_decision["import_id"] in (None, imported_summary["import_id"]) and
             release_decision["selected_source"] not in (None, "loc") and
-            isinstance(release_decision["selected_engine"], str) and
-            bool(release_decision["selected_engine"].strip())
+            rel_engine is not None
         )
         has_matching_publication = (
             search_provenance["published"] is True and
@@ -1240,15 +1363,12 @@ def trace(db, page_id, run_id=None):
             receipt.get("index_version") == search_provenance["index_id"] and
             receipt.get("ocr_source") not in (None, "loc") and
             receipt.get("ocr_source") == release_decision["selected_source"] == search_provenance["selected_source"] and
-            isinstance(receipt.get("ocr_engine"), str) and
-            bool(receipt.get("ocr_engine").strip()) and
-            receipt.get("ocr_engine") == release_decision["selected_engine"] == search_provenance["selected_engine"]
+            rel_engine is not None and
+            rel_engine == idx_engine == rec_engine
         )
         publication_proof_complete = bool(
             resolved_run_id is not None and
-            has_verified_or_present_artifact and
-            has_ok_execution and
-            has_selected_ok_run and
+            has_matching_execution_and_run and
             has_matching_import and
             has_matching_acceptance and
             has_matching_publication

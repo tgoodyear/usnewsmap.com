@@ -945,20 +945,28 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(len(c.query(self.db, "page_state", {"status": "accepted"})["items"]), 1)
         self.assertEqual(len(c.query(self.db, "page_state", {"status": "rejected"})["items"]), 1)
 
-        # Filtered/paginated /v1/hits responses omitting the target page or using `hits` fail closed.
+        # Filtered/paginated /v1/hits responses omitting the target page, using `hits`,
+        # or marked `synthetic=true` fail closed without writing evidence or mutating indexed state.
         for bad_hits in (
             {"index_version": "pages-v20261018-1", "hits": [{"doc_id": doc_a}]},
             {"index_version": "pages-v20261018-1", "synthetic": False, "place": None,
              "title": None, "total": 0, "items": [], "next_cursor": None},
             {"index_version": "pages-v20261018-1", "synthetic": False, "place": None,
              "title": None, "total": 1, "items": [{"doc_id": doc_b}], "next_cursor": "eyJvIjoxfQ"},
+            {"index_version": "pages-v20261018-1", "synthetic": True, "place": None,
+             "title": None, "total": 1, "items": [{
+                 "doc_id": doc_a,
+                 "ocr": {"source": "usnm-tesseract", "engine": "tesseract/5.5.1 deu_latf+deu"},
+             }], "next_cursor": None},
         ):
             bad_hits_file = self.work / "bad-hits.json"
             bad_hits_file.write_text(c.canonical(bad_hits) + "\n")
+            bad_ev = self.work / ("bad-s-" + uuid.uuid4().hex + ".jsonl")
             with self.subTest(bad_hits=bad_hits), self.assertRaises(c.CatalogError):
                 c.ingest_search_provenance(
-                    self.db, bad_hits_file, self.work / ("bad-s-" + uuid.uuid4().hex + ".jsonl"),
+                    self.db, bad_hits_file, bad_ev,
                     "bad-search", "public-hits-verifier", page_a, verified_at, run_id=run_a)
+            self.assertFalse(bad_ev.exists())
         self.assertEqual(c.trace(self.db, page_a)["search_provenance"]["state"], "unknown")
 
         hits_file = self.work / "hits-v20261018-1.json"
@@ -1070,6 +1078,54 @@ class CatalogTests(unittest.TestCase):
                 (page_a,)).fetchone()[0], 1)
         finally:
             conn.close()
+
+        # Upgrade regression: existing schema-v1 databases with legacy run-scoped indexed keys
+        # collapse and migrate on writable open (including batch replay) and are superseded by newer baseline rows.
+        conn = sqlite3.connect(self.db)
+        try:
+            cur_row = conn.execute(
+                "SELECT * FROM latest WHERE kind='page_state' AND stage='indexed' AND page_id=?",
+                (page_a,),
+            ).fetchone()
+            col_names = [d[0] for d in conn.execute("SELECT * FROM latest LIMIT 0").description]
+            row_dict = dict(zip(col_names, cur_row))
+            conn.execute("DELETE FROM latest WHERE key=?", (row_dict["key"],))
+            legacy_key_1 = c.digest(["public-hits-verifier", "page_state", [page_a, "indexed", "old-run"]])
+            legacy_key_2 = c.digest(["public-hits-verifier", "page_state", [page_a, "indexed", run_a]])
+            older_data = json.loads(row_dict["data"])
+            older_data.update(state="present", run_id="old-run", decision="accepted")
+            newer_data = json.loads(row_dict["data"])
+            newer_data.update(state="present", run_id=run_a, decision="accepted")
+            conn.execute(
+                "INSERT INTO latest VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (legacy_key_1, "", "page_state", "public-hits-verifier", page_a,
+                 "legacy-ev-1", "2026-10-18T02:01:00.000000000Z", c.canonical(older_data),
+                 None, "accepted", "old-run", "indexed", "present"),
+            )
+            conn.execute(
+                "INSERT INTO latest VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (legacy_key_2, "", "page_state", "public-hits-verifier", page_a,
+                 row_dict["event_id"], "2026-10-18T02:05:00.000000000Z", c.canonical(newer_data),
+                 None, "accepted", run_a, "indexed", "present"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        # Read-only open refuses unmigrated legacy indexed keys rather than miscounting snapshot.
+        with self.assertRaises(c.CatalogError):
+            c.snapshot(self.db)
+        # Replaying a known batch into the existing database triggers migration and collapses the keys.
+        self.assertTrue(c.ingest(self.db, search_ev)["replayed"])
+        self.assertEqual({s["id"]: s for s in c.snapshot(self.db)["stages"]}["indexed"]["count"], 1)
+        # Ingesting a newer baseline from the same source now replaces the migrated key in latest & snapshot.
+        baseline_hits_2 = self.work / "hits-baseline-rollback-2.json"
+        baseline_hits_2.write_text(baseline_hits_raw)
+        self.cli("ingest-search", "--input", str(baseline_hits_2),
+                 "--evidence-out", str(self.work / "search-baseline-2.jsonl"),
+                 "--batch-id", "search-baseline-2", "--source", "public-hits-verifier",
+                 "--page-id", page_a, "--verified-at", "2026-10-18T02:40:00.000000000Z")
+        self.assertFalse(c.trace(self.db, page_a)["published"])
+        self.assertEqual({s["id"]: s for s in c.snapshot(self.db)["stages"]}["indexed"]["count"], 0)
 
         # Revocation without run_id is rejected so it cannot leave run-scoped acceptance intact.
         bad_revoke_file = self.work / "release-revoke-null.json"
@@ -1379,17 +1435,30 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(c.trace(self.db, page_id)["published"])
         self.assertFalse(c.trace(self.db, page_id)["publication_proof_complete"])
 
-        c.ingest_worker(self.db, ROOT / "scripts/fixtures/data_catalog/worker-success.json",
+        worker_fixture = ROOT / "scripts/fixtures/data_catalog/worker-success.json"
+        worker_sha = json.loads(worker_fixture.read_text())["run_record"]["image_sha256"]
+        c.ingest_worker(self.db, worker_fixture,
                         self.work / "worker-a.jsonl", "worker-a", "worker-capture")
         # Still missing verified/present scan artifact.
         self.assertFalse(c.trace(self.db, page_id)["publication_proof_complete"])
 
+        # Mismatched scan checksum (HASH != RunRecord.image_sha256) cannot satisfy publication_proof_complete.
+        self.ingest(event("scan-mismatch", "artifact", when="2026-10-16T19:59:00Z",
+                          page_id=page_id, source="scan-inventory",
+                          payload={"artifact_id": "scan", "sha256": HASH, "version": "v-mismatch",
+                                   "location": "cached-scans-buffer",
+                                   "reference": "buffer/nbu_gage/sn83045462/1890-05-03/1/7.jpg",
+                                   "state": "verified", "observed_sha256": HASH}))
+        self.assertEqual(c.trace(self.db, page_id)["artifact"]["state"], "verified")
+        self.assertFalse(c.trace(self.db, page_id)["publication_proof_complete"])
+
+        # Verified scan artifact matching RunRecord.image_sha256 completes the proof chain.
         self.ingest(event("scan-a", "artifact", when="2026-10-16T20:00:00Z",
                           page_id=page_id, source="scan-inventory",
-                          payload={"artifact_id": "scan", "sha256": HASH, "version": "v1",
+                          payload={"artifact_id": "scan", "sha256": worker_sha, "version": "v1",
                                    "location": "cached-scans",
                                    "reference": "keep/nbu_gage/sn83045462/1890-05-03/1/7.jpg",
-                                   "state": "verified", "observed_sha256": HASH}))
+                                   "state": "verified", "observed_sha256": worker_sha}))
         complete = c.trace(self.db, page_id)
         self.assertTrue(complete["accepted"])
         self.assertTrue(complete["published"])
@@ -1431,6 +1500,42 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(mismatch_eng["accepted"])
         self.assertTrue(mismatch_eng["published"])
         self.assertFalse(mismatch_eng["publication_proof_complete"])
+
+        # Mismatch 3: release and search both claim Kraken for run A, while the selected RunRecord
+        # for run A is Tesseract -> accepted=true & published=true, but publication_proof_complete=false.
+        release_kraken = self.work / "release-kraken.json"
+        release_kraken.write_text(c.canonical({
+            "schema": 1,
+            "release_id": "v20261018-1",
+            "decided_at": "2026-10-18T05:30:00.000000000Z",
+            "decisions": [{
+                "doc_id": doc_id,
+                "run_id": run_a,
+                "import_id": import_a,
+                "committed_at": committed_a,
+                "decision": "accepted",
+                "decision_reason": "rule_v1",
+                "selected_source": "usnm-kraken",
+                "selected_engine": "kraken/4.3.13 deu",
+            }],
+        }) + "\n")
+        c.ingest_release(self.db, release_kraken, self.work / "rel-kraken.jsonl", "rel-kraken", "release-builder")
+        hits_kraken = self.work / "hits-kraken.json"
+        hits_kraken.write_text(c.canonical({
+            "index_version": "pages-v20261018-1",
+            "items": [{
+                "doc_id": doc_id,
+                "ocr": {"source": "usnm-kraken", "engine": "kraken/4.3.13 deu"},
+            }],
+        }) + "\n")
+        c.ingest_search_provenance(
+            self.db, hits_kraken, self.work / "search-kraken.jsonl", "search-kraken",
+            "public-hits", page_id, "2026-10-18T05:35:00Z",
+            run_id=run_a, release_id="v20261018-1", import_id=import_a)
+        mismatch_run_eng = c.trace(self.db, page_id)
+        self.assertTrue(mismatch_run_eng["accepted"])
+        self.assertTrue(mismatch_run_eng["published"])
+        self.assertFalse(mismatch_run_eng["publication_proof_complete"])
 
         # Baseline text observation supersedes replacement in search and sets published & proof completeness false.
         hits_baseline = self.work / "hits-baseline.json"
