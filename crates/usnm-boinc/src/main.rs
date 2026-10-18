@@ -606,6 +606,9 @@ enum Surya {
         /// Experimental single-replica probe, at most 30 units, no fallback hosts.
         #[arg(long)]
         target_host: Option<u64>,
+        /// Exact-host NVIDIA version 1.3 only, with its 8 GiB memory envelope.
+        #[arg(long, requires = "target_host")]
+        gpu_probe: bool,
     },
     /// Write a unit from a local image, to check a host or the image without LoC or BOINC.
     /// Inside the worker image the engine values default to the image's own.
@@ -1510,12 +1513,14 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             project,
             max_units,
             target_host,
+            gpu_probe,
         } => {
             let s = x::submit::run(&x::submit::Options {
                 root,
                 project,
                 max_units,
                 target_host,
+                gpu_probe,
             })
             .await?;
             eprintln!("{s:?}");

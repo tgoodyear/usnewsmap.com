@@ -475,6 +475,13 @@ case "$step" in
     if [ -n "${SURYA_TARGET_HOST:-}" ]; then
       [[ "$SURYA_TARGET_HOST" =~ ^[1-9][0-9]*$ ]] || fail "SURYA_TARGET_HOST must be positive"
       target_args=(--target-host "$SURYA_TARGET_HOST")
+      case "${SURYA_GPU_PROBE:-0}" in
+        0) ;;
+        1) target_args+=(--gpu-probe) ;;
+        *) fail "SURYA_GPU_PROBE must be 0 or 1" ;;
+      esac
+    elif [ "${SURYA_GPU_PROBE:-0}" != 0 ]; then
+      fail "SURYA_GPU_PROBE requires SURYA_TARGET_HOST"
     fi
     usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" "${target_args[@]}" || rc=$?
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates"

@@ -14,6 +14,8 @@ pub struct Options {
     pub max_units: usize,
     /// Single-replica, exact-host probe only; ordinary campaigns remain quorum two.
     pub target_host: Option<u64>,
+    /// NVIDIA-only probe: signed version 1.3, with its 8 GiB container bound.
+    pub gpu_probe: bool,
 }
 
 #[derive(Debug, Default)]
@@ -33,10 +35,10 @@ pub const FPOPS_BOUND: &str = "2e16";
 pub const MEMORY_BOUND: &str = "12884901888";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {
-    work_args(job, None)
+    work_args(job, None, false)
 }
 
-fn work_args(job: &Job, target_host: Option<u64>) -> Vec<String> {
+fn work_args(job: &Job, target_host: Option<u64>, gpu_probe: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "--appname",
         APP,
@@ -85,6 +87,14 @@ fn work_args(job: &Job, target_host: Option<u64>) -> Vec<String> {
         args[index + 1] = format!("{}_host{host}", job.workunit());
         args.extend(["--target_host".into(), host.to_string()]);
     }
+    if gpu_probe {
+        let index = args
+            .iter()
+            .position(|arg| arg == "--rsc_memory_bound")
+            .unwrap();
+        args[index + 1] = "8589934592".into();
+        args.extend(["--app_version_num".into(), "103".into()]);
+    }
     args.extend(physical_names(job).into_iter().map(|(p, _)| p));
     args
 }
@@ -99,6 +109,10 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
+    ensure!(
+        !opts.gpu_probe || opts.target_host.is_some(),
+        "GPU probe requires an exact target host"
+    );
     let project = opts.project.canonicalize()?;
     if let Some(host) = opts.target_host {
         ensure!(host > 0, "target host must be positive");
@@ -139,7 +153,7 @@ async fn submit_units(
             names.len() <= 30,
             "targeted probe campaign exceeds 30 units"
         );
-        let policy = serde_json::to_vec(&opts.target_host)?;
+        let policy = serde_json::to_vec(&(opts.target_host, opts.gpu_probe))?;
         let path = opts.root.join("target-host.json");
         if path.exists() {
             ensure!(std::fs::read(&path)? == policy, "campaign target changed");
@@ -190,7 +204,7 @@ async fn submit_units(
         }
         let status = Command::new(project.join("bin/create_work"))
             .current_dir(project)
-            .args(work_args(&job, opts.target_host))
+            .args(work_args(&job, opts.target_host, opts.gpu_probe))
             .status()
             .await?;
         ensure!(
@@ -211,13 +225,17 @@ mod tests {
     #[test]
     fn exact_host_probe_has_one_result_and_no_fallback() {
         let job = super::super::work::tests::job();
-        let args = work_args(&job, Some(10));
+        let args = work_args(&job, Some(10), true);
         for flag in ["--min_quorum", "--target_nresults", "--max_total_results"] {
             let index = args.iter().position(|a| a == flag).unwrap();
             assert_eq!(args[index + 1], "1");
         }
         let index = args.iter().position(|a| a == "--target_host").unwrap();
         assert_eq!(args[index + 1], "10");
+        let index = args.iter().position(|a| a == "--rsc_memory_bound").unwrap();
+        assert_eq!(args[index + 1], "8589934592");
+        let index = args.iter().position(|a| a == "--app_version_num").unwrap();
+        assert_eq!(args[index + 1], "103");
         assert!(!create_work_args(&job).contains(&"--target_host".into()));
     }
 

@@ -267,3 +267,14 @@ uncertain, retain the serialization lease and reconcile rather than retrying.
 Release the claim/lease only after terminal status and verification. Keep current
 live server/bridge pins/settings unchanged; the appver release pin alone does not
 authorize replacing them.
+
+The NVIDIA-only exact-host variant also sets `SURYA_GPU_PROBE=1` (CLI
+`--gpu-probe`): it pins `--app_version_num 103` (1.3) and reduces the shared
+memory admission bound to **8 GiB**, matching `job-gpu.toml`. This cannot fall
+back to CPU version 1.2. Untargeted/CPU campaigns retain the 12 GiB CPU bound.
+CT214 reports 12 GiB RAM and two CPUs; the CPU plan needs four usable CPUs,
+while CT100 has only 8 GiB RAM, below the CPU contract. Neither is an eligible
+CPU probe host without resource changes, which this trial does not authorize.
+Do not raise their limits or lower the CPU bound to force a result. If no existing
+eligible CPU host is available, run the GPU-only bounded probe and report CPU
+measurements unavailable rather than fabricate cross-device acceptance.
