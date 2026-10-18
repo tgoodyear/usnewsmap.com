@@ -292,7 +292,13 @@ pub fn benchmark(
         staged.push((job, image, reference));
     }
     // All checks finish before any campaign files are written. A partial write is never reused.
-    std::fs::create_dir_all(root)?;
+    if let Some(parent) = root
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir(root).context("campaign created concurrently; refusing overwrite")?;
     atomic(&root.join("benchmark-inputs.json"), &raw)?;
     atomic(
         &root.join("benchmark-inputs.sha256"),

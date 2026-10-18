@@ -123,9 +123,9 @@ def collect(root, seen, out, binary):
             if mode not in MODES or device not in ("cpu", "cuda", "none"):
                 raise ValueError("unexpected mode/device")
             records.append({"sample_id": row["sample_id"], "result": directory.name, **run})
+            key = (device, mode, row["group"])
+            group = outputs.setdefault(key, {})
             if run["outcome"] == "ok":
-                key = (device, mode, row["group"])
-                group = outputs.setdefault(key, {})
                 if row["sample_id"] in group:
                     raise ValueError("duplicate successful output; select one campaign/host rather than silently averaging")
                 group[row["sample_id"]] = (directory / f"text-{mode}.txt").read_text()

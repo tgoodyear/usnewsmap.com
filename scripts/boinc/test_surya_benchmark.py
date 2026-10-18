@@ -54,6 +54,7 @@ class SuryaBenchmarkTests(unittest.TestCase):
                 self.assertEqual(receipt["returned"], 1)
                 exported = json.loads((out / "cuda-tiled-english.jsonl").read_text())
                 self.assertEqual(exported, {"id": "sample-1", "text": "text\nwith newline"})
+                self.assertEqual((out / "cuda-whole-english.jsonl").read_bytes(), b"")
                 saved = json.loads((out / "receipt.json").read_text())
                 self.assertEqual(saved["records"][1]["outcome"], "timeout")
             with patch.object(module.subprocess, "run", side_effect=RuntimeError("validator rejected")):
