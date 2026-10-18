@@ -78,8 +78,13 @@ are reclaimed. Reservations are atomic across concurrent requests in one service
 
 Authorization precedes any archive I/O. Each authorized allowlisted request
 reserves one request and its range/full bytes **before** properties/GET. Invalid
-ranges reserve a request but zero bytes. If-Range expanding to full reserves the
-additional bytes before GET, without charging another request. Failed property
+ranges reserve a request but zero bytes. With If-Range, properties are still
+needed to evaluate the validator: a mismatch ignores even an unsatisfiable range
+and separately reserves a full 200 response. A matching validator preserves 416.
+If-Range expanding to full reserves the additional bytes before GET, without
+charging another request. Every admission refreshes time under the counter lock,
+and expiry is rechecked after properties before starting a body read, preventing
+expired in-flight requests from recreating pruned counters. Failed property
 lookups, 404s, disconnects, and failed body checks are not refunded. Repeated
 small ranges cannot evade the request bound; failures cannot cause unbounded
 Cold reads. Requests rejected at authorization/allowlist checks perform no

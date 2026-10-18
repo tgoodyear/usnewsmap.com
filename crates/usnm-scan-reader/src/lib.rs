@@ -269,10 +269,15 @@ impl Service {
         id: [u8; 32],
         ip: IpAddr,
         bytes: u64,
-        now: u64,
         request: bool,
     ) -> Result<(), Failure> {
         let mut budgets = self.budgets.lock().map_err(|_| Failure::Upstream)?;
+        // Refresh under the admission lock: a pre-await timestamp could recreate a
+        // pruned, expired ticket counter and lose earlier reservations.
+        let now = self.clock.unix_seconds();
+        if now < ticket.issued_at || now >= ticket.expires_at {
+            return Err(Failure::Unauthorized);
+        }
         budgets.tickets.retain(|_, c| c.until > now);
         budgets.ips.retain(|_, c| c.until > now);
         let day = now / 86400;
@@ -481,11 +486,14 @@ async fn download(
         return Err(Failure::Forbidden);
     }
     let scan = ticket.blobs.get(&blob).ok_or(Failure::Forbidden)?;
-    // Malformed ranges still consume a request, but perform no archive reads.
+    // Invalid ranges still consume a request. If-Range can require ignoring even
+    // an unsatisfiable Range, so defer its error when a validator is present.
     let requested = range(&headers, scan.bytes);
     let mut bytes = requested.as_ref().map_or(0, |(r, _)| r.end - r.start + 1);
-    service.reserve(&ticket, id, peer.ip(), bytes, now, true)?;
-    let (mut interval, mut partial) = requested?;
+    service.reserve(&ticket, id, peer.ip(), bytes, true)?;
+    if requested.is_err() && !headers.contains_key(header::IF_RANGE) {
+        return Err(Failure::Range(scan.bytes));
+    }
     // If-Range mismatch means a full representation, not an unpinned partial response.
     // Reserve the extra bytes before the GET if metadata later shows a mismatch.
     let deadline = tokio::time::Instant::now()
@@ -509,18 +517,24 @@ async fn download(
     {
         return Err(Failure::Upstream);
     }
-    if partial
+    let expanded = headers.contains_key(header::RANGE)
         && headers.contains_key(header::IF_RANGE)
-        && headers.get(header::IF_RANGE) != Some(&etag)
-    {
-        service.reserve(&ticket, id, peer.ip(), scan.bytes - bytes, now, false)?;
+        && headers.get(header::IF_RANGE) != Some(&etag);
+    let extra = if expanded { scan.bytes - bytes } else { 0 };
+    // Recheck live expiry even without expansion before starting the body read.
+    service.reserve(&ticket, id, peer.ip(), extra, false)?;
+    let (interval, partial) = if expanded {
         bytes = scan.bytes;
-        interval = ByteRange {
-            start: 0,
-            end: scan.bytes - 1,
-        };
-        partial = false;
-    }
+        (
+            ByteRange {
+                start: 0,
+                end: scan.bytes - 1,
+            },
+            false,
+        )
+    } else {
+        requested?
+    };
     // No automatic retries or source fallback: a caller can fall back politely on 404,
     // 429, 5xx, timeout, or integrity failure, retaining the job's provenance URL.
     let stream = tokio::time::timeout_at(

@@ -632,3 +632,122 @@ async fn duplicate_range_headers_fail_closed_and_key_revocation_is_immediate() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+#[tokio::test]
+async fn unsatisfiable_range_obeys_if_range_before_deciding_416() {
+    for (validator, status) in [
+        ("\"old\"", StatusCode::OK),
+        ("\"immutable-v1\"", StatusCode::RANGE_NOT_SATISFIABLE),
+    ] {
+        let (s, r, _) = setup(Mode::Good, Limits::default());
+        let response = send(&s, &[("range", "bytes=10-"), ("if-range", validator)]).await;
+        assert_eq!(response.status(), status);
+        if status == StatusCode::OK {
+            assert_eq!(
+                response.into_body().collect().await.unwrap().to_bytes(),
+                DATA
+            );
+            assert_eq!(r.reads.lock().unwrap().len(), 1);
+        } else {
+            assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */10");
+            assert!(r.reads.lock().unwrap().is_empty());
+        }
+    }
+    let (s, r, _) = setup(
+        Mode::Good,
+        Limits {
+            replica_bytes_per_day: 9,
+            ..Limits::default()
+        },
+    );
+    assert_eq!(
+        send(&s, &[("range", "bytes=10-"), ("if-range", "\"old\"")])
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert!(r.reads.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn expiry_during_pending_properties_cannot_recreate_pruned_ticket_allowance() {
+    use futures::FutureExt;
+    struct PausingReader {
+        reader: Arc<Reader>,
+        started: futures::channel::mpsc::UnboundedSender<()>,
+        release: futures::future::Shared<futures::future::BoxFuture<'static, ()>>,
+    }
+    #[async_trait]
+    impl ArchiveReader for PausingReader {
+        async fn properties(&self, blob: &str) -> Result<Properties, ArchiveError> {
+            self.started.unbounded_send(()).unwrap();
+            self.release.clone().await;
+            self.reader.properties(blob).await
+        }
+        async fn read(
+            &self,
+            blob: &str,
+            range: ByteRange,
+            etag: &str,
+        ) -> Result<ByteStream, ArchiveError> {
+            self.reader.read(blob, range, etag).await
+        }
+    }
+    let (_, reader, clock) = setup(Mode::Good, Limits::default());
+    let (started_tx, mut started_rx) = futures::channel::mpsc::unbounded();
+    let (release_tx, release_rx) = futures::channel::oneshot::channel();
+    let backend = Arc::new(PausingReader {
+        reader: reader.clone(),
+        started: started_tx,
+        release: release_rx.map(|_| ()).boxed().shared(),
+    });
+    let service = Arc::new(
+        Service::new(
+            backend,
+            BTreeMap::from([("test-v1".into(), key().verifying_key())]),
+            Limits::default(),
+            clock.clone(),
+        )
+        .unwrap(),
+    );
+    let mut t = ticket();
+    let mut small = scan();
+    small.bytes = 1;
+    t.blobs.insert(BLOB.replace("seq-1", "seq-2"), small);
+    let id: [u8; 32] = Sha256::digest(t.canonical_json().unwrap()).into();
+    let mut pending = Vec::new();
+    for _ in 0..6 {
+        let req = request(
+            &token(&t),
+            BLOB,
+            "wu-1",
+            &[("range", "bytes=0-0"), ("if-range", "\"old\"")],
+            "127.0.0.1:1",
+        );
+        let router = service.clone().router();
+        pending.push(tokio::spawn(
+            async move { router.oneshot(req).await.unwrap() },
+        ));
+    }
+    for _ in 0..6 {
+        started_rx.next().await.unwrap();
+    }
+    assert_eq!(service.budgets.lock().unwrap().tickets[&id].bytes, 6);
+    clock.0.store(t.expires_at, Ordering::SeqCst);
+    // A different, live admission prunes the old ticket exactly as a concurrent
+    // request would, while all six old requests still await properties.
+    let mut live = ticket();
+    live.issued_at = t.expires_at;
+    live.expires_at = t.expires_at + 100;
+    let live_id = Sha256::digest(live.canonical_json().unwrap()).into();
+    service
+        .reserve(&live, live_id, "127.0.0.2".parse().unwrap(), 0, true)
+        .unwrap();
+    assert!(!service.budgets.lock().unwrap().tickets.contains_key(&id));
+    release_tx.send(()).unwrap();
+    for request in pending {
+        assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+    assert!(!service.budgets.lock().unwrap().tickets.contains_key(&id));
+    assert!(reader.reads.lock().unwrap().is_empty());
+}
