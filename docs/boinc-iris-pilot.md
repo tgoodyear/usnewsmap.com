@@ -211,4 +211,12 @@ ocr-bench `legacy/overproof-en-100` subset by default), then `iris-bundle-submit
 `IRIS_APPLY=1`), then `iris-bundle-collect` for per-crop CER and drift from the 1.0 results.
 `iris-bundle-cancel` (dry run unless `IRIS_APPLY=1`) cancels a stranded batch-105 campaign.
 Rollback: deprecate version 1.1 (1.0 is untouched).
+
+Result, campaign `overproof-100-b104` (2026-10-18; 7 bundles of 16,16,16,16,16,16,4 on host 9):
+100/100 ok, normalized CER 0.02000 (1.0 pilot: 0.01975), drift from the 1.0 text 0.047%. A 16-crop
+bundle took 136–146 s, of which 22–24 s was model load, so about 6.8 crops/min per bundle in production.
+That is slower than the 98 s benchmark run; the load is paid once per bundle because the compile cache is
+not shipped. All 100 crops finished in 18 minutes of wall time, run one bundle at a time.
+Dispatch first needed the server to map `docker_intel_opencl_4b` to the Intel GPU
+(`scripts/boinc/patch-server-intel-proc-type.py`) and the feeder on the share refreshed from the image.
 The 20,000-page set stays gated by its own `campaign.json`; this release does not dispatch it.
