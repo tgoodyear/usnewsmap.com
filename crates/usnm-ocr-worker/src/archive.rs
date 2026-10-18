@@ -29,7 +29,7 @@ use usnm_store::credential::Credential;
 
 use crate::batch;
 use crate::loc::ScanFormat;
-use crate::prefetch::{consumed_path, matches_sidecar, sidecar_path, Sidecar};
+use crate::prefetch::{matches_sidecar, sidecar_path, Sidecar};
 
 /// Blob service REST API version, as `usnm_store::blob`.
 const API_VERSION: &str = "2023-11-03";
@@ -47,9 +47,10 @@ pub enum Mode {
 }
 
 pub struct Options {
-    /// The scans root, holding `keep/` (and `buffer/`).
+    /// The scans root, holding `keep/`.
     pub scans: PathBuf,
-    /// The set to archive: `keep`, `buffer`, or `both`.
+    /// The set to archive: `keep` (the buffer set is deleted after OCR and
+    /// would only pay the Cold early-delete charge).
     pub set: String,
     /// `https://<account>.blob.core.windows.net/<container>`.
     pub container_url: String,
@@ -63,11 +64,6 @@ pub struct Options {
     /// read or looked up, so a run with nothing new costs no requests.
     /// Verify ignores it and checks every scan.
     pub state: Option<PathBuf>,
-    /// In upload mode, once a scan is confirmed in the archive (`Uploaded`
-    /// or `Present`), rename `<scan>.json` to `<scan>.done` and delete the
-    /// local `<scan>` file so a bounded-disk spool node can stream the full
-    /// manifest into Azure without filling local storage.
-    pub evict: bool,
 }
 
 /// What a run did, printed as JSON.
@@ -80,9 +76,6 @@ pub struct Report {
     pub uploaded_bytes: u64,
     /// Already in the archive and matching.
     pub present: u64,
-    /// Local scan files evicted to `.done` after upload/present confirmation.
-    #[serde(default)]
-    pub evicted: u64,
     /// Would be uploaded (dry run) .
     pub would_upload: u64,
     /// Local file does not match its sidecar, or has none: not uploaded.
@@ -477,81 +470,39 @@ fn encode_path(name: &str) -> String {
 /// path order, with their blob names. Scaled sample files (`.pct<n>.jpg`),
 /// sidecars and consumed markers are left out.
 pub fn list(scans: &Path, set: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
-    let sets: &[&str] = match set {
-        "keep" => &["keep"],
-        "buffer" => &["buffer"],
-        "both" => &["keep", "buffer"],
-        _ => bail!("--set must be keep, buffer, or both"),
-    };
+    if !matches!(set, "keep" | "buffer") {
+        bail!("--set must be keep or buffer");
+    }
+    let root = scans.join(set);
     let mut out = Vec::new();
-    let mut saw_root = false;
-    for s in sets {
-        let root = scans.join(s);
-        let mut stack = vec![root.clone()];
-        while let Some(dir) = stack.pop() {
-            let rd = match std::fs::read_dir(&dir) {
-                Ok(rd) => {
-                    if dir == root {
-                        saw_root = true;
-                    }
-                    rd
-                }
-                // With `both`, one of `keep/` or `buffer/` may not exist yet;
-                // a directory that vanishes mid-walk is also skipped.
-                Err(e)
-                    if e.kind() == std::io::ErrorKind::NotFound
-                        && (dir != root || sets.len() > 1) =>
-                {
-                    continue
-                }
-                Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
-            };
-            for entry in rd {
-                let entry = entry?;
-                let path = entry.path();
-                let ty = entry.file_type()?;
-                if ty.is_dir() {
-                    stack.push(path);
-                } else if ty.is_file() && is_scan(&path) {
-                    let rel = path.strip_prefix(scans)?;
-                    let name = rel
-                        .components()
-                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                        .collect::<Vec<_>>()
-                        .join("/");
-                    out.push((path, name));
-                }
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            // A directory that vanishes mid-walk is skipped; a missing
+            // root is a wrong path or an unmounted pool, not an empty set.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir != root => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+        };
+        for entry in rd {
+            let entry = entry?;
+            let path = entry.path();
+            let ty = entry.file_type()?;
+            if ty.is_dir() {
+                stack.push(path);
+            } else if ty.is_file() && is_scan(&path) {
+                let rel = path.strip_prefix(scans)?;
+                let name = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                out.push((path, name));
             }
         }
-    }
-    if !saw_root {
-        bail!(
-            "reading {}: neither keep nor buffer directory exists",
-            scans.display()
-        );
     }
     out.sort_by(|a, b| a.1.cmp(&b.1));
     Ok(out)
-}
-
-/// Rename `<scan>.json` to `<scan>.done` first (so `prefetch` treats the
-/// page as already fetched across restarts), then remove `<scan>`.
-async fn evict_local(scan: &Path) -> anyhow::Result<()> {
-    let done = consumed_path(scan);
-    match tokio::fs::rename(sidecar_path(scan), &done).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if !tokio::fs::try_exists(&done).await.unwrap_or(false) {
-                return Err(e).with_context(|| format!("marking {} done", scan.display()));
-            }
-        }
-        Err(e) => return Err(e).with_context(|| format!("marking {} done", scan.display())),
-    }
-    match tokio::fs::remove_file(scan).await {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).with_context(|| format!("removing {}", scan.display())),
-    }
 }
 
 /// What identifies one version of a local file: size, mtime in
@@ -654,27 +605,18 @@ pub async fn run(opts: Options, credential: Arc<Credential>) -> anyhow::Result<R
             let mode = opts.mode;
             tasks.spawn(async move {
                 let (o, bytes) = a.one(&path, &name, mode).await;
-                (o, path, name, bytes, st)
+                (o, name, bytes, st)
             });
         }
         let Some(done) = tasks.join_next().await else {
             break;
         };
-        let (mut o, path, name, bytes, st) = done?;
+        let (o, name, bytes, st) = done?;
         if let (Some(f), Some((size, mtime, ino, ctime)), Outcome::Uploaded | Outcome::Present) =
             (state_out.as_mut(), st, &o)
         {
             // A failed append only means the scan is looked up again.
             let _ = writeln!(f, "{name}\t{size}\t{mtime}\t{ino}\t{ctime}");
-        }
-        if opts.evict
-            && opts.mode == Mode::Upload
-            && matches!(o, Outcome::Uploaded | Outcome::Present)
-        {
-            match evict_local(&path).await {
-                Ok(()) => report.evicted += 1,
-                Err(e) => o = Outcome::Error(format!("{e:#} ({name})")),
-            }
         }
         report.add(o, &name, bytes);
         if report.scanned % 1000 == 0 {
@@ -819,7 +761,6 @@ mod tests {
             limit: 0,
             concurrency: 2,
             state: None,
-            evict: false,
         }
     }
 
@@ -1181,40 +1122,6 @@ mod tests {
         o.state = Some(state);
         let r = run(o, cred()).await.unwrap();
         assert_eq!((r.skipped, r.missing), (0, 1));
-    }
-
-    #[tokio::test]
-    async fn archives_both_sets_and_evicts_local_scans_to_done_markers() {
-        let dir = tempfile::tempdir().unwrap();
-        put_scan(
-            dir.path(),
-            "keep/b1/sn1/1890-01-01/1/1.jp2",
-            b"keep-one",
-            true,
-        );
-        put_scan(
-            dir.path(),
-            "buffer/b1/sn2/1890-01-01/1/2.jp2",
-            b"buf-two",
-            true,
-        );
-        let m = Arc::new(Mock::default());
-        let url = serve(m.clone()).await;
-        let state = dir.path().join("archived.tsv");
-        let mut o = opts(dir.path(), url, Mode::Upload);
-        o.set = "both".into();
-        o.state = Some(state.clone());
-        o.evict = true;
-        let r = run(o, cred()).await.unwrap();
-        assert_eq!((r.scanned, r.uploaded, r.evicted), (2, 2, 2));
-        assert!(r.clean());
-        let keep_scan = dir.path().join("keep/b1/sn1/1890-01-01/1/1.jp2");
-        let buf_scan = dir.path().join("buffer/b1/sn2/1890-01-01/1/2.jp2");
-        assert!(!keep_scan.exists() && consumed_path(&keep_scan).exists());
-        assert!(!buf_scan.exists() && consumed_path(&buf_scan).exists());
-        let blobs = m.blobs.lock().unwrap();
-        assert!(blobs.contains_key("scans/keep/b1/sn1/1890-01-01/1/1.jp2"));
-        assert!(blobs.contains_key("scans/buffer/b1/sn2/1890-01-01/1/2.jp2"));
     }
 
     #[test]

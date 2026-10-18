@@ -479,8 +479,8 @@ enum Command {
         /// The archive container: `https://<account>.blob.core.windows.net/scans`.
         #[arg(long, env = "USNM_ARCHIVE_URL")]
         archive_url: String,
-        /// The set to archive (`keep`, `buffer`, or `both`).
-        #[arg(long, env = "USNM_ARCHIVE_SET", default_value = "keep")]
+        /// The set to archive. Only `keep` is meant for the archive.
+        #[arg(long, default_value = "keep")]
         set: String,
         /// Say what would be uploaded; write nothing.
         #[arg(long, conflicts_with = "verify")]
@@ -500,10 +500,6 @@ enum Command {
         /// upload run appends to it. Ignored by --verify.
         #[arg(long, env = "USNM_ARCHIVE_STATE")]
         state: Option<PathBuf>,
-        /// In upload mode, once a scan is confirmed in the archive, rename
-        /// `<scan>.json` to `<scan>.done` and delete the local scan file.
-        #[arg(long, env = "USNM_ARCHIVE_EVICT")]
-        evict: bool,
     },
     /// Project a manifest's size and fetch time from a sample's index
     /// (`index-<tag>.jsonl` from `prefetch --sample`). Prints JSON.
@@ -1031,7 +1027,6 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             limit,
             concurrency,
             state,
-            evict,
         } => {
             let mode = if verify {
                 usnm_ocr_worker::archive::Mode::Verify
@@ -1049,7 +1044,6 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     limit,
                     concurrency,
                     state,
-                    evict,
                 },
                 usnm_store::credential::from_env(),
             )
