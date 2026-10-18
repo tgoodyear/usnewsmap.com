@@ -7,8 +7,9 @@
 #   scripts/archive-store.sh deploy [--subscription ID] [--location REGION]
 #   scripts/archive-store.sh unlock [--subscription ID]   # lift the delete lock
 #
-# `what-if` shows what `deploy` would change, and changes nothing. `deploy`
-# first creates or updates the guard-rail stack, usnm-guardrails, whose
+# `what-if` uses GA stack-aware previews for both stacks, including unmanage and
+# deny-setting changes, and creates no managed resources. `deploy` first creates
+# or updates the guard-rail stack, usnm-guardrails, whose
 # policy definitions the account's group assigns (as an environment's
 # provision does), then the account (putting the delete lock back), and
 # prints the account's resource id, for an environment's USNM_ARCHIVE_ACCOUNT.
@@ -62,17 +63,55 @@ keep_stack_location() {
 case "$ACTION" in
   what-if)
     keep_stack_location
-    # Stacks have no what-if; a deployment's shows the same template's
-    # changes. The guard-rail definitions come first: the account's group
-    # assigns them, so its what-if can fail until they exist (deploy creates
-    # them first).
+    az stack-whatif sub create --help > /dev/null ||
+      die "this Azure CLI lacks GA stack-whatif; update Azure CLI before previewing"
+    subscription_id=$(az account show --query id -o tsv) || die "can't read the subscription id"
+    guardrails_params=""
+    if guardrails_params=$(az stack sub show -n "$GUARDRAILS_STACK" \
+      --query "[keys(parameters || \`{}\`), values(parameters || \`{}\`)[].value]" -o tsv 2>&1); then
+      guardrails_location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv) ||
+        die "can't read the location of $GUARDRAILS_STACK"
+      guardrails_emails=$(stack_param "$guardrails_params" devBudgetEmails)
+      if [ -n "$guardrails_emails" ]; then
+        guardrails_start=$(stack_param "$guardrails_params" devBudgetStart)
+      else
+        guardrails_start=""
+      fi
+      guardrails_dev_location=$(stack_param "$guardrails_params" devBudgetLocation)
+    else
+      grep -qiE 'NotFound|could not be found' <<< "$guardrails_params" ||
+        die "can't check $GUARDRAILS_STACK: $guardrails_params"
+      guardrails_location=$LOCATION
+      guardrails_emails=""
+      guardrails_start=""
+      guardrails_dev_location=eastus2
+    fi
+    [ -n "$guardrails_start" ] || guardrails_start=$(date -u +%Y-%m-01)
+    [ -n "$guardrails_dev_location" ] || guardrails_dev_location=eastus2
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)-$$
+    guardrails_preview="$GUARDRAILS_STACK-$stamp"
+    guardrails_id="/subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacks/$GUARDRAILS_STACK"
     echo "guard-rail definitions ($GUARDRAILS_STACK):"
-    az deployment sub what-if --location "$LOCATION" \
-      --template-file infra/guardrails.bicep --only-show-errors
+    az stack-whatif sub create --subscription "$subscription_id" --name "$guardrails_preview" \
+      --stack-id "$guardrails_id" --location "$guardrails_location" \
+      --template-file infra/guardrails.bicep \
+      --parameters devBudgetEmails="$guardrails_emails" devBudgetStart="$guardrails_start" \
+        devBudgetLocation="$guardrails_dev_location" \
+      --action-on-unmanage deleteResources --deny-settings-mode denyDelete \
+      --description "usnewsmap guard-rail policy definitions, shared by every environment in the subscription and the archival account" \
+      --retention-interval PT3H --no-color || die "the stack-aware what-if of $GUARDRAILS_STACK failed"
     echo "archival account ($STACK):"
-    az deployment sub what-if --location "$LOCATION" \
-      --template-file infra/archive/main.bicep \
-      --parameters location="$LOCATION" --only-show-errors
+    archive_preview="$STACK-$stamp"
+    archive_id="/subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacks/$STACK"
+    az stack-whatif sub create --subscription "$subscription_id" --name "$archive_preview" \
+      --stack-id "$archive_id" --location "$LOCATION" \
+      --template-file infra/archive/main.bicep --parameters location="$LOCATION" \
+      --action-on-unmanage detachAll --deny-settings-mode denyDelete \
+      --deny-settings-excluded-actions "Microsoft.Authorization/locks/delete Microsoft.Authorization/roleDefinitions/delete Microsoft.Storage/storageAccounts/privateEndpointConnections/delete Microsoft.Storage/storageAccounts/privateEndpointConnectionProxies/delete" \
+      --description "usnewsmap archival storage, shared by every environment (scripts/archive-store.sh)" \
+      --retention-interval PT3H --no-color || die "the stack-aware what-if of $STACK failed"
+    echo "guard-rail preview retained for up to three hours: /subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacksWhatIfResults/$guardrails_preview"
+    echo "archive preview retained for up to three hours: /subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacksWhatIfResults/$archive_preview"
     ;;
   deploy)
     need_stack_az

@@ -20,4 +20,4 @@ These are **hard constraints** on every design choice:
 ## Consequences
 
 - Some managed-service conveniences (Front Door, Azure AI Search, a larger always-on search node, zone-redundant storage) are left out to stay under the cost ceiling. They are described as the **growth profile** in [09 §9.5](../09-operations-security-cost.md#95-cost-model-monthly-usd-list-prices-confirm-with-the-azure-pricing-calculator). The design keeps each one a configuration switch, not a rewrite.
-- Cost and operability are reviewed in every PR that touches `infra/`: the PR carries a cost note and lists the resources the change adds or removes. Deployment stacks have no what-if preview ([ADR-0011](0011-deployment-stacks.md)).
+- Cost and operability are reviewed in every PR that touches `infra/`: the PR carries a cost note and lists the resources the change adds or removes. Deployment-stack What-If is a read-only preview ([ADR-0011](0011-deployment-stacks.md)); review deletions, detachments and deny-setting changes before deploying.

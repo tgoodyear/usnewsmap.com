@@ -66,7 +66,9 @@ scripts/provision.sh --env prod            # creates the settings store if the s
 scripts/settings.sh --env prod --migrate   # moves the private settings into it
 ```
 
-`scripts/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and prints the template's changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions.
+`scripts/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and calls GA `az stack-whatif sub create` to preview the stack, including unmanaged-resource and deny-setting changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions. What-If results can be retained from `PT1H` to `PT3H`; the scripts request `PT3H`.
+
+Known residual What-If noise includes provider normalization: Static Web Apps provider-generated properties, diagnostic-setting destination defaults, and Azure Files soft-delete retention defaults. Compare each result with the deployed resource and template before classifying it; don't change the template merely to silence a provider-generated/default difference. Always review actual deletions and deny-setting changes; `--only-show-errors` is not a substitute for examining the preview. [Microsoft's deployment-stacks What-If documentation](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-stacks-what-if) describes the supported preview and retention behavior.
 
 ## Deploy the jobs
 
