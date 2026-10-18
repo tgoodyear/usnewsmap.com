@@ -14,11 +14,6 @@
     "adr": "ADR-0017, Exceptions",
     "reason": "The prod environment skeleton: kept until a prod rebuild (region or subscription move, or a new Container Apps environment)."
   },
-  "archiveEndpoint": {
-    "until": "phase-0",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Deployed in prod only with USNM_ARCHIVE_ACCOUNT, which the Bicep can't see: the current prod keeps pe-usnm-archive-blob until its live stack shows no such endpoint (the ternary then goes, #309). Dev and experiments use ADR-0017's name."
-  },
   "backfillJob": {
     "until": "phase-3",
     "adr": "ADR-0017, Exceptions",

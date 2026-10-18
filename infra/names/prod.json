@@ -1,5 +1,5 @@
 {
-  "$comment": "Reviewed target map from names('prod', 'ffapzy', true), including stateless Phase 1 and Phase 2 renames (ADR-0017), not a verified live inventory. Reconcile the pre-rollout map at 84f887c8 against Azure before provisioning; infra/README.md documents the rollout, CI/budget handoff and remaining migration gates. scripts/ci/check-names.py requires this map to equal Bicep. Search-cluster keys are never deployed in prod; archiveEndpoint is conditional on USNM_ARCHIVE_ACCOUNT. NIC and infrastructure-group keys are empty when pinned.",
+  "$comment": "Reviewed target map from names('prod', 'ffapzy', true), including stateless Phase 1 and Phase 2 renames (ADR-0017), not a verified live inventory. Reconcile the pre-rollout map at 84f887c8 against Azure before provisioning; infra/README.md documents the rollout, CI/budget handoff and remaining migration gates. scripts/ci/check-names.py requires this map to equal Bicep. Search-cluster keys are never deployed in prod; archiveEndpoint is conditional on USNM_ARCHIVE_ACCOUNT and uses the conventional name because the read-only 15 October inventory found no prod endpoint. NIC and infrastructure-group keys are empty when pinned.",
   "actionGroup": "usnm-core-ag-prod",
   "actionGroupShortName": "usnm-prod",
   "apiAggregateSlowAlert": "usnm-api-aggregate-slow-alert-prod",
@@ -12,8 +12,8 @@
   "apiServerErrorsAlert": "usnm-api-server-errors-alert-prod",
   "apiWorkbookTitle": "usnm API (prod)",
   "appInsights": "appi-usnm-prod",
-  "archiveEndpoint": "pe-usnm-archive-blob",
-  "archiveEndpointNic": "",
+  "archiveEndpoint": "usnm-archive-blob-pep-prod",
+  "archiveEndpointNic": "usnm-archive-blob-nic-prod",
   "archiveWriterRole": "usnm-archive-writer-role-prod",
   "archiveWriterRoleScopeEnv": "",
   "backfillJob": "caj-usnm-backfill-prod",
