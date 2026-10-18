@@ -221,6 +221,7 @@ var writerTuningEnv = empty(ingestProfile)
 var scratchEnv = scratch
   ? [
       { name: 'USNM_WORK_DIR', value: scratchDir }
+      { name: 'USNM_WRITER_WAL_DIR', value: '/work' }
       { name: 'USNM_WORK_MIN_FREE_GIB', value: string(scratchGiB * 3 / 4) }
     ]
   : []

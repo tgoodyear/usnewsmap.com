@@ -127,7 +127,7 @@ foreach ($updated->plan_class as $node) {
     $name = (string)$node->name;
     if ($name === "nvidia_cuda_2b") {
         assert((string)$node->min_wu_id === "100" && (string)$node->max_wu_id === "100");
-    } elseif ($name === "nvidia_cuda_8b") {
+    } elseif (in_array($name, ["nvidia_cuda_8b", "intel_vulkan_8b"], true)) {
         assert((string)$node->min_wu_id === "2" && (string)$node->max_wu_id === "1");
     } else {
         $matching = $original->xpath("plan_class[name='$name']");
@@ -135,10 +135,20 @@ foreach ($updated->plan_class as $node) {
     }
 }
 native_qwen_cohort_write($project, "nvidia_cuda_8b", 101, true);
+$vulkan = native_qwen_cohort_write($project, "intel_vulkan_8b", 102, true);
+$opened = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($opened->plan_class as $node) {
+    $name = (string)$node->name;
+    if ($name === "intel_vulkan_8b") {
+        assert((string)$node->min_wu_id === "102" && (string)$node->max_wu_id === "102");
+    } elseif (in_array($name, ["nvidia_cuda_2b", "nvidia_cuda_8b"], true)) {
+        assert((int)$node->min_wu_id > (int)$node->max_wu_id);
+    }
+}
 native_qwen_cohort_write($project, "nvidia_cuda_2b", 0, true);
 $closed = simplexml_load_file("$project/plan_class_spec.xml");
 foreach ($closed->plan_class as $node) {
-    if (in_array((string)$node->name, ["nvidia_cuda_2b","nvidia_cuda_8b"], true)) {
+    if (in_array((string)$node->name, ["nvidia_cuda_2b","nvidia_cuda_8b","intel_vulkan_8b"], true)) {
         assert((int)$node->min_wu_id > (int)$node->max_wu_id);
     }
 }
@@ -161,6 +171,7 @@ catch (RuntimeException $e) { $refused = true; }
 assert($refused);
 $wu->batch = 8; $wu->rsc_disk_bound = 19327352832; $results[0]->server_state = 2;
 native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b");
+native_qwen_cohort_validate($wu, $results, "intel_vulkan_8b");
 foreach ($results as $row) $row->sent_time = 1;
 $refused = false;
 try { native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b"); }

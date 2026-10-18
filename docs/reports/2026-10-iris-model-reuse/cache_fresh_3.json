@@ -1,0 +1,61 @@
+{
+ "label": "cache_fresh_3",
+ "n": 1,
+ "count": 1,
+ "config": {
+  "INFERENCE_PRECISION_HINT": "f16",
+  "CACHE_DIR": "/cache"
+ },
+ "engine": {
+  "openvino": "2026.4.1-22982-e213a147257-releases/2026/4",
+  "openvino_genai": "2026.4.1.0-3408-ab01d1771e4"
+ },
+ "device": {
+  "full_device_name": "Intel(R) Iris(R) Xe Graphics (iGPU)",
+  "device_architecture": "GPU: vendor=0x8086 arch=v12.0.0",
+  "gpu_total_mem_bytes": 15135723520
+ },
+ "wall_ms": 8533.2,
+ "cache_bytes": 3177319213,
+ "groups": [
+  {
+   "crops": 1,
+   "load_ms": 1756.1,
+   "group_ms": 8326.5,
+   "memory_after_release": {
+    "cgroup_current": 354766848,
+    "cgroup_peak": 3921129472,
+    "rss": 593858560
+   }
+  }
+ ],
+ "crops": [
+  {
+   "crop_id": "pub-reichsanzeiger-lines-344",
+   "page_sha256": "a45b1c287274f564b28ab9d0d7513fb526fdd44e10c2e0b972aaca549cfed88d",
+   "width": 1894,
+   "height": 148,
+   "decode_ms": 16.3,
+   "generate_ms": 6483.4,
+   "tokens": 35,
+   "finish_reason": "STOP",
+   "truncated": false,
+   "empty": false,
+   "text": "19. d. Mts. den ersten Ausgang unternehmen konnte und vor- ausfichtlich in B\u00e4lde zur badischen Division wird zur\u00fcckkehren",
+   "text_sha256": "ac898d27bc91a8adb9933359fe16d9300fd42e82cd0fb12b7d933706f58cb52a",
+   "ttft_ms": 4370.45166015625,
+   "tpot_ms": 62.11159133911133,
+   "tokens_per_s": 16.100053787231445,
+   "tokenization_ms": 0.6880000233650208,
+   "prepare_embeddings_ms": 1349.095947265625,
+   "inference_ms": 3229.322998046875,
+   "memory": {
+    "cgroup_current": 3889795072,
+    "cgroup_peak": 3921129472,
+    "rss": 794947584
+   },
+   "position_in_group": 0
+  }
+ ],
+ "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n"
+}

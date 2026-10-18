@@ -25,6 +25,12 @@ pub fn disk_free(path: &Path) -> Option<u64> {
     Some(u64::from(s.f_bavail).saturating_mul(u64::from(s.f_frsize)))
 }
 
+/// Free bytes on the optional local WAL volume, independently of NFS scratch.
+pub fn wal_disk_free() -> Option<u64> {
+    let root = std::env::var_os("USNM_WRITER_WAL_DIR")?;
+    disk_free(Path::new(&root))
+}
+
 /// Resident memory of this process (`None`) or of `pid`, from
 /// `/proc/<pid>/status` (Linux only; `None` elsewhere).
 pub fn rss_bytes(pid: Option<u32>) -> Option<u64> {
@@ -136,6 +142,7 @@ impl Snapshot {
             retries_429 = self.retries_429,
             retries_503 = self.retries_503,
             disk_free_mb = mb(self.disk_free),
+            wal_disk_free_mb = mb(wal_disk_free()),
             rss_mb = mb(self.rss),
             quickwit_rss_mb = mb(self.quickwit_rss),
             "release progress"

@@ -146,6 +146,8 @@ jobs:
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
+      - name: Install scheduler gate test headers
+        run: sudo apt-get update -q && sudo apt-get install -y -q nlohmann-json3-dev
       - name: The app version checks' tests pass
         working-directory: .
         run: |
@@ -155,6 +157,7 @@ jobs:
           python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
           python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
+          python3 -m unittest -v scripts/boinc/test_patch_server_gold_routing.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
           python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
       - name: Install Bicep
@@ -628,7 +631,7 @@ jobs:
       - name: changes.sh runs the Quickwit job only for what its tests build
         run: python3 -m unittest -v scripts/ci/test_changes.py
       - name: The bounded local corpus catalog's tests pass
-        run: python3 -m unittest -v scripts/test_data_catalog.py
+        run: python3 -m unittest -v scripts/test_data_catalog.py scripts/test_scan_cache_inventory.py scripts/test_worker_evidence_sync.py
       - name: Read-only corpus flow observations preserve scope and freshness
         run: python3 -m unittest -v scripts/test_data_flow_observer.py
       - name: Pinned model downloads retry TLS failures without bypassing verification

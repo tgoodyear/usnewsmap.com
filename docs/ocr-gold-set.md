@@ -1,5 +1,141 @@
 # OCR gold set
 
+## Issue-disjoint current-worker calibration (17 October 2026)
+
+For #527/#751, the original BLN600 archive's publication/date metadata excluded
+all 28 issues represented by the old 142-crop benchmark. An outcome-blind hash
+ordering selected one excerpt per unused issue: 30 for calibration and the next
+30 for sealed testing. These are newspaper excerpts, not asserted independent
+original pages or absent from model training. The experiment is English BLN
+only; it does not establish multilingual or American-newspaper performance.
+Selection SHA-256:
+`204b2d1b468eea53cdab3b9fadd289b90e6cdc55454da88f046efcf44b8a0054`.
+Normal reference-only bundle manifests are calibration
+`d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f`
+and heldout
+`2bc0e24ebdf20adfb5577eab8634279391ba135f3ffd066d0a6cc4a5307056ea`.
+Original archives/licences stayed unchanged; only counts are reported here.
+
+Actual ARM runs used production worker
+`sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa`,
+base `sha256:7bc7b78658562430ec95a1b1048c2f689c26f8d2443d6ed0c5e981e311cbab93`,
+Tesseract 5.5.0, PSM 3 and 300 DPI. Fault controls ran the real engine but
+returned empty output for 1, 2 or 4 outcome-blind hash-ranked crops; report
+scores were not edited. Each run scored all 30 crops with zero skips.
+The external unmodified control matched native integer character/word counts
+on every crop in both partitions.
+
+| Partition   | Native / unmodified edits | One lost crop | Two lost crops | Four lost crops | Reference characters |
+| ----------- | ------------------------: | ------------: | -------------: | --------------: | -------------------: |
+| Calibration |                     5,929 |         8,534 |         10,874 |          14,491 |               82,794 |
+| Heldout     |                     4,719 |         7,084 |          7,993 |          14,361 |               85,685 |
+
+Before opening heldout, candidate
+`9cfe342402d4fe5c3facd09e83fc048555d093f6f3f6a6333e7331abe73fc0f2`
+fixed the aggregate CER limit at the calibration positive/nearest-fault
+midpoint, `14463/165588 = 0.08734328574534386`. It required both positives
+to pass and every fault to fail, without retuning on heldout.
+**This candidate failed:** heldout lost-one-crop CER
+`7084/85685 = 0.08267491392892572` incorrectly passed. This is not a usable
+production threshold or statistical error guarantee. The numerical threshold
+has not been retuned against this spent test partition.
+
+Trust format v4 therefore binds one explicit calibrated manifest and also
+requires complete scoring with no skips or crop whose character edits reach
+its reference length. The normal validated collector derives the counts-only
+`complete_loss_crops` field; old tables cannot silently satisfy this policy.
+This structural guard catches empty-output controls but does not prove
+resilience to partial omissions, wrong-language models or other fault families.
+The revised candidate kept the same numerical limit and froze this structural
+guard before OCR on the next 30 outcome-blind issues, disjoint from baseline,
+calibration and the spent heldout. Selection SHA-256:
+`11183a39b1b64616745e6e2bcb8adb86a757649704fd5d85a69cc91465ab9c3f`;
+manifest `70600f006cdfce3cfba273028fc7a3f52bb30df3e7934b9ccde6e8f5265f468c`;
+frozen candidate
+`ff12ee4cc80d94f7812876cda2c4953f380f76cb529dca20b7488e64e7279023`.
+Both real-engine positives matched every integer count and passed, with
+6,255 edits / 87,111 reference characters. Lost-one/two/four-crop controls had
+9,099 / 11,339 / 17,172 edits and respectively 1 / 2 / 4 complete-loss crops;
+all failed. Every run scored 30 crops with zero skips. Thus this independently
+tested revised policy passed its preregistered criteria, not the original
+aggregate-only policy.
+
+The shared handoff trust file cannot be isolated by passing a pilot-only path.
+Trust v4 therefore additionally records source language `eng`, model profile
+`eng`, PSM 3 and 300 DPI, and publication/spot checks require the actual job to
+match that scope. The collector records actual profiles/configuration and trust
+building checks those against the declared policy; language scope must also
+be established by the operator's pinned-manifest evidence. This English-only
+experiment does not authorize other languages or profiles on the same image.
+These offline experiments alone did not promote a host; current-image canonical
+evidence and explicit deployment were required before the scoped promotion
+recorded below. None of these experiments is fresh page OCR, handoff publication,
+release or search acceptance.
+
+The reviewed routing registry also records the current `247c` image's separately
+verified native base on each architecture: ARM above and AMD64
+`sha256:e088ef6f8004aa66091ee4bdaa06a42e5061a42dfd505db31c5d7257b747d065`.
+This permits future correctly signed current-image Gold apps; it is not app
+publication or calibration by itself. The existing `80bf` mapping stays intact.
+After #749/#750's image-only rollout, production revision 54 was healthy and
+the native targeted path dispatched compatible Mac WU 16734/result 32114 using
+app 38. It reached canonical 32114, assimilation 2, outcome/validation 1 and
+exit 0; normal `gold check` and collection accepted all 142 crops with zero
+skips (report SHA-256
+`d2c0781be7863cf3c2170bed03c3abab50770192d279ce4a524a2823a7d582a5`).
+That validates a live compatible dispatch on `80bf`, not a `247c` measurement
+or an observed live incompatible refusal.
+
+### Current-worker native canonical evidence and scoped promotion
+
+The reviewed #755/#761 image-only rollout reached healthy production revision
+55, including the separate handoff job without changing its command or other
+settings. Signed Gold 1.4 publication then succeeded for Linux
+(`usnm-boinc-publish-caj-prod-uucz4sm`) and Apple Silicon
+(`usnm-boinc-publish-caj-prod-p57pptb`). Independent native registration checks
+found active version 104 / `docker` apps 39 and 40 respectively, and both
+published Dockerfiles pin the exact `247c` worker above. All six registered
+public download URLs returned anonymous HTTP 200 with SHA-256 hashes identical
+to the signed published payloads. Gold publication does not update `usnm_ocr`.
+
+One normal targeted challenge per existing user-2 host used the unchanged
+30-crop calibration manifest above:
+
+| Platform      | Host | Workunit | Canonical result | App version | Canonical report SHA-256                                           |
+| ------------- | ---: | -------: | ---------------: | ----------: | ------------------------------------------------------------------ |
+| Apple Silicon |    1 |    16736 |            32117 |          40 | `082649110586b90dab6ab717ee9aea60914f11205cfbfdd7f8819aaa47bab2f4` |
+| Linux x86_64  |    8 |    16737 |            32118 |          39 | `d9b67382e7a4127fd1ffa046d4792d688f1b32b1705903b47ca7ea56556c7a4e` |
+
+Both native results have outcome 1, validation 1 and exit 0; their workunits
+have assimilation 2 and error mask 0. Normal `gold check` and `gold collect`
+accepted each report with no pending or failed result. All 30 unique crops
+have zero skips and complete losses, and every source, profile and integer
+character/word edit and reference count exactly matches the offline ARM
+baseline: **5,929 edits / 82,794 reference characters**. A separate local AMD64
+emulation also matched those counts (report SHA-256
+`c17ff88f1051623b5f71879981b07b8d8a900e08771f751b8536522a1c1baf41`);
+it is not a substitute for the actual Linux BOINC result.
+
+At `2026-10-17T07:19:56Z`, the normal local production mutex, all-six-idle
+preflight and infinite controller lease guarded the global trust promotion.
+Native receipts and the unchanged old policy were rechecked before publishing.
+`/project/gold/current247c-scope-eng-20261017/` retains the before-policy
+snapshot, generated candidate and promotion receipt. The actual shared
+`/project/gold/trust.json` has SHA-256
+`3bfc19016cf38b47455faa4ddbe8fbbe27577c410c1d8e74a2ccdd8a0a6a651b`:
+v4, only worker `247c`, hosts **1 and 8**, calibration manifest `d8cd7279...`,
+source language/profile **eng/eng**, PSM 3, 300 DPI and frozen limit
+`0.08734328574534386`. It does not authorize another worker, language,
+profile or configuration.
+
+This is an English BLN fixed-worker quality pilot, not proof of American-corpus,
+multilingual, statistical, availability or malicious-host performance.
+Terminal/no-valid-report attribution remains [#756](https://github.com/tgoodyear/usnewsmap.com/issues/756).
+The [native promotion receipt](https://github.com/tgoodyear/usnewsmap.com/issues/527#issuecomment-6231138896)
+does not close the separate fresh-page Mac OCR, handoff, release or search gates.
+No queue-admission exception, client preference, task abort or priority change
+was used.
+
 Part of [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296). The [engine survey](reports/2026-10-ocr-engine-survey/report.md) has no ground truth, so it can't report a character error rate (CER) or word error rate (WER); it relies on the damage metric. The gold set is a fixed set of crops with a person's transcription, so any engine, profile or route change can be scored by CER and WER on the same text. The plan in [13 §13.9](design/13-ocr-engines.md#139-how-the-survey-and-production-share-engine-images) already names `score --truth <crops dir>`; the gold set is what goes in that directory.
 
 The transcriptions of the 60 crops are not written yet. Every `transcription` field is empty, and none may be filled from an engine's output. Until they are, the 60 are scored as engine agreement only (`gold.py agree`), and the accuracy numbers come from public datasets that already have human transcriptions, described in [Public ground truth](#public-ground-truth).
@@ -344,8 +480,8 @@ and its public download both pin the measured `80bf2d65...` worker. The
 publisher-only update preserved all other template, configuration and identity
 properties and did not replace the concurrent server/bridge runtime.
 
-The full v1 campaign remains held pending verification of NonCommercial-use
-eligibility. Instead, the normal builder prepared a separate **52-crop,
+At the time of this measurement, verification of NonCommercial-use eligibility
+for the full v1 campaign was pending. The normal builder therefore prepared a separate **52-crop,
 CC-BY-4.0-only** bundle from the existing converted NewsEye validation inputs:
 BnF 24, Finnish 18 and Swedish 10. No BLN600, Overproof or NZZ content is in it.
 All source licence files and attribution travel unchanged with the crops.
@@ -393,8 +529,108 @@ This establishes actual current-image canonical execution and measured
 French/Finnish/Swedish coverage on host 8, **not English accuracy or Mac host
 calibration**. These are reused validation crops, not an independent unseen
 holdout. No production threshold was inferred and no trust was promoted.
-English-representative calibration, a defensible trust disposition, and the
-fresh Mac OCR publication/search lifecycle remain open.
+Subsequent [full-v1 canonical verification in #527](https://github.com/tgoodyear/usnewsmap.com/issues/527#issuecomment-6227645406)
+established four successful `80bf2d65...` executions on hosts 6, 9, 2 and 8:
+all 142 unique crops, zero skips, and exact per-crop integer-count parity with
+the offline baseline (125,622 reference characters, 11,336 edits, CER
+0.09023897088). This includes the English benchmark coverage missing from the
+separate CC-BY-only bundle, but is still reused benchmark material, not an
+independent unseen holdout. Four hosts are independent executions, not four
+independent truth sets.
+
+The [recorded project-purpose fact in #526](https://github.com/tgoodyear/usnewsmap.com/issues/526#issuecomment-6227671263)
+resolves the earlier factual NonCommercial-purpose unknown. It does not waive
+NoDerivatives, attribution or other licence conditions; the original archive
+and licence/attribution files remain unchanged. A defensible trust disposition,
+Mac calibration, and the fresh Mac OCR publication/search lifecycle remain open.
+
+### Prepared Mac Gold sibling, 17 October 2026
+
+ACR build `ch6r` prepared the signed Gold 1.3 `arm64-apple-darwin` / `docker`
+sibling, with all three payload signatures verified. Its publisher image is
+`crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:89a345d9a6f765cae467448438ee61ba70066562dcdff1280f816064aed9880c`.
+It deliberately pins the same measured `80bf2d65...` worker as Linux Gold 1.3;
+the newer production worker pin is not rolled back or implicitly calibrated.
+Preparation is not publication, native registration, Mac execution or host
+trust. A Mac job must name the ARM base, not the Linux AMD64 base. Existing
+Linux Gold 1.3 payloads must remain unchanged when publishing this platform
+sibling. No additional workunit or queue-admission exception is authorized by
+this artifact pin.
+
+### Canonical Mac Gold measurement, 17 October 2026
+
+After the reviewed release in #741, publisher execution
+`usnm-boinc-publish-caj-prod-twa4osl` succeeded and registered Gold 1.3
+`arm64-apple-darwin` / `docker` as **app_version 38**. The image-only update
+preserved the publisher's other template, configuration and identity settings.
+Existing Linux Gold 1.3 remained registered as app_version 28.
+
+The ordinary scheduler initially sent Mac host 1 two existing generic Gold
+jobs with incompatible historical/AMD64 bases. WU 15712 / result 32108 and
+WU 15721 / result 32109 both exited 1 before OCR: the strict engine-base check
+correctly rejected them. They are not calibration measurements. Generic
+architecture-safe Gold routing remains tracked in [#747](https://github.com/tgoodyear/usnewsmap.com/issues/747);
+publishing a platform sibling does not by itself constrain queued jobs to
+that platform's base.
+
+With zero pending Mac Gold and zero global unsent Gold, the normal preparer
+verified a separate campaign at `/project/gold/mac-arm-20261017-80bf` from
+the existing unchanged full-v1 bundle and cached originals. Its prepared
+metadata is identical to the Linux campaign's 142-crop expectations; no
+source downloads or modified original archives were needed. With all six
+lifecycle jobs idle and the controller lease held, one ordinary targeted
+Gold job was submitted to existing **host 1 / user 2**, naming the ARM base
+`sha256:86418d991a798c885a7a505bc94ce27cbfe0c5361fa3dde319b7d6b400d9ebad`.
+No client preference, priority, abort, trust or fresh-OCR admission override
+was used.
+
+Actual **WU 16733 / result 32110 / app_version 38** completed with outcome 1,
+validation state 1 and exit status 0. Result 32110 became canonical; the
+workunit reached assimilation state 2 with error mask zero. The native
+canonical database host matches the report's host claim. The deployed
+validator passed and normal `gold collect` reported one collected, zero
+pending and zero failed. The canonical counts-only report SHA-256 is
+`0a41d70086c4bed79d89489f293853a7bc3fc64fb0e94386145e3841618f32fb`;
+its job ID is `d0f4b1eada04766e01f2a8ac03972ff86b66ab9d6d6cd992213cfedffa5e9460`.
+The immutable job, prepared metadata and collector tables remain in that
+campaign root.
+
+After receipt-hash verification, all **142 unique crops, zero skips**, match
+both offline ARM and AMD64 baselines exactly in source, profile, and integer
+character/word edit and reference counts: **125,622 reference characters,
+11,336 edits, CER 0.09023897088**. This establishes actual Mac BOINC
+execution/validation/collection and cross-architecture benchmark parity
+for the pinned `80bf2d65...` worker. It does not calibrate newer worker
+`247c131a...`, supply independent held-out truth, establish a production
+threshold, promote trust, or complete the fresh-page OCR/native
+handoff/release/search lifecycle. The [native acceptance receipt](https://github.com/tgoodyear/usnewsmap.com/issues/527#issuecomment-6228584575)
+records the same boundaries.
+
+### Gold architecture and image routing
+
+The scheduler's Gold-specific compatibility hook reads the authoritative
+staged `<job-id>_gold_json`, including for work queued before the hook was
+deployed. Before dispatch, it requires the selected app's registered
+Dockerfile to pin that job's exact worker image, and requires the job's base
+to match the reviewed image/platform entry in
+`contrib-compute/boinc/gold-engine-platforms.json`. Missing or malformed
+metadata, anonymous app versions, unknown bindings, and mismatches refuse
+dispatch with an explicit `[Gold routing]` scheduler log. Filesystem reads
+run only in the unlocked slow check, assignment, locality, and lost-work
+resend paths, not
+the fast check under the global scheduler semaphore. Job inputs use the
+workunit fanout; registered application Dockerfiles use the flat download
+directory. Incompatible locality candidates are skipped without stopping
+the search; incompatible lost-work resends are skipped without expiring
+the existing result. Other apps retain their existing routing.
+
+Adding a new Gold worker requires independently verifying its per-architecture
+base digests and reviewing the registry entries before deployment; this is
+execution compatibility, not accuracy calibration or host trust. A refusal
+may leave a stale workunit pending for operator disposition rather than
+sending it to an incompatible host. Do not change signed payloads, weaken
+the worker/validator identity checks, or abort/reprioritize existing jobs
+to disguise this gate.
 
 ## Licensing
 

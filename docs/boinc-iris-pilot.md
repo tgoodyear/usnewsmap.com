@@ -58,6 +58,11 @@ substantially understates memory use.
 
 ## Prepare, dispatch, inspect
 
+OCR benchmark release v1.0.0 ([docs/ocr-bench.md](ocr-bench.md)) preserves the pilot's exact
+images and references, and those of the paired and German campaigns. Subset
+`legacy/overproof-en-100` is this acceptance set byte for byte. When comparing against it, cite
+its subset digest and the release's content digest.
+
 The operator's dataset directory contains `dataset.json`, `images/`, and
 `LICENSES/`. The manifest has `evaluation_only: true` and exactly 100 `crops`,
 each with a unique `pub-overproof-ca-NNN` ID, relative image path, image SHA-256,
@@ -169,3 +174,36 @@ OpenVINO 2026.4.1 on an i7-1185G7 Iris Xe. Warm-cache newspaper-crop inference t
 7.5 seconds on GPU versus 27.6 seconds on two CPU threads. The clear text card was
 read exactly. The newspaper transcription had errors and CPU/GPU differences;
 these two images do not establish corpus accuracy or sustained performance.
+
+## Throughput experiment (#736)
+
+`ocr/boinc/iris/bench.py` and `scripts/boinc/iris-bench.sh` measure one resident `VLMPipeline`
+for N sequential crops and an optional persistent `CACHE_DIR`, with the worker's device checks, prompt,
+f16 hint and container limits. They are experiment tools, not shipped in the worker image, and change no
+BOINC behavior. On Computer 9 pipeline construction was about 70% of each task; N=8 gave 3.8x and
+a warm compile cache plus N=8 gave 6.4x end-to-end crops/min with no truncations or OOMs. Reference-scored CER, the
+multi-crop contract and a signed release are still required: see
+[the report](reports/2026-10-iris-model-reuse/README.md). Rollback needs nothing: the published
+single-crop app version is unchanged. To rerun, stop BOINC on the host first
+(`systemctl stop boinc-client` in the CT) and restore it with `systemctl start boinc-client` afterwards.
+
+### Multi-crop bundles (app version 1.1)
+
+`ocr/boinc/iris/bundle.py` defines the v2 unit: `iris.json` (`"v": 2`) plus `pages.pack` (the crops' JPEGs
+concatenated). The worker loads the model once and runs the crops in order. Each crop has its own v1-shaped
+result bound to a derived v1 job (id, crop id, page checksum), so a bundle cannot hide a failed crop.
+The bundle status is `ok`, `partial` or `error`; a partial bundle exits 0 so its finished crops upload, and
+the validator retains it but rejects it. A crash or the watchdog (900 s + 90 s per crop) keeps the crops
+already finished. A `generate()` exception aborts the remaining crops (`bundle_aborted`) because pipeline
+state is untrusted afterwards. A unit without `pages.pack` takes the unchanged v1 path.
+
+Limits: at most 32 crops and 128 MiB per unit; stage 16 (measured 12.8 crops/min warm, 5.3 GiB peak, no
+truncation). Real worker image on Computer 9, 16 distinct crops, production container limits, cold
+cache: 16/16 ok in 98 s (load 14.5 s), text identical to the benchmark's N=16 run. Templates:
+`usnm_iris_bundle_in` / `usnm_iris_bundle_out` (result up to 2 MiB). The compile cache is not part of 1.1.
+
+Evaluation re-run of the accepted 100 crops, host 9 only (batch 105, version 1.1):
+`iris-bundle-campaign.py prepare --source <v1 campaign> --out <dir> --worker-image <digest> --bundle-size 16`,
+then `submit` (dry run unless `--apply`) and `collect --seen <dir> --v1-seen <1.0 seen>` for per-crop CER and
+drift from the 1.0 results. Rollback: deprecate version 1.1 (1.0 is untouched).
+The 20,000-page set stays gated by its own `campaign.json`; this release does not dispatch it.

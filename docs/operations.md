@@ -392,6 +392,27 @@ scripts/provision.sh --env prod
 
 Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would rebuild the whole corpus. Don't leave `USNM_INGEST_SCRATCH_GIB` set either: the share, its private endpoint and its DNS zone cost about $25 a month (#308), and deltas don't need them. Its contents are scratch: a release empties the writer's data before it starts, so deleting the share loses nothing, and the next rebuild's provision creates it again, empty, under the same names. Don't leave `USNM_DEDICATED_PROFILE` set either: while the environment has the E4 profile it pays the Dedicated plan management fee every hour (about $0.10 an hour in East US 2 in October 2026), whether or not a node runs. An E4 node itself (4 vCPU, 32 GiB) costs about $0.39 an hour while the job runs.
 
+**The WAL stays local even with scratch enabled.** Mounted jobs set the internal
+`USNM_WRITER_WAL_DIR=/work`: the ingest image's writable ephemeral disk, not
+`/scratch`. Each writer creates a fresh private directory there and links
+`qwdata/wal` to it (Quickwit 0.9.1's v2 WAL path). Startup requires at least
+8 GiB free locally for the bounded 4 GiB WAL plus headroom; `writer WAL on local
+disk` records the actual path and free MiB. `wal_disk_free_mb` in
+`release progress` and `release merges` tracks the local volume separately from
+the NFS `disk_free_mb`. The directory lives until the writer
+stops and is not replayed by the next run. Split cache, merge files and decade
+spill remain on the large NFS share and retain their existing caps/checks. Jobs
+without scratch keep the existing all-local layout. Neither layout resumes an
+interrupted rebuild: the next run clears its writer data before starting.
+
+This separates the WAL's latency-sensitive persist lock from NFS. The first
+#283 production attempt failed after 25 h at 43.9%: a persist held that lock for
+45.51 s against Quickwit 0.9.1's hard 6 s persist timeout (five router attempts),
+then returned HTTP 500. It was not a full-disk or confirmed OOM failure. Retrying
+that HTTP 500 blindly is unsafe because acceptance is ambiguous and can duplicate
+documents. A failed staged run publishes nothing; keep the serving version and
+rollback intact while fixing and restarting it.
+
 **Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why ordinary ingest has a 48 h replica timeout (#173). Explicit full rebuilds and staging runs now get 96 h, from the slower #283 dev measurement above. Benchmark afterwards with `scripts/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
 
 ## Index storage cutover
@@ -691,6 +712,12 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
    sudo install -m 0644 src/scripts/ocr-node/usnm-sset.service src/scripts/ocr-node/usnm-sset-status.service \
      src/scripts/ocr-node/usnm-sset-status.timer /etc/systemd/system/
    sudo install -d -o usnm -g usnm -m 0750 /var/lib/usnm-sset /var/lib/usnm-sset/raw /var/lib/usnm-sset/reference
+   sudo install -d -m 0755 /etc/usnm
+   # Create only if absent; preserve an existing local endpoint on upgrades.
+   sudo test -e /etc/usnm/sset-status.env || sudo install -m 0600 /dev/null /etc/usnm/sset-status.env
+   sudoedit /etc/usnm/sset-status.env
+   # Before continuing, set USNM_SSET_STATUS_PUSH_URL to the local dashboard's
+   # full http://<local-dashboard>/api/sset/usnm-sset endpoint (not a placeholder).
    sudo systemctl daemon-reload
    sudo systemctl enable --now usnm-sset-status.timer
    sudo systemctl enable usnm-sset
@@ -1360,7 +1387,7 @@ Deploy the scan service and storage using infrastructure tooling. The applicatio
 
 ### The scan archive (#442)
 
-The keep-set scans are copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. Production has Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The archive-only identity grant and host installation were applied through #641; the JPEG compatibility fix (#644) was deployed in attested release `ocr-worker-20261016-00fbdd9`. **The 16 October 2026 11:26:03 UTC recovery point is fully verified: 148,127 scans present; no missing scans, mismatches, invalid local files, conflicts or request errors; and no verification skips.** Acceptance used a temporary ZFS snapshot so upload and full property verification covered exactly the same immutable cohort while the source fetcher kept running. Its final top-up uploaded 5,203 scans (17,530,564,063 bytes); the temporary snapshot was destroyed afterward. Daily top-up and monthly verification timers remain enabled. That verification covers a dated off-site copy; it says nothing about whether a later fetch manifest is complete or whether scans fetched since then lag the archive. Read the current reports instead of taking the enabled timers as evidence of later coverage. Direct-client API and tickets remain deferred in #649.
+The keep-set scans have been copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. Production has Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The archive-only identity grant and host installation were applied through #641; the JPEG compatibility fix (#644) was deployed in attested release `ocr-worker-20261016-00fbdd9`. **The 16 October 2026 11:26:03 UTC recovery point is fully verified: 148,127 scans present; no missing scans, mismatches, invalid local files, conflicts or request errors; and no verification skips.** Acceptance used a temporary ZFS snapshot so upload and full property verification covered exactly the same immutable cohort while the source fetcher kept running. Its final top-up uploaded 5,203 scans (17,530,564,063 bytes); the temporary snapshot was destroyed afterward. **On 17 October, daily top-up and monthly verification timers were disabled under the local-first cost decision (#783); existing bytes and manual units remain intact.** That verification covers a dated off-site copy; it says nothing about whether a later fetch manifest is complete or whether scans fetched since then lag the archive. Read the current reports instead of assuming later coverage. Direct-client API and tickets remain deferred in #649. See [local BOINC download hosting](boinc-file-host.md) for the revised cost and serving boundaries.
 
 1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
 2. **The identity.** Keep pve-big out of the OCR nodes' group: that group grants queue permissions and is counted for node pacing. Save its Arc principal as the archive-only uploader, then provision to grant the existing archive role (create and read, no delete) on `scans`:
@@ -1397,7 +1424,7 @@ The keep-set scans are copied to a Cold-tier container, `scans` in the storage a
 
    The helper requires the installed binary, service user, Arc group, tmpfiles configuration and environment file. It runs each phase as `usnm` with the unit's Arc environment and supplementary group, and holds the same lock as the upload and verify services throughout all phases. The lock lives in root-controlled `/run/lock/usnm-scan-archive`, not the service-writable state directory, so the service account cannot replace it with a symlink. A concurrent upload, verify or acceptance check makes it fail before starting a sample. It never enables timers or starts a full upload. The dry run writes nothing; the upload creates at most the requested number of missing scans; verify compares size, md5, tier and stored sha256 from properties without downloading Cold bytes. Limits are 1–1,000 scans (default 100), and acceptance requires a nonempty, consistent-size sample with clean reports and every sampled scan present at verification. The transient units remove `USNM_ARCHIVE_STATE` and set `RUST_LOG=off`, overriding the environment file: acceptance never touches the service state file, and progress logs cannot contaminate the single JSON report.
 
-5. **The first upload.** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time in nanoseconds, inode, change time); an older three-field line is ignored, so that scan is checked once more; on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. Then `sudo systemctl enable --now usnm-scan-archive.timer` for a daily top-up as the fetcher adds scans, and `sudo systemctl enable --now usnm-scan-archive-verify.timer` for the full check on the first of each month. The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand with `sudo systemctl start usnm-scan-archive-verify`. The upload, verify and bounded acceptance helper hold one `flock` on `/run/lock/usnm-scan-archive/lock`, so a verify that starts during an upload waits for it (and the other way round) instead of reporting scans not yet uploaded as missing. A blob with no stored MD5 is never counted as present, in any mode (`conflicts` in an upload or dry run, `mismatched` in verify), and is never written to the state file.
+5. **The first upload (manual, cost-approved only).** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time in nanoseconds, inode, change time); an older three-field line is ignored, so that scan is checked once more; on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. **Do not automatically enable the timers under the current local-first policy.** Their explicit rollback commands are documented in [local BOINC download hosting](boinc-file-host.md). The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand only after cost approval with `sudo systemctl start usnm-scan-archive-verify`. The upload, verify and bounded acceptance helper hold one `flock` on `/run/lock/usnm-scan-archive/lock`, so a verify that starts during an upload waits for it (and the other way round) instead of reporting scans not yet uploaded as missing. A blob with no stored MD5 is never counted as present, in any mode (`conflicts` in an upload or dry run, `mismatched` in verify), and is never written to the state file.
 6. **What a report means.** `bad_local` is a scan whose sidecar is missing or doesn't match its bytes, full resolution or format (not uploaded: investigate before fetching it again). JPEG sidecars use `format="jpeg"` for `.jpg` files; old sidecars without a format default to JPEG. Releases through `ocr-worker-20261016-c66d480` incorrectly rejected valid JPEGs by comparing the sidecar name with the file extension; retry these with a corrected release rather than changing sidecars or re-fetching good bytes. `conflicts` is a blob of that name that differs from the local file (never overwritten: look before doing anything). `errors` are failed requests: run it again. `skipped` (upload runs with the state file) are scans recorded as archived and unchanged; they are not counted in `scanned`. In `--verify`, `mismatched` includes a blob with no stored sha256 metadata or one that differs. Progress logs include failure counters; the final JSON report includes up to 20 problem paths. The command exits non-zero unless all are zero.
 
 The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists for a test only.
@@ -1482,11 +1509,15 @@ scripts/provision.sh --env prod
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication on an access-controlled internal endpoint ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Operational details (workers, batches, pages, queues, host stats and provenance) are collapsed by default; open them without leaving the page. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. DNS, certificates, container provisioning and access rules are managed by the infrastructure operator.
+`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication on an access-controlled internal endpoint ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines opens directly beneath the summaries, independently of Operational details. On phones, diagrams become readable step cards with the same descriptions and live rates; wider screens retain the SVG maps. Operational details (workers, batches, pages, queues, host stats and provenance) remain collapsed by default. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. DNS, certificates, container provisioning and access rules are infrastructure concerns.
 
 Summaries use fresh reports, not a shared pipeline percentage. Local completions are worker output; BOINC counts are assigned/unsent result replicas, not unique pages or actively computing devices. The evaluation card groups observed assignments by purpose, but campaign readiness, paired results and acceptance decisions are not connected. Catalog counts cover imported evidence only. Missing publication evidence stays unknown, never zero or inferred success. Snapshot generation time is shown separately from evidence age, so old historical observations do not label all live lanes stale.
 
-**Pipelines.** The collapsed reference section at the bottom draws one diagram per data set, as inline SVG in `crates/usnm-ocr-dash/src/diagrams/`: the LoC pages we keep, the LoC pages we only buffer, the pages the kept set's OCR rebuilds, and the Serial Set. Each is in lanes (LoC and Azure, the scan store, the OCR nodes, Azure) so where an artifact lives is plain, and sits above a table that answers where the data comes from, whether it needs OCR, where it is stored and what must still happen before it is searchable. Every box shows done, running, waiting, not built or not tracked here, read from the same view as the operational panels; the dashboard reads nothing in Azure, so the ingest, release, rebuild and search index steps show "not tracked here", and the unbuilt step that queues pages users find shows "not built". Nothing in a diagram is a hard-coded count. When the pipeline changes, edit the SVG and the answers in `diagrams.rs`; the tests check that each SVG parses, that no placeholder is left, that element ids don't clash and that no private address or internal host name is written.
+**Pipelines.** The collapsed reference section draws the original LoC text, keep-set OCR, buffer-set OCR, Serial Set and volunteer/experiment flows, as inline SVG in `crates/usnm-ocr-dash/src/diagrams/`. Storage lanes and the tables below them identify sources, OCR requirements and publication gates. The volunteer lane is independent of local OCR; queued/assigned replicas do not establish active computation, experiment success or acceptance. Worker boxes describe configured workers, not fixed machine assignments. Imported OCR can be considered by an enabled release indexing that batch; previously published batches need a full rebuild.
+
+Active boxes include a rate or "rate unknown". Fetch rates are last-hour completions shared across keep/buffer and the fetch/store boxes; worker rates are last-hour successful completions from fresh reporting workers across both sets. Do not add repeated rates or interpret them as per-dataset measurements. Serial Set volume throughput is the collector's run-to-date average, including empty/incomplete volumes, not an upload rate. An active-step table below each diagram gives the measurement window and scope. Queue stock and BOINC assignments have no connected throughput counter; missing rates are not zero. Separate upload, import, acceptance and publication rates are not inferred from worker completions. Stale/error sources do not animate as live work.
+
+States come from the operational view; steps without telemetry show "not tracked here". The dashboard does not directly query Azure ingest, release or search, and user-driven priority queueing is still marked "not built". Counts are not hard-coded. When the pipeline changes, edit the SVG and the answers in `diagrams.rs`; tests check XML, marker substitution, unique ids, source freshness, rate units/scope and the absence of private addresses or internal host names.
 
 **Deployment.** Use infrastructure tooling to install the released dashboard binary, configure its source URLs, mounts and TLS, and install host-stat collectors. The application repository provides the binary, API schemas and service definitions, not lab provisioning.
 
@@ -1497,5 +1528,66 @@ The panel spans the operational-details section below "At a glance". Its stage l
 Have the producer atomically publish a readable snapshot file and configure `--pipeline-snapshot` / `USNM_OCRDASH_PIPELINE_SNAPSHOT` through the deployment's infrastructure tooling. Preserve existing source, TLS and access settings. `USNM_OCRDASH_PIPELINE_MAX_AGE_SECS` / `--pipeline-max-age-secs` sets evidence freshness (default 900 seconds; allowed 1–604800).
 
 Input is limited to 1 MiB and schema version 1, producer `corpus-catalog`; unknown fields, invalid UTC RFC3339 times, times more than 60 seconds ahead, negative/fractional or over-trillion counts, and `verified + missing > locations` are rejected. Bounds: 32 coverage strings (128 characters), 64 stages (id 256, label 128, detail 512), 128 issues (code 64, detail 512). No control characters; stage ids must be unique; unknown stage counts must be null. The wrapper reports `retrieved_at`, `last_error`, `age_secs`, `stale`, optional `snapshot`, and `stage_freshness`. Source `observed_at`, not `generated_at` or retrieval time, determines freshness; null means unknown/unavailable. Optional stage `observed_at` supplies independent evidence times (explicit null is unknown; omission uses the snapshot evidence time). Stale stage evidence remains visible even when another source was just observed. Missing, oversized or malformed files retain the last valid snapshot with an explicit error indication and suppress its live summary counts; no valid snapshot shows unavailable, never a silent fallback to worker totals. The API's aggregate `stale` flag remains unchanged; the diagnostic heading says "Some evidence old or unknown", with actual read errors shown beneath it.
+
+**Resumable local scan-cache inventory (#704).** For indexes larger than the
+single-batch adapter's 10,000-row/16 MiB limits, run the stdlib orchestrator
+**on the POSIX machine holding the scan files**:
+
+```bash
+python3 scripts/scan_cache_inventory.py \
+  --db catalog.sqlite --index scans/index-full.jsonl --scan-root scans \
+  --work-dir inventory-20261017 --source local-cache-stat \
+  --cache-set keep --cache-set buffer --max-batches 10
+```
+
+Repeat the identical command until `finished` is true. Select only cache sets
+that this operator intends to observe; the index does not encode membership.
+No scans are downloaded, hashed, modified or deleted. A regular file with the
+expected size is `present`, **not checksum-verified**. Missing/wrong-size copies
+are observations, not deletion requests; absent rows are not deletions either.
+This does not change workers, cloud archives, acceptance, publication or indexing.
+
+The first invocation fixes an input byte prefix, inode, and prefix SHA-256.
+That hash protects the **index metadata**, not image bytes. Each resume checks
+the captured prefix by streaming it with at most 1 MiB reads; replacement,
+truncation, or edits fail closed. The index must remain append-only during an
+invocation. Appends are deliberately excluded; use a new inventory directory
+to observe a later prefix (overlapping observations are allowed). A trailing
+record without a newline is excluded and remains explicitly uncovered.
+
+Each slice is limited to 256 rows/1 MiB and the existing 64 KiB line limit.
+It is statted separately for each selected set and imported through the existing
+transactional catalog ingestion. `--max-batches` limits newly completed slices
+per invocation, not the prefix integrity scan. Output reports covered/captured
+bytes, uncovered bytes, rows, completed batches, selected sets, and later
+appended bytes. Counts are index rows/observations, **not unique pages or corpus
+completeness**. Even `finished: true` means only that the fixed prefix's complete
+records were processed; LAN dashboard coverage remains partial.
+
+Keep the private inventory directory on durable local storage. It contains
+bounded raw index slices (including original discarded metadata), immutable
+`batch-*/keep.jsonl` / `batch-*/buffer.jsonl` evidence and atomic `state.json`
+checkpoints. Published evidence is reused without re-statting after interruption.
+Checkpoints advance only after all selected sets commit. A crash after a commit
+is recovered by idempotent replay, while an interrupted unpublished build is
+retained as replaceable `.interrupted` scratch. A filesystem lock prevents
+concurrent use of one inventory directory; do not share its catalog with a
+different inventory job concurrently. State/evidence storage grows with the
+observed prefix; working memory is bounded to one slice/adapter batch.
+
+To rebuild a lost catalog, replay only the retained evidence, not `index.jsonl`
+slices or scratch files, into the **same database pathname**:
+
+```bash
+for batch in inventory-20261017/batch-*/keep.jsonl inventory-20261017/batch-*/buffer.jsonl; do
+  [ -f "$batch" ] || continue
+  python3 scripts/data_catalog.py --db catalog.sqlite ingest --batch "$batch" || break
+done
+```
+
+The normal resume command refuses a missing catalog checkpoint; after evidence
+replay it can resume. Evidence is independent of the original scan files and can
+also rebuild a different database for inspection. Do not hand-edit checkpoints
+or evidence. Input transport, scheduling and retention policy are separate work.
 
 **Binary updates.** Build with `cargo build --locked --release -p usnm-ocr-dash --bin usnm-ocrdash`. Deploy the reviewed artifact with infrastructure tooling, retaining rollback and preserving existing settings. Verify `/healthz`, `/api/pipeline.json`, `/api/nodes.json` and the UI; health alone does not prove fresh evidence.

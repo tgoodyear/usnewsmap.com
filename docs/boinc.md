@@ -287,6 +287,70 @@ target/debug/usnm-boinc submit --root /srv/usnm/boinc-state \
   --project /srv/boinc/newspapers --job JOB_ID
 ```
 
+#### Optional local page hosting (native OCR pilot only, #783)
+
+The native `usnm-boinc submit` command alone accepts
+`--download-base-url https://downloads.example.org/ocr-pages/` for an
+independently published origin. The Azure submitting process does not need an
+origin mount: the trusted local producer must first publish the exact staged
+page as `<origin-root>/<sha256>`, atomically and immutably. Default submission is
+unchanged. This does **not** migrate gold, Qwen, quality, Surya, NDLOCR, model,
+application, upload or result files; the scheduler, application and database
+remain in Azure.
+
+Two-host flow (no origin filesystem mount on Azure):
+
+```sh
+# Trusted local producer: receipt records publication, NOT HTTPS readiness.
+usnm-boinc prepare-download --page /srv/local/staged-page \
+  --download-root /srv/usnm/immutable-ocr-pages
+# Azure project server: retains the existing verified staged job/request.
+usnm-boinc submit --root /srv/usnm/boinc-state \
+  --project /srv/boinc/newspapers --job JOB_ID \
+  --download-base-url https://downloads.example.org/ocr-pages/
+```
+
+When the submitter also runs on the producer, optional
+`--download-root /srv/usnm/immutable-ocr-pages` adds create-only publication
+before the same mandatory public probe (and requires `--download-base-url`).
+Provision the existing absolute local directory without symlinks in any path
+component and without group/world write access. This must be the trusted
+producer's writable path, **not** a web-server container's read-only bind mount.
+Map that directory exactly to
+the public HTTPS prefix, with a valid certificate, anonymous GET and no redirects
+or rewriting. In this mode submission verifies the staged SHA-256, publishes a create-only
+`<root>/<sha256>` file as read-only `0444`, and fsyncs the file and directory.
+An existing object must be identical and read-only; conflicts are never replaced.
+Keep the directory operator-controlled and its content immutable; retain files
+for outstanding work, retries and rollback, with backup and disk headroom.
+
+Before writing `Submitting`, every attempt streams a fresh HTTP 200 GET,
+checking exact size and SHA-256 with the existing scan-size cap and a 120-second
+request timeout. DNS resolution has a separate 10-second timeout and runs
+outside Tokio's blocking pool so stalled system DNS cannot delay CLI shutdown;
+only public
+addresses are allowed and pinned, proxies and redirects are disabled. Local
+existence is not readiness proof. Unavailable/mismatched downloads leave the
+job reserved without invoking stock tools.
+
+Only tiny `request.json` is then staged on the project share. Stock
+`create_work --remote_file URL nbytes md5` occupies input position 0; the
+request filename remains position 1. At pinned BOINC commit
+`22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`,
+[`tools/create_work.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/tools/create_work.cpp)
+appends remote descriptors in argument order and
+[`tools/process_input_template.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/tools/process_input_template.cpp)
+names them `jf_<md5>` while preserving the supplied URL verbatim (the URL
+basename need not equal that physical name). The unchanged `usnm_ocr_in`
+template maps them to logical `page` and `request.json`. Any failure after
+write-ahead remains uncertain and requires existing explicit reconciliation.
+Allocation, trust, validation, acceptance and publication gates are unchanged.
+Before enabling this opt-in, verify ingress from outside the LAN and adequate
+upload bandwidth; no service or deployment change is included here. Public
+HTTPS ingress is not yet established: the local origin is LAN-only, so
+production volunteer submission/cutover remains blocked pending an approved,
+persistent public ingress path. Do not relax the HTTPS probe to enable it.
+
 Attach one friend's stock BOINC client to the project. Configure idle-only
 processing and conservative preferences, and update the project. After the task
 uploads and the assimilator spools it:
@@ -366,6 +430,110 @@ It is safe to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks u
 `user_friendly_name` or `min_version`, prints "already in DB" for the rest, and never
 deletes or deprecates anything. The step needs a bridge image with this step in it
 (`scripts/build-boinc-images.sh`, then `scripts/provision-boinc.sh`).
+
+### Current-worker OCR 1.5 publication, 17 October 2026
+
+The native app inventory found that Linux OCR 1.3/app 20 and Mac OCR 1.4/apps
+23 and 24 still pin worker `80bf`, whereas current export and scoped trust
+name worker `247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa`.
+Publishing current-worker Gold does not update these OCR payloads. Do not
+export a current-worker pilot and assume its signed OCR app matches, or
+weaken the worker's identity check.
+
+The normal prepare-only signing workflow produced immutable `usnm_ocr` 1.5
+siblings with all three payload signatures verified for each platform.
+Publisher repository: `crusnmprodffapzy.azurecr.io/usnm-boinc-appver`.
+
+| Platform              | ACR build | Publisher digest                                                          | Succeeded execution suffix | Native app version |
+| --------------------- | --------- | ------------------------------------------------------------------------- | -------------------------- | -----------------: |
+| `x86_64-pc-linux-gnu` | `ch7a`    | `sha256:b9bf07591a265cb7b9a260221bcfd719b320cd96e204cc78ec8d7196eec70dd2` | `9rbj04a`                  |                 41 |
+| `arm64-apple-darwin`  | `ch7b`    | `sha256:ccdf4a46376776ede3621be447b15e518e15e5594bdf99ad97bcd56feb07c8d2` | `sia7vgx`                  |                 42 |
+| `x86_64-apple-darwin` | `ch7c`    | `sha256:74a718918a031125e5103125a1142a35533fc73efe91b525cb8899bca96ee626` | `n7hkbcb`                  |                 43 |
+
+All pin the exact current `247c` worker; existing signed versions remain
+unchanged. The desired `images.appver` pin names the final Intel sibling;
+it is not a multi-platform publisher. After exact-head Copilot GREEN review,
+zero threads, all CI and merge of #762, Linux, ARM and Intel were published
+separately and serially. Each execution has prefix
+`usnm-boinc-publish-caj-prod-` plus the suffix above and terminated Succeeded
+before the next started. Normal production mutex, all-six-idle preflight,
+infinite controller lease and expected-previous-image guards protected each
+image-only update. Exact comparisons preserved every other template,
+configuration and identity property; no broad stack provision was run.
+
+Independent checks verified all three unique active version-105 / `docker`
+registrations, exact `247c` Dockerfiles and three payload/signature pairs per
+platform. All nine native download URLs returned anonymous HTTP 200 and
+byte-identical SHA-256 hashes. Scoped global trust stayed unchanged.
+Publication and registration are **not actual OCR-client acceptance**. The
+[current-worker native Gold evidence and English-only scoped promotion](ocr-gold-set.md#current-worker-native-canonical-evidence-and-scoped-promotion)
+are separate from fresh-page OCR execution, native handoff, release/search and
+Intel-client acceptance. No allocation, continuous-feed activation or
+backlog-policy exception is authorized by this publisher pin.
+
+### Fresh-page Mac computation, collection and import, 17 October 2026
+
+The normal one-page controller admitted
+`sn82014782/1789-04-04/ed-2/seq-1` from base batch `kyu_frenchie`
+(LoC version `kyu_frenchie_ver02`) under plan
+`boinc-mac-current247c-20261017`. Four earlier ticks correctly held at
+617 pending workunits against the normal target of 600. The existing managed
+laptop client had 59 successful completed results waiting to report; an
+identity-guarded ordinary project update reported them, reducing pending
+work to 558. The unchanged allocation/configuration and persisted controller
+state then admitted exactly one page. No cap exception, task cancellation,
+reprioritization, account change or client-preference change was used.
+
+The existing Mac fetched the page through ordinary scheduling; this was not
+a targeted Gold challenge or a relabeled Linux result. Native evidence:
+
+| Field                        | Accepted value                                                     |
+| ---------------------------- | ------------------------------------------------------------------ |
+| Job                          | `cae8426495087616cdf46bcadbf648406c96c1e24561b81aa99f6d7fcee6b232` |
+| Workunit / canonical result  | `16738` / `32119`                                                  |
+| Canonical host / app version | `1` / `42` (Apple Silicon OCR 1.5)                                 |
+| Outcome / validation / exit  | `1` / `1` / `0`                                                    |
+| Assimilation / error mask    | `2` / `0`                                                          |
+| Canonical report SHA-256     | `d5ac93f0be4e05258affaddecb642b01e38f4caf31f4fb40dde40e0168f51b6e` |
+| Input scan SHA-256           | `64c0a1122e17ced977e1540536acdd88a8fbdeff268192fb634f832de729d958` |
+| Output text SHA-256          | `92d54913897d94a50dda409f1610f9c291e88dfe0a557e482ba7e2c88e4d52de` |
+
+The canonical report names current worker `247c`, Tesseract 5.5.0 and
+profile `eng` / PSM 3 / DPI 300. Global scoped trust stayed at SHA-256
+`3bfc19016cf38b47455faa4ddbe8fbbe27577c410c1d8e74a2ccdd8a0a6a651b`.
+Normal controller collection then completed through `spool-out` and
+trust-checked handoff execution `usnm-boinc-handoff-caj-prod-71j1xrr`
+(Succeeded). The durable dispatch record is `published`; the one-page
+controller reports selected 1 / published 1 / collection backlog 0.
+This marker means published to `ocr-out`, not to public search.
+
+Normal pickup execution `usnm-ocrs-caj-prod-ye8ldw4` also Succeeded.
+Its durable import record
+`ocr-local/import/20261017T091059970936Z-2a10320b-0000.json`
+records the exact BOINC page part and ALTO as `imported`. The merged part is
+`ocr-local/pages/sn82014782/20261017T091059970936Z-2a10320b-0000.parquet`,
+SHA-256 `ed7f2968107ced85fec4031c7d327bcf26413c3be9680bb94d4ae702a6e0e86e`.
+Its one row names the expected document, node `boinc-cae842649508`,
+worker `247c`, `route=boinc@r1` and 8,669 normalized characters. The
+normalized text SHA-256 is
+`0747212670a1df26014df567c1226180eaee373da196775990aeb55ba99c8d4b`;
+the collector applies `normalize_ocr` after validating the raw canonical
+text hash, so this is not the raw worker text hash above.
+
+Stored metric-v2 scores detect English for both readings: our damage rate
+is `0.20512820512820512`, versus LoC's `0.2841726618705036`, with head-word
+counts 341 versus 199. These stored scores clear rule v1's 0.05 margin and
+head-count test, but are an estimate: a real release scores the texts again,
+checks title languages, revocations and competing candidates, and records
+its actual selection. The already-running `pages-v20261017-1` rebuild
+started before this import; do not assume its frozen local-OCR inputs
+include the new part or restart its owner's writer to force inclusion.
+
+This proves fresh-page Mac computation, native canonical assimilation,
+trust-checked handoff and native import. Actual release selection,
+new-version search/source credits and Intel-client execution remain open.
+Retain the same controller state and journals; never manufacture another
+submission or reset the page to fresh.
 
 ## Server and maintainer on different hosts
 
@@ -854,7 +1022,9 @@ scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN
   --var GOLD_SPOOL=/project/usnmocr/results/<batch>
 # Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
 scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
-  --var GOLD_MAX_CER=<calibrated-threshold> --wait-mins 10
+  --var GOLD_MAX_CER=<calibrated-threshold> \
+  --var GOLD_MANIFEST_SHA256=<calibrated-manifest-sha256> \
+  --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile> --wait-mins 10
 ```
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
@@ -890,17 +1060,54 @@ A unit left with a `submitting` marker is handled as for the assessment.
 `usnm_ocr` validates with `sample_trivial_validator`, which accepts any
 well-formed result. So `collect` can gate publication on the gold check (#468):
 a result counts only when the host that returned it has a gold report for the
-same engine image (the worker image digest) with overall CER at or below a
-threshold. There is **no default scientific threshold**: calibrate on the first
-campaign for the locked image, bundle, languages and scoring configuration;
-record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) explicitly.
-An earlier MVP's 0.10 was not calibrated. Trust format v2 deliberately rejects
-old v1 lists; rebuild before using the updated collector.
+same engine image (the worker image digest) on the exact calibrated challenge,
+and the page's source language and model profile match the declared calibration,
+with every crop scored, no skips, no crop with character edits at least its
+reference length, and overall CER at or below a threshold. The per-crop guard
+rejects complete loss (including empty output) even when an aggregate hides it;
+it is not a guarantee against subtler OCR errors. There is **no default
+scientific threshold**: calibrate on the first campaign for the locked image,
+bundle, languages and scoring configuration;
+record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) and
+`--manifest-sha256` (bridge: `GOLD_MANIFEST_SHA256`), `--language`
+(`GOLD_LANGUAGE`) and `--profile` (`GOLD_PROFILE`) explicitly.
+Gold currently supports PSM 3 / 300 DPI only; the trust artifact records these,
+and different page configurations are refused. The collector records observed
+profiles and scoring configuration, and every scored crop in an eligible report must use the declared profile.
+A newer valid canonical report with a different/mixed profile or failed crop
+quality revokes earlier eligibility.
+The operator must establish the declared
+source-language scope from the pinned challenge and calibration evidence;
+observing an English model profile alone does not establish an English source.
+One artifact covers one language/profile/configuration, not every language
+supported by its image.
+
+An earlier MVP's 0.10 was not calibrated. Trust format v4 deliberately rejects
+old unscoped v1/v2/v3 lists for publication. Gold onboarding logs those legacy
+policies and treats every host as untrusted, so it can issue new challenges.
+Rerun the updated normal `gold collect` against the original validated canonical
+reports to derive counts-only crop-loss and scope metadata, then rebuild trust
+with the calibrated manifest and scope; do not edit or relabel legacy lists.
+Old tables without those fields and mixed-challenge tables fail explicitly.
+Deploying this guard neither chooses a threshold nor promotes hosts.
+Only validated canonical quality reports establish or revoke eligibility.
+Terminal attempts, including an engine failing every crop without producing
+a valid report, are counted separately by the collector; their spool markers
+do not carry authoritative host/time attribution and do not automatically revoke
+an earlier passing host. Do not infer that attribution from file timestamps or
+claim that this quality signal detects terminal failures or malicious hosts.
+The handoff spool shares one global `gold/trust.json`; passing a separate local
+file does not isolate its policy to one job. Both native and handoff publication,
+and independent-host spot replay/comparison, enforce the job scope. English-only
+evidence never implicitly authorizes French, Japanese, another model profile or
+another page segmentation/DPI configuration.
 
 ```sh
 # Build the trust list from one or more campaigns' reports.
 usnm-boinc gold trust --reports <share>/gold/v1-tess550/out/reports.jsonl \
-  [--reports ...] --max-cer CALIBRATED_THRESHOLD --out <share>/gold/trust.json
+  [--reports ...] --max-cer CALIBRATED_THRESHOLD \
+  --manifest-sha256 CALIBRATED_MANIFEST_SHA256 \
+  --language CALIBRATED_LANGUAGE --profile CALIBRATED_PROFILE --out <share>/gold/trust.json
 # The canonical result's host, from the project database:
 #   select r.hostid from workunit w join result r on r.id = w.canonical_resultid
 #   where w.name = 'usnm_JOB_ID';

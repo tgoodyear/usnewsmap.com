@@ -57,6 +57,17 @@ PLAN = {
     "surya": ({
         g: [("surya-ocr-2-tiles", 1.0)] for g in ("worst-english", "serbian", "russian", "german")
     }, 2, 3600),
+    "kraken": ({
+        "german": [("fraktur_all_2", 1.0)],
+        "worst-english": [("en_best", 1.0)],
+        "control": [("en_best", 1.0)],
+    }, None, 1800),
+    "paddleocr": ({
+        "worst-english": [("ppocr+en", 1.0)],
+        "control": [("ppocr+en", 1.0)],
+        "german": [("ppocr+german", 1.0)],
+        "french": [("ppocr+french", 1.0)],
+    }, None, 1800),
 }
 
 

@@ -251,7 +251,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         "HANDOFF_DIR",
     }
     container = job_doc["properties"]["template"]["containers"][0]
-    container["command"] = ["/usr/local/bin/bridge-job.sh"]
+    container["command"] = ["/usr/local/bin/bridge-job"]
     container.pop("args", None)
     container.pop("imageType", None)
     container["env"] = [e for e in container.get("env", []) if e.get("name") in base_names]
@@ -295,7 +295,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
     finally:
         tmp_spec.unlink(missing_ok=True)
 
-    print(f"Restored {args.job_name} to canonical single-replica bridge-job.sh configuration.")
+    print(f"Restored {args.job_name} to canonical single-replica bridge-job configuration.")
     return 0
 
 
@@ -615,6 +615,153 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_refresh_db(args: argparse.Namespace) -> int:
+    work_dir = Path(args.work_dir)
+    quality_root = work_dir / "audit" / "quality"
+    consolidated_dir = quality_root / "consolidated"
+    sqlite_path = work_dir / "quality_assessment.sqlite"
+    manifest_path = work_dir / "manifest.parquet"
+    quality_root.mkdir(parents=True, exist_ok=True)
+
+    if not manifest_path.is_file() or args.download:
+        run_az(
+            [
+                "storage",
+                "blob",
+                "download",
+                "--account-name",
+                args.handoff_account,
+                "--container-name",
+                args.handoff_container,
+                "--name",
+                "audit/ocr-damage/v2/manifest.parquet",
+                "--file",
+                str(manifest_path),
+                "--auth-mode",
+                "login",
+                "-o",
+                "none",
+            ],
+            capture_json=False,
+        )
+
+    blobs = run_az(
+        [
+            "storage",
+            "blob",
+            "list",
+            "--account-name",
+            args.handoff_account,
+            "--container-name",
+            args.handoff_container,
+            "--prefix",
+            "audit/quality/",
+            "--auth-mode",
+            "login",
+            "--query",
+            "[].name",
+            "-o",
+            "json",
+        ]
+    )
+    for bname in blobs or []:
+        if bname.startswith("audit/quality/consolidated/"):
+            continue
+        if not (bname.endswith("/pages.parquet") or bname.endswith("/crops.parquet") or bname.endswith("/summary.md")):
+            continue
+        local_dest = work_dir / bname
+        local_dest.parent.mkdir(parents=True, exist_ok=True)
+        run_az(
+            [
+                "storage",
+                "blob",
+                "download",
+                "--account-name",
+                args.handoff_account,
+                "--container-name",
+                args.handoff_container,
+                "--name",
+                bname,
+                "--file",
+                str(local_dest),
+                "--auth-mode",
+                "login",
+                "-o",
+                "none",
+            ],
+            capture_json=False,
+        )
+
+    builder_script = ROOT / "scripts" / "build-quality-assessment-db.py"
+    res = subprocess.run(
+        [
+            args.python_bin,
+            str(builder_script),
+            "--quality-root",
+            str(quality_root),
+            "--manifest",
+            str(manifest_path),
+            "--out-dir",
+            str(consolidated_dir),
+            "--sqlite-out",
+            str(sqlite_path),
+        ],
+        check=False,
+    )
+    if res.returncode != 0:
+        return res.returncode
+
+    if args.upload:
+        for f in sorted(consolidated_dir.iterdir()):
+            if f.is_file():
+                run_az(
+                    [
+                        "storage",
+                        "blob",
+                        "upload",
+                        "--account-name",
+                        args.handoff_account,
+                        "--container-name",
+                        args.handoff_container,
+                        "--name",
+                        f"audit/quality/consolidated/{f.name}",
+                        "--file",
+                        str(f),
+                        "--overwrite",
+                        "true",
+                        "--auth-mode",
+                        "login",
+                        "-o",
+                        "none",
+                    ],
+                    capture_json=False,
+                )
+        if sqlite_path.is_file():
+            run_az(
+                [
+                    "storage",
+                    "blob",
+                    "upload",
+                    "--account-name",
+                    args.handoff_account,
+                    "--container-name",
+                    args.handoff_container,
+                    "--name",
+                    "audit/quality/consolidated/quality_assessment.sqlite",
+                    "--file",
+                    str(sqlite_path),
+                    "--overwrite",
+                    "true",
+                    "--auth-mode",
+                    "login",
+                    "-o",
+                    "none",
+                ],
+                capture_json=False,
+            )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="subcommand", required=True)
@@ -652,6 +799,15 @@ def build_parser() -> argparse.ArgumentParser:
     gs.add_argument("--handoff-container", default=DEFAULT_HANDOFF_CONTAINER)
     gs.add_argument("--run-probe", action="store_true", help="Run a fresh server-side MySQL/share probe first")
     gs.set_defaults(func=cmd_gpu_status)
+
+    rd = sub.add_parser("refresh-db", help="Download campaign Parquet files, rebuild consolidated DB, and upload")
+    rd.add_argument("--work-dir", default="/tmp/boinc-quality-audit", help="Local workspace directory")
+    rd.add_argument("--handoff-account", default=DEFAULT_HANDOFF_ACCOUNT)
+    rd.add_argument("--handoff-container", default=DEFAULT_HANDOFF_CONTAINER)
+    rd.add_argument("--python-bin", default=sys.executable, help="Python interpreter with duckdb/pyarrow")
+    rd.add_argument("--download", action="store_true", help="Force re-download of manifest.parquet")
+    rd.add_argument("--upload", action="store_true", default=True, help="Upload consolidated artifacts to Azure")
+    rd.set_defaults(func=cmd_refresh_db)
 
     return p
 

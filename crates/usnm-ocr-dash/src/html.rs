@@ -169,6 +169,13 @@ section.wide svg { margin:6px 0 10px; min-width:760px; }
 .pipeline-table details p { margin:6px 0; color:var(--ink2); }
 .pipeline-meta { margin-top:12px; }
 .pipeline-meta > summary { cursor:pointer; color:var(--ink2); }
+.step-rates { table-layout:fixed; }
+.step-rates th, .step-rates td { white-space:normal; overflow-wrap:anywhere; }
+.step-rates th:first-child { width:25%; }
+.step-rates th:nth-child(2) { width:20%; }
+.mobile-flow { display:none; }
+.diagram-hint { display:none; }
+.sub, .ecosystem-card, .kv td { overflow-wrap:anywhere; }
 .ecosystem-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr)); gap:14px; }
 .ecosystem-card { border:1px solid var(--grid); border-radius:6px; padding:14px; min-width:0; }
 .ecosystem-card h3 { margin:0 0 8px; font-size:16px; }
@@ -231,6 +238,23 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
   table { width:100%; table-layout:auto; }
   table.kv td + td { padding-top:0; }
   .meter { width:84px; }
+  .grid { columns:auto; }
+  section { min-width:0; }
+  #operational-details { padding:10px 8px; }
+  .ecosystem-card { padding:12px; }
+  .ecosystem-card .headline { font-size:19px; }
+  #pipelines figure, #pipelines .diagram-state { display:none; }
+  .mobile-flow { display:block; list-style:none; padding:0 0 0 10px; margin:12px 0; border-left:2px solid var(--fill); }
+  .mobile-flow li { position:relative; padding:10px 12px; margin:0 0 12px; border:1px solid var(--grid); border-radius:6px; }
+  .mobile-flow li + li::before { content:"↓"; position:absolute; top:-17px; left:12px; color:var(--fill); }
+  .mobile-flow h4 { font-size:14px; margin:0 0 5px; }
+  .mobile-flow p { margin:0; overflow-wrap:anywhere; }
+  .diagram-hint { display:block; }
+  .step-rates { table-layout:fixed; font-size:12px; }
+  .step-rates th:first-child { width:28%; }
+  .step-rates th:nth-child(2) { width:24%; }
+  .step-rates th, .step-rates td { white-space:normal; overflow-wrap:anywhere; }
+  .pipeline-table th { white-space:normal; overflow-wrap:anywhere; }
 }
 "#;
 
@@ -273,6 +297,8 @@ const swap = (old, fresh) => {
   const scrolls = [...old.querySelectorAll('.scroll')].map((e) => [e.getAttribute('aria-label'), e.scrollTop, e.scrollLeft]);
   const open = rowKeys(old).filter((k, i) => old.querySelectorAll('details')[i].open).filter(Boolean);
   const focused = old.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
+  const focusedDetail = [...old.querySelectorAll('details')].findIndex(d => d.querySelector(':scope > summary') === document.activeElement);
+  const focusedKey = focusedDetail < 0 ? null : rowKeys(old)[focusedDetail];
   const left = old.scrollLeft;
   const node = document.importNode(fresh, true);
   localTimes(node);
@@ -290,6 +316,7 @@ const swap = (old, fresh) => {
   restore();
   const focus = [...node.querySelectorAll('.scroll')].find(e => e.getAttribute('aria-label') === focused);
   if (focus) focus.focus({preventScroll:true});
+  if (focusedKey) node.querySelectorAll('details')[keys.indexOf(focusedKey)]?.querySelector(':scope > summary')?.focus({preventScroll:true});
   requestAnimationFrame(() => { if (node.isConnected && node.checkVisibility()) restore(); });
   return node;
 };
@@ -582,7 +609,7 @@ fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
     o
 }
 
-fn summary_stage<'a>(v: &'a View, id: &str) -> Option<&'a crate::pipeline::Stage> {
+pub(crate) fn summary_stage<'a>(v: &'a View, id: &str) -> Option<&'a crate::pipeline::Stage> {
     let pipeline = &v.pipeline;
     let snapshot = pipeline.snapshot.as_ref()?;
     let stage = snapshot.stages.iter().find(|s| s.id == id)?;
@@ -618,15 +645,7 @@ fn ecosystem_panel(v: &View) -> String {
          are different populations, not one progress bar.</p><div class=\"ecosystem-cards\">",
     );
     let f = &v.fetch;
-    let fetch_time = f
-        .status
-        .as_ref()
-        .and_then(|s| DateTime::parse_from_rfc3339(&s.updated_at).ok());
-    let fetch_fresh = fetch_time
-        .is_some_and(|t| (0..=900).contains(&(now - t.with_timezone(&Utc)).num_seconds()))
-        && f.status_error.is_none()
-        && f.plan_error.is_none();
-    if fetch_fresh {
+    if crate::view::fetch_status_fresh(v) {
         let state = f.status.as_ref().map_or("unknown", |s| s.state.as_str());
         let keep = f.sets.iter().find(|s| s.name == "keep");
         let population = keep.map_or_else(
@@ -663,11 +682,7 @@ fn ecosystem_panel(v: &View) -> String {
     let fresh_nodes: Vec<_> = v
         .nodes
         .iter()
-        .filter(|n| {
-            n.ok && n
-                .last_ok
-                .is_some_and(|at| now - at <= crate::view::NODE_FRESH)
-        })
+        .filter(|n| crate::view::node_status_fresh(n, now))
         .collect();
     if fresh_nodes.is_empty() {
         summary_card(
@@ -887,6 +902,7 @@ pub fn render(v: &View) -> String {
         v.refresh_secs
     );
     o.push_str(&ecosystem_panel(v));
+    o.push_str(&crate::diagrams::section(v));
     o.push_str("<section class=\"wide\" id=\"operational-details\"><h2>Operational details</h2>\
         <details class=\"diagnostics\" data-refresh-key=\"operational-details\"><summary>\
         Show workers, queues, page lists, source evidence and reference diagrams</summary><div class=\"grid\">");
@@ -1525,7 +1541,6 @@ pub fn render(v: &View) -> String {
         esc(v.azure.queues_note)
     );
 
-    o.push_str(&crate::diagrams::section(v));
     let _ = write!(
         o,
         "</div></details></section></div><script>{SCRIPT}</script></body></html>"

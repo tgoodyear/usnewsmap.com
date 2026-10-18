@@ -307,7 +307,9 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             let mut job_named = job.clone();
             job_named.doc_id = name.clone();
             let mut page_text = String::new();
-            for row in collect::page_rows(&job_named, &c.result, crops_out.is_some()) {
+            let mut rows = collect::page_rows(&job_named, &c.result, crops_out.is_some());
+            collect::enrich_rows_with_damage(&mut rows, &l.texts, None);
+            for row in rows {
                 page_text.push_str(&serde_json::to_string(&row)?);
                 page_text.push('\n');
             }

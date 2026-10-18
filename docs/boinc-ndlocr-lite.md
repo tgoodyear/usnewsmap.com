@@ -272,15 +272,45 @@ The returned state archive SHA-256 is
 Do not reconstruct this state from volunteer files or rerun collection from
 the older pre-publication snapshot.
 
-**Normal release/search acceptance remains pending.** An existing full rebuild,
-`caj-usnm-ingest-prod-pg4wqlz` for `pages-v20261016-1`, was still running at
-33.4% at 22:09 UTC; public search still named `pages-v20261010-2`.
-Do not start a competing release, change its full-rebuild settings, or treat
-reader acceptance or the page's older native search result as publication of
-this canonical part. The next serialized normal release must record this
-part in its Japanese overlay manifest before live Japanese/Latin searches
-and credits can establish final acceptance. This already-native page remains
-separate from the genuinely fresh-page Mac pilot and current-image Gold trust.
+**Normal release/search acceptance remains pending.** The prior full rebuild
+`caj-usnm-ingest-prod-pg4wqlz` failed; the #283 release owner merged the local-WAL
+recovery in #753 and started replacement
+`caj-usnm-ingest-prod-si5kesp` at `2026-10-17T05:40:57Z` for
+`pages-v20261017-1`. The owner verified Running/Ready with no restart, actual
+local WAL placement and main-page progress. Public search still serves
+`pages-v20261010-2`; see [#283](https://github.com/tgoodyear/usnewsmap.com/issues/283)
+for current progress and forecasts.
+
+The replacement's startup count of 12,768 Japanese pages is not evidence
+that this BOINC part won. Its eventual frozen overlay manifest must contain
+the exact part/hash, and the selected row must actually be from that part.
+The normal reader chooses the newest `(ocred_at, part path)` per document
+among rows in the release's batches with catalogued titles; a read part need
+not be the winning row. Only then can Japanese/Latin queries and source
+credits against the newly served version establish final acceptance, rather
+than merely finding the page's older native OCR.
+
+A read-only check on 17 October downloaded the four current same-issue
+parts. Three contain this document; the `.3.parquet` part contains another
+page. The BOINC part is byte-identical to the retained canonical collection,
+SHA-256 `a55a3f72505803e0cb99d01864cc6362bab5e921c074238fe957120077fb9fe8`.
+Its `ocred_at`, `2026-10-16T22:07:36.345231Z`, is newer than both native
+copies (`2026-10-05T17:12:02.136580Z` and
+`2026-10-05T01:54:36.725406Z`), so it wins among these same-issue candidates.
+All three rows name batch `dlc_ballston` and have identical 7,607-character
+text and text hashes. A text-search hit alone therefore cannot distinguish
+BOINC from native OCR. The BOINC row's engine is
+`ndlocr-lite/636d1cfeb1331f89f4048f416e49e23a09a714b5 default`;
+the native rows use
+`ndlocr-lite 636d1cfeb1331f89f4048f416e49e23a09a714b5`.
+This bounded present-state comparison does not prove the running release's
+frozen release-wide winner or its batch/catalog qualification. Preserve the
+exact winning part/hash and engine provenance at release acceptance.
+
+Do not start a competing release, change the running full-rebuild settings,
+break locks or prune old indexes to advance this gate. The original accepted
+bytes and state remain intact. This already-native page is separate from the
+genuinely fresh-page Mac pilot and current-image Gold trust.
 
 ## BOINC lifecycle (phase 2, #626)
 

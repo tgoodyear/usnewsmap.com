@@ -63,7 +63,7 @@ class InstallTest(unittest.TestCase):
         self.assertIn("--network=none", job)
         self.assertIn("--memory=9g --memory-swap=9g", job)
         self.assertNotIn("use_gpu = true", job)
-        for name in ("usnm_iris_in", "usnm_iris_out"):
+        for name in ("usnm_iris_in", "usnm_iris_out", "usnm_iris_bundle_in", "usnm_iris_bundle_out"):
             self.assertTrue((self.project / "templates" / name).is_file())
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_iris", "docker_nvidia_cuda")
@@ -251,6 +251,8 @@ class InstallTest(unittest.TestCase):
             ("apple_gpu_8b", "arm64-apple-darwin", True, "usnm_qwen_8b_in"),
             ("nvidia_cuda_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("nvidia_cuda_2b", "windows_x86_64", True, "usnm_qwen_2b_in"),
+            ("intel_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
+            ("intel_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
         ):
             bin_for_plat = bin_win if platform == "windows_x86_64" else bin_unix
             ext = ".exe" if platform == "windows_x86_64" else ""
@@ -261,12 +263,14 @@ class InstallTest(unittest.TestCase):
                 f"llama.lock={llama_lock}",
                 f"weights.lock={weights_lock}",
             ]
-            dll_names = (
-                "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll",
-                "ggml-cuda.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
-                "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
-                "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
-            ) if platform == "windows_x86_64" else ()
+            runtime = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+            llama_dlls = ("ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
+                          "ggml-cpu-x64.dll", "libomp140.x86_64.dll")
+            backend = (
+                ("ggml-vulkan.dll",) if plan_class == "intel_vulkan_8b"
+                else ("ggml-cuda.dll", "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
+            )
+            dll_names = runtime + llama_dlls + backend if platform == "windows_x86_64" else ()
             extras.extend(f"{name}={llama_srv_win}" for name in dll_names)
             for missing in dll_names:
                 with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "requires --extra-file"):
@@ -334,6 +338,14 @@ class InstallTest(unittest.TestCase):
                 app="usnm_qwen",
                 plan_class="nvidia_cuda_8b",
                 platform="arm64-apple-darwin",
+                kind="native",
+                binary=bin_unix,
+            ),
+            dict(
+                version="1.0",
+                app="usnm_qwen",
+                plan_class="intel_vulkan_8b",
+                platform="aarch64-unknown-linux-gnu",
                 kind="native",
                 binary=bin_unix,
             ),

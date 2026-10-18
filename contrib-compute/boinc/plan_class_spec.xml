@@ -135,6 +135,30 @@
         <max_batch>8</max_batch>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
+    <!-- Intel GPUs on llama.cpp Vulkan for usnm_qwen (#786): the same 8B Q4_K_M readings as the
+         CUDA and Metal classes, on the same batch-8 workunits. BOINC detects Intel GPUs through
+         OpenCL, so gpu_type intel with <opencl/> is the eligibility gate; the app lists the
+         Vulkan devices with its own llama-server, refuses software devices, and ends no_gpu when
+         the device has less free memory than the model needs, never reading on the CPU. An
+         integrated GPU's memory is system RAM: on Computer 9's Iris Xe (#787) an 8B unit peaked at
+         8,609 MiB of GPU buffers plus process memory. The scheduler reserves no host memory for a
+         GPU class (mem_usage_base_mb applies only to multicore CPU classes), so volunteers with an
+         integrated GPU run one unit at a time (docs/boinc-intel-gpu.md). OpenCL reports nearly
+         all system RAM as an integrated GPU's memory, so min_gpu_ram_mb admits such hosts that
+         the app may still refuse. Closed until an operator opens one audited workunit. -->
+    <plan_class>
+        <name>intel_vulkan_8b</name>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <gpu_type>intel</gpu_type>
+        <opencl/>
+        <min_core_client_version>80211</min_core_client_version>
+        <min_gpu_ram_mb>7000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>6500</gpu_ram_used_mb>
+        <min_batch>8</min_batch>
+        <max_batch>8</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
     <plan_class>
         <name>nvidia_cuda_2b</name>
         <min_wu_id>2</min_wu_id>
