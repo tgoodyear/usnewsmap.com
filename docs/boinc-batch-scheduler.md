@@ -14,8 +14,9 @@ controller; do not also dispatch it through an on-prem node plan. The native
 exporter still checks and reserves the ledger and refuses conflicting requests.
 LoC batch names are case-sensitive (`curiv_joshuaTree`, `lu_Cypher`); preserve
 their spelling and use the unversioned base batch, not its `_verNN` directory.
-Unallocated pages remain on-prem work. There is no automatic queue consumption,
-LoC fetching, scanfetch change, worker-image rollover, gold issuance, trust
+Unallocated pages remain on-prem work, unless the controller is set to take pages
+off the work queues itself ([Queue-fed work](#queue-fed-work)). There is no LoC
+fetching, scanfetch change, worker-image rollover, gold issuance, trust
 override, client attachment, or retry of terminal failures.
 
 The controller uses a single approved execution host with Python 3.9+, Azure
@@ -167,6 +168,137 @@ failures through the owning workflow, then rerun. A conservative snapshot can
 delay refilling by one tick after collection; it cannot enlarge the queue. The
 target counts page workunits rather than replicas; native quorum and deadline
 settings are unchanged.
+
+## Queue-fed work
+
+By default the controller works through pages an operator named. With
+`"source": "queue"` it instead takes them off the OCR exchange's Azure Storage
+queues, `ocr-bulk` and optionally `ocr-priority`, as a **second consumer**
+beside the on-prem worker (#296). A page has one place in line whichever pool
+reads it, so the damage order and the user-requested pages are the queues' and
+there is no separate list to keep in step with them.
+
+```json
+{
+  "schema_version": 1, "source": "queue", "env": "dev", "account": "exchange123",
+  "plan": "queue-feed-1", "manifest": "snapshot-1/manifest.parquet", "image": "sha256:...",
+  "push_command": ["ssh", "-o", "BatchMode=yes", "operator@pve.example", "pct", "exec", "211",
+                   "--", "/opt/usnm/scripts/ocr-node/push-boinc-scan.sh"],
+  "scans_root": "/tank/ocr/scans", "manifests_root": "/tank/ocr/manifests",
+  "batch_size": 10, "max_pending": 40, "pages_per_host": 2,
+  "claim_queues": ["ocr-bulk"], "lease_hours": 96
+}
+```
+
+There is no `batch` or `pages`: the pages are whatever the queue gives, from any
+number of batches. `claim_queues` is `ocr-bulk` by default and should stay so
+until a volunteer's turnaround is measured: a volunteer may take up to the
+workunits' three-day `delay_bound`, and a page someone was just shown should not
+wait for that. The on-prem node reads `ocr-priority` first either way.
+
+```
+ocr-bulk (and ocr-priority) --claim--> claims/<doc_id>.json in boinc-handoff
+  -> push the page's cached scan from CT 211 -> export --claims -> submit
+  -> BOINC -> spool-out -> collect (ocr-out) -> delete the queue message
+```
+
+### The claim
+
+The hand-off job's `claim` step (`usnm-boinc claim pull`, in the main
+environment, which reaches the queues, the ledger and `ocr-out`) receives up to
+`CLAIM_MAX` messages with a hide of `lease_hours` (96 by default: the three-day
+`delay_bound` and a day to collect; Azure allows seven days). It holds the `ocr-sync`
+lock while it reads the ledger and receives, so no producer changes a row between
+the two: every producer writes a page's row before it sends the page's message, and a
+ledger read under the lock has the row of every message already queued. It uses a
+message only when all of these hold, and otherwise puts it back:
+
+- it decodes, and the ledger has the page **outstanding** with the same batch,
+  reason and language (the seeder, `ocr-enqueue` and the requests step write the
+  row before they send the message, and `ocr-sync` imports against it);
+- the batch is published at the version the row names, the title isn't Japanese
+  and the language routes to an installed Tesseract model;
+- the page is on the newest fetched-scans list for the controller's manifest
+  version, because volunteers never fetch from LoC.
+
+A page whose ledger row is already answered is **deleted** from the queue. Any
+other message it can't use is **sent back** (a copy is sent, then the original is
+deleted), so it starts again at a dequeue count of zero for the node to read. The
+queue is peeked first, and one whose front holds nothing usable isn't touched.
+
+Each usable message becomes `claims/<doc_id>.json`, holding the message text, its
+pop receipt, the lease end and the ledger row. The files go up **before** the
+summary (`scheduler/claims.json`, with the run's nonce), even when the run then
+fails, because the pop receipts exist nowhere else. A message whose claim file
+could not be written comes back when its hide runs out.
+
+### The rest of the tick
+
+The tick claims only what it can start: `min(batch_size, target - pending)` less
+the pages already claimed and not yet started, so backpressure holds back claims
+and the messages stay visible to the node. Every claim is saved to the
+controller's state before its scan is pushed. The controller then pushes each
+page with `push-boinc-scan.sh --keep-page <batch>/<lccn>/<date>/<edition>/<seq>`,
+which finds the scan's format (`.jp2` or `.jpg`) on the scan server. A page with no
+cached scan, despite the list, is given back with the `release` step and dropped.
+Export runs once per batch with `HANDOFF_CLAIMS=1`.
+
+With claims, `export` does not write a ledger row. The job's message is the
+queue's own (reason, score, `queued_at`), the journal records the claimed ledger
+row, and the export checks under the `ocr-sync` lock that the row is still the
+outstanding one (`ocr_local::boinc::adopt`). `collect` then imports against that
+row exactly as it does for the node's pages.
+
+### The queue message's life
+
+| What happens                                               | The message                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claimed                                                    | Hidden for the lease; a node doesn't see it                                                                                                                                                                                                 |
+| `collect` published the page                               | Deleted, by `collect` itself (`usnm-boinc claim finish`)                                                                                                                                                                                    |
+| `collect`'s delete failed, or the lease ended first        | Visible again. A claim finds the page answered and deletes the message; a node would read the page again, and the newest row per page wins                                                                                                  |
+| The job failed, or was never collected                     | Visible again when the lease ends, for a node or a later claim. The controller still stops on a terminal failure for an operator, as before                                                                                                 |
+| The same message again after its lease (job still pending) | Kept as the same claim: the summary carries the message's hash, the controller recognizes it and keeps its scan, selection and job, and the new delivery is hidden for a fresh lease. A different message for a claimed page stops the feed |
+| A second delivery of a page within one pull                | Deleted; the first claim covers the page and keeps its pop receipt                                                                                                                                                                          |
+
+This is at-least-once, like a node's. `ocr-sync`'s import and the ledger already
+tolerate the same page being read twice. Nothing in a claim carries search text:
+the message is the same page-id-only message the nodes read.
+
+### Access
+
+The hand-off job's identity gets Storage Queue Data Message Processor and
+Message Sender on `ocr-priority` and `ocr-bulk` only (`handoffQueueIds` in
+`infra/modules/ocr-exchange.bicep`). That is the nodes' roles plus the ability to
+put a message back; it has no Update Message (ADR-0015) and nothing on
+`ocr-deadletter`. The job's `QUEUE_URL` setting is optional for the launcher, so a
+job deployed before this change still runs export and collect until it is
+provisioned. `claims/` expires after 30 days.
+
+### Rollout order and edge cases
+
+- A queue-fed job's journal record carries one more field, the claimed ledger row, which
+  the BOINC bridge reads when it pulls the job. Deploy the hand-off and bridge images
+  built from the same revision (#529) before the first claim; explicit cohorts' records
+  are unchanged, so nothing changes for them meanwhile.
+- A message queued again after its claim lapsed (the seeder re-queues a page outstanding
+  for 14 days) is a different message and so a different job. The controller then sees two
+  jobs on one page and stops for an operator to reconcile, as it does for any two.
+- A claim can lapse while the job is pending, and a node can then import the page. When
+  the BOINC result arrives, `collect` finds the page answered by another producer and marks
+  the job `published` with a `superseded` note, without publishing anything, so the feed
+  goes on. This applies only to queue-fed jobs; an explicit cohort's page is not read by a
+  node, so the same finding there remains an error.
+- A claim that failed after taking messages leaves their claim files in the container.
+  The controller records those it finds in the summary and stops the tick; any other
+  message comes back when its lease runs out.
+
+### Not changed
+
+A page that fails on a volunteer is not dead-lettered by BOINC; the node and
+`ocr-sync` own that path. Gold issuance, host trust, the worker pin and
+operator approval are as above. Merging this is not a deployment: provision the
+hand-off job and its roles, reconcile, and approve a first tick with `--apply`
+before scheduling it.
 
 ## Validation, scheduling and recovery
 

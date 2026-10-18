@@ -482,6 +482,7 @@ module boincHandoffJob 'modules/boinc-handoff-job.bicep' = if (boincHandoff) {
     curatedUrl: '${storage.outputs.blobEndpoint}curated'
     referenceUrl: '${storage.outputs.blobEndpoint}reference'
     outUrl: 'https://${exchangeName}.blob.${environment().suffixes.storage}/ocr-out'
+    queueUrl: 'https://${exchangeName}.queue.${environment().suffixes.storage}'
   }
 }
 
@@ -544,6 +545,8 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
       boincHandoff ? [boincHandoffJob!.outputs.principalId, boincBridgeIdentity!.properties.principalId] : [],
       empty(trim(boincHandoffRunner)) ? [] : [trim(boincHandoffRunner)]
     )
+    // The hand-off job takes pages off the work queues beside the nodes (#296).
+    handoffQueueIds: boincHandoff ? [boincHandoffJob!.outputs.principalId] : []
     nodeGroupId: trim(ocrNodeGroupId)
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     nodeWriterRoleLabel: n.ocrNodeWriterRole

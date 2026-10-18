@@ -21,6 +21,8 @@ param subnetId string
 param boincSubnetId string = ''
 @description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
 param handoffWriterIds array = []
+@description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296): Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`. Sender, so a page BOINC can\'t use goes back to the queue for the nodes. Nothing on `ocr-deadletter`, and no Update Message.')
+param handoffQueueIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
 param nodeGroupId string = ''
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
@@ -175,6 +177,19 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             }
           }
         }
+        // A queue claim (its message's pop receipt) is useless once the message's hide of at most
+        // four days has run out.
+        {
+          name: 'expire-boinc-handoff-claims'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['${handoffContainer}/claims/'] }
+            actions: {
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+            }
+          }
+        }
         {
           name: 'expire-ocr-quarantine'
           enabled: true
@@ -284,6 +299,33 @@ resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (n
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
   }
 }
+
+// BOINC takes pages off the work queues beside the nodes (#296, docs/boinc-batch-scheduler.md):
+// the hand-off job's identity gets the nodes' queue roles, Message Processor to take and delete
+// a message and Message Sender to put one back. Per queue, so nothing else in the account.
+resource handoffQueueTake 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for (p, i) in flatten(map(handoffQueueIds, id => map(range(0, length(workQueues)), j => { id: id, queue: j }))): {
+    scope: queues[p.queue]
+    name: guid(queues[p.queue].id, p.id, queueMessageProcessor)
+    properties: {
+      principalId: p.id
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageProcessor)
+    }
+  }
+]
+
+resource handoffQueuePut 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for (p, i) in flatten(map(handoffQueueIds, id => map(range(0, length(workQueues)), j => { id: id, queue: j }))): {
+    scope: queues[p.queue]
+    name: guid(queues[p.queue].id, p.id, queueMessageSender)
+    properties: {
+      principalId: p.id
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender)
+    }
+  }
+]
 
 // The hand-off writers: list, read and create in boinc-handoff, no delete (the node writer
 // role, as on ocr-out). Each assignment's name comes from the scope, the principal and the role.
