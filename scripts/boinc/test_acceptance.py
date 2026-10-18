@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -364,7 +364,7 @@ class ClientProbe(Workspace):
         log = self.root / 'calls.json'
         stub.write_text('#!' + sys.executable + '\nimport os,json,sys\nopen(os.environ["CALLS"],"w").write(json.dumps(sys.argv[1:]))\n')
         stub.chmod(0o700)
-        result = subprocess.run([sys.executable, str(HERE / 'acceptance_client.py'), 'update', URL],
+        result = subprocess.run([sys.executable, str(HERE / 'acceptance_client.py'), '--action', 'update', '--project-url', URL],
                                 capture_output=True, text=True,
                                 env={**os.environ, 'PATH': str(self.root), 'BOINC_DIR': str(self.root), 'CALLS': str(log)})
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -375,10 +375,21 @@ class ClientProbe(Workspace):
 class Server(Workspace):
     def manifest(self):
         return dict(release=RELEASE, profile=PROFILE, batch=12, min_quorum=2,
-                    workunit_name='usnm_qwen_' + 'a' * 64,
+                    workunit_name='usnm_qwen_' + 'a' * 64, peer_host_ids=[3],
                     input_template='qwen_in', output_template='qwen_out',
                     inputs=[dict(name='page.jpg', sha256='a' * 64)],
                     outputs=[dict(name='result.json', kind='json', equals={'unit_error': None}, nonempty=['transcription'])])
+
+    def test_fixture_requires_exact_quorum_peers_and_app_native_identity(self):
+        path = self.root / 'fixture.json'
+        manifest = self.manifest()
+        path.write_text(json.dumps(manifest))
+        self.assertEqual(S.fixture_load(self.root, 'fixture', RELEASE), manifest)
+        for changes in ({'peer_host_ids': []}, {'peer_host_ids': [0]}, {'peer_host_ids': [3, 3]},
+                        {'workunit_name': '../escape'}, {'release': {}}):
+            path.write_text(json.dumps({**manifest, **changes}))
+            with self.assertRaises(ValueError):
+                S.fixture_load(self.root, 'fixture', RELEASE)
 
     def test_dispatch_keeps_exact_version_host_batch_and_independent_quorum(self):
         args = S.create_args(self.manifest(), 'acceptance_abc', 2)
@@ -406,6 +417,26 @@ class Server(Workspace):
         manifest['batch'] = 8
         with self.assertRaises(ValueError):
             S.scheduler_profile(self.root, manifest)
+
+    def test_dispatch_adds_only_exact_host_peer_assignments(self):
+        manifest = self.manifest()
+        record = dict(run_id='a' * 32, release=RELEASE, workunit=manifest['workunit_name'],
+                      app_version_id=7, released=False,
+                      manifest_sha256=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest())
+        (self.root / 'fixture.reservation.json').write_text(json.dumps(record))
+        (self.root / 'config.xml').write_text('<boinc><config><enable_assignment>1</enable_assignment></config></boinc>')
+        request = dict(action='dispatch', fixture='fixture', run_id='a' * 32, release=RELEASE, host_id=2)
+        db = MagicMock()
+        with patch.object(S, 'fixture_load', return_value=manifest), \
+                patch.object(S, 'query', return_value=[{'id': 11}]), patch.object(S.subprocess, 'run'):
+            result = S.handle(request, self.root, self.root, db)
+        self.assertTrue(result['dispatched'])
+        sql, values = db.cursor.return_value.execute.call_args.args
+        self.assertIn('assignment', sql)
+        self.assertIn('1, 0', sql)
+        self.assertEqual(values, (3, 11))
+        db.commit.assert_called_once()
+        self.assertTrue(json.loads((self.root / 'fixture.reservation.json').read_text())['dispatched'])
 
     def test_release_of_another_runs_uncertain_reservation_is_non_destructive(self):
         journal = self.root / 'fixture.reservation.json'
@@ -461,7 +492,7 @@ class Server(Workspace):
         output.write_bytes(DATA)
         rows = [[dict(id=1, canonical_resultid=88, error_mask=0)], [client], [canonical]]
         with patch.object(S, 'query', side_effect=rows), patch.object(S.subprocess, 'run') as run:
-            run.return_value.stdout = str(output)
+            run.return_value.stdout = str(self.root / 'download' / output.name)
             receipt = S.status(None, self.root, record, self.manifest())
         self.assertEqual(receipt['state'], 'validated')
         self.assertEqual(A.check_evidence(receipt, RELEASE, 2, 'a' * 32)['canonical_result_id'], 88)

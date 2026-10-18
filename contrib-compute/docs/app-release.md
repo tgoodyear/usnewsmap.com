@@ -350,6 +350,7 @@ creates a disposable account when `projectAuthenticator` is empty, and runs
 
 UNVERIFIED against a live deployment: cloud-init package installation, GPU detection by
 `boinc-client`, workunit execution on the VM, and end-to-end result assimilation.
+
 ### Opt-in bounded client acceptance (#548)
 
 Registration/public health is **not** execution acceptance. Add
@@ -436,6 +437,7 @@ fixture's actual requirements, including cold image/model extraction space):
   "workunit_name": "REPLACE_WITH_ACTUAL_APP_WORKUNIT_NAME",
   "batch": 12,
   "min_quorum": 2,
+  "peer_host_ids": [3],
   "profile": {"cpus": 4, "memory_bytes": 6442450944, "disk_bytes": 42949672960, "gpu": "none"},
   "input_template": "usnm_qwen_2b_in",
   "output_template": "usnm_qwen_out",
@@ -449,8 +451,11 @@ all required canonical outputs. JSON checks use dotted object keys; `text` check
 require non-whitespace UTF-8, `xml` checks require well-formed XML. Use the
 application's actual result schema; this example is not a ready-to-submit Qwen
 job. Project host assignments must already be enabled. The manifest quorum is
-never reduced by the runner: fixtures requiring peer consensus also need their
-normal independent peers; otherwise the bounded run correctly times out. A
+never reduced by the runner: `peer_host_ids` must name exactly quorum-minus-one
+existing dedicated independent peers (distinct from the driven client). The adapter
+adds only exact-workunit, exact-host assignments for these peers; it never opens
+work to an entire account/team. Those peers must already be compatible and
+attached/running; absent consensus correctly times out. A
 single-client structural-validation fixture is suitable only where the app's
 existing scientific/trust policy permits it, not as a consensus bypass.
 

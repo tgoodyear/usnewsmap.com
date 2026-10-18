@@ -103,6 +103,7 @@ master_url="${PROJECT_URL}usnmocr/"
 work=$(boinc_workdir)
 params="$work/params.json"
 trap 'rm -rf "$work"' EXIT
+umask 077
 printf '%s' "$auth_val" | jq -Rs \
   --arg env "$ENV_NAME" \
   --arg location "$LOCATION" \

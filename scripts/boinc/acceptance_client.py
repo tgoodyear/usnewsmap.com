@@ -1,11 +1,11 @@
 """Secret-free client probe, executed on an explicitly dedicated test client."""
+import argparse
 import json
 import math
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import xml.etree.ElementTree as ET
 
 
@@ -57,7 +57,11 @@ def probe(root, url):
 
 
 def main():
-    action, url = sys.argv[1:]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--action", choices=["probe", "update"], required=True)
+    parser.add_argument("--project-url", required=True)
+    args = parser.parse_args()
+    action, url = args.action, args.project_url
     root = Path(os.environ.get('BOINC_DIR', '/var/lib/boinc'))
     if action == 'probe':
         try:

@@ -29,7 +29,12 @@ def run(argv, seconds, payload=None):
     try:
         stdout, _ = process.communicate(payload, timeout=max(.01, seconds))
     except BaseException:
-        os.killpg(process.pid, signal.SIGKILL)
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # The child can exit concurrently with a signal/timeout handler.
+                process.kill()
         process.communicate()
         raise
     if process.returncode:
@@ -149,9 +154,9 @@ class Runner:
 
     def client(self, action):
         code = CLIENT.read_text()
-        argv = ['-c', code, action, self.url]
+        argv = ['-c', code, '--action', action, '--project-url', self.url]
         if self.config['client']['mode'] == 'existing':
-            source = 'import sys; sys.argv = ' + repr(['acceptance-client', action, self.url]) + '\n' + code
+            source = 'import sys; sys.argv = ' + repr(['acceptance-client', '--action', action, '--project-url', self.url]) + '\n' + code
             return json.loads(self.call(self.config['client']['python_command'], source))
         script = ('if id boinc >/dev/null 2>&1 && test -f /var/lib/boinc/client_state.xml; then '
                   'runuser -u boinc -- python3 ' + shlex.join(argv) +

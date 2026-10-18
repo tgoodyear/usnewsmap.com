@@ -39,7 +39,7 @@ def db_connect(project):
     config = ET.parse(project / 'config.xml').find('config')
     return MySQLdb.connect(host=config.findtext('db_host'), user=config.findtext('db_user'),
                            passwd=config.findtext('db_passwd'), db=config.findtext('db_name'),
-                           ssl={'ca': '/usr/local/share/usnm/mysql-ca.pem'})
+                           ssl={'ca': '/usr/local/share/usnm/mysql-ca.pem'}, ssl_mode='VERIFY_IDENTITY')
 
 
 def query(db, sql, values):
@@ -71,6 +71,10 @@ def fixture_load(root, name, release):
             or not manifest['outputs'] or not manifest['inputs']
             or type(manifest['min_quorum']) is not int or not 1 <= manifest['min_quorum'] <= 10):
         raise ValueError('invalid fixture requirements')
+    peers = manifest.get('peer_host_ids', [])
+    if (not isinstance(peers, list) or len(peers) != manifest['min_quorum'] - 1
+            or any(type(host) is not int or host <= 0 for host in peers) or len(set(peers)) != len(peers)):
+        raise ValueError('quorum requires explicit distinct existing peer_host_ids')
     for name in ('input_template', 'output_template'):
         if not SAFE.fullmatch(manifest[name]):
             raise ValueError('invalid template name')
@@ -193,10 +197,14 @@ def status(db, project, record, manifest):
         if rule['name'] not in refs:
             return dict(base, state='failed')
         physical = refs[rule['name']]
-        location = subprocess.run([str(project / 'bin/dir_hier_path'), '--upload', physical],
+        location = subprocess.run([str(project / 'bin/dir_hier_path'), physical],
                                   cwd=project, capture_output=True, text=True, check=True, timeout=30).stdout.strip()
         path = Path(location)
         path = path if path.is_absolute() else project / path
+        download = (project / 'download').resolve()
+        if not path.resolve().is_relative_to(download):
+            raise ValueError('BOINC hierarchy path outside download directory')
+        path = project / 'upload' / path.resolve().relative_to(download)
         if not path.exists():
             # Assimilation/deletion can race collection; absence is not acceptance.
             return base
@@ -238,6 +246,9 @@ def handle(request, project, fixtures, db):
                              (release['app'], release['version_num'], release['platform'], release['plan_class']))
             if len(versions) != 1:
                 raise ValueError('expected exactly one active registered app version')
+            for peer in manifest.get('peer_host_ids', []):
+                if len(query(db, 'SELECT id FROM host WHERE id=%s', (peer,))) != 1:
+                    raise ValueError('unknown independent fixture peer')
             for key in ('input_template', 'output_template'):
                 below(project / 'templates', manifest[key])
             for entry in manifest['inputs']:
@@ -261,7 +272,8 @@ def handle(request, project, fixtures, db):
             raise ValueError('fixture changed during reservation')
         if action == 'dispatch':
             host_id = request['host_id']
-            if type(host_id) is not int or host_id <= 0 or record.get('dispatch_intent'):
+            if (type(host_id) is not int or host_id <= 0 or record.get('dispatch_intent')
+                    or host_id in manifest.get('peer_host_ids', [])):
                 raise ValueError('invalid host or uncertain/duplicate dispatch')
             if ET.parse(project / 'config.xml').findtext('./config/enable_assignment') != '1':
                 raise ValueError('host-target assignment must already be enabled')
@@ -271,6 +283,19 @@ def handle(request, project, fixtures, db):
             durable(journal, record)  # Persist before mutation: do not retry unknown outcomes.
             subprocess.run([str(project / 'bin/create_work'), *create_args(manifest, record['workunit'], host_id)],
                            cwd=project, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+            if manifest.get('peer_host_ids'):
+                units = query(db, 'SELECT id FROM workunit WHERE name=%s', (record['workunit'],))
+                if len(units) != 1:
+                    raise ValueError('uncertain fixture workunit creation')
+                cursor = db.cursor()
+                try:
+                    for peer in manifest['peer_host_ids']:
+                        # BOINC ASSIGN_HOST=1; never assign to an entire account/team.
+                        cursor.execute('INSERT INTO assignment (create_time, target_id, target_type, multi, workunitid) '
+                                       'VALUES (UNIX_TIMESTAMP(), %s, 1, 0, %s)', (peer, units[0]['id']))
+                    db.commit()
+                finally:
+                    cursor.close()
             record['dispatched'] = True
             durable(journal, record)
             return {'dispatched': True}
