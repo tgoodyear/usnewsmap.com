@@ -108,3 +108,10 @@ data and table: `large-n/`. End-to-end time includes container start and, for N 
 **Recommended first release:** N between 16 and 32 per workunit (about 5-8 minutes, +8-14% over N=8 on
 a warm cache), with the cache as a separate release, pending reference-scored CER. N above 64 adds no throughput
 and the most drift. BOINC runtimes up to an hour would allow it, but there's no measured reason to.
+
+## Addendum: the cache in production (app version 1.2)
+
+The compile cache shipped as a named volume with a manifest of files from clean runs, so a killed run's
+partial files are never trusted. See [the pilot doc](../../boinc-iris-pilot.md#persistent-compile-cache-app-version-12)
+for the design and the verification on Computer 9: a warm load took 1.7-2.9 s against 14-17 s cold, and the
+text was identical with and without the cache.
