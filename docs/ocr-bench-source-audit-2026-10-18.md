@@ -8,13 +8,13 @@ and masks. No new human transcription or damage review is claimed in this pass.
 
 ## Included sources and rights
 
-| Track | Source and human GT evidence | Image / reference rights | This audit's evidence |
-| --- | --- | --- | --- |
-| English crops | Overproof dataset 3 via HIPE, hand-corrected articles | LoC public domain / **CC BY-NC-SA 4.0** structured copy | Published v1.0.0 manifest and source notices; not relicensed, not asserted permissive for commercial use |
-| German line pairs | Mannheim Reichsanzeiger GT, Transkribus OCR-D Level 2 | Public Domain Mark 1.0 / CC BY 4.0 (follow stricter Zenodo statement, notwithstanding GitHub CC0) | Published v1.0.0 manifest; [source survey](ocr-gold-set.md#source-policy) |
-| French regions | [NewsEye BnF 4293602](https://doi.org/10.5281/zenodo.4293602), carefully corrected PAGE text, Muehlberger/Hackl, BnF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0** | Current Zenodo record pinned in inputs; validation archive MD5 checked against publisher; SHA-256 below |
-| Finnish regions | [NewsEye NLF 4599472](https://doi.org/10.5281/zenodo.4599472), carefully corrected PAGE text, Muehlberger/Hackl, NLF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0** | Same checks; publisher describes 8 validation pages, but eligible selected regions cover only 6 |
-| Swedish regions | [NewsEye NLF 4599624](https://doi.org/10.5281/zenodo.4599624), carefully corrected PAGE text, Muehlberger/Hackl, NLF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0** | Same checks; publisher describes 6 validation pages, but eligible selected regions cover only 4 |
+| Track             | Source and human GT evidence                                                                                                      | Image / reference rights                                                                          | This audit's evidence                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| English crops     | Overproof dataset 3 via HIPE, hand-corrected articles                                                                             | LoC public domain / **CC BY-NC-SA 4.0** structured copy                                           | Published v1.0.0 manifest and source notices; not relicensed, not asserted permissive for commercial use |
+| German line pairs | Mannheim Reichsanzeiger GT, Transkribus OCR-D Level 2                                                                             | Public Domain Mark 1.0 / CC BY 4.0 (follow stricter Zenodo statement, notwithstanding GitHub CC0) | Published v1.0.0 manifest; [source survey](ocr-gold-set.md#source-policy)                                |
+| French regions    | [NewsEye BnF 4293602](https://doi.org/10.5281/zenodo.4293602), carefully corrected PAGE text, Muehlberger/Hackl, BnF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0**                                                                         | Current Zenodo record pinned in inputs; validation archive MD5 checked against publisher; SHA-256 below  |
+| Finnish regions   | [NewsEye NLF 4599472](https://doi.org/10.5281/zenodo.4599472), carefully corrected PAGE text, Muehlberger/Hackl, NLF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0**                                                                         | Same checks; publisher describes 8 validation pages, but eligible selected regions cover only 6          |
+| Swedish regions   | [NewsEye NLF 4599624](https://doi.org/10.5281/zenodo.4599624), carefully corrected PAGE text, Muehlberger/Hackl, NLF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0**                                                                         | Same checks; publisher describes 6 validation pages, but eligible selected regions cover only 4          |
 
 Each released item resolves its `source` to separate image/reference licences,
 attribution and `LICENSES/<source>/`. v1.1.0 includes the actual public metadata
@@ -38,11 +38,11 @@ name/hash, full-page image hash, crop box, region id and selection parameters.
 This checks binding/extraction; it does not independently adjudicate the
 publisher's language readings or reading order.
 
-| Validation archive | SHA-256 | Transcribed regions read | Selected crops / pages |
-| --- | --- | ---: | ---: |
-| `ATR_ValidationSet_BnF_Newseye_M2+.zip` | `6862c17af69712508979413ce1012a1aa36c478f1b945b74ed42354033f791d0` | 1,332 | 24 / 8 |
-| `ATR_ValidationSet_NLF_Newseye_GT_FI_M2+.zip` | `64d2d143abcd174811f17546622fe344f438347e2cf285b649384a9ba02051ce` | 372 | 18 / 6 |
-| `ATR_ValidationSet_NLF_Newseye_GT_SV_M2+.zip` | `bc4b2a6e8f84ed1e6f1cae5d8c36795f7e99e52ea914a4d672988d3bda51f94b` | 78 | 10 / 4 |
+| Validation archive                            | SHA-256                                                            | Transcribed regions read | Selected crops / pages |
+| --------------------------------------------- | ------------------------------------------------------------------ | -----------------------: | ---------------------: |
+| `ATR_ValidationSet_BnF_Newseye_M2+.zip`       | `6862c17af69712508979413ce1012a1aa36c478f1b945b74ed42354033f791d0` |                    1,332 |                 24 / 8 |
+| `ATR_ValidationSet_NLF_Newseye_GT_FI_M2+.zip` | `64d2d143abcd174811f17546622fe344f438347e2cf285b649384a9ba02051ce` |                      372 |                 18 / 6 |
+| `ATR_ValidationSet_NLF_Newseye_GT_SV_M2+.zip` | `bc4b2a6e8f84ed1e6f1cae5d8c36795f7e99e52ea914a4d672988d3bda51f94b` |                       78 |                 10 / 4 |
 
 Commands used for each `DATASET` (`newseye-bnf`, `newseye-nlf-fi`, `newseye-nlf-sv`):
 
@@ -75,14 +75,14 @@ independently match the committed release index before publication.
 members, not sums of overlapping smoke/all/legacy subsets. All references in
 these rows are publisher human-verified GT; all splits are `public-eval`.
 
-| Release / principal language | Unit | Unknown damage: samples / distinct pages | Reviewed none | Mild | Moderate | Severe | Full-page units |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| v1.0.0 English | crop | 300 / 18 | 0 | 0 | 0 | 0 | 0 |
-| v1.0.0 German | line-pair | 700 / 20 | 0 | 0 | 0 | 0 | 0 |
-| v1.1.0 French | crop | 24 / 8 | 0 | 0 | 0 | 0 | 0 |
-| v1.1.0 Finnish | crop | 18 / 6 | 0 | 0 | 0 | 0 | 0 |
-| v1.1.0 Swedish | crop | 10 / 4 | 0 | 0 | 0 | 0 | 0 |
-| Japanese, Spanish, Italian, Danish, Lithuanian, Czech, Russian, Serbian, Hebrew, Yiddish | any | **0 / 0** | 0 | 0 | 0 | 0 | 0 |
+| Release / principal language                                                             | Unit      | Unknown damage: samples / distinct pages | Reviewed none | Mild | Moderate | Severe | Full-page units |
+| ---------------------------------------------------------------------------------------- | --------- | ---------------------------------------: | ------------: | ---: | -------: | -----: | --------------: |
+| v1.0.0 English                                                                           | crop      |                                 300 / 18 |             0 |    0 |        0 |      0 |               0 |
+| v1.0.0 German                                                                            | line-pair |                                 700 / 20 |             0 |    0 |        0 |      0 |               0 |
+| v1.1.0 French                                                                            | crop      |                                   24 / 8 |             0 |    0 |        0 |      0 |               0 |
+| v1.1.0 Finnish                                                                           | crop      |                                   18 / 6 |             0 |    0 |        0 |      0 |               0 |
+| v1.1.0 Swedish                                                                           | crop      |                                   10 / 4 |             0 |    0 |        0 |      0 |               0 |
+| Japanese, Spanish, Italian, Danish, Lithuanian, Czech, Russian, Serbian, Hebrew, Yiddish | any       |                                **0 / 0** |             0 |    0 |        0 |      0 |               0 |
 
 Each unlisted language × reviewed damage × unit cell is zero **in these two
 releases**, not a statement that no suitable source exists. No verified

@@ -74,16 +74,16 @@ Reviewed samples use `status: reviewed`, a unique list of `labels`, `severity`
 and nonempty `evidence` (review receipt/source annotation, not an engine score).
 Multiple labels describe co-occurring damage:
 
-| Label | Visible phenomenon |
-| --- | --- |
-| `bleed-through` | Reverse-side print interferes with foreground strokes. |
-| `faded-ink` | Weak or absent foreground ink; includes uneven impression. |
-| `blur` | Defocus/motion/resampling prevents resolving strokes. |
-| `stain` | Discoloration or spots obscure foreground text. |
-| `tear` | Physical paper loss, holes or torn edges remove text. |
-| `occlusion` | Bindings, folds or another object cover text. |
-| `warping` | Curvature, folds or geometric deformation displace text. |
-| `clipping` | Scan/crop boundary truncates printed text. |
+| Label           | Visible phenomenon                                         |
+| --------------- | ---------------------------------------------------------- |
+| `bleed-through` | Reverse-side print interferes with foreground strokes.     |
+| `faded-ink`     | Weak or absent foreground ink; includes uneven impression. |
+| `blur`          | Defocus/motion/resampling prevents resolving strokes.      |
+| `stain`         | Discoloration or spots obscure foreground text.            |
+| `tear`          | Physical paper loss, holes or torn edges remove text.      |
+| `occlusion`     | Bindings, folds or another object cover text.              |
+| `warping`       | Curvature, folds or geometric deformation displace text.   |
+| `clipping`      | Scan/crop boundary truncates printed text.                 |
 
 Assess severity against the **text-bearing area of the sample** (not blank
 margins), independently of OCR. `none` requires an empty label list and an
