@@ -1,0 +1,29 @@
+{
+  "backend": "cuda",
+  "start_utc": "2026-10-18T21:28:46.599232+00:00",
+  "slots": [
+    {
+      "job_id": "1fc6689539ecff212d71b5d6672608e0b3a9ad6ff9f9ebd3e3c61f990c6beb30",
+      "elapsed_s": 87.66526478700689,
+      "exit_code": 0
+    },
+    {
+      "job_id": "428db60e4d77af9b02fc83cfd47e3d5a85fcc72d90ec90f4c534424d05708b51",
+      "elapsed_s": 68.80713391098834,
+      "exit_code": 0
+    },
+    {
+      "job_id": "43f64fac2f60884966a746d5a504fd4728e4eb98db6e4eb45617db97c2e93f61",
+      "elapsed_s": 68.80186639699969,
+      "exit_code": 0
+    },
+    {
+      "job_id": "55f88fbd4330142b94b859fe098e17a6ee7cc37804c49070339cc182938fb5c5",
+      "elapsed_s": 67.72594397999637,
+      "exit_code": 0
+    }
+  ],
+  "deadline_epoch": 1792363200.0,
+  "elapsed_s": 293.28565369900025,
+  "end_utc": "2026-10-18T21:33:39.884914+00:00"
+}
