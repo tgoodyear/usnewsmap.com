@@ -51,6 +51,13 @@ Each sample in the manifest records:
 Each subset records its members, sample and source-page counts, how it was made, and a digest:
 the sha256 of one line per member, `id image-sha256 reference-sha256`, in id order.
 
+## Annotation and source admission
+
+The [transcription, illegibility-mask and damage policy](ocr-bench-annotation-policy.md)
+defines new reviewed annotations, Unicode offsets and real versus unknown damage.
+The [source audit and measured coverage](ocr-bench-source-audit-2026-10-18.md)
+separates admissible public GT from candidates and unmet tier targets.
+
 ## Release v1.0.0
 
 v1.0.0 preserves the samples of the Iris Xe campaigns
@@ -105,6 +112,25 @@ Candidate sources for the missing languages are reviewed in
 [docs/ocr-gold-set.md](ocr-gold-set.md). They include the NewsEye French, Finnish and Swedish
 sets, the Austrian newspapers and NZZ. Each new language or label comes as a new release.
 
+## Release v1.1.0: additional public multilingual tracks
+
+v1.1.0 adds 52 CC BY 4.0 NewsEye validation-region image/GT pairs from 18
+source pages: French 24 (8 pages), Finnish 18 (6), Swedish 10 (4). It does not
+repeat or replace the 1,000 v1.0.0 samples. Sources, licences, exact counts,
+selection and unmet targets are in the [source audit](ocr-bench-source-audit-2026-10-18.md).
+
+```sh
+scripts/ocr-bench/fetch --version v1.1.0 --verify --subset multilingual/all-52
+```
+
+Content digest: `329c73b5fbaf56b91cd5cd5b1b0cdf131e15ec43391ac9e459e4a423a88eb01e`.
+Archive SHA-256: `0a015eb4085af36b015566f1311411d12aef802d461442bd8c3e963bff932923`.
+See `releases.json` for all six subset digests. Principal language labels are
+inherited from the publisher; damage and language-mix status are **unannotated**.
+This is a multilingual pool, not verified mixed-language samples, reviewed
+damage strata, full pages, or per-language standard/extended tiers. Source
+conventions are preserved, with no new diplomatic re-transcription claimed.
+
 ## Scoring
 
 ```sh
@@ -127,6 +153,11 @@ An output for an id outside the subset is an error.
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `legacy-ws-v1` | The Iris pilot's rule. Whitespace runs collapse to one space and the ends are trimmed, as in Python's `" ".join(s.split())`. Then character (code point) edit distance. Case and punctuation count. |
 | `raw-v1`       | Character edit distance with no normalization.                                                                                                                                                      |
+
+`raw-masked-v1` is an opt-in ambiguity-aware lower-bound score using frozen
+reference-side illegibility spans; [the policy](ocr-bench-annotation-policy.md)
+defines alignment and denominators. Always report `raw-v1` alongside it. It does
+not change either historical rule or any published release.
 
 These are character-level rules. Word error rates depend on how a script is tokenized, so they
 are left out until there is a definition for each script.
@@ -159,6 +190,9 @@ stay valid for the bytes they were measured on.
 To add a release:
 
 1. Write `ocr/bench/<version>/spec.json` and `inputs.sha256`, and stage the inputs tar.
+   A recipe may set an HTTPS `inputs_url` for a public immutable GitHub release
+   asset; absent this, the original input host is used. The committed inventory
+   still pins every input byte. Published release recipes must never change.
 2. Open a pull request. The check job prints the release's `releases.json` entry.
 3. Review the entry, commit it and merge.
 

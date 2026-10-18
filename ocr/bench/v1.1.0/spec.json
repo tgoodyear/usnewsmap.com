@@ -1,0 +1,97 @@
+{
+  "campaigns": [],
+  "derived": [
+    {
+      "description": "Seeded ten-region smoke subset, nested in source track.",
+      "from": "newseye-bnf/all-24",
+      "id": "newseye-bnf/smoke-10",
+      "seed": "738:v1.1.0:newseye-bnf:smoke-10",
+      "take": 10
+    },
+    {
+      "description": "Seeded ten-region smoke subset, nested in source track.",
+      "from": "newseye-nlf-fi/all-18",
+      "id": "newseye-nlf-fi/smoke-10",
+      "seed": "738:v1.1.0:newseye-nlf-fi:smoke-10",
+      "take": 10
+    },
+    {
+      "description": "All 52 French/Finnish/Swedish regions, not balanced, not mixed-language units; report each source separately.",
+      "id": "multilingual/all-52",
+      "union": [
+        "newseye-bnf/all-24",
+        "newseye-nlf-fi/all-18",
+        "newseye-nlf-sv/all-10"
+      ]
+    }
+  ],
+  "examples": [],
+  "format": "usnm-ocr-bench-spec",
+  "imports": [
+    {
+      "path": "newseye-bnf",
+      "source": "newseye-bnf",
+      "subset": "newseye-bnf/all-24"
+    },
+    {
+      "path": "newseye-nlf-fi",
+      "source": "newseye-nlf-fi",
+      "subset": "newseye-nlf-fi/all-18"
+    },
+    {
+      "path": "newseye-nlf-sv",
+      "source": "newseye-nlf-sv",
+      "subset": "newseye-nlf-sv/all-10"
+    }
+  ],
+  "inputs_url": "https://github.com/tgoodyear/usnewsmap.com/releases/download/ocr-bench-inputs-v1.1.0/usnm-ocr-bench-inputs-v1.1.0.tar",
+  "limitations": [
+    "Three additional principal-language tracks only: French, Finnish and Swedish; no English/German samples repeated from v1.0.0.",
+    "All samples are published GT regions, not full pages. Source PAGE line text is stripped at line ends and joined with LF by the existing converter; word-level text is not used.",
+    "No independent local re-transcription or damage/illegibility review: all damage and language-mix status remain unannotated. No diplomatic-v1 compliance is asserted for inherited source conventions.",
+    "Only bounded validation archives used: no per-language standard-1000 or extended-10000 tier, no full-page tier, no verified mixed-language samples.",
+    "All samples are public-eval; publisher validation labels do not mean unseen model tests. No model-training overlap guarantee."
+  ],
+  "release": "v1.1.0",
+  "sources": {
+    "newseye-bnf": {
+      "annotation_status": "human-verified",
+      "attribution": "Guenter Muehlberger and Guenter Hackl; NewsEye / READ OCR training dataset from French Newspapers, BnF, CC BY 4.0; see credited source record in LICENSES.",
+      "image_license": "CC BY 4.0, https://creativecommons.org/licenses/by/4.0/",
+      "languages": [
+        "fra"
+      ],
+      "reference_license": "CC BY 4.0, https://creativecommons.org/licenses/by/4.0/",
+      "scripts": [
+        "Latn"
+      ],
+      "unit": "crop"
+    },
+    "newseye-nlf-fi": {
+      "annotation_status": "human-verified",
+      "attribution": "Guenter Muehlberger and Guenter Hackl; NewsEye / READ OCR training dataset from Finnish Newspapers, National Library of Finland, CC BY 4.0; see credited source record in LICENSES.",
+      "image_license": "CC BY 4.0, https://creativecommons.org/licenses/by/4.0/",
+      "languages": [
+        "fin"
+      ],
+      "reference_license": "CC BY 4.0, https://creativecommons.org/licenses/by/4.0/",
+      "scripts": [
+        "Latn"
+      ],
+      "unit": "crop"
+    },
+    "newseye-nlf-sv": {
+      "annotation_status": "human-verified",
+      "attribution": "Guenter Muehlberger and Guenter Hackl; NewsEye / READ OCR training dataset from Swedish Newspapers, National Library of Finland, CC BY 4.0; see credited source record in LICENSES.",
+      "image_license": "CC BY 4.0, https://creativecommons.org/licenses/by/4.0/",
+      "languages": [
+        "swe"
+      ],
+      "reference_license": "CC BY 4.0, https://creativecommons.org/licenses/by/4.0/",
+      "scripts": [
+        "Latn"
+      ],
+      "unit": "crop"
+    }
+  }
+}
