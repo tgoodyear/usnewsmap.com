@@ -71,20 +71,20 @@ three verified full pages. Both systems produced all three outputs. The human re
 has digest `8a72a9d387d3f3ffaa60cd95f6027b621f69e9ab4471e1eb553573e46e4af382`; the complete
 pilot file-set digest is `1d6567cb7efb375ed0a3eb39609c80479cf8bf0b43e6ffa4aa37dd72b0c07a3d`.
 
-| OCR output | Rule | Edits / reference chars | CER | Missing |
-| --- | --- | ---: | ---: | ---: |
-| GovInfo PDF text layer | `legacy-ws-v1` | 611 / 6,405 | 9.54% | 0 / 3 |
-| GovInfo PDF text layer | `raw-v1` | 766 / 6,429 | 11.91% | 0 / 3 |
-| Local Tesseract 5.5.1 | `legacy-ws-v1` | 785 / 6,405 | 12.26% | 0 / 3 |
-| Local Tesseract 5.5.1 | `raw-v1` | 836 / 6,429 | 13.00% | 0 / 3 |
+| OCR output             | Rule           | Edits / reference chars |    CER | Missing |
+| ---------------------- | -------------- | ----------------------: | -----: | ------: |
+| GovInfo PDF text layer | `legacy-ws-v1` |             611 / 6,405 |  9.54% |   0 / 3 |
+| GovInfo PDF text layer | `raw-v1`       |             766 / 6,429 | 11.91% |   0 / 3 |
+| Local Tesseract 5.5.1  | `legacy-ws-v1` |             785 / 6,405 | 12.26% |   0 / 3 |
+| Local Tesseract 5.5.1  | `raw-v1`       |             836 / 6,429 | 13.00% |   0 / 3 |
 
 Per-page `legacy-ws-v1` results show why the aggregate is not a re-OCR decision:
 
-| Page | GovInfo PDF text layer | Tesseract 5.5.1 | Notes |
-| --- | ---: | ---: | --- |
-| H. Doc. 16-42, p. 3 (1820 prose) | 12 / 1,928 (0.62%) | 20 / 1,928 (1.04%) | Existing text layer has fewer edits. |
-| H. Doc. 16-53, p. 5 (1820 tables) | 455 / 1,550 (29.35%) | 755 / 1,550 (48.71%) | Both struggle with dense table layout/order; dominates errors. |
-| H. Doc. 101-183, p. 3 (1990 prose) | 144 / 2,927 (4.92%) | 10 / 2,927 (0.34%) | Local Tesseract has fewer edits. |
+| Page                               | GovInfo PDF text layer |      Tesseract 5.5.1 | Notes                                                          |
+| ---------------------------------- | ---------------------: | -------------------: | -------------------------------------------------------------- |
+| H. Doc. 16-42, p. 3 (1820 prose)   |     12 / 1,928 (0.62%) |   20 / 1,928 (1.04%) | Existing text layer has fewer edits.                           |
+| H. Doc. 16-53, p. 5 (1820 tables)  |   455 / 1,550 (29.35%) | 755 / 1,550 (48.71%) | Both struggle with dense table layout/order; dominates errors. |
+| H. Doc. 101-183, p. 3 (1990 prose) |    144 / 2,927 (4.92%) |   10 / 2,927 (0.34%) | Local Tesseract has fewer edits.                               |
 
 The 1820 page's top table is transcribed left region then right region, and its lower table row by
 row; scorer CER is character-level and reading-order-sensitive. The high p. 5 scores therefore
