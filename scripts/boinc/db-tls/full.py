@@ -138,7 +138,9 @@ def start_apache(database_failure=False):
         except (OSError, ET.ParseError):
             time.sleep(0.5)
     else:
-        raise RuntimeError("Apache project config readiness timed out")
+        logs = "\n".join(p.read_text(errors="replace")[-2000:]
+                         for p in (ROOT / "apache.log", ROOT / "apache/log/error.log") if p.exists())
+        raise RuntimeError("Apache project config readiness timed out: " + logs)
 
 
 def secure_keys():
@@ -339,6 +341,7 @@ def rehearse_code_migration():
     original = PROJECT
     copied = ROOT / "migration-copy"
     shutil.copytree(original, copied, symlinks=True)
+    run("chown", "-R", "--no-dereference", "boincadm:boincadm", str(copied))
     for name in ("stop", "status"):
         link = copied / "bin" / name
         if link.is_symlink():
