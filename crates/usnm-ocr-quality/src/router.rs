@@ -127,6 +127,8 @@ pub fn canonical_language(language: &str) -> &str {
         "wel" => "cym",
         "dut" => "nld",
         "slo" => "slk",
+        "chi" => "zho",
+        "gre" => "ell",
         other => other,
     }
 }
@@ -456,5 +458,17 @@ mod tests {
         assert_eq!(d_extreme.family, EngineFamily::QwenVlm);
         assert!(d_extreme.gpu_escalate);
         assert!(d_extreme.slice_columns);
+    }
+
+    #[test]
+    fn chinese_and_greek_library_codes_map_to_canonical_profiles() {
+        let page = sample_features(3600, 0.08, 0.19, 195.0, 6800.0, 4, 36.0, 0.82);
+        let d_chi = route_page("chi", &page, Some(0.11), Some(0.88));
+        assert_eq!(d_chi.profile, "chi_tra");
+        assert_eq!(d_chi.regime, DamageRegime::MultiScriptFraktur);
+
+        let d_gre = route_page("gre", &page, Some(0.11), Some(0.88));
+        assert_eq!(d_gre.profile, "ell");
+        assert_eq!(d_gre.regime, DamageRegime::CleanStandard);
     }
 }

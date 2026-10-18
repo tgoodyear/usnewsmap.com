@@ -86,6 +86,29 @@ def build_database(
             )
 
     con.execute(f"CREATE TABLE raw_boinc_pages AS {' UNION ALL BY NAME '.join(union_parts)}")
+    for col_name, col_type in [
+        ("cer_vs_loc", "DOUBLE"),
+        ("wer_vs_loc", "DOUBLE"),
+        ("dice_vs_loc", "DOUBLE"),
+        ("word_ratio_vs_loc", "DOUBLE"),
+        ("damage_rate", "DOUBLE"),
+        ("function_share", "DOUBLE"),
+        ("garbage_share", "DOUBLE"),
+        ("known_words", "BIGINT"),
+        ("hat_residual", "DOUBLE"),
+        ("legibility_ceiling", "DOUBLE"),
+        ("otsu_local_diff", "DOUBLE"),
+        ("bg_tile_std", "DOUBLE"),
+        ("est_line_height_px", "DOUBLE"),
+        ("vertical_stroke_ratio", "DOUBLE"),
+        ("fraktur_score", "DOUBLE"),
+        ("gutter_clarity", "DOUBLE"),
+        ("img_columns", "BIGINT"),
+        ("ink_word_coverage", "DOUBLE"),
+        ("numeric_share", "DOUBLE"),
+        ("short_line_share", "DOUBLE"),
+    ]:
+        con.execute(f"ALTER TABLE raw_boinc_pages ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     if crop_parts:
         con.execute(f"CREATE TABLE raw_boinc_crops AS {' UNION ALL BY NAME '.join(crop_parts)}")
     else:
@@ -179,6 +202,8 @@ def build_database(
                 WHEN 'ice' THEN 'isl'
                 WHEN 'dut' THEN 'nld'
                 WHEN 'gre' THEN 'ell'
+                WHEN 'chi' THEN 'zho'
+                WHEN 'wel' THEN 'cym'
                 ELSE lang
             END AS manifest_lang,
             lang AS manifest_lang_raw,
@@ -279,7 +304,7 @@ def build_database(
                     OR COALESCE(p.blur, 5000.0) < 900.0
                     OR COALESCE(p.legibility_ceiling, 0.80) < 0.55
                 THEN 'severely_degraded'
-                WHEN COALESCE(m.manifest_lang, p.boinc_lang, 'eng') IN ('deu', 'ger', 'srp', 'ces', 'cze', 'yid', 'zho', 'haw')
+                WHEN COALESCE(m.manifest_lang, p.boinc_lang, 'eng') IN ('deu', 'ger', 'srp', 'ces', 'cze', 'yid', 'zho', 'chi', 'haw')
                 THEN 'multi_script_fraktur'
                 WHEN COALESCE(p.columns, 1) >= 6 OR COALESCE(p.line_height_px, 34.0) < 26.0
                 THEN 'dense_broadsheet'
@@ -293,7 +318,14 @@ def build_database(
             CASE
                 WHEN COALESCE(p.legibility_ceiling, 0.80) < 0.40
                     OR COALESCE(p.ours_damage_rate, m.manifest_damage_rate, 0.15) >= 0.50
-                    OR (COALESCE(p.mean_word_conf, 0.75) < 0.55 AND COALESCE(p.contrast, 180.0) < 65.0)
+                    OR (
+                        COALESCE(p.mean_word_conf, 0.75) < 0.55
+                        AND (
+                            (COALESCE(p.ink_density, 0.20) < 0.12 AND COALESCE(p.contrast, 180.0) < 95.0)
+                            OR COALESCE(p.contrast, 180.0) < 65.0
+                            OR COALESCE(p.blur, 5000.0) < 900.0
+                        )
+                    )
                 THEN 'qwen-vlm'
                 WHEN COALESCE(p.mean_word_conf, 0.75) < 0.55
                     OR COALESCE(p.ours_damage_rate, m.manifest_damage_rate, 0.15) >= 0.30
