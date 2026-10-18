@@ -1299,16 +1299,26 @@ hosts.
 The handoff spool shares one global `gold/trust.json`; passing a separate local
 file does not isolate its policy to one job. Both native and handoff publication,
 and independent-host spot replay/comparison, enforce the job scope. English-only
-evidence never implicitly authorizes French, Japanese, another model profile or
-another page segmentation/DPI configuration.
+evidence never implicitly authorizes German, French, Japanese, another model
+profile or another page segmentation/DPI configuration. When additional
+`(language, profile)` scopes are calibrated and promoted into the shared
+`trust.json`, `usnm-boinc gold trust` merges the newly promoted scope into
+`policies` without overwriting or invalidating existing scopes (such as
+`eng/eng`), while remaining backward-compatible with existing calibrated v4
+single-scope `trust.json` files. Collection and spot-check planning look up the
+job's exact `(message.language, engine.profile)` entry and check its `psm`,
+`dpi`, `manifest_sha256`, `max_cer` and per-image `hosts` map, so a host trusted
+only for `eng/eng` is refused for `deu/frak2021` work (and vice versa).
 
 ```sh
-# Build trust from canonical reports plus native server outcome snapshots.
+# Build or merge a calibrated scope from canonical reports plus native server
+# outcome snapshots (preserving any other scopes already in --out or --merge).
 usnm-boinc gold trust --reports <share>/gold/v1-tess550/out/reports.jsonl \
   --outcomes <share>/gold/v1-tess550/out/native-outcomes.jsonl \
   [--reports ...] [--outcomes ...] --max-cer CALIBRATED_THRESHOLD \
   --manifest-sha256 CALIBRATED_MANIFEST_SHA256 \
-  --language CALIBRATED_LANGUAGE --profile CALIBRATED_PROFILE --out <share>/gold/trust.json
+  --language CALIBRATED_LANGUAGE --profile CALIBRATED_PROFILE \
+  [--merge <share>/gold/trust.json] --out <share>/gold/trust.json
 # The canonical result's host, from the project database:
 #   select r.hostid from workunit w join result r on r.id = w.canonical_resultid
 #   where w.name = 'usnm_JOB_ID';

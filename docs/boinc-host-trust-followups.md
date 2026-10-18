@@ -53,11 +53,12 @@ changed.
 original-file set** from the existing `gold prepare` command. Each prepared remote
 must be present under `cache/<remotes[*].name>` and match its size, MD5 and SHA-256.
 Metadata and the bundle alone are not sufficient for mirrored gold submission.
-`trust` is the existing calibrated v5 list: no default CER or
-new approval is invented. Only `onboard` accepts a missing list or the
-uncalibrated v1-v4 list, and treats either as trusting no host: issuing gold
+`trust` is the existing calibrated v4/v5 list: no default CER or
+new approval is invented. Only `onboard` accepts a missing list or an
+uncalibrated v1-v3 (or unscoped v4) list, and treats either as trusting no host: issuing gold
 publishes nothing, and its reports are what calibrates the first threshold.
-Spot checks and publication still require a valid v5 list. `jobs_root` is the server-local root containing the
+Spot checks and publication require a calibrated scoped v4 or v5 list and evaluate
+host eligibility within the sampled job's exact `(language, profile)` scope. `jobs_root` is the server-local root containing the
 exported OCR job journals and staged inputs, not the controller root.
 
 ## Automatically discover and issue first gold
