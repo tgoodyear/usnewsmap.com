@@ -194,8 +194,8 @@ pub enum Outcome {
     /// Surya exited non-zero or was killed by a signal (an out-of-memory
     /// kill shows as signal 9).
     Failed,
-    /// The GPU version ran, but no usable NVIDIA GPU was visible in the
-    /// container, so nothing was read (the diagnostics say why).
+    /// The GPU version ran, but no usable NVIDIA or Vulkan GPU was visible in
+    /// the container, so nothing was read (the diagnostics say why).
     NoGpu,
 }
 impl Outcome {
@@ -218,8 +218,8 @@ pub struct Run {
     /// CPU seconds of the process group (Python and llama-server), summed
     /// over the processes seen while it ran.
     pub cpu_secs: Option<f64>,
-    /// What llama-server ran the model on: `cuda` when it offloaded layers
-    /// to a GPU, else `cpu`; `none` when nothing ran.
+    /// What llama-server ran the model on: `cuda` or `vulkan` when it
+    /// offloaded layers to a GPU, else `cpu`; `none` when nothing ran.
     pub device: String,
     pub engine_ms: u64,
     /// Highest GPU memory in use while the mode ran, less what was in use
@@ -324,7 +324,7 @@ impl ResultManifest {
                     };
                     ensure!(consistent, "outcome does not match the exit status");
                     ensure!(
-                        ["cpu", "cuda", "none"].contains(&r.device.as_str()),
+                        ["cpu", "cuda", "vulkan", "none"].contains(&r.device.as_str()),
                         "unknown device"
                     );
                     ensure!(

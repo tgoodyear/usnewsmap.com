@@ -13,7 +13,7 @@ the model lock and language routing. It publishes native ALTO and Parquet to
 
 - `usnm_assess`: [JP2 versus IIIF JPEG comparison](boinc-assessment.md) (#456).
 - `usnm_gold`: [score a host's engine on public ground truth](#gold-check).
-- `usnm_surya`: [Surya 2 on CPUs and NVIDIA GPUs](boinc-surya.md) (#516).
+- `usnm_surya`: [Surya 2 on CPUs, NVIDIA GPUs, and Intel GPUs](boinc-surya.md) (#516, #842).
 - `usnm_ndlocr`: [Japanese NDLOCR-Lite/default-route CPU work](boinc-ndlocr-lite.md),
   two-reading character-similarity validation and collection into `ocr-ja`.
 - `usnm_quality` and `usnm_qwen`: [per-page quality scoring without ground

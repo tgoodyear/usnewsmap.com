@@ -27,6 +27,15 @@ class DaemonConfig(unittest.TestCase):
         self.assertEqual(plan.findtext("min_batch"), "104")
         self.assertEqual(plan.findtext("max_batch"), "104")
         self.assertEqual(plan.findtext("mem_usage_base_mb"), "9663.676416")
+        surya_intel = [p for p in plans.findall("plan_class") if p.findtext("name") == "docker_intel_vulkan"]
+        self.assertEqual(len(surya_intel), 1)
+        surya_plan = surya_intel[0]
+        self.assertEqual(surya_plan.findtext("gpu_type"), "intel")
+        self.assertIsNotNone(surya_plan.find("docker"))
+        self.assertIsNotNone(surya_plan.find("opencl"))
+        self.assertIsNone(surya_plan.find("cuda"))
+        self.assertEqual(surya_plan.findtext("min_gpu_ram_mb"), "4096")
+        self.assertEqual(surya_plan.findtext("gpu_ram_used_mb"), "4096")
 
     def test_feeder_interleaves_all_apps_with_expanded_shmem(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))

@@ -38,11 +38,26 @@ use usnm_ocr_contract::{
 const RUNNER: &str = "/opt/surya/run.py";
 /// The engine the image was built with, from its environment.
 const ENV_IMAGE_LLAMA: &str = "USNM_SURYA_LLAMA_IMAGE";
+const ENV_BACKEND: &str = "USNM_SURYA_BACKEND";
 const ENV_VERSION: &str = "USNM_SURYA_VERSION";
 const ENV_WEIGHTS: &str = "USNM_SURYA_WEIGHTS";
 /// x86-64 Linux: 4 KiB pages, 100 clock ticks a second.
 pub(crate) const PAGE_KIB: u64 = 4;
 pub(crate) const TICKS: f64 = 100.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GpuDevice {
+    Cuda(u32),
+    Vulkan(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VulkanDevice {
+    pub index: u32,
+    pub name: String,
+    pub total_mib: Option<u64>,
+    pub free_mib: Option<u64>,
+}
 
 /// The diagnostics text, kept under [`MAX_DIAG`]: each section is cut to its
 /// own cap and the whole to the limit, with a note where it was cut.
@@ -343,6 +358,126 @@ pub(crate) fn gpu_info(host: &mut Host, diag: &mut Diag) -> Option<u32> {
     chosen
 }
 
+pub(crate) fn parse_vulkan_devices(out: &str) -> Vec<VulkanDevice> {
+    let mut devs = Vec::new();
+    for line in out.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("Vulkan") else {
+            continue;
+        };
+        let Some((idx_str, after)) = rest.split_once(':') else {
+            continue;
+        };
+        let Ok(index) = idx_str.trim().parse::<u32>() else {
+            continue;
+        };
+        let after = after.trim();
+        let (name, total_mib, free_mib) = match after.rsplit_once('(') {
+            Some((name_part, mem_part)) => {
+                let mem = mem_part.trim_end_matches(')');
+                let mut total = None;
+                let mut free = None;
+                for part in mem.split(',') {
+                    let p = part.trim();
+                    if let Some(num) = p.strip_suffix("MiB free") {
+                        free = num.trim().parse::<u64>().ok();
+                    } else if let Some(num) = p.strip_suffix("MiB") {
+                        total = num.trim().parse::<u64>().ok();
+                    }
+                }
+                (name_part.trim(), total, free)
+            }
+            None => (after, None, None),
+        };
+        let lower = name.to_ascii_lowercase();
+        if ["llvmpipe", "lavapipe", "swiftshader", "software"]
+            .iter()
+            .any(|sw| lower.contains(sw))
+        {
+            continue;
+        }
+        devs.push(VulkanDevice {
+            index,
+            name: name.chars().take(64).collect(),
+            total_mib,
+            free_mib,
+        });
+    }
+    devs
+}
+
+fn vulkan_info(host: &mut Host, diag: &mut Diag) -> Option<u32> {
+    let mut render_nodes: Vec<String> = std::fs::read_dir("/dev/dri")
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("renderD") || n.starts_with("card"))
+                .collect()
+        })
+        .unwrap_or_default();
+    render_nodes.sort();
+    let has_render_node = render_nodes.iter().any(|n| n.starts_with("renderD"));
+    let is_vulkan_backend = std::env::var(ENV_BACKEND).ok().as_deref() == Some("vulkan");
+    let wants_vulkan = is_vulkan_backend
+        || host
+            .plan_class
+            .as_deref()
+            .is_some_and(|p| p.contains("vulkan") || p.contains("intel"))
+        || host.gpu_type.as_deref() == Some("intel")
+        || has_render_node;
+    if !wants_vulkan {
+        return None;
+    }
+    diag.section(
+        "dri devices",
+        &if render_nodes.is_empty() {
+            "no /dev/dri/card* or /dev/dri/renderD* nodes".into()
+        } else {
+            format!("/dev/dri: {}", render_nodes.join(" "))
+        },
+        1024,
+    );
+    if !has_render_node {
+        return None;
+    }
+    let llama_bin =
+        std::env::var("LLAMA_CPP_BINARY").unwrap_or_else(|_| "/app/llama-server".into());
+    match quick(&llama_bin, &["--list-devices"], Duration::from_secs(30)) {
+        Ok((true, out)) => {
+            diag.section("llama-server --list-devices", &out, 2048);
+            let devs = parse_vulkan_devices(&out);
+            let wanted = host.gpu_device_num.and_then(|n| u32::try_from(n).ok());
+            let chosen = wanted
+                .and_then(|idx| devs.iter().find(|d| d.index == idx))
+                .or_else(|| devs.first());
+            if let Some(dev) = chosen {
+                host.gpu = Some(dev.name.clone());
+                host.gpu_mem_total_mib = dev.total_mib;
+                diag.section(
+                    "gpu used",
+                    &format!(
+                        "Vulkan{} ({}) from llama-server --list-devices (BOINC's gpu_device_num {:?})",
+                        dev.index, dev.name, host.gpu_device_num
+                    ),
+                    256,
+                );
+                return Some(dev.index);
+            }
+        }
+        Ok((false, out)) => diag.section("llama-server --list-devices (failed)", &out, 2048),
+        Err(e) => diag.section("llama-server --list-devices (did not run)", &e, 1024),
+    }
+    None
+}
+
+fn detect_gpu(host: &mut Host, diag: &mut Diag) -> Option<GpuDevice> {
+    let is_vulkan_backend = std::env::var(ENV_BACKEND).ok().as_deref() == Some("vulkan");
+    if let Some(i) = gpu_info(host, diag).filter(|_| !is_vulkan_backend) {
+        return Some(GpuDevice::Cuda(i));
+    }
+    vulkan_info(host, diag).map(GpuDevice::Vulkan)
+}
+
 /// Python's view: torch and its CUDA check, surya's version and settings.
 fn python_probe(host: &mut Host, diag: &mut Diag) {
     match quick("python3", &[RUNNER, "--probe"], Duration::from_secs(180)) {
@@ -489,20 +624,34 @@ pub(crate) fn gpu_mem_used(index: u32) -> Option<u64> {
 pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
     let mut lines = String::new();
     let mut offload = None;
-    let mut cuda = false;
+    let mut gpu_offloaded = false;
+    let mut saw_vulkan = false;
+    let mut saw_cuda = false;
     for l in log.lines() {
         let low = l.to_ascii_lowercase();
+        if low.contains("ggml_vulkan")
+            || low.contains("using device vulkan")
+            || low.contains("device vulkan")
+            || low.contains("vulkan0")
+            || low.contains("vulkan1")
+        {
+            saw_vulkan = true;
+        }
+        if low.contains("ggml_cuda") || low.contains("using device cuda") || low.contains("cuda0") {
+            saw_cuda = true;
+        }
         if low.contains("offloaded") && low.contains("layers to gpu") {
             offload = l
                 .split("offloaded")
                 .nth(1)
                 .map(|s| s.trim().chars().take(64).collect::<String>());
             if let Some(o) = &offload {
-                cuda = !o.starts_with("0/");
+                gpu_offloaded = !o.starts_with("0/");
             }
         }
         let shown = [
             "cuda",
+            "vulkan",
             "offload",
             "ggml_backend",
             "error",
@@ -518,7 +667,16 @@ pub(crate) fn llama_device(log: &str) -> (String, Option<String>, String) {
             lines.push('\n');
         }
     }
-    (if cuda { "cuda" } else { "cpu" }.into(), offload, lines)
+    let device = if gpu_offloaded {
+        if saw_vulkan && !saw_cuda {
+            "vulkan"
+        } else {
+            "cuda"
+        }
+    } else {
+        "cpu"
+    };
+    (device.into(), offload, lines)
 }
 
 struct ModeRun {
@@ -532,7 +690,7 @@ fn run_mode(
     mode: InputMode,
     deadline: Duration,
     threads: u32,
-    gpu: Option<u32>,
+    gpu: Option<GpuDevice>,
     home: &Path,
     diag: &mut Diag,
 ) -> anyhow::Result<ModeRun> {
@@ -542,14 +700,23 @@ fn run_mode(
     let stderr_path = scratch.path().join("stderr.txt");
     let log = home.join(".cache/datalab/surya/llamacpp_server.log");
     let _ = std::fs::remove_file(&log);
-    let gpu_before = gpu.and_then(gpu_mem_used);
+    let cuda_gpu = match gpu {
+        Some(GpuDevice::Cuda(i)) => Some(i),
+        _ => None,
+    };
+    let gpu_before = cuda_gpu.and_then(gpu_mem_used);
     let mut cmd = Command::new("python3");
-    if let Some(i) = gpu {
-        // Only BOINC's GPU, as nvidia-smi numbers them (llama.cpp's CUDA
-        // order is the same with CUDA_DEVICE_ORDER=PCI_BUS_ID).
-        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-            .env("CUDA_VISIBLE_DEVICES", i.to_string());
-    }
+    let extra_args = match gpu {
+        Some(GpuDevice::Cuda(i)) => {
+            // Only BOINC's GPU, as nvidia-smi numbers them (llama.cpp's CUDA
+            // order is the same with CUDA_DEVICE_ORDER=PCI_BUS_ID).
+            cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+                .env("CUDA_VISIBLE_DEVICES", i.to_string());
+            format!("--threads {threads}")
+        }
+        Some(GpuDevice::Vulkan(i)) => format!("--threads {threads} --device Vulkan{i}"),
+        None => format!("--threads {threads}"),
+    };
     let mut child = cmd
         .arg(RUNNER)
         .args(["--image", &work.join(PAGE_FILE).to_string_lossy()])
@@ -558,7 +725,7 @@ fn run_mode(
         .args(["--stats", &stats.to_string_lossy()])
         .env("HOME", home)
         .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env("LLAMA_CPP_EXTRA_ARGS", format!("--threads {threads}"))
+        .env("LLAMA_CPP_EXTRA_ARGS", extra_args)
         .env("OMP_NUM_THREADS", threads.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -576,7 +743,7 @@ fn run_mode(
     let mut timed_out = false;
     let waited: std::io::Result<std::process::ExitStatus> = loop {
         peak_rss = peak_rss.max(runner_stats(pgid, &mut cpu));
-        if let Some(i) = gpu.filter(|_| last_gpu.elapsed() >= Duration::from_secs(2)) {
+        if let Some(i) = cuda_gpu.filter(|_| last_gpu.elapsed() >= Duration::from_secs(2)) {
             last_gpu = Instant::now();
             if let Some(u) = gpu_mem_used(i) {
                 gpu_peak = Some(gpu_peak.map_or(u, |p| p.max(u)));
@@ -638,7 +805,10 @@ fn run_mode(
     let log_text = std::fs::read(&log)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
-    let (device, gpu_layers, device_lines) = llama_device(&log_text);
+    let (mut device, gpu_layers, device_lines) = llama_device(&log_text);
+    if device == "cuda" && matches!(gpu, Some(GpuDevice::Vulkan(_))) {
+        device = "vulkan".into();
+    }
     let stderr = std::fs::read(&stderr_path)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
@@ -722,14 +892,14 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
     let mut host = Host::default();
     boinc_info(work, &mut host, &mut diag);
     container_info(&mut host, &mut diag);
-    let gpu = gpu_info(&mut host, &mut diag);
+    let gpu = detect_gpu(&mut host, &mut diag);
     let visible = gpu.is_some();
     python_probe(&mut host, &mut diag);
     let gpu_version = host
         .plan_class
         .as_deref()
-        .is_some_and(|p| p.contains("cuda"))
-        || host.gpu_type.as_deref() == Some("nvidia");
+        .is_some_and(|p| p.contains("cuda") || p.contains("vulkan") || p.contains("intel"))
+        || matches!(host.gpu_type.as_deref(), Some("nvidia" | "intel"));
     let mut texts = BTreeMap::new();
     let mut runs = Vec::new();
     let (job_id, engine, unit_error) = match prepare(work) {
@@ -900,11 +1070,31 @@ pub(crate) mod tests {
         assert_eq!(d, "cuda");
         assert_eq!(o.as_deref(), Some("29/29 layers to GPU"));
         assert!(lines.contains("RTX 3060"));
+        let vk_log = "ggml_vulkan: Found 1 Vulkan devices:\nggml_vulkan: 0 = Intel(R) Iris(R) Xe Graphics (TGL GT2) (Mesa) | uma: 1\nload_backend: loaded Vulkan backend from /app/libggml-vulkan.so\nload_tensors: offloaded 37/37 layers to GPU\n";
+        let (vd, vo, vlines) = llama_device(vk_log);
+        assert_eq!(vd, "vulkan");
+        assert_eq!(vo.as_deref(), Some("37/37 layers to GPU"));
+        assert!(vlines.contains("Iris(R) Xe"));
         assert_eq!(
             llama_device("load_tensors: offloaded 0/29 layers to GPU\n").0,
             "cpu"
         );
         assert_eq!(llama_device("main: server is listening\n").0, "cpu");
+    }
+
+    #[test]
+    fn vulkan_list_devices_parses_and_filters_software() {
+        let out = "ggml_vulkan: Found 2 Vulkan devices:\nAvailable devices:\n  Vulkan0: Intel(R) Iris(R) Xe Graphics (TGL GT2) (23950 MiB, 23950 MiB free)\n  Vulkan1: llvmpipe (LLVM 19.1.7, 256 bits) (32000 MiB, 32000 MiB free)\n";
+        let devs = parse_vulkan_devices(out);
+        assert_eq!(
+            devs,
+            vec![VulkanDevice {
+                index: 0,
+                name: "Intel(R) Iris(R) Xe Graphics (TGL GT2)".into(),
+                total_mib: Some(23950),
+                free_mib: Some(23950),
+            }]
+        );
     }
 
     #[test]

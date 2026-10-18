@@ -1,6 +1,6 @@
 # Surya 2 on BOINC
 
-Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU and on NVIDIA GPUs, to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](boinc-assessment.md).
+Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](boinc-assessment.md).
 
 Status: a probe of a few pages, to find out whether volunteers' container runtimes can give the job a GPU, how long a page takes, and how far two hosts' texts agree. The larger sample comes after it.
 
@@ -20,18 +20,23 @@ Every result has five files: `text-tiled.txt`, `text-whole.txt`, `text-capped.tx
 
 ## The image
 
-`ocr/boinc/surya/Containerfile` builds one image for both app versions, on llama.cpp's CUDA server image, pinned by digest. That build loads its CUDA backend when the container can see an NVIDIA GPU and its CPU backends otherwise. On top of it are surya-ocr 0.22.1 in a Python virtual environment, with the CPU build of torch (torch only runs Surya's layout fallback; the OCR model runs in llama-server), and `usnm-boinc`, which runs the unit.
+`ocr/boinc/surya/Containerfile` builds two variants from the same pinned `llama.cpp` revision (`b11610`, commit `091b6a7fc561b78da90a0ed2d524ec995458c657`):
+- `LLAMA_VARIANT=cuda` (default): on `ghcr.io/ggml-org/llama.cpp:server-cuda`, which loads its CUDA backend when the container can see an NVIDIA GPU and its CPU backends otherwise (`docker_mt` and `docker_nvidia_cuda`).
+- `LLAMA_VARIANT=vulkan` (#842): on `ghcr.io/ggml-org/llama.cpp:server-vulkan`, which runs the OCR model on Intel Xe / Iris GPUs via Vulkan (`docker_intel_vulkan` / `intel_vulkan_8b`).
+
+On top of the base image are surya-ocr 0.22.1 in a Python virtual environment, with the CPU build of torch (`TORCH_DEVICE=cpu`; torch only runs Surya's layout fallback, while the OCR model runs in llama-server), and `usnm-boinc`, which runs the unit.
 
 The weights are in the image: Surya 2's GGUF model and vision projector, and the layout model, at the revisions round 1 used. `ocr/boinc/surya/weights.lock` pins each file's URL and sha256, and the build checks them. Datalab's licence (a modified Open RAIL-M) requires a copy with every distribution of the weights, and notice of its use-based restrictions, so the image carries `LICENSE` beside the weights (`/opt/surya/models/LICENSE`) and a `NOTICE`. The image records its llama.cpp base, Surya version and weights lock digest as `USNM_SURYA_LLAMA_IMAGE`, `USNM_SURYA_VERSION` and `USNM_SURYA_WEIGHTS`; a unit carries the same three values and the host refuses a unit staged for another build.
 
-The image is several GB (the weights alone are 1.6 GB), which a volunteer downloads once per image version. `.github/workflows/boinc-surya.yml` builds it, checks that it reads a rendered line on CPU, and, when started by hand on main, pushes it to the public package `ghcr.io/tgoodyear/usnm-boinc-worker` with the tag `surya-<commit>`. The run's summary gives the digest and the values to stage with.
+The image is several GB (the weights alone are 1.6 GB), which a volunteer downloads once per image version. `.github/workflows/boinc-surya.yml` builds both `cuda` and `vulkan` variants, checks that each reads a rendered line on CPU, and, when started by hand on main, pushes them to the public package `ghcr.io/tgoodyear/usnm-boinc-worker` with the tags `surya-<commit>` and `surya-vulkan-<commit>`. The run's summary gives each digest and the values to stage with.
 
 ## App versions and plan classes
 
-| Version | Plan class           | Sent to                                                                                                                                        | Container                                                                        |
-| ------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| 1.0     | `docker_mt`          | hosts with Docker or Podman and at least 4 usable CPUs; 4 to 8 threads                                                                         | `--cpus` from the thread count, 12 GiB, no swap (`ocr/boinc/surya/job-cpu.toml`) |
-| 1.1     | `docker_nvidia_cuda` | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory | `--gpus all`, 2 CPUs, 8 GiB, no swap (`job-gpu.toml`)                            |
+| Version | Plan class            | Sent to                                                                                                                                        | Container                                                                                                 |
+| ------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| 1.0     | `docker_mt`           | hosts with Docker or Podman and at least 4 usable CPUs; 4 to 8 threads                                                                         | `--cpus` from the thread count, 12 GiB, no swap (`ocr/boinc/surya/job-cpu.toml`)                          |
+| 1.1     | `docker_nvidia_cuda`  | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory | `--gpus all`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-gpu.toml`)                                     |
+| 1.x     | `docker_intel_vulkan` | hosts with Docker or Podman whose client reports an Intel OpenCL GPU with at least 4,096 MB of memory (#842)                                   | `use_gpu = false`, `--device=/dev/dri/renderD128`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-intel.toml`) |
 
 Both classes need client 8.2.13 or later and are in `contrib-compute/boinc/plan_class_spec.xml`. The scheduler sends a host the version it expects to be fastest, so a host with a qualifying GPU gets the GPU version.
 

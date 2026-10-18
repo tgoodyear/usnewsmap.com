@@ -102,18 +102,18 @@ def collect(root, seen, out, binary, intended_device):
         checked(unit, "page.jpg", row["image_sha256"])
         checked(unit, "reference.txt", row["reference_sha256"])
         jobs[job["id"]] = (row, job)
-    if intended_device not in ("cpu", "cuda"):
-        raise ValueError("intended device must be cpu or cuda")
+    if intended_device not in ("cpu", "cuda", "vulkan"):
+        raise ValueError("intended device must be cpu, cuda or vulkan")
     target = json.loads((root / "target-host.json").read_bytes())
     if (not isinstance(target, list) or len(target) != 2 or type(target[0]) is not int
             or target[0] <= 0 or type(target[1]) is not bool):
         raise ValueError("targeted collection requires the persisted target policy")
     target_host, gpu_probe = target
-    if gpu_probe and intended_device != "cuda":
-        raise ValueError("GPU-only target policy requires intended CUDA device")
+    if gpu_probe and intended_device not in ("cuda", "vulkan"):
+        raise ValueError("GPU-only target policy requires intended CUDA or Vulkan device")
     outputs = {(intended_device, mode, row["group"]): {}
                for row, job in jobs.values()
-               for mode in job["gpu_modes" if intended_device == "cuda" else "cpu_modes"]}
+               for mode in job["gpu_modes" if intended_device in ("cuda", "vulkan") else "cpu_modes"]}
     records, returned = [], set()
     for directory in sorted(seen.iterdir()) if seen.exists() else []:
         path = directory / "result.json"
@@ -138,7 +138,7 @@ def collect(root, seen, out, binary, intended_device):
                             "unit_error": result["unit_error"]})
         for run in result["runs"]:
             mode, device = run["mode"], run["device"]
-            if mode not in MODES or device not in ("cpu", "cuda", "none"):
+            if mode not in MODES or device not in ("cpu", "cuda", "vulkan", "none"):
                 raise ValueError("unexpected mode/device")
             records.append({"sample_id": row["sample_id"], "result": directory.name, **run})
             key = (device, mode, row["group"])
@@ -171,7 +171,7 @@ def main():
     export.add_argument("--seen", type=Path, required=True)
     export.add_argument("--out", type=Path, required=True)
     export.add_argument("--binary", default="usnm-boinc")
-    export.add_argument("--intended-device", choices=("cpu", "cuda"), required=True)
+    export.add_argument("--intended-device", choices=("cpu", "cuda", "vulkan"), required=True)
     args = parser.parse_args()
     result = prepare(args.release, args.out) if args.command == "prepare" else collect(args.root, args.seen, args.out, args.binary, args.intended_device)
     print(json.dumps(result, indent=2))

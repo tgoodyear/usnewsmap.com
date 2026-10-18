@@ -22,13 +22,70 @@ the inference settings, without loading a model.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 
 TILE, OVERLAP = 1280, 256
 CAPPED_LONG_SIDE = 2048
+VULKAN_DEVICE_LINE = re.compile(r"^\s*(Vulkan[0-9]+):\s*(.+?)\s*$")
+SOFTWARE_VULKAN = ("llvmpipe", "lavapipe", "swiftshader", "software")
+
+
+def list_vulkan_devices(llama_binary: str | None = None, dri_root: str = "/dev/dri") -> list[tuple[str, str]]:
+    """Return hardware `(VulkanN, description)` pairs from `llama-server --list-devices` when `/dev/dri/renderD*` exists."""
+    if not glob.glob(os.path.join(dri_root, "renderD*")):
+        return []
+    binary = llama_binary or os.environ.get("LLAMA_CPP_BINARY", "/app/llama-server")
+    try:
+        res = subprocess.run([binary, "--list-devices"], capture_output=True, text=True, timeout=15, check=False)
+    except OSError, subprocess.SubprocessError:
+        return []
+    if res.returncode != 0:
+        return []
+    devices: list[tuple[str, str]] = []
+    for line in (res.stdout + "\n" + res.stderr).splitlines():
+        m = VULKAN_DEVICE_LINE.match(line)
+        if not m:
+            continue
+        name, desc = m.group(1), m.group(2)
+        low = desc.lower()
+        if any(sw in low for sw in SOFTWARE_VULKAN):
+            continue
+        devices.append((name, desc))
+    return devices
+
+
+def detect_device(
+    backend: str | None = None,
+    *,
+    llama_binary: str | None = None,
+    dri_root: str = "/dev/dri",
+) -> str:
+    """Report the llama-server inference device (`cuda`, `vulkan`, or `cpu`).
+
+    PyTorch layout fallback always stays on CPU (`TORCH_DEVICE=cpu`); this reports
+    the `llama-server` OCR device.
+    """
+    active_backend = (backend or os.environ.get("USNM_SURYA_BACKEND") or "cuda").strip().lower()
+    if active_backend == "vulkan":
+        if list_vulkan_devices(llama_binary=llama_binary, dri_root=dri_root):
+            return "vulkan"
+        return "cpu"
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:  # noqa: BLE001
+        pass
+    if list_vulkan_devices(llama_binary=llama_binary, dri_root=dri_root):
+        return "vulkan"
+    return "cpu"
 
 
 def tiles(w: int, h: int, size: int = TILE, overlap: int = OVERLAP):
@@ -56,7 +113,14 @@ def inside(core, cx: float, cy: float) -> bool:
 
 
 def probe() -> int:
-    info = {"python": sys.version.split()[0]}
+    backend = os.environ.get("USNM_SURYA_BACKEND", "cuda")
+    vulkan_devs = list_vulkan_devices()
+    info = {
+        "backend": backend,
+        "device": detect_device(backend),
+        "python": sys.version.split()[0],
+        "vulkan_devices": [f"{name}: {desc}" for name, desc in vulkan_devs],
+    }
     try:
         import torch
 
@@ -173,7 +237,15 @@ def main() -> int:
         f.write("\n".join(lines))
     os.replace(tmp, a.out)
     with open(a.stats, "w") as f:
-        json.dump({"blocks": len(lines), "seconds": round(time.monotonic() - started, 2), "tiles": n}, f)
+        json.dump(
+            {
+                "blocks": len(lines),
+                "device": detect_device(),
+                "seconds": round(time.monotonic() - started, 2),
+                "tiles": n,
+            },
+            f,
+        )
     return 0
 
 
