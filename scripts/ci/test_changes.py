@@ -382,9 +382,8 @@ class BuildInputs(unittest.TestCase):
             if text is not None:
                 file.write_text(text)
             else:
-                mark = "#" if path.endswith((".toml", ".yml", ".py", ".sh")) else "//"
                 with file.open("a") as h:
-                    h.write(f"\n{mark} touched\n")
+                    h.write("\n")
         after = self.commit("change")
         out = self.tmp / "out"
         out.write_text("")
