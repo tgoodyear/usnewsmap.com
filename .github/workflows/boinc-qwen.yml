@@ -28,6 +28,15 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".dockerignore"
+      # Files the crates it builds embed (scripts/ci/changes.sh finds them).
+      - "catalog/**"
+      - "fixtures/ocr-gold/bundle-v1.lock.json"
+      - "infra/quickwit/**"
+      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "ocr/engines/engines.toml"
+      - "ocr/engines/ndlocr-lite/models.lock"
+      - "ocr/engines/tesseract/models.lock"
+      - "ocr/routing/routes.toml"
       - "!**/*.md"
 
 permissions:
@@ -41,10 +50,27 @@ env:
   IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
 
 jobs:
+  # Whether this change touches what the image is built from (scripts/ci/changes.sh):
+  # a crate counts when the image builds it, not for being under crates/.
+  # Not named `changes`: ci.yml's required check has that name.
+  inputs:
+    name: qwen worker image inputs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.f.outputs.boinc_qwen }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: f
+        run: scripts/ci/changes.sh
   # Pull requests: build and check only, with a read-only token.
   check:
     name: qwen worker image (build)
-    if: github.event_name == 'pull_request'
+    needs: inputs
+    if: github.event_name == 'pull_request' && needs.inputs.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
