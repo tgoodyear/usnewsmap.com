@@ -1,0 +1,233 @@
+{
+  "format": "usnm-ocr-bench-effocr-adapter-v1",
+  "release": "v1.0.0",
+  "release_content_digest": "c5e38736b6e60610ef0dbe6d8296c3dc58f8a945d6e1cfea5aa47b03fb163800",
+  "subset": "overproof-en/smoke-10",
+  "subset_digest": "e4256f3e6c9ae9e0453e74d7b38c5c862e8265ab88a50ca95dd3fbfd8fd10576",
+  "samples": [
+    {
+      "id": "pub-overproof-ca-013",
+      "image": "images/pub-overproof-ca-013.jpg",
+      "image_sha256": "d9f5eaf75fcee194636f7b02e3fe1ee79a378bf3c9e321fa4a98d0aa5dcaf520",
+      "image_width": 823,
+      "image_height": 416,
+      "reference": "references/pub-overproof-ca-013.txt",
+      "reference_sha256": "aed6a7bcf582196a9f5030d15c26acd2710e780571031bcf127d23e4cedfe041"
+    },
+    {
+      "id": "pub-overproof-ca-017",
+      "image": "images/pub-overproof-ca-017.jpg",
+      "image_sha256": "2062e3b0c407a74adfaa6d44953d162ed00a8647c4d789ecf0fbf42558b36276",
+      "image_width": 688,
+      "image_height": 293,
+      "reference": "references/pub-overproof-ca-017.txt",
+      "reference_sha256": "ae53a40048c7cda985cf3acfdd77ec1da2d0d53d837117f7153ee5d87709cb27"
+    },
+    {
+      "id": "pub-overproof-ca-022",
+      "image": "images/pub-overproof-ca-022.jpg",
+      "image_sha256": "4fafc4e340b64754597726d948ab923d4e50200c0580d56dcdf6a04a932220ef",
+      "image_width": 648,
+      "image_height": 312,
+      "reference": "references/pub-overproof-ca-022.txt",
+      "reference_sha256": "545ae79761a9b8389e9e3d5dc3933d382287858ee764ce5704d7a8c5ca011710"
+    },
+    {
+      "id": "pub-overproof-ca-034",
+      "image": "images/pub-overproof-ca-034.jpg",
+      "image_sha256": "2b34a5c1a2661d2ee68f9e34266127213340550a7191b25ab1980925409b8efb",
+      "image_width": 832,
+      "image_height": 415,
+      "reference": "references/pub-overproof-ca-034.txt",
+      "reference_sha256": "173bac258f565604a4e037bd0ebf4cc89dcfefe84f30ac75d186c88f7be5da7d"
+    },
+    {
+      "id": "pub-overproof-ca-039",
+      "image": "images/pub-overproof-ca-039.jpg",
+      "image_sha256": "81881ecc772a0577c4408a7114283c1103cfa7075eacfe23e603fcdc34199673",
+      "image_width": 646,
+      "image_height": 367,
+      "reference": "references/pub-overproof-ca-039.txt",
+      "reference_sha256": "2892cb997fb4bcdaa3e60d3e25fe39a469c276d350983c08a4b3483c943779c0"
+    },
+    {
+      "id": "pub-overproof-ca-042",
+      "image": "images/pub-overproof-ca-042.jpg",
+      "image_sha256": "d4fbd7d26ed6b72c9aec0963f0bc8520689c1c0aba70b8a499aedc70deb3ec3d",
+      "image_width": 657,
+      "image_height": 376,
+      "reference": "references/pub-overproof-ca-042.txt",
+      "reference_sha256": "a96d8e614663dba0f6c73daebdd1309e4be2a45f05fc1528fbabb8c16e8bbf55"
+    },
+    {
+      "id": "pub-overproof-ca-044",
+      "image": "images/pub-overproof-ca-044.jpg",
+      "image_sha256": "939bad52dcc743ad162cd142c0b14d82dec7092d572986779d81b7c92c885e92",
+      "image_width": 859,
+      "image_height": 467,
+      "reference": "references/pub-overproof-ca-044.txt",
+      "reference_sha256": "62d9fd3c823323c1aa7175f18d2a18dd1a9de5139094a5a47658d9fac2015125"
+    },
+    {
+      "id": "pub-overproof-ca-068",
+      "image": "images/pub-overproof-ca-068.jpg",
+      "image_sha256": "ab843bc62f1ffb97ea5618d286a6dd4d7dd7141c6525518645e2b63839e3db4b",
+      "image_width": 658,
+      "image_height": 408,
+      "reference": "references/pub-overproof-ca-068.txt",
+      "reference_sha256": "c9ee27d445dfe9bdd74a2556055d0acfe1ff7068f0c21ea8f1f7188ca38bebbc"
+    },
+    {
+      "id": "pub-overproof-ca-073",
+      "image": "images/pub-overproof-ca-073.jpg",
+      "image_sha256": "a44b00575c2a01a44429a2f733fe3afbf567044466de98eba448fd00d081cdc5",
+      "image_width": 646,
+      "image_height": 300,
+      "reference": "references/pub-overproof-ca-073.txt",
+      "reference_sha256": "4781955a34a3c387f1b681e18e79027c1912f3c580b0f90451f3164e9240bfd4"
+    },
+    {
+      "id": "pub-overproof-ca-075",
+      "image": "images/pub-overproof-ca-075.jpg",
+      "image_sha256": "ce8e18e3343b40c0cddb5dd262ab285e0cc888d2682c9c0e6c82dcd7de290019",
+      "image_width": 649,
+      "image_height": 357,
+      "reference": "references/pub-overproof-ca-075.txt",
+      "reference_sha256": "59404c6dd5c86364ee4fd1127a8613981c60514e02950c3f6588109d49751578"
+    }
+  ],
+  "model_used": "effocr_en",
+  "model_repositories": {
+    "effocr_en": {
+      "repo": "dell-research-harvard/effocr_en",
+      "revision": "2eafb831e8d55d2cc9427d5f20257886cb317d55",
+      "files": [
+        {
+          "path": "char_recognizer/enc_best.onnx",
+          "bytes": 2275198,
+          "sha256": "51e0483f6a27b70d2ba7b629073219566a9ee239e4c9bb1a87a14f8a7d5cc050"
+        },
+        {
+          "path": "char_recognizer/ref.index",
+          "bytes": 372781,
+          "sha256": "adc38f321c25ae76bc2e9d82795860fbad7ee3bc0334e3defa23d1398b173475"
+        },
+        {
+          "path": "char_recognizer/ref.txt",
+          "bytes": 181,
+          "sha256": "755854ec2b5e6f4e97ddc17d3f199a2c5d0cb4fbbe423480c14c3770f0cf3db7"
+        },
+        {
+          "path": "line.onnx",
+          "bytes": 44696464,
+          "sha256": "4bb5d8a64203b38bb6edabe9a6bb7a3c3366880db16a54b0c6c548f800845d2a"
+        },
+        {
+          "path": "localizer.onnx",
+          "bytes": 10209058,
+          "sha256": "c3c2c13d64668a5e18837ebf7089a6885bb04156b8674c14a2f17281eb73a7c4"
+        },
+        {
+          "path": "word_recognizer/enc_best.onnx",
+          "bytes": 2275198,
+          "sha256": "2a60332959f8cd9eacf8e787a63bda53135d19af4661d516577caae9f6444b24"
+        },
+        {
+          "path": "word_recognizer/ref.index",
+          "bytes": 271761453,
+          "sha256": "ef949e6852dc239b09f9f77a2cd46a823617be7b3aa446c366f95c573876cce9"
+        },
+        {
+          "path": "word_recognizer/ref.txt",
+          "bytes": 1629982,
+          "sha256": "20cf4c52ec71414ac3bdbb06455dbe5c532276381a3cfcb2fc90df7f6a26c061"
+        }
+      ],
+      "file_tree_sha256": "4a5b796ebc7c72bb8295055db0677807805920069897834c45489a7cbb173a24",
+      "license_tag": null,
+      "model_card_license": null
+    },
+    "effocr_demo": {
+      "repo": "dell-research-harvard/effocr_demo",
+      "revision": "b50b4b1b5d93aebd35454dd937794236f9d54d62",
+      "files": [
+        {
+          "path": "best.pt",
+          "bytes": 14283453,
+          "sha256": "c42dd1c34c96d1f4671ab3e14be2e434543832ee0f4acdeea24cb7a5a0a00425"
+        },
+        {
+          "path": "enc_best.pth",
+          "bytes": 4689733,
+          "sha256": "a9f68928ee74326ef1ab6df84256f2da47ea9ee4a41fcc988e974ada5c306396"
+        },
+        {
+          "path": "ref.index",
+          "bytes": 9231981,
+          "sha256": "8e329460cf2d2754ed6844a2088caaa41d8ea56b115e35df673646879af33c21"
+        },
+        {
+          "path": "ref.txt",
+          "bytes": 55230,
+          "sha256": "9b81febfa3f617d9ee5496ef02a78fa547a1c7cf68d38792e5a9a4a8e30a7d79"
+        },
+        {
+          "path": "sample_viz.jpg",
+          "bytes": 870109,
+          "sha256": "656af055536faa1cf5724d619338d61440ee857c44c28a743556740e096bec14"
+        },
+        {
+          "path": "tk_enc_best.pth",
+          "bytes": 4690213,
+          "sha256": "4f9eb21cf69214271039aa17957c0d95030744bca755917fa8b7e400b76d521f"
+        }
+      ],
+      "file_tree_sha256": "443979ba9f187ce5ff2b6061fdc588ec0911906f10994311ef4956f685d961f1",
+      "license_tag": null,
+      "model_card_license": null
+    }
+  },
+  "effocr_source": {
+    "repo": "dell-research-harvard/efficient_ocr",
+    "revision": "e38da3cd0b614cf13ba4c148bab5b37aeec3db7d",
+    "license": "Apache-2.0",
+    "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "distribution": "efficient_ocr 0.1.1"
+  },
+  "rights": {
+    "checkpoint_license_tag": "absent on both HF model cards (cardData null; no license tag)",
+    "checkpoint_license_basis": "Maintainer decision 2026-10-18 authorizes research-licensed checkpoints for benchmarking/full OCR; project is explicitly noncommercial/research only; source repository is Apache-2.0. No separate model checkpoint license or output-redistribution restriction was found in checkpoint metadata.",
+    "output_redistribution": "No additional output-redistribution prohibition identified; benchmark source licenses remain applicable."
+  },
+  "inference": {
+    "backend": "EffOCR official package pipeline using pinned ONNX localizer, line detector, word and character recognizers",
+    "providers": [
+      "CPUExecutionProvider"
+    ],
+    "threads": 4,
+    "word_similarity_threshold": 0.83,
+    "post_correction": "none",
+    "faiss_compatibility_adapter": "The upstream Torch-tensor Faiss IndexFlatIP search segfaulted in the mixed Apple arm64 CPU runtime. The exact pinned index vectors are reconstructed in a separate FAISS-only process; NumPy float32 inner-product search reproduces FAISS top-1 IDs and scores for four deterministic equivalence queries per index. No embeddings, reference vectors, thresholds, models, or preprocessing are changed."
+  },
+  "runtime": {
+    "python": "3.11.8",
+    "packages": {
+      "efficient-ocr": "0.1.1",
+      "faiss-cpu": "1.15.1",
+      "huggingface-hub": "0.24.7",
+      "numpy": "2.4.6",
+      "onnx": "1.23.2",
+      "onnxruntime": "1.31.0",
+      "opencv-python": "5.0.0.93",
+      "Pillow": "13.0.0",
+      "pytorch-metric-learning": "1.6.3",
+      "setuptools": "80.10.2",
+      "timm": "1.0.30",
+      "torch": "2.14.1",
+      "torchvision": "0.29.1",
+      "yolov5": "7.0.10"
+    },
+    "requirements_lock": "scripts/ocr-bench/effocr-runtime.lock",
+    "requirements_lock_sha256": "9c4224d7c9d0342b1714cf0622fd65b0fd50a681e1495ea92104bcff0ada2650"
+  }
+}

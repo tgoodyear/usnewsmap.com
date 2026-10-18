@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from churro_trial import score_text
+from churro_trial import collect_samples, score_text
 
 
 class ChurroScoreTextTests(unittest.TestCase):
@@ -38,6 +38,36 @@ class ChurroScoreTextTests(unittest.TestCase):
             score_text(raw),
             ("Tom Jerry", "xml-page-text-metadata-excluded-lines-v2"),
         )
+
+
+    def test_trims_line_boundary_indentation_but_keeps_inline_spaces(self) -> None:
+        raw = (
+            "<Document><Page>\n"
+            "  <Line>\n  <Word>Tom</Word>   <Word>Jerry</Word>\n</Line>\n"
+            "  <Line>\n    and friends  \n</Line>\n"
+            "</Page></Document>"
+        )
+
+        self.assertEqual(
+            score_text(raw),
+            ("Tom Jerry\nand friends", "xml-page-text-metadata-excluded-lines-v2"),
+        )
+
+    def test_preserves_completed_outputs_when_later_sample_fails(self) -> None:
+        samples = [{"id": "first"}, {"id": "broken"}, {"id": "not-run"}]
+
+        def infer_one(_index: int, sample: dict[str, str]) -> tuple[str, int | None]:
+            if sample["id"] == "broken":
+                raise RuntimeError("failure details are intentionally not included in receipts")
+            return f"<Line>{sample['id']}</Line>", 1
+
+        raw_rows, scored_rows, _timings, _statuses, failures = collect_samples(samples, infer_one)
+
+        self.assertEqual(raw_rows, [{"id": "first", "text": "<Line>first</Line>"}])
+        self.assertEqual(scored_rows, [{"id": "first", "text": "first"}])
+        self.assertEqual([(row["id"], row["error_type"]) for row in failures], [("broken", "RuntimeError")])
+        self.assertIsInstance(failures[0]["elapsed_seconds"], float)
+        self.assertEqual(len(scored_rows), 1)
 
     def test_invalid_xml_uses_trimmed_raw_output(self) -> None:
         self.assertEqual(score_text("  not XML  "), ("not XML", "unparsed-raw-fallback"))

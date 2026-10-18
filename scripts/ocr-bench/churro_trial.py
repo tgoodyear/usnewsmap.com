@@ -10,13 +10,14 @@ import json
 import math
 import os
 import platform
+import re
 import resource
 import statistics
 import subprocess
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 MODEL_ID = "stanford-oval/churro-3B"
 MODEL_REVISION = "ca2150ea465d5a3d67818c50e234b9422619c75d"
@@ -57,34 +58,76 @@ def score_text(raw: str) -> tuple[str, str]:
         return raw.strip(), "unparsed-raw-fallback"
     chunks: list[str] = []
 
-    def append_text(value: str | None, *, preserve_spaces: bool = False) -> None:
-        if not value:
-            return
-        if preserve_spaces and value.isspace():
-            chunks.append(" ")
-        elif value.strip():
+    def append_text(value: str | None) -> None:
+        if value and value.strip():
             chunks.append(value)
 
     def append_newline() -> None:
         if chunks and chunks[-1] != "\n":
             chunks.append("\n")
 
-    def walk(node: ET.Element, *, inside_line: bool = False) -> None:
+    def line_text(node: ET.Element) -> str:
+        parts: list[str] = []
+
+        def collect(element: ET.Element) -> None:
+            if element.tag.rsplit("}", 1)[-1].lower() == "metadata":
+                return
+            if element.text:
+                parts.append(element.text)
+            for child in element:
+                collect(child)
+                if child.tail:
+                    parts.append(child.tail)
+
+        collect(node)
+        return re.sub(r"\s+", " ", "".join(parts)).strip()
+
+    def walk(node: ET.Element) -> None:
         local_name = node.tag.rsplit("}", 1)[-1].lower()
         if local_name == "metadata":
             return
-        inside_line = inside_line or local_name == "line"
-        append_text(node.text, preserve_spaces=inside_line)
+        if local_name == "line":
+            append_text(line_text(node))
+            return
+        append_text(node.text)
         for child in node:
             child_name = child.tag.rsplit("}", 1)[-1].lower()
             if child_name != "metadata":
-                walk(child, inside_line=inside_line)
+                walk(child)
                 if child_name in BLOCK_ELEMENTS:
                     append_newline()
-            append_text(child.tail, preserve_spaces=inside_line)
+            append_text(child.tail)
 
     walk(root)
     return "".join(chunks).strip(), "xml-page-text-metadata-excluded-lines-v2"
+
+
+def collect_samples(
+    samples: list[dict[str, Any]],
+    infer_one: Callable[[int, dict[str, Any]], tuple[str, int | None]],
+) -> tuple[list[dict[str, str]], list[dict[str, str]], list[float], list[str], list[dict[str, str | float]]]:
+    raw_rows: list[dict[str, str]] = []
+    scored_rows: list[dict[str, str]] = []
+    timings: list[float] = []
+    parse_statuses: list[str] = []
+    failures: list[dict[str, str | float]] = []
+    for index, sample in enumerate(samples):
+        started = time.monotonic()
+        try:
+            text, generated_tokens = infer_one(index, sample)
+            scored_text, parse_status = score_text(text)
+        except Exception as error:
+            elapsed = time.monotonic() - started
+            failures.append({"id": sample["id"], "error_type": type(error).__name__, "elapsed_seconds": round(elapsed, 3)})
+            print(f"{index + 1}/{len(samples)} {sample['id']} failed ({type(error).__name__}); preserving completed outputs", flush=True)
+            break
+        elapsed = time.monotonic() - started
+        timings.append(elapsed)
+        parse_statuses.append(parse_status)
+        raw_rows.append({"id": sample["id"], "text": text})
+        scored_rows.append({"id": sample["id"], "text": scored_text})
+        print(f"{index + 1}/{len(samples)} {sample['id']} {elapsed:.3f}s generated_tokens={generated_tokens}", flush=True)
+    return raw_rows, scored_rows, timings, parse_statuses, failures
 
 
 def command_output(argv: list[str]) -> str | None:
@@ -236,25 +279,17 @@ def run() -> None:
         return output
 
     hf_module._generate_with_model = measured_generate
-    raw_rows = []
-    scored_rows = []
-    timings = []
-    parse_statuses = []
+    def infer_sample(index: int, sample: dict[str, Any]) -> tuple[str, int | None]:
+        generation_count = len(generations)
+        page = client.ocr_image(image_path=args.image_dir / sample["image"], page_index=index)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        generated_tokens = generations[-1]["generated_tokens"] if len(generations) > generation_count else None
+        return page.text or "", generated_tokens
+
     wall_started = time.monotonic()
     try:
-        for index, sample in enumerate(supplied):
-            started = time.monotonic()
-            page = client.ocr_image(image_path=args.image_dir / sample["image"], page_index=index)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            elapsed = time.monotonic() - started
-            text = page.text or ""
-            scored_text, parse_status = score_text(text)
-            timings.append(elapsed)
-            parse_statuses.append(parse_status)
-            raw_rows.append({"id": sample["id"], "text": text})
-            scored_rows.append({"id": sample["id"], "text": scored_text})
-            print(f"{index + 1}/{len(supplied)} {sample['id']} {elapsed:.3f}s generated_tokens={generations[-1]['generated_tokens']}", flush=True)
+        raw_rows, scored_rows, timings, parse_statuses, sample_failures = collect_samples(supplied, infer_sample)
     finally:
         hf_module._generate_with_model = generate
     wall_seconds = time.monotonic() - wall_started
@@ -319,6 +354,9 @@ def run() -> None:
         "ocr_loop_wall_seconds": round(wall_seconds, 3),
         "samples": len(scored_rows),
         "missing_outputs": len(supplied) - len(scored_rows),
+        "complete": not sample_failures,
+        "sample_failures": sample_failures,
+        "failure_handling": "stop at first inference exception, preserve completed outputs and receipt, no retries",
         "blank_outputs": sum(not row["text"].strip() for row in scored_rows),
         "xml_extraction_status_counts": {status: parse_statuses.count(status) for status in sorted(set(parse_statuses))},
         "generation_tokens": generations,
@@ -333,6 +371,8 @@ def run() -> None:
         "benchmark_source_licenses": "As recorded in the verified v1.0.0 manifest.",
     }
     write_json(out_dir / "run.json", receipt)
+    if sample_failures:
+        raise SystemExit(f"partial run saved for {len(scored_rows)} completed samples; see run.json for the failed sample")
     print(f"completed {len(scored_rows)} samples in {wall_seconds:.3f}s; scores={scored_path}", flush=True)
 
 
