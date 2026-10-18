@@ -241,7 +241,7 @@ build_worker_in_acr() {
     echo "usnm-boinc-tesseract:$engine_key is in $registry"
   else
     echo "building usnm-boinc-tesseract:$engine_key in $registry"
-    acr_build_verified baz "$registry" "usnm-boinc-tesseract:$engine_key" 7200 --platform linux/amd64 \
+    acr_build_verified baz_build "$registry" "usnm-boinc-tesseract:$engine_key" 7200 --platform linux/amd64 \
       --file ocr/engines/tesseract/Containerfile ocr/engines/tesseract || die "the engine image build failed"
   fi
   engine_ref="$registry.azurecr.io/usnm-boinc-tesseract@$(digest usnm-boinc-tesseract "$engine_key")"
@@ -249,7 +249,7 @@ build_worker_in_acr() {
     echo "usnm-boinc-worker:$worker_key is in $registry"
   else
     echo "building usnm-boinc-worker:$worker_key in $registry (usnm-boinc release build: about 10 minutes)"
-    acr_build_verified baz "$registry" "usnm-boinc-worker:$worker_key" 7200 --platform linux/amd64 \
+    acr_build_verified baz_build "$registry" "usnm-boinc-worker:$worker_key" 7200 --platform linux/amd64 \
       --build-arg "TESSERACT_IMAGE=$engine_ref" --file ocr/boinc/Containerfile . ||
       die "the worker image build failed"
   fi
@@ -427,7 +427,7 @@ elif [ -f "$work/wrapper" ]; then
   appver_wrapper_pin=/opt/usnm-appver-build/wrapper-candidate/wrapper.pin
 fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
-acr_build_verified baz "$registry" "$APPVER_REPO:$APPVER_TAG" 1800 --platform linux/amd64 \
+acr_build_verified baz_build "$registry" "$APPVER_REPO:$APPVER_TAG" 1800 --platform linux/amd64 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
   --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \
   --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin" \

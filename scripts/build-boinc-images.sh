@@ -88,7 +88,7 @@ if have usnm-boinc-base "$base_key"; then
   echo "usnm-boinc-base:$base_key is in $registry; not rebuilding BOINC"
 else
   echo "building usnm-boinc-base:$base_key in $registry (BOINC from source: about 20 minutes)"
-  acr_build_verified baz "$registry" "usnm-boinc-base:$base_key" 7200 --platform linux/amd64 \
+  acr_build_verified baz_build "$registry" "usnm-boinc-base:$base_key" 7200 --platform linux/amd64 \
     --file contrib-compute/images/base/Containerfile . ||
     die "the base image build failed"
 fi
@@ -98,21 +98,21 @@ if have usnm-boinc-bridge-bin "$bin_key"; then
   echo "usnm-boinc-bridge-bin:$bin_key is in $registry; not recompiling usnm-boinc"
 else
   echo "building usnm-boinc-bridge-bin:$bin_key in $registry (release build: about 10 minutes)"
-  acr_build_verified baz "$registry" "usnm-boinc-bridge-bin:$bin_key" 7200 --platform linux/amd64 \
+  acr_build_verified baz_build "$registry" "usnm-boinc-bridge-bin:$bin_key" 7200 --platform linux/amd64 \
     --file contrib-compute/images/bridge-bin/Containerfile . ||
     die "the bridge binary build failed"
 fi
 bin_image="$registry.azurecr.io/usnm-boinc-bridge-bin@$(digest usnm-boinc-bridge-bin "$bin_key")"
 
 echo "building usnm-boinc-server:$sha in $registry"
-acr_build_verified baz "$registry" "usnm-boinc-server:$sha" 1800 --platform linux/amd64 \
+acr_build_verified baz_build "$registry" "usnm-boinc-server:$sha" 1800 --platform linux/amd64 \
   --build-arg "BASE_IMAGE=$base_image" --file contrib-compute/images/server/Containerfile contrib-compute ||
   die "the server image build failed"
 server_image="$server@$(digest usnm-boinc-server "$sha")"
 echo "server image $server_image"
 
 echo "building usnm-boinc-bridge:$sha in $registry"
-acr_build_verified baz "$registry" "usnm-boinc-bridge:$sha" 1800 --platform linux/amd64 \
+acr_build_verified baz_build "$registry" "usnm-boinc-bridge:$sha" 1800 --platform linux/amd64 \
   --build-arg "SERVER_IMAGE=$server_image" --build-arg "BIN_IMAGE=$bin_image" \
   --file contrib-compute/images/bridge/Containerfile . ||
   die "the bridge image build failed"
