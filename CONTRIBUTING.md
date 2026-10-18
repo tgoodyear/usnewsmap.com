@@ -6,7 +6,7 @@ The [design documents](docs/design/README.md) explain how the system works and w
 
 ## Run the checks
 
-[`contrib-compute/`](contrib-compute/README.md) holds the shell, XML and Bicep that host a stock BOINC server, and has no Rust; CI checks it when a pull request touches it, and its README lists those checks. CI runs the Rust checks when a pull request touches Rust code and the web checks when it touches the web app (`scripts/ci/changes.sh`). A pull request that only changes documentation (Markdown anywhere, or anything under `docs/`) runs none of this workflow's checks beyond the `changes` job itself and, when it changes Markdown, the format check (`npm run format:check`). CodeQL (`.github/workflows/codeql.yml`) analyses only the languages a pull request touches (`scripts/ci/codeql-languages.sh`), so a change to only HTML, CSS, Markdown, Bicep or JSON data runs no analysis; `package.json`, lock files and `tsconfig*.json` count as JavaScript. Every language runs on main weekly. Run the ones that apply before you push:
+[`contrib-compute/`](contrib-compute/README.md) holds the shell, XML and Bicep that host a stock BOINC server, and has no Rust; CI checks it when a pull request touches it, and its README lists those checks. CI runs the Rust checks when a pull request touches Rust code and the web checks when it touches the web app (`scripts/ci/changes.sh`). The BOINC worker, Qwen, Surya and NDLOCR-Lite image workflows, the native apps' workflow and the dashboard workflow start from their own `paths:` filters and then build only when something they build changed: a workspace crate they depend on, a file such a crate embeds with `include_str!` or `include_bytes!`, a file their own recipe reads, the Rust toolchain file, or a change to what Cargo resolves for those crates across all targets (including non-host native builds), using release-only dependencies for release binaries and dev dependencies for tests/examples. The OCR worker's EL9 build in `ci.yml` uses the same test. A change confined to `src/` and `tests/` in `crates/usnm-ocr-dash` (the LAN dashboard) builds the dashboard but not the worker, skips the BOINC image workflows and the RHEL 10 and Tesseract check, and skips the infra job's Bicep, naming, workbook and script-test steps; the shared-key and named-argument scans still run. On main, a dashboard change still builds both binaries, runs the RHEL 10 and Tesseract check and publishes the OCR worker release, which holds both. A pull request that only changes documentation (Markdown anywhere, or anything under `docs/`) runs none of this workflow's checks beyond the `changes` job itself and, when it changes Markdown, the format check (`npm run format:check`). CodeQL (`.github/workflows/codeql.yml`) analyses only the languages a pull request touches (`scripts/ci/codeql-languages.sh`), so a change to only HTML, CSS, Markdown, Bicep or JSON data runs no analysis; `package.json`, lock files and `tsconfig*.json` count as JavaScript. Every language runs on main weekly. Run the ones that apply before you push:
 
 ```sh
 cargo fmt --all --check
@@ -36,14 +36,14 @@ python3 -m unittest scripts/test_env_scripts.py
 scripts/lib/env_settings.py --check
 scripts/ci/check-names.py --base origin/main
 python3 -m unittest scripts/ci/test_check_names.py
-bicep build infra/main.bicep --stdout > /dev/null
-bicep build infra/guardrails.bicep --stdout > /dev/null
+scripts/ci/lint-bicep.sh
+scripts/ci/build-bicep.sh
 AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
 `scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included.
 
-`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
+Use Bicep CLI v0.48.1, the single version pinned in `scripts/ci/bicep-version`; CI installs that release. The lint and build helpers above verify the pinned compiler and cover every tracked `.bicep` template. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
 Local nightly fuzz targets for untrusted OCR Parquet, ALTO and dead letters live
 in [`fuzz/`](fuzz/README.md), outside the production workspace. Its README covers

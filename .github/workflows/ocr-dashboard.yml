@@ -10,6 +10,8 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
+      # Files the crates it builds embed (scripts/ci/changes.sh finds them).
+      - "ocr/routing/routes.toml"
       - "!**/*.md"
   workflow_dispatch:
 
@@ -21,8 +23,26 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Whether this change touches what the dashboard is built from (scripts/ci/changes.sh):
+  # a crate counts when the binary builds it, not for being under crates/. This job
+  # also runs on manual dispatch, where the selector says everything.
+  # Not named `changes`: ci.yml's required check has that name.
+  inputs:
+    name: dashboard inputs
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.f.outputs.ocr_dashboard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: f
+        run: scripts/ci/changes.sh
   build:
     name: dashboard (static Linux binary)
+    needs: inputs
+    if: needs.inputs.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:

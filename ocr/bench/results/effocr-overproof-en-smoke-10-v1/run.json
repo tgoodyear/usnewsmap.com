@@ -1,0 +1,158 @@
+{
+  "format": "usnm-ocr-bench-effocr-trial-v1",
+  "release": "v1.0.0",
+  "release_content_digest": "c5e38736b6e60610ef0dbe6d8296c3dc58f8a945d6e1cfea5aa47b03fb163800",
+  "subset": "overproof-en/smoke-10",
+  "subset_digest": "e4256f3e6c9ae9e0453e74d7b38c5c862e8265ab88a50ca95dd3fbfd8fd10576",
+  "adapter_lock_sha256": "ba100299f98eaec3855ae2166f27bf146ad355e6dc6145a941bc13c265e6b40c",
+  "model_repo": "dell-research-harvard/effocr_en",
+  "model_revision": "2eafb831e8d55d2cc9427d5f20257886cb317d55",
+  "model_license_tag": null,
+  "model_card_license": null,
+  "model_tree_sha256": "4a5b796ebc7c72bb8295055db0677807805920069897834c45489a7cbb173a24",
+  "model_files": [
+    {
+      "path": "char_recognizer/enc_best.onnx",
+      "bytes": 2275198,
+      "sha256": "51e0483f6a27b70d2ba7b629073219566a9ee239e4c9bb1a87a14f8a7d5cc050"
+    },
+    {
+      "path": "char_recognizer/ref.index",
+      "bytes": 372781,
+      "sha256": "adc38f321c25ae76bc2e9d82795860fbad7ee3bc0334e3defa23d1398b173475"
+    },
+    {
+      "path": "char_recognizer/ref.txt",
+      "bytes": 181,
+      "sha256": "755854ec2b5e6f4e97ddc17d3f199a2c5d0cb4fbbe423480c14c3770f0cf3db7"
+    },
+    {
+      "path": "line.onnx",
+      "bytes": 44696464,
+      "sha256": "4bb5d8a64203b38bb6edabe9a6bb7a3c3366880db16a54b0c6c548f800845d2a"
+    },
+    {
+      "path": "localizer.onnx",
+      "bytes": 10209058,
+      "sha256": "c3c2c13d64668a5e18837ebf7089a6885bb04156b8674c14a2f17281eb73a7c4"
+    },
+    {
+      "path": "word_recognizer/enc_best.onnx",
+      "bytes": 2275198,
+      "sha256": "2a60332959f8cd9eacf8e787a63bda53135d19af4661d516577caae9f6444b24"
+    },
+    {
+      "path": "word_recognizer/ref.index",
+      "bytes": 271761453,
+      "sha256": "ef949e6852dc239b09f9f77a2cd46a823617be7b3aa446c366f95c573876cce9"
+    },
+    {
+      "path": "word_recognizer/ref.txt",
+      "bytes": 1629982,
+      "sha256": "20cf4c52ec71414ac3bdbb06455dbe5c532276381a3cfcb2fc90df7f6a26c061"
+    }
+  ],
+  "model_card_gap": "absent on both HF model cards (cardData null; no license tag)",
+  "license_basis": "Maintainer decision 2026-10-18 authorizes research-licensed checkpoints for benchmarking/full OCR; project is explicitly noncommercial/research only; source repository is Apache-2.0. No separate model checkpoint license or output-redistribution restriction was found in checkpoint metadata.",
+  "effocr_source_repo": "dell-research-harvard/efficient_ocr",
+  "effocr_source_revision": "e38da3cd0b614cf13ba4c148bab5b37aeec3db7d",
+  "effocr_source_license": "Apache-2.0",
+  "effocr_source_license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "effocr_package_version": "0.1.1",
+  "python": "3.11.8",
+  "torch": "2.14.1",
+  "onnxruntime": "1.31.0",
+  "numpy": "2.4.6",
+  "faiss_cpu": "1.15.1",
+  "runtime_packages": {
+    "efficient-ocr": "0.1.1",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.31.0",
+    "opencv-python": "5.0.0.93",
+    "Pillow": "13.0.0",
+    "pytorch-metric-learning": "1.6.3",
+    "setuptools": "80.10.2",
+    "timm": "1.0.30",
+    "torch": "2.14.1",
+    "torchvision": "0.29.1",
+    "yolov5": "7.0.10"
+  },
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "backend": "EffOCR official package pipeline using pinned ONNX localizer, line detector, word and character recognizers",
+  "device": "CPU",
+  "onnx_runtime_available_providers": [
+    "CoreMLExecutionProvider",
+    "AzureExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "onnx_runtime_used_providers": [
+    "CPUExecutionProvider"
+  ],
+  "threads": 4,
+  "faiss_query_backend": "numpy float32 inner product against vectors reconstructed from pinned IndexFlatIP files; exact metric/index data",
+  "faiss_reference_vectors": [
+    {
+      "kind": "word",
+      "source_index": "word_recognizer/ref.index",
+      "source_index_sha256": "ef949e6852dc239b09f9f77a2cd46a823617be7b3aa446c366f95c573876cce9",
+      "index_type": "IndexFlatIP",
+      "metric": "inner_product",
+      "vectors": "word.npy",
+      "shape": [
+        66348,
+        1024
+      ],
+      "dtype": "float32",
+      "sha256": "ad2e077748b3bc012b97d06b7e4ab1fcf77eb9d69a0b7f2e22de32254a3b3be6",
+      "numpy_faiss_equivalence_queries": 4,
+      "faiss_version": "1.15.1"
+    },
+    {
+      "kind": "char",
+      "source_index": "char_recognizer/ref.index",
+      "source_index_sha256": "adc38f321c25ae76bc2e9d82795860fbad7ee3bc0334e3defa23d1398b173475",
+      "index_type": "IndexFlatIP",
+      "metric": "inner_product",
+      "vectors": "char.npy",
+      "shape": [
+        91,
+        1024
+      ],
+      "dtype": "float32",
+      "sha256": "4f5086a2cbcf30700819522e4cd9c80a31db2a9d08386b92fde1ad4e879542c8",
+      "numpy_faiss_equivalence_queries": 4,
+      "faiss_version": "1.15.1"
+    }
+  ],
+  "faiss_vector_manifest_sha256": "4021ff805d3e4d67fb7dbb52db36e66dc3b82e01beee89b03ea19a476373a879",
+  "word_similarity_threshold": 0.83,
+  "faiss_compatibility_adapter": "The upstream Torch-tensor Faiss IndexFlatIP search segfaulted in the mixed Apple arm64 CPU runtime. The exact pinned index vectors are reconstructed in a separate FAISS-only process; NumPy float32 inner-product search reproduces FAISS top-1 IDs and scores for four deterministic equivalence queries per index. No embeddings, reference vectors, thresholds, models, or preprocessing are changed.",
+  "post_correction": "none",
+  "model_initialization_seconds": 0.33,
+  "cold_first_image_seconds": 0.852,
+  "warm_image_seconds": [
+    0.752,
+    0.871,
+    0.707,
+    0.755,
+    0.771,
+    0.709,
+    0.682,
+    0.629,
+    0.771
+  ],
+  "warm_p50_seconds": 0.752,
+  "warm_p95_seconds": 0.871,
+  "ocr_loop_wall_seconds": 7.5,
+  "blank_outputs": 0,
+  "process_peak_rss_kib": 2192304,
+  "resource_note": "Isolated local process without a cgroup cap; process peak RSS from getrusage.",
+  "benchmark_source_licenses": "As recorded in the verified v1.0.0 manifest.",
+  "output_redistribution_note": "No additional output-redistribution prohibition identified; benchmark source licenses remain applicable.",
+  "samples": 10,
+  "missing_outputs": 0,
+  "complete": true,
+  "sample_failures": [],
+  "output_sha256": "9ba30bb4f4a85f21c44d4908a7506b0b804a6fc7ce95225cc978e78952750198"
+}

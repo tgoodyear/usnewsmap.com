@@ -66,7 +66,9 @@ scripts/provision.sh --env prod            # creates the settings store if the s
 scripts/settings.sh --env prod --migrate   # moves the private settings into it
 ```
 
-`scripts/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and prints the template's changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions.
+`scripts/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and calls GA `az stack-whatif sub create` to preview the stack, including unmanaged-resource and deny-setting changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions. What-If results can be retained from `PT1H` to `PT3H`; the scripts request `PT3H`.
+
+Known residual What-If noise includes provider normalization: Static Web Apps provider-generated properties, diagnostic-setting destination defaults, and Azure Files soft-delete retention defaults. Compare each result with the deployed resource and template before classifying it; don't change the template merely to silence a provider-generated/default difference. Always review actual deletions and deny-setting changes; `--only-show-errors` is not a substitute for examining the preview. [Microsoft's deployment-stacks What-If documentation](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-stacks-what-if) describes the supported preview and retention behavior.
 
 ## Deploy the jobs
 
@@ -725,7 +727,7 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
 
    `/etc/usnm/sset.env` (mode 0640, group `usnm`) sets `USNM_CURATED_URL=https://<lake>.blob.core.windows.net/curated`, `USNM_RAW_URL=/var/lib/usnm-sset/raw`, `USNM_STATE_FILE=/var/lib/usnm-sset/state.json` and `USNM_REFERENCE_URL=/var/lib/usnm-sset/reference` (an empty directory; the fetch reads nothing there). The raw store holds the MODS and page texts, about 20 GB, so a stopped volume resumes without its PDFs. Before the lake is open, `USNM_CURATED_URL` can be a local directory: the fetch then fills the raw store, and a later run against the lake reads every volume back from it without asking GovInfo for the PDFs again.
 
-3. **Run.** `sudo systemctl start usnm-sset` runs the whole fetch, at a request a second, until every volume is written or left (no deadline), and then stops. It runs as `usnm` with the Arc identity. Logs: `journalctl -u usnm-sset`; the report is the JSON at the end. `/var/lib/usnm-sset/status.json` (every 10 minutes) has the volumes to fetch, written, incomplete, the rate per hour and the hours left, and `finished` once `/var/lib/usnm-sset/done` exists. The same timer pushes it to the OCR dashboard (`PUT /api/sset/usnm-sset` over plain HTTP, accepted from this node's address only; the dashboard needs `--sset-push usnm-sset=<this node's name>` in `ocrdash-ct.sh --configure`), which shows it under Serial Set.
+3. **Run.** `sudo systemctl start usnm-sset` runs the whole fetch, at a request a second, until every volume is written or left (no deadline), and then stops. It runs as `usnm` with the Arc identity. Logs: `journalctl -u usnm-sset`; the report is the JSON at the end. `/var/lib/usnm-sset/status.json` (every 10 minutes) has the volumes to fetch, written, incomplete, the rate per hour and the hours left, and `finished` once `/var/lib/usnm-sset/done` exists. The same timer pushes it to the OCR dashboard (`PUT /api/sset/usnm-sset` over plain HTTP, accepted from this node's address only; the dashboard needs `--sset-push usnm-sset=<this node's name>` in the dashboard's infrastructure configuration), which shows it under Serial Set.
 
    The unit is enabled, so it also starts at boot, until the fetch has finished. A run that ends with `"left": 0` and `incomplete` empty writes `/var/lib/usnm-sset/done` (`--done-file`: when, and the volumes and pages), and the unit doesn't start while that file exists (`ConditionPathExists=!`). A run that ends with incomplete volumes (a 404 for a document the sitemap lists, a PDF that couldn't be read) exits 0 without the marker, and stays down until the next boot or `sudo systemctl start usnm-sset`, which fetches those volumes again. If the same volumes stay incomplete run after run (GovInfo answers 404 for good), check them on GovInfo, then write the marker by hand: `sudo -u usnm touch /var/lib/usnm-sset/done`. To fetch again after it's done (new volumes on GovInfo), remove the marker and start it: `sudo rm /var/lib/usnm-sset/done && sudo systemctl start usnm-sset`.
 
@@ -860,7 +862,7 @@ It writes `audit/mixed-pages-<version>-<execution>.json` and a CSV per table in 
 
 ## American Stories against LoC's text
 
-`jaocr.py american-stories --year Y [--year …] [--sample-pct 10]` (`ja-ocr/american_stories.py`, #205) compares [American Stories](https://huggingface.co/datasets/dell-research-harvard/AmericanStories) (Dell et al. 2023, CC BY 4.0), a re-OCR of Chronicling America, with LoC's text on our pages. It streams each year's tarball from Hugging Face (0.4 to 7.6 GB; nothing is written to disk), joins scans to our pages by their file names, read in a first pass (a scan named `<date>_p<page>_<lccn>_<reel>_<date><ed>_<image>.json` is our `<lccn>_<date>_ed-<ed>_seq-<page>`; one with no page, `pNone`, about 3% of 1865, takes its image's place in the issue, a rule that agrees with 92.8% of 1865's named pages; a second copy of a page is skipped), keeps the audit's fixed sample (`quality.sampled`), and reads LoC's text for the sampled pages of those years from the batches whose dates overlap them. For pages of titles whose first language is English it reports the join, words per page, the audit's English damage rate and function-word share for each text, pages matching a fixed term list in either text, and LoC's damage rate by the share of regions American Stories marked Illegible.
+`jaocr.py american-stories --year Y [--year …] [--sample-pct 10]` (`ja-ocr/american_stories.py`, #205) compares [American Stories](https://huggingface.co/datasets/dell-research-harvard/AmericanStories) (Dell et al. 2023, CC BY 4.0), a re-OCR of Chronicling America, with LoC's text on our pages. It streams each year's tarball from Hugging Face (0.4 to 7.6 GB; nothing is written to disk), joins scans to our pages using the shared placement policy below (names read in a first pass), keeps the audit's fixed sample (`quality.sampled`), and reads LoC's text for the sampled pages of those years from the batches whose dates overlap them. For pages of titles whose first language is English it reports the join, words per page, the audit's English damage rate and function-word share for each text, pages matching a fixed term list in either text, and LoC's damage rate by the share of regions American Stories marked Illegible.
 
 ```sh
 scripts/ja-ocr/start-quality.sh --env prod --command american-stories --year 1865 --year 1925
@@ -885,7 +887,7 @@ The diff runs after the comparison and takes about 40 s per 1,000 pages of 8,000
 
 ## American Stories' text for our pages
 
-`jaocr.py american-stories-write [--year Y …]` (`ja-ocr/american_stories_write.py`, #218) writes American Stories' text (Dell et al. 2023, CC BY 4.0) for our pages to the curated container, for the release to index beside LoC's. It streams each year's tarball from Hugging Face once, places every scan on our page as `american-stories` does, and writes `american-stories/pages/<lccn>/<year>-<nnn>.parquet`: one row per page with `doc_id`, `lccn`, `date`, `text` (each article's headline, byline and text in American Stories' order, separated by blank lines), `articles` (JSON: each article's headline, byline, `start`/`end` in `text`, bounding boxes in scan pixels and the legibility of its regions), `legibility` (the page's text regions by legibility) and the scan's `width` and `height`. A page's second copy is skipped. Each year ends with a marker `american-stories/years/<year>.json` holding its counts; a rerun skips marked years, so an interrupted run resumes. A download that goes 5 minutes without data, or breaks off, fails and the year starts again from the top (up to 3 tries, a minute apart, each logged as `american stories year failed; retrying`); a retry writes the same parts under the same names. A year counts as read only when the gzip stream reached its end marker and, when Hugging Face sends one, the byte count matches `Content-Length`, so a download that stops at a file boundary inside the tarball is retried rather than marked. All 180 years are about 340 GB to stream.
+`jaocr.py american-stories-write [--year Y …]` (`ja-ocr/american_stories_write.py`, #218) writes American Stories' text (Dell et al. 2023, CC BY 4.0) for our pages to the curated container, for the release to index beside LoC's. It streams each year's tarball from Hugging Face twice on a fresh run (names/placement, then text), places every scan on our page as `american-stories` does, and writes `american-stories/pages/<lccn>/<year>-<nnn>.parquet`: one row per resolved page with `doc_id`, `scan_key` (JSON physical identity tuple), `source_name` (archive member), `lccn`, `date`, `text` (each article's headline, byline and text in American Stories' order, separated by blank lines), `articles` (JSON: each article's headline, byline, `start`/`end` in `text`, bounding boxes in scan pixels and the legibility of its regions), `legibility` (the page's text regions by legibility) and the scan's `width` and `height`. A page's second copy is skipped. Each year ends with a marker `american-stories/years/<year>.json` holding its counts; a rerun skips marked years, so an interrupted run resumes. A download that goes 5 minutes without data, or breaks off, fails and the year retries (reusing a frozen placement if already written; up to 3 tries, a minute apart, each logged as `american stories year failed; retrying`); a retry writes the same parts under the same names. A year counts as read only when the gzip stream reached its end marker and, when Hugging Face sends one, the byte count matches `Content-Length`, so a download that stops at a file boundary inside the tarball is retried rather than marked. All 180 archives total about 340 GB compressed (about 680 GB transferred for two fresh passes).
 
 ```sh
 scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write          # every year
@@ -893,6 +895,69 @@ scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write --ye
 ```
 
 It runs on the one-replica job and logs `american stories year written` per year. `jaocr.py american-stories` also lists, per term and year, up to 8 pages that match only in American Stories' text with the words around the match (`only_american_stories`), for checking those matches by hand.
+
+### Physical scan identity and existing data (#573)
+
+`p<page>` is a label, **not a scan identity**. The shared audit/writer key is
+`(LCCN, date, edition, reel, image)` from the scan filename, ignoring its archive
+directory and page label. Different images with `p1` must not be discarded as
+copies. Edition and reel remain part of identity, so equal image numbers on
+different reels do not alias.
+
+Unambiguous numbered issues keep their existing joins. An issue with repeated
+labels on distinct scan keys, conflicting labels on one scan, inconsistent
+label/image offsets within a reel, or any missing/zero page label requires LoC's
+`/item/<lccn>/<date>/ed-<edition>/?fo=json`. Its ordered `resources[0].files`
+JP2 paths map **reel + image** to sequence. All labels in that issue are ignored,
+including an apparently matching first `p1`; only physical keys uniquely present
+in the metadata can join. Multiple representations mapping to the same verified
+sequence are copies; the first archive member wins. Neither sorting image
+numbers nor subtracting the minimum observed image is a safe fallback: the
+archive can omit the first page, and LoC sequences need not follow image order.
+Requests use the existing rate limiter (`JAOCR_API_GAP`, default 3.5 seconds).
+
+Unavailable/ambiguous metadata and unmatched scans are **unresolved**, not
+`duplicates`. They receive no guessed `doc_id`/indexed text. The writer retains
+names, physical keys and reasons in `american-stories/unresolved/<year>.json`;
+the audit retains the same records in its saved summary's `scans_unresolved_scans`.
+Console logs include only their counts, not the unbounded inventory, so large
+unresolved cohorts cannot truncate the log-based coverage summaries.
+`page_from_image` now counts every resolved scan using authoritative issue
+metadata, including numbered scans whose labels were ignored. Year markers
+include `identity_version: 2`. The writer freezes the IDs, counts and unresolved
+records in `american-stories/placements/<year>.json` **before writing parts**,
+so retry/resume cannot leave stale parts after a metadata outage changes the
+chosen placements. Metadata resolution is renewed only by an intentional
+placement reset; unresolved cohorts must be reviewed, not interpreted as proof
+of physical absence.
+
+**No production repair or rebuild is performed by this change.** Existing
+indexed `text_as` and completed curated years remain unchanged: markers still
+skip existing imports. The historical 1925 cohort has 4,051 label-based
+collisions, not 4,051 verified duplicate scans (#327); some indexed sequence-1
+texts belong to later physical pages. Correcting the importer alone does not
+repair those existing fields or establish a corrected coverage percentage.
+
+**Coordinate any repair with the owner of #283**, while no ingest/release or
+writer is reading/changing these paths. First preserve the old per-year
+markers/parts and plan a scoped reimport of affected years. Remove the selected
+year's completion marker, **all** its title parts (including any interrupted
+old import), placement snapshot and unresolved sidecar before importing it with
+the fixed writer. Do not just delete the completion marker: a smaller new import
+could leave old tail parts that the release would still read. Verify the new
+`identity_version`, unresolved cohort and representative physical joins before
+allowing the separately approved rebuild. A metadata retry also requires this
+whole-year reset, not simply removing the placement snapshot alongside existing
+parts. No bulk reimport/reindex is authorized here.
+
+The next approved **full** rebuild under #283 will take repaired curated rows
+for years explicitly reimported first: recover resolvable missing sequences,
+replace misassigned text at previously matched sequences, and omit unresolved
+American Stories assignments (LoC text is unchanged). Without that reimport it
+will read the same old rows and **will not repair #573**; an ordinary delta does
+not replace existing base-page text. This change does not bump the Rust American
+Stories version or trigger a full rebuild. The existing reader ignores the
+additional provenance columns; the canonical `doc_id` format is unchanged.
 
 ## Search log
 
@@ -992,6 +1057,8 @@ Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.ta
 
 ## Dev environment lifecycle
 
+A first stand-up accepts Azure’s missing-stack responses (`DeploymentStackNotFound`, or `ResourceNotFound` naming the stack itself); other inventory read errors still block the protected-resource guard.
+
 Reprovisioning the same experiment preserves the project group's original `started` timestamp, including stand-up's second provision. If that timestamp is missing, status reports an unknown start and falls back to month-to-date cost; an unreadable group is an error, not a missing tag.
 
 **The rule** (#275): `dev` (the stack `usnm-dev`, the group `usnm-core-rg-dev`) holds no resources unless a focused experiment is running. Stand it up for the experiment, and tear it down completely once the results are saved. Scaling to zero isn't enough: with no replicas running it still costs about $2 a day, about $60 a month. That's the 4 private endpoints ($0.24 a day each), the Container Apps environment's load balancer (about $0.45 to $0.60 a day) and public IP ($0.12), the registry (ACR Basic, about $0.17), the NFS share (64 GiB, about $0.21), 3 private DNS zones (about $0.05) and storage (Cost Management, October 2026).
@@ -1022,6 +1089,23 @@ The experiment's public settings, and the ones `stand-up.sh` and `teardown.sh` w
 scripts/titles-seed.sh --env dev                       # again, or after turning the ingest job on
 scripts/logs.sh --env dev --query-name titles-archive --span 1h
 ```
+
+**ACR build verification.** All build wrappers (`stand-up.sh`, `build-quickwit.sh`,
+`build-boinc-images.sh`, and `boinc-app-release.sh`) use `scripts/lib/acr-build.sh`.
+It queues once with `--no-wait`, polls that run's canonical `az acr task show-run`
+status, and requires `Succeeded` plus the requested output image's SHA-256 digest
+matching the registry tag. A nonzero submission exit is recoverable only when a
+valid run ID was returned; no run ID, a failed/canceled run, an unreadable run at
+the deadline, or a missing/mismatched digest fails closed. An existing tag cannot
+prove that a new build succeeded. Polling defaults to every 10 seconds, bounded
+by the build timeout plus 600 seconds (`ACR_POLL_INTERVAL` / `ACR_WAIT_SECONDS`
+override these in seconds). Each status and digest read is also bounded by the
+remaining budget, including its CLI child processes. A local timeout does not cancel the remote run; use
+the printed registry/run ID to inspect it before deciding whether to rebuild.
+These checks do not deploy images. For manual builds, source the helper in Bash
+and call `acr_build_verified az REGISTRY REPOSITORY:TAG TIMEOUT [build arguments]`
+as in the examples below; do not infer remote success or failure from the log
+streaming CLI exit status (#549).
 
 **Cost of standing up:** two provisions and two or three `az acr build` runs, a few cents. Reading the 1% set back from Cold is about $0.71 ($0.03 per GB retrieved) plus about $0.24 of private endpoint processing. Then the idle floor (about $2 a day) and whatever the experiment runs. **Time:** about 40 to 60 minutes to a running environment with images. Data takes minutes for a set, about an hour to curate the 1% from the archive, and a few minutes to seed the titles from the archive (up to 8 hours for a titles-sync when there is no copy yet, or the catalog needs titles the copy lacks).
 
@@ -1083,8 +1167,9 @@ scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --value "$ARCHIVE_ID"  
 scripts/provision.sh --env dev --allow-dirty    # the experiment's settings, before they're committed
 RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD)
-az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
-az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+. scripts/lib/acr-build.sh
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
+acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f Dockerfile .
 scripts/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
 scripts/settings.sh --env dev --key USNM_USE_ACR --value true
 scripts/provision.sh --env dev --allow-dirty
@@ -1151,10 +1236,11 @@ Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; 
 cd ~/code/usnewsmap.com-qwcluster
 RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD); SHA=$(git rev-parse HEAD)
+. scripts/lib/acr-build.sh
 NIGHTLY=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
-az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
-az acr build -r "$ACR" -t usnewsmap-ingest:$TAG-qw2509 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
-az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG-qw2509" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
+acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f Dockerfile .
 ```
 
 **Smoke test** on an index the cluster already holds (`s1ixb`, the 1% without American Stories, 58 splits): cluster nodes off, so nothing writes while they search; both searchers at the sidecar's 4 vCPU.
@@ -1249,50 +1335,11 @@ scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the setti
 scripts/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
-**The nodes' Key Vault.** With `USNM_OCR_NODES` on, the provision also creates `usnmocrkv<env><suffix>` (saved as `OCR_KEYVAULT`) for the secrets you hold for setting up nodes: `rhel-activation-key` and `rhel-org-id`, the Red Hat activation key and organization id a RHEL node registers with, and `rhel-offline-token`, a Red Hat API offline token with which `scripts/ocr-node/rhel-image.sh` fetches RHEL images onto the Proxmox hosts through Red Hat's image API (below). Its firewall allows only `USNM_OCR_NODE_IPS`, so run `az` against it from home. Access is Azure RBAC only, and only the object ids in `USNM_OCR_KEYVAULT_ADMINS` get Key Vault Secrets Officer (nodes get nothing). Prod's vault has purge protection: a deleted secret or vault is kept for 90 days and can't be purged. Never paste the secrets into a chat, an issue or a commit, and keep them out of your shell history. The leading space on the `secret set` lines below keeps zsh and bash from saving them when `HIST_IGNORE_SPACE` or `HISTCONTROL=ignorespace` is set; or use `--file` with a file you delete straight after. Grant yourself access, provision, then set the secrets in your own terminal:
-
-```sh
-scripts/settings.sh --env prod --key USNM_OCR_KEYVAULT_ADMINS \
-  --value "$(az ad signed-in-user show --query id -o tsv)"   # private: the settings store
-scripts/provision.sh --env prod                              # writes OCR_KEYVAULT
-vault=$(scripts/settings.sh --env prod --key OCR_KEYVAULT)   # usnmocrkvprodffapzy
- az keyvault secret set --vault-name "$vault" --name rhel-activation-key --value '<activation key>' -o none
- az keyvault secret set --vault-name "$vault" --name rhel-org-id --value '<organization id>' -o none
- az keyvault secret set --vault-name "$vault" --name rhel-offline-token --value '<offline token>' -o none
-az keyvault secret list --vault-name "$vault" --query '[].name' -o tsv   # names only, never values
-```
-
-A new role assignment can take a few minutes to apply; a `Forbidden` right after the provision clears on its own. The vault's audit log (`AuditEvent`, every read, write and refused request) goes to `log-usnm-<env>`. Turning `USNM_OCR_NODES` off deletes the vault with the rest; prod's then stays soft-deleted for 90 days, holding its name, (7 days outside prod). `provision.sh` recovers it, with its secrets, before deploying when the nodes are turned back on within that time; it only recovers a vault deleted from this environment's resource group. Elsewhere a deleted vault is kept 7 days and `teardown.sh` purges it.
+**Host infrastructure.** Provisioning, OS subscriptions and lab credentials are managed outside this application repository. The legacy `OCR_KEYVAULT` resource remains in its existing deployment stack until a separately reviewed ownership transfer; do not delete it during the source migration.
 
 **The nodes' group.** The nodes get their roles through the Entra security group `usnm-ocr-nodes-grp-<env>` (`usnm-ocr-nodes-<env>` before the operator rename). The provision grants it Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter`, the no-delete writer role on `ocr-out`, and Monitoring Metrics Publisher on the nodes' own component `usnm-ocr-appi-<env>`, not the main component. Each node's Arc identity is a member. `group.sh` creates a group once, saves its object ID in `USNM_OCR_NODE_GROUP` and makes you an owner. On rerun it uses that same ID, lists owners and updates `displayName`/`mailNickname` in place: no identity, member or grant changes. `--dry-run` only describes the rename. It never adopts a group by name or creates a duplicate of an unsaved legacy group: check its members and owners (`az ad group member list --group <id>`; `az ad group owner list --group <id>`) and save the verified ID by hand. Every member gets node roles, and owners can add members. Creating it needs the right to create security groups (default user setting or Groups Administrator); renaming requires rights to update the saved group. Deployment stacks cannot manage it (ADR-0015), and teardown leaves it. Delete by the saved object ID (`az ad group delete --group <id>`), never by display name.
 
-**Create the VM.** On a Proxmox host, `scripts/ocr-node/proxmox-create-vm.sh` (copy it and `scripts/lib/names.sh` into the same directory on the host, run it as root) creates a VM from a qcow2 image already on the host, with `--image-file` and `--image-sha256`, such as Red Hat's RHEL 10 KVM Guest Image, or, without them, an AlmaLinux 9 VM from AlmaLinux's GenericCloud image, checking its published sha256. `--mac` gives the VM a fixed MAC address, so a DHCP reservation (a fixed IP on the router) still applies after a rebuild. The VM boots UEFI with Secure Boot (Microsoft's keys pre-enrolled; AlmaLinux's and Red Hat's shims are signed) and has a vTPM, CPU type `host` (so the OCR engines can use AVX2), the QEMU guest agent, DHCP and start at boot. cloud-init creates an admin user `claude` with key-only SSH and passwordless sudo. On the first try cloud-init left the hostname as `localhost`; the script now sets `fqdn` and runs `hostnamectl set-hostname`. The first DHCP request still goes out as `localhost`, so the gateway's local DNS learned the name only at the next renewal; cloud-init now brings the wired connection up again after setting the hostname, which sends it at once. The script prints the VM's address once the guest agent reports one.
-
-`scripts/ocr-node/rhel-image.sh` puts the RHEL image on the host (#339). From your machine, it reads `rhel-offline-token` from the nodes' Key Vault with your sign-in and sends it to the host on ssh's stdin. On the host it exchanges the token at Red Hat's SSO for an access token, asks the image API for the download link of the image with that SHA-256 (Red Hat's download page lists it), downloads the image and keeps it only if the SHA-256 matches. The tokens and the signed link go to curl on its stdin, so none of them is on a command line or on the host's disk. An image already there with the right SHA-256 is left alone. Red Hat lets an offline token lapse after 30 days unused.
-
-A rebuilt node gets a new name with the next number (`usnm-ocr-node3-arcs-prod` replaced node 2, `usnm-ocr-node4-arcs-prod` node 1), never a reused one. The name is also the worker's node id, which the ledger, `ocr-sync --report`'s pages by node and revocations by `node` all key on, so a reused name would mix two machines' output. The VMID is the host's choice; the nodes use 203 on pve-big and 124 on the NUC.
-
-```sh
-# from your machine: the RHEL 10.2 KVM Guest Image onto the host
-scripts/ocr-node/rhel-image.sh --env prod --host root@pve.tjg.fyi --file-name rhel-10.2-x86_64-kvm.qcow2 \
-  --image-sha256 caaacd0b11bbc4206f8c7fec8594b82b4366b3f88ff974dbbf373832ae676f4f [--dest /var/lib/vz/template/cache] [--dry-run]
-# on the host, as root
-bash proxmox-create-vm.sh --vmid 124 --name usnm-ocr-node4-arcs-prod --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" \
-  --cores 4 --memory-mib 8192 --disk-gib 64 \
-  --image-file /var/lib/vz/template/cache/rhel-10.2-x86_64-kvm.qcow2 \
-  --image-sha256 caaacd0b11bbc4206f8c7fec8594b82b4366b3f88ff974dbbf373832ae676f4f
-# AlmaLinux 9 instead: leave out --image-file and --image-sha256
-# optional: --storage local-lvm --bridge vmbr0 --snippets-storage local --mac 52:54:00:12:34:56
-```
-
-A RHEL image has no package repositories until it's registered with Red Hat, which `onboard.sh` does, so with `--image-file` cloud-init installs nothing: it creates the user, sets the hostname and starts the guest agent if the image has it (Red Hat's KVM Guest Image ships it). If the image has no guest agent, the script can't print the address; it prints the VM's MAC instead, to find in the router's DHCP leases, and `node-setup.sh` installs the agent after registration.
-
-**The Proxmox host's network card.** The NUC's Intel e1000e NIC logs `Detected Hardware Unit Hang` and drops off the network under load. Turning off its segmentation and receive offloads fixes it; make it permanent with a `post-up` line on the interface in `/etc/network/interfaces` (the NIC is `nic0` on this host):
-
-```text
-iface nic0 inet manual
-        post-up /sbin/ethtool -K nic0 tso off gso off gro off
-```
+**Prepared-host prerequisites.** Supply an AlmaLinux 9 or RHEL 10 host with key-based SSH and passwordless sudo. RHEL must already be registered, with BaseOS, AppStream and CodeReady Builder enabled. VM creation, OS registration, hardware and hypervisor configuration belong to the infrastructure operator, not application onboarding. Use a new node ID after rebuilding a host so provenance cannot mix the old and new machine.
 
 **Connect a node.** The node needs AlmaLinux 9 or RHEL 10 and an admin account with key-based SSH and passwordless sudo. Its name (`--name`, also the worker's `--node-id`) must be `usnm-ocr-node<digits>-arcs-<env>`, match `--env` and be at most 32 characters (ADR-0017). A legacy node must first be drained and offboarded, renamed in the VM, its hostname and DNS, and onboarded again; changing only `--name` is not a migration. Run from your machine with rights to create app registrations (Application Developer or the default user setting), assign roles and write Arc machines, extensions and DCR associations (Owner, or User Access Administrator plus Contributor, or plus Azure Connected Machine Resource Administrator and Monitoring Contributor), and add group members (its owner, as `group.sh` makes you). Automatic agent upgrade requires `Microsoft.HybridCompute/machines/write`. The first onboarding also registers three providers, a subscription-level action (Contributor or Owner); with only resource-group rights, have them registered first:
 
@@ -1301,7 +1348,7 @@ scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name us
 scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1-arcs-prod --reboot-day Tue
 ```
 
-`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers. Unless the node is already connected, it then creates a throwaway app registration and service principal, `usnm-arc-onboard-<name>-<UTC time>`, with a client secret valid for 2 hours and only Azure Connected Machine Onboarding on the environment's resource group, and waits for the role assignment to show up. Then it runs `scripts/ocr-node/node-setup.sh` on the node with sudo. On a RHEL node that isn't registered with Red Hat, `onboard.sh` first reads `rhel-org-id` and `rhel-activation-key` from the nodes' Key Vault (`OCR_KEYVAULT`) with your sign-in, so you need Key Vault Secrets Officer (`USNM_OCR_KEYVAULT_ADMINS`) and to run it from home (the vault's firewall allows `USNM_OCR_NODE_IPS` only), and sends them with the onboarding credential on `node-setup.sh`'s stdin; they're never written to disk on your machine, the node or the Proxmox host. `node-setup.sh` registers first (`subscription-manager register --org ... --activationkey ...`, which takes them as arguments, so they're in the process list for the few seconds it runs, before the `usnm` user exists; a registered node is skipped and needs no secrets) and enables BaseOS, AppStream and CodeReady Builder, since nothing can be installed before that. That script installs python3, podman, chrony, cron (for the agent's automatic upgrades), rsyslog and which, and initscripts where the distribution has it (the monitoring agent's prerequisites), the QEMU guest agent on a VM if the image lacks it, plus htop, iftop and screen from EPEL for watching the node. It installs no OCR engine: EL9 has only Tesseract 4.1.1 and EPEL 9 none, so the engines come as pinned container images, and `install-worker.sh` loads the worker's. It creates the `usnm` user. It sets up the engine runtime of [ADR-0016](design/adr/0016-pluggable-ocr-engines.md) ([13 §13.3](design/13-ocr-engines.md#133-component-view)): a second system user, `usnmeng`, with its own subordinate ids, lingering and the cpu, memory and pids cgroup controllers delegated to its user manager, not in `himds`; its Podman API socket at `/run/usnm-ocr/podman.sock` (mode 0660, group `usnmocr`, which `usnm` shares), through which the worker runs engine containers with `podman --remote`; and the engines' scratch, a tmpfs at `/run/usnm-ocr/scratch` capped at `--scratch-size` (default 2G) and owned by `usnm`, so an engine's files count against its own memory limit. It installs the Connected Machine agent. It sets the agent's extension allow list to the Azure Monitor Linux Agent alone (with extensions off while a different list is replaced), reads it back, stops if any other extension is installed in `/var/lib/waagent` (the allow list doesn't remove one installed before it, and turning the extension manager on would run it again), and only then turns the extension manager on (an empty list allows every extension); it turns off guest configuration and incoming connections. It keeps the journal on disk (`/etc/systemd/journald.conf.d/50-usnm.conf`: `Storage=persistent`, `SystemMaxUse=1G`; the cloud image keeps it in memory only, so a reboot lost the logs). It sets sshd to offer post-quantum key exchange first where its OpenSSH supports it (a drop-in, `/etc/ssh/sshd_config.d/40-pq-kex.conf`; AlmaLinux 9.8's default crypto policy leaves it out). It connects with that service principal (the tenant, app id and secret go over ssh's stdin, never on a command line; the secret waits in a root-only file under `/run` while `azcmagent connect --config` reads it, and a refused connect is retried for a few minutes while the new principal propagates). It writes the worker's settings to `/etc/usnm/ocr-worker.env` unless `install-worker.sh` has written it (the exchange account's queue and `ocr-out` URLs, the node id, one page in flight per CPU and the connection string of the nodes' Application Insights component, which `onboard.sh` passes from `OCR_NODE_APPINSIGHTS`; root:usnm, mode 0640, nothing secret: with local auth off, ingestion needs an Entra token too). Last, it installs `usnm-ocr-worker.service` (copied from `scripts/ocr-node/`) disabled, which starts only once `/usr/local/bin/usnm-ocr-worker` exists. It ends by checking that `usnm` can get a token (for Resource Manager, not storage: see below), and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done and applies the lockdown, the settings and the unit as they are now (restarting a running worker if they changed). `onboard.sh` then waits for the machine's system-assigned identity and adds it to the nodes' group unless it's already a member, which gives the node its roles; no provision is needed. The machine identity's private key can live in the node's TPM (`--identity-key-store tpm`, the agent's TPM-backed identity, in preview; `proxmox-create-vm.sh` gives VMs a vTPM 2.0), so it can't be copied off the disk. Azure accepts that only once the subscription's `Microsoft.HybridCompute/HybridComputePreview` feature is Registered, which needs Microsoft's approval: `az feature register --namespace Microsoft.HybridCompute --name HybridComputePreview` leaves it Pending until then (requested 2026-10-10). `onboard.sh` checks the feature and asks `node-setup.sh` for the TPM only when it's Registered; otherwise the key stays in the agent's default store on disk. The key store is fixed at connect: moving an existing node to the TPM means `offboard.sh` and `onboard.sh` again, which makes a new machine and identity. A vTPM's state is a file on the Proxmox host, so this protects against the VM's disk or a backup of it, not against the host. `onboard.sh` also turns on Microsoft's automatic agent upgrade for the machine (in preview: the agent upgrades itself to within one version of the latest, in batches at off-peak hours, scheduled with cron), which `node-setup.sh` already asks for at connect with `--enable-automatic-upgrade`; the property is checked so a machine connected earlier gets it too. Last, it stops if the machine has any extension in Azure other than the Azure Monitor Linux Agent (delete it, then run again), associates the machine with the nodes' data collection rule (`OCR_NODE_DCR_ID`), waits until the machine reports the allow list to Azure (a few minutes after a change), and installs the Azure Monitor Linux Agent extension with automatic upgrades on, waiting until it's installed (an agent already installed with automatic upgrades off gets them turned on). As soon as `node-setup.sh` has finished, since the connect was its only use, or when `onboard.sh` stops before that, on failure or Ctrl-C too, it deletes the role assignment, the service principal and the app registration, purges them from Entra's deleted items and prints what it deleted; a warning names anything it couldn't delete, to remove by hand.
+`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers. Unless the node is already connected, it then creates a throwaway app registration and service principal, `usnm-arc-onboard-<name>-<UTC time>`, with a client secret valid for 2 hours and only Azure Connected Machine Onboarding on the environment's resource group, and waits for the role assignment to show up. Then it runs `scripts/ocr-node/node-setup.sh` on the node with sudo. RHEL registration is checked before onboarding changes any resources; the application never reads OS subscription credentials. That script installs python3, podman, chrony, cron (for the agent's automatic upgrades), rsyslog and which, and initscripts where the distribution has it (the monitoring agent's prerequisites), the QEMU guest agent on a VM if the image lacks it, plus htop, iftop and screen from EPEL for watching the node. It installs no OCR engine: EL9 has only Tesseract 4.1.1 and EPEL 9 none, so the engines come as pinned container images, and `install-worker.sh` loads the worker's. It creates the `usnm` user. It sets up the engine runtime of [ADR-0016](design/adr/0016-pluggable-ocr-engines.md) ([13 §13.3](design/13-ocr-engines.md#133-component-view)): a second system user, `usnmeng`, with its own subordinate ids, lingering and the cpu, memory and pids cgroup controllers delegated to its user manager, not in `himds`; its Podman API socket at `/run/usnm-ocr/podman.sock` (mode 0660, group `usnmocr`, which `usnm` shares), through which the worker runs engine containers with `podman --remote`; and the engines' scratch, a tmpfs at `/run/usnm-ocr/scratch` capped at `--scratch-size` (default 2G) and owned by `usnm`, so an engine's files count against its own memory limit. It installs the Connected Machine agent. It sets the agent's extension allow list to the Azure Monitor Linux Agent alone (with extensions off while a different list is replaced), reads it back, stops if any other extension is installed in `/var/lib/waagent` (the allow list doesn't remove one installed before it, and turning the extension manager on would run it again), and only then turns the extension manager on (an empty list allows every extension); it turns off guest configuration and incoming connections. It keeps the journal on disk (`/etc/systemd/journald.conf.d/50-usnm.conf`: `Storage=persistent`, `SystemMaxUse=1G`; the cloud image keeps it in memory only, so a reboot lost the logs). It sets sshd to offer post-quantum key exchange first where its OpenSSH supports it (a drop-in, `/etc/ssh/sshd_config.d/40-pq-kex.conf`; AlmaLinux 9.8's default crypto policy leaves it out). It connects with that service principal (the tenant, app id and secret go over ssh's stdin, never on a command line; the secret waits in a root-only file under `/run` while `azcmagent connect --config` reads it, and a refused connect is retried for a few minutes while the new principal propagates). It writes the worker's settings to `/etc/usnm/ocr-worker.env` unless `install-worker.sh` has written it (the exchange account's queue and `ocr-out` URLs, the node id, one page in flight per CPU and the connection string of the nodes' Application Insights component, which `onboard.sh` passes from `OCR_NODE_APPINSIGHTS`; root:usnm, mode 0640, nothing secret: with local auth off, ingestion needs an Entra token too). Last, it installs `usnm-ocr-worker.service` (copied from `scripts/ocr-node/`) disabled, which starts only once `/usr/local/bin/usnm-ocr-worker` exists. It ends by checking that `usnm` can get a token (for Resource Manager, not storage: see below), and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done and applies the lockdown, the settings and the unit as they are now (restarting a running worker if they changed). `onboard.sh` then waits for the machine's system-assigned identity and adds it to the nodes' group unless it's already a member, which gives the node its roles; no provision is needed. The machine identity's private key can live in the node's TPM (`--identity-key-store tpm`, the agent's TPM-backed identity, in preview; provision a vTPM 2.0 separately), so it can't be copied off the disk. Azure accepts that only once the subscription's `Microsoft.HybridCompute/HybridComputePreview` feature is Registered, which needs Microsoft's approval: `az feature register --namespace Microsoft.HybridCompute --name HybridComputePreview` leaves it Pending until then (requested 2026-10-10). `onboard.sh` checks the feature and asks `node-setup.sh` for the TPM only when it's Registered; otherwise the key stays in the agent's default store on disk. The key store is fixed at connect: moving an existing node to the TPM means `offboard.sh` and `onboard.sh` again, which makes a new machine and identity. A vTPM's state is a file on the Proxmox host, so this protects against the VM's disk or a backup of it, not against the host. `onboard.sh` also turns on Microsoft's automatic agent upgrade for the machine (in preview: the agent upgrades itself to within one version of the latest, in batches at off-peak hours, scheduled with cron), which `node-setup.sh` already asks for at connect with `--enable-automatic-upgrade`; the property is checked so a machine connected earlier gets it too. Last, it stops if the machine has any extension in Azure other than the Azure Monitor Linux Agent (delete it, then run again), associates the machine with the nodes' data collection rule (`OCR_NODE_DCR_ID`), waits until the machine reports the allow list to Azure (a few minutes after a change), and installs the Azure Monitor Linux Agent extension with automatic upgrades on, waiting until it's installed (an agent already installed with automatic upgrades off gets them turned on). As soon as `node-setup.sh` has finished, since the connect was its only use, or when `onboard.sh` stops before that, on failure or Ctrl-C too, it deletes the role assignment, the service principal and the app registration, purges them from Entra's deleted items and prints what it deleted; a warning names anything it couldn't delete, to remove by hand.
 
 **A node connected before monitoring** (connected with extensions off): provision once, so the nodes' workspace, component and rule exist and the group has Monitoring Metrics Publisher, then run `onboard.sh` again. It needs no onboarding credential for a connected node, re-runs `node-setup.sh` (which applies the allow list) and installs the agent.
 
@@ -1418,26 +1465,15 @@ scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node
 scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node1.example.org
 ```
 
-It removes the machine's identity from the nodes' group and deletes its data collection rule associations. With `--host`, it deletes the Azure Monitor Agent extension and waits while the node uninstalls it, then on the node stops and disables `usnm-ocr-worker.service`, removes any extension left (`azcmagent extension remove --all`) and runs `azcmagent disconnect --force-local-only`, which clears the agent's local state without an Azure sign-in, so no onboarding credential is needed. A RHEL node is also unregistered from Red Hat (`subscription-manager unregister`). It turns off `dnf-automatic.timer` and the weekly reboot window before it stops the worker. It leaves the [Serial Set fetch](#the-serial-set-on-prem) alone (`usnm-sset.service`, `usnm-sset-status.timer`, `/etc/usnm/sset.env` and `/var/lib/usnm-sset`): on a node that runs it, stop and disable it first (`sudo systemctl disable --now usnm-sset usnm-sset-status.timer`), since without the Arc identity it can only fail and retry every 15 minutes. Last, it deletes the Arc machine with your `az` sign-in, which deletes its identity so it can get no new token. Without `--host` (a node that's gone or unreachable) it leaves the extension to go with the machine and prints the node commands to run later. It needs ownership of the nodes' group and the right to delete resources in the environment's resource group. To cut a node off at once, rather than when its tokens expire, also take its address out of `USNM_OCR_NODE_IPS` and provision; with both nodes behind the same home IP, that cuts off every node. Offboard every node before turning `USNM_OCR_NODES` off. The provision then deletes the exchange account with its queues and `ocr-out`, and the nodes' monitoring: their workspace with its data, their Application Insights component with the group's Monitoring Metrics Publisher grant, the data collection rule and the three node alerts. Azure won't delete a data collection rule that still has associations: with a node still associated, the provision fails until its association is gone. `offboard.sh` deletes the machine's associations. The provision stops before it starts if the rule in `OCR_NODE_DCR_ID` still has any. The Arc machines stay in the resource group, and their identities in the nodes' group, until offboarded.
+It removes the machine's identity from the nodes' group and deletes its data collection rule associations. With `--host`, it deletes the Azure Monitor Agent extension and waits while the node uninstalls it, then on the node stops and disables `usnm-ocr-worker.service`, removes any extension left (`azcmagent extension remove --all`) and runs `azcmagent disconnect --force-local-only`, which clears the agent's local state without an Azure sign-in, so no onboarding credential is needed. OS registration and Lightspeed reporting are left unchanged; their lifecycle belongs to the infrastructure operator. It turns off `dnf-automatic.timer` and the weekly reboot window before it stops the worker. It leaves the [Serial Set fetch](#the-serial-set-on-prem) alone (`usnm-sset.service`, `usnm-sset-status.timer`, `/etc/usnm/sset.env` and `/var/lib/usnm-sset`): on a node that runs it, stop and disable it first (`sudo systemctl disable --now usnm-sset usnm-sset-status.timer`), since without the Arc identity it can only fail and retry every 15 minutes. Last, it deletes the Arc machine with your `az` sign-in, which deletes its identity so it can get no new token. Without `--host` (a node that's gone or unreachable) it leaves the extension to go with the machine and prints the node commands to run later. It needs ownership of the nodes' group and the right to delete resources in the environment's resource group. To cut a node off at once, rather than when its tokens expire, also take its address out of `USNM_OCR_NODE_IPS` and provision; with both nodes behind the same home IP, that cuts off every node. Offboard every node before turning `USNM_OCR_NODES` off. The provision then deletes the exchange account with its queues and `ocr-out`, and the nodes' monitoring: their workspace with its data, their Application Insights component with the group's Monitoring Metrics Publisher grant, the data collection rule and the three node alerts. Azure won't delete a data collection rule that still has associations: with a node still associated, the provision fails until its association is gone. `offboard.sh` deletes the machine's associations. The provision stops before it starts if the rule in `OCR_NODE_DCR_ID` still has any. The Arc machines stay in the resource group, and their identities in the nodes' group, until offboarded.
 
-### Prefetched scans on pve-big (#368)
+### Prefetched scans (#368)
 
-The scans of the damaged pages are fetched into pve-big's `tank/ocr/scans` by the scan-fetch container, CT 211 `usnm-scanfetch`, and served from there to the nodes over HTTP (12 §12.2.4). Everything runs on pve-big as root, from the repository's `scripts/ocr-node/`:
-
-```sh
-pve-ocr-storage.sh                                   # datasets, ocrdata, no NFS export
-scanfetch-ct.sh --create                             # CT 211 with scans and manifests mounted
-scanfetch-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
-scanfetch-ct.sh --serve                              # the scan server, port 8380, for the OCR nodes by name
-```
-
-To get a manifest in, build it in Azure (`scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-prefetch-manifest --version <v> --exchange-url <OCR_BLOB_ENDPOINT>ocr-out`, with no other ingest or backfill execution running), then on a node: `sudo pull-manifest.sh --account <OCR_EXCHANGE_ACCOUNT> --index-version <v> --scan-server http://<CT 211>:8380`. Start or move the fetch with `scanfetch-ct.sh --configure --manifest /tank/ocr/manifests/<v>/manifest.parquet [--buffer-cap BYTES] [--buffer-resolution ...] --enable`; it goes on where it stopped.
-
-Check it with `pct exec 211 -- cat /tank/ocr/scans/status-full.json` and `pct exec 211 -- journalctl -u usnm-scanfetch -n 20`. `waiting` means the buffer is at its cap until workers read and delete buffer scans; `failed` after 20 pages from 3 titles in a row means LoC is refusing, so look before starting it again. `cooling` means every page left is in an issue whose item loc.gov couldn't serve (12 §12.2.4, #414); it asks again when the cool-off ends. `/tank/ocr/scans/item-errors.json` lists those issues, and `failures-full.jsonl` has a `loc_item_error` line for each page skipped. Point the workers at the server with `install-worker.sh --scan-cache-url http://<CT 211>:8380`. The nodes mount nothing; `node-setup.sh` removes an old `/srv/ocr-data` mount.
+Deploy the scan service and storage using infrastructure tooling. The application's `ocr-prefetch-manifest` command builds the manifest; `scripts/ocr-node/pull-manifest.sh` verifies and submits it to the configured scan-server URL. Set workers' `--scan-cache-url` to that service. Workers use HTTP rather than hypervisor storage mounts. The scan-fetch service's `status-full.json`, `failures-full.jsonl` and journal explain buffer capacity, source cooldown and failures.
 
 ### The scan archive (#442)
 
-The keep-set scans are copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. Production has Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The archive-only identity grant and host installation were applied through #641; the JPEG compatibility fix (#644) was deployed in attested release `ocr-worker-20261016-00fbdd9`. **The 16 October 2026 11:26:03 UTC recovery point is fully verified: 148,127 scans present; no missing scans, mismatches, invalid local files, conflicts or request errors; and no verification skips.** Acceptance used a temporary ZFS snapshot so upload and full property verification covered exactly the same immutable cohort while the source fetcher kept running. Its final top-up uploaded 5,203 scans (17,530,564,063 bytes); the temporary snapshot was destroyed afterward. Daily top-up and monthly verification timers remain enabled. That verification covers a dated off-site copy; it says nothing about whether a later fetch manifest is complete or whether scans fetched since then lag the archive. Read the current reports instead of taking the enabled timers as evidence of later coverage. Direct-client API and tickets remain deferred in #649.
+The keep-set scans have been copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. Production has Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The archive-only identity grant and host installation were applied through #641; the JPEG compatibility fix (#644) was deployed in attested release `ocr-worker-20261016-00fbdd9`. **The 16 October 2026 11:26:03 UTC recovery point is fully verified: 148,127 scans present; no missing scans, mismatches, invalid local files, conflicts or request errors; and no verification skips.** Acceptance used a temporary ZFS snapshot so upload and full property verification covered exactly the same immutable cohort while the source fetcher kept running. Its final top-up uploaded 5,203 scans (17,530,564,063 bytes); the temporary snapshot was destroyed afterward. **On 17 October, daily top-up and monthly verification timers were disabled under the local-first cost decision (#783); existing bytes and manual units remain intact.** That verification covers a dated off-site copy; it says nothing about whether a later fetch manifest is complete or whether scans fetched since then lag the archive. Read the current reports instead of assuming later coverage. Direct-client API and tickets remain deferred in #649. See [local BOINC download hosting](boinc-file-host.md) for the revised cost and serving boundaries.
 
 1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
 2. **The identity.** Keep pve-big out of the OCR nodes' group: that group grants queue permissions and is counted for node pacing. Save its Arc principal as the archive-only uploader, then provision to grant the existing archive role (create and read, no delete) on `scans`:
@@ -1474,7 +1510,7 @@ The keep-set scans are copied to a Cold-tier container, `scans` in the storage a
 
    The helper requires the installed binary, service user, Arc group, tmpfiles configuration and environment file. It runs each phase as `usnm` with the unit's Arc environment and supplementary group, and holds the same lock as the upload and verify services throughout all phases. The lock lives in root-controlled `/run/lock/usnm-scan-archive`, not the service-writable state directory, so the service account cannot replace it with a symlink. A concurrent upload, verify or acceptance check makes it fail before starting a sample. It never enables timers or starts a full upload. The dry run writes nothing; the upload creates at most the requested number of missing scans; verify compares size, md5, tier and stored sha256 from properties without downloading Cold bytes. Limits are 1–1,000 scans (default 100), and acceptance requires a nonempty, consistent-size sample with clean reports and every sampled scan present at verification. The transient units remove `USNM_ARCHIVE_STATE` and set `RUST_LOG=off`, overriding the environment file: acceptance never touches the service state file, and progress logs cannot contaminate the single JSON report.
 
-5. **The first upload.** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time in nanoseconds, inode, change time); an older three-field line is ignored, so that scan is checked once more; on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. Then `sudo systemctl enable --now usnm-scan-archive.timer` for a daily top-up as the fetcher adds scans, and `sudo systemctl enable --now usnm-scan-archive-verify.timer` for the full check on the first of each month. The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand with `sudo systemctl start usnm-scan-archive-verify`. The upload, verify and bounded acceptance helper hold one `flock` on `/run/lock/usnm-scan-archive/lock`, so a verify that starts during an upload waits for it (and the other way round) instead of reporting scans not yet uploaded as missing. A blob with no stored MD5 is never counted as present, in any mode (`conflicts` in an upload or dry run, `mismatched` in verify), and is never written to the state file.
+5. **The first upload (manual, cost-approved only).** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time in nanoseconds, inode, change time); an older three-field line is ignored, so that scan is checked once more; on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. **Do not automatically enable the timers under the current local-first policy.** Their explicit rollback commands are documented in [local BOINC download hosting](boinc-file-host.md). The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand only after cost approval with `sudo systemctl start usnm-scan-archive-verify`. The upload, verify and bounded acceptance helper hold one `flock` on `/run/lock/usnm-scan-archive/lock`, so a verify that starts during an upload waits for it (and the other way round) instead of reporting scans not yet uploaded as missing. A blob with no stored MD5 is never counted as present, in any mode (`conflicts` in an upload or dry run, `mismatched` in verify), and is never written to the state file.
 6. **What a report means.** `bad_local` is a scan whose sidecar is missing or doesn't match its bytes, full resolution or format (not uploaded: investigate before fetching it again). JPEG sidecars use `format="jpeg"` for `.jpg` files; old sidecars without a format default to JPEG. Releases through `ocr-worker-20261016-c66d480` incorrectly rejected valid JPEGs by comparing the sidecar name with the file extension; retry these with a corrected release rather than changing sidecars or re-fetching good bytes. `conflicts` is a blob of that name that differs from the local file (never overwritten: look before doing anything). `errors` are failed requests: run it again. `skipped` (upload runs with the state file) are scans recorded as archived and unchanged; they are not counted in `scanned`. In `--verify`, `mismatched` includes a blob with no stored sha256 metadata or one that differs. Progress logs include failure counters; the final JSON report includes up to 20 problem paths. The command exits non-zero unless all are zero.
 
 The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists for a test only.
@@ -1559,7 +1595,7 @@ scripts/provision.sh --env prod
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication on the LAN dashboard ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines opens directly beneath the summaries, independently of Operational details. On phones, diagrams become readable step cards with the same descriptions and live rates; wider screens retain the SVG maps. Operational details (workers, batches, pages, queues, host stats and provenance) remain collapsed by default. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. Deployment hostnames belong in local configuration, not GitHub. `dashboard.example.invalid` below is a placeholder: substitute the configured LAN name. The dashboard uses a local DNS record and DHCP reservation for CT 212, not a public A record.
+`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication on an access-controlled internal endpoint ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines opens directly beneath the summaries, independently of Operational details. On phones, diagrams become readable step cards with the same descriptions and live rates; wider screens retain the SVG maps. Operational details (workers, batches, pages, queues, host stats and provenance) remain collapsed by default. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. DNS, certificates, container provisioning and access rules are infrastructure concerns.
 
 Summaries use fresh reports, not a shared pipeline percentage. Local completions are worker output; BOINC counts are assigned/unsent result replicas, not unique pages or actively computing devices. The evaluation card groups observed assignments by purpose, but campaign readiness, paired results and acceptance decisions are not connected. Catalog counts cover imported evidence only. Missing publication evidence stays unknown, never zero or inferred success. Snapshot generation time is shown separately from evidence age, so old historical observations do not label all live lanes stale.
 
@@ -1569,71 +1605,75 @@ Active boxes include a rate or "rate unknown". Fetch rates are last-hour complet
 
 States come from the operational view; steps without telemetry show "not tracked here". The dashboard does not directly query Azure ingest, release or search, and user-driven priority queueing is still marked "not built". Counts are not hard-coded. When the pipeline changes, edit the SVG and the answers in `diagrams.rs`; tests check XML, marker substitution, unique ids, source freshness, rate units/scope and the absence of private addresses or internal host names.
 
-**Host stats.** As root on each Proxmox host, from a checkout of the scripts:
-
-```sh
-# pve-big: its file is bind-mounted into the dashboard's container
-scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve-big.json \
-  --pool tank --dataset tank/ocr --dataset tank/ocr/scans --dataset tank/ocr/text
-# the NUC host: pushes its stats to the dashboard
-scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve.json \
-  --push-url http://dashboard.example.invalid/api/host/pve
-```
-
-Each installs `usnm-hoststats.timer`, which runs every minute.
-
-Before installing `usnm-sset-status.service`, create a root-owned
-`/etc/usnm/sset-status.env` containing
-`USNM_SSET_STATUS_PUSH_URL=http://dashboard.example.invalid/api/sset/usnm-sset`,
-substituting the local endpoint. Its required environment file keeps deployment
-addresses out of the service template; missing or empty configuration fails the unit
-instead of silently dropping status pushes. Existing installed units are unchanged
-by a dashboard-only binary update.
-
-**The container.** As root on pve-big:
-
-```sh
-scripts/ocr-node/ocrdash-ct.sh --create
-scripts/ocr-node/ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
-scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
-  --worker usnm-ocr-node3=http://usnm-ocr-node3-arcs-prod.tjg.fyi:8381 \
-  --host-push pve=pve.tjg.fyi --sset-push usnm-sset=usnm-ocr-node3-arcs-prod.tjg.fyi --workbook-url '<the OCR nodes workbook link>' \
-  --https-name dashboard.example.invalid
-```
-
-`--create` makes CT 212 (unprivileged Debian 12, 1 core, 768 MB, onboot) with `tank/ocr/scans`, `tank/ocr/manifests` and `/var/lib/usnm-hoststats` bind-mounted read-only. `--install` takes `usnm-ocrdash` from a worker release; every release since the dashboard was merged has it. `--configure` sets the nftables input policy to drop everything but `--allow` (`lan`: the container's subnet), writes `/etc/usnm/ocrdash.env` and starts `usnm-ocrdash.service`. The worker link is the OCR nodes workbook's portal link, from `az resource list --resource-group rg-usnm-prod --resource-type microsoft.insights/workbooks`.
-
-Node 4 is intentionally BOINC-only since 16 October 2026; do not configure it as an OCR worker. When updating an existing environment file, remove only its retired token from `USNM_OCRDASH_WORKER`, preserving the other workers. An actual configured worker that stops answering still shows the existing error / "no status" behavior.
+**Deployment.** Use infrastructure tooling to install the released dashboard binary, configure its source URLs, mounts and TLS, and install host-stat collectors. The application repository provides the binary, API schemas and service definitions, not lab provisioning.
 
 **Corpus data flow snapshot (#704).** The optional "Corpus data flow" panel reads a local metadata-only `corpus-catalog` JSON file at the usual file polling cadence (15 seconds by default). It appears at `/api/pipeline.json` and as `pipeline` in `/api/view.json`, under the same LAN access controls. It never queries a database or cloud service and needs no credentials. Cataloged stage, run and artifact counts are separate from local worker journal totals, not whole-corpus totals: zero can mean no catalog loaded. The producer must include coverage and issues for absent sources and must not include OCR text or storage URIs.
 
 The panel spans the operational-details section below "At a glance". Its stage list scrolls independently; expand a stage for provenance, or "Coverage, provenance and issues" for source limits and diagnostics. Open details and list positions survive automatic refresh. Closed operational details retain their existing panels and refresh on reopening, preserving list positions while summaries continue to update.
 
-After installing a binary that supports the option, have the producer atomically publish the file at an existing container path readable by `ocrdash`, for example root-owned `/etc/usnm/pipeline.json` (0644). No new mount or service write permission is needed. As root on pve-big, enable **only** the source setting:
-
-```sh
-scripts/ocr-node/ocrdash-ct.sh --ctid 212 --pipeline-snapshot /etc/usnm/pipeline.json
-```
-
-Without `--configure`, this validates readability inside the container, atomically updates only `USNM_OCRDASH_PIPELINE_SNAPSHOT` in the existing `/etc/usnm/ocrdash.env`, preserving its permissions, and restarts the dashboard. It does not rewrite workers, TLS settings, firewall, mounts or the unit. **Do not run broad `--configure` for this incremental change:** that mode replaces the environment and firewall using the supplied arguments. The binary also accepts `--pipeline-snapshot` directly; `USNM_OCRDASH_PIPELINE_MAX_AGE_SECS` / `--pipeline-max-age-secs` sets evidence freshness (default 900 seconds; allowed 1–604800).
+Have the producer atomically publish a readable snapshot file and configure `--pipeline-snapshot` / `USNM_OCRDASH_PIPELINE_SNAPSHOT` through the deployment's infrastructure tooling. Preserve existing source, TLS and access settings. `USNM_OCRDASH_PIPELINE_MAX_AGE_SECS` / `--pipeline-max-age-secs` sets evidence freshness (default 900 seconds; allowed 1–604800).
 
 Input is limited to 1 MiB and schema version 1, producer `corpus-catalog`; unknown fields, invalid UTC RFC3339 times, times more than 60 seconds ahead, negative/fractional or over-trillion counts, and `verified + missing > locations` are rejected. Bounds: 32 coverage strings (128 characters), 64 stages (id 256, label 128, detail 512), 128 issues (code 64, detail 512). No control characters; stage ids must be unique; unknown stage counts must be null. The wrapper reports `retrieved_at`, `last_error`, `age_secs`, `stale`, optional `snapshot`, and `stage_freshness`. Source `observed_at`, not `generated_at` or retrieval time, determines freshness; null means unknown/unavailable. Optional stage `observed_at` supplies independent evidence times (explicit null is unknown; omission uses the snapshot evidence time). Stale stage evidence remains visible even when another source was just observed. Missing, oversized or malformed files retain the last valid snapshot with an explicit error indication and suppress its live summary counts; no valid snapshot shows unavailable, never a silent fallback to worker totals. The API's aggregate `stale` flag remains unchanged; the diagnostic heading says "Some evidence old or unknown", with actual read errors shown beneath it.
 
-**Dashboard-only binary updates.** `cargo build --locked --release -p usnm-ocr-dash --bin usnm-ocrdash` builds only the dashboard executable, not BOINC binaries or engine images. A Linux x86_64 static build can add `--target x86_64-unknown-linux-musl` on a Linux builder with the Rust target and musl C tools installed; validate the resulting artifact in CI, not on the busy Proxmox host. The crate's existing worker-library dependency brings Arrow/Parquet, image, store and telemetry libraries; native compilation includes ring and zstd, but not an OCR engine or BOINC application build. `ocrdash-ct.sh --install` supports worker release tags only, not local binaries/archives. For a dashboard-only CI artifact, verify the exact reviewed commit and checksums, copy the binary to a new versioned `/usr/local/lib/usnm-ocrdash/<commit>/` directory inside CT 212, retain the previous symlink target for rollback, atomically replace `/usr/local/bin/usnm-ocrdash` using a sibling symlink and rename, and restart only `usnm-ocrdash.service`. Keep the existing environment, unit, TLS files, mounts and firewall. Verify `/healthz`, `/api/pipeline.json`, `/api/nodes.json` and the panel over the existing LAN HTTPS endpoint; a process-health response alone does not establish snapshot freshness.
+**Resumable local scan-cache inventory (#704).** For indexes larger than the
+single-batch adapter's 10,000-row/16 MiB limits, run the stdlib orchestrator
+**on the POSIX machine holding the scan files**:
 
-**HTTPS.** The certificate for the locally configured name is a Let's Encrypt one that pve-big gets and renews itself, with home-infra's `home-acme` (lego over the DNS-01 challenge, signed in as pve-big's Arc managed identity; [home-infra README, "Let's Encrypt with DNS-01"](https://github.com/tgoodyear/home-infra#lets-encrypt-with-dns-01)). CT 212 holds no Azure credentials and never talks to Let's Encrypt. Substitute the actual local name for every `dashboard.example.invalid` example below, including unit instances and certificate paths.
+```bash
+python3 scripts/scan_cache_inventory.py \
+  --db catalog.sqlite --index scans/index-full.jsonl --scan-root scans \
+  --work-dir inventory-20261017 --source local-cache-stat \
+  --cache-set keep --cache-set buffer --max-batches 10
+```
 
-- `home-acme@dashboard.example.invalid.timer` on pve-big runs daily and renews when fewer than 30 days are left. It writes `fullchain.pem` and `privkey.pem` to `/var/lib/usnm-certs/dashboard.example.invalid/` on the host (the key 0640, group 102001, which is ocrdash's gid 2001 in the unprivileged container), then runs `pct exec 212 -- systemctl reload-or-restart usnm-ocrdash.service`.
-- `--configure --https-name dashboard.example.invalid` bind-mounts that directory read-only at `/etc/usnm/tls` (`mp3`) and sets `USNM_OCRDASH_TLS_CERT`, `_TLS_KEY`, `_TLS_LISTEN` (`0.0.0.0:443`) and `_HTTPS_NAME`. The dashboard then serves the page on 443; port 80 answers every request with a 308 to `https://dashboard.example.invalid/` and the same path, except the NUC's `PUT /api/host/pve`, which stays plain HTTP (it carries no secret, it's checked by address, and `curl` wouldn't follow a redirect). `systemctl reload` (SIGHUP) makes it read the pair again; a pair it can't read is logged and the old one kept.
-- The nftables rule accepts any port from `--allow`, so 443 needs nothing new.
-- Certificate Transparency exposes the configured certificate name, not its LAN address. Only its `_acme-challenge` TXT record is in public DNS, holding a placeholder except during a challenge. Public certificate metadata is not a reason to copy deployment hostnames into GitHub.
-- Check: `curl -sv https://dashboard.example.invalid/healthz` from a LAN machine shows `issuer: C=US; O=Let's Encrypt` and `SSL certificate verify ok`; `journalctl -u home-acme@dashboard.example.invalid` on pve-big shows each run, with the issuer and expiry.
+Repeat the identical command until `finished` is true. Select only cache sets
+that this operator intends to observe; the index does not encode membership.
+No scans are downloaded, hashed, modified or deleted. A regular file with the
+expected size is `present`, **not checksum-verified**. Missing/wrong-size copies
+are observations, not deletion requests; absent rows are not deletions either.
+This does not change workers, cloud archives, acceptance, publication or indexing.
 
-**When it shows something odd.**
+The first invocation fixes an input byte prefix, inode, and prefix SHA-256.
+That hash protects the **index metadata**, not image bytes. Each resume checks
+the captured prefix by streaming it with at most 1 MiB reads; replacement,
+truncation, or edits fail closed. The index must remain append-only during an
+invocation. Appends are deliberately excluded; use a new inventory directory
+to observe a later prefix (overlapping observations are allowed). A trailing
+record without a newline is excluded and remains explicitly uncovered.
 
-- _A node says "no status"._ The worker isn't answering on port 8381: it is down, or it was installed without `--status-allow dashboard.example.invalid`, or the name points somewhere else now (the worker resolves it each time its status server starts, the node's nftables rule when `install-worker.sh` runs). `scripts/ocr-node/install-worker.sh --status-allow <address>` sets the worker's settings and the node's nftables rule (`usnm-ocr-status-firewall.service`).
-- _A node shows no routes or models before its first page._ A current worker reports the routes and models it knows at startup; install a release containing that behavior if the fields stay empty.
-- _The stats are stale._ `systemctl status usnm-hoststats.timer` on the host. On the NUC, a failed push logs `can't push` in `journalctl -u usnm-hoststats`.
-- _A new manifest._ The dashboard reads the manifest the fetcher's status names, and reads it again when its sha256 changes.
-- _The browser warns about the certificate._ `journalctl -u home-acme@dashboard.example.invalid -n 50` on pve-big, and `openssl x509 -in /var/lib/usnm-certs/dashboard.example.invalid/fullchain.pem -noout -enddate`. `systemctl start home-acme@dashboard.example.invalid` tries again now.
-- _Logs:_ `pct exec 212 -- journalctl -u usnm-ocrdash`. The copies of the workers' journals are in `/var/lib/usnm-ocrdash` in the container; deleting them makes the dashboard copy each worker's journal again from the start.
+Each slice is limited to 256 rows/1 MiB and the existing 64 KiB line limit.
+It is statted separately for each selected set and imported through the existing
+transactional catalog ingestion. `--max-batches` limits newly completed slices
+per invocation, not the prefix integrity scan. Output reports covered/captured
+bytes, uncovered bytes, rows, completed batches, selected sets, and later
+appended bytes. Counts are index rows/observations, **not unique pages or corpus
+completeness**. Even `finished: true` means only that the fixed prefix's complete
+records were processed; LAN dashboard coverage remains partial.
+
+Keep the private inventory directory on durable local storage. It contains
+bounded raw index slices (including original discarded metadata), immutable
+`batch-*/keep.jsonl` / `batch-*/buffer.jsonl` evidence and atomic `state.json`
+checkpoints. Published evidence is reused without re-statting after interruption.
+Checkpoints advance only after all selected sets commit. A crash after a commit
+is recovered by idempotent replay, while an interrupted unpublished build is
+retained as replaceable `.interrupted` scratch. A filesystem lock prevents
+concurrent use of one inventory directory; do not share its catalog with a
+different inventory job concurrently. State/evidence storage grows with the
+observed prefix; working memory is bounded to one slice/adapter batch.
+
+To rebuild a lost catalog, replay only the retained evidence, not `index.jsonl`
+slices or scratch files, into the **same database pathname**:
+
+```bash
+for batch in inventory-20261017/batch-*/keep.jsonl inventory-20261017/batch-*/buffer.jsonl; do
+  [ -f "$batch" ] || continue
+  python3 scripts/data_catalog.py --db catalog.sqlite ingest --batch "$batch" || break
+done
+```
+
+The normal resume command refuses a missing catalog checkpoint; after evidence
+replay it can resume. Evidence is independent of the original scan files and can
+also rebuild a different database for inspection. Do not hand-edit checkpoints
+or evidence. Input transport, scheduling and retention policy are separate work.
+
+**Binary updates.** Build with `cargo build --locked --release -p usnm-ocr-dash --bin usnm-ocrdash`. Deploy the reviewed artifact with infrastructure tooling, retaining rollback and preserving existing settings. Verify `/healthz`, `/api/pipeline.json`, `/api/nodes.json` and the UI; health alone does not prove fresh evidence.

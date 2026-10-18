@@ -8,8 +8,9 @@
 #   scripts/settings-store.sh --what-if [--subscription ID] [--location REGION] [--admins IDS]
 #   scripts/settings-store.sh --deploy [--subscription ID] [--location REGION] [--admins IDS]
 #
-# --what-if shows what --deploy would change, and changes nothing. --deploy
-# creates or updates the store and prints its endpoint; scripts/lib/env.sh's
+# --what-if uses the GA stack-aware preview, including unmanage and deny-setting
+# changes, and creates no managed resources. --deploy creates or updates the
+# store and prints its endpoint; scripts/lib/env.sh's
 # provision runs it when the subscription has no store yet. --admins takes
 # the Entra object ids, comma separated, given App Configuration Data Owner
 # on the store besides the account deploying it: every operator who
@@ -62,13 +63,19 @@ fi
 
 case "$ACTION" in
   what-if)
-    # Stacks have no what-if; a deployment's shows the same template's
-    # changes, but not what the stack deletes because the template dropped
-    # it (an admin taken off the list loses the role).
-    echo "the store's changes (a deployment's what-if: it doesn't list role assignments the stack deletes for admins taken off the list):"
-    az deployment sub what-if --location "$LOCATION" \
-      --template-file infra/settings/main.bicep \
-      --parameters location="$LOCATION" admins="$ADMINS" --only-show-errors
+    az stack-whatif sub create --help > /dev/null ||
+      die "this Azure CLI lacks GA stack-whatif; update Azure CLI before previewing"
+    subscription_id=$(az account show --query id -o tsv) || die "can't read the subscription id"
+    preview="$STACK-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    stack_id="/subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacks/$STACK"
+    echo "previewing stack $STACK (includes unmanaged resources and deny settings)"
+    az stack-whatif sub create --subscription "$subscription_id" --name "$preview" --stack-id "$stack_id" \
+      --location "$LOCATION" --template-file infra/settings/main.bicep \
+      --parameters location="$LOCATION" admins="$ADMINS" \
+      --action-on-unmanage deleteResources --deny-settings-mode denyDelete \
+      --description "usnewsmap settings store, every environment's private settings by label (scripts/settings-store.sh)" \
+      --retention-interval PT3H --no-color || die "the stack-aware what-if of $STACK failed"
+    echo "preview retained for up to three hours: /subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacksWhatIfResults/$preview"
     ;;
   deploy)
     need_stack_az

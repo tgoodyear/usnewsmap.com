@@ -54,6 +54,13 @@ enum Commands {
         #[arg(long, default_value = "/work")]
         dir: PathBuf,
     },
+    /// Publish a page on the local producer; this is NOT public readiness proof.
+    PrepareDownload {
+        #[arg(long)]
+        page: PathBuf,
+        #[arg(long)]
+        download_root: PathBuf,
+    },
     /// Stage and submit one reserved job with stock create_work.
     Submit {
         #[arg(long)]
@@ -62,6 +69,12 @@ enum Commands {
         project: PathBuf,
         #[arg(long)]
         job: String,
+        /// Public HTTPS prefix serving immutable content-addressed page bytes.
+        #[arg(long)]
+        download_base_url: Option<String>,
+        /// Existing local directory mapped to download-base-url (no symlinks).
+        #[arg(long, requires = "download_base_url")]
+        download_root: Option<PathBuf>,
     },
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile {
@@ -503,11 +516,25 @@ enum Gold {
         spool: PathBuf,
         #[arg(long)]
         out: PathBuf,
+        /// Read authoritative result metadata from this private MySQL option file.
+        #[arg(long, requires_all = ["mysql_ca_file", "database", "language", "profile"])]
+        mysql_defaults_file: Option<PathBuf>,
+        #[arg(long, requires_all = ["mysql_defaults_file", "database", "language", "profile"])]
+        mysql_ca_file: Option<PathBuf>,
+        #[arg(long, requires_all = ["mysql_defaults_file", "mysql_ca_file", "language", "profile"])]
+        database: Option<String>,
+        /// Explicit trust scope recorded with server-authoritative outcome evidence.
+        #[arg(long, requires_all = ["mysql_defaults_file", "mysql_ca_file", "database", "profile"])]
+        language: Option<String>,
+        #[arg(long, requires_all = ["mysql_defaults_file", "mysql_ca_file", "database", "language"])]
+        profile: Option<String>,
     },
-    /// Build trust.json for `collect --trust` from one or more reports.jsonl files.
+    /// Build trust.json from validated canonical reports and native server outcome evidence.
     Trust {
         #[arg(long, required = true)]
         reports: Vec<PathBuf>,
+        #[arg(long, required = true)]
+        outcomes: Vec<PathBuf>,
         /// The highest overall CER that passes.
         #[arg(long)]
         max_cer: f64,
@@ -526,6 +553,24 @@ enum Gold {
 }
 #[derive(Subcommand)]
 enum Surya {
+    /// Stage checksummed benchmark images and private references, with no network requests.
+    BenchmarkStage {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        manifest_sha256: String,
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        engine_image: String,
+        #[arg(long)]
+        engine_llama: String,
+        #[arg(long)]
+        engine_weights: String,
+        #[arg(long, default_value = "0.22.1")]
+        engine_surya: String,
+    },
+
     /// Get each page's full-size IIIF JPEG (the scan archive, then tile.loc.gov one request at a
     /// time) and write its unit.
     Stage {
@@ -572,6 +617,12 @@ enum Surya {
         project: PathBuf,
         #[arg(long, default_value_t = 20)]
         max_units: usize,
+        /// Experimental single-replica probe, at most 30 units, no fallback hosts.
+        #[arg(long)]
+        target_host: Option<u64>,
+        /// Exact-host NVIDIA version 1.3 only, with its 8 GiB memory envelope.
+        #[arg(long, requires = "target_host")]
+        gpu_probe: bool,
     },
     /// Write a unit from a local image, to check a host or the image without LoC or BOINC.
     /// Inside the worker image the engine values default to the image's own.
@@ -871,7 +922,8 @@ enum Qwen {
         /// Its USNM_QWEN_WEIGHTS.
         #[arg(long)]
         engine_weights: String,
-        #[arg(long, default_value_t = 1800)]
+        /// GPU runtime per page, including all crops; allow slower volunteer GPUs.
+        #[arg(long, default_value_t = 14_400)]
         gpu_timeout_secs: u32,
         #[arg(long, default_value_t = 7200)]
         cpu_timeout_secs: u32,
@@ -961,6 +1013,54 @@ enum Qwen {
         #[arg(long)]
         pairs: PathBuf,
     },
+}
+
+#[cfg(test)]
+mod qwen_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn staged_gpu_jobs_allow_four_hours_unless_explicitly_bounded() {
+        let args = [
+            "usnm-boinc",
+            "qwen",
+            "stage",
+            "--quality-root",
+            "quality",
+            "--root",
+            "qwen",
+            "--engine-image",
+            "sha256:image",
+            "--engine-llama",
+            "sha256:llama",
+            "--engine-weights",
+            "sha256:weights",
+        ];
+        for override_secs in [None, Some("1800")] {
+            let mut command = args.to_vec();
+            if let Some(value) = override_secs {
+                command.extend(["--gpu-timeout-secs", value]);
+            }
+            let cli = Cli::try_parse_from(command).unwrap();
+            let Commands::Qwen(Qwen::Stage {
+                gpu_timeout_secs,
+                cpu_timeout_secs,
+                ..
+            }) = cli.command
+            else {
+                panic!("expected Qwen staging command");
+            };
+            assert_eq!(
+                gpu_timeout_secs,
+                if override_secs.is_some() {
+                    1800
+                } else {
+                    14_400
+                }
+            );
+            assert_eq!(cpu_timeout_secs, 7200);
+        }
+    }
 }
 #[derive(Clone, Copy, ValueEnum)]
 enum SuryaMode {
@@ -1077,8 +1177,33 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Work { dir } => usnm_boinc::worker::run(&dir).await?,
-        Commands::Submit { root, project, job } => {
-            usnm_boinc::submit::submit(&root, &project, &job).await?
+        Commands::PrepareDownload {
+            page,
+            download_root,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string(&usnm_boinc::submit::prepare_download(
+                    &page,
+                    &download_root
+                )?)?
+            );
+        }
+        Commands::Submit {
+            root,
+            project,
+            job,
+            download_base_url,
+            download_root,
+        } => {
+            let download = match (download_base_url, download_root) {
+                (Some(base), Some(root)) => Some(usnm_boinc::submit::Download::new(&base, &root)?),
+                (Some(base), None) => Some(usnm_boinc::submit::Download::remote(&base)?),
+                (None, None) => None,
+                (None, Some(_)) => anyhow::bail!("download-root requires download-base-url"),
+            };
+            usnm_boinc::submit::submit_with_download(&root, &project, &job, download.as_ref())
+                .await?
         }
         Commands::Reconcile { root, job, found } => {
             usnm_boinc::submit::reconcile(&root, &job, matches!(found, Found::Present))?
@@ -1292,25 +1417,61 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
             project,
             spool,
             out,
+            mysql_defaults_file,
+            mysql_ca_file,
+            database,
+            language,
+            profile,
         } => {
-            let s = x::collect::run(&x::collect::Options {
+            let options = x::collect::Options {
                 root,
                 project,
                 spool,
                 out,
-            })?;
-            eprintln!("{s:?}");
+            };
+            let summary = match (
+                mysql_defaults_file,
+                mysql_ca_file,
+                database,
+                language,
+                profile,
+            ) {
+                (
+                    Some(mysql_defaults_file),
+                    Some(mysql_ca_file),
+                    Some(database),
+                    Some(language),
+                    Some(profile),
+                ) => {
+                    let config = x::collect::NativeConfig {
+                        mysql_defaults_file,
+                        mysql_ca_file,
+                        database,
+                        language,
+                        profile,
+                    };
+                    let rows = x::collect::native_results(&options.root, &config).await?;
+                    x::collect::run_with_native(&options, &rows, &config)?
+                }
+                (None, None, None, None, None) => x::collect::run(&options)?,
+                _ => {
+                    anyhow::bail!("native Gold collection requires all database and scope options")
+                }
+            };
+            eprintln!("{summary:?}");
         }
         Gold::Trust {
             reports,
+            outcomes,
             max_cer,
             manifest_sha256,
             language,
             profile,
             out,
         } => {
-            let t = usnm_boinc::trust::Trust::build(
+            let t = usnm_boinc::trust::Trust::build_with_outcomes(
                 &reports,
+                &outcomes,
                 max_cer,
                 &manifest_sha256,
                 usnm_boinc::trust::Scope {
@@ -1337,6 +1498,29 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
 async fn surya(c: Surya) -> anyhow::Result<()> {
     use usnm_boinc::surya as x;
     match c {
+        Surya::BenchmarkStage {
+            manifest,
+            manifest_sha256,
+            root,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            engine_surya,
+        } => {
+            let count = x::stage::benchmark(
+                &manifest,
+                &manifest_sha256,
+                &root,
+                usnm_ocr_contract::surya::Engine {
+                    image: engine_image,
+                    llama: engine_llama,
+                    weights: engine_weights,
+                    surya: engine_surya,
+                },
+            )?;
+            eprintln!("staged {count} immutable benchmark inputs");
+        }
+
         Surya::Stage {
             pages,
             root,
@@ -1378,11 +1562,15 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             root,
             project,
             max_units,
+            target_host,
+            gpu_probe,
         } => {
             let s = x::submit::run(&x::submit::Options {
                 root,
                 project,
                 max_units,
+                target_host,
+                gpu_probe,
             })
             .await?;
             eprintln!("{s:?}");

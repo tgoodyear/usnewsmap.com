@@ -853,25 +853,26 @@ def poke_local_boinc_client(project_url: str = "https://boinc.usnewsmap.com/") -
     except OSError:
         local_ok = False
 
-    # Best-effort: also poke local Proxmox BOINC containers on pve-big.tjg.fyi if reachable via SSH
-    try:
-        subprocess.run(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=3",
-                "root@pve-big.tjg.fyi",
-                f"for ct in 100 101 214; do pct exec $ct -- boinccmd --project {project_url} update >/dev/null 2>&1 || true; done",
-            ],
-            check=False,
-            timeout=8,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+    remote_host = os.environ.get("USNM_BOINC_REMOTE_POKE_HOST")
+    if remote_host:
+        try:
+            subprocess.run(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=3",
+                    remote_host,
+                    f"for ct in 100 101 214; do pct exec $ct -- boinccmd --project {project_url} update >/dev/null 2>&1 || true; done",
+                ],
+                check=False,
+                timeout=8,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
     return local_ok
 
 

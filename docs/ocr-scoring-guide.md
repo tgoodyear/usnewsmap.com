@@ -83,7 +83,14 @@ scripts/ocr-survey/gold.py public-convert --dataset newseye-bnf --src DATA/newse
 
 Other `public-convert` flags: `--seed` (default 296) changes which regions are picked; `--min-chars` and `--max-chars` override the length window (200 to 2,500 normalized characters for most sets, 200 to 8,000 for BLN600, 20 to 300 for NZZ lines). The pick takes one region from each page before a second from any page, up to `--per-page` per page. With the same download, seed and flags, the pick is the same, so two people can score on the same crops.
 
-The `reichsanzeiger` and `austrian` conversions have not yet run on the real files (see [What was tested](ocr-gold-set.md#fetch-and-convert)). If one of them fails or writes no crops, open an issue with the error.
+The `austrian` conversion has now run on real training and validation files;
+the publisher's partitions overlap by newspaper issue. See the
+[German diagnostic](ocr-gold-set.md#german-fraktur-cutover-diagnostic-18-october-2026)
+for the issue-disjoint experiment and its failed candidate. Reichsanzeiger image
+retrieval returned HTTP 503 on 18 October 2026, so that attempted run did not
+establish image-backed conversion coverage. If a conversion fails or writes no
+crops, record the failing stage rather than treating a downloaded XML archive as
+a complete reference set.
 
 ## Running your engine
 

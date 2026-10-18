@@ -21,6 +21,9 @@ param storageGb int = 20
 @description('The BOINC database. make_project creates it (CREATE DATABASE, not IF NOT EXISTS), so this template does not.')
 param databaseName string = 'usnmocr'
 
+@description('Enable only after #464 Azure-chain, copied-project migration/rollback and all-consumer acceptance, coordinated under #529. OFF preserves the deployed policy.')
+param requireSecureTransport bool = false
+
 resource server 'Microsoft.DBforMySQL/flexibleServers@2024-12-30' = {
   name: serverName
   location: location
@@ -37,14 +40,12 @@ resource server 'Microsoft.DBforMySQL/flexibleServers@2024-12-30' = {
   }
 }
 
-// OFF: BOINC's clients (make_project's MySQLdb, the PHP pages, the C++ daemons) never ask for
-// TLS, and Debian bookworm's MariaDB Connector/C does not use it unasked; tested 2026-10-13,
-// make_project failed with error 3159. The server has no public endpoint (VNet integration,
-// private DNS), so the traffic stays inside the VNet. Design doc section 9.
+// Pinned clients now request verified TLS. Existing persisted project copies and the
+// deployed Azure certificate chain still need acceptance before enforcement (#464).
 resource secureTransport 'Microsoft.DBforMySQL/flexibleServers/configurations@2024-12-30' = {
   parent: server
   name: 'require_secure_transport'
-  properties: { value: 'OFF', source: 'user-override' }
+  properties: { value: requireSecureTransport ? 'ON' : 'OFF', source: 'user-override' }
 }
 
 // The Entra administrator is NOT created here: it needs a server identity that already holds

@@ -43,6 +43,8 @@ jobs:
       provision: ${{ steps.f.outputs.provision }}
       markdown: ${{ steps.f.outputs.markdown }}
       ocr_worker: ${{ steps.f.outputs.ocr_worker }}
+      ocr_dash: ${{ steps.f.outputs.ocr_dash }}
+      infra: ${{ steps.f.outputs.infra }}
       page_language: ${{ steps.f.outputs.page_language }}
       contrib: ${{ steps.f.outputs.contrib }}
       ocr_gold: ${{ steps.f.outputs.ocr_gold }}
@@ -103,8 +105,6 @@ jobs:
         options: >-
           --health-cmd="mysqladmin ping --silent"
           --health-interval=5s --health-timeout=5s --health-retries=30
-    env:
-      BICEP_VERSION: v0.47.16
     defaults:
       run:
         working-directory: contrib-compute
@@ -152,11 +152,12 @@ jobs:
         working-directory: .
         run: |
           python3 -m unittest -v scripts/boinc/test_install.py
-          python3 -m unittest -v scripts/boinc/test_iris_campaign.py scripts/boinc/test_iris_worker.py scripts/boinc/test_iris_stage_pages.py
+          python3 -m unittest -v scripts/boinc/test_iris_campaign.py scripts/boinc/test_iris_worker.py scripts/boinc/test_iris_cache.py scripts/boinc/test_iris_stage_pages.py
           python3 -m unittest -v scripts/boinc/test_volunteer.py scripts/boinc/test_qwen_disk.py scripts/boinc/test_qwen_canary.py scripts/boinc/test_hold_legacy_qwen.py
           python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
           python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
+          python3 -m unittest -v scripts/boinc/test_patch_server_intel_proc_type.py
           python3 -m unittest -v scripts/boinc/test_patch_server_gold_routing.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
           python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
@@ -164,10 +165,8 @@ jobs:
         working-directory: .
         run: scripts/ci/install-bicep.sh
       - name: Bicep builds
-        run: |
-          for f in $(git ls-files 'infra/*.bicep'); do
-            bicep build "$f" --stdout > /dev/null
-          done
+        working-directory: .
+        run: scripts/ci/build-bicep.sh
 
   # The BOINC project's web pages: a PHP syntax check, no image build.
   boinc-pages:
@@ -180,6 +179,7 @@ jobs:
         with:
           persist-credentials: false
       - run: find contrib-compute/boinc/html -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: python3 -m unittest -v contrib-compute/images/server/test_work_summary.py
 
   boinc-db-tls:
     name: BOINC actual database TLS (private disposable fixture)
@@ -194,6 +194,20 @@ jobs:
       - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py
       - run: shellcheck -x -S warning scripts/boinc/check-db-tls.sh
       - run: scripts/boinc/check-db-tls.sh
+
+  boinc-mysql84-db-tls:
+    name: BOINC actual database TLS (private MySQL 8.4)
+    needs: changes
+    if: needs.changes.outputs.contrib == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py scripts/boinc/test_mysql84_db_tls.py
+      - run: shellcheck -x -S warning scripts/boinc/check-mysql84-db-tls.sh
+      - run: scripts/boinc/check-mysql84-db-tls.sh
 
   boinc-node-client:
     name: BOINC stable node client (EL9 build, no host installation)
@@ -449,8 +463,13 @@ jobs:
   ocr-worker-el9:
     name: ocr worker (EL9 build, glibc)
     needs: changes
-    if: needs.changes.outputs.ocr_worker == 'true'
+    if: needs.changes.outputs.ocr_worker == 'true' || needs.changes.outputs.ocr_dash == 'true'
     runs-on: ubuntu-latest
+    env:
+      # A pull request that changes only the dashboard builds only the
+      # dashboard. A pull request that changes the worker, and every run that
+      # is not a pull request, builds both, as the release carries both.
+      BUILD_WORKER: ${{ needs.changes.outputs.ocr_worker == 'true' || github.event_name != 'pull_request' }}
     container:
       image: mirror.gcr.io/library/almalinux:9@sha256:9819dc675b67b595c2b59e42be7763fca1a8bb217fa5944e04daa22e9a64db16
     steps:
@@ -468,13 +487,19 @@ jobs:
       # --version prints the commit (USNM_GIT_SHA at build time).
       # The LAN dashboard (usnm-ocrdash, 12 §12.2.5) ships in the same
       # release; its container on pve-big is Debian 12 (glibc 2.36).
-      - run: cargo build --release --locked -p usnm-ocr-worker -p usnm-ocr-dash
+      - name: Build
+        run: |
+          packages=(-p usnm-ocr-dash)
+          if [ "$BUILD_WORKER" = true ]; then packages+=(-p usnm-ocr-worker); fi
+          cargo build --release --locked "${packages[@]}"
         env:
           USNM_GIT_SHA: ${{ github.sha }}
       - name: No glibc symbol newer than EL9's 2.34
         run: |
           mkdir -p dist
-          for name in usnm-ocr-worker usnm-ocrdash; do
+          names=(usnm-ocrdash)
+          if [ "$BUILD_WORKER" = true ]; then names+=(usnm-ocr-worker); fi
+          for name in "${names[@]}"; do
             bin=target/release/$name
             newest=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1)
             echo "$name: newest glibc symbol version: $newest"
@@ -500,7 +525,11 @@ jobs:
   ocr-worker-check:
     name: ocr worker (RHEL 10, Tesseract image)
     needs: [changes, ocr-worker-el9]
-    if: needs.changes.outputs.ocr_worker == 'true'
+    # The release is built from this job's artifact, so a dashboard change on
+    # main runs it too; a pull request that changes only the dashboard doesn't.
+    if: >-
+      needs.changes.outputs.ocr_worker == 'true'
+      || (needs.changes.outputs.ocr_dash == 'true' && github.event_name != 'pull_request')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -550,7 +579,7 @@ jobs:
     name: ocr worker release
     needs: [changes, rust, ocr-worker-el9, ocr-worker-check]
     if: >-
-      always() && needs.changes.outputs.ocr_worker == 'true'
+      always() && (needs.changes.outputs.ocr_worker == 'true' || needs.changes.outputs.ocr_dash == 'true')
       && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
       && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -608,19 +637,22 @@ jobs:
   infra:
     name: infra (bicep lint, build)
     # Also the shared-key scan and the named-arguments check (#277), so every
-    # change but documentation runs them.
+    # change but documentation runs them. The Bicep, naming, workbook and
+    # script-test steps run when something they read changed (`infra`), which
+    # a change confined to src/ and tests/ of the LAN dashboard crate doesn't.
+    # The OCR gold steps follow `ocr_gold`.
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    env:
-      BICEP_VERSION: v0.47.16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Bicep
+        if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/install-bicep.sh
       - name: Lint (any warning fails)
+        if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/lint-bicep.sh
       - name: No shared-key authentication (ADR-0009)
         run: scripts/ci/no-shared-keys.sh
@@ -629,12 +661,16 @@ jobs:
           scripts/ci/no-positional-args.py
           python3 -m unittest -v scripts/ci/test_no_positional_args.py
       - name: changes.sh runs the Quickwit job only for what its tests build
+        if: needs.changes.outputs.infra == 'true'
         run: python3 -m unittest -v scripts/ci/test_changes.py
       - name: The bounded local corpus catalog's tests pass
-        run: python3 -m unittest -v scripts/test_data_catalog.py
+        if: needs.changes.outputs.infra == 'true'
+        run: python3 -m unittest -v scripts/test_data_catalog.py scripts/test_scan_cache_inventory.py scripts/test_worker_evidence_sync.py
       - name: Read-only corpus flow observations preserve scope and freshness
+        if: needs.changes.outputs.infra == 'true'
         run: python3 -m unittest -v scripts/test_data_flow_observer.py
       - name: Pinned model downloads retry TLS failures without bypassing verification
+        if: needs.changes.outputs.infra == 'true'
         run: python3 -m unittest -v scripts/ci/test_model_download.py
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
@@ -646,6 +682,7 @@ jobs:
         if: needs.changes.outputs.ocr_gold == 'true'
         run: python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
       - name: The OCR nodes' nightly update picks the right release (#471)
+        if: needs.changes.outputs.infra == 'true'
         run: |
           python3 -m unittest -v scripts/ocr-node/test_update_worker.py
           python3 -m unittest -v scripts/ocr-node/test_check_scan_archive.py
@@ -656,20 +693,25 @@ jobs:
             scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
             scripts/ocr-node/install-archive-host.sh
       - name: The search cluster report's tests pass
+        if: needs.changes.outputs.infra == 'true'
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's
       # parameters, the settings location and scripts/dev-status.sh (#275).
       - name: The environment scripts' tests pass
+        if: needs.changes.outputs.infra == 'true'
         run: python3 -m unittest -v scripts/test_env_scripts.py scripts/test_rename_guard.py scripts/test_resource_names.py
       # Against a stub az: the BOINC bridge starter keeps the job's own settings
       # and share, and starts it without an override.
       - name: The BOINC scripts' tests pass
+        if: needs.changes.outputs.infra == 'true'
         run: |
           python3 -m unittest -v scripts/test_boinc_scripts.py scripts/test_boinc_provision.py
+          python3 -m unittest -v scripts/boinc/test_acceptance.py
           shellcheck -x -S warning scripts/start-boinc-bridge.sh scripts/provision-boinc.sh scripts/boinc-app-release.sh
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
       - name: Each environment's committed settings match infra/env/schema.json
+        if: needs.changes.outputs.infra == 'true'
         run: scripts/lib/env_settings.py --check
       # Resource names (ADR-0017): names() in infra/naming.bicep against the
       # rules, infra/names/exceptions.json (which only shrinks against the
@@ -680,6 +722,7 @@ jobs:
       # base check-names.py can't read (--require-base), so the shrink check
       # never drops out quietly.
       - name: Resource names follow ADR-0017 and prod's are unchanged
+        if: needs.changes.outputs.infra == 'true'
         env:
           BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
@@ -692,18 +735,19 @@ jobs:
           python3 -m unittest -v scripts/ci/test_check_names.py
       # The workbooks are loaded as text, so Bicep doesn't parse them.
       - name: The workbook definitions parse and name the workspace placeholder
+        if: needs.changes.outputs.infra == 'true'
         run: |
           scripts/ci/check-workbooks.py
           scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
           python3 -m unittest -v scripts/ci/test_check_workbooks.py
-      - run: bicep build infra/main.bicep --stdout > /dev/null
-      - run: bicep build infra/guardrails.bicep --stdout > /dev/null
-      - run: bicep build infra/archive/main.bicep --stdout > /dev/null
-      - run: bicep build infra/settings/main.bicep --stdout > /dev/null
+      - name: Build every Bicep template
+        if: needs.changes.outputs.infra == 'true'
+        run: scripts/ci/build-bicep.sh
       # The parameters bootstrap deploys the stack with (settings from the
       # environment; unset ones take their defaults). The VNet block has no
       # default; this sample is from RFC 5737's documentation range.
-      - run: bicep build-params infra/main.bicepparam --stdout > /dev/null
+      - if: needs.changes.outputs.infra == 'true'
+        run: bicep build-params infra/main.bicepparam --stdout > /dev/null
         env:
           AZURE_ENV_NAME: dev
           USNM_VNET_ADDRESS_PREFIX: 192.0.2.0/24

@@ -28,6 +28,15 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".dockerignore"
+      # Files the crates it builds embed (scripts/ci/changes.sh finds them).
+      - "catalog/**"
+      - "fixtures/ocr-gold/bundle-v1.lock.json"
+      - "infra/quickwit/**"
+      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "ocr/engines/engines.toml"
+      - "ocr/engines/ndlocr-lite/models.lock"
+      - "ocr/engines/tesseract/models.lock"
+      - "ocr/routing/routes.toml"
       - "!**/*.md"
 
 permissions:
@@ -41,10 +50,27 @@ env:
   IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
 
 jobs:
+  # Whether this change touches what the image is built from (scripts/ci/changes.sh):
+  # a crate counts when the image builds it, not for being under crates/.
+  # Not named `changes`: ci.yml's required check has that name.
+  inputs:
+    name: qwen worker image inputs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.f.outputs.boinc_qwen }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: f
+        run: scripts/ci/changes.sh
   # Pull requests: build and check only, with a read-only token.
   check:
     name: qwen worker image (build)
-    if: github.event_name == 'pull_request'
+    needs: inputs
+    if: github.event_name == 'pull_request' && needs.inputs.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -111,3 +137,11 @@ jobs:
             echo "| QWEN_ENGINE_WEIGHTS | \`$weights\` |"
             echo "| commit | \`$SHA\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p release
+          jq -n --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg commit "$SHA" --arg model "qwen-$MODEL" --arg image "$IMAGE@$digest" \
+            '{schema:1,run_id:$run,run_attempt:$attempt,commit:$commit,model:$model,image:$image}' > release/final.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boinc-bootstrap-qwen-${{ matrix.model }}-${{ github.run_attempt }}
+          path: release/final.json
+          if-no-files-found: error

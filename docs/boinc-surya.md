@@ -133,3 +133,151 @@ docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=1g --gpus all -v
 - That llama.cpp's CUDA build falls back to its CPU backends on a host without a GPU other than the CI runner.
 - Peak memory and time on volunteers' hosts, and so the plan classes' limits.
 - Quality against LoC and the gold set for a stratified multi-hundred-page sample.
+
+## Bounded immutable-input probe (#812)
+
+The registries serve different purposes, just as for Qwen and Iris. Volunteers
+pull the **public GHCR worker** by digest. The private production ACR
+`crusnmprodffapzy` holds signed **app-version payloads** and server/bridge images.
+Do not mirror the worker into private ACR: anonymous volunteers cannot pull it.
+`images.appver` is the last publisher replay image, not a catalog of all registered
+versions. An older app's artifact need not equal that pin. Anonymous `apps.php`
+redirects to login; an empty 302 body is not evidence that an app is absent.
+Check the production `app`/`app_version` rows and their signed Dockerfile downloads
+before releasing either version. Also inspect existing version/platform directories:
+absence from the DB does not permit overwriting an immutable signed payload.
+On 18 October both Surya 1.0/1.1 directories existed with the older `84c1069f…`
+worker while neither version was registered. A new worker requires an unused,
+reviewed version pair; do not delete or replace the old signed directories. Use the normal signer; stop if locked or absent.
+
+`surya-benchmark-stage` accepts a pinned bundle, without fetching or transforming
+its images. Prepare the same two v1.0.0 smoke subsets used by the candidate trials:
+
+```sh
+scripts/ocr-bench/fetch --version v1.0.0 --verify --dest benchmark
+python3 scripts/boinc/surya-benchmark.py prepare \
+  --release benchmark/usnm-ocr-bench-v1.0.0 --out surya-inputs
+```
+
+The helper checks the committed release-manifest and subset digests and every
+selected image/reference hash. It keeps upstream provenance and `LICENSES`,
+including the English reference NC attribution. Copy the bundle, retaining its
+layout, to `<share>/surya-inputs/<campaign>/` through the existing authorized
+operator transport. Keep references private. `inputs.json` is an array of
+`sample_id`, `group`, `language`, relative `image`/`reference` paths and their
+`image_sha256`/`reference_sha256`, `source_url`, and `license`. The SHA256 of its
+exact bytes, printed by prepare, is required by staging:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step surya-benchmark-stage \
+  --var SURYA_CAMPAIGN=probe-812-gpu --var SURYA_BENCHMARK_SHA256=MANIFEST_SHA256 \
+  --var SURYA_ENGINE_IMAGE=sha256:WORKER --var SURYA_ENGINE_LLAMA=sha256:LLAMA \
+  --var SURYA_ENGINE_WEIGHTS=sha256:WEIGHTS --wait-mins 15
+```
+
+The equivalent local command is `usnm-boinc surya benchmark-stage --manifest FILE
+--manifest-sha256 SHA256 --root ROOT --engine-image sha256:WORKER --engine-llama
+sha256:LLAMA --engine-weights sha256:WEIGHTS`. Staging validates all inputs before
+writing, refuses an existing campaign, and writes a completion marker. Submission
+rechecks the pinned manifest, every reference/image and job. Only `page.jpg` (the
+original image bytes, never re-encoded) and `surya.json` enter the download tree.
+The existing v1 worker's `https://tile.loc.gov/local` sentinel is retained for
+local inputs; it is **not a provenance URL and is never fetched**. Actual source
+URLs and license evidence remain in `benchmark-inputs.json` and the bundle.
+
+For a small exact-host probe, set `SURYA_TARGET_HOST` on `surya-submit` (or
+`surya submit --target-host ID`). This reuses stock `create_work --target_host`
+and requires the real `enable_assignment=1` server setting from #719. It uses
+**quorum one**, target one, maximum one result, no fallback/retry hosts, and at
+most 30 units per campaign. The campaign lock, durable target policy and existing
+`submitting` marker prevent concurrent dispatch, retargeting and blind retries.
+Targeted workunit names include the host ID so separate CPU and GPU probe
+campaigns can share immutable job identities. Untargeted campaigns retain the
+original quorum-two behavior.
+
+This fallback deliberately does **not** claim GPU+CPU quorum: the stock single
+`--target_host` option cannot specify one replica per device, while ordinary
+quorum-two scheduling cannot guarantee the pair. The per-result Surya check
+script remains unchanged and keeps every returned result in `surya/seen`.
+Quorum-one results do not generate validator comparison pairs; report
+`pairs.jsonl` as absent/empty rather than claiming cross-host consensus. Separate
+validated CPU/GPU outputs can be compared explicitly with `surya compare --log`
+and labeled as post-collection comparison, not quorum validation.
+
+Keep the total dispatch around 20–30 units: for example 20 GPU smoke inputs,
+three LoC pages (one each Serbian, Russian and worst-English, through ordinary
+`surya-stage` into a **separate** campaign), and three pinned repeat inputs on a
+known eligible CPU host, each with its own target/campaign. The CPU repeat bundle
+must explicitly pin its three selected members and retain original attribution.
+Do not append LoC units to an immutable benchmark campaign. Recheck the #529
+claim, current GPU reservations on #794, host idleness, signed-image equality,
+client plan eligibility, memory/disk bounds and existing preferences before
+submission. A prepared bundle or passing CI is not dispatch authorization.
+
+Export only validator-kept results for the existing scorers:
+
+```sh
+python3 scripts/boinc/surya-benchmark.py collect --root CAMPAIGN \
+  --seen PROJECT/surya/seen --out collected --binary usnm-boinc --intended-device cuda
+usnm-ocr-survey bench-score --release RELEASE --subset overproof-en/smoke-10 \
+  --outputs collected/cuda-tiled-english.jsonl --rule legacy-ws-v1
+usnm-ocr-survey bench-score --release RELEASE --subset overproof-en/smoke-10 \
+  --outputs collected/cuda-tiled-english.jsonl --rule raw-v1
+```
+
+Repeat for each device/mode and `reichsanzeiger-de/smoke-10`. Collection runs the
+same structural/checksum check script again, verifies engine equality and rejects
+duplicate successful outputs instead of silently selecting a favorable repeat.
+The receipt retains every failure, timing, measured RSS/GPU peak and missing
+sample. Use scorer missing-as-empty metrics as well as successful-output CER.
+LoC outputs are baseline comparisons, not independent gold CER. No routing,
+queue, volunteer preference, trust, or account policy is changed by this probe.
+
+The authorized current-worker probe version pair is **1.2 (`docker_mt`) and
+1.3 (`docker_nvidia_cuda`)**, subject to a fresh unused-version check. The old
+1.0/1.1 payloads remain retired/unregistered and immutable; do not publish or
+replace them. Use the same normal `boinc-app-release.sh` commands above with
+these new version numbers and the requested worker digest.
+
+### Scoped signed publication without runtime rollback
+
+When reviewed main differs from the deployed stack, do not run a full-stack
+provision to release this probe. Under the #529 claim and ordinary local mutex /
+controller lease, first verify **all six lifecycle jobs idle**. Prepare each new
+version with `scripts/boinc-app-release.sh --prepare-only` and the normal signing
+host. Review and merge the resulting immutable appver pin before publication.
+Do not reuse a locked signer or change existing signed payloads.
+
+For publication, save the existing publish job's complete `properties.template`;
+copy it as an execution-only YAML/JSON document (JSON is YAML), change only its
+container image to the approved signed appver digest, and add
+`APPVER_REUSE_PROJECT=1` to that container's existing environment. Preserve all
+other environment, identity/secret references, resources and volume definitions.
+Start the existing publish job with `az containerapp job start --yaml FILE`;
+**never update its persisted template** or deploy the stack. The reviewed scoped
+publisher fetches credentials into its own execution-local memory and creates a
+minimal registration-only config there. It leaves shared project config/key
+symlinks, scheduler configuration and `project.xml`/other app registration untouched, while preserving signature checks, immutable-directory
+checks, stock `update_versions` and exact app-version DB verification. The app
+must already exist; this mode does not create it. This handles the deployed
+layout where shared config/key symlinks point into each container’s private
+`/dev/shm/boinc`, not the web replica’s memory.
+
+Check the actual execution's image, environment and volumes match the intended
+full template, wait for success, then independently verify DB registration,
+Dockerfile worker digest/signature and anonymous downloads. If execution is
+uncertain, retain the serialization lease and reconcile rather than retrying.
+Release the claim/lease only after terminal status and verification. Keep current
+live server/bridge pins/settings unchanged; the appver release pin alone does not
+authorize replacing them.
+
+The NVIDIA-only exact-host variant also sets `SURYA_GPU_PROBE=1` (CLI
+`--gpu-probe`): it pins `--app_version_num 103` (1.3) and reduces the shared
+memory admission bound to **8 GiB**, matching `job-gpu.toml`. This cannot fall
+back to CPU version 1.2. Untargeted/CPU campaigns retain the 12 GiB CPU bound.
+CT214 reports 12 GiB RAM and two CPUs; the CPU plan needs four usable CPUs,
+while CT100 has only 8 GiB RAM, below the CPU contract. Neither is an eligible
+CPU probe host without resource changes, which this trial does not authorize.
+Do not raise their limits or lower the CPU bound to force a result. If no existing
+eligible CPU host is available, run the GPU-only bounded probe and report CPU
+measurements unavailable rather than fabricate cross-device acceptance.

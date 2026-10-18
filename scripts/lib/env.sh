@@ -613,9 +613,8 @@ deploy_stack() (
     --action-on-unmanage deleteResources --deny-settings-mode denyDelete
     --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)")
   if [ "${1:-}" = --what-if ]; then
-    # Azure's preflight validation of the stack, as a create runs it first
-    # (policy denials included), then the template's changes: stacks have no
-    # what-if, a deployment's shows the same template's.
+    # Validate the stack first (including policy); the GA stack What-If then
+    # previews the actual stack operation, including unmanaged resources and deny settings.
     local exempting="" err what_if_args=()
     [ "${2:-}" != --exempting ] || exempting=${3:-}
     echo "validating stack $STACK (preflight)"
@@ -627,8 +626,22 @@ deploy_stack() (
       # checks the template alone; the validation above checked the rest.
       what_if_args=(--validation-level Template)
     fi
-    echo "stack $STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
-    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam ${what_if_args[@]+"${what_if_args[@]}"} --only-show-errors || exit 1
+    local preview stack_id subscription_id
+    preview="${STACK}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    subscription_id=$(az account show --query id -o tsv) || {
+      echo "error: can't read the current subscription id" >&2
+      exit 1
+    }
+    [ -n "$subscription_id" ] || { echo "error: current subscription id is empty" >&2; exit 1; }
+    stack_id="/subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacks/$STACK"
+    local preview_args=(--subscription "$subscription_id" --name "$preview" --stack-id "$stack_id"
+      --location "$location" --parameters infra/main.bicepparam
+      --action-on-unmanage deleteResources --deny-settings-mode denyDelete
+      --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)"
+      --retention-interval PT3H --no-color)
+    echo "stack $STACK passes preflight; previewing its stack changes, including unmanage and deny settings:"
+    az stack-whatif sub create "${preview_args[@]}" ${what_if_args[@]+"${what_if_args[@]}"} || exit 1
+    echo "preview retained for up to three hours: /subscriptions/$subscription_id/providers/Microsoft.Resources/deploymentStacksWhatIfResults/$preview"
     guard_stack_renames "$location" ${what_if_args[@]+"${what_if_args[@]}"} || exit 42
     exit
   fi
@@ -641,7 +654,11 @@ guard_stack_renames() {
   local location=$1 resources plan
   shift
   if ! resources=$(az stack sub show -n "$STACK" --query resources -o json --only-show-errors 2>&1); then
-    if grep -q 'DeploymentStackNotFound' <<< "$resources"; then
+    # Azure also returns ResourceNotFound for the stack itself. Do not
+    # accept that code for a missing dependency or a different resource.
+    if grep -q 'DeploymentStackNotFound' <<< "$resources" ||
+      { grep -q '^Code: ResourceNotFound$' <<< "$resources" &&
+        grep -Fq "The resource '$STACK' was not found." <<< "$resources"; }; then
       resources='[]'
     else
       echo "error: rename guard can't read $STACK: $resources" >&2

@@ -1,0 +1,3 @@
+The source pages are from U.S. federal government publications served by GovInfo and digitized by the Library of Congress in partnership with GPO. U.S. federal government works are public domain in the United States (17 U.S.C. § 105). Source PDFs and GovInfo ALTO outputs are not included as complete documents; four page images and their page-level ALTO responses are included as small evaluation fixtures.
+
+Reference files are new transcriptions made directly from the corresponding page images under `serialset-full-page-v1`; no existing OCR output or third-party reference dataset was used as ground truth. The transcriptions reproduce public-domain government text. GovInfo and GPO retain their names and marks; this notice does not claim affiliation or endorsement.

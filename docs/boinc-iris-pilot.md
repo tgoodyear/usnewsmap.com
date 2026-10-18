@@ -202,8 +202,60 @@ truncation). Real worker image on Computer 9, 16 distinct crops, production cont
 cache: 16/16 ok in 98 s (load 14.5 s), text identical to the benchmark's N=16 run. Templates:
 `usnm_iris_bundle_in` / `usnm_iris_bundle_out` (result up to 2 MiB). The compile cache is not part of 1.1.
 
-Evaluation re-run of the accepted 100 crops, host 9 only (batch 105, version 1.1):
-`iris-bundle-campaign.py prepare --source <v1 campaign> --out <dir> --worker-image <digest> --bundle-size 16`,
-then `submit` (dry run unless `--apply`) and `collect --seen <dir> --v1-seen <1.0 seen>` for per-crop CER and
-drift from the 1.0 results. Rollback: deprecate version 1.1 (1.0 is untouched).
+Evaluation re-run of the accepted 100 crops, host 9 only (version 1.1, `version_num` 101). Bundles use
+batch 104: the patched scheduler sends `docker_intel_opencl_4b` work only from that batch, so the first
+submission at batch 105 was never sent. Workunits are `usnm_iris_<id>_b104` with inputs
+`iris_<id>_{pack,job}_b104`, distinct from v1 names. From the bridge (`scripts/start-boinc-bridge.sh --env prod`):
+`--step iris-bundle-stage` (`IRIS_CAMPAIGN`, `IRIS_WORKER_IMAGE`, `IRIS_ARCHIVE_URL`, `IRIS_ARCHIVE_SHA256`; the
+ocr-bench `legacy/overproof-en-100` subset by default), then `iris-bundle-submit` (dry run unless
+`IRIS_APPLY=1`), then `iris-bundle-collect` for per-crop CER and drift from the 1.0 results.
+`iris-bundle-cancel` (dry run unless `IRIS_APPLY=1`) cancels a stranded batch-105 campaign.
+Rollback: deprecate version 1.1 (1.0 is untouched).
+
+Result, campaign `overproof-100-b104` (2026-10-18; 7 bundles of 16,16,16,16,16,16,4 on host 9):
+100/100 ok, normalized CER 0.02000 (1.0 pilot: 0.01975), drift from the 1.0 text 0.047%. A 16-crop
+bundle took 136–146 s, of which 22–24 s was model load, so about 6.8 crops/min per bundle in production.
+That is slower than the 98 s benchmark run; the load is paid once per bundle because 1.1 has no compile
+cache (version 1.2 below). All 100 crops finished in 18 minutes of wall time, run one bundle at a time.
+Dispatch first needed the server to map `docker_intel_opencl_4b` to the Intel GPU
+(`scripts/boinc/patch-server-intel-proc-type.py`) and the feeder on the share refreshed from the image.
 The 20,000-page set stays gated by its own `campaign.json`; this release does not dispatch it.
+
+### Persistent compile cache (app version 1.2)
+
+`job.toml` mounts the named volume `usnm-iris-compile-cache` at `/cache` (the docker_wrapper `mount`
+option; the root stays read-only). `ocr/boinc/iris/cache.py` gives OpenVINO a `CACHE_DIR` under it, keyed by
+the model manifest, OpenVINO and GenAI versions, the image's package list, the compile config and the GPU.
+OpenVINO's writes are not atomic, so the worker trusts only files recorded in a manifest after a clean
+run (fsynced, then the manifest replaced atomically). At start it deletes any unrecorded or changed file
+(from a killed run), other keys' entries and an over-size cache (6 GiB). A `generate()` exception or a
+failed load through the cache discards it; a failed cached load retries once without the cache. An flock
+lets one task use it at a time; a second runs without it (`busy`), as does a host with too little free
+space (8 GiB for a cold fill, 1 GiB warm: `no_space`). A cache problem is never a unit failure. Each
+crop's diagnostics carry `compile_cache` (`cold`, `warm`, `busy`, `no_space`, `unavailable`, `error`,
+`load_failed`) and the last crop the `compile_cache_commit` result.
+
+Volunteer disk: the volume holds about 3.2 GB (160 files) per host and is outside BOINC's disk accounting.
+A new worker image or driver changes the key and replaces it. To remove it: `docker volume rm usnm-iris-compile-cache`.
+
+Verification on Computer 9 (2026-10-18), the 1.2 worker code in the 1.1 image with production
+container flags, the same 16 crops each run, all 16/16 ok with identical text:
+
+| Run                        | Cache                          | Load   | Bundle  | Crops/min | Peak cgroup |
+| -------------------------- | ------------------------------ | ------ | ------- | --------- | ----------- |
+| No cache                   | none                           | 14.3 s | 104.1 s | 9.2       | not sampled |
+| First run                  | cold, writes 3.19 GB           | 17.0 s | 108.5 s | 8.9       | not sampled |
+| Second run                 | warm                           | 2.9 s  | 88.1 s  | 10.9      | 5.90 GiB    |
+| After a killed warm run    | warm, 0 dropped                | 1.7 s  | 83.1 s  | 11.6      | 3.79 GiB    |
+| After a run killed at 10 s | cold, 30 partial files dropped | 14.7 s | 108.2 s | 8.9       | 7.30 GiB    |
+
+No run hit the memory limit (`memory.events` max 0, no OOM). Generation also got about 5-10% faster
+warm (81-85 s against 89-93 s for 16 crops), since kernels compiled during generation are cached too.
+Rollback: deprecate version 1.2; 1.1 is unchanged and never mounts the volume.
+
+Result, campaign `overproof-100-v12` (2026-10-18; version 1.2, app_version 49, the same 100 crops in 7
+bundles on host 9): 100/100 ok, normalized CER 0.02000 and drift from the 1.0 text 0.047%, both the same as
+1.1. The first bundle filled the cache (load 23.7 s, bundle 137 s); the five other 16-crop bundles loaded in
+2.3-3.2 s and took 104-113 s, against 136-146 s on 1.1: about 9.0 crops/min, up from 6.8 (+32%).
+1.2 was published by running only the publish job with its appver image, and the campaign steps ran on
+main's bridge image, so that a stack deploy would not roll back the separately deployed #777 images.

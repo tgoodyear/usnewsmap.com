@@ -101,6 +101,9 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
       set|delete) ;;
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
+  "stack-whatif sub")
+    if [ -n "${STUB_STACK_WHATIF_ERROR:-}" ]; then echo "$STUB_STACK_WHATIF_ERROR" >&2; exit 1; fi
+    echo "stack what-if: no changes" ;;
   "deployment sub")
     if [ -n "${STUB_CAPTURE_PARAMS:-}" ]; then
       printf '%s\t%s\t%s\t%s\n' "${USNM_ARCHIVE_ACCOUNT:-}" "${USNM_SEARCH_CLUSTER:-}" \
@@ -1067,8 +1070,16 @@ class StackRenameGuard(Stubbed):
     def test_new_stack_and_read_errors(self):
         r = self.lib("deploy_stack", STUB_RESOURCES_ERROR="DeploymentStackNotFound: usnm-dev")
         self.assertEqual(r.returncode, 0, r.stderr)
-        r = self.lib("deploy_stack", STUB_RESOURCES_ERROR="ResourceNotFound: unexpected dependency")
-        self.assertEqual(r.returncode, 42, r.stderr)
+        message = ("ERROR: (ResourceNotFound) The resource 'usnm-dev' was not found. "
+                   "For more details please go to https://aka.ms/ARMResourceNotFoundFix\n"
+                   "Code: ResourceNotFound\nMessage: The resource 'usnm-dev' was not found.")
+        r = self.lib("deploy_stack", STUB_RESOURCES_ERROR=message)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for error in ("ResourceNotFound: unexpected dependency",
+                      message.replace("usnm-dev", "some-dependency"),
+                      message.replace("Code: ResourceNotFound", "Code: AuthorizationFailed")):
+            r = self.lib("deploy_stack", STUB_RESOURCES_ERROR=error)
+            self.assertEqual(r.returncode, 42, r.stderr)
 
     def test_guard_failure_is_not_retried(self):
         r = self.lib("vaults_recover() { :; }; settings_store_ensure() { :; }; "
@@ -1963,8 +1974,13 @@ class CommittedSettings(Stubbed):
         validate = next(c for c in calls if c.startswith("stack sub validate"))
         self.assertIn("--name usnm-dev", validate)
         self.assertIn("--deny-settings-mode denyDelete", validate)
-        self.assertLess(calls.index(validate), next(i for i, c in enumerate(calls)
-                                                    if c.startswith("deployment sub what-if")))
+        preview = next(c for c in calls if c.startswith("stack-whatif sub create"))
+        self.assertLess(calls.index(validate), calls.index(preview))
+        self.assertIn("--subscription sub-1", preview)
+        self.assertIn("/subscriptions/sub-1/providers/Microsoft.Resources/deploymentStacks/usnm-dev", preview)
+        self.assertIn("--retention-interval PT3H", preview)
+        self.assertIn("--action-on-unmanage deleteResources", preview)
+        self.assertIn("--deny-settings-mode denyDelete", preview)
         self.assertFalse(any(c.startswith("stack sub create") for c in calls))
 
     def test_a_policy_denial_fails_the_what_if(self):

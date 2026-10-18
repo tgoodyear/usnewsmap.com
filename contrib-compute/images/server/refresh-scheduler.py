@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh the persistent project CGI from the reviewed server image."""
+"""Refresh a persistent project scheduler binary (the CGI or the feeder) from the reviewed server image."""
 import argparse
 import os
 from pathlib import Path
@@ -8,10 +8,10 @@ import uuid
 
 def refresh(source: Path, target: Path) -> bool:
     if not source.is_file() or not os.access(source, os.X_OK):
-        raise ValueError("image scheduler CGI is missing or not executable")
+        raise ValueError("image scheduler binary is missing or not executable")
     payload = source.read_bytes()
     if not payload:
-        raise ValueError("image scheduler CGI is empty")
+        raise ValueError("image scheduler binary is empty")
     if target.is_file() and os.access(target, os.X_OK) and target.read_bytes() == payload:
         return False
     staged = target.with_name(".usnm-scheduler-" + uuid.uuid4().hex)
@@ -37,7 +37,7 @@ def main() -> None:
     parser.add_argument("--target", type=Path, required=True)
     args = parser.parse_args()
     changed = refresh(args.source, args.target)
-    print("scheduler CGI refreshed from image" if changed else "scheduler CGI matches image")
+    print(f"{args.target} refreshed from image" if changed else f"{args.target} matches image")
 
 
 if __name__ == "__main__":
