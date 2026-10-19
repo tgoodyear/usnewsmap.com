@@ -135,12 +135,14 @@ static std::vector<Pci> opencl_assignment(uint32_t index) {
 static std::vector<Adapter> vulkan_devices(const std::filesystem::path &dir) {
 #ifdef _WIN32
     Library base((dir / "ggml-base.dll").string());
+    Library registry((dir / "ggml.dll").string());
     auto backend = (dir / "ggml-vulkan.dll").string();
 #else
     Library base((dir / "libggml-base.so").string());
+    Library registry((dir / "libggml.so").string());
     auto backend = (dir / "libggml-vulkan.so").string();
 #endif
-    auto load = base.symbol<void *(*)(const char *)>("ggml_backend_load");
+    auto load = registry.symbol<void *(*)(const char *)>("ggml_backend_load");
     auto count = base.symbol<size_t(*)(void *)>("ggml_backend_reg_dev_count");
     auto device = base.symbol<void *(*)(void *, size_t)>("ggml_backend_reg_dev_get");
     auto props = base.symbol<void(*)(void *, Props *)>("ggml_backend_dev_get_props");

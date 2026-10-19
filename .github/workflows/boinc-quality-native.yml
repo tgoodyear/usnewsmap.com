@@ -129,6 +129,19 @@ jobs:
           "$out/usnm-amd-device-map" --self-test
           python3 -m unittest scripts.boinc.test_amd_device_map
           (cd "$out" && sha256sum usnm-amd-device-map >> SHA256SUMS)
+      - name: Verify pinned AMD runtime library split (Linux x86-64)
+        if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+          mkdir .amd-pinned-archives
+          trap 'rm -rf .amd-pinned-archives' EXIT
+          gh release download b8799 --repo ggml-org/llama.cpp \
+            --pattern '*bin-ubuntu-vulkan-x64.tar.gz' --pattern '*bin-win-vulkan-x64.zip' \
+            --dir .amd-pinned-archives
+          AMD_PINNED_LLAMA_ARCHIVES="$PWD/.amd-pinned-archives" python3 -m unittest scripts.boinc.test_amd_device_map
       - name: Build AMD PCI identity helper (Windows x64)
         if: matrix.boinc_platform == 'windows_x86_64'
         shell: pwsh

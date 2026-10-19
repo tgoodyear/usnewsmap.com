@@ -238,6 +238,8 @@ def install(
             required_extras = (required_server, "llama.lock", "weights.lock")
             if plan_class == "amd_vulkan_8b":
                 required_extras += ("usnm-amd-device-map.exe" if platform == "windows_x86_64" else "usnm-amd-device-map",)
+                required_extras += (("ggml.dll", "ggml-base.dll", "ggml-vulkan.dll") if platform == "windows_x86_64"
+                                    else ("libggml.so", "libggml-base.so", "libggml-vulkan.so"))
             if platform == "windows_x86_64":
                 required_extras += ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
                 if plan_class in ("nvidia_cuda_2b", "nvidia_cuda_8b"):

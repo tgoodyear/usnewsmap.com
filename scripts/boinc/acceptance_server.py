@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import uuid
 import xml.etree.ElementTree as ET
 
@@ -274,7 +275,7 @@ def fixture_inputs(project, manifest):
             raise ValueError('fixture input changed')
 
 
-def audited_workunit(db, manifest, *, staging=False):
+def audited_workunit(db, manifest):
     """Verify the pre-staged identity and payload; never create or rewrite its scientific rows."""
     rows = query(db, 'SELECT w.*, a.name AS app_name FROM workunit w JOIN app a ON a.id=w.appid '
                  'WHERE w.id=%s AND w.name=%s FOR UPDATE',
@@ -295,9 +296,16 @@ def audited_workunit(db, manifest, *, staging=False):
         raise ValueError('audited workunit inputs differ from fixture')
     results = query(db, 'SELECT id, server_state, sent_time, hostid, userid FROM result '
                     'WHERE workunitid=%s FOR UPDATE', (wu['id'],))
-    if (len(results) != manifest['min_quorum'] and not (staging and not results)) or any(
+    # Stock targeted scheduling creates results; pre-created generic replicas
+    # consume its target_nresults budget and can never serve this isolated account.
+    # TRANSITION_NO_NEW_RESULTS=2 in pinned db/boinc_db_types.h.
+    if manifest['release']['plan_class'] == 'amd_vulkan_8b':
+        if (results or wu['transitioner_flags'] != 2 or wu['transition_time'] <= time.time()
+                or wu['need_validate']):
+            raise ValueError('audited workunit requires targeted staging, no results and a future transition')
+    elif len(results) != manifest['min_quorum'] or any(
             r['server_state'] != 2 or r['sent_time'] or r['hostid'] or r['userid'] for r in results):
-        raise ValueError('audited workunit requires exactly two unsent, unassigned results')
+        raise ValueError('audited workunit requires unsent, unassigned results')
     if query(db, 'SELECT id FROM assignment WHERE workunitid=%s FOR UPDATE', (wu['id'],)):
         raise ValueError('audited workunit already has assignments')
     return wu
@@ -445,13 +453,14 @@ def handle(request, project, fixtures, db):
             args = create_args(manifest, manifest['workunit_name'], 0)
             start = args.index('--target_host')
             del args[start:start + 2]
+            args.append('--no_new_results')
             subprocess.run([str(project / 'bin/create_work'), *args], cwd=project, check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
             units = query(db, 'SELECT id FROM workunit WHERE name=%s', (manifest['workunit_name'],))
             if len(units) != 1:
                 raise ValueError('uncertain staged workunit creation; reconcile stage journal')
             staged = {**manifest, 'audited_workunit_id': units[0]['id']}
-            audited_workunit(db, staged, staging=True)
+            audited_workunit(db, staged)
             db.commit()
             durable(stage_journal, dict(run_id=run_id, release=release, workunit=manifest['workunit_name'],
                                        stage_intent=True, audited_workunit_id=units[0]['id']))

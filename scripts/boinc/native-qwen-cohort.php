@@ -53,8 +53,12 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class) {
     if (intval($workunit->batch) !== $batch || intval($workunit->rsc_disk_bound) !== $disk
         || intval($workunit->min_quorum) !== 2 || intval($workunit->target_nresults) !== 2
         || intval($workunit->canonical_resultid) !== 0 || intval($workunit->error_mask) !== 0
-        || count($results) !== 2) {
-        throw new RuntimeException("Expected one unaccepted model-specific native workunit, quorum/replicas 2");
+        || ($plan_class === "amd_vulkan_8b" ? (
+            count($results) !== 0 || intval($workunit->transitioner_flags ?? 0) !== 2
+            || intval($workunit->transition_time ?? 0) <= time()
+            || intval($workunit->need_validate ?? 0) !== 0
+        ) : count($results) !== 2)) {
+        throw new RuntimeException("Expected unaccepted native quorum-2 work; AMD requires targeted staging without results");
     }
     foreach ($results as $result) {
         if (intval($result->server_state) !== 2 || intval($result->sent_time) !== 0) {

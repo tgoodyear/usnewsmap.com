@@ -646,6 +646,7 @@ class Server(Workspace):
     def amd_unit(self, manifest):
         return dict(id=300, name=manifest['workunit_name'], app_name='usnm_qwen', app_version_num=100,
                     batch=8, canonical_resultid=0, error_mask=0,
+                    transitioner_flags=2, transition_time=2147483647, need_validate=0,
                     result_template_file='templates/qwen_out',
                     xml_doc=b'<file_info><name>page.jpg</name></file_info>', **S.bounds(manifest))
 
@@ -659,7 +660,7 @@ class Server(Workspace):
         request = dict(action='stage', fixture='fixture', run_id='a' * 32, release=release)
         state = {'created': False}
         unit = self.amd_unit(manifest)
-        unsent = [dict(id=i, server_state=2, sent_time=0, hostid=0, userid=0) for i in (1, 2)]
+        results = []
         def query(db, sql, args):
             if 'FROM app_version' in sql:
                 return [dict(id=7)]
@@ -671,13 +672,14 @@ class Server(Workspace):
             if 'FROM workunit' in sql:
                 return [dict(id=300)] if state['created'] else []
             if 'FROM result' in sql:
-                return unsent
+                return results
             if 'FROM assignment' in sql:
                 return []
             raise AssertionError(sql)
         def create(argv, **kwargs):
             self.assertTrue(argv[0].endswith('/bin/create_work'))
             self.assertNotIn('--target_host', argv)
+            self.assertIn('--no_new_results', argv)
             self.assertEqual(argv[argv.index('--app_version_num') + 1], '100')
             self.assertEqual(argv[argv.index('--delay_bound') + 1], '259200')
             state['created'] = True
@@ -706,10 +708,10 @@ class Server(Workspace):
             with self.assertRaisesRegex(ValueError, 'payload changed'):
                 S.handle({**request, 'action': 'dispatch', 'host_id': 2}, self.root, self.root, db)
             unit['xml_doc'] = original_xml
-            unsent[0]['sent_time'] = 1
-            with self.assertRaisesRegex(ValueError, 'unsent'):
+            results.append(dict(id=1, server_state=2, sent_time=0, hostid=0, userid=0))
+            with self.assertRaisesRegex(ValueError, 'no results'):
                 S.handle({**request, 'action': 'dispatch', 'host_id': 2}, self.root, self.root, db)
-            unsent[0]['sent_time'] = 0
+            results.clear()
             # A close after reserve must prevent dispatch without creating or assigning anything.
             node.find('min_wu_id').text, node.find('max_wu_id').text = '2', '1'
             tree.write(self.root / 'plan_class_spec.xml')
@@ -735,13 +737,14 @@ class Server(Workspace):
         manifest = {**self.amd_manifest(), 'audited_workunit_id': 300}
         unit = self.amd_unit(manifest)
         results = [dict(id=i, server_state=2, sent_time=0, hostid=0, userid=0) for i in (1, 2)]
-        def check(wu=unit, replicas=results, assignments=None):
-            with patch.object(S, 'query', side_effect=[[wu], replicas, assignments or []]):
+        def check(wu=unit, replicas=None, assignments=None):
+            with patch.object(S, 'query', side_effect=[[wu], replicas or [], assignments or []]):
                 return S.audited_workunit(None, manifest)
         self.assertEqual(check()['id'], 300)
         for key, bad in [('batch', 18), ('canonical_resultid', 1), ('error_mask', 1),
                          ('app_name', 'usnm_surya'), ('app_version_num', 101),
                          ('min_quorum', 1), ('target_nresults', 1), ('rsc_disk_bound', 1),
+                         ('transitioner_flags', 0), ('transition_time', 1), ('need_validate', 1),
                          ('result_template_file', 'templates/other'),
                          ('xml_doc', '<file_info><name>other</name></file_info>')]:
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -750,7 +753,7 @@ class Server(Workspace):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 check(replicas=[{**results[0], key: bad}, results[1]])
         with self.assertRaises(ValueError):
-            check(replicas=[])
+            check(replicas=results)
         with self.assertRaises(ValueError):
             check(assignments=[dict(id=1)])
         with patch.object(S, 'query', return_value=[]), self.assertRaises(ValueError):

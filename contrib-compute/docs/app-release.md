@@ -125,6 +125,14 @@ joins `shared_8b`, and neither AMD nor legacy/shared operations reset the other'
 window. In particular, unqualified `--stop` does not stop AMD. Refresh preserves
 both windows. See [AMD onboarding and hardware gates](../../docs/boinc-amd-gpu.md)
 for signed Vulkan bundle, driver, model, quorum and canary requirements.
+Unlike the generic native cohorts above, AMD acceptance stages with
+`acceptance_server.py --stage-fixture` and the reviewed
+`create_work --no_new_results` base-image extension. Audit/admission requires
+**zero results**, `TRANSITION_NO_NEW_RESULTS` and a future transition time.
+After admission, dispatch adds the exact client/peer assignments to the same
+audited workunit; stock targeted scheduling creates the two results itself.
+Never delete generic replicas to convert an old fixture or reduce quorum/target 2. Publish the signed registry (`libggml.so` / `ggml.dll`), base and Vulkan
+libraries alongside the AMD PCI helper.
 
 These native-only classes admit stable BOINC 8.2.11+ and do not require a
 container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when

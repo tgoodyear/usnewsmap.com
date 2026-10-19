@@ -83,17 +83,21 @@ python3 scripts/boinc/acceptance_server.py --project /project/usnmocr \
 ```
 
 This hashes the existing inputs, verifies the native template bounds and release,
-and uses stock `create_work` with the exact numeric version and no host assignment.
+and uses `create_work --no_new_results` with the exact numeric version and no
+host assignment. This requires the reviewed server base containing
+`patch-server-stage-work.py`; an older tool rejects the flag, leaving a durable
+uncertain-stage journal for reconciliation, not a retry.
 It journals intent before creation, never opens admission, and returns
 `audited_workunit_id`. Do not repeat after an uncertain outcome: reconcile the
-private `.stage.json` journal and database identity first. Wait for the ordinary
-transitioner to produce exactly two unsent results. Audit the workunit's ID/name,
+private `.stage.json` journal and database identity first. Audit **zero results**,
+`transitioner_flags=2` (`TRANSITION_NO_NEW_RESULTS`), a future `transition_time`,
+no pending validation, and the workunit's ID/name,
 payload, template, batch, bounds and version, then add that ID to the same fixture
 as `audited_workunit_id` and use it as `ID` below.
 
 The reviewed scheduler policy ships **closed** (`min_wu_id=2`, `max_wu_id=1`).
 Only after signed publication and explicit operator authorization, preview and
-apply one newly staged, audited, unaccepted workunit with two unsent results:
+apply one newly staged, audited, unaccepted workunit without generic replicas:
 
 ```sh
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
@@ -105,7 +109,7 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
 Now run the existing-client acceptance runner with that fixture/config and exact
 release (see [release acceptance](../contrib-compute/docs/app-release.md)).
 Reservation verifies the audited ID/name, input references, native bounds,
-unaccepted scientific state and two unsent/unassigned results against the
+unaccepted scientific state and targeted staging without results against the
 **exact** operator window. Dispatch rechecks those gates under database locks,
 adds only the client and reviewed peer host assignments to that same workunit,
 and journals intent; it never creates a replacement workunit. Closing the window
@@ -130,7 +134,15 @@ plus two host CPUs. The pinned BOINC source accepts `ati`/`amd` in
 [`plan_class_spec.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/plan_class_spec.cpp#L690-L750)
 and maps `amd` plan names to `PROC_TYPE_AMD_GPU` in
 [`sched_util_basic.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp#L313-L332).
-No new scheduler source patch is needed. Inference uses Vulkan, not OpenCL.
+Inference uses Vulkan, not OpenCL. The staging CLI patch exposes BOINC's existing
+targeted-work flag without creating an assignment before audit/admission.
+The ordinary transitioner must not create generic replicas: the pinned
+`sched_assign.cpp::need_targeted_instance()` subtracts unsent replicas from the
+target of two. With zero replicas initially, targeted scheduling creates one
+result for the client and one for the reviewed peer, preserving quorum/target
+2 and all native bounds. Do not delete, cancel, relabel or replay existing
+scientific rows to convert an old generic fixture; stage a new reviewed identity
+while AMD is closed instead.
 
 The app requires an explicit ATI/AMD assignment, nonnegative `gpu_device_num`,
 and `gpu_opencl_dev_index`. The physical BOINC device number is **not** assumed
@@ -147,7 +159,11 @@ also requires that exact device in the server listing with a real AMD/ATI/Radeon
 or Advanced Micro Devices name, skipping software and other vendors.
 
 The signed helper runs with a 30-second deadline and the same bundled backend
-and loader environment as the server. A missing helper/assignment, unverifiable
+and loader environment as the server. Its registry loader comes from
+`libggml.so` / `ggml.dll`, while device APIs come from
+`libggml-base.so` / `ggml-base.dll`. Both libraries and the Vulkan backend must
+be included and signed in the native bundle on Linux and Windows.
+A missing helper/assignment, unverifiable
 identity, failed probe or insufficient free memory ends `no_gpu`; it never
 selects another adapter or falls back to CPU. Driver support for the required
 PCI properties remains a real-card acceptance prerequisite, not an assumption.

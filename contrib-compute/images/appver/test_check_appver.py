@@ -40,7 +40,8 @@ class CheckAppver(unittest.TestCase):
             proj, version="1.0", app="usnm_qwen", plan_class="amd_vulkan_8b",
             kind="native", binary=payload,
             extra_files=[f"{name}={payload}" for name in
-                         ("llama-server", "llama.lock", "weights.lock", "usnm-amd-device-map")])
+                         ("llama-server", "llama.lock", "weights.lock", "usnm-amd-device-map",
+                          "libggml.so", "libggml-base.so", "libggml-vulkan.so")])
         signatures = self.root / "amd-sigs"
         signatures.mkdir()
         for path in directory.iterdir():
@@ -55,16 +56,24 @@ class CheckAppver(unittest.TestCase):
             ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
         for signature in directory.glob("*.sig"):
             signature.unlink()
-        helper.unlink()
-        (directory / (helper.name + ".sig")).unlink(missing_ok=True)
-        (signatures / (helper.name + ".sig")).unlink()
-        tree = ca.ET.parse(directory / "version.xml")
-        for node in tree.getroot().findall("file"):
-            if node.findtext("logical_name") == "usnm-amd-device-map":
-                tree.getroot().remove(node)
-        tree.write(directory / "version.xml")
-        with self.assertRaisesRegex(ca.Refused, "missing required bundle files: usnm-amd-device-map"):
-            ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
+        helper.write_bytes(payload.read_bytes())
+        original_xml = (directory / "version.xml").read_bytes()
+        for logical in ("usnm-amd-device-map", "libggml.so", "libggml-base.so", "libggml-vulkan.so"):
+            tree = ca.ET.fromstring(original_xml)
+            node = next(n for n in tree.findall("file") if n.findtext("logical_name") == logical)
+            physical = directory / node.findtext("physical_name")
+            content = physical.read_bytes()
+            signature = signatures / (physical.name + ".sig")
+            signature_content = signature.read_bytes()
+            physical.unlink()
+            signature.unlink()
+            tree.remove(node)
+            (directory / "version.xml").write_bytes(ca.ET.tostring(tree))
+            with self.subTest(logical=logical), self.assertRaisesRegex(ca.Refused, "missing required bundle files: " + logical):
+                ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
+            physical.write_bytes(content)
+            signature.write_bytes(signature_content)
+            (directory / "version.xml").write_bytes(original_xml)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

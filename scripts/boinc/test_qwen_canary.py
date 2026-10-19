@@ -415,11 +415,17 @@ $wu->batch = 8; $wu->rsc_disk_bound = 19327352832; $results[0]->server_state = 2
 native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b");
 native_qwen_cohort_validate($wu, $results, "intel_vulkan_8b");
 native_qwen_cohort_validate($wu, $results, "nvidia_vulkan_8b");
-native_qwen_cohort_validate($wu, $results, "amd_vulkan_8b");
+$wu->transitioner_flags = 2; $wu->transition_time = 2147483647; $wu->need_validate = 0;
+native_qwen_cohort_validate($wu, [], "amd_vulkan_8b");
+$refused = false;
+try { native_qwen_cohort_validate($wu, $results, "amd_vulkan_8b"); }
+catch (RuntimeException $e) { $refused = true; }
+assert($refused);
 foreach (["batch"=>2,"rsc_disk_bound"=>12884901888,"min_quorum"=>1,
-    "target_nresults"=>3,"canonical_resultid"=>10,"error_mask"=>1] as $key=>$value) {
+    "target_nresults"=>3,"canonical_resultid"=>10,"error_mask"=>1,
+    "transitioner_flags"=>0,"transition_time"=>1,"need_validate"=>1] as $key=>$value) {
     $bad = clone $wu; $bad->$key = $value; $refused = false;
-    try { native_qwen_cohort_validate($bad, $results, "amd_vulkan_8b"); }
+    try { native_qwen_cohort_validate($bad, [], "amd_vulkan_8b"); }
     catch (RuntimeException $e) { $refused = true; }
     assert($refused);
 }

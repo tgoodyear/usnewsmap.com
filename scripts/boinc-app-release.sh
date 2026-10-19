@@ -171,6 +171,11 @@ else
       required_helper=usnm-amd-device-map
       [ "$PLATFORM" != windows_x86_64 ] || required_helper=usnm-amd-device-map.exe
       required_extras+=("$required_helper")
+      if [ "$PLATFORM" = windows_x86_64 ]; then
+        required_extras+=(ggml.dll ggml-base.dll ggml-vulkan.dll)
+      else
+        required_extras+=(libggml.so libggml-base.so libggml-vulkan.so)
+      fi
     fi
     for req_extra in "${required_extras[@]}"; do
       found_extra=false

@@ -278,6 +278,14 @@ class InstallTest(unittest.TestCase):
                     module.install(self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
                                    platform=platform, kind="native", binary=bin_for_plat, extra_files=extras)
                 extras.append(f"usnm-amd-device-map{ext}={srv_src}")
+                if platform != "windows_x86_64":
+                    libraries = ("libggml.so", "libggml-base.so", "libggml-vulkan.so")
+                    extras.extend(f"{name}={srv_src}" for name in libraries)
+                    for missing in libraries:
+                        with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, missing):
+                            module.install(self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
+                                           platform=platform, kind="native", binary=bin_for_plat,
+                                           extra_files=[e for e in extras if not e.startswith(missing + "=")])
             runtime = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
             llama_dlls = ("ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
                           "ggml-cpu-x64.dll", "libomp140.x86_64.dll")
