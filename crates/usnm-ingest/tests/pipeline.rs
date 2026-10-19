@@ -5158,6 +5158,212 @@ async fn releases_page_languages_into_a_quickwit_writer_node() {
     node.stop().await.unwrap();
 }
 
+/// Ingest v1 on a real Quickwit writer (#283): six forced commits are six
+/// splits, below the merge factor; the release's seal restarts the writer
+/// with a merge factor of 2, which merges them into one, and puts the
+/// index's config back. Every page is in the index once. Then a full base
+/// laid out by decade and a delta on it, released through v1 end to end:
+/// one split a decade, each page once. Runs when `QUICKWIT_BIN` is set.
+#[cfg(unix)]
+#[test]
+fn a_v1_writer_merges_by_restarting_and_holds_each_page_once() {
+    if std::env::var_os("QUICKWIT_BIN").is_none_or(|b| b.is_empty()) {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    }
+    if let Some(root) = std::env::var_os("USNM_TEST_LOCAL_WAL_ROOT") {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(v1_writer_merges_by_restarting(Path::new(&root)));
+        return;
+    }
+    // The writer's queues on local disk, as in the job; the environment
+    // override in a process of its own.
+    let root = tempfile::tempdir().unwrap();
+    let local = root.path().join("local");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_v1_writer_merges_by_restarting_and_holds_each_page_once",
+            "--nocapture",
+        ])
+        .env("USNM_TEST_LOCAL_WAL_ROOT", &local)
+        .env("USNM_WRITER_WAL_DIR", &local)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "v1 writer failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn v1_writer_merges_by_restarting(local: &Path) {
+    let bin = std::env::var_os("QUICKWIT_BIN").unwrap();
+    use usnm_ingest::merges::{self, Node};
+    use usnm_ingest::sink::{IngestApi, QuickwitNode, QuickwitSink, INDEX_TEMPLATE};
+    let e = env().await;
+    let qw = e.root.join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7431, &meta, &root)
+        .await
+        .unwrap();
+    let http = reqwest::Client::new();
+    let n = Node {
+        http: &http,
+        base: &node.url,
+    };
+    // The index's pages, and how many of each `doc_id` it holds.
+    let census = |id: String| {
+        let (http, url) = (http.clone(), node.url.clone());
+        async move {
+            let v: Value = http
+                .post(format!("{url}/api/v1/{id}/search"))
+                .json(&serde_json::json!({
+                    "query": "*", "max_hits": 0,
+                    "aggs": {"twice": {"terms": {"field": "doc_id", "size": 100, "min_doc_count": 2}}},
+                }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let twice = v["aggregations"]["twice"]["buckets"]
+                .as_array()
+                .unwrap()
+                .len();
+            (v["num_hits"].as_u64().unwrap(), twice)
+        }
+    };
+
+    let id = "pages-delta-20261020-1";
+    let config = INDEX_TEMPLATE
+        .replace("${INDEX_ID}", id)
+        .replace("${INDEX_URI}", &format!("{root}/{id}"));
+    http.post(format!("{}/api/v1/indexes", node.url))
+        .header("content-type", "application/yaml")
+        .body(config)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let docs: Vec<Value> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|f| read_jsonl(&fixtures().join(format!("indexes/{f}.jsonl"))))
+        .collect();
+    for chunk in docs.chunks(docs.len().div_ceil(6)) {
+        let body: String = chunk.iter().map(|d| format!("{d}\n")).collect();
+        // The v1 queue is created with the index's pipeline, just after it.
+        let v: Value = loop {
+            let resp = http
+                .post(format!(
+                    "{}/api/v1/{id}/ingest?commit=force&use_legacy_ingest=true",
+                    node.url
+                ))
+                .body(body.clone())
+                .send()
+                .await
+                .unwrap();
+            if resp.status() != reqwest::StatusCode::NOT_FOUND {
+                break resp.error_for_status().unwrap().json().await.unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        };
+        assert_eq!(v["num_docs_for_processing"], chunk.len() as u64, "{v}");
+    }
+    let queues = std::fs::read_link(qw.join("qwdata/queues")).unwrap();
+    assert!(queues.starts_with(local.canonicalize().unwrap()));
+    assert!(
+        std::fs::read_dir(&queues).unwrap().next().is_some(),
+        "Quickwit wrote no queue files"
+    );
+    assert_eq!(n.splits(id).await.unwrap().len(), 6);
+    let before = n.index_config(id).await.unwrap();
+    let pid = node.pid();
+    let layout = merges::seal_restarting(
+        &n,
+        &node,
+        id,
+        docs.len() as u64,
+        merges::template_split_target(),
+        &node.events(),
+        &quick_merges(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_ne!(node.pid(), pid, "the writer restarted");
+    assert_eq!((layout.splits, layout.docs), (1, docs.len() as u64));
+    assert_eq!(census(id.into()).await, (docs.len() as u64, 0));
+    // The config is the index's own again.
+    assert_eq!(n.index_config(id).await.unwrap(), before);
+    assert_eq!(
+        before["indexing_settings"]["merge_policy"]["merge_factor"],
+        10
+    );
+
+    // A full base by decade and a delta on it, through the release.
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let (early, late) = (over_decades(&early), over_decades(&late));
+    let archive = |name: &str, pages: &[Page]| {
+        let path = e.root.join(format!("{name}.tar.gz"));
+        write_archive(&path, &pages.iter().collect::<Vec<_>>(), false, true);
+        listed(name, &path, None)
+    };
+    let mut published = Vec::new();
+    for (day, full, batch) in [
+        (21, true, archive("batch_fx_early_ver01", &early)),
+        (28, false, archive("batch_fx_late_ver01", &late)),
+    ] {
+        curate(&e, vec![batch]).await;
+        let r = Release {
+            partition_decade: true,
+            ..e.releaser(day, full)
+        };
+        let mut sink = QuickwitSink::new(&node.url, &root)
+            .unwrap()
+            .watching(&node)
+            .merges(quick_merges())
+            .ingest(IngestApi::V1);
+        published.push(r.run(&mut sink).await.unwrap().unwrap());
+    }
+    let p = published.last().unwrap();
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p.index_version))
+        .await;
+    let layout = manifest["indexes"].as_array().unwrap();
+    assert_eq!(
+        layout[0]["splits_by_decade"],
+        serde_json::json!({"1830": 1, "1840": 1, "1860": 1, "1890": 1}),
+        "{}",
+        layout[0]
+    );
+    assert_eq!(layout[1]["splits"], 1, "{}", layout[1]);
+    for (l, id) in layout.iter().zip(&p.indexes) {
+        let docs = l["docs"].as_u64().unwrap();
+        assert!(docs > 0, "{l}");
+        assert_eq!(census(id.clone()).await, (docs, 0), "{id}");
+        let config = n.index_config(id).await.unwrap();
+        assert_eq!(
+            config["indexing_settings"]["merge_policy"]["merge_factor"], 10,
+            "{id}"
+        );
+    }
+    node.stop().await.unwrap();
+    assert_eq!(std::fs::read_dir(local).unwrap().count(), 0);
+}
+
 /// A base built with `--partition-decade` on a real Quickwit writer (05
 /// §5.5.5): each split holds one decade, the release checks the merges per
 /// decade and records the splits of each, and a delta on it tags its split

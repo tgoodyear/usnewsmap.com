@@ -368,6 +368,7 @@ Only a full base takes it: a delta's few splits keep the template's target. The 
 | `USNM_CONGRESS`                                                | `true` if the published version has a Congress set (none yet)                  | The Congress pages (#229); a release without it publishes a version without them (even with no new batch), and one that moves to a new analyzer rebuilds them | `build.features.congress: 1`; `current.json` has `congress`                                                                                                                                                                                                                      |
 | (none)                                                         | Automatic                                                                      | The catalog on `main` (`catalog/overrides/title-places.json`), the 17 title moves of #281 included (item 7); only a full base moves published titles          | `/v1/titles/{lccn}` of a moved title (such as the Anti-Slavery Bugle) names its new place                                                                                                                                                                                        |
 | `USNM_MERGE_TIMEOUT_SECS`                                      | `14400` (the default), unless dev shows larger splits merge for longer         | How long the release waits for the merges                                                                                                                     | `release merges` reaches `merges settled` well inside it                                                                                                                                                                                                                         |
+| `USNM_WRITER_INGEST`                                           | `v1`                                                                           | The writer's ingest API ([Duplicate-safe ingest](#duplicate-safe-ingest)): each accepted page once; the release restarts the writer for its final merges      | `writer ingest api` says `v1`; `restarting the writer for the final merges`, then the base's `index layout`; the page count matches the pages sent exactly                                                                                                                       |
 | `USNM_INGEST_SCRATCH_GIB`                                      | `128`, cleared afterwards (below)                                              | The writer's scratch share, its account and private endpoint                                                                                                  | Free disk in `release merges` stays well above the largest merge (about twice the split target's pages), plus the decade spill's `peak_disk_mb` while pages are sent                                                                                                             |
 | `USNM_AMERICAN_STORIES_SEARCH`                                 | `true` (as now)                                                                | No effect on a `text_layout: 2` version                                                                                                                       | No `USNM_AMERICAN_STORIES_SEARCH=false has no effect` warning in the API's log                                                                                                                                                                                                   |
 | `split_footer_cache_capacity` (`infra/quickwit/searcher.yaml`) | Resized after the release if needed                                            | The searcher's footer cache must hold every footer of the version ([Searcher caches](#searcher-caches))                                                       | The new version's `footer_bytes` total against the capacity, then footer misses after the warm-up                                                                                                                                                                                |
@@ -397,12 +398,14 @@ Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would re
 **The WAL stays local even with scratch enabled.** Mounted jobs set the internal
 `USNM_WRITER_WAL_DIR=/work`: the ingest image's writable ephemeral disk, not
 `/scratch`. Each writer creates a fresh private directory there and links
-`qwdata/wal` to it (Quickwit 0.9.1's v2 WAL path). Startup requires at least
+`qwdata/wal` (Quickwit 0.9.1's v2 WAL) and `qwdata/queues` (its v1 ingest
+queue, [Duplicate-safe ingest](#duplicate-safe-ingest)) to it. Startup requires at least
 8 GiB free locally for the bounded 4 GiB WAL plus headroom; `writer WAL on local
 disk` records the actual path and free MiB. `wal_disk_free_mb` in
 `release progress` and `release merges` tracks the local volume separately from
 the NFS `disk_free_mb`. The directory lives until the writer
-stops and is not replayed by the next run. Split cache, merge files and decade
+stops, through the restart of a v1 release's final merges, and is not replayed
+by the next run. Split cache, merge files and decade
 spill remain on the large NFS share and retain their existing caps/checks. Jobs
 without scratch keep the existing all-local layout. Neither layout resumes an
 interrupted rebuild: the next run clears its writer data before starting.
@@ -414,6 +417,56 @@ then returned HTTP 500. It was not a full-disk or confirmed OOM failure. Retryin
 that HTTP 500 blindly is unsafe because acceptance is ambiguous and can duplicate
 documents. A failed staged run publishes nothing; keep the serving version and
 rollback intact while fixing and restarting it.
+
+### Duplicate-safe ingest
+
+**Quickwit 0.9.1's ingest v2 is at least once, and a full rebuild can keep a
+page twice.** The second #283 attempt (`si5kesp`, October 2026) sent all
+23,740,914 pages, each request answered 200 once, but its base held
+23,741,035 documents, and the release's exact count refused to publish it
+(57 h lost). A scan of every `doc_id` found 52 pages held more than once, 121
+extra copies, in two runs of consecutive pages: 23 pages 5 times and 29 pages
+twice. Quickwit's router gives each persist 6 s and tries it up to 5 times
+(`PERSIST_REQUEST_TIMEOUT`, `MAX_PERSIST_ATTEMPTS`; neither can be set), and a
+persist that timed out still appends once the ingester's lock frees: the logs
+show the lock held for 26 s at the time. The client cannot see this, and
+Quickwit does not deduplicate by `doc_id`. Nor can such a base be repaired: a
+delete by `doc_id` removes every copy, the original too, and the delete
+planner skips splits that are not yet mature (7 days).
+
+`USNM_WRITER_INGEST=v1` sends pages through Quickwit's v1 ingest API
+(`use_legacy_ingest=true`) instead. It appends a request to the node's local
+queue once, with no internal retry, and answers `num_docs_for_processing`.
+The sink then:
+
+- Sends a request again only after a 429 (queue full) or a 404 (the index's
+  queue doesn't exist yet), which come before anything is appended.
+- Never resends after any other answer, a transport error or a timeout. The
+  release fails instead, since the request may have been taken.
+- Requires `num_docs_for_processing` to equal the request's pages. v1 drops
+  pages the mapping refuses without saying so.
+
+v1's merge pipeline reads the merge policy only when the writer starts, so
+the final merges can't lower the factor in place as v2's do.
+`seal_restarting`:
+
+1. Lets the merges settle.
+2. Puts the index's config back with `merge_factor: 2`.
+3. Restarts the writer on the same data directory and port.
+4. Waits for the new merge pipeline's `spawning merge pipeline` line to show
+   `merge_factor: 2`. It fails without publishing if the line shows another
+   factor or if no pipeline starts within the finalize stall.
+5. Lets the merges settle again, restores the original config, and checks the
+   layout as before.
+
+The page count and the layout check are unchanged: they still refuse an index
+whose documents differ from the pages sent. v1 needs `--quickwit-bin`, the
+writer the release starts itself, and is refused with `--quickwit-url`.
+
+`USNM_WRITER_INGEST` is a public setting (`infra/env/<env>.json`), passed to
+the ingest job. `v2` is the default; set `v1` for full rebuilds. Test it on
+dev first (a 1% release with the rebuild's settings) and compare its pages
+per second with v2's before a long run.
 
 **Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why ordinary ingest has a 48 h replica timeout (#173). Explicit full rebuilds and staging runs now get 96 h, from the slower #283 dev measurement above. Benchmark afterwards with `scripts/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
 

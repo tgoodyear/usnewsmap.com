@@ -117,6 +117,9 @@ param pageLanguage bool = false
 @minValue(0)
 @maxValue(999999)
 param splitDocs int = 0
+@description('The writer\'s ingest API: v2 (at least once) or v1 (each accepted page once; the release restarts the writer for its final merges) (#283).')
+@allowed(['v1', 'v2'])
+param writerIngest string = 'v2'
 @minValue(1)
 @maxValue(32)
 param workers int = 8
@@ -309,6 +312,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
           env: concat(env, rawEnv, scratchEnv, writerTuningEnv, [
             { name: 'QW_AZURE_STORAGE_ACCOUNT', value: empty(indexStorageAccountName) ? storageAccountName : indexStorageAccountName }
             { name: 'USNM_MERGE_TIMEOUT_SECS', value: string(mergeTimeoutSecs) }
+            { name: 'USNM_WRITER_INGEST', value: writerIngest }
           ])
           volumeMounts: scratch ? [{ volumeName: 'scratch', mountPath: '/scratch' }] : null
         }
