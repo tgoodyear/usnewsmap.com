@@ -133,6 +133,9 @@ After admission, dispatch adds the exact client/peer assignments to the same
 audited workunit; stock targeted scheduling creates the two results itself.
 Never delete generic replicas to convert an old fixture or reduce quorum/target 2. Publish the signed registry (`libggml.so` / `ggml.dll`), base and Vulkan
 libraries alongside the AMD PCI helper.
+`audited_workunit_id` is accepted only for this AMD targeted-staging route.
+Other plans must omit it and retain their existing fresh create-on-dispatch flow;
+generic unsent replicas cannot be resumed through targeted assignments.
 
 These native-only classes admit stable BOINC 8.2.11+ and do not require a
 container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when

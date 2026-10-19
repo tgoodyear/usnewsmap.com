@@ -163,6 +163,8 @@ def fixture_load(root, name, release, *, staging=False):
     audited = manifest.get('audited_workunit_id')
     if audited is not None and (type(audited) is not int or audited <= 1):
         raise ValueError('invalid audited workunit ID')
+    if audited is not None and release['plan_class'] != 'amd_vulkan_8b':
+        raise ValueError('audited workunit IDs require AMD zero-result targeted staging')
     if release['plan_class'] == 'amd_vulkan_8b' and (
             release['app'] != 'usnm_qwen' or (audited is None and not staging)
             or manifest['batch'] != 8 or manifest['min_quorum'] != 2

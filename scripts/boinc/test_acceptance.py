@@ -929,6 +929,30 @@ class Server(Workspace):
                            ('--min_quorum', '2'), ('--target_nresults', '2')]:
             self.assertEqual(args[args.index(key) + 1], value)
 
+    def test_non_amd_audited_fixture_and_reservation_refuse_before_mutations(self):
+        path = self.root / 'fixture.json'
+        for plan in ('docker_mt_2b', 'mt', 'apple_gpu_8b', 'intel_vulkan_8b',
+                     'nvidia_vulkan_8b', 'nvidia_cuda_8b', 'nvidia_cuda_2b'):
+            release = {**RELEASE, 'plan_class': plan}
+            manifest = {**self.manifest(), 'release': release, 'audited_workunit_id': 300}
+            path.write_text(json.dumps(manifest))
+            with self.subTest(plan=plan):
+                for staging in (False, True):
+                    with self.assertRaisesRegex(ValueError, 'AMD zero-result targeted staging'):
+                        S.fixture_load(self.root, 'fixture', release, staging=staging)
+                db = MagicMock()
+                with patch.object(S, 'query') as query, patch.object(S, 'durable') as durable, \
+                        patch.object(S.subprocess, 'run') as run, \
+                        self.assertRaisesRegex(ValueError, 'AMD zero-result targeted staging'):
+                    S.handle(dict(action='reserve', fixture='fixture', run_id='a' * 32, release=release),
+                             self.root, self.root, db)
+                query.assert_not_called()
+                durable.assert_not_called()
+                run.assert_not_called()
+                self.assertEqual(db.mock_calls, [])
+                self.assertFalse((self.root / 'fixture.reservation.json').exists())
+                self.assertFalse((self.root / 'fixture.stage.json').exists())
+
     def test_output_contract_requires_real_inference_and_no_unit_error(self):
         rule = self.manifest()['outputs'][0]
         S.output_check(DATA, rule)
@@ -966,6 +990,7 @@ class Server(Workspace):
 
     def test_dispatch_adds_only_exact_host_peer_assignments(self):
         manifest = self.manifest()
+        (self.root / 'fixture.json').write_text(json.dumps(manifest))
         record = dict(run_id='a' * 32, release=RELEASE, workunit=manifest['workunit_name'],
                       app_version_id=7, released=False, input_template_sha256='approved',
                       manifest_sha256=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest())
@@ -985,9 +1010,15 @@ class Server(Workspace):
             self.assertFalse(visibility['snapshot'], 'host lookup transaction must end before external create_work')
             visibility['created'] = True
         db.commit.side_effect = commit
-        with patch.object(S, 'fixture_load', return_value=manifest), patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
-                patch.object(S, 'query', side_effect=query), patch.object(S.subprocess, 'run', side_effect=create):
+        with patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
+                patch.object(S, 'query', side_effect=query), patch.object(S.subprocess, 'run', side_effect=create) as run:
             result = S.handle(request, self.root, self.root, db)
+        run.assert_called_once()
+        args = run.call_args.args[0]
+        self.assertEqual(args[0], str(self.root / 'bin/create_work'))
+        self.assertEqual(args[args.index('--target_host') + 1], '2')
+        self.assertEqual(args[args.index('--target_nresults') + 1], '2')
+        self.assertNotIn('--no_new_results', args)
         self.assertTrue(result['dispatched'])
         sql, values = db.cursor.return_value.execute.call_args.args
         self.assertIn('assignment', sql)
