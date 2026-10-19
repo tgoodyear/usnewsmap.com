@@ -879,8 +879,9 @@ current batch with `--current s=<batch>_verNN`, from the shard's status file
 (`quality/v1-wave9/status/shard-<s>.json`, `current_batch`): the runner skips pages that are
 already bundled or have no LoC text, so a shard's bundle count doesn't tell where it is in
 its list. The runner lists the archive and the damage index once, when it starts, and both
-grow, so a later list can put a tier-1 batch under another shard. The builder then warns and
-lists every batch after it for that shard, so no batch the runner still needs is left out. Rebuild the list before the converter reaches
+grow, so a later list can't reproduce its tier-1 rotation. Each shard's list therefore
+continues with every tier-1 batch after the one it names, and the lists are deduplicated: the
+cache converts some pages another shard has passed, but none a shard still needs. Rebuild the list before the converter reaches
 its end, or the cache falls behind as shards move into tier 1.
 
 The output must be byte for byte what the runner would make, so the script runs only on

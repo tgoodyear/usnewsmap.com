@@ -22,10 +22,13 @@ batches follow the manifest's in the same shard rotation, their pages in the
 runner's doc_id order.
 
 --current s=<batch>_verNN skips shard s's batches up to and including the one
-its status file names now; an unknown batch is an error. If the batch is in
-the order but under another shard, the listing has changed since the runner
-started, so its exact rotation is unknown: that shard then gets every later
-batch, not every Nth, so none it still needs is left out. --start-after s=k does the same by index (k is the index
+its status file names now; an unknown batch is an error. The manifest's
+batches never change, so each shard takes every Nth of them exactly. Tier 1
+comes from listings that grow after the runner starts, so its rotation can't
+be verified: each shard's queue continues with every tier-1 batch after its
+own position (all of tier 1 if it is still in the manifest), and the queues
+are deduplicated. That converts some pages another shard has passed, but none
+a shard still needs is left out. --start-after s=k does the same by index (k is the index
 of the batch it is in now). Shards not named start at their first batch.
 --done drops pages already in the converter's done.txt. Needs duckdb.
 """
@@ -78,7 +81,19 @@ def ordered_batches(rows, tier1=()):
     return [(k, by[k]) for k in batches] + list(tier1)
 
 
-def resolve_current(ordered, shards, current, warn=print):
+def manifest_count(rows):
+    """How many batches the manifest has: the start of tier 1 in ordered_batches."""
+    return len({(b, int(bv)) for b, bv, _ in rows})
+
+
+def remaining_batches(ordered, n_manifest, shards, s, after):
+    """Shard s's batches after global index `after` (-1: from its first): its own manifest
+    batches, every `shards`-th, then every tier-1 batch after `after`, unstrided."""
+    mine = [k for i, k in enumerate(ordered[:n_manifest]) if i % shards == s and i > after]
+    return mine + ordered[max(n_manifest, after + 1):]
+
+
+def resolve_current(ordered, shards, current, warn=print, n_manifest=None):
     """{shard: "<batch>_verNN"} to {shard: the batches it has left}.
 
     The runner lists the scan archive and the damage index once, when it starts; both grow,
@@ -87,6 +102,8 @@ def resolve_current(ordered, shards, current, warn=print):
     batch (the queues are deduplicated when interleaved), with a warning. A batch not in the
     order at all is an error."""
     keys = [k for k, _ in ordered]
+    if n_manifest is None:
+        n_manifest = len(ordered)
     out = {}
     for s, name in current.items():
         batch, _, ver = name.rpartition("_ver")
@@ -94,11 +111,9 @@ def resolve_current(ordered, shards, current, warn=print):
             g = keys.index((batch, int(ver)))
         except ValueError:
             raise SystemExit(f"shard {s}: {name} is not in the batch order; check the inputs")
-        if g % shards != s:
-            warn(f"shard {s}: {name} is shard {g % shards}'s in this order; listing every later batch")
-            out[s] = ordered[g + 1:]
-        else:
-            out[s] = ordered[g + shards::shards]
+        if g < n_manifest and g % shards != s:
+            warn(f"shard {s}: {name} is shard {g % shards}'s in the manifest order; check the inputs")
+        out[s] = remaining_batches(ordered, n_manifest, shards, s, g)
     return out
 
 
@@ -106,13 +121,18 @@ def shard_queues(rows, shards, start_after, done, tier1=(), remaining=None):
     """rows: (batch, batch_version, blob_name) in the runner's doc_id order. One page list per
     shard. remaining: {shard: batches left} from resolve_current, which wins over start_after."""
     ordered = ordered_batches(rows, tier1)
+    n_manifest = manifest_count(rows)
     remaining = remaining or {}
     queues = []
     for s in range(shards):
         if s in remaining:
             left = remaining[s]
         else:
-            left = ordered[s::shards][start_after[s] + 1 if s in start_after else 0:]
+            # start_after counts this shard's manifest batches (every Nth from s).
+            k = start_after.get(s, -1)
+            mine = list(range(s, n_manifest, shards))
+            after = mine[k] if 0 <= k < len(mine) else (-1 if k < 0 else n_manifest - 1)
+            left = remaining_batches(ordered, n_manifest, shards, s, after)
         queues.append([n for _, pages in left for n in pages
                        if n.endswith(".jp2") and n not in done])
     return queues
@@ -168,7 +188,8 @@ def main(argv=None):
         with open(a.keep_files) as f:
             keep = [line.strip().removeprefix("./") for line in f if line.strip()]
         tier1 = tier1_batches({(b, int(bv)) for b, bv, _ in rows}, damage, keep)
-    remaining = resolve_current(ordered_batches(rows, tier1), a.shards, parse_current(a.current))
+    remaining = resolve_current(ordered_batches(rows, tier1), a.shards, parse_current(a.current),
+                                n_manifest=manifest_count(rows))
     queues = shard_queues(rows, a.shards, parse_start_after(a.start_after), done, tier1, remaining)
     out = list(dict.fromkeys(interleave(queues)))
     with open(a.out, "w") as f:
