@@ -66,11 +66,11 @@ both AMD sibling platforms (the fresh live inventory ended at 1.6).
 | Image repository / purpose                  | SHA256 digest                                                      | ACR build |
 | ------------------------------------------- | ------------------------------------------------------------------ | --------- |
 | `usnm-boinc-base`, new pinned staging tool  | `7526fa79c6259c4d12d3c057da4d3bcff24138f1ce44246de800786e218265a0` | `cha1`    |
-| `usnm-boinc-appver`, signed Linux x64 1.7   | `a9f27d7307d05b68fa368105d1656e8dab6ddb3bb8ae027173012e4a80621647` | `cha2`    |
-| `usnm-boinc-appver`, signed Windows x64 1.7 | `8659f1444a416f333336d7885d26fc8a2dd6b6184fd98f7cb244a1c84e51e0f3` | `cha4`    |
-| `usnm-boinc-bridge`, additive runtime       | `067d640d8dce040ca226159beff64599dca2d8b9ea6f44805f65a501656876d5` | `cha5`    |
+| `usnm-boinc-appver`, signed Linux x64 1.7   | `57b0de0793df18a15701103ce2b8061214cacc49c5c496ff5ae2f6240a9f5303` | `cha7`    |
+| `usnm-boinc-appver`, signed Windows x64 1.7 | `68a8811eb516d61d8dfa53696636118ed742ceb19b5e877eaff7534665281998` | `cha8`    |
+| `usnm-boinc-bridge`, additive runtime       | `d417a2ad0469c2b0c54787a0e466d6e76cb78577e40a1e776870bef252b4da9e` | `cha6`    |
 
-The runtime overlay source is `bb6a06103e34d52d81efdc5dbf57d24398268983`.
+The runtime overlay source is `2cb09db4e8a8f77c3749ca7d41249eba4ecc2249`.
 Actual-image verification compared **5,660 files** under `/etc` and `/usr/local`
 against the immutable live base (excluding only container-generated hostname,
 hosts and resolver files). Only the four intended replacements differ:
