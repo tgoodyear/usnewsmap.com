@@ -359,6 +359,8 @@ module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
 // BOINC identity and run only if its sha256 is the committed one. 4 vCPUs: the runner converts
 // any page the on-prem JPEG cache (docs/boinc.md) hasn't; more cache, not more vCPUs, is the
 // way to speed it up. A day per run; it is started by hand (az containerapp job start).
+// It stages only pages the scan archive holds and then ends: the LoC fallback pass, one
+// 5-second pacer across every shard, is off unless QUALITY_LOC_FALLBACK=1 (#914).
 module qualityWaveJob 'modules/bridge-job.bicep' = if (withApp && !empty(qualityWaveScript)) {
   name: 'quality-wave-job'
   dependsOn: [ registry ]

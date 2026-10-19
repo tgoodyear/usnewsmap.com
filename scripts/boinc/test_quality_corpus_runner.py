@@ -52,3 +52,12 @@ class Scope(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocFallback(unittest.TestCase):
+    def test_off_unless_asked_for(self):
+        # One 5-second pacer for every shard can't fetch a corpus (#914): the LoC pass runs
+        # only with QUALITY_LOC_FALLBACK=1, and every pass loop goes through PASSES.
+        self.assertIn('LOC_FALLBACK = os.environ.get("QUALITY_LOC_FALLBACK", "0") == "1"', SOURCE)
+        self.assertIn('PASSES = ("jpeg_cached", "jpeg_cached", "archived") + (("loc_fallback",) if LOC_FALLBACK else ())', SOURCE)
+        self.assertNotRegex(SOURCE, r'for pass_mode in \("')
