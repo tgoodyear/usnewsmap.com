@@ -98,8 +98,13 @@ secrets_principal=$(principal_id "usnm-boinc-secrets-id-$ENV_NAME") || die "inva
 domain_stage() {
   local record=${MASTER_HOST%".$DNS_ZONE"} state names
   [ -n "$DNS_ZONE" ] && [ -n "$SERVER_IMAGE" ] || { echo 0; return; }
-  # No app in the stack yet (a base-only deploy): no environment, so no certificate to read.
-  [ -n "$(boinc_output appFqdn)" ] || { echo 0; return; }
+  # No app yet (a base-only deploy): no environment, so no certificate to read. A failed
+  # deployment leaves the stack with no outputs at all, so ask the app itself before deciding
+  # there is none: stage 0 would unbind the live domain (#529, 2026-10-19).
+  [ -n "$(boinc_output appFqdn)" ] ||
+    [ -n "$(baz containerapp show --name "usnm-boinc-ca-$ENV_NAME" --resource-group "$BOINC_RG" \
+      --query properties.configuration.ingress.fqdn -o tsv 2> /dev/null)" ] ||
+    { echo 0; return; }
   # A failed read must stop the run: guessing a lower stage would unbind a working domain.
   state=$(baz containerapp env certificate list --name "usnm-boinc-cae-$ENV_NAME" --resource-group "$BOINC_RG" \
     --managed-certificates-only --query "[?name=='$CERT_NAME'].properties.provisioningState | [0]" -o tsv) ||
