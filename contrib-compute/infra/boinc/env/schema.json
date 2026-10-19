@@ -104,7 +104,7 @@
         "script",
         "sha256"
       ],
-      "description": "Deploy the usnm_quality wave job (usnm-boinc-quality-caj-<env>): it downloads the runner script with the BOINC identity, refuses it unless its sha256 matches, and runs its eight shards. The script is contrib-compute/images/bridge/quality-wave/run_wave9.py, uploaded under this exact name. Absent: no job. main.bicep's qualityWaveScript and qualityWaveScriptSha256.",
+      "description": "Deploy the usnm_quality wave job (usnm-boinc-quality-caj-<env>): it downloads the runner with the BOINC identity, refuses it unless its sha256 matches, and runs its eight shards. scripts/boinc-quality-campaign.py launch-corpus uploads scripts/boinc/quality_corpus_runner.py as quality/<campaign>/run_wave9-<first 12 of its sha256>.py and prints this setting when the job pins another. Absent: no job. main.bicep's qualityWaveScript and qualityWaveScriptSha256.",
       "properties": {
         "script": {
           "type": "string",

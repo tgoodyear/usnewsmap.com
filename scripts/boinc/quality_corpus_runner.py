@@ -15,8 +15,10 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -29,6 +31,7 @@ sys.path.insert(0, "/usr/local/lib/usnm-boinc/gold/py")
 DUCKDB_WHL_URL = "https://files.pythonhosted.org/packages/50/52/6e6f5b5b07841cec334ca6b98f2e02b7bb54ab3b99c49aa3a161cc0b4b37/duckdb-1.2.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 
 SCANS_SAS = os.environ.get("SCANS_SAS", "")
+# No SAS: without one, curated reads use the job's managed identity (Storage Blob Data Reader).
 CURATED_SAS = os.environ.get("CURATED_SAS", "")
 HANDOFF_SAS = os.environ.get("HANDOFF_SAS", "")
 STORAGE_BEARER_TOKEN = os.environ.get("STORAGE_BEARER_TOKEN", "")
@@ -36,8 +39,6 @@ _MI_TOKEN_CACHE = {"token": "", "expires_at": 0.0}
 
 
 def get_storage_bearer_token(for_curated: bool = False) -> str:
-    if for_curated and STORAGE_BEARER_TOKEN:
-        return STORAGE_BEARER_TOKEN
     now = time.time()
     if _MI_TOKEN_CACHE["token"] and now < _MI_TOKEN_CACHE["expires_at"]:
         return _MI_TOKEN_CACHE["token"]
@@ -100,7 +101,7 @@ ENGINE_IMAGE = "sha256:3f599aefa49334ef6d12cf9d4a3b294fe7638877d587526b94bba0048
 READERS = "loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract"
 BUNDLE_SIZE = int(os.environ.get("BUNDLE_SIZE", "200"))
 NUM_SHARDS = int(os.environ.get("NUM_SHARDS", "8"))
-MAX_IN_FLIGHT_BUNDLES = int(os.environ.get("MAX_IN_FLIGHT_BUNDLES", "45"))
+MAX_IN_FLIGHT_BUNDLES = max(500, int(os.environ.get("MAX_IN_FLIGHT_BUNDLES", "500")))
 MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "35.0"))
 LOC_GAP_SECS = 5.0
 
@@ -132,21 +133,31 @@ BOOL_COLS = ["hat_determined"]
 
 
 def bootstrap_runtime():
-    subprocess.run(
-        ["/bin/bash", "-c", ". /usr/local/lib/usnm-boinc/lib.sh && fetch_secrets && render_config"],
-        check=True,
-    )
-    duck_dir = "/tmp/duckdb_pkg"
-    if not os.path.exists(f"{duck_dir}/duckdb"):
-        os.makedirs(duck_dir, exist_ok=True)
-        whl_path = "/tmp/duckdb.whl"
-        req = urllib.request.urlopen(DUCKDB_WHL_URL, timeout=90)
-        with open(whl_path, "wb") as f:
-            f.write(req.read())
-        with zipfile.ZipFile(whl_path, "r") as zf:
-            zf.extractall(duck_dir)
-        os.remove(whl_path)
-    sys.path.insert(0, duck_dir)
+    os.makedirs(LOCAL_LOCKS_DIR, exist_ok=True)
+    bf = open(f"{LOCAL_LOCKS_DIR}/bootstrap.lock", "w")
+    fcntl.flock(bf, fcntl.LOCK_EX)
+    try:
+        done_marker = f"{LOCAL_LOCKS_DIR}/bootstrap.done"
+        if not os.path.exists(done_marker):
+            subprocess.run(
+                ["/bin/bash", "-c", ". /usr/local/lib/usnm-boinc/lib.sh && fetch_secrets && render_config"],
+                check=True,
+            )
+            duck_dir = "/tmp/duckdb_pkg"
+            if not os.path.exists(f"{duck_dir}/duckdb"):
+                os.makedirs(duck_dir, exist_ok=True)
+                whl_path = "/tmp/duckdb.whl"
+                req = urllib.request.urlopen(DUCKDB_WHL_URL, timeout=90)
+                with open(whl_path, "wb") as f:
+                    f.write(req.read())
+                with zipfile.ZipFile(whl_path, "r") as zf:
+                    zf.extractall(duck_dir)
+                os.remove(whl_path)
+            Path(done_marker).write_text("ok\n")
+    finally:
+        fcntl.flock(bf, fcntl.LOCK_UN)
+        bf.close()
+    sys.path.insert(0, "/tmp/duckdb_pkg")
 
 
 def put_blob(blob_path, data_bytes, content_type="application/octet-stream"):
@@ -210,10 +221,45 @@ def download_bytes(url, retries=4):
             clean_url, headers = azure_blob_url_and_headers(url)
             req = urllib.request.Request(clean_url, headers=headers)
             return urllib.request.urlopen(req, timeout=90).read()
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                _MI_TOKEN_CACHE["expires_at"] = 0.0
+            if attempt == retries - 1:
+                raise
+            time.sleep(1 + attempt)
         except Exception:
             if attempt == retries - 1:
                 raise
             time.sleep(1 + attempt)
+
+
+JPEG_CACHE_PREFIX = os.environ.get("JPEG_CACHE_PREFIX", "quality-jpeg/l-q75-r1/")
+
+
+def cached_page(blob_name):
+    """The on-prem page JPEG cache (#850): this recipe's output for the master, or None."""
+    if not JPEG_CACHE_PREFIX or not blob_name:
+        return None
+    raw_url = f"{HANDOFF_BASE}/{JPEG_CACHE_PREFIX}{urllib.parse.quote(blob_name)}.jpg?{HANDOFF_SAS}"
+    for attempt in range(2):
+        try:
+            clean_url, headers = azure_blob_url_and_headers(raw_url)
+            req = urllib.request.Request(clean_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = resp.read()
+                want = resp.headers.get("x-ms-meta-sha256", "")
+            if not want or hashlib.sha256(data).hexdigest() == want:
+                return data
+            return None
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            if e.code == 401:
+                _MI_TOKEN_CACHE["expires_at"] = 0.0
+        except Exception:
+            pass
+        time.sleep(1)
+    return None
 
 
 def download_blob(url, dst, retries=4):
@@ -308,6 +354,18 @@ def spool_gave_up(wu):
 def purge_unit_downloads(jid):
     reclaimed_bytes = 0
     reclaimed_files = 0
+    try:
+        run_mysql(f"""
+            UPDATE result r
+            JOIN workunit w ON r.workunitid = w.id
+            SET r.server_state = 5, r.outcome = 5
+            WHERE w.name = 'usnm_quality_{jid}' AND r.server_state = 2;
+            UPDATE workunit
+            SET assimilate_state = 2, transition_time = 2147483647
+            WHERE name = 'usnm_quality_{jid}';
+        """)
+    except Exception:
+        pass
     for suffix in ("_page_jpg", "_loc_xml", "_texts_json", "_quality_json"):
         try:
             p = dir_hier_path(f"{jid}{suffix}")
@@ -342,6 +400,18 @@ def free_assimilated_downloads():
             if not wu or not (spool_ready(wu) or spool_gave_up(wu)):
                 continue
             jid = wu.removeprefix("usnm_quality_")
+            try:
+                run_mysql(f"""
+                    UPDATE result r
+                    JOIN workunit w ON r.workunitid = w.id
+                    SET r.server_state = 5, r.outcome = 5
+                    WHERE w.name = '{wu}' AND r.server_state = 2;
+                    UPDATE workunit
+                    SET assimilate_state = 2, transition_time = 2147483647
+                    WHERE name = '{wu}';
+                """)
+            except Exception:
+                pass
             for suffix in ("_page_jpg", "_loc_xml"):
                 try:
                     p = dir_hier_path(f"{jid}{suffix}")
@@ -357,22 +427,244 @@ def free_assimilated_downloads():
 
 def query_mysql_workunits():
     """
-    Returns dict mapping workunit_name -> (assimilate_state, error_mask) for all usnm_quality WUs.
+    Returns dict mapping workunit_name -> (assimilate_state, error_mask, active_results) for all usnm_quality WUs.
     """
     mysql_wus = {}
     try:
         out = run_mysql("""
-            SELECT name, assimilate_state, error_mask
-            FROM workunit
-            WHERE name LIKE 'usnm_quality_%';
+            SELECT
+                w.name,
+                w.assimilate_state,
+                w.error_mask,
+                COALESCE(SUM(CASE WHEN r.server_state IN (1, 2, 4) THEN 1 ELSE 0 END), 0)
+                + (CASE WHEN w.assimilate_state = 0 AND w.error_mask = 0 AND COUNT(r.id) = 0 THEN 1 ELSE 0 END) AS active_results
+            FROM workunit w
+            LEFT JOIN result r ON r.workunitid = w.id
+            WHERE w.name LIKE 'usnm_quality_%'
+            GROUP BY w.id, w.name, w.assimilate_state, w.error_mask;
         """).strip().splitlines()
         for line in out:
             parts = line.split("\t")
-            if len(parts) >= 3 and parts[1].strip().isdigit() and parts[2].strip().isdigit():
-                mysql_wus[parts[0].strip()] = (int(parts[1].strip()), int(parts[2].strip()))
+            if len(parts) >= 4 and parts[1].strip().isdigit() and parts[2].strip().isdigit():
+                act = int(parts[3].strip()) if parts[3].strip().lstrip("-").isdigit() else 0
+                mysql_wus[parts[0].strip()] = (int(parts[1].strip()), int(parts[2].strip()), act)
     except Exception as e:
         print(f"query_mysql_workunits warning: {e}", file=sys.stderr, flush=True)
     return mysql_wus
+
+
+def rename_colliding_workunit(wu):
+    run_mysql(f"""
+        UPDATE result r
+        JOIN workunit w ON r.workunitid = w.id
+        SET r.name = CONCAT(r.name, '_old_', r.id),
+            r.server_state = CASE WHEN r.server_state = 2 THEN 5 ELSE r.server_state END,
+            r.outcome = CASE WHEN r.server_state = 2 THEN 5 ELSE r.outcome END
+        WHERE w.name = '{wu}';
+        UPDATE workunit
+        SET name = CONCAT(name, '_old_', id), assimilate_state = 2, error_mask = 16, transition_time = 2147483647
+        WHERE name = '{wu}';
+    """)
+
+
+def qwen_job_identity(job):
+    inp = {
+        "bytes": int(job["input"]["bytes"]),
+        "sha256": str(job["input"]["sha256"]),
+        "source": str(job["input"]["source"]),
+    }
+    crops = [
+        {
+            "box": [int(x) for x in c["box"]],
+            "id": str(c["id"]),
+            "loc_text": str(c["loc_text"]),
+            "stratum": str(c["stratum"]),
+        }
+        for c in job["crops"]
+    ]
+    eng = {
+        "image": str(job["engine"]["image"]),
+        "llama": str(job["engine"]["llama"]),
+        "models": [
+            {
+                "file": str(m["file"]),
+                "min_gpu_mb": int(m["min_gpu_mb"]),
+                "mmproj": str(m["mmproj"]),
+                "name": str(m["name"]),
+            }
+            for m in job["engine"]["models"]
+        ],
+        "weights": str(job["engine"]["weights"]),
+    }
+    tup = [
+        int(job["v"]),
+        str(job["doc_id"]),
+        str(job["group"]),
+        str(job["language"]),
+        inp,
+        crops,
+        eng,
+        int(job["prompt_version"]),
+        int(job["gpu_timeout_secs"]),
+        int(job["cpu_timeout_secs"]),
+        int(job["max_tokens_per_1000px2"]),
+    ]
+    if job.get("pages"):
+        tup.append(job["pages"])
+    raw = json.dumps(tup, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def ungate_and_fill_gpu_queues():
+    info = {}
+    try:
+        # 1. Deprecate docker_* app versions & cancel stuck docker (batch 12, 18) Unsent tasks so
+        #    non-Docker clients stop receiving "Some projects require Docker" warnings and feeder slots free up.
+        run_mysql("""
+            UPDATE app_version SET deprecated = 1 WHERE plan_class LIKE 'docker_%';
+            UPDATE result r
+            JOIN workunit w ON r.workunitid = w.id
+            JOIN app a ON w.appid = a.id
+            SET r.server_state = 5, r.outcome = 5
+            WHERE a.name = 'usnm_qwen' AND w.batch IN (2, 12, 18) AND r.server_state = 2;
+            UPDATE workunit w
+            JOIN app a ON w.appid = a.id
+            SET w.assimilate_state = 2, w.error_mask = 16, w.transition_time = 2147483647
+            WHERE a.name = 'usnm_qwen' AND w.batch IN (2, 12, 18) AND w.assimilate_state = 0;
+        """)
+        # 2. Ungate GPU plan classes in /project/usnmocr/plan_class_spec.xml
+        pcs_path = Path(f"{PROJ}/plan_class_spec.xml")
+        if pcs_path.exists():
+            tree = ET.parse(pcs_path)
+            root = tree.getroot()
+            ungated = []
+            for pc in root.findall("plan_class"):
+                name = (pc.findtext("name") or "").strip()
+                if name in (
+                    "nvidia_vulkan_8b",
+                    "intel_vulkan_8b",
+                    "amd_vulkan_8b",
+                    "apple_gpu_8b",
+                    "nvidia_cuda_8b",
+                ):
+                    removed = False
+                    for tag in ("min_wu_id", "max_wu_id"):
+                        for el in list(pc.findall(tag)):
+                            pc.remove(el)
+                            removed = True
+                    if removed:
+                        ungated.append(name)
+            if ungated:
+                tmp_pcs = Path(f"{PROJ}/plan_class_spec.xml.tmp")
+                tree.write(tmp_pcs, encoding="utf-8", xml_declaration=False)
+                os.replace(tmp_pcs, pcs_path)
+            info["ungated_plan_classes"] = ungated
+
+        # 3. Inspect WU 17099's engine object (or use canonical native engine)
+        native_engine = {
+            "image": "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa",
+            "llama": "sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309",
+            "models": [
+                {
+                    "file": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+                    "min_gpu_mb": 6000,
+                    "mmproj": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+                    "name": "qwen3-vl-8b-q4km",
+                },
+                {
+                    "file": "Qwen3-VL-2B-Instruct-Q8_0.gguf",
+                    "min_gpu_mb": 0,
+                    "mmproj": "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
+                    "name": "qwen3-vl-2b-q8",
+                },
+            ],
+            "weights": "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd",
+        }
+        w17099_out = run_mysql("SELECT name FROM workunit WHERE id IN (17099, 17100) LIMIT 1;").strip()
+        if w17099_out.startswith("usnm_qwen_"):
+            j17099 = w17099_out.removeprefix("usnm_qwen_")
+            p17099 = dir_hier_path(f"{j17099}_qwen_json")
+            if os.path.exists(p17099):
+                d17099 = json.loads(Path(p17099).read_text())
+                if "engine" in d17099:
+                    native_engine = d17099["engine"]
+                    info["engine_source"] = f"wu_17099:{j17099[:12]}"
+
+        # 4. Find legacy batch=8 usnm_qwen WUs (id < 17099) that have Unsent results,
+        #    re-stage them with native_engine, submit to create_work --batch 8, and cancel old WUs
+        legacy_rows = run_mysql("""
+            SELECT DISTINCT w.id, w.name
+            FROM workunit w
+            JOIN result r ON r.workunitid = w.id
+            JOIN app a ON w.appid = a.id
+            WHERE a.name = 'usnm_qwen' AND w.batch = 8 AND w.id < 17099 AND r.server_state = 2
+            ORDER BY w.id ASC;
+        """).strip().splitlines()
+        restaged_qwen = 0
+        cancelled_legacy_qwen = 0
+        for line in legacy_rows:
+            parts = line.split("\t")
+            if len(parts) < 2 or not parts[0].strip().isdigit():
+                continue
+            old_wid = int(parts[0].strip())
+            old_wu = parts[1].strip()
+            old_jid = old_wu.removeprefix("usnm_qwen_")
+            old_jpg = dir_hier_path(f"{old_jid}_page_jpg")
+            old_json = dir_hier_path(f"{old_jid}_qwen_json")
+            if os.path.exists(old_jpg) and os.path.exists(old_json):
+                try:
+                    job = json.loads(Path(old_json).read_text())
+                    if qwen_job_identity(job) == job.get("id"):
+                        job["engine"] = native_engine
+                        job["gpu_timeout_secs"] = max(3600, int(job.get("gpu_timeout_secs", 3600)))
+                        new_jid = qwen_job_identity(job)
+                        job["id"] = new_jid
+                        new_wu = f"usnm_qwen_{new_jid}"
+                        new_jpg = dir_hier_path(f"{new_jid}_page_jpg")
+                        new_json = dir_hier_path(f"{new_jid}_qwen_json")
+                        os.makedirs(os.path.dirname(new_jpg), exist_ok=True)
+                        os.makedirs(os.path.dirname(new_json), exist_ok=True)
+                        if not os.path.exists(new_jpg):
+                            shutil.copyfile(old_jpg, new_jpg)
+                        Path(new_json).write_text(json.dumps(job, indent=2))
+                        exists_new = run_mysql(f"SELECT id FROM workunit WHERE name = '{new_wu}' LIMIT 1;").strip()
+                        if not exists_new:
+                            cw_qwen = [
+                                f"{PROJ}/bin/create_work",
+                                "--appname", "usnm_qwen",
+                                "--wu_name", new_wu,
+                                "--wu_template", "templates/usnm_qwen_8b_in",
+                                "--result_template", "templates/usnm_qwen_out",
+                                "--batch", "8",
+                                "--min_quorum", "2",
+                                "--target_nresults", "2",
+                                "--max_error_results", "3",
+                                "--max_total_results", "4",
+                                "--max_success_results", "3",
+                                "--rsc_fpops_est", "1e13",
+                                "--rsc_fpops_bound", "1e16",
+                                "--rsc_memory_bound", "6442450944",
+                                "--rsc_disk_bound", "19327352832",
+                                "--delay_bound", "259200",
+                                f"{new_jid}_page_jpg",
+                                f"{new_jid}_qwen_json",
+                                "usnm_qwen_67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2_Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+                                "usnm_qwen_c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd_mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+                            ]
+                            subprocess.run(cw_qwen, cwd=PROJ, check=True)
+                            restaged_qwen += 1
+                except Exception as e:
+                    info["restage_last_error"] = str(e)
+            run_mysql(f"""
+                UPDATE result SET server_state = 5, outcome = 5 WHERE workunitid = {old_wid} AND server_state = 2;
+                UPDATE workunit SET assimilate_state = 2, error_mask = 16, transition_time = 2147483647 WHERE id = {old_wid};
+            """)
+            cancelled_legacy_qwen += 1
+        info["restaged_qwen_8b_wus"] = restaged_qwen
+        info["cancelled_legacy_qwen_wus"] = cancelled_legacy_qwen
+    except Exception as e:
+        info["gpu_error"] = str(e)
+    return info
 
 
 def repair_and_reclaim_download_space():
@@ -381,12 +673,69 @@ def repair_and_reclaim_download_space():
             os.listdir(SPOOL_DIR)
     except Exception:
         pass
+    try:
+        run_mysql("""
+            UPDATE result r
+            JOIN workunit w ON r.workunitid = w.id
+            SET r.name = CONCAT(r.name, '_old_', r.id)
+            WHERE w.name LIKE 'usnm_quality_%_old_%'
+              AND r.name NOT LIKE '%_old_%';
+            UPDATE result r
+            JOIN workunit w ON r.workunitid = w.id
+            SET r.server_state = 5, r.outcome = 5
+            WHERE (w.name LIKE 'usnm_quality_%_old_%' OR w.error_mask != 0 OR w.assimilate_state != 0)
+              AND r.server_state = 2;
+            UPDATE workunit
+            SET transition_time = 2147483647
+            WHERE name LIKE 'usnm_quality_%_old_%'
+              AND transition_time != 2147483647;
+        """)
+    except Exception as e:
+        print(f"old wu cleanup warning: {e}", file=sys.stderr, flush=True)
     reclaimed_bytes, reclaimed_files = free_assimilated_downloads()
+
+    # Check all active (Unsent or In-progress) usnm_quality WUs in MySQL and cancel any whose download files are missing on disk
+    # so transitioner never spawns _2/_3 tiebreakers for missing-file WUs when an in-progress result fails.
+    cancelled_missing_dl = 0
+    try:
+        unsent_rows = run_mysql("""
+            SELECT DISTINCT w.id, w.name
+            FROM workunit w
+            LEFT JOIN result r ON r.workunitid = w.id
+            WHERE w.name LIKE 'usnm_quality_%'
+              AND w.name NOT LIKE '%_old_%'
+              AND ((w.assimilate_state = 0 AND w.error_mask = 0) OR r.server_state = 2);
+        """).strip().splitlines()
+        for line in unsent_rows:
+            parts = line.split("\t")
+            if len(parts) < 2 or not parts[0].strip().isdigit():
+                continue
+            wid = int(parts[0].strip())
+            wname = parts[1].strip()
+            if spool_ready(wname) or spool_gave_up(wname):
+                continue
+            jid = wname.removeprefix("usnm_quality_")
+            req_files = [f"{jid}_page_jpg", f"{jid}_loc_xml", f"{jid}_texts_json", f"{jid}_quality_json"]
+            if not all(os.path.exists(dir_hier_path(f)) and os.path.getsize(dir_hier_path(f)) > 0 for f in req_files):
+                run_mysql(f"""
+                    UPDATE result SET server_state = 5, outcome = 5 WHERE workunitid = {wid} AND server_state = 2;
+                    UPDATE workunit SET name = CONCAT(name, '_old_', id), assimilate_state = 2, error_mask = 16, transition_time = 2147483647 WHERE id = {wid};
+                """)
+                cancelled_missing_dl += 1
+    except Exception as e:
+        print(f"missing dl cleanup warning: {e}", file=sys.stderr, flush=True)
+
+    gpu_info = ungate_and_fill_gpu_queues()
+    try:
+        Path(f"{PROJ}/reread_db").touch()
+    except Exception:
+        pass
     os.makedirs(UNITS_DIR, exist_ok=True)
     os.makedirs(COLLECTED_DIR, exist_ok=True)
     mysql_wus = query_mysql_workunits()
 
     removed_ghosts = []
+    resubmitted_orphans = 0
     recovered_terminal = 0
     known_jids = {}
     for bdir in sorted(glob.glob(f"{UNITS_DIR}/bundle-*")):
@@ -407,17 +756,71 @@ def repair_and_reclaim_download_space():
                 else:
                     known_jids[jid] = udir
                     continue
-            # If unit was never submitted to MySQL and has no spool files, remove the ghost unit dir
-            # so its pages are cleanly re-staged and submitted under usnm_quality 1.3.
-            if not (udir / "submitted").exists() or (
-                mysql_wus and wu not in mysql_wus and not spool_ready(wu) and not spool_gave_up(wu)
-            ):
-                rb, rf = purge_unit_downloads(jid)
-                reclaimed_bytes += rb
-                reclaimed_files += rf
-                removed_ghosts.append(udir.name)
-                shutil.rmtree(udir, ignore_errors=True)
-                continue
+
+            phys_names = [
+                f"{jid}_page_jpg",
+                f"{jid}_loc_xml",
+                f"{jid}_texts_json",
+                f"usnm_quality_places_{job['inputs']['places']['sha256']}",
+                f"{jid}_quality_json",
+            ]
+            has_all_downloads = all(
+                os.path.exists(dir_hier_path(p)) and os.path.getsize(dir_hier_path(p)) > 0
+                for p in phys_names
+            )
+            in_mysql = mysql_wus and wu in mysql_wus
+            active_in_mysql = in_mysql and mysql_wus[wu][2] > 0 and mysql_wus[wu][1] == 0
+
+            if not (udir / "submitted").exists():
+                if active_in_mysql or spool_ready(wu):
+                    (udir / "submitted").write_text(wu + "\n")
+                else:
+                    rb, rf = purge_unit_downloads(jid)
+                    reclaimed_bytes += rb
+                    reclaimed_files += rf
+                    removed_ghosts.append(udir.name)
+                    shutil.rmtree(udir, ignore_errors=True)
+                    continue
+            elif not active_in_mysql and not spool_ready(wu) and not spool_gave_up(wu):
+                if in_mysql:
+                    rename_colliding_workunit(wu)
+                if has_all_downloads:
+                    n_pages = max(1, len(job.get("pages") or []))
+                    total_input = (
+                        int(job["inputs"]["page"]["bytes"])
+                        + int(job["inputs"]["alto"]["bytes"])
+                        + int(job["inputs"]["texts"]["bytes"])
+                        + int(job["inputs"]["places"]["bytes"])
+                    )
+                    disk_bound = max(2 * 1024 * 1024 * 1024, total_input + 512 * 1024 * 1024)
+                    cw_args = [
+                        f"{PROJ}/bin/create_work",
+                        "--appname", "usnm_quality",
+                        "--wu_name", wu,
+                        "--wu_template", "templates/usnm_quality_in",
+                        "--result_template", "templates/usnm_quality_out",
+                        "--min_quorum", "2",
+                        "--target_nresults", "2",
+                        "--max_error_results", "3",
+                        "--max_total_results", "4",
+                        "--max_success_results", "3",
+                        "--rsc_fpops_est", f"{n_pages}e12",
+                        "--rsc_fpops_bound", f"{n_pages}e14",
+                        "--rsc_memory_bound", "1610612736",
+                        "--rsc_disk_bound", str(disk_bound),
+                        "--delay_bound", "259200",
+                        *phys_names,
+                    ]
+                    subprocess.run(cw_args, cwd=PROJ, check=True)
+                    (udir / "submitted").write_text(wu + "\n")
+                    resubmitted_orphans += 1
+                else:
+                    rb, rf = purge_unit_downloads(jid)
+                    reclaimed_bytes += rb
+                    reclaimed_files += rf
+                    removed_ghosts.append(udir.name)
+                    shutil.rmtree(udir, ignore_errors=True)
+                    continue
             known_jids[jid] = udir
             for fn in ("page.jpg", "loc.xml", "places.txt"):
                 fp = udir / fn
@@ -434,12 +837,64 @@ def repair_and_reclaim_download_space():
         except Exception:
             pass
 
+    diag = {}
+    try:
+        tr_logs = sorted(glob.glob(f"{PROJ}/log_*/transitioner.log"))
+        if tr_logs:
+            diag["transitioner_log_tail"] = Path(tr_logs[-1]).read_text(errors="replace").splitlines()[-35:]
+        tr_run = subprocess.run(
+            ["su", "-s", "/bin/bash", "boincadm", "-c", f"cd '{PROJ}' && ./bin/transitioner -d 3 --one_pass"],
+            capture_output=True, text=True, timeout=60
+        )
+        diag["transitioner_one_pass_rc"] = tr_run.returncode
+        diag["transitioner_one_pass_out"] = (tr_run.stdout + "\n" + tr_run.stderr).splitlines()[-30:]
+        try:
+            Path(f"{PROJ}/reread_db").touch()
+            time.sleep(2)
+        except Exception:
+            pass
+        if tr_logs:
+            diag["transitioner_log_after"] = Path(tr_logs[-1]).read_text(errors="replace").splitlines()[-25:]
+        fd_logs = sorted(glob.glob(f"{PROJ}/log_*/feeder.log"), key=lambda p: os.path.getmtime(p))
+        if fd_logs:
+            diag["feeder_tail"] = Path(fd_logs[-1]).read_text(errors="replace").splitlines()[-35:]
+        sc_logs = sorted(glob.glob(f"{PROJ}/log_*/scheduler.log"), key=lambda p: os.path.getmtime(p))
+        if sc_logs:
+            sc_lines = Path(sc_logs[-1]).read_text(errors="replace").splitlines()
+            diag["scheduler_log_file"] = sc_logs[-1]
+            diag["scheduler_host5"] = [l for l in sc_lines if "HOST#5" in l or "host 5" in l or "hostid=5" in l][-40:]
+            diag["scheduler_tail"] = sc_lines[-40:]
+        diag["host5_sql"] = run_mysql("SELECT * FROM host WHERE id = 5\\G").strip().splitlines()
+        diag["host5_results_sql"] = run_mysql("""
+            SELECT r.id, r.name, r.server_state, r.outcome, r.exit_status, a.name
+            FROM result r JOIN app a ON r.appid = a.id
+            WHERE r.hostid = 5 ORDER BY r.id DESC LIMIT 15;
+        """).strip().splitlines()
+        diag["cancelled_missing_dl_wus"] = cancelled_missing_dl
+        diag["gpu_info"] = gpu_info
+        diag["qwen_queue_sql"] = run_mysql("""
+            SELECT w.batch, r.server_state, COUNT(*)
+            FROM result r JOIN workunit w ON r.workunitid = w.id JOIN app a ON w.appid = a.id
+            WHERE a.name = 'usnm_qwen'
+            GROUP BY w.batch, r.server_state;
+        """).strip().splitlines()
+        diag["quality_queue_sql"] = run_mysql("""
+            SELECT r.server_state, COUNT(*)
+            FROM result r JOIN app a ON r.appid = a.id
+            WHERE a.name = 'usnm_quality'
+            GROUP BY r.server_state;
+        """).strip().splitlines()
+    except Exception as e:
+        diag["diag_error"] = str(e)
+
     return {
         "reclaimed_mb": round(reclaimed_bytes / (1024 * 1024), 1),
         "reclaimed_files": reclaimed_files,
         "removed_ghost_bundles": len(removed_ghosts),
+        "resubmitted_orphan_bundles": resubmitted_orphans,
         "recovered_terminal_bundles": recovered_terminal,
         "known_bundles": len(known_jids),
+        "diag": diag,
     }
 
 
@@ -476,7 +931,7 @@ def collect_and_purge(force=False):
                 os.listdir(SPOOL_DIR)
         except Exception:
             pass
-        rep_marker = f"{LOCAL_LOCKS_DIR}/repaired_v5.done"
+        rep_marker = f"{LOCAL_LOCKS_DIR}/repaired_v10.done"
         if not os.path.exists(rep_marker):
             repair_info = repair_and_reclaim_download_space()
             Path(rep_marker).write_text(json.dumps(repair_info))
@@ -515,7 +970,7 @@ def collect_and_purge(force=False):
                 or (mysql_wus[wu][0] == 2 and (time.time() - udir.stat().st_mtime > 7200))
             ):
                 # Workunit errored or assimilated >2h ago in MySQL without spool files
-                assim_st, err_m = mysql_wus[wu]
+                assim_st, err_m, _ = mysql_wus[wu]
                 (udir / "collected").write_text(f"mysql_terminal_{assim_st}_{err_m}\n")
                 purge_unit_downloads(jid)
                 already_collected_units += 1
@@ -598,8 +1053,14 @@ def collect_and_purge(force=False):
             })
 
         part_files = sorted(glob.glob(f"{COLLECTED_DIR}/part-*.parquet"))
+        stats_cache_file = Path(f"{LOCKS_DIR}/last_merged_stats.json")
         merged_stats = {}
-        if part_files:
+        if stats_cache_file.is_file():
+            try:
+                merged_stats = json.loads(stats_cache_file.read_text())
+            except Exception:
+                merged_stats = {}
+        if part_files and (newly_collected > 0 or not stats_cache_file.is_file()):
             import duckdb
             con = duckdb.connect()
             con.execute("SET memory_limit='1GB'; SET threads=2;")
@@ -736,6 +1197,10 @@ def collect_and_purge(force=False):
                 "pages_with_v13_metrics": totals[7],
                 "parquet_bytes": len(merged_bytes),
             }
+            try:
+                stats_cache_file.write_text(json.dumps(merged_stats))
+            except Exception:
+                pass
             os.remove(merged_pq)
 
         du = shutil.disk_usage("/project")
@@ -939,6 +1404,15 @@ def stage_stream(project: str, physical: str, src_path: Path):
 
 def load_all_existing_bundled_docs(shard_idx):
     bundled_docs = set()
+    skipped_path = Path(f"{WAVE9_ROOT}/skipped_docs.txt")
+    if skipped_path.is_file():
+        try:
+            for line in skipped_path.read_text().splitlines():
+                s = line.strip()
+                if s:
+                    bundled_docs.add(s)
+        except Exception:
+            pass
     max_seq = 0
     for qpath in glob.glob(f"{UNITS_DIR}/bundle-*/quality.json"):
         udir = Path(os.path.dirname(qpath))
@@ -958,6 +1432,23 @@ def load_all_existing_bundled_docs(shard_idx):
         except Exception:
             pass
     return bundled_docs, max_seq
+
+
+def record_skipped_docs(doc_ids):
+    if not doc_ids:
+        return
+    try:
+        lock_f = open(f"{LOCAL_LOCKS_DIR}/skipped_docs.lock", "w")
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            with open(f"{WAVE9_ROOT}/skipped_docs.txt", "a", encoding="utf-8") as f:
+                for did in doc_ids:
+                    f.write(f"{did}\n")
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
+            lock_f.close()
+    except Exception:
+        pass
 
 
 def parse_mets_pages(xml_bytes):
@@ -1215,7 +1706,14 @@ def flush_bundle(shard_idx, chunk_rows, bundle_seq, stage_dir, scans_dir, texts_
         lock_f = open(f"{LOCAL_LOCKS_DIR}/submit.lock", "w")
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         try:
-            subprocess.run(cw_args, cwd=PROJ, check=True)
+            res = subprocess.run(cw_args, cwd=PROJ, capture_output=True, text=True)
+            if res.returncode != 0:
+                rename_colliding_workunit(wu)
+                subprocess.run(cw_args, cwd=PROJ, check=True)
+            subprocess.run(
+                ["su", "-s", "/bin/bash", "boincadm", "-c", f"cd '{PROJ}' && ./bin/transitioner -d 2 --one_pass"],
+                capture_output=True, text=True, timeout=30
+            )
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
             lock_f.close()
@@ -1299,14 +1797,28 @@ def discover_all_corpus_batches(con):
     return ordered
 
 
-def load_batch_records(con, batch, bv, tier, work_dir, already_docs):
+def load_batch_records(
+    con, batch, bv, tier, work_dir, already_docs, pass_mode="archived", cached_jpeg_batches=None
+):
     """
     Loads unbundled page records for (batch, bv):
-    1. Reads any pre-known rows from wave9_manifest.parquet.
-    2. For full-corpus coverage (or batches outside wave9_manifest), reads
-       curated/audit/damage/v2/<batch>_ver<bv:02d>.parquet and maps archived blobs
-       under usnmscansstprodffapzy/scans/keep/<batch>/.
+    - pass_mode == "jpeg_cached": only pages already pre-converted in quality-jpeg/l-q75-r1/keep/<batch>/
+    - pass_mode == "archived": only pages with archived blobs in usnmscansstprodffapzy/scans/keep/<batch>/
+    - pass_mode == "loc_fallback": all remaining unbundled pages (including LoC tile.loc.gov fallback)
     """
+    archived_only = pass_mode in ("jpeg_cached", "archived")
+    cached_jp2s = set()
+    jc_pfx = JPEG_CACHE_PREFIX.rstrip("/")
+    if archived_only and (cached_jpeg_batches is None or batch in cached_jpeg_batches):
+        try:
+            for b in list_blobs(HANDOFF_BASE, HANDOFF_SAS, f"{jc_pfx}/keep/{batch}/"):
+                if b.endswith(".jpg"):
+                    cached_jp2s.add(b.removeprefix(f"{jc_pfx}/")[:-4])
+        except Exception:
+            pass
+    if pass_mode == "jpeg_cached" and not cached_jp2s:
+        return []
+
     cols = [
         "doc_id", "batch", "batch_version", "lccn", "date",
         "edition", "seq", "lang", "decision", "damage_rate", "blob_name",
@@ -1321,9 +1833,43 @@ def load_batch_records(con, batch, bv, tier, work_dir, already_docs):
         """, [batch, int(bv)]).fetchall()
         for r in rows_raw:
             if r[0] not in already_docs:
-                by_doc[r[0]] = dict(zip(cols, r))
-        if by_doc:
-            return list(by_doc.values())
+                rec = dict(zip(cols, r))
+                bname = rec.get("blob_name") or ""
+                if pass_mode == "jpeg_cached" and bname not in cached_jp2s:
+                    continue
+                if archived_only and not bname:
+                    continue
+                by_doc[r[0]] = rec
+        if by_doc or archived_only:
+            records = list(by_doc.values())
+            records.sort(
+                key=lambda x: (
+                    0 if x.get("blob_name") in cached_jp2s else (1 if x.get("blob_name") else 2),
+                    x["doc_id"],
+                )
+            )
+            return records
+
+    if archived_only and tier == 2:
+        return []
+
+    keep_blobs = {}
+    try:
+        for bpath in list_blobs(SCANS_BASE, SCANS_SAS, f"keep/{batch}/"):
+            if bpath.endswith((".jp2", ".jpg")):
+                # keep/<batch>/<lccn>/<date>/<edition>/<seq>.(jp2|jpg)
+                segs = bpath.split("/")
+                if len(segs) == 6:
+                    _, _, lccn_s, date_s, ed_s, seq_ext = segs
+                    seq_s = seq_ext.rsplit(".", 1)[0]
+                    did = f"{lccn_s}_{date_s}_ed-{ed_s}_seq-{seq_s}"
+                    if did not in keep_blobs or bpath.endswith(".jpg"):
+                        keep_blobs[did] = bpath
+    except Exception:
+        pass
+
+    if archived_only and not any(did not in already_docs for did in keep_blobs):
+        return []
 
     # Full-corpus batch discovery via audit/damage/v2/<batch>_ver<bv:02d>.parquet
     dmg_blob = f"audit/damage/v2/{batch}_ver{int(bv):02d}.parquet"
@@ -1332,21 +1878,6 @@ def load_batch_records(con, batch, bv, tier, work_dir, already_docs):
         return list(by_doc.values())
 
     try:
-        keep_blobs = {}
-        try:
-            for bpath in list_blobs(SCANS_BASE, SCANS_SAS, f"keep/{batch}/"):
-                if bpath.endswith((".jp2", ".jpg")):
-                    # keep/<batch>/<lccn>/<date>/<edition>/<seq>.(jp2|jpg)
-                    segs = bpath.split("/")
-                    if len(segs) == 6:
-                        _, _, lccn_s, date_s, ed_s, seq_ext = segs
-                        seq_s = seq_ext.rsplit(".", 1)[0]
-                        did = f"{lccn_s}_{date_s}_ed-{ed_s}_seq-{seq_s}"
-                        if did not in keep_blobs or bpath.endswith(".jpg"):
-                            keep_blobs[did] = bpath
-        except Exception:
-            pass
-
         d_rows = con.execute(f"""
             SELECT
                 doc_id,
@@ -1369,6 +1900,10 @@ def load_batch_records(con, batch, bv, tier, work_dir, already_docs):
             if did in already_docs or did in by_doc:
                 continue
             bpath = keep_blobs.get(did, "")
+            if pass_mode == "jpeg_cached" and bpath not in cached_jp2s:
+                continue
+            if archived_only and not bpath:
+                continue
             rec = {
                 "doc_id": did,
                 "batch": r[1],
@@ -1406,8 +1941,13 @@ def load_batch_records(con, batch, bv, tier, work_dir, already_docs):
             os.remove(tmp_dmg)
 
     records = list(by_doc.values())
-    # Prioritize pages already archived in SCANS_BASE before LoC fallback pages
-    records.sort(key=lambda x: (0 if x.get("blob_name") else 1, x["doc_id"]))
+    # Prioritize pre-cached JPEGs first, then archived scans, then LoC fallback pages
+    records.sort(
+        key=lambda x: (
+            0 if x.get("blob_name") in cached_jp2s else (1 if x.get("blob_name") else 2),
+            x["doc_id"],
+        )
+    )
     return records
 
 
@@ -1451,6 +1991,8 @@ def process_shard(shard_idx):
         "already_bundled_total": len(already_docs),
         "staged_pages": 0,
         "bundles_submitted": max_seq,
+        "jpeg_cache_hits": 0,
+        "jpeg_cache_misses": 0,
         "bundle_names": [],
         "skipped_errors": [],
         "elapsed_s": 0.0,
@@ -1463,269 +2005,319 @@ def process_shard(shard_idx):
     }
     as_lccn_blobs = {}
     staged_rows = []
+    cache_lock = threading.Lock()
 
-    for b_idx, (batch, bv, _, tier) in enumerate(my_batches, 1):
-        touch_shard_heartbeat(shard_idx)
-        status["current_batch"] = f"{batch}_ver{int(bv):02d}"
-        status["current_tier"] = tier
-        batch_records = load_batch_records(con, batch, bv, tier, work_dir, already_docs)
-        if not batch_records:
-            status["completed_batches"] = b_idx
-            continue
-
-        batch_doc_set = {r["doc_id"] for r in batch_records}
-        loc_resolver = LocBatchResolver(batch, bv)
-
-        # 1. Load LoC OCR texts from curated/pages/<batch>/v<bv:02d>/
-        loc_map = {}
-        page_pfx = f"pages/{batch}/v{int(bv):02d}/"
-        for bname in sorted(list_blobs(CURATED_BASE, CURATED_SAS, page_pfx)):
-            if not bname.endswith(".parquet"):
+    for pass_mode in ("jpeg_cached", "jpeg_cached", "archived", "loc_fallback"):
+        archived_only = pass_mode != "loc_fallback"
+        status["current_pass"] = pass_mode
+        jc_pfx = JPEG_CACHE_PREFIX.rstrip("/")
+        try:
+            cached_jpeg_batches = {
+                p.rstrip("/").split("/")[-1]
+                for p in list_blobs(HANDOFF_BASE, HANDOFF_SAS, f"{jc_pfx}/keep/", delimiter="/")
+            }
+        except Exception:
+            cached_jpeg_batches = None
+        for b_idx, (batch, bv, _, tier) in enumerate(my_batches, 1):
+            touch_shard_heartbeat(shard_idx)
+            batch_records = load_batch_records(
+                con,
+                batch,
+                bv,
+                tier,
+                work_dir,
+                already_docs,
+                pass_mode=pass_mode,
+                cached_jpeg_batches=cached_jpeg_batches,
+            )
+            if not batch_records:
+                if not archived_only:
+                    status["completed_batches"] = b_idx
                 continue
-            tmp_pq = f"{work_dir}/tmp_loc.parquet"
-            if download_blob(f"{CURATED_BASE}/{bname}?{CURATED_SAS}", tmp_pq):
-                try:
-                    for did, src, txt in con.execute(
-                        f"SELECT doc_id, ocr_source, text FROM read_parquet('{tmp_pq}')"
-                    ).fetchall():
-                        if did in batch_doc_set and txt:
-                            loc_map[did] = (src or "ndnp-original", txt)
-                except Exception as e:
-                    status["skipped_errors"].append(f"loc pq {bname}: {str(e)[:120]}")
-                finally:
-                    if os.path.exists(tmp_pq):
-                        os.remove(tmp_pq)
 
-        # 2. Load auxiliary readers (AS + ocr-local) scoped strictly to batch_doc_set
-        ours_map = {}
-        alto_blob_map = {}
-        as_map = {}
-        by_lccn_years = {}
-        for r in batch_records:
-            yr = str(r["date"])[:4]
-            by_lccn_years.setdefault(r["lccn"], set()).add(yr)
+            status["current_batch"] = f"{batch}_ver{int(bv):02d}"
+            status["current_tier"] = tier
+            status["elapsed_s"] = round(time.time() - t0, 1)
+            put_status(f"shard-{shard_idx}.json", status)
 
-        for lccn, yrs in by_lccn_years.items():
-            if lccn in ocr_local_lccns:
-                for bname in list_blobs(CURATED_BASE, CURATED_SAS, f"ocr-local/pages/{lccn}/"):
-                    if not bname.endswith(".parquet"):
-                        continue
-                    tmp_pq = f"{work_dir}/tmp_ol.parquet"
-                    if download_blob(f"{CURATED_BASE}/{bname}?{CURATED_SAS}", tmp_pq):
-                        try:
-                            for did, eng, src, txt in con.execute(
-                                f"SELECT doc_id, ocr_engine, ocr_source, text FROM read_parquet('{tmp_pq}')"
-                            ).fetchall():
-                                if did in batch_doc_set and txt:
-                                    ours_map[did] = (eng or "", src or "", txt)
-                        except Exception:
-                            pass
-                        finally:
-                            if os.path.exists(tmp_pq):
-                                os.remove(tmp_pq)
-                for bname in list_blobs(CURATED_BASE, CURATED_SAS, f"ocr-local/alto/{lccn}"):
-                    if bname.endswith(".xml"):
-                        did = os.path.basename(bname).split(".")[0]
-                        if did in batch_doc_set:
-                            alto_blob_map[did] = bname
+            batch_doc_set = {r["doc_id"] for r in batch_records}
+            loc_resolver = LocBatchResolver(batch, bv)
 
-            if lccn not in as_lccn_blobs:
-                as_lccn_blobs[lccn] = list_blobs(
-                    CURATED_BASE, CURATED_SAS, f"american-stories/pages/{lccn}/"
-                )
-            for yr in sorted(yrs):
-                pfx = f"american-stories/pages/{lccn}/{yr}-"
-                for bname in as_lccn_blobs[lccn]:
-                    if bname.startswith(pfx) and bname.endswith(".parquet"):
-                        tmp_pq = f"{work_dir}/tmp_as.parquet"
+            # 1. Load LoC OCR texts from curated/pages/<batch>/v<bv:02d>/
+            loc_map = {}
+            page_pfx = f"pages/{batch}/v{int(bv):02d}/"
+            for bname in sorted(list_blobs(CURATED_BASE, CURATED_SAS, page_pfx)):
+                if not bname.endswith(".parquet"):
+                    continue
+                tmp_pq = f"{work_dir}/tmp_loc.parquet"
+                if download_blob(f"{CURATED_BASE}/{bname}?{CURATED_SAS}", tmp_pq):
+                    try:
+                        for did, src, txt in con.execute(
+                            f"SELECT doc_id, ocr_source, text FROM read_parquet('{tmp_pq}')"
+                        ).fetchall():
+                            if did in batch_doc_set and txt:
+                                loc_map[did] = (src or "ndnp-original", txt)
+                    except Exception as e:
+                        status["skipped_errors"].append(f"loc pq {bname}: {str(e)[:120]}")
+                    finally:
+                        if os.path.exists(tmp_pq):
+                            os.remove(tmp_pq)
+
+            no_loc_docs = [r["doc_id"] for r in batch_records if r["doc_id"] not in loc_map]
+            if no_loc_docs:
+                already_docs.update(no_loc_docs)
+                record_skipped_docs(no_loc_docs)
+
+            valid_records = [r for r in batch_records if r["doc_id"] in loc_map]
+            if not valid_records:
+                if not archived_only:
+                    status["completed_batches"] = b_idx
+                continue
+
+            # 2. Load auxiliary readers (AS + ocr-local) scoped strictly to valid_records
+            valid_doc_set = {r["doc_id"] for r in valid_records}
+            ours_map = {}
+            alto_blob_map = {}
+            as_map = {}
+            by_lccn_years = {}
+            for r in valid_records:
+                yr = str(r["date"])[:4]
+                by_lccn_years.setdefault(r["lccn"], set()).add(yr)
+
+            for lccn, yrs in by_lccn_years.items():
+                if lccn in ocr_local_lccns:
+                    for bname in list_blobs(CURATED_BASE, CURATED_SAS, f"ocr-local/pages/{lccn}/"):
+                        if not bname.endswith(".parquet"):
+                            continue
+                        tmp_pq = f"{work_dir}/tmp_ol.parquet"
                         if download_blob(f"{CURATED_BASE}/{bname}?{CURATED_SAS}", tmp_pq):
                             try:
-                                for did, txt in con.execute(
-                                    f"SELECT doc_id, text FROM read_parquet('{tmp_pq}')"
+                                for did, eng, src, txt in con.execute(
+                                    f"SELECT doc_id, ocr_engine, ocr_source, text FROM read_parquet('{tmp_pq}')"
                                 ).fetchall():
-                                    if did in batch_doc_set and txt:
-                                        as_map[did] = txt
+                                    if did in valid_doc_set and txt:
+                                        ours_map[did] = (eng or "", src or "", txt)
                             except Exception:
                                 pass
                             finally:
                                 if os.path.exists(tmp_pq):
                                     os.remove(tmp_pq)
+                    for bname in list_blobs(CURATED_BASE, CURATED_SAS, f"ocr-local/alto/{lccn}"):
+                        if bname.endswith(".xml"):
+                            did = os.path.basename(bname).split(".")[0]
+                            if did in valid_doc_set:
+                                alto_blob_map[did] = bname
 
-        def dl_and_prepare_page(r, loc_entry):
-            did = r["doc_id"]
-            blob_name = r.get("blob_name") or ""
-            jpg_dst = f"{scans_dir}/{did}.jpg"
-            xml_dst = f"{scans_dir}/{did}.xml"
-
-            try:
-                loc_alto_url = None
-                cached_jpeg = False
-                if blob_name:
-                    if blob_name.endswith(".jp2"):
-                        cache_url = f"{HANDOFF_BASE}/quality-jpeg/l-q75-r1/{blob_name}.jpg?{HANDOFF_SAS}"
+                if lccn not in as_lccn_blobs:
+                    as_lccn_blobs[lccn] = list_blobs(
+                        CURATED_BASE, CURATED_SAS, f"american-stories/pages/{lccn}/"
+                    )
+                want_as_blobs = []
+                for yr in sorted(yrs):
+                    pfx = f"american-stories/pages/{lccn}/{yr}-"
+                    for bname in as_lccn_blobs[lccn]:
+                        if bname.startswith(pfx) and bname.endswith(".parquet"):
+                            want_as_blobs.append(bname)
+                if want_as_blobs:
+                    as_tmp_dir = f"{work_dir}/tmp_as_dir"
+                    shutil.rmtree(as_tmp_dir, ignore_errors=True)
+                    os.makedirs(as_tmp_dir, exist_ok=True)
+                    def _dl_as(idx_bname):
+                        idx, bn = idx_bname
+                        dst = f"{as_tmp_dir}/{idx:05d}.parquet"
+                        return dst if download_blob(f"{CURATED_BASE}/{bn}?{CURATED_SAS}", dst) else None
+                    with ThreadPoolExecutor(max_workers=16) as as_ex:
+                        as_files = [p for p in as_ex.map(_dl_as, enumerate(want_as_blobs)) if p]
+                    if as_files:
                         try:
-                            raw = download_bytes(cache_url, retries=1)
-                            cached_jpeg = True
-                            is_jp2 = False
+                            for did, txt in con.execute(
+                                f"SELECT doc_id, text FROM read_parquet({as_files})"
+                            ).fetchall():
+                                if did in valid_doc_set and txt:
+                                    as_map[did] = txt
                         except Exception:
-                            scan_url = f"{SCANS_BASE}/{blob_name}?{SCANS_SAS}"
-                            raw = download_bytes(scan_url)
-                            is_jp2 = True
-                    else:
+                            pass
+                    shutil.rmtree(as_tmp_dir, ignore_errors=True)
+
+            def dl_and_prepare_page(r, loc_entry):
+                did = r["doc_id"]
+                blob_name = r.get("blob_name") or ""
+                jpg_dst = f"{scans_dir}/{did}.jpg"
+                xml_dst = f"{scans_dir}/{did}.xml"
+
+                try:
+                    loc_alto_url = None
+                    cached = cached_page(blob_name) if (blob_name and blob_name.endswith(".jp2")) else None
+                    from_cache = cached is not None
+                    if from_cache:
+                        with open(jpg_dst, "wb") as f:
+                            f.write(cached)
+                        with cache_lock:
+                            status["jpeg_cache_hits"] = status.get("jpeg_cache_hits", 0) + 1
+                    elif blob_name:
                         scan_url = f"{SCANS_BASE}/{blob_name}?{SCANS_SAS}"
                         raw = download_bytes(scan_url)
-                        is_jp2 = False
-                else:
-                    jp2_url, loc_alto_url = loc_resolver.resolve(
-                        r["lccn"], r["date"], r["edition"], r["seq"]
-                    )
-                    if not jp2_url:
-                        raise RuntimeError(f"no archive or LoC bag entry for {did}")
-                    raw = loc_paced_download(jp2_url)
-                    is_jp2 = True
+                        is_jp2 = blob_name.endswith(".jp2")
+                        if is_jp2:
+                            with cache_lock:
+                                status["jpeg_cache_misses"] = status.get("jpeg_cache_misses", 0) + 1
+                    else:
+                        jp2_url, loc_alto_url = loc_resolver.resolve(
+                            r["lccn"], r["date"], r["edition"], r["seq"]
+                        )
+                        if not jp2_url:
+                            raise RuntimeError(f"no archive or LoC bag entry for {did}")
+                        raw = loc_paced_download(jp2_url)
+                        is_jp2 = True
 
-                w, h = 0, 0
-                if cached_jpeg:
-                    with Image.open(io.BytesIO(raw)) as im:
-                        w, h = im.size
-                    with open(jpg_dst, "wb") as f:
-                        f.write(raw)
-                elif is_jp2 or len(raw) > 20_000_000:
-                    with Image.open(io.BytesIO(raw)) as im:
-                        if getattr(im, "format", "") == "JPEG2000" and max(im.size) > 4000:
-                            im.reduce = 1
-                        im_l = im.convert("L")
-                        w, h = im_l.size
-                        im_l.save(jpg_dst, "JPEG", quality=75)
-                        im_l.close()
-                else:
-                    with Image.open(io.BytesIO(raw)) as im:
-                        w, h = im.size
-                        if w * h > 40_000_000 or im.mode != "L":
+                    w, h = 0, 0
+                    if from_cache:
+                        with Image.open(io.BytesIO(cached)) as im:
+                            w, h = im.size
+                    elif is_jp2 or len(raw) > 20_000_000:
+                        with Image.open(io.BytesIO(raw)) as im:
+                            if getattr(im, "format", "") == "JPEG2000" and max(im.size) > 4000:
+                                im.reduce = 1
                             im_l = im.convert("L")
                             w, h = im_l.size
                             im_l.save(jpg_dst, "JPEG", quality=75)
                             im_l.close()
-                        else:
-                            with open(jpg_dst, "wb") as f:
-                                f.write(raw)
-                del raw
-
-                xml_blob = alto_blob_map.get(did)
-                got_alto = False
-                if xml_blob and download_blob(f"{CURATED_BASE}/{xml_blob}?{CURATED_SAS}", xml_dst):
-                    got_alto = True
-                elif loc_alto_url:
-                    try:
-                        alto_bytes = loc_paced_download(loc_alto_url)
-                        with open(xml_dst, "wb") as f:
-                            f.write(alto_bytes)
-                        got_alto = True
-                    except Exception:
-                        got_alto = False
-                if not got_alto:
-                    write_empty_alto(xml_dst, w, h)
-
-                _, loc_txt = loc_entry
-                loc_norm = normalize_text(loc_txt)
-                if not loc_norm.strip():
-                    loc_norm = " "
-                readers = [{
-                    "alto": False,
-                    "name": "loc-hist",
-                    "regions": [],
-                    "source": "loc-hist",
-                    "text": loc_norm,
-                }]
-                if did in as_map:
-                    as_norm = normalize_text(as_map[did])
-                    if as_norm.strip():
-                        readers.append({
-                            "alto": False,
-                            "name": "as",
-                            "regions": [],
-                            "source": "american-stories",
-                            "text": as_norm,
-                        })
-                if did in ours_map:
-                    eng, src, otxt = ours_map[did]
-                    onorm = normalize_text(otxt)
-                    if onorm.strip():
-                        low = f"{eng} {src}".lower()
-                        rname = "ours-surya" if "surya" in low else (
-                            "ours-ndlocr" if "ndlocr" in low else (
-                                "ours-paddle" if "paddle" in low else "ours-tesseract"
-                            )
-                        )
-                        readers.append({
-                            "alto": False,
-                            "name": rname,
-                            "regions": [],
-                            "source": "ocr-local:tesseract",
-                            "text": onorm,
-                        })
-                with open(f"{texts_dir}/{did}.json", "w") as f:
-                    json.dump({"page": None, "readers": readers}, f)
-                return did, True, None
-            except Exception as e:
-                for p in (jpg_dst, xml_dst, f"{texts_dir}/{did}.json"):
-                    if os.path.exists(p):
-                        try:
-                            os.remove(p)
-                        except OSError:
-                            pass
-                return did, False, str(e)
-
-        valid_records = [r for r in batch_records if r["doc_id"] in loc_map]
-        pos = 0
-        while pos < len(valid_records):
-            touch_shard_heartbeat(shard_idx)
-            need = max(1, BUNDLE_SIZE - len(staged_rows))
-            slice_records = valid_records[pos : pos + need]
-            pos += len(slice_records)
-
-            # Use 8 threads when slices are from Azure SCANS_BASE, 1 thread when pacing against LoC
-            has_unarchived = any(not r.get("blob_name") for r in slice_records)
-            workers = 1 if has_unarchived else 8
-
-            ok_docs = set()
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = [
-                    ex.submit(dl_and_prepare_page, r, loc_map[r["doc_id"]])
-                    for r in slice_records
-                ]
-                for fut in as_completed(futs):
-                    did, ok, err = fut.result()
-                    if ok:
-                        ok_docs.add(did)
                     else:
-                        if len(status["skipped_errors"]) < 200:
-                            status["skipped_errors"].append(f"{did}: {err[:120] if err else 'dl failed'}")
+                        with Image.open(io.BytesIO(raw)) as im:
+                            w, h = im.size
+                            if w * h > 40_000_000 or im.mode != "L":
+                                im_l = im.convert("L")
+                                w, h = im_l.size
+                                im_l.save(jpg_dst, "JPEG", quality=75)
+                                im_l.close()
+                            else:
+                                with open(jpg_dst, "wb") as f:
+                                    f.write(raw)
+                    del cached
+                    if not from_cache:
+                        del raw
 
-            for r in slice_records:
-                if r["doc_id"] in ok_docs:
-                    staged_rows.append((r["doc_id"], r))
-                    already_docs.add(r["doc_id"])
-                    status["staged_pages"] += 1
+                    xml_blob = alto_blob_map.get(did)
+                    got_alto = False
+                    if xml_blob and download_blob(f"{CURATED_BASE}/{xml_blob}?{CURATED_SAS}", xml_dst):
+                        got_alto = True
+                    elif loc_alto_url:
+                        try:
+                            alto_bytes = loc_paced_download(loc_alto_url)
+                            with open(xml_dst, "wb") as f:
+                                f.write(alto_bytes)
+                            got_alto = True
+                        except Exception:
+                            got_alto = False
+                    if not got_alto:
+                        write_empty_alto(xml_dst, w, h)
 
-            status["elapsed_s"] = round(time.time() - t0, 1)
-            put_status(f"shard-{shard_idx}.json", status)
-            gc.collect()
+                    _, loc_txt = loc_entry
+                    loc_norm = normalize_text(loc_txt)
+                    if not loc_norm.strip():
+                        loc_norm = " "
+                    readers = [{
+                        "alto": False,
+                        "name": "loc-hist",
+                        "regions": [],
+                        "source": "loc-hist",
+                        "text": loc_norm,
+                    }]
+                    if did in as_map:
+                        as_norm = normalize_text(as_map[did])
+                        if as_norm.strip():
+                            readers.append({
+                                "alto": False,
+                                "name": "as",
+                                "regions": [],
+                                "source": "american-stories",
+                                "text": as_norm,
+                            })
+                    if did in ours_map:
+                        eng, src, otxt = ours_map[did]
+                        onorm = normalize_text(otxt)
+                        if onorm.strip():
+                            low = f"{eng} {src}".lower()
+                            rname = "ours-surya" if "surya" in low else (
+                                "ours-ndlocr" if "ndlocr" in low else (
+                                    "ours-paddle" if "paddle" in low else "ours-tesseract"
+                                )
+                            )
+                            readers.append({
+                                "alto": False,
+                                "name": rname,
+                                "regions": [],
+                                "source": "ocr-local:tesseract",
+                                "text": onorm,
+                            })
+                    with open(f"{texts_dir}/{did}.json", "w") as f:
+                        json.dump({"page": None, "readers": readers}, f)
+                    return did, True, None
+                except Exception as e:
+                    for p in (jpg_dst, xml_dst, f"{texts_dir}/{did}.json"):
+                        if os.path.exists(p):
+                            try:
+                                os.remove(p)
+                            except OSError:
+                                pass
+                    return did, False, str(e)
 
-            while len(staged_rows) >= BUNDLE_SIZE:
-                chunk = staged_rows[:BUNDLE_SIZE]
-                staged_rows = staged_rows[BUNDLE_SIZE:]
-                n_sub = flush_bundle(
-                    shard_idx, chunk, bundle_seq, stage_dir, scans_dir, texts_dir, status
-                )
-                status["bundles_submitted"] += n_sub
-                bundle_seq += max(1, n_sub)
+            pos = 0
+            while pos < len(valid_records):
+                touch_shard_heartbeat(shard_idx)
+                need = max(1, BUNDLE_SIZE - len(staged_rows))
+                slice_records = valid_records[pos : pos + need]
+                pos += len(slice_records)
+
+                # Use 8 threads when slices are pre-cached JPEGs, 2 threads for raw JP2 decode, 1 thread for LoC
+                has_unarchived = any(not r.get("blob_name") for r in slice_records)
+                workers = 1 if has_unarchived else (8 if pass_mode == "jpeg_cached" else 2)
+
+                ok_docs = set()
+                failed_docs = []
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futs = [
+                        ex.submit(dl_and_prepare_page, r, loc_map[r["doc_id"]])
+                        for r in slice_records
+                    ]
+                    for fut in as_completed(futs):
+                        did, ok, err = fut.result()
+                        if ok:
+                            ok_docs.add(did)
+                        else:
+                            failed_docs.append(did)
+                            if len(status["skipped_errors"]) < 200:
+                                status["skipped_errors"].append(f"{did}: {err[:120] if err else 'dl failed'}")
+
+                if failed_docs:
+                    already_docs.update(failed_docs)
+                    record_skipped_docs(failed_docs)
+
+                for r in slice_records:
+                    if r["doc_id"] in ok_docs:
+                        staged_rows.append((r["doc_id"], r))
+                        already_docs.add(r["doc_id"])
+                        status["staged_pages"] += 1
+
                 status["elapsed_s"] = round(time.time() - t0, 1)
                 put_status(f"shard-{shard_idx}.json", status)
+                gc.collect()
 
-        status["completed_batches"] = b_idx
-        status["elapsed_s"] = round(time.time() - t0, 1)
-        put_status(f"shard-{shard_idx}.json", status)
+                while len(staged_rows) >= BUNDLE_SIZE:
+                    chunk = staged_rows[:BUNDLE_SIZE]
+                    staged_rows = staged_rows[BUNDLE_SIZE:]
+                    n_sub = flush_bundle(
+                        shard_idx, chunk, bundle_seq, stage_dir, scans_dir, texts_dir, status
+                    )
+                    status["bundles_submitted"] += n_sub
+                    bundle_seq += max(1, n_sub)
+                    status["elapsed_s"] = round(time.time() - t0, 1)
+                    put_status(f"shard-{shard_idx}.json", status)
+
+            if not archived_only:
+                status["completed_batches"] = b_idx
+            status["elapsed_s"] = round(time.time() - t0, 1)
+            put_status(f"shard-{shard_idx}.json", status)
 
     if staged_rows:
         n_sub = flush_bundle(

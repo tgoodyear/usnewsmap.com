@@ -354,7 +354,7 @@ module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
   }
 }
 
-// The usnm_quality wave (contrib-compute/images/bridge/quality-wave/run_wave9.py): eight shards
+// The usnm_quality wave (scripts/boinc/quality_corpus_runner.py, uploaded by boinc-quality-campaign.py launch-corpus): eight shards
 // that stage page bundles onto the share and collect results. The script is fetched with the
 // BOINC identity and run only if its sha256 is the committed one. 4 vCPUs: the runner converts
 // any page the on-prem JPEG cache (docs/boinc.md) hasn't; more cache, not more vCPUs, is the

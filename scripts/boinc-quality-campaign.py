@@ -848,166 +848,54 @@ def poke_local_boinc_client(project_url: str = "https://boinc.usnewsmap.com/") -
 
 
 def cmd_launch_corpus(args: argparse.Namespace) -> int:
+    """Upload the runner under its sha256 and start the quality job.
+
+    The job's template is the BOINC stack's (main.bicep qualityWaveJob, set by qualityWave in
+    contrib-compute/infra/boinc/env/<env>.json), so this never edits it and never puts a
+    credential in it. If the deployed job pins another script, it prints the setting to commit
+    and stops: open a PR with it, then run scripts/provision-boinc.sh.
+    """
     runner_path = ROOT / "scripts" / "boinc" / "quality_corpus_runner.py"
     if not runner_path.is_file():
         print(f"error: runner script not found at {runner_path}", file=sys.stderr)
         return 1
+    data = runner_path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    blob_path = f"quality/{args.campaign}/run_wave9-{digest[:12]}.py"
+    url = f"https://{args.handoff_account}.blob.core.windows.net/{args.handoff_container}/{blob_path}"
+    upload_blob_bytes(args.handoff_account, args.handoff_container, blob_path, get_storage_token(),
+                      data, "text/x-python")
+    print(f"Uploaded {runner_path.name} -> {url}")
 
-    env_settings_path = ROOT / "contrib-compute" / "infra" / "boinc" / "env" / f"{args.env}.json"
-    bridge_image = args.bridge_image
-    if not bridge_image and env_settings_path.is_file():
-        env_doc = json.loads(env_settings_path.read_text())
-        bridge_image = (env_doc.get("images") or {}).get("bridge")
-    if not bridge_image:
-        print("error: could not determine bridge image from env settings", file=sys.stderr)
+    job_doc = run_az(["containerapp", "job", "show", "-g", args.resource_group, "-n", args.job_name, "-o", "json"])
+    env = {e.get("name"): e.get("value") for e in job_doc["properties"]["template"]["containers"][0].get("env", [])}
+    if env.get("QUALITY_WAVE_SHA256") != digest or env.get("QUALITY_WAVE_SCRIPT") != url:
+        print(
+            f"error: {args.job_name} pins another runner. Set this in contrib-compute/infra/boinc/env/{args.env}.json,\n"
+            "open a pull request, merge it and run scripts/provision-boinc.sh, then launch again:\n"
+            + json.dumps({"qualityWave": {"script": url, "sha256": digest}}, indent=2),
+            file=sys.stderr,
+        )
         return 1
 
-    token = get_storage_token()
-    blob_path = f"quality/{args.campaign}/run_wave9.py"
-    upload_blob_bytes(
-        args.handoff_account,
-        args.handoff_container,
-        blob_path,
-        token,
-        runner_path.read_bytes(),
-        "text/x-python",
-    )
-    print(f"Uploaded {runner_path.name} -> {args.handoff_account}/{args.handoff_container}/{blob_path}")
-
     running = run_az(
-        [
-            "containerapp",
-            "job",
-            "execution",
-            "list",
-            "-g",
-            args.resource_group,
-            "-n",
-            args.job_name,
-            "--query",
-            "[?properties.status=='Running' || properties.status=='Processing'].name",
-            "-o",
-            "json",
-        ]
-    )
-    for ex in running or []:
+        ["containerapp", "job", "execution", "list", "-g", args.resource_group, "-n", args.job_name,
+         "--query", "[?properties.status=='Running' || properties.status=='Processing'].name", "-o", "json"]
+    ) or []
+    if running and not args.restart:
+        print(f"error: {args.job_name} is already running ({', '.join(running)}); pass --restart to stop it first",
+              file=sys.stderr)
+        return 1
+    for ex in running:
         print(f"Stopping prior execution {ex}...")
-        run_az(
-            [
-                "containerapp",
-                "job",
-                "stop",
-                "-g",
-                args.resource_group,
-                "-n",
-                args.job_name,
-                "--job-execution-name",
-                ex,
-                "-o",
-                "none",
-            ],
-            capture_json=False,
-        )
-
-    job_doc = run_az(
-        [
-            "containerapp",
-            "job",
-            "show",
-            "-g",
-            args.resource_group,
-            "-n",
-            args.job_name,
-            "-o",
-            "json",
-        ]
-    )
-    handoff_url = f"https://{args.handoff_account}.blob.core.windows.net/{args.handoff_container}/{blob_path}"
-    shard_list = " ".join(str(i) for i in range(args.shards))
-    cmd_script = (
-        "set -euo pipefail; "
-        'st_tok="$(curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" '
-        '"$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$AZURE_CLIENT_ID" '
-        '| jq -er .access_token)"; '
-        f'curl -fsSL -H "Authorization: Bearer $st_tok" -H "x-ms-version: 2021-08-06" "{handoff_url}" -o /tmp/run_wave9.py; '
-        f"export NUM_SHARDS={args.shards} BUNDLE_SIZE={args.bundle_size} "
-        f"MAX_IN_FLIGHT_BUNDLES={args.max_in_flight} MIN_FREE_GB={args.min_free_gb}; "
-        f"for s in {shard_list}; do SHARD_ENV=$s python3 /tmp/run_wave9.py & sleep 3; done; wait"
-    )
-    base_names = {
-        "AZURE_CLIENT_ID",
-        "KEY_VAULT_NAME",
-        "DB_HOST",
-        "DB_NAME",
-        "MASTER_HOST",
-        "PROJECT_DIR",
-        "HANDOFF_DIR",
-    }
-    container = job_doc["properties"]["template"]["containers"][0]
-    container["image"] = bridge_image
-    container["command"] = ["/bin/bash", "-c", cmd_script]
-    container.pop("args", None)
-    container.pop("imageType", None)
-    env_list = [e for e in container.get("env", []) if e.get("name") in base_names]
-    env_list.append({"name": "STORAGE_BEARER_TOKEN", "value": token})
-    container["env"] = env_list
-    cfg = job_doc["properties"]["configuration"]
-    cfg.pop("identitySettings", None)
-    cfg.pop("replicaCompletionCount", None)
-    cfg.pop("parallelism", None)
-    if "manualTriggerConfig" in cfg and isinstance(cfg["manualTriggerConfig"], dict):
-        cfg["manualTriggerConfig"]["replicaCompletionCount"] = 1
-        cfg["manualTriggerConfig"]["parallelism"] = 1
-
-    tmp_spec = Path("/tmp/boinc_quality_launch_spec.json")
-    tmp_spec.write_text(
-        json.dumps(
-            {
-                "location": job_doc["location"],
-                "identity": job_doc["identity"],
-                "properties": {
-                    "environmentId": job_doc["properties"]["environmentId"],
-                    "configuration": cfg,
-                    "template": job_doc["properties"]["template"],
-                },
-            }
-        )
-    )
-    try:
-        run_az(
-            [
-                "rest",
-                "--method",
-                "PATCH",
-                "--uri",
-                f"{job_doc['id']}?api-version=2024-03-01",
-                "--body",
-                f"@{tmp_spec}",
-                "-o",
-                "none",
-            ],
-            capture_json=False,
-        )
-    finally:
-        tmp_spec.unlink(missing_ok=True)
+        run_az(["containerapp", "job", "stop", "-g", args.resource_group, "-n", args.job_name,
+                "--job-execution-name", ex, "-o", "none"], capture_json=False)
 
     ex_name = run_az(
-        [
-            "containerapp",
-            "job",
-            "start",
-            "-g",
-            args.resource_group,
-            "-n",
-            args.job_name,
-            "--query",
-            "name",
-            "-o",
-            "tsv",
-        ],
+        ["containerapp", "job", "start", "-g", args.resource_group, "-n", args.job_name, "--query", "name", "-o", "tsv"],
         capture_json=False,
     )
-    print(f"Started full-corpus rolling job {args.job_name} execution: {ex_name} (image={bridge_image}, shards={args.shards})")
+    print(f"Started {args.job_name} execution {ex_name} (runner sha256 {digest[:12]})")
     if poke_local_boinc_client():
         print("Triggered local BOINC client project_update to clear any work-fetch backoff.")
     return 0
@@ -1062,19 +950,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     lc = sub.add_parser(
         "launch-corpus",
-        help="Upload scripts/boinc/quality_corpus_runner.py, configure usnm-boinc-quality-caj-prod with pinned bridge image, and start rolling full-corpus job",
+        help="Upload scripts/boinc/quality_corpus_runner.py under its sha256 and start usnm-boinc-quality-caj-prod, "
+             "whose template (image, shards, pinned runner) is the BOINC stack's qualityWave setting",
     )
     lc.add_argument("--env", default="prod", help="Environment name (default: prod)")
     lc.add_argument("--campaign", default="v1-wave9", help="Campaign name (default: v1-wave9)")
     lc.add_argument("--resource-group", default=DEFAULT_BOINC_RG)
     lc.add_argument("--job-name", default="usnm-boinc-quality-caj-prod")
-    lc.add_argument("--bridge-image", default="", help="Override bridge image (defaults to contrib-compute/infra/boinc/env/<env>.json)")
-    lc.add_argument("--shards", type=int, default=8, help="Number of rolling stager shards (default: 8)")
-    lc.add_argument("--bundle-size", type=int, default=200, help="Pages per BOINC workunit bundle (default: 200)")
-    lc.add_argument("--max-in-flight", type=int, default=45, help="Max uncollected bundles in flight (default: 45)")
-    lc.add_argument("--min-free-gb", type=float, default=35.0, help="Minimum free GB on /project before backpressure (default: 35.0)")
     lc.add_argument("--handoff-account", default=DEFAULT_HANDOFF_ACCOUNT)
     lc.add_argument("--handoff-container", default=DEFAULT_HANDOFF_CONTAINER)
+    lc.add_argument("--restart", action="store_true", help="Stop a running execution before starting")
     lc.set_defaults(func=cmd_launch_corpus)
 
     return p
