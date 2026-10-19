@@ -116,10 +116,18 @@ class DaemonConfig(unittest.TestCase):
         plans = {p.findtext("name"): p for p in ET.parse(root / "plan_class_spec.xml").findall("plan_class")}
         for name in ("mt", "apple_gpu_8b"):
             self.assertEqual(plans[name].findtext("min_core_client_version"), "80211")
-        for name in ("docker_intel_vulkan", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
+        for name in ("docker_intel_vulkan", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
             with self.subTest(plan=name):
                 self.assertEqual(plans[name].findtext("min_wu_id"), "2")
                 self.assertEqual(plans[name].findtext("max_wu_id"), "1")
+        amd = plans["amd_vulkan_8b"]
+        for tag, value in (("gpu_type", "ati"), ("ngpus", "1"), ("min_batch", "8"),
+                           ("max_batch", "8"), ("min_gpu_ram_mb", "7000"),
+                           ("gpu_ram_used_mb", "6500"), ("avg_ncpus", "2")):
+            self.assertEqual(amd.findtext(tag), value)
+        self.assertIsNotNone(amd.find("opencl"))
+        self.assertIsNone(amd.find("cuda"))
+        self.assertIsNone(amd.find("docker"))
 
     def test_high_throughput_scheduler_dispatch_limits(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
@@ -128,4 +136,3 @@ class DaemonConfig(unittest.TestCase):
         self.assertEqual(root.findtext("./config/max_wus_in_progress"), "32")
         self.assertEqual(root.findtext("./config/daily_result_quota"), "50000")
         self.assertEqual(root.findtext("./config/max_wus_to_send"), "64")
-

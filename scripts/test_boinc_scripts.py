@@ -949,6 +949,28 @@ class AppReleaseArgs(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("--signing-host must be a host name", r.stderr)
 
+    def test_native_amd_allows_only_pinned_vulkan_platforms(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+            binary = Path(folder) / "usnm_qwen"
+            binary.write_bytes(b"fixture")
+            for platform in ("x86_64-pc-linux-gnu", "windows_x86_64",
+                             "aarch64-unknown-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin"):
+                r = subprocess.run(
+                    [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0",
+                     "--signing-host", "fixture.invalid", "--app", "usnm_qwen",
+                     "--kind", "native", "--binary", str(binary),
+                     "--plan-class", "amd_vulkan_8b", "--platform", platform],
+                    cwd=ROOT, capture_output=True, text=True,
+                )
+                self.assertNotEqual(r.returncode, 0)
+                if platform in ("x86_64-pc-linux-gnu", "windows_x86_64"):
+                    self.assertIn("requires --extra-file llama-server", r.stderr)
+                else:
+                    self.assertIn("native --plan-class amd_vulkan_8b is not supported", r.stderr)
+            r = self.run_release("--app", "usnm_surya", "--kind", "native",
+                                 "--binary", str(binary), "--plan-class", "amd_vulkan_8b")
+            self.assertIn("--app and --plan-class for --kind native", r.stderr)
+
     def test_rejects_qwen_without_worker_image_or_wrong_plan_class(self):
         r = self.run_release("--app", "usnm_qwen", "--plan-class", "docker_nvidia_cuda_8b")
         self.assertEqual(r.returncode, 1)

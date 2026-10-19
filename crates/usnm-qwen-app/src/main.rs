@@ -305,7 +305,14 @@ fn vulkan_device(list: &str, vendor: &str, wanted: u32) -> Option<VulkanDevice> 
         })
         .filter(|d| {
             let n = d.name.to_ascii_lowercase();
-            !SOFTWARE_VULKAN.iter().any(|s| n.contains(s)) && n.contains(vendor)
+            let matches_vendor = if vendor == "amd" {
+                n.split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|word| matches!(word, "amd" | "ati" | "radeon"))
+                    || n.contains("advanced micro devices")
+            } else {
+                n.contains(vendor)
+            };
+            !SOFTWARE_VULKAN.iter().any(|s| n.contains(s)) && matches_vendor
         })
         .collect();
     devices.into_iter().nth(usize::try_from(wanted).ok()?)
@@ -418,7 +425,16 @@ fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuState {
         let devices = find_llama_server(work)
             .map_err(|e| format!("{e:#}"))
             .and_then(|bin| list_devices(&bin));
-        let wanted = u32::try_from(host.gpu_device_num.unwrap_or(0)).unwrap_or(0);
+        let wanted = if plan == "amd_vulkan_8b" {
+            // A new AMD class must carry BOINC's explicit ATI/AMD resource assignment.
+            host.gpu_device_num
+                .filter(|_| {
+                    gpu_type.eq_ignore_ascii_case("ati") || gpu_type.eq_ignore_ascii_case("amd")
+                })
+                .and_then(|ordinal| u32::try_from(ordinal).ok())
+        } else {
+            u32::try_from(host.gpu_device_num.unwrap_or(0)).ok()
+        };
         let (vulkan_device, free_mb) = match &devices {
             Ok(text) => {
                 let _ = writeln!(body, "llama-server --list-devices:\n{}", text.trim());
@@ -426,10 +442,12 @@ fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuState {
                     "intel"
                 } else if plan.contains("nvidia") {
                     "nvidia"
+                } else if plan == "amd_vulkan_8b" {
+                    "amd"
                 } else {
                     "unsupported-vulkan-vendor"
                 };
-                match vulkan_device(text, vendor, wanted) {
+                match wanted.and_then(|ordinal| vulkan_device(text, vendor, ordinal)) {
                     Some(d) => {
                         host.gpu = Some(d.name.chars().take(64).collect());
                         host.gpu_mem_total_mib = Some(d.total_mib);
@@ -2053,6 +2071,77 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn amd_vulkan_assignment_and_memory_are_fail_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path().join("slot");
+        let mut job = write_qwen_unit(&slot);
+        job.engine.models[0].min_gpu_mb = 7000;
+        let listing = "  Vulkan0: NVIDIA GeForce RTX 3060 (12288 MiB, 11000 MiB free)
+  Vulkan1: AMD llvmpipe (LLVM 19) (16384 MiB, 16000 MiB free)
+  Vulkan2: AMD Radeon RX 9070 XT (16384 MiB, 15000 MiB free)
+  Vulkan3: Intel Arc A770 (16384 MiB, 16000 MiB free)
+  Vulkan4: Advanced Micro Devices, Inc. [RADV NAVI48] (16384 MiB, 6000 MiB free)";
+        fake_llama_server(&slot, listing);
+        for (ordinal, expected) in [(0, Some(2)), (1, Some(4)), (2, None), (-1, None)] {
+            std::fs::write(
+                slot.join("init_data.xml"),
+                format!("<app_init_data><plan_class>amd_vulkan_8b</plan_class><gpu_type>ATI</gpu_type><gpu_device_num>{ordinal}</gpu_device_num></app_init_data>"),
+            )
+            .unwrap();
+            let mut host = Host::default();
+            let mut diag = Diag::new();
+            boinc_info(&slot, &mut host, &mut diag);
+            let gpu = detect_gpu(&slot, &mut host, &mut diag);
+            assert_eq!(gpu.vulkan_device, expected);
+            assert_eq!(gpu.cuda_device, None);
+            assert_eq!(gpu.use_gpu, expected.is_some());
+            assert_eq!(vulkan_refusal(&gpu, &job).is_none(), ordinal == 0);
+            if ordinal == 1 {
+                assert!(vulkan_refusal(&gpu, &job)
+                    .unwrap()
+                    .contains("6000 MiB free"));
+            }
+        }
+        for name in [
+            "AMD Radeon RX 9070 XT",
+            "Radeon RX 9070 XT (RADV NAVI48)",
+            "Advanced Micro Devices, Inc.",
+            "ATI Radeon",
+        ] {
+            let line = format!("  Vulkan7: {name} (16384 MiB, 15000 MiB free)");
+            assert_eq!(vulkan_device(&line, "amd", 0).unwrap().index, 7);
+            assert!(vulkan_device(&line, "amd", 1).is_none());
+        }
+        for name in [
+            "AMD lavapipe",
+            "Radeon SwiftShader",
+            "Intel Arc",
+            "NVIDIA RTX",
+        ] {
+            let line = format!("  Vulkan0: {name} (16384 MiB, 15000 MiB free)");
+            assert!(vulkan_device(&line, "amd", 0).is_none());
+        }
+        for assignment in [
+            "<gpu_type>NVIDIA</gpu_type><gpu_device_num>0</gpu_device_num>",
+            "<gpu_type>ATI</gpu_type>",
+            "<gpu_device_num>0</gpu_device_num>",
+            "<gpu_type>ATI</gpu_type><gpu_device_num>invalid</gpu_device_num>",
+        ] {
+            let init = format!(
+                "<app_init_data><plan_class>amd_vulkan_8b</plan_class>{assignment}</app_init_data>"
+            );
+            std::fs::write(slot.join("init_data.xml"), init).unwrap();
+            let mut host = Host::default();
+            let mut diag = Diag::new();
+            boinc_info(&slot, &mut host, &mut diag);
+            let gpu = detect_gpu(&slot, &mut host, &mut diag);
+            assert!(!gpu.use_gpu);
+            assert!(vulkan_refusal(&gpu, &job).is_some());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn vulkan_plan_class_uses_the_listed_device_and_refuses_too_little_memory() {
         let tmp = tempfile::tempdir().unwrap();
         let slot = tmp.path().join("slot");
@@ -2142,16 +2231,16 @@ mod tests {
             resolve_model(&slot, &job.engine.models, Some(16000), false, Some("mt")).unwrap();
         assert_eq!(chosen_mt.name, "qwen3-vl-2b-q8");
 
-        // nvidia_cuda_8b selects the 8B model.
-        let (chosen_8b, _, _) = resolve_model(
-            &slot,
-            &job.engine.models,
-            Some(16000),
-            true,
-            Some("nvidia_cuda_8b"),
-        )
-        .unwrap();
-        assert_eq!(chosen_8b.name, "qwen3-vl-8b-q4km");
+        for plan in [
+            "nvidia_cuda_8b",
+            "intel_vulkan_8b",
+            "nvidia_vulkan_8b",
+            "amd_vulkan_8b",
+        ] {
+            let (chosen_8b, _, _) =
+                resolve_model(&slot, &job.engine.models, Some(16000), true, Some(plan)).unwrap();
+            assert_eq!(chosen_8b.name, "qwen3-vl-8b-q4km");
+        }
     }
 
     #[test]

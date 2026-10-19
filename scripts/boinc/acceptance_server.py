@@ -146,7 +146,7 @@ def fixture_load(root, name, release):
     profile = manifest['profile']
     if (type(manifest['batch']) is not int or not 0 <= manifest['batch'] < 2**31
             or any(type(profile[k]) is not int or profile[k] <= 0 for k in ('cpus', 'memory_bytes', 'disk_bytes'))
-            or profile['gpu'] not in ('none', 'nvidia', 'intel', 'apple')
+            or profile['gpu'] not in ('none', 'nvidia', 'intel', 'apple', 'amd')
             or not manifest['outputs'] or not manifest['inputs']
             or type(manifest['min_quorum']) is not int or not 1 <= manifest['min_quorum'] <= 10):
         raise ValueError('invalid fixture requirements')
@@ -215,6 +215,8 @@ def scheduler_profile(project, manifest):
     profile['client_version'] = max(profile.get('client_version', 0),
                                     int(node.findtext('min_core_client_version', '0')))
     expected_gpu = node.findtext('gpu_type', 'none')
+    if expected_gpu == 'ati':
+        expected_gpu = 'amd'
     if profile['gpu'] != expected_gpu:
         raise ValueError('fixture GPU differs from scheduler plan')
     for field, tag in [('cuda_version', 'min_cuda_version'), ('compute_capability', 'min_nvidia_compcap'),

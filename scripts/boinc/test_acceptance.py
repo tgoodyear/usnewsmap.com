@@ -104,13 +104,17 @@ class Eligibility(Workspace):
     def test_gpu_vendor_and_vram_and_native_do_not_require_docker(self):
         for plan, gpu, platform in [('nvidia_cuda_8b', 'nvidia', RELEASE['platform']),
                                     ('apple_gpu_8b', 'apple', 'arm64-apple-darwin'),
-                                    ('intel_vulkan_8b', 'intel', 'windows_x86_64')]:
+                                    ('intel_vulkan_8b', 'intel', 'windows_x86_64'),
+                                    ('nvidia_vulkan_8b', 'nvidia', RELEASE['platform']),
+                                    ('amd_vulkan_8b', 'amd', RELEASE['platform']),
+                                    ('amd_vulkan_8b', 'amd', 'windows_x86_64')]:
             release = {**RELEASE, 'plan_class': plan, 'platform': platform}
             profile = {**PROFILE, 'gpu': gpu, 'gpu_memory_bytes': 7_000_000_000}
             probe = {**PROBE, 'platform': platform, 'gpus': [gpu],
                      'gpu_memory_bytes': {gpu: 8_000_000_000}, 'container_runtime': False}
             A.eligible(probe, profile, release, URL)
-            for bad in ({'gpus': []}, {'gpu_memory_bytes': {gpu: 1}}, {'platform': 'wrong'}):
+            for bad in ({'gpus': []}, {'gpus': ['intel' if gpu != 'intel' else 'amd']},
+                        {'gpu_memory_bytes': {gpu: 1}}, {'platform': 'wrong'}):
                 with self.assertRaises(A.AcceptanceError):
                     A.eligible({**probe, **bad}, profile, release, URL)
 
@@ -591,6 +595,20 @@ class ClientProbe(Workspace):
         self.assertEqual(probe['gpu_capabilities']['nvidia'],
                          dict(cuda_version=12080, compute_capability=800, opencl_version=300))
 
+    def test_probe_reports_boinc_ati_as_amd_for_native_vulkan(self):
+        self.state()
+        state = C.ET.parse(self.root / 'client_state.xml')
+        node = C.ET.SubElement(C.ET.SubElement(state.getroot(), 'coprocs'), 'coproc_ati')
+        for key, value in {'count': '1', 'available_ram': str(16 * 1024**3),
+                           'opencl_device_version': 'OpenCL 3.0 AMD'}.items():
+            C.ET.SubElement(node, key).text = value
+        state.write(self.root / 'client_state.xml')
+        with patch.object(C, 'container_runtime', return_value=False):
+            probe = C.probe(self.root, URL)
+        self.assertEqual(probe['gpus'], ['amd'])
+        self.assertEqual(probe['gpu_memory_bytes']['amd'], 16 * 1024**3)
+        self.assertEqual(probe['gpu_capabilities']['amd']['opencl_version'], 300)
+
     def test_disk_quota_subtracts_existing_usage_and_zero_absolute_is_unlimited(self):
         total, free, used = 100_000_000_000, 60_000_000_000, 20_000_000_000
         self.assertEqual(C.disk_allowance(total, free, used, {'disk_max_used_pct': 25,
@@ -620,6 +638,28 @@ class ClientProbe(Workspace):
 
 
 class Server(Workspace):
+    def test_amd_fixture_and_scheduler_profile_remain_closed_until_operator_admission(self):
+        release = {**RELEASE, 'plan_class': 'amd_vulkan_8b'}
+        manifest = {**self.manifest(), 'release': release, 'batch': 8,
+                    'profile': {**PROFILE, 'gpu': 'amd'}}
+        (self.root / 'fixture.json').write_text(json.dumps(manifest))
+        self.assertEqual(S.fixture_load(self.root, 'fixture', release), manifest)
+        source = ROOT / 'contrib-compute/boinc/plan_class_spec.xml'
+        tree = C.ET.parse(source)
+        target = self.root / 'plan_class_spec.xml'
+        tree.write(target)
+        with self.assertRaisesRegex(ValueError, 'never auto-open cohorts'):
+            S.scheduler_profile(self.root, manifest)
+        node = next(n for n in tree.getroot() if n.findtext('name') == 'amd_vulkan_8b')
+        node.find('min_wu_id').text = node.find('max_wu_id').text = '300'
+        tree.write(target)
+        profile = S.scheduler_profile(self.root, manifest)
+        self.assertEqual(profile['gpu'], 'amd')
+        self.assertEqual(profile['gpu_memory_bytes'], 7_000_000_000)
+        self.assertEqual(profile['client_version'], max(80211, PROFILE['client_version']))
+        with self.assertRaisesRegex(ValueError, 'GPU differs'):
+            S.scheduler_profile(self.root, {**manifest, 'profile': {**PROFILE, 'gpu': 'intel'}})
+
     def setUp(self):
         super().setUp()
         (self.root / 'config.xml').write_text('<boinc><config><enable_assignment>1</enable_assignment></config></boinc>')

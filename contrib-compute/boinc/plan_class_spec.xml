@@ -195,6 +195,23 @@
         <max_batch>8</max_batch>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
+    <!-- AMD/ATI is detected and assigned through OpenCL; inference uses native Vulkan.
+         Closed pending signed publication and actual-device acceptance (#885).
+         Stock BOINC recognizes "amd" plan names as PROC_TYPE_AMD_GPU. -->
+    <plan_class>
+        <name>amd_vulkan_8b</name>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <gpu_type>ati</gpu_type>
+        <opencl/>
+        <min_core_client_version>80211</min_core_client_version>
+        <min_gpu_ram_mb>7000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>6500</gpu_ram_used_mb>
+        <ngpus>1</ngpus>
+        <min_batch>8</min_batch>
+        <max_batch>8</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
     <plan_class>
         <name>nvidia_cuda_2b</name>
         <min_wu_id>2</min_wu_id>

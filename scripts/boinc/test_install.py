@@ -261,6 +261,8 @@ class InstallTest(unittest.TestCase):
             ("intel_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("intel_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
             ("nvidia_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
+            ("amd_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
+            ("amd_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
         ):
             bin_for_plat = bin_win if platform == "windows_x86_64" else bin_unix
             ext = ".exe" if platform == "windows_x86_64" else ""
@@ -275,7 +277,7 @@ class InstallTest(unittest.TestCase):
             llama_dlls = ("ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
                           "ggml-cpu-x64.dll", "libomp140.x86_64.dll")
             backend = (
-                ("ggml-vulkan.dll",) if plan_class == "intel_vulkan_8b"
+                ("ggml-vulkan.dll",) if plan_class in ("intel_vulkan_8b", "amd_vulkan_8b")
                 else ("ggml-cuda.dll", "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
             )
             dll_names = runtime + llama_dlls + backend if platform == "windows_x86_64" else ()
@@ -360,6 +362,19 @@ class InstallTest(unittest.TestCase):
         ):
             with self.subTest(**bad_kwargs), self.assertRaises(ValueError):
                 module.install(self.project, **bad_kwargs)
+
+    def test_amd_native_rejects_unsupported_platforms_and_other_apps(self):
+        for platform in module.PLATFORMS:
+            if platform in ("x86_64-pc-linux-gnu", "windows_x86_64"):
+                continue
+            with self.subTest(platform=platform), self.assertRaisesRegex(ValueError, "not supported on"):
+                module.install(self.project, version="1.0", app="usnm_qwen", plan_class="amd_vulkan_8b",
+                               platform=platform, kind="native", binary=self.wrapper)
+        for app in ("usnm_surya", "usnm_quality"):
+            with self.subTest(app=app), self.assertRaisesRegex(ValueError, "no native version"):
+                module.install(self.project, version="1.0", app=app, plan_class="amd_vulkan_8b",
+                               kind="native", binary=self.wrapper)
+        self.assertFalse((self.project / "apps").exists())
 
     def test_app_release_script_accepts_native_and_new_platforms(self):
         import subprocess

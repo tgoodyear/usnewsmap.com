@@ -64,6 +64,31 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertTrue(POLICY.refresh(self.source, self.target))
         self.assertFalse(POLICY.refresh(self.source, self.target))
 
+    def test_amd_upgrade_and_restart_preserve_independent_windows(self):
+        tree = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
+        tree.getroot().remove(nodes["amd_vulkan_8b"])
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            nodes[name].find("min_wu_id").text = "200"
+            nodes[name].find("max_wu_id").text = "209"
+        tree.write(self.target)
+        self.assertTrue(POLICY.refresh(self.source, self.target))
+        tree = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
+        self.assertEqual(nodes["amd_vulkan_8b"].findtext("min_wu_id"), "2")
+        self.assertEqual(nodes["amd_vulkan_8b"].findtext("max_wu_id"), "1")
+        nodes["amd_vulkan_8b"].find("min_wu_id").text = "300"
+        nodes["amd_vulkan_8b"].find("max_wu_id").text = "300"
+        tree.write(self.target)
+        POLICY.refresh(self.source, self.target)
+        nodes = {node.findtext("name"): node for node in ET.parse(self.target).findall("plan_class")}
+        self.assertEqual(nodes["amd_vulkan_8b"].findtext("min_wu_id"), "300")
+        self.assertEqual(nodes["amd_vulkan_8b"].findtext("max_wu_id"), "300")
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            self.assertEqual(nodes[name].findtext("min_wu_id"), "200")
+            self.assertEqual(nodes[name].findtext("max_wu_id"), "209")
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
     def test_upgrade_restores_missing_vulkan_classes_without_resetting_admission(self):
         tree = ET.parse(self.target)
         nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
@@ -99,6 +124,17 @@ class PlanPolicyRefresh(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     POLICY.refresh(self.source, self.target)
                 self.assertEqual(self.target.read_bytes(), payload)
+
+    def test_amd_refresh_refuses_a_range_without_replacing_existing_policy(self):
+        tree = ET.parse(self.target)
+        node = next(node for node in tree.findall("plan_class") if node.findtext("name") == "amd_vulkan_8b")
+        node.find("min_wu_id").text = "300"
+        node.find("max_wu_id").text = "301"
+        tree.write(self.target)
+        before = self.target.read_bytes()
+        with self.assertRaisesRegex(ValueError, "exactly one workunit"):
+            POLICY.refresh(self.source, self.target)
+        self.assertEqual(self.target.read_bytes(), before)
 
     def test_failed_replace_retains_original_and_cleans_only_owned_staging(self):
         before = self.target.read_bytes()
@@ -314,7 +350,39 @@ foreach ($opened->plan_class as $node) {
         assert($node->asXML() === $matching[0]->asXML());
     }
 }
-foreach ([["shared_8b",200,210],["shared_8b",200,199],["nvidia_cuda_8b",200,201]] as $bad) {
+// AMD admission touches only AMD; legacy/shared commands must leave it untouched.
+$beforeAmd = simplexml_load_file("$project/plan_class_spec.xml");
+$amdPreview = native_qwen_cohort_write($project, "amd_vulkan_8b", 300, false);
+assert(!$amdPreview["apply"]);
+assert($beforeAmd->asXML() === simplexml_load_file("$project/plan_class_spec.xml")->asXML());
+native_qwen_cohort_write($project, "amd_vulkan_8b", 300, true);
+$withAmd = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($withAmd->plan_class as $node) {
+    $name = (string)$node->name;
+    if ($name === "amd_vulkan_8b") {
+        assert((int)$node->min_wu_id === 300 && (int)$node->max_wu_id === 300);
+    } else {
+        assert($node->asXML() === $beforeAmd->xpath("plan_class[name='$name']")[0]->asXML());
+    }
+}
+foreach (["shared_8b", "nvidia_cuda_2b"] as $legacy) {
+    native_qwen_cohort_write($project, $legacy, 0, true);
+    $after = simplexml_load_file("$project/plan_class_spec.xml");
+    assert((int)$after->xpath("plan_class[name='amd_vulkan_8b']")[0]->min_wu_id === 300);
+}
+native_qwen_cohort_write($project, "shared_8b", 200, true, 209);
+native_qwen_cohort_write($project, "amd_vulkan_8b", 0, true);
+$after = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($after->plan_class as $node) {
+    $name = (string)$node->name;
+    if ($name === "amd_vulkan_8b") {
+        assert((int)$node->min_wu_id === 2 && (int)$node->max_wu_id === 1);
+    } else {
+        assert($node->asXML() === $beforeAmd->xpath("plan_class[name='$name']")[0]->asXML());
+    }
+}
+foreach ([["shared_8b",200,210],["shared_8b",200,199],["nvidia_cuda_8b",200,201],
+          ["amd_vulkan_8b",300,301],["amd_vulkan_8b",1,1]] as $bad) {
     $refused = false;
     try { native_qwen_cohort_xml($xml, ...$bad); }
     catch (RuntimeException $e) { $refused = true; }
@@ -347,6 +415,14 @@ $wu->batch = 8; $wu->rsc_disk_bound = 19327352832; $results[0]->server_state = 2
 native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b");
 native_qwen_cohort_validate($wu, $results, "intel_vulkan_8b");
 native_qwen_cohort_validate($wu, $results, "nvidia_vulkan_8b");
+native_qwen_cohort_validate($wu, $results, "amd_vulkan_8b");
+foreach (["batch"=>2,"rsc_disk_bound"=>12884901888,"min_quorum"=>1,
+    "target_nresults"=>3,"canonical_resultid"=>10,"error_mask"=>1] as $key=>$value) {
+    $bad = clone $wu; $bad->$key = $value; $refused = false;
+    try { native_qwen_cohort_validate($bad, $results, "amd_vulkan_8b"); }
+    catch (RuntimeException $e) { $refused = true; }
+    assert($refused);
+}
 foreach ($results as $row) $row->sent_time = 1;
 $refused = false;
 try { native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b"); }

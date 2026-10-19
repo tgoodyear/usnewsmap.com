@@ -117,6 +117,15 @@ closed container class. Newly introduced classes start closed; reinitialization
 uses the closed template. Re-audit before opening or widening any cohort. Stop
 after the cohort. The helper does not authorize general unvalidated dispatch.
 
+AMD native Vulkan (`amd_vulkan_8b`, Linux x86-64 and Windows x64 only) ships closed
+pending actual-device acceptance (#885). It has an independent exact-one-WU
+operator window: `--plan-class amd_vulkan_8b --workunit ID` (preview, then `--apply`),
+and `--plan-class amd_vulkan_8b --stop --apply` to close **only AMD**. It never
+joins `shared_8b`, and neither AMD nor legacy/shared operations reset the other's
+window. In particular, unqualified `--stop` does not stop AMD. Refresh preserves
+both windows. See [AMD onboarding and hardware gates](../../docs/boinc-amd-gpu.md)
+for signed Vulkan bundle, driver, model, quorum and canary requirements.
+
 These native-only classes admit stable BOINC 8.2.11+ and do not require a
 container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
 its platform runtime is available; do not require a development Mac client for it.
@@ -272,7 +281,9 @@ fake migration.
      libraries) passed via repeatable `--extra-file LOGICAL=PATH` flags under
      `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
-     `aarch64-unknown-linux-gnu`, `windows_x86_64`), and `mt` (all five platforms). Model files
+     `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b` and
+     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`
+     (`x86_64-pc-linux-gnu`), and `mt` (all five platforms). Model files
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
      plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
      `usnm_qwen_2b_in` for 2B/`mt` classes).

@@ -95,7 +95,8 @@ def eligible(probe, profile, release, url):
     gpu = profile['gpu']
     plan = release['plan_class']
     required = ('nvidia' if any(x in plan for x in ('nvidia', 'cuda')) else
-                'intel' if any(x in plan for x in ('intel', 'vulkan')) else
+                'amd' if plan == 'amd_vulkan_8b' else
+                'intel' if 'intel' in plan else
                 'apple' if 'apple_gpu' in plan else 'none')
     if gpu != required or (gpu != 'none' and gpu not in probe['gpus']):
         raise AcceptanceError('fixture/client GPU does not match plan class')
