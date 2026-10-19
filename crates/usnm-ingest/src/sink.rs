@@ -1523,9 +1523,12 @@ impl WriterProcess {
 
     /// Stop the current run: SIGTERM, then a kill after 60 s.
     async fn terminate(&self) {
-        let (pid, exit, supervisor) = {
-            let mut r = self.run();
-            (r.pid, r.exit.clone(), r.supervisor.take())
+        // The supervisor stays in `Run` until the run has stopped or been
+        // aborted: a release cancelled during the wait (a merge timeout, a
+        // lost lease) still leaves `stop`/`Drop` a handle to kill it with.
+        let (pid, exit) = {
+            let r = self.run();
+            (r.pid, r.exit.clone())
         };
         let Some(mut exit) = exit else { return };
         let running = exit.borrow().is_none();
@@ -1539,18 +1542,19 @@ impl WriterProcess {
         let stopped = tokio::time::timeout(Duration::from_secs(60), exit.wait_for(Option::is_some))
             .await
             .is_ok();
+        if !stopped {
+            // Expected after a release: the closed index's ingest shards
+            // have no pipeline left to drain them, and the ingester waits
+            // for that. Everything is published by now, and the next
+            // writer starts from an empty data directory (a restart
+            // reads what is published from the metastore, and resumes
+            // ingest v1 queues from their checkpoints).
+            tracing::info!("the Quickwit writer did not stop within 60 s; killing it");
+            // Dropping the supervisor's child kills it (`kill_on_drop`).
+            self.abort();
+        }
+        let supervisor = self.run().supervisor.take();
         if let Some(mut supervisor) = supervisor {
-            if !stopped {
-                // Expected after a release: the closed index's ingest shards
-                // have no pipeline left to drain them, and the ingester waits
-                // for that. Everything is published by now, and the next
-                // writer starts from an empty data directory (a restart
-                // reads what is published from the metastore, and resumes
-                // ingest v1 queues from their checkpoints).
-                tracing::info!("the Quickwit writer did not stop within 60 s; killing it");
-                // Dropping the supervisor's child kills it (`kill_on_drop`).
-                supervisor.abort();
-            }
             let _ = tokio::time::timeout(Duration::from_secs(5), &mut supervisor).await;
         }
     }
@@ -1957,6 +1961,61 @@ mod tests {
             "{err}"
         );
         assert!(err.contains("Error: data dir volume too small"), "{err}");
+    }
+
+    /// A release cancelled while it waits for the writer to stop (a merge
+    /// timeout, a lost lease) can still kill a writer that ignores SIGTERM.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancelled_stop_still_leaves_the_writer_to_kill() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("quickwit");
+        let trapped = dir.path().join("trapped");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ntrap '' TERM\ntouch '{}'\nwhile :; do sleep 1; done\n",
+                trapped.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let writer = WriterProcess {
+            bin,
+            config_path: dir.path().join("node.yaml"),
+            url: "http://127.0.0.1:1".into(),
+            tail: Tail::default(),
+            events: Arc::new(NodeEvents::default()),
+            local_wal: None,
+            run: Mutex::new(Run::default()),
+        };
+        writer.spawn().unwrap();
+        while !trapped.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let stopping = tokio::time::timeout(Duration::from_millis(500), writer.terminate()).await;
+        assert!(stopping.is_err(), "the writer ignores SIGTERM");
+        assert!(writer.exited().is_none());
+        assert!(writer.run().supervisor.is_some());
+        let pid = writer.pid().unwrap().to_string();
+        writer.abort();
+        // The aborted supervisor drops the child, which kills it.
+        let gone = || {
+            !std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        for _ in 0..100 {
+            if gone() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("the writer outlived its aborted supervisor");
     }
 
     #[cfg(unix)]
