@@ -17,7 +17,7 @@ The maintainer wants as much storage off Azure as is sensible, with serving on-p
 1. Phase 1 moves **no live or public-serving data**, and starts only after the failing `sdb` is replaced, resilvered and scrubbed. It verifies the scans already on `tank`, copies the 73-blob archive account and a second copy of OCR ALTO to `tank`, and adds snapshots and monitoring (a `usbbak` replica is optional, not a prerequisite).
 2. Files stay files: ZFS datasets read by POSIX mounts for on-prem consumers. No S3 gateway until an Azure-hosted reader needs one (Garage, not MinIO, if so).
 3. Nothing is deleted in Azure until checksums are verified, the on-prem copy has been scrubbed, and the maintainer approves the specific deletion.
-4. Expansion path: replace both disks of mirror-1 (`sdb`, `sdc`) with larger matching CMR drives, one at a time (one disk per mirror would not expand the pool; see [design 16](../16-tank-replacement-and-scan-access.md)); then an HBA only for a third vdev, M.2 NVMe only for rebuildable data.
+4. Expansion path (hardware decision still open, 2026-10-19): if expansion is chosen, replace both disks of mirror-1 (`sdb`, `sdc`) with larger matching CMR drives, one at a time (one disk per mirror would not expand the pool; see [design 16](../16-tank-replacement-and-scan-access.md)); then an HBA only for a third vdev, M.2 NVMe only for rebuildable data.
 5. Datasets that cannot be re-derived stay in two places until a second site exists.
 
 ## Alternatives

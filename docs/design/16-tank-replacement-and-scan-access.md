@@ -1,6 +1,6 @@
-# 16. `tank` disk replacement and authenticated scan access
+# 16. `tank` disk replacement options and scan staging
 
-Follow-up to [design 15](15-onprem-cold-storage.md) (#895). **Design only.** Nothing here has been bought, changed on `pve-big`, deployed or changed in Azure. The maintainer chose (1) to plan replacing failing disks with two larger matching CMR drives and (2) to design authenticated on-prem scan access for the BOINC bridge. Mirror-only redundancy was already chosen. Facts below were read from `pve-big` on 2026-10-18 (`zpool status`, `zpool get`, `smartctl`, `lsblk`; read-only).
+Follow-up to [design 15](15-onprem-cold-storage.md) (#895). **Design only.** Nothing here has been bought, changed on `pve-big`, deployed or changed in Azure. Maintainer decisions of 2026-10-19: (1) **hardware decisions remain open**: no drive size, replacement order, burn-in or swap is selected or authorized; this document keeps the alternatives and their risks. (2) **Scan access direction is outbound-only staging into Azure, with no public gateway**; the gateway, an Entra app registration and a tunnel are unselected alternatives, not approved implementation. (3) Mirror-only with no independent backup is settled. Any "recommended" wording below is analysis, not a decision. Facts below were read from `pve-big` on 2026-10-18 (`zpool status`, `zpool get`, `smartctl`, `lsblk`; read-only).
 
 ## 16.1 Pool membership and which disks are failing
 
@@ -17,7 +17,7 @@ All four are about 10,000 power-on hours. The two failing disks are in **differe
 
 All six SATA ports are used (two Samsung system SSDs plus these four). A USB 3.1 controller (ASM1142) and a 1 TB USB disk (`usbbak`) are present.
 
-## 16.2 Do two larger disks expand the pool?
+## 16.2 Do larger disks expand the pool? Alternatives (none selected)
 
 A mirror vdev grows only when **every** member is larger. So:
 
@@ -25,11 +25,20 @@ A mirror vdev grows only when **every** member is larger. So:
 - Replacing **both disks of mirror-1** (`sdb` and `sdc`) grows mirror-1 to the new size. This is the only two-disk path that expands. It removes `sdb` (worst) and also a healthy but 3 TB disk, and leaves `sdd` (91 reallocated) in service in mirror-0.
 - Replacing both disks of mirror-0 (`sda`, `sdd`) also expands, retires `sdd`, but leaves `sdb` failing: not acceptable first.
 
-Recommended: **mirror-1 first** (`sdb` then `sdc`), because it holds the disk that failed its self-test. `sdd` is then a watched risk: it is covered by `sda` and by monitoring (16.5), and is retired by the optional step below.
+Alternatives, all open:
+
+| Alternative | Replaces                                                         | Health effect                                     | Capacity effect                                   | Risk left                                                                                                                                         |
+| ----------- | ---------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H1          | `sdb` and `sdd` (the two failing disks), one new disk per mirror | Removes both failing disks                        | **None**: each mirror stays at its smaller member | No failing disk remains; larger drives are wasted until their partners are replaced                                                               |
+| H2          | `sdb` and `sdc` (both of mirror-1)                               | Removes `sdb`, the disk that failed its self-test | mirror-1 grows                                    | **`sdd` (91 reallocated sectors) stays in mirror-0 and still needs attention**: monitoring, then its replacement or the optional mirror-0 removal |
+| H3          | `sda` and `sdd` (both of mirror-0)                               | Removes `sdd`                                     | mirror-0 grows                                    | **`sdb` keeps failing**; not advisable first                                                                                                      |
+| H4          | `sdb` first, then decide                                         | Removes the worst disk                            | None until its partner is also replaced           | `sdd` still open                                                                                                                                  |
+
+**Cross-mirror risk:** the two failing disks are in different mirrors, so no single two-disk replacement both fixes both disks' health and adds capacity. H1 fixes health without capacity; H2 adds capacity without fixing `sdd`. Each mirror has one clean member today, so a second fault in the same mirror (`sdc` during `sdb`'s resilver, or `sda` while `sdd` is weak) loses data, whichever alternative is chosen. The maintainer decides which trade-off to accept and when.
 
 Optional follow-on (a decision, not required): once mirror-1 is large, `zpool remove tank mirror-0` evacuates mirror-0 (587 G) into mirror-1. It works because `device_removal` is enabled, the pool has only mirror vdevs and `ashift` matches. It retires both Hitachis and frees two SATA ports for later. The cost is a small permanent indirect-mapping table (memory) and no way to undo except adding a vdev. It is not needed to get the capacity.
 
-### Capacity options (no purchase made)
+### Capacity options (illustrative; no purchase made or size selected)
 
 TB are decimal; ZFS shows TiB. A 2x mirror gives one disk's capacity.
 
@@ -39,11 +48,11 @@ TB are decimal; ZFS shows TiB. A 2x mirror gives one disk's capacity.
 | 2 x 12 TB      | ~10.9 TiB       | ~12.7 TiB               | ~10.9 TiB                               | 2.8x / 2.4x                  |
 | 2 x 16 TB      | ~14.6 TiB       | ~16.4 TiB               | ~14.6 TiB                               | 3.6x / 3.2x                  |
 
-Figures lose a few percent to ZFS overhead and the 80 % planning limit. Against design 15's projections (Phase 1 about 2.4 to 2.9 TB with the buffer; Phase 2 about 4 to 4.5 TB), 2x8 TB is enough through Phase 2 with headroom; 2x12 TB is the comfortable choice if the index also grows or a second dataset copy is wanted; 2x16 TB buys the longest runway but raises the single-drive loss exposure and resilver time. **Recommendation: 2 x 12 TB CMR**, with 2 x 8 TB as the minimum. Price is not stated here; the maintainer should check current prices.
+Figures lose a few percent to ZFS overhead and the 80 % planning limit. Against design 15's projections (Phase 1 about 2.4 to 2.9 TB with the buffer; Phase 2 about 4 to 4.5 TB), 2x8 TB is enough through Phase 2 with headroom; 2x12 TB is the comfortable choice if the index also grows or a second dataset copy is wanted; 2x16 TB buys the longest runway but raises the single-drive loss exposure and resilver time. This table shows what each size would give if the maintainer later picks H2; no size is selected or recommended for execution. Price is not stated here; the maintainer should check current prices.
 
 Selection rules: a **CMR** (not SMR) 3.5-inch drive, 7200 rpm class, 5-year warranty, rated for 24x7 NAS use; confirm CMR in the vendor datasheet for the exact model (for example WD Red Plus and Red Pro rather than the SMR WD Red of 6 TB and below; Seagate IronWolf or IronWolf Pro; Toshiba N300; WD or Seagate enterprise lines). Two drives of the **same model** from different purchase batches if possible. Check 512e/4Kn compatibility (`ashift=12` already matches 4K). Check the drive's SATA speed (6 Gbps ports on ata2 and ata3 are the ones mirror-1 uses today).
 
-## 16.3 Replacement procedure (future; not performed)
+## 16.3 Replacement procedure (illustrative and not authorized; nothing is performed)
 
 Gates for every new disk, before it is attached:
 
@@ -57,7 +66,7 @@ Pool gates before the first replacement:
 5. `sdc`'s SMART is clean and its extended test passes now (it will be the only good source if `sdb` drops).
 6. A backup exists **if the maintainer wants one**. Mirror-only was chosen; an independent copy (the `usbbak` pool with `syncoid`) is **optional**. It is not a prerequisite for this plan.
 
-Order, one disk at a time (the pool must never have two disks of one mirror out at once):
+Order if H2 were ever approved (for H1, replace `sdb` then `sdd` by the same steps), one disk at a time (the pool must never have two disks of one mirror out at once):
 
 | Step | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Gate to continue                                                                                        |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
@@ -72,15 +81,15 @@ Resilver size: only allocated data is copied (727 G for mirror-1, so a few hours
 
 Rollback depends on the route. **USB-attach route:** until the replacement completes the old disk stays online and current, so `zpool detach tank <new by-id>` abandons it safely. **Offline-and-swap route:** the removed disk stops receiving writes at the offline and is stale; the surviving current member (`sdc`) is authoritative and must not be removed. Abandon by re-attaching the new disk only after it is written off, never by treating the removed disk as current; bringing the old disk back online would resilver it from `sdc`. After completion the old `sdb` is kept unplugged until the post-replacement scrub passes; it is failing and is not a backup.
 
-## 16.4 What mirror-only means (risk, not a prerequisite)
+## 16.4 Mirror-only (settled): the risk, stated once
 
-A mirror protects against **one disk failing**. It does not protect against deletion, a bad command, ransomware, a controller or power fault that damages both members, fire or theft. Snapshots (design 15 §15.4) protect against deletion and mistakes while the pool is alive. The maintainer chose this level for Phase 1. An independent, optional extra copy would add protection, but only as far as it is independent: `usbbak` with `syncoid` is a partial local replica (it covers a pool-wide fault or deletion on `tank`, not fire or theft at the same site, and it does not have the capacity for the full scan set, design 15 D1); only a copy at another site covers site loss; it is **not required** by this plan and no step here depends on it. What the scans and archive can be re-fetched from (LoC) is stated in design 15 §15.2.3; data that cannot be re-derived is exactly what the maintainer should decide on (D1).
+Mirror-only with no independent backup is the maintainer's settled choice and is not a question in this document. For the record, a mirror protects against **one disk failing**; it does not protect against deletion, a bad command, ransomware, a fault that damages both members, fire or theft. Snapshots (design 15 §15.4) cover deletion and mistakes while the pool is alive. Nothing in this plan depends on `usbbak` or `syncoid`.
 
 ## 16.5 Monitoring while disks are suspect
 
 `smartd` mail on any change of reallocated, pending or CRC counters (`sdb` and `sdd` especially); `zpool status -x` check every 5 minutes with alert; scrub every month and **before** each replacement step; a weekly `smartctl -a` snapshot kept as text to see trends. These are the same alerts as design 15 and are future work on the host.
 
-## 16.6 Authenticated on-prem scan access for the BOINC bridge
+## 16.6 Scan access for the BOINC bridge: outbound-only staging (chosen direction)
 
 ### Today
 
@@ -90,21 +99,36 @@ The bridge (Container Apps job in `usnm-boinc-vnet-prod`) reads the Azure scan a
 - On-prem nodes already authenticate to Azure with Arc managed identities (ADR-0015); there is no VPN between Azure and on-prem (ADR-0015, ADR-0019) and the BOINC database is private.
 - `crates/usnm-scan-reader` (#649) is an unwired axum reader for the archive with Ed25519 tickets, per-ticket and per-IP budgets, `If-Match` ranged GETs, `private, no-store` and no proxy-header trust. Its README lists open gates: durable budgets, signing-key placement, activation review.
 - `usnm-ocr-worker serve-scans` is **LAN-only plain HTTP** with a host allowlist and an nftables rule, and it also accepts `DELETE` on `buffer/` and `PUT` for manifests. It must **not** be exposed or reused for this.
-- No server-side Entra JWT validation exists in the repo yet. This design adds it, and it is new code that needs review.
+- No server-side Entra JWT validation exists in the repo yet. Only the unselected gateway alternative would need it.
 
-### Options compared
+### Chosen direction and implementation requirements
 
-| Option                                                                                                                                                  | Inbound to home                                                            | New Azure cost / resource                                           | Fit                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A. **Keep the Azure copy; sync on-prem to Azure** (today's design, the "pull" direction)                                                                | None                                                                       | The Azure copy stays (~$16/month for scans)                         | Safest; no savings for scans. Default.                                                                                                                             |
-| B. **Stage needed pages**: the on-prem side pushes the pages a run needs to the Azure exchange container (`boinc-handoff`), the bridge reads them there | None (outbound only; the scan fetcher already does this with Arc identity) | Small, short-lived blobs; no standing 1 TB copy                     | Matches how the scan fetcher (CT 211) already feeds the bridge. No inbound exposure. Needs a run manifest of pages in advance. Recommended default for the bridge. |
-| C. **Read-only HTTPS reader on-prem, bridge calls it with an Entra token** (this section's design)                                                      | Yes, one HTTPS port or a tunnel                                            | None, or a tunnel/relay service                                     | Lets Azure scan storage be retired (~$16/month); adds inbound exposure and new auth code. Only with the controls below.                                            |
-| D. Site-to-site VPN gateway                                                                                                                             | Private                                                                    | VPN gateway (VpnGw1 about $0.19/hour, ~$139/month) plus a public IP | Costs more than the saving. Rejected. ADR-0015 says no VPN.                                                                                                        |
-| E. Expose `serve-scans` or a generic file/S3 server                                                                                                     | Yes                                                                        | None                                                                | **Rejected**: unauthenticated or write-capable. Never.                                                                                                             |
+**Decision (2026-10-19): outbound-only staging into Azure; no public gateway.** On-prem pushes the pages a run needs into Azure with its Arc identity (as the scan fetcher already does). The bridge reads them from Azure with its managed identity. Nothing on `pve-big` is reachable from the internet or from Azure. Hand-off and coordination stay in Azure, and the Azure scan archive stays as the fallback during staged rollout. The gateway, Entra app registration and tunnel below are **unselected alternatives, not approved**.
 
-**Prerequisite for B:** explicit page selection and a staged-input path for each stage that reads the archive today (assess, Surya, quality), which needs new work; it is not met by the existing hand-off manifest. Recommendation: **B** for Phase 2 if the page set per run is known in advance (it is not yet: the hand-off job consumes a manifest rather than exporting one, and the assess, Surya and quality stages read the archive separately in `bridge-job.sh`), else **C**. C is specified below so the maintainer can approve it; neither is implemented.
+Requirements for a future implementation (none built; each is a separately reviewed change):
 
-### Design for C: `usnm-scan-gateway` (new, read-only)
+1. **Page selection.** A defined, durable list of the pages each run needs (batch, lccn, date, edition, seq, format), produced before the run. Today the hand-off job only consumes a manifest, and assess, Surya and quality select pages inside `bridge-job.sh` and `usnm-boinc`. Decide who writes the list (the hand-off job or the dispatcher) and where it lives (a container, with a schema and version).
+2. **Staging writer.** An on-prem job (the scan fetcher's owner, Arc identity, no secrets) reads the list, copies each page from `tank/ocr/scans/keep` to a staging prefix in Azure, and writes the sidecar fields (sha256, md5, `iiif_base`, `loc_url`) as blob metadata or a manifest. It verifies sha256 against the local sidecar before and after upload, is idempotent and resumable, never overwrites a differing blob, and never deletes.
+3. **Staging location and permissions.** A container or prefix in the existing exchange account: writer role for the Arc identity, read for the bridge identity only. No new account, shared key or SAS (ADR-0009). Lifecycle expiry applies to the staging prefix only; the Azure archive is not touched.
+4. **Bridge read order.** For each stage (assess, Surya, quality) the order becomes: staged copy, then the Azure archive (while it exists), then LoC. The existing sha256/md5 verification applies to staged copies; a mismatch falls through.
+5. **Failure behavior.** A missing or late staged page is a miss, not a hold: the bridge falls through to the archive or LoC under the existing LoC pacing. A run is not blocked on the staging job; an alert fires when staging lags a run's list.
+6. **Size and cost.** Count pages per run and staged bytes (upload from home has no Azure egress charge; Azure transactions and short retention are the cost), and cap the uplink share (for example 200 Mbps).
+7. **Retirement gate.** Unchanged: the Azure scan archive is deleted only after sha256 of every blob equals the on-prem copy, a clean scrub, the Cold-tier accounting, and the maintainer's specific approval. Blob soft delete is off on the scan archive, so a prefix deletion cannot be undone. Rollback before retirement: point the bridge back at the archive; after it: restore from `tank` and re-verify.
+8. **Staged rollout.** Shadow (stage and compare while the bridge still reads the archive), then staging primary with archive fallback, then retirement as above.
+
+### Options compared (alternatives; only B is the chosen direction)
+
+| Option                                                                                                                                                  | Inbound to home                                                            | New Azure cost / resource                                           | Fit                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A. **Keep the Azure copy; sync on-prem to Azure** (today's design, the "pull" direction)                                                                | None                                                                       | The Azure copy stays (~$16/month for scans)                         | Safest; no savings for scans. Default.                                                                                                                        |
+| B. **Stage needed pages**: the on-prem side pushes the pages a run needs to the Azure exchange container (`boinc-handoff`), the bridge reads them there | None (outbound only; the scan fetcher already does this with Arc identity) | Small, short-lived blobs; no standing 1 TB copy                     | Matches how the scan fetcher (CT 211) already feeds the bridge. No inbound exposure. Needs a run manifest of pages in advance. Chosen direction (2026-10-19). |
+| C. **Read-only HTTPS reader on-prem, bridge calls it with an Entra token** (this section's design)                                                      | Yes, one HTTPS port or a tunnel                                            | None, or a tunnel/relay service                                     | Lets Azure scan storage be retired (~$16/month); adds inbound exposure and new auth code. Only with the controls below.                                       |
+| D. Site-to-site VPN gateway                                                                                                                             | Private                                                                    | VPN gateway (VpnGw1 about $0.19/hour, ~$139/month) plus a public IP | Costs more than the saving. Rejected. ADR-0015 says no VPN.                                                                                                   |
+| E. Expose `serve-scans` or a generic file/S3 server                                                                                                     | Yes                                                                        | None                                                                | **Rejected**: unauthenticated or write-capable. Never.                                                                                                        |
+
+**Prerequisite for B:** explicit page selection and a staged-input path for each stage that reads the archive today (assess, Surya, quality), which needs new work; it is not met by the existing hand-off manifest. Chosen: **B**. Analysis kept for the record: **B** for Phase 2 if the page set per run is known in advance (it is not yet: the hand-off job consumes a manifest rather than exporting one, and the assess, Surya and quality stages read the archive separately in `bridge-job.sh`), else **C**. C is specified below only as an alternative if staging proves inadequate; it is not approved and nothing is implemented.
+
+### Unselected alternative C: `usnm-scan-gateway` (new, read-only; not approved)
 
 A separate small process (not `serve-scans`), reusing `usnm-scan-reader`'s router, integrity checks and `ArchiveReader` seam with a **filesystem** reader instead of the Azure blob reader and an **Entra bearer** authenticator instead of tickets (tickets stay for future volunteer clients).
 
@@ -137,19 +161,22 @@ Rollback before stage 4: set the source setting back to the Azure archive URL (o
 - Home uplink, power and the single mirror now sit in the BOINC critical path for page reads (but not for hand-off), softened by the Azure and LoC fallbacks.
 - JWKS fetch needs outbound access to Entra from the gateway; cached keys must survive a short outage.
 
-## 16.7 Decisions needing the maintainer's approval
+## 16.7 Decisions
 
-- **R1 — disks.** Approve the mirror-1-first plan (`sdb` then `sdc`), and the size: 2 x 8 TB (minimum), **2 x 12 TB (recommended)** or 2 x 16 TB. Approve or reject the optional later removal of mirror-0 (and retiring `sdd`).
-- **R2 — burn-in.** Approve a destructive burn-in of the new drives before use (they are empty), and the USB-attach resilver route (old disk stays as a read source) versus the offline-and-swap route.
-- **R3 — optional backup.** Whether to add an independent copy (`usbbak` plus `syncoid`) at all. Not required by this plan.
-- **P1 — scan access route.** B (stage pages to the exchange container, no inbound), C (authenticated reader), or keep the Azure copy. If C: tunnel versus port forward, and the provider.
-- **P2 — Entra.** A new app registration and app role for the gateway audience, assigned to the BOINC bridge identity only (Azure change), and the pinned issuer version.
-- **P3 — code.** Build `usnm-scan-gateway` on `usnm-scan-reader`, and its rate caps and uplink share.
-- **P4 — retirement.** The later, separate approval to delete the Azure scan copy, after the checksum, scrub and retention gates in 16.6.
+Settled by the maintainer (2026-10-19):
+
+- Mirror-only, no independent backup.
+- Scan access is outbound-only staging into Azure. No public gateway. The gateway, the Entra app registration and the tunnel or port forward are not selected.
+
+Still open (no action authorized):
+
+- **R1 — hardware.** Whether to replace disks at all, which alternative (H1 to H4 in 16.2), which size, and when. No drive size or order is selected.
+- **R2 — burn-in and swap method.** Whether and how to burn in new drives and swap (USB-attach or offline-and-swap). Not authorized.
+- **S1 — staging design.** Approval of the page-selection and staging requirements in 16.6 before any code is written, and who owns each piece.
+- **P4 — retirement.** The later, separate approval to delete the Azure scan copy, after the checksum, scrub and retention gates.
 
 ## 16.8 Not done and not known
 
 - No drives were bought, benchmarked or attached; no `zpool` command that changes state was run; no Azure resource, role or firewall changed.
 - The exact drive model, price and datasheet CMR confirmation are open. SATA cabling and USB dock throughput for the USB-attach route were not measured.
-- Whether the router or ISP allows an inbound port, and the tunnel's terms and limits, are not checked.
-- The gateway code and its JWT library choice do not exist yet.
+- The staging writer, page list and bridge changes do not exist yet. The alternative gateway code and JWT library choice also do not exist.
