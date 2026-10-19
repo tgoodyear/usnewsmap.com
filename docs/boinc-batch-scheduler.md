@@ -67,7 +67,44 @@ though the bridge launcher's stack discovery works. Verify hand-off
 for any active service to finish before changing its configuration or performing
 exclusive lifecycle maintenance. Each tick takes the shared controller lease.
 Successful empty-queue ticks are not end-to-end priority-page acceptance:
-retain #866 for real-page publication, queue deletion, and turnaround evidence.
+the real-page receipt for #866 is recorded below.
+
+### Production priority canary
+
+On 19 October 2026, cached English page
+`sn99066040_1865-08-12_ed-1_seq-2` completed the queue-fed path under plan
+`priority-feed-1`, job `a9ba35b339d479442d0efcfeefa9bbab2f31ab4989b88db569cd3c0c0f0761bb`.
+The existing ledger-aware operator command `ocr-enqueue --reason user` queued
+it at 04:36:52 UTC; this tests downstream priority handling, not browser
+request capture or the daily request batch.
+
+The normal bounded scan claimed it at 05:10:14, pushed its cached scan,
+exported it and submitted it. Host 10 finished at 05:18:33 with 29,826 text
+bytes and 181,376 ms worker elapsed time. Collection initially quarantined it
+because that host lacked exact-image English gold evidence. One normal targeted
+challenge using the existing frozen 30-crop calibration then passed: CER 0.0716
+against the unchanged 0.08734328574534386 threshold, with no skips or complete-loss
+crops. Native canonical reports and complete outcome snapshots for hosts 1, 8
+and 10 produced the v5 trust list; the image, challenge, language, model, PSM,
+DPI and threshold were unchanged. No trust override was used.
+
+The resumed normal collector published at 06:25:06, and the claim's persisted
+`ended` became `finished`. An operator-triggered execution of the unchanged
+`ocr-sync --max-runtime-secs 3000` stage recorded the page's `imported` outcome
+at 06:28:01. Enqueue-to-claim was 33 min 22 s, enqueue-to-volunteer-output
+41 min 41 s, and enqueue-to-import 1 h 51 min 9 s. Calibration bootstrap and a
+container-exec throttling wait dominate this single observation; it is not a
+steady-state latency or page-accuracy guarantee.
+
+Node 4's direct worker was active, contrary to the original issue's assumption:
+it consumed the first canary. The second used a bounded graceful pause, with an
+automatic restart armed before stopping; the worker was restored immediately
+after the BOINC claim. Both it and CT 211's timer were active afterward.
+Competing consumers and Azure queue ordering mean bounded scanning does not
+promise ownership or a fixed number of ticks. Inventory and lifecycle overhead
+also mean five minutes between inactive services is not five-minute polling.
+Language admission alone does not guarantee the returning host is calibrated;
+retain normal gold onboarding and fail-closed quarantine.
 
 ### Separate hand-off runtime
 
@@ -75,12 +112,16 @@ The hand-off job is in the **main** resource group, not the BOINC runtime
 group. Updating the BOINC server and bridge pair does not update this job.
 `USNM_BOINC_HANDOFF_IMAGE` in `infra/env/prod.json` must name a reviewed bridge
 artifact containing the bounded export, exact-file reads and accepted-snapshot
-collection code. PR #888 pins both lifecycle jobs to bridge digest
+collection code. PR #888 initially pinned both lifecycle jobs to bridge digest
 `sha256:91539ee197e3de29ac5e1eb3ccbee1d25237553d25b519feabb90aef9436100d`,
 built from main `1ac92dcb91fcc0b3bc4b1c900163d427df63aed1`, including
 language-scoped claims (#867) and priority user work (#868). Both job images
 were rolled out image-only under #529; server, web, worker, and TLS settings
-were unchanged. A future pin change alone is not a runtime rollout or host
+were unchanged. PR #898 subsequently advanced only the hand-off job to
+`sha256:b4f2f00b2128b7eb32206f210e0673be7f9edc7017133e1684e493ed2922b877`,
+containing #897's bounded priority scan. The bridge remained at `91539ee1...`;
+the hand-off template, configuration and identity were otherwise unchanged.
+A future pin change alone is not a runtime rollout or host
 promotion; it requires a reviewed rebuild and separately coordinated deployment.
 
 After the pin PR passes review and CI and merges, serialize a hand-off-only
