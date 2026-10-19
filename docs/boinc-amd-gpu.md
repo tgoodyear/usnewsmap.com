@@ -10,6 +10,31 @@ This is a native application, not Docker/Podman, ROCm or a CUDA fallback. Neithe
 the NVIDIA CUDA Qwen containers nor the Surya CUDA images support AMD through this
 change. The existing Intel/NVIDIA measurements are not AMD acceptance evidence.
 
+## One-time qualification versus everyday scheduling
+
+The intended production experience is automatic: an attached host with a
+compatible accelerator should receive eligible accelerator-only work through
+normal BOINC scheduling, without a manual admission step for each volunteer.
+The bounded AMD procedure below is **initial platform qualification**, not that
+steady-state design. Installing compatible drivers and attaching today does not
+open AMD work: its shipped workunit window remains closed until signed release
+publication and an explicitly authorized hardware canary.
+
+GPU-only Qwen routes use separate resource classes: AMD/ATI and Intel are
+detected through OpenCL for Vulkan execution; NVIDIA uses CUDA detection for
+its CUDA/Vulkan routes, and Apple uses its native GPU route. A host still needs
+a published app version for its OS, the correct model/batch, supported BOINC
+and driver capabilities, sufficient memory, and the actual assigned device.
+GPU classes never silently fall back to CPU. Existing Intel/NVIDIA native
+cohort windows are also bounded pilots, not general automatic queue admission.
+
+After initial qualification, a separate reviewed general-availability change
+must authorize sustained accelerator-only work supply and admission for
+qualified classes, verify normal scheduling across compatible hosts, and retain
+vendor/device, memory, independent-quorum and distinct-host validation gates.
+It should not replace those gates with per-volunteer manual cohorts. Neither
+this onboarding change nor publication alone enables that broader admission.
+
 ## Volunteer prerequisites
 
 - **OS/artifact:** x86-64 Linux (`x86_64-pc-linux-gnu`) or x64 Windows
