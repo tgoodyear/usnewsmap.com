@@ -452,12 +452,23 @@ the final merges can't lower the factor in place as v2's do.
 
 1. Lets the merges settle.
 2. Puts the index's config back with `merge_factor: 2`.
-3. Restarts the writer on the same data directory and port.
+3. Restarts the writer on the same data directory and port. It sends
+   SIGTERM, then SIGKILL after 60 s, and starts the new writer only once the
+   old one has exited and been reaped. If that isn't confirmed 30 s after the
+   SIGKILL, the release fails without starting a second writer.
 4. Waits for the new merge pipeline's `spawning merge pipeline` line to show
    `merge_factor: 2`. It fails without publishing if the line shows another
    factor or if no pipeline starts within the finalize stall.
 5. Lets the merges settle again, restores the original config, and checks the
    layout as before.
+
+If the release fails or times out after step 2, it puts the original config
+back before failing and says so in its error. A release that is cancelled
+outright tries the same from a background task and logs the outcome. If the
+error says the index "keeps merge_factor 2 in the metastore", the restore
+failed. Such an index is never published: prune it, or PUT the config from
+its `GET /api/v1/indexes/<id>` (`index_config`) back with the original
+`merge_factor` before reusing it.
 
 The page count and the layout check are unchanged: they still refuse an index
 whose documents differ from the pages sent. v1 needs `--quickwit-bin`, the

@@ -1018,7 +1018,10 @@ pub fn with_merge_factor(config: &Value, factor: u64) -> anyhow::Result<Value> {
 /// a new merge pipeline takes a new policy), wait for the index's new merge
 /// pipeline to start with it, settle again, put the config back and check.
 /// The splits left are below `merge_factor` in every partition, so a later
-/// writer's merge pipeline has nothing to merge either way.
+/// writer's merge pipeline has nothing to merge either way. A release that
+/// fails or times out after changing the config puts it back first, and
+/// says whether that worked; one cancelled outright tries from a task of its
+/// own ([`RestoreOnDrop`]).
 #[allow(clippy::too_many_arguments)]
 pub async fn seal_restarting(
     node: &Node<'_>,
@@ -1032,6 +1035,7 @@ pub async fn seal_restarting(
 ) -> anyhow::Result<IndexLayout> {
     let start = tokio::time::Instant::now();
     let deadline = start + wait.timeout;
+    let guard = RestoreOnDrop::new(node, index_id);
     let sealing = async {
         let ev = Some(events);
         let splits = settled(
@@ -1044,6 +1048,8 @@ pub async fn seal_restarting(
         }
         let original = explained(ev, node.index_config(index_id).await).await?;
         let finals = with_merge_factor(&original, FINAL_MERGE_FACTOR)?;
+        // Before the request: one whose answer is lost may still apply.
+        guard.arm(&original);
         explained(ev, node.update_index(index_id, &finals).await).await?;
         let (before, _) = events.v1_spawns(index_id);
         tracing::info!(
@@ -1082,15 +1088,124 @@ pub async fn seal_restarting(
         .await?;
         events.check_v1(index_id)?;
         explained(ev, node.update_index(index_id, &original).await).await?;
+        guard.disarm();
         check(index_id, expected, split_target, &splits)
     };
-    match tokio::time::timeout(wait.timeout + wait.poll, sealing).await {
+    let result = match tokio::time::timeout(wait.timeout + wait.poll, sealing).await {
         Ok(result) => result,
-        Err(_) => bail!(
+        Err(_) => Err(anyhow::anyhow!(
             "merges into `{index_id}` did not finish within {} s (a request to the writer was \
              still waiting); not publishing",
             wait.timeout.as_secs()
-        ),
+        )),
+    };
+    let Err(e) = result else { return result };
+    // The guard stays armed until the request is done: a release cancelled
+    // during it still puts the config back from the guard's own task.
+    let Some(original) = guard.pending() else {
+        return Err(e);
+    };
+    let restored =
+        match tokio::time::timeout(RESTORE_TIMEOUT, node.update_index(index_id, &original)).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow::anyhow!(
+                "the writer did not answer within {} s",
+                RESTORE_TIMEOUT.as_secs()
+            )),
+        };
+    guard.disarm();
+    match restored {
+        Ok(()) => Err(anyhow::anyhow!(
+            "{e:#}; `{index_id}`'s merge policy was put back"
+        )),
+        Err(r) => Err(anyhow::anyhow!(
+            "{e:#}; `{index_id}` keeps merge_factor {FINAL_MERGE_FACTOR} in the metastore: putting its \
+             merge policy back failed ({r:#}). Prune the failed index, or PUT its config back \
+             (docs/operations.md, \"Duplicate-safe ingest\")"
+        )),
+    }
+}
+
+/// How long putting an index's merge policy back may take.
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The config [`seal_restarting`] changed, to put back if it doesn't: from
+/// `seal_restarting` itself on an error or a timeout, and from a task of its
+/// own if the release is cancelled (dropped) while it is armed.
+struct RestoreOnDrop {
+    http: reqwest::Client,
+    base: String,
+    index_id: String,
+    original: std::sync::Mutex<Option<Value>>,
+}
+
+impl RestoreOnDrop {
+    fn new(node: &Node<'_>, index_id: &str) -> Self {
+        Self {
+            http: node.http.clone(),
+            base: node.base.to_owned(),
+            index_id: index_id.to_owned(),
+            original: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Value>> {
+        self.original.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn arm(&self, original: &Value) {
+        *self.slot() = Some(original.clone());
+    }
+
+    /// The config to put back, if it still has to be.
+    fn pending(&self) -> Option<Value> {
+        self.slot().clone()
+    }
+
+    fn disarm(&self) -> Option<Value> {
+        self.slot().take()
+    }
+}
+
+impl Drop for RestoreOnDrop {
+    fn drop(&mut self) {
+        let Some(original) = self.disarm() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                index = %self.index_id,
+                "could not put back the merge policy of a cancelled release's index (no runtime)"
+            );
+            return;
+        };
+        let (http, base, index_id) = (
+            self.http.clone(),
+            std::mem::take(&mut self.base),
+            std::mem::take(&mut self.index_id),
+        );
+        rt.spawn(async move {
+            let node = Node {
+                http: &http,
+                base: &base,
+            };
+            match tokio::time::timeout(RESTORE_TIMEOUT, node.update_index(&index_id, &original))
+                .await
+            {
+                Ok(Ok(())) => {
+                    tracing::info!(index = %index_id, "put back the merge policy of a cancelled release's index")
+                }
+                Ok(Err(e)) => tracing::warn!(
+                    index = %index_id,
+                    "could not put back the merge policy of a cancelled release's index: {e:#}"
+                ),
+                Err(_) => tracing::warn!(
+                    index = %index_id,
+                    "could not put back the merge policy of a cancelled release's index: the \
+                     writer did not answer"
+                ),
+            }
+        });
     }
 }
 
@@ -1716,6 +1831,212 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (format!("http://{addr}"), fake)
+    }
+
+    /// A settled writer node for `seal_restarting`: its config has a
+    /// `limit_merge` policy with factor 10; every PUT of it is recorded,
+    /// and those after the first fail with `fail_restore`; the second takes 3 s
+    /// with `slow_restore`.
+    async fn config_node(
+        fail_restore: bool,
+        slow_restore: bool,
+    ) -> (String, Arc<Mutex<Vec<Value>>>) {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        let puts: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let p = puts.clone();
+        let app = axum::Router::new()
+            .route(
+                "/metrics",
+                get(|| async {
+                    "quickwit_indexing_ongoing_merge_operations 0\n\
+                     quickwit_indexing_pending_merge_operations 0\n"
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                get(|| async {
+                    axum::Json(serde_json::json!({"splits": [
+                        {"split_id": "a", "num_docs": 10, "footer_offsets": {"end": 100}},
+                        {"split_id": "b", "num_docs": 10, "footer_offsets": {"end": 100}},
+                    ]}))
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}",
+                get(|| async {
+                    axum::Json(serde_json::json!({"index_config": {
+                        "index_id": "idx",
+                        "indexing_settings": {"merge_policy": {
+                            "type": "limit_merge", "merge_factor": 10, "max_merge_factor": 12
+                        }}
+                    }}))
+                })
+                .put(move |axum::Json(body): axum::Json<Value>| async move {
+                    let n = {
+                        let mut puts = p.lock().unwrap();
+                        puts.push(body);
+                        puts.len()
+                    };
+                    if slow_restore && n == 2 {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    }
+                    if fail_restore && n > 1 {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::OK
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), puts)
+    }
+
+    /// A writer whose restart fails, or "succeeds" without a merge pipeline.
+    struct FakeRestart(bool);
+
+    #[async_trait::async_trait]
+    impl Restart for FakeRestart {
+        async fn restart(&self) -> anyhow::Result<()> {
+            if self.0 {
+                Ok(())
+            } else {
+                bail!("the writer did not stop")
+            }
+        }
+    }
+
+    fn factors(puts: &Mutex<Vec<Value>>) -> Vec<u64> {
+        puts.lock()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                c["indexing_settings"]["merge_policy"]["merge_factor"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    async fn seal_with(restarts: bool, fail_restore: bool) -> (String, Vec<u64>) {
+        let (base, puts) = config_node(fail_restore, false).await;
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let events = NodeEvents::default();
+        let err = seal_restarting(
+            &node,
+            &FakeRestart(restarts),
+            "idx",
+            20,
+            T,
+            &events,
+            &quick(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        (format!("{err:#}"), factors(&puts))
+    }
+
+    #[tokio::test]
+    async fn a_failed_restart_puts_the_merge_policy_back() {
+        let (err, puts) = seal_with(false, false).await;
+        assert!(err.contains("the writer did not stop"), "{err}");
+        assert!(err.contains("merge policy was put back"), "{err}");
+        assert_eq!(puts, [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    #[tokio::test]
+    async fn a_restart_without_final_merges_puts_the_merge_policy_back() {
+        let (err, puts) = seal_with(true, false).await;
+        assert!(err.contains("started no merge pipeline"), "{err}");
+        assert!(err.contains("merge policy was put back"), "{err}");
+        assert_eq!(puts, [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    #[tokio::test]
+    async fn a_merge_policy_that_cant_be_put_back_is_reported() {
+        let (err, puts) = seal_with(false, true).await;
+        assert!(err.contains("the writer did not stop"), "{err}");
+        assert!(
+            err.contains("keeps merge_factor 2 in the metastore"),
+            "{err}"
+        );
+        assert!(err.contains("500"), "{err}");
+        assert_eq!(puts, [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    /// A release cancelled after the change puts the config back from a
+    /// task of its own.
+    #[tokio::test]
+    async fn a_cancelled_release_puts_the_merge_policy_back() {
+        struct Hang;
+        #[async_trait::async_trait]
+        impl Restart for Hang {
+            async fn restart(&self) -> anyhow::Result<()> {
+                std::future::pending().await
+            }
+        }
+        let (base, puts) = config_node(false, false).await;
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let events = NodeEvents::default();
+        let wait = quick();
+        let sealing = seal_restarting(&node, &Hang, "idx", 20, T, &events, &wait, None);
+        assert!(tokio::time::timeout(Duration::from_millis(500), sealing)
+            .await
+            .is_err());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while factors(&puts).len() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the config was put back");
+        assert_eq!(factors(&puts), [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    /// A release cancelled while it puts the config back after an error
+    /// still has the guard's task put it back.
+    #[tokio::test]
+    async fn a_release_cancelled_during_the_restore_still_puts_the_merge_policy_back() {
+        let (base, puts) = config_node(false, true).await;
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let events = NodeEvents::default();
+        let wait = quick();
+        let sealing = seal_restarting(
+            &node,
+            &FakeRestart(false),
+            "idx",
+            20,
+            T,
+            &events,
+            &wait,
+            None,
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(500), sealing)
+            .await
+            .is_err());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while factors(&puts).len() < 3 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the guard put the config back");
+        assert_eq!(factors(&puts), [FINAL_MERGE_FACTOR, 10, 10]);
     }
 
     fn quick() -> MergeWait {
