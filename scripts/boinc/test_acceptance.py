@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import signal
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,34 @@ PROBE = dict(ready=True, project_url=URL, host_id=2, platform=RELEASE['platform'
 CONFIG = dict(fixture='qwen-cpu', server_command=['server'],
               client=dict(mode='existing', dedicated_test_client=True, python_command=['python3', '-']))
 DATA = b'{"transcription":"actual inference", "unit_error":null}'
+
+class RegisteredVersionRouting(unittest.TestCase):
+    def test_same_numeric_platform_versions_are_refused_but_distinct_versions_work(self):
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        db.row_factory = sqlite3.Row
+        db.executescript("""
+            CREATE TABLE app(id INTEGER, name TEXT);
+            CREATE TABLE platform(id INTEGER, name TEXT);
+            CREATE TABLE app_version(id INTEGER, appid INTEGER, platformid INTEGER,
+                                     version_num INTEGER, plan_class TEXT, deprecated INTEGER);
+            INSERT INTO app VALUES(1,'usnm_qwen');
+            INSERT INTO platform VALUES(1,'x86_64-pc-linux-gnu'),(2,'windows_x86_64');
+            INSERT INTO app_version VALUES(50,1,1,107,'amd_vulkan_8b',0),
+                                          (51,1,2,107,'amd_vulkan_8b',0);
+        """)
+        def sql_query(_db, sql, values):
+            return [dict(row) for row in db.execute(sql.replace("%s", "?"), values)]
+        linux = dict(app="usnm_qwen", version_num=107, platform="x86_64-pc-linux-gnu",
+                     plan_class="amd_vulkan_8b")
+        windows = dict(linux, platform="windows_x86_64")
+        with patch.object(S, "query", side_effect=sql_query):
+            for release in (linux, windows):
+                with self.assertRaisesRegex(ValueError, "ambiguous app/version routing"):
+                    S.registered_version(None, release)
+            db.execute("UPDATE app_version SET version_num=108 WHERE id=51")
+            self.assertEqual(S.registered_version(None, linux), 50)
+            self.assertEqual(S.registered_version(None, dict(windows, version_num=108)), 51)
 
 
 def evidence(run_id, **changes):

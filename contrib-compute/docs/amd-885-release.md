@@ -1,0 +1,97 @@
+# AMD #885 scoped production release
+
+PR #889 merged at `5e12de6d7a12b86314959005c4c73c055c0f461c`;
+native workflow `39188557570`, full CI `39188533783` and CodeQL
+`39188533710` passed. The signed Linux x64 and Windows x64 payloads use
+that exact native source and the unchanged b8799 archives from `llama.lock`.
+The PCI helper, ggml registry/base/Vulkan libraries, SONAME aliases on Linux,
+and Microsoft CRT on Windows are part of the signed bundles.
+
+The production runtime at release preparation is `tls464-rb3`, immutable bridge
+digest `4cd42232b18d9a7b6317da4be490d50ca569de82c6ca6b935784fe173c896201`.
+Main's server/web pins do not describe that runtime, and a whole-stack provision
+would import unrelated changes. `images/server/amd-885.Containerfile` therefore
+uses that **exact live base**, retaining its scheduler, collector, TLS/config
+rendering, credentials, validators and daemon configuration. It adds only:
+
+- the reviewed AMD class and admission-window-preserving policy refresh;
+- the reviewed pinned-BOINC `create_work --no_new_results` binary and a startup
+  refresh of that one project tool;
+- the reviewed server acceptance adapter and cohort helper, installed in
+  `/usr/local/lib/usnm-boinc/amd-885/`.
+
+The staging binary is copied from the normal newly built BOINC base, not from a
+stale overlay. Build-time dependency/help checks run against the live runtime.
+The previous entrypoint remains byte-for-byte intact and is invoked after the
+tool refresh. No other binary or startup configuration is replaced.
+
+Production publication uses the normal signed app-version image and
+`APPVER_REUSE_PROJECT=1`: existing live credentials/config symlinks are retained;
+registration is isolated to this app/platform/version. Publisher workspaces
+for public payloads are UUID directories on the project filesystem. Executed PHP
+registration files live only in private UUID directories under the existing
+permission-enforcing `$SECRETS` tmpfs (`/dev/shm/boinc`), never the Azure Files
+share, whose fixed `0775` modes cannot enforce `0700`. The publish job's full existing template is preserved except its
+image and the scoped-reuse variable. Only that job is gated idle under its start
+lease; other running jobs and their **entire templates** are untouched.
+
+All live writes require the #529 claim, authoritative
+`boinc-handoff/scheduler/controller.lock` and normal per-job guard for the publish
+template/start. The supported local mutex setting is explicitly
+`USNM_BOINC_LOCK_DIR=/Users/tgoodyear/code/.usnm-boinc-prod.lock`, already used by
+the #860 transaction; no system temporary path or lease takeover is used.
+
+The maintainer authorized preserving MySQL `require_secure_transport=OFF`
+**as found**; this release neither resumes #464 nor toggles enforcement.
+An actual verified encrypted read-only DB connection must pass independently.
+The maintainer subsequently authorized **automatic general AMD admission ASAP**,
+before hardware qualification. After signed publication and runtime deployment,
+the reviewed AMD-only `--general --apply` promotion removes AMD workunit bounds
+and persists `usnm-amd-general-admission-v1` under the same journal/policy lock.
+Startup preserves that mode; a later explicit AMD stop removes it and remains
+closed across restart. Every other class's **fresh live** bounds survive unchanged.
+The preparation snapshot had Intel/NVIDIA `17099–17100`, but #860 closed that
+pilot under its own guards at 03:08 UTC and restored the original container-18
+admission. Preserve that newer closure; never restore the stale open snapshot.
+No workunit/result, volunteer attachment/preference
+or forced-client-dispatch mutations are part of this publication/promotion.
+Initial volunteer use is **hardware-unverified**; actual RX 9070 XT qualification
+remains pending under #885, not a prerequisite for each eligible volunteer.
+
+Final image digests, app-version IDs and public hash verification are recorded
+in the #885/#529 deployment receipts. Preparation is not publication.
+
+## Immutable publication candidates
+
+All images are in `crusnmprodffapzy.azurecr.io`. Version **1.7** is reserved for
+Linux and **1.8** for Windows (the fresh live inventory ended at 1.6). Distinct
+numeric versions preserve the optional diagnostic adapter's intentionally strict
+unambiguous app/version routing. Earlier same-number Windows candidates were
+never published or registered and are superseded, not reused.
+
+| Image repository / purpose                  | SHA256 digest                                                      | ACR build |
+| ------------------------------------------- | ------------------------------------------------------------------ | --------- |
+| `usnm-boinc-base`, new pinned staging tool  | `7526fa79c6259c4d12d3c057da4d3bcff24138f1ce44246de800786e218265a0` | `cha1`    |
+| `usnm-boinc-appver`, signed Linux x64 1.7   | `57b0de0793df18a15701103ce2b8061214cacc49c5c496ff5ae2f6240a9f5303` | `cha7`    |
+| `usnm-boinc-appver`, signed Windows x64 1.8 | `495f9c269291f13ec99439c83e6fd094f3c9cf343bcb42f4972130256693f02d` | `chaa`    |
+| `usnm-boinc-bridge`, additive runtime       | `d417a2ad0469c2b0c54787a0e466d6e76cb78577e40a1e776870bef252b4da9e` | `cha6`    |
+
+The runtime overlay source is `2cb09db4e8a8f77c3749ca7d41249eba4ecc2249`.
+Actual-image verification compared **5,660 files** under `/etc` and `/usr/local`
+against the immutable live base (excluding only container-generated hostname,
+hosts and resolver files). Only the four intended replacements differ:
+`create_work`, the entrypoint adapter, plan template and policy refresh.
+The two operator adapters, dependency-check receipt and byte-identical saved
+entrypoint are the only added files. Docker runtime environment, entrypoint,
+command, user, working directory, volumes and exposed ports are unchanged.
+The actual image's policy merger preserves all 13 existing classes exactly
+while adding AMD closed `2/1`. Its real startup refresh passes first/repeat
+serve checks, retains non-serve delegation, and exposes `--no_new_results`;
+all dynamic dependencies resolve in that exact runtime.
+
+The server pin is reconciled to the **unchanged live init/secrets image**
+`3b6d73b4e56dfe9edd2290432a10d8e251234972bce49e2a366992bbd6728251`,
+not deployed to another image. The priority bridge and worker pins are unchanged.
+Only the web runtime and publish-job images are intended to change. Busy
+quality/gold templates retain their entire existing state; these differing
+per-job live images are not permission for a broad stack provision.

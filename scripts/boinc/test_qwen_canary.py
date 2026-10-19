@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -88,6 +89,106 @@ class PlanPolicyRefresh(unittest.TestCase):
             self.assertEqual(nodes[name].findtext("min_wu_id"), "200")
             self.assertEqual(nodes[name].findtext("max_wu_id"), "209")
         self.assertFalse(POLICY.refresh(self.source, self.target))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_explicit_amd_general_promotion_survives_restart_and_stop_stays_closed(self):
+        tree = ET.parse(self.target)
+        for node in tree.findall("plan_class"):
+            if node.findtext("name") in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+                node.find("min_wu_id").text = "17099"
+                node.find("max_wu_id").text = "17100"
+        tree.write(self.target)
+        (self.root / "config.xml").write_text("<boinc/>")
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        command = ["php", str(helper), "--project", str(self.root),
+                   "--plan-class", "amd_vulkan_8b", "--general"]
+        before = self.target.read_bytes()
+        result = subprocess.run(command, text=True, capture_output=True, check=True)
+        self.assertEqual(json.loads(result.stdout)["admission_mode"], "general")
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertFalse((self.root / "ops-issue-559").exists())
+        subprocess.run(command + ["--apply"], text=True, capture_output=True, check=True)
+        promoted = self.target.read_bytes()
+        _, old = POLICY.parse_policy(before)
+        _, new = POLICY.parse_policy(promoted)
+        def fields(node):
+            return [(c.tag, (c.text or "").strip(), dict(c.attrib))
+                    for c in node if isinstance(c.tag, str)]
+        for name, node in old.items():
+            if name != "amd_vulkan_8b":
+                self.assertEqual(fields(node), fields(new[name]))
+        amd = new["amd_vulkan_8b"]
+        self.assertEqual(fields(amd), [f for f in fields(old["amd_vulkan_8b"])
+                                      if f[0] not in ("min_wu_id", "max_wu_id")])
+        self.assertEqual(amd.findtext("gpu_type"), "ati")
+        self.assertIsNotNone(amd.find("opencl"))
+        self.assertEqual((amd.findtext("min_batch"), amd.findtext("max_batch")), ("8", "8"))
+        self.assertEqual(amd.findtext("min_gpu_ram_mb"), "7000")
+        self.assertEqual(amd.findtext("ngpus"), "1")
+        self.assertNotIn("project_prefs_tag", [f[0] for f in fields(amd)])
+        subprocess.run(command + ["--apply"], text=True, capture_output=True, check=True)
+        self.assertEqual(self.target.read_bytes(), promoted)
+        self.assertEqual(len(list((self.root / "ops-issue-559/native-cohort").glob("*.json"))), 1)
+        POLICY.refresh(self.source, self.target)
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+        _, restarted = POLICY.parse_policy(self.target.read_bytes())
+        self.assertIsNone(restarted["amd_vulkan_8b"].find("min_wu_id"))
+        self.assertIn(POLICY.AMD_GENERAL_MARKER, self.target.read_text())
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            self.assertEqual(fields(restarted[name]), fields(old[name]))
+        subprocess.run(command[:-1] + ["--stop", "--apply"],
+                       text=True, capture_output=True, check=True)
+        POLICY.refresh(self.source, self.target)
+        stopped = ET.parse(self.target).find("plan_class[name='amd_vulkan_8b']")
+        self.assertEqual((stopped.findtext("min_wu_id"), stopped.findtext("max_wu_id")), ("2", "1"))
+        self.assertNotIn(POLICY.AMD_GENERAL_MARKER, self.target.read_text())
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_general_rejects_other_vendors_and_fixture_arguments_before_mutations(self):
+        (self.root / "config.xml").write_text("<boinc/>")
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        for arguments in (
+            ["--plan-class", "intel_vulkan_8b", "--general"],
+            ["--plan-class", "shared_8b", "--general"],
+            ["--plan-class", "amd_vulkan_8b", "--general", "--workunit", "300"],
+            ["--plan-class", "amd_vulkan_8b", "--general", "--workunit-end", "300"],
+            ["--plan-class", "amd_vulkan_8b", "--general", "--stop"],
+        ):
+            with self.subTest(arguments=arguments):
+                before = self.target.read_bytes()
+                result = subprocess.run(["php", str(helper), "--project", str(self.root),
+                                         *arguments, "--apply"], text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.target.read_bytes(), before)
+                self.assertFalse((self.root / ".native-qwen-cohort.lock").exists())
+                self.assertFalse((self.root / "ops-issue-559").exists())
+
+    def test_amd_general_marker_is_explicit_and_malformed_states_fail_closed(self):
+        tree = ET.parse(self.target)
+        amd = tree.find("plan_class[name='amd_vulkan_8b']")
+        for tag in ("min_wu_id", "max_wu_id"):
+            amd.remove(amd.find(tag))
+        tree.write(self.target)
+        POLICY.refresh(self.source, self.target)
+        self.assertEqual(ET.parse(self.target).findtext("plan_class[name='amd_vulkan_8b']/min_wu_id"), "2")
+        for count, bounds in ((1, ("2", "1")), (2, None), (1, ("2", None))):
+            with self.subTest(markers=count, bounds=bounds):
+                root = ET.fromstring(self.source.read_bytes())
+                amd = root.find("plan_class[name='amd_vulkan_8b']")
+                for tag in ("min_wu_id", "max_wu_id"):
+                    amd.remove(amd.find(tag))
+                for _ in range(count):
+                    amd.append(ET.Comment(POLICY.AMD_GENERAL_MARKER))
+                if bounds:
+                    for tag, value in zip(("min_wu_id", "max_wu_id"), bounds):
+                        if value is not None:
+                            ET.SubElement(amd, tag).text = value
+                self.target.write_bytes(ET.tostring(root))
+                before = self.target.read_bytes()
+                with self.assertRaisesRegex(ValueError, "explicit AMD general"):
+                    POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), before)
 
     def test_upgrade_restores_missing_vulkan_classes_without_resetting_admission(self):
         tree = ET.parse(self.target)

@@ -3,6 +3,32 @@
 // shared_8b opens Intel/NVIDIA Vulkan classes over the same audited, bounded workunit range.
 const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"];
 const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
+const AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1";
+
+function native_qwen_general_xml($xml) {
+    $doc = new DOMDocument();
+    if (!$doc->loadXML($xml, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
+    $xpath = new DOMXPath($doc);
+    $nodes = $xpath->query("//plan_class[name='amd_vulkan_8b']");
+    if ($nodes->length !== 1) throw new RuntimeException("Missing or duplicate AMD class");
+    $node = $nodes->item(0);
+    if ($xpath->query("project_prefs_tag", $node)->length) throw new RuntimeException("Unexpected AMD account gate");
+    $markers = $xpath->query("comment()[normalize-space(.)='".AMD_GENERAL_MARKER."']", $node);
+    $low = $xpath->query("min_wu_id", $node);
+    $high = $xpath->query("max_wu_id", $node);
+    if ($markers->length === 1 && $low->length === 0 && $high->length === 0) return $xml;
+    if ($markers->length !== 0 || $low->length !== 1 || $high->length !== 1
+        || !preg_match('/^[1-9][0-9]*$/D', $low->item(0)->nodeValue)
+        || !preg_match('/^[1-9][0-9]*$/D', $high->item(0)->nodeValue)
+        || !(($low->item(0)->nodeValue === "2" && $high->item(0)->nodeValue === "1")
+            || (intval($low->item(0)->nodeValue) > 1 && $low->item(0)->nodeValue === $high->item(0)->nodeValue))) {
+        throw new RuntimeException("Invalid AMD admission state");
+    }
+    $node->removeChild($low->item(0));
+    $node->removeChild($high->item(0));
+    $node->appendChild($doc->createComment(AMD_GENERAL_MARKER));
+    return $doc->saveXML();
+}
 
 function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null) {
     // AMD has an independent one-workunit canary. Neither path resets the other's windows.
@@ -25,6 +51,17 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
         $node = $nodes->item(0);
         if ($xpath->query("project_prefs_tag", $node)->length) {
             throw new RuntimeException("Deploy project-participation policy first");
+        }
+        if ($name === "amd_vulkan_8b") {
+            $markers = $xpath->query("comment()[normalize-space(.)='".AMD_GENERAL_MARKER."']", $node);
+            if ($markers->length) {
+                if ($markers->length !== 1 || $xpath->query("min_wu_id|max_wu_id", $node)->length) {
+                    throw new RuntimeException("Invalid explicit AMD general admission");
+                }
+                $node->removeChild($markers->item(0));
+                $node->appendChild($doc->createElement("min_wu_id"));
+                $node->appendChild($doc->createElement("max_wu_id"));
+            }
         }
         foreach (["min_wu_id", "max_wu_id"] as $tag) {
             $fields = $xpath->query($tag, $node);
@@ -67,7 +104,10 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class) {
     }
 }
 
-function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null) {
+function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false) {
+    if ($general && ($plan_class !== "amd_vulkan_8b" || $workunit_id !== 0 || ($last_id !== null && $last_id !== 0))) {
+        throw new RuntimeException("General admission is AMD-only and has no workunit identity");
+    }
     $path = "$project/plan_class_spec.xml";
     if (is_link($path)) throw new RuntimeException("Refusing symlinked plan XML");
     $lock_path = "$project/.native-qwen-cohort.lock";
@@ -78,11 +118,13 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
     try {
         $original = file_get_contents($path);
         if ($original === false) throw new RuntimeException("Cannot read plan XML");
-        $updated = native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id);
+        $updated = $general ? native_qwen_general_xml($original)
+            : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id);
         $proof = [
             "plan_class" => $plan_class, "workunit_id" => $workunit_id,
             "last_workunit_id" => $last_id ?? $workunit_id,
-            "other_managed_class_closed" => true,
+            "other_managed_class_closed" => !$general,
+            "admission_mode" => $general ? "general" : ($workunit_id > 1 ? "bounded" : "closed"),
             "independent_amd_window" => true, "apply" => $apply,
             "before_sha256" => hash("sha256", $original),
             "after_sha256" => hash("sha256", $updated),
@@ -126,25 +168,28 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
 }
 
 function native_qwen_cohort_main() {
-    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "apply"]);
+    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "general", "apply"]);
     $project = isset($options["project"]) ? realpath($options["project"]) : false;
     $db_project = isset($options["db-project"]) ? realpath($options["db-project"]) : $project;
     $plan_class = $options["plan-class"] ?? "nvidia_cuda_2b";
     $stop = array_key_exists("stop", $options);
+    $general = array_key_exists("general", $options);
     if (!$project || !is_dir($project) || !$db_project || !is_file("$db_project/config.xml")
         || (!in_array($plan_class, NATIVE_QWEN_CLASSES, true) && $plan_class !== "shared_8b")
-        || (!$stop && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
+        || (!$stop && !$general && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
         || (isset($options["workunit-end"]) && !preg_match('/^[1-9][0-9]*$/', $options["workunit-end"]))
-        || ($stop && (isset($options["workunit"]) || isset($options["workunit-end"])))) {
-        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
+        || ($stop && (isset($options["workunit"]) || isset($options["workunit-end"])))
+        || ($general && ($stop || $plan_class !== "amd_vulkan_8b"
+            || isset($options["workunit"]) || isset($options["workunit-end"])))) {
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b --general | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
     }
-    $id = $stop ? 0 : intval($options["workunit"]);
+    $id = ($stop || $general) ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;
     if ($last_id < $id || $last_id - $id >= 10
         || ($plan_class !== "shared_8b" && $last_id !== $id)) {
         throw new RuntimeException("Only shared_8b supports a contiguous range of at most ten workunits");
     }
-    if (!$stop) {
+    if (!$stop && !$general) {
         if ($id <= 1) throw new RuntimeException("Use a newly staged workunit ID greater than 1");
         chdir("$db_project/html/inc");
         require_once("boinc_db.inc");
@@ -157,7 +202,7 @@ function native_qwen_cohort_main() {
         }
     }
     echo json_encode(native_qwen_cohort_write(
-        $project, $plan_class, $id, array_key_exists("apply", $options), $last_id
+        $project, $plan_class, $id, array_key_exists("apply", $options), $last_id, $general
     ), JSON_PRETTY_PRINT)."\n";
 }
 

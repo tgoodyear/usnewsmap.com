@@ -68,6 +68,16 @@ if ! mkdir "$lock" 2> /dev/null; then
   fi
 fi
 registration=""
+private_directory() {
+  python3 - "$1" "$2" <<'PYDIR'
+from pathlib import Path
+import sys
+import uuid
+path = Path(sys.argv[1]) / (sys.argv[2] + uuid.uuid4().hex)
+path.mkdir(mode=0o700)
+print(path)
+PYDIR
+}
 cleanup() {
   [ -z "$registration" ] || rm -rf "$registration"
   rmdir "$lock"
@@ -94,7 +104,7 @@ if [ -e "$dst" ]; then
   log "$dst is already on the share and identical"
 else
   mkdir -p "$version_dir"
-  stage=$(mktemp -d "$version_dir/.$subdir.XXXXXX")
+  stage=$(private_directory "$version_dir" ".$subdir.")
   cp -r "$source_dir/." "$stage/"
   chmod 0755 "$stage"
   mv "$stage" "$dst" || { rm -rf "$stage"; fail "can't move the version into $dst"; }
@@ -105,10 +115,12 @@ for t in "$src"/templates/*; do
   if [ -e "$PROJ/templates/$n" ] && cmp -s "$t" "$PROJ/templates/$n"; then
     continue
   fi
-  tmp_tpl=$(mktemp "$PROJ/templates/.$n.XXXXXX")
+  template_stage=$(private_directory "$PROJ/templates" ".$n.")
+  tmp_tpl="$template_stage/template"
   cp "$t" "$tmp_tpl"
   chmod 0644 "$tmp_tpl"
   mv -f "$tmp_tpl" "$PROJ/templates/$n" || { rm -f "$tmp_tpl"; fail "can't install templates/$n"; }
+  rmdir "$template_stage"
   log "installed templates/$n"
 done
 case "${APPVER_REUSE_PROJECT:-0}" in
@@ -146,7 +158,15 @@ PYCONFIG
 esac
 # Stock update_versions has no app selector and can abort on an unrelated version's
 # immutable files. Keep its code and signed payloads unchanged, but isolate its apps tree.
-registration=$(mktemp -d)
+# Azure Files forces shared directory modes; executable PHP must stay on tmpfs.
+registration=$(private_directory "$SECRETS" "appver-registration.")
+python3 - "$registration" <<'PYPRIVATE'
+import os
+import sys
+info = os.stat(sys.argv[1], follow_symlinks=False)
+if info.st_mode & 0o777 != 0o700 or info.st_uid != os.geteuid():
+    raise PermissionError("registration storage must enforce private owner-only permissions")
+PYPRIVATE
 mkdir -p "$registration/html" "$registration/apps/$APPVER_APP/$APPVER_VERSION"
 cp -LR "$PROJ/html/inc" "$registration/html/inc"
 if [ "${APPVER_REUSE_PROJECT:-0}" = 1 ]; then

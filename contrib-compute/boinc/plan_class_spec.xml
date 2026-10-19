@@ -196,7 +196,8 @@
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <!-- AMD/ATI is detected and assigned through OpenCL; inference uses native Vulkan.
-         Closed pending signed publication and actual-device acceptance (#885).
+         Closed on first installation; explicitly promote general admission after
+         signed publication (#885). Refresh preserves that promotion or a later stop.
          Stock BOINC recognizes "amd" plan names as PROC_TYPE_AMD_GPU. -->
     <plan_class>
         <name>amd_vulkan_8b</name>

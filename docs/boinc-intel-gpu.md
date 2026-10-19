@@ -57,13 +57,13 @@ refused by the app.
 
 ## Supported hardware
 
-| GPU                                    | Host                              | Status                                                                                         |
-| -------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Iris Xe (TigerLake-LP GT2), i7-1185G7  | 16 GB RAM, Debian 13, Mesa 25.0.7 | Measured (below)                                                                               |
-| Iris Xe with 8 GB RAM                  |                                   | Not measured; likely refused if its Vulkan heap is half of RAM, as on Computer 9               |
-| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Proxmox host, CT 214              | CUDA and Vulkan-on-NVIDIA measured (below)                                                     |
-| Arc A-series (A750 8 GB, A770 16 GB)   |                                   | Not measured; no Arc hardware was available for #829                                           |
-| AMD GPUs through the same Vulkan build |                                   | [Separate bounded onboarding](boinc-amd-gpu.md); RX 9070 XT hardware acceptance pending (#885) |
+| GPU                                    | Host                              | Status                                                                                              |
+| -------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Iris Xe (TigerLake-LP GT2), i7-1185G7  | 16 GB RAM, Debian 13, Mesa 25.0.7 | Measured (below)                                                                                    |
+| Iris Xe with 8 GB RAM                  |                                   | Not measured; likely refused if its Vulkan heap is half of RAM, as on Computer 9                    |
+| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Proxmox host, CT 214              | CUDA and Vulkan-on-NVIDIA measured (below)                                                          |
+| Arc A-series (A750 8 GB, A770 16 GB)   |                                   | Not measured; no Arc hardware was available for #829                                                |
+| AMD GPUs through the same Vulkan build |                                   | [Separate automatic AMD admission](boinc-amd-gpu.md); RX 9070 XT hardware acceptance pending (#885) |
 
 ## Measured on Computer 9 (#787)
 

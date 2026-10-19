@@ -117,15 +117,21 @@ closed container class. Newly introduced classes start closed; reinitialization
 uses the closed template. Re-audit before opening or widening any cohort. Stop
 after the cohort. The helper does not authorize general unvalidated dispatch.
 
-AMD native Vulkan (`amd_vulkan_8b`, Linux x86-64 and Windows x64 only) ships closed
-pending actual-device acceptance (#885). It has an independent exact-one-WU
-operator window: `--plan-class amd_vulkan_8b --workunit ID` (preview, then `--apply`),
+AMD native Vulkan (`amd_vulkan_8b`, Linux x86-64 and Windows x64 only) installs
+closed, then uses the explicitly authorized `--plan-class amd_vulkan_8b --general`
+(preview, then `--apply`) after signed publication for automatic compatible-host
+GPU-only batch-8 scheduling. Initial use is hardware-unverified (#885), not blocked
+on a manual cohort for each volunteer. The persistent XML admission marker survives
+refresh; normal GPU, memory and independent quorum gates remain intact.
+It also retains an optional exact-one-WU
+diagnostic window: `--plan-class amd_vulkan_8b --workunit ID` (preview, then `--apply`),
 and `--plan-class amd_vulkan_8b --stop --apply` to close **only AMD**. It never
 joins `shared_8b`, and neither AMD nor legacy/shared operations reset the other's
-window. In particular, unqualified `--stop` does not stop AMD. Refresh preserves
-both windows. See [AMD onboarding and hardware gates](../../docs/boinc-amd-gpu.md)
-for signed Vulkan bundle, driver, model, quorum and canary requirements.
-Unlike the generic native cohorts above, AMD acceptance stages with
+window or general mode. In particular, unqualified `--stop` does not stop AMD.
+An explicit AMD stop removes the general marker and remains closed across restart.
+See [AMD onboarding and pending hardware evidence](../../docs/boinc-amd-gpu.md)
+for signed Vulkan bundle, driver, model, quorum and optional diagnostic requirements.
+Unlike the generic native cohorts above, optional AMD acceptance stages with
 `acceptance_server.py --stage-fixture` and the reviewed
 `create_work --no_new_results` base-image extension. Audit/admission requires
 **zero results**, `TRANSITION_NO_NEW_RESULTS` and a future transition time.

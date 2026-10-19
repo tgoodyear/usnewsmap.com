@@ -1,8 +1,9 @@
 # AMD native Qwen Vulkan onboarding
 
-`usnm_qwen` plan class `amd_vulkan_8b` prepares AMD volunteers, including a possible
-Radeon RX 9070 XT (16 GB), for **bounded hardware acceptance**, not general dispatch.
-No RX 9070 XT was available for this change. Driver compatibility, correctness,
+`usnm_qwen` plan class `amd_vulkan_8b` supports automatic eligible AMD volunteer
+scheduling, including initial use of a possible Radeon RX 9070 XT (16 GB).
+**Initial volunteer use is hardware-unverified:** no RX 9070 XT was available
+for this change. Driver compatibility, correctness,
 memory use and performance on that card remain unverified in
 [#885](https://github.com/tgoodyear/usnewsmap.com/issues/885).
 
@@ -10,15 +11,17 @@ This is a native application, not Docker/Podman, ROCm or a CUDA fallback. Neithe
 the NVIDIA CUDA Qwen containers nor the Surya CUDA images support AMD through this
 change. The existing Intel/NVIDIA measurements are not AMD acceptance evidence.
 
-## One-time qualification versus everyday scheduling
+## Automatic scheduling and optional qualification
 
-The intended production experience is automatic: an attached host with a
+The production admission mode is automatic: an attached host with a
 compatible accelerator should receive eligible accelerator-only work through
 normal BOINC scheduling, without a manual admission step for each volunteer.
-The bounded AMD procedure below is **initial platform qualification**, not that
-steady-state design. Installing compatible drivers and attaching today does not
-open AMD work: its shipped workunit window remains closed until signed release
-publication and an explicitly authorized hardware canary.
+The maintainer authorized initial AMD admission before hardware qualification;
+signed publication plus one operator **platform-wide promotion** enables it.
+That promotion removes only AMD workunit bounds, not GPU, memory or validation
+checks. Volunteers do not need an individual cohort, audited workunit or manual
+host approval. The optional bounded procedure below remains a diagnostic tool,
+not a prerequisite for normal volunteers.
 
 GPU-only Qwen routes use separate resource classes: AMD/ATI and Intel are
 detected through OpenCL for Vulkan execution; NVIDIA uses CUDA detection for
@@ -28,12 +31,12 @@ and driver capabilities, sufficient memory, and the actual assigned device.
 GPU classes never silently fall back to CPU. Existing Intel/NVIDIA native
 cohort windows are also bounded pilots, not general automatic queue admission.
 
-After initial qualification, a separate reviewed general-availability change
-must authorize sustained accelerator-only work supply and admission for
-qualified classes, verify normal scheduling across compatible hosts, and retain
-vendor/device, memory, independent-quorum and distinct-host validation gates.
-It should not replace those gates with per-volunteer manual cohorts. Neither
-this onboarding change nor publication alone enables that broader admission.
+Automatic admission does not manufacture work. Matching native Qwen 8B batch-8
+work with ordinary replicas must be available in the accelerator-only queue;
+CPU batch-12 and NVIDIA-container batch-18 work are not eligible for AMD.
+Correctness, performance and actual driver compatibility remain to be measured,
+and failed GPU probes remain real failures rather than CPU fallback or accepted
+readings.
 
 ## Volunteer prerequisites
 
@@ -41,7 +44,7 @@ this onboarding change nor publication alone enables that broader admission.
   (`windows_x86_64`) only. ARM Linux and both macOS platforms are excluded.
   The native driver comes from `boinc-quality-native.yml`; its existence alone
   is not a published AMD app version. The operator must assemble and sign the
-  matching Vulkan bundle before inviting a canary.
+  matching Vulkan bundle before general admission.
 - **Linux driver:** a kernel/firmware stack and real AMD Vulkan ICD supporting
   the card, plus a compatible AMD OpenCL runtime so BOINC detects the AMD/ATI
   resource. Vulkan availability alone does not make a host scheduler-eligible.
@@ -65,7 +68,7 @@ this onboarding change nor publication alone enables that broader admission.
   not an AMD measurement). The native 8B cold disk envelope is 18 GiB;
   normal BOINC free-space reserves still apply.
 
-## Operator prerequisites and bounded admission
+## Operator publication and general admission
 
 Use the unchanged `ocr/boinc/qwen/llama.lock` b8799
 `ubuntu-vulkan-x64` or `win-vulkan-x64` asset, verified by its pinned SHA-256.
@@ -87,7 +90,31 @@ platform. Stage the unchanged Qwen3-VL-8B Q4_K_M model and Q8_0 projector from
 native-8B batch 8, 6 GiB host-memory/18 GiB disk bounds, quorum 2 and target
 replicas 2. Do not edit scientific rows or relax independent/distinct-host validation.
 
-### Stage, audit, admit, then resume the same workunit
+After publication, under the normal #529 controller guard, preview and explicitly
+promote **only AMD**:
+
+```sh
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class amd_vulkan_8b --general
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class amd_vulkan_8b --general --apply
+```
+
+The existing durable journal and shared policy lock cover this change. The
+promotion atomically removes only AMD `min_wu_id`/`max_wu_id` and records the XML
+comment `usnm-amd-general-admission-v1`. The marker is operator state, not a
+BOINC preference or host trust override. Startup refresh preserves this explicit
+mode while restoring reviewed resource gates. Removing bounds without that marker
+does **not** opt in: refresh restores closed bounds. An explicit AMD `--stop`
+removes the marker and restores `2/1`, which remains stopped across restarts.
+Neither general promotion nor stop changes any Intel/NVIDIA window. The deployed
+helper is also available at `/usr/local/lib/usnm-boinc/amd-885/native-qwen-cohort.php`.
+
+### Optional bounded diagnostic: stage, audit, admit, then resume the same workunit
+
+This procedure is not required for automatic scheduling. It deliberately
+replaces general AMD admission with an exact-one-workunit pilot; coordinate any
+such platform-wide diagnostic with other AMD users and close AMD first.
 
 AMD acceptance does **not** use the runner's legacy create-on-dispatch path.
 Prepare a reviewed server fixture with the exact release/platform/plan, a
@@ -120,8 +147,8 @@ no pending validation, and the workunit's ID/name,
 payload, template, batch, bounds and version, then add that ID to the same fixture
 as `audited_workunit_id` and use it as `ID` below.
 
-The reviewed scheduler policy ships **closed** (`min_wu_id=2`, `max_wu_id=1`).
-Only after signed publication and explicit operator authorization, preview and
+The installation default is **closed** (`min_wu_id=2`, `max_wu_id=1`); normal
+production promotion above is separate. For this optional diagnostic, preview and
 apply one newly staged, audited, unaccepted workunit without generic replicas:
 
 ```sh
@@ -151,12 +178,13 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --stop --apply
 ```
 
-AMD has an **independent exact-one-workunit** window; `--workunit-end` cannot
-widen it. It is deliberately not a member of the existing `shared_8b`
+AMD's optional pilot has an **independent exact-one-workunit** window;
+`--workunit-end` cannot widen it. It is deliberately not a member of the existing `shared_8b`
 Intel/NVIDIA pilot. Opening/stopping AMD preserves all old windows; legacy/shared
 commands (including an unqualified `--stop`) preserve AMD. Stop AMD explicitly.
-Both paths share the policy lock and durable journal. Image policy refresh
-introduces AMD closed on upgrade and preserves valid existing windows on restart.
+All modes share the policy lock and durable journal. Image policy refresh
+introduces AMD closed on upgrade and preserves explicit general, bounded or
+stopped AMD state on restart.
 
 The scheduler uses `<gpu_type>ati</gpu_type><opencl/>` and reserves one AMD GPU
 plus two host CPUs. The pinned BOINC source accepts `ati`/`amd` in
@@ -195,7 +223,8 @@ be included and signed in the native bundle on Linux and Windows.
 A missing helper/assignment, unverifiable
 identity, failed probe or insufficient free memory ends `no_gpu`; it never
 selects another adapter or falls back to CPU. Driver support for the required
-PCI properties remains a real-card acceptance prerequisite, not an assumption.
+PCI properties remains a real per-task requirement, not an assumption or a
+waived check for initial volunteer use.
 
 ## Pending actual-device acceptance
 
