@@ -5,7 +5,7 @@
   "goldBundle": true,
   "images": {
     "appver": "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:12ee1fe72b26f71f46d9b9db5ca84397b7f30cdf48ffd8336cad7c7f2894370d",
-    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:d19b706e8d1feac9d0cd8a2e45d26a94caadde66cdc76c9df71faab0d33a9247",
+    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:91539ee197e3de29ac5e1eb3ccbee1d25237553d25b519feabb90aef9436100d",
     "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:ada7f1259f0754489d9fa9597ae1775d7a703e0f764844a096c0f8fcf498edd8",
     "web": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:d19b706e8d1feac9d0cd8a2e45d26a94caadde66cdc76c9df71faab0d33a9247",
     "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa"
