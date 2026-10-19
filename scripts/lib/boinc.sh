@@ -41,19 +41,23 @@ boinc_clean_check() {
 }
 
 # Checks the settings against the rules in schema.json, with jq, and reads them into
-# ASSESSMENT, GOLD_BUNDLE, SUBSCRIPTION, LOCATION, PROJECT_URL, MASTER_HOST, OPERATOR_ID, OPERATOR_LOGIN,
+# ASSESSMENT, GOLD_BUNDLE, QUALITY_WAVE_SCRIPT, QUALITY_WAVE_SHA256, SUBSCRIPTION, LOCATION, PROJECT_URL, MASTER_HOST, OPERATOR_ID, OPERATOR_LOGIN,
 # SERVER_IMAGE, BRIDGE_IMAGE, WORKER_IMAGE and APPVER_IMAGE.
 boinc_load_settings() {
   local err
   err=$(jq -r '
     def guid: test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
     def acr: test("^$|^[a-z0-9.-]+\\.azurecr\\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$");
-    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "location", "operator", "projectUrl", "requireSecureTransport", "subscriptionId"]
+    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "location", "operator", "projectUrl", "qualityWave", "requireSecureTransport", "subscriptionId"]
         | if length > 0 then "unknown keys: \(join(", "))" else empty end),
       (if keys_unsorted != keys then "keys are not sorted" else empty end),
       (if (.assessment | type) != "boolean" then "assessment must be true or false" else empty end),
       (if (.codeSignPublicKey | type) != "string" then "codeSignPublicKey must be a string" else empty end),
       (if (.goldBundle | type) != "boolean" then "goldBundle must be true or false" else empty end),
+      (if has("qualityWave") and ((.qualityWave | type) != "object" or (.qualityWave | keys) != ["script", "sha256"]
+          or (.qualityWave.script | test("^https://[a-z0-9]+\\.blob\\.core\\.windows\\.net/[a-z0-9-]+/[A-Za-z0-9/._-]+\\.py$") | not)
+          or (.qualityWave.sha256 | test("^[0-9a-f]{64}$") | not))
+        then "qualityWave must be {script: an https blob URL of a .py file, sha256: 64 hex}" else empty end),
       (if has("requireSecureTransport") and (.requireSecureTransport | type) != "boolean" then "requireSecureTransport must be true or false" else empty end),
       (if (.images | type) != "object" or ((.images | keys) - ["web"]) != ["appver", "bridge", "server", "worker"] then "images must have appver, bridge, server and worker, with optional web" else empty end),
       (if has("images") and (.images | has("web")) and (.images.web | type) != "string" then "images.web must be a string" else empty end),
@@ -73,6 +77,8 @@ boinc_load_settings() {
   [ -z "$err" ] || die "$BOINC_SETTINGS: $(printf '%s; ' "$err" | sed 's/; $//')"
   ASSESSMENT=$(jq -r .assessment "$BOINC_SETTINGS")
   GOLD_BUNDLE=$(jq -r .goldBundle "$BOINC_SETTINGS")
+  QUALITY_WAVE_SCRIPT=$(jq -r '.qualityWave.script // ""' "$BOINC_SETTINGS")
+  QUALITY_WAVE_SHA256=$(jq -r '.qualityWave.sha256 // ""' "$BOINC_SETTINGS")
   REQUIRE_SECURE_TRANSPORT=$(jq -r '.requireSecureTransport // false' "$BOINC_SETTINGS")
   SUBSCRIPTION=$(jq -r .subscriptionId "$BOINC_SETTINGS")
   LOCATION=$(jq -r .location "$BOINC_SETTINGS")
