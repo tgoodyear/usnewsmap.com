@@ -123,44 +123,93 @@ fn run_slot_reporting(work: &Path) -> anyhow::Result<()> {
 const DIAG_EXCERPT_BYTES: usize = 6144;
 const DIAG_HEAD_BYTES: usize = 2048;
 
-/// Replaces absolute paths (`/home/user/...`, `C:\\Users\\...`, `~/...`) with `.../<file>`,
-/// so the excerpt names files without exposing a volunteer's directory layout.
+/// Replaces absolute paths (`/home/user/...`, `C:\\Users\\...`, `~/...`, `\\\\server\\...`)
+/// with `.../<file>`, so the excerpt names files without exposing a volunteer's name or
+/// directory layout. Paths can hold spaces and brackets (`C:\\Users\\Alice Smith\\...`,
+/// `Program Files (x86)`), so a path opened by a quote runs to the closing quote, and an
+/// unquoted one runs through the last chunk on its line that has a path separator. This errs
+/// toward redacting too much.
 fn redact_paths(text: &str) -> String {
-    let is_delim = |c: char| c.is_whitespace() || "\"'=,()[]<>;|`".contains(c);
-    let looks_like_path = |t: &str| {
-        let b = t.as_bytes();
-        (t.starts_with('/') && t[1..].contains('/'))
-            || t.starts_with("~/")
-            || t.starts_with("\\\\")
-            || (b.len() > 2
-                && b[0].is_ascii_alphabetic()
-                && b[1] == b':'
-                && (b[2] == b'\\' || b[2] == b'/'))
-    };
     let mut out = String::with_capacity(text.len());
-    let mut token = String::new();
-    let flush = |token: &mut String, out: &mut String| {
-        if looks_like_path(token) {
-            let name = token
-                .rsplit(['/', '\\'])
-                .find(|s| !s.is_empty())
-                .unwrap_or("");
-            out.push_str(".../");
-            out.push_str(name);
-        } else {
-            out.push_str(token);
-        }
-        token.clear();
-    };
-    for c in text.chars() {
-        if is_delim(c) {
-            flush(&mut token, &mut out);
-            out.push(c);
-        } else {
-            token.push(c);
-        }
+    for line in text.split_inclusive('\n') {
+        out.push_str(&redact_line(line));
     }
-    flush(&mut token, &mut out);
+    out
+}
+
+fn path_starts_at(s: &str) -> bool {
+    let b = s.as_bytes();
+    let sep = |c: u8| c == b'/' || c == b'\\';
+    if s.starts_with("~/") || s.starts_with("\\\\") {
+        return true;
+    }
+    if b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && sep(b[2]) {
+        return true;
+    }
+    // `/x/...`: a slash, a name, another slash (not `//` or a lone `/`).
+    b.first() == Some(&b'/')
+        && b.len() > 2
+        && b[1] != b'/'
+        && !b[1].is_ascii_whitespace()
+        && s[1..]
+            .split(char::is_whitespace)
+            .next()
+            .is_some_and(|t| t.contains('/'))
+}
+
+fn redact_line(line: &str) -> String {
+    let is_boundary = |c: char| c.is_whitespace() || "\"'`=,([{<:;|".contains(c);
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    let mut prev: Option<char> = None;
+    while let Some((i, c)) = rest.char_indices().find(|&(i, c)| {
+        let before = if i == 0 {
+            prev
+        } else {
+            rest[..i].chars().next_back()
+        };
+        before.is_none_or(is_boundary)
+            && (c == '/' || c == '~' || c == '\\' || c.is_ascii_alphabetic())
+            && path_starts_at(&rest[i..])
+    }) {
+        let _ = c;
+        out.push_str(&rest[..i]);
+        let quote = if i == 0 {
+            prev
+        } else {
+            rest[..i].chars().next_back()
+        }
+        .filter(|q| "\"'`".contains(*q));
+        let tail = &rest[i..];
+        let body_end = tail.find('\n').unwrap_or(tail.len());
+        let end = match quote.and_then(|q| tail[..body_end].find(q)) {
+            Some(close) => close,
+            None => {
+                // Through the last whitespace-separated chunk that holds a separator.
+                let mut end = 0;
+                let mut pos = 0;
+                for chunk in tail[..body_end].split_inclusive(char::is_whitespace) {
+                    let word = chunk.trim_end();
+                    if word.contains(['/', '\\']) {
+                        end = pos + word.len();
+                    }
+                    pos += chunk.len();
+                }
+                end
+            }
+        };
+        let path = &tail[..end];
+        let name = path
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("");
+        out.push_str(".../");
+        out.push_str(name);
+        prev = path.chars().next_back();
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -2089,16 +2138,48 @@ mod tests {
     }
 
     #[test]
+    fn path_redaction_covers_spaces_brackets_and_quotes() {
+        let cases = [
+            (
+                "model C:\\Users\\Alice Smith\\AppData\\BOINC\\llama-server.exe failed",
+                "model .../llama-server.exe failed",
+            ),
+            (
+                "open \"C:\\Users\\Alice Smith\\x y\\Qwen3VL-8B.gguf\": access denied",
+                "open \".../Qwen3VL-8B.gguf\": access denied",
+            ),
+            (
+                "C:\\Program Files (x86)\\BOINC\\boinc.exe started",
+                ".../boinc.exe started",
+            ),
+            (
+                "spawning /home/alice smith/boinc/llama-server failed: os error 2",
+                "spawning .../llama-server failed: os error 2",
+            ),
+            ("cwd='/Users/bob/Library/BOINC Data/slots/3'", "cwd='.../3'"),
+            (
+                "GET http://127.0.0.1:8080/health ok; a/b stays",
+                "GET http://127.0.0.1:8080/health ok; a/b stays",
+            ),
+            ("\\\\nas\\share\\Alice\\f.txt", ".../f.txt"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact_paths(input), want, "{input}");
+        }
+        let two = redact_paths("a /home/alice/x\nb C:\\Users\\Bob Jones\\y.gguf\n");
+        assert_eq!(two, "a .../x\nb .../y.gguf\n");
+        assert!(!two.contains("alice") && !two.contains("Bob"));
+    }
+
+    #[test]
     fn diag_excerpt_redacts_paths_and_keeps_head_and_tail() {
         let text = "spawning /home/alice/boinc/slots/3/llama-server failed: os error 2\n\
                     model C:\\Users\\bob\\AppData\\BOINC\\Qwen3VL-8B.gguf (\"~/x/y.txt\")\n\
                     GET http://127.0.0.1:8080/health ok; relative a/b stays";
         let r = redact_paths(text);
         assert!(r.contains("spawning .../llama-server failed"), "{r}");
-        assert!(
-            r.contains("model .../Qwen3VL-8B.gguf (\".../y.txt\")"),
-            "{r}"
-        );
+        // Two paths on one line collapse to the last file name: redacting more is the safe side.
+        assert!(r.contains("model .../y.txt\")"), "{r}");
         assert!(
             r.contains("http://127.0.0.1:8080/health") && r.contains("a/b stays"),
             "{r}"
