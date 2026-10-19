@@ -123,7 +123,8 @@ absent. The first #464 activation was rolled back immediately after a public
 PHP HTTP 500, despite successful CLI cipher and plaintext-rejection checks.
 The operator restored OFF, copied code and the prior app image; the initial
 HTTP failure's cause was not established. Do not label it a fixed product bug.
-The bounded retry was also rolled back after public PHP HTTP 500. The maintainer
+The bounded retry passed public pages and RPC but was rolled back after a later
+runtime verification failed. The maintainer
 shelved #464 on 2026-10-18: production and main explicitly remain OFF. Keep the
 migration tooling, do not deploy or diagnose further without renewed approval.
 A future separately reviewed activation requires a
