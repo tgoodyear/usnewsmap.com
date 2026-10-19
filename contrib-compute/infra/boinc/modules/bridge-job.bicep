@@ -27,6 +27,8 @@ param extraEnv array = []
 @description('CPU cores and memory of a run.')
 param cpu string = '0.5'
 param memory string = '1Gi'
+@description('The project share\'s mount options. Without mfsymlinks, BOINC\'s symlinks appear as the small files that store them, which is what a byte-for-byte copy needs.')
+param mountOptions string = 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict'
 
 resource job 'Microsoft.App/jobs@2024-03-01' = {
   name: jobName
@@ -66,7 +68,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
       ]
       // SMB has no symlinks or POSIX owners: mfsymlinks stores BOINC's symlinks (bin/stop ->
       // bin/start), and the share appears owned by boincadm (uid 1000).
-      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorageName, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' } ]
+      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorageName, mountOptions: mountOptions } ]
     }
   }
 }

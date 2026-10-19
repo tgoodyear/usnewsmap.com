@@ -21,6 +21,8 @@ param provisionedShare bool = false
 @description('The provisioned v2 account\'s name and its file private endpoint\'s.')
 param provisionedAccountName string = ''
 param provisionedEndpointName string = ''
+@description('Principal that fills the provisioned share (the share copy job\'s identity): Storage File Data Privileged Contributor on that account. Empty: none.')
+param copyWriterPrincipalId string = ''
 
 resource files 'Microsoft.Storage/storageAccounts@2023-05-01' = if (legacyShare) {
   name: filesAccountName
@@ -119,6 +121,19 @@ resource v2Share 'Microsoft.Storage/storageAccounts/fileServices/shares@2025-01-
   properties: {
     shareQuota: shareQuotaGb
     enabledProtocols: 'SMB'
+  }
+}
+
+// Files over REST with an Entra identity takes the privileged data roles (they bypass the
+// share's file ACLs, so they're scoped to the one account and only for the copy).
+resource copyWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (provisionedShare && !empty(copyWriterPrincipalId)) {
+  scope: v2
+  name: guid(v2.id, copyWriterPrincipalId, 'storage-file-data-privileged-contributor')
+  properties: {
+    principalId: copyWriterPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69566ab7-960f-475b-8e7c-b8118f4c1e15')
+    description: 'The BOINC share copy job (#917): writes the provisioned project share during the move.'
   }
 }
 

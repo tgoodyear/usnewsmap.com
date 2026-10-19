@@ -961,15 +961,17 @@ The project directory (`/project`: uploads, downloads, staging, results) is one 
 
 `projectShare` in `contrib-compute/infra/boinc/env/<env>.json` moves the share in stages, each a pull request and a `scripts/provision-boinc.sh` run (claimed on #529):
 
-1. **`copy`.** Creates the provisioned account, share and private endpoint, and the server also mounts the new share at `/project-v2`.
-   - The server restarts, so re-apply GPU general admission (`native-qwen-cohort.php --general`).
-   - Fill the new share from inside the server: install `rsync` in the running container (`apt-get install -y rsync`), then run `rsync -a --delete /project/ /project-v2/` detached (`setsid nohup …`). Run it again until a pass changes little.
+1. **`copy`.** Creates the provisioned account, share and private endpoint, plus the share copy job `usnm-boinc-sharecopy-caj-<env>` and its own identity. That identity has Storage File Data Privileged Contributor on the new account only, and pull rights on the registry.
+   - The job runs AzCopy (pinned by version and SHA-256 in `main.bicep`): `azcopy sync /project https://<new account>.file.core.windows.net/project --delete-destination=true`, as the job's identity, over the private endpoint.
+   - It mounts the old share without `mfsymlinks`, so BOINC's symlinks copy byte for byte as the small files that store them, and the new share's normal mount reads them as symlinks again.
+   - Start it (`az containerapp job start`) while BOINC runs; repeat runs send only what changed.
+   - The server isn't touched in this stage.
 2. **Cutover.** Stop new work so the tree is still:
    - stop the BOINC daemons (`bin/stop` as `boincadm`);
    - stop the quality wave job and the batch controller in CT 211;
    - wait for running bridge executions.
 
-   Then run a last `rsync -a --delete` and set **`provisioned`**: `/project` is the provisioned share for the server and every job. Start everything again, re-apply GPU admission, and relaunch the quality wave (`launch-corpus`).
+   Then run the copy job once more and set **`provisioned`**: `/project` is the provisioned share for the server and every job. Start everything again, re-apply GPU admission, and relaunch the quality wave (`launch-corpus`).
 
 3. **`provisioned-final`**, after a few days without trouble: the stack deletes the old account and its endpoint.
 

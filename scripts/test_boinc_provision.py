@@ -479,9 +479,18 @@ class ProductionReconciliation(unittest.TestCase):
         self.assertIn("legacyShare: projectShare != 'provisioned-final'", source)
         self.assertIn("provisionedShare: projectShare != 'standard'", source)
         self.assertIn("var projectOnV2 = projectShare == 'provisioned' || projectShare == 'provisioned-final'", source)
-        # Only the copy stage mounts the new share beside the old one.
-        self.assertIn("copyAccountName: projectShare == 'copy' ? names.filesV2 : ''", source)
-        self.assertIn("mountPath: '/project-v2'", app)
+        # The copy stage fills the new share with AzCopy, pinned by sha256, as its own identity
+        # with the privileged Files role on the new account only; the old share is mounted
+        # without mfsymlinks, so symlinks copy as the files that store them.
+        job = source.split("module shareCopyJob ")[1].split("module secretsJob ")[0]
+        self.assertIn("if (withApp && projectShare == 'copy')", job)
+        self.assertIn('sha256sum -c -', job)
+        self.assertIn("azcopy sync /project", job)
+        self.assertNotIn("mfsymlinks", job.split("mountOptions:")[1].split("\n")[0])
+        self.assertIn("69566ab7-960f-475b-8e7c-b8118f4c1e15", storage)
+        self.assertIn("scope: v2", storage.split("resource copyWriter")[1])
+        self.assertNotIn("SAS", job)
+        self.assertNotIn("project-v2", app)
         settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/schema.json").read_text())
         self.assertEqual(settings["properties"]["projectShare"]["enum"],
                          ["standard", "copy", "provisioned", "provisioned-final"])

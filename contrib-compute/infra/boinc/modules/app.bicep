@@ -21,12 +21,6 @@ param registryServer string
 param keyVaultName string
 param filesAccountName string
 param shareName string
-@description('The provisioned v2 share to mount at /project-v2 while projectShare is copy (its account, key); empty: none.')
-param copyAccountName string = ''
-@secure()
-param copyAccountKey string = ''
-@secure()
-param filesAccountKey string
 param mysqlHost string
 param databaseName string
 param masterHost string
@@ -52,28 +46,20 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
+// The account's key is read here, inside this module, which deploys after the storage
+// module has made the account (the Container Apps mount takes the account key, ADR-0019 decision 5;
+// nothing outside the deployment sees it).
+resource projectAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: filesAccountName
+}
+
 resource projectStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
   parent: env
   name: 'project'
   properties: {
     azureFile: {
       accountName: filesAccountName
-      accountKey: filesAccountKey
-      shareName: shareName
-      accessMode: 'ReadWrite'
-    }
-  }
-}
-
-// The provisioned v2 share while it is filled (projectShare copy): the server mounts it at
-// /project-v2, and the copy runs inside the server's VNet.
-resource copyStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = if (!empty(copyAccountName)) {
-  parent: env
-  name: 'project-v2'
-  properties: {
-    azureFile: {
-      accountName: copyAccountName
-      accountKey: copyAccountKey
+      accountKey: projectAccount.listKeys().keys[0].value
       shareName: shareName
       accessMode: 'ReadWrite'
     }
@@ -120,7 +106,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'MASTER_HOST', value: masterHost }
             { name: 'PROJECT_DIR', value: '/project' }
           ]
-          volumeMounts: concat([ { volumeName: 'project', mountPath: '/project' } ], empty(copyAccountName) ? [] : [ { volumeName: 'project-v2', mountPath: '/project-v2' } ])
+          volumeMounts: [ { volumeName: 'project', mountPath: '/project' } ]
           probes: [
             {
               type: 'Liveness'
@@ -133,9 +119,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       // SMB has no symlinks or POSIX owners: mfsymlinks stores BOINC's symlinks (bin/stop ->
       // bin/start), and the share appears owned by boincadm (uid 1000).
-      volumes: concat([ { name: 'project', storageType: 'AzureFile', storageName: projectStorage.name, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' } ], empty(copyAccountName) ? [] : [
-        { name: 'project-v2', storageType: 'AzureFile', storageName: copyStorage.name, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' }
-      ])
+      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorage.name, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' } ]
       scale: { minReplicas: 1, maxReplicas: 1 }
     }
   }
