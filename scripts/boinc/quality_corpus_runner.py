@@ -515,158 +515,6 @@ def qwen_job_identity(job):
     return hashlib.sha256(raw).hexdigest()
 
 
-def ungate_and_fill_gpu_queues():
-    info = {}
-    try:
-        # 1. Deprecate docker_* app versions & cancel stuck docker (batch 12, 18) Unsent tasks so
-        #    non-Docker clients stop receiving "Some projects require Docker" warnings and feeder slots free up.
-        run_mysql("""
-            UPDATE app_version SET deprecated = 1 WHERE plan_class LIKE 'docker_%';
-            UPDATE result r
-            JOIN workunit w ON r.workunitid = w.id
-            JOIN app a ON w.appid = a.id
-            SET r.server_state = 5, r.outcome = 5
-            WHERE a.name = 'usnm_qwen' AND w.batch IN (2, 12, 18) AND r.server_state = 2;
-            UPDATE workunit w
-            JOIN app a ON w.appid = a.id
-            SET w.assimilate_state = 2, w.error_mask = 16, w.transition_time = 2147483647
-            WHERE a.name = 'usnm_qwen' AND w.batch IN (2, 12, 18) AND w.assimilate_state = 0;
-        """)
-        # 2. Ungate GPU plan classes in /project/usnmocr/plan_class_spec.xml
-        pcs_path = Path(f"{PROJ}/plan_class_spec.xml")
-        if pcs_path.exists():
-            tree = ET.parse(pcs_path)
-            root = tree.getroot()
-            ungated = []
-            for pc in root.findall("plan_class"):
-                name = (pc.findtext("name") or "").strip()
-                if name in (
-                    "nvidia_vulkan_8b",
-                    "intel_vulkan_8b",
-                    "amd_vulkan_8b",
-                    "apple_gpu_8b",
-                    "nvidia_cuda_8b",
-                ):
-                    removed = False
-                    for tag in ("min_wu_id", "max_wu_id"):
-                        for el in list(pc.findall(tag)):
-                            pc.remove(el)
-                            removed = True
-                    if removed:
-                        ungated.append(name)
-            if ungated:
-                tmp_pcs = Path(f"{PROJ}/plan_class_spec.xml.tmp")
-                tree.write(tmp_pcs, encoding="utf-8", xml_declaration=False)
-                os.replace(tmp_pcs, pcs_path)
-            info["ungated_plan_classes"] = ungated
-
-        # 3. Inspect WU 17099's engine object (or use canonical native engine)
-        native_engine = {
-            "image": "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa",
-            "llama": "sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309",
-            "models": [
-                {
-                    "file": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
-                    "min_gpu_mb": 6000,
-                    "mmproj": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
-                    "name": "qwen3-vl-8b-q4km",
-                },
-                {
-                    "file": "Qwen3-VL-2B-Instruct-Q8_0.gguf",
-                    "min_gpu_mb": 0,
-                    "mmproj": "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
-                    "name": "qwen3-vl-2b-q8",
-                },
-            ],
-            "weights": "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd",
-        }
-        w17099_out = run_mysql("SELECT name FROM workunit WHERE id IN (17099, 17100) LIMIT 1;").strip()
-        if w17099_out.startswith("usnm_qwen_"):
-            j17099 = w17099_out.removeprefix("usnm_qwen_")
-            p17099 = dir_hier_path(f"{j17099}_qwen_json")
-            if os.path.exists(p17099):
-                d17099 = json.loads(Path(p17099).read_text())
-                if "engine" in d17099:
-                    native_engine = d17099["engine"]
-                    info["engine_source"] = f"wu_17099:{j17099[:12]}"
-
-        # 4. Find legacy batch=8 usnm_qwen WUs (id < 17099) that have Unsent results,
-        #    re-stage them with native_engine, submit to create_work --batch 8, and cancel old WUs
-        legacy_rows = run_mysql("""
-            SELECT DISTINCT w.id, w.name
-            FROM workunit w
-            JOIN result r ON r.workunitid = w.id
-            JOIN app a ON w.appid = a.id
-            WHERE a.name = 'usnm_qwen' AND w.batch = 8 AND w.id < 17099 AND r.server_state = 2
-            ORDER BY w.id ASC;
-        """).strip().splitlines()
-        restaged_qwen = 0
-        cancelled_legacy_qwen = 0
-        for line in legacy_rows:
-            parts = line.split("\t")
-            if len(parts) < 2 or not parts[0].strip().isdigit():
-                continue
-            old_wid = int(parts[0].strip())
-            old_wu = parts[1].strip()
-            old_jid = old_wu.removeprefix("usnm_qwen_")
-            old_jpg = dir_hier_path(f"{old_jid}_page_jpg")
-            old_json = dir_hier_path(f"{old_jid}_qwen_json")
-            if os.path.exists(old_jpg) and os.path.exists(old_json):
-                try:
-                    job = json.loads(Path(old_json).read_text())
-                    if qwen_job_identity(job) == job.get("id"):
-                        job["engine"] = native_engine
-                        job["gpu_timeout_secs"] = max(3600, int(job.get("gpu_timeout_secs", 3600)))
-                        new_jid = qwen_job_identity(job)
-                        job["id"] = new_jid
-                        new_wu = f"usnm_qwen_{new_jid}"
-                        new_jpg = dir_hier_path(f"{new_jid}_page_jpg")
-                        new_json = dir_hier_path(f"{new_jid}_qwen_json")
-                        os.makedirs(os.path.dirname(new_jpg), exist_ok=True)
-                        os.makedirs(os.path.dirname(new_json), exist_ok=True)
-                        if not os.path.exists(new_jpg):
-                            shutil.copyfile(old_jpg, new_jpg)
-                        Path(new_json).write_text(json.dumps(job, indent=2))
-                        exists_new = run_mysql(f"SELECT id FROM workunit WHERE name = '{new_wu}' LIMIT 1;").strip()
-                        if not exists_new:
-                            cw_qwen = [
-                                f"{PROJ}/bin/create_work",
-                                "--appname", "usnm_qwen",
-                                "--wu_name", new_wu,
-                                "--wu_template", "templates/usnm_qwen_8b_in",
-                                "--result_template", "templates/usnm_qwen_out",
-                                "--batch", "8",
-                                "--min_quorum", "2",
-                                "--target_nresults", "2",
-                                "--max_error_results", "3",
-                                "--max_total_results", "4",
-                                "--max_success_results", "3",
-                                "--rsc_fpops_est", "1e13",
-                                "--rsc_fpops_bound", "1e16",
-                                "--rsc_memory_bound", "6442450944",
-                                "--rsc_disk_bound", "19327352832",
-                                "--delay_bound", "259200",
-                                f"{new_jid}_page_jpg",
-                                f"{new_jid}_qwen_json",
-                                "usnm_qwen_67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2_Qwen3VL-8B-Instruct-Q4_K_M.gguf",
-                                "usnm_qwen_c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd_mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
-                            ]
-                            subprocess.run(cw_qwen, cwd=PROJ, check=True)
-                            restaged_qwen += 1
-                except Exception as e:
-                    info["restage_last_error"] = str(e)
-            run_mysql(f"""
-                UPDATE result SET server_state = 5, outcome = 5 WHERE workunitid = {old_wid} AND server_state = 2;
-                UPDATE workunit SET assimilate_state = 2, error_mask = 16, transition_time = 2147483647 WHERE id = {old_wid};
-            """)
-            cancelled_legacy_qwen += 1
-        info["restaged_qwen_8b_wus"] = restaged_qwen
-        info["cancelled_legacy_qwen_wus"] = cancelled_legacy_qwen
-    except Exception as e:
-        info["gpu_error"] = str(e)
-    return info
-
-
 def repair_and_reclaim_download_space():
     try:
         if os.path.exists(SPOOL_DIR):
@@ -683,7 +531,8 @@ def repair_and_reclaim_download_space():
             UPDATE result r
             JOIN workunit w ON r.workunitid = w.id
             SET r.server_state = 5, r.outcome = 5
-            WHERE (w.name LIKE 'usnm_quality_%_old_%' OR w.error_mask != 0 OR w.assimilate_state != 0)
+            WHERE w.name LIKE 'usnm_quality_%'
+              AND (w.name LIKE 'usnm_quality_%_old_%' OR w.error_mask != 0 OR w.assimilate_state != 0)
               AND r.server_state = 2;
             UPDATE workunit
             SET transition_time = 2147483647
@@ -725,7 +574,6 @@ def repair_and_reclaim_download_space():
     except Exception as e:
         print(f"missing dl cleanup warning: {e}", file=sys.stderr, flush=True)
 
-    gpu_info = ungate_and_fill_gpu_queues()
     try:
         Path(f"{PROJ}/reread_db").touch()
     except Exception:
@@ -781,7 +629,11 @@ def repair_and_reclaim_download_space():
                     removed_ghosts.append(udir.name)
                     shutil.rmtree(udir, ignore_errors=True)
                     continue
-            elif not active_in_mysql and not spool_ready(wu) and not spool_gave_up(wu):
+            # Replace a unit only on positive evidence that BOINC won't finish it: it is gone from
+            # the database, or the transitioner marked it failed (error_mask). A unit with no
+            # active results may be awaiting validation or assimilation, so it is left alone.
+            elif (not spool_ready(wu) and not spool_gave_up(wu)
+                  and not active_in_mysql and (not in_mysql or mysql_wus[wu][1] != 0)):
                 if in_mysql:
                     rename_colliding_workunit(wu)
                 if has_all_downloads:
@@ -871,7 +723,6 @@ def repair_and_reclaim_download_space():
             WHERE r.hostid = 5 ORDER BY r.id DESC LIMIT 15;
         """).strip().splitlines()
         diag["cancelled_missing_dl_wus"] = cancelled_missing_dl
-        diag["gpu_info"] = gpu_info
         diag["qwen_queue_sql"] = run_mysql("""
             SELECT w.batch, r.server_state, COUNT(*)
             FROM result r JOIN workunit w ON r.workunitid = w.id JOIN app a ON w.appid = a.id
@@ -1315,12 +1166,15 @@ def init_wave9():
                 SHARED_MANIFEST,
             )
 
-        # Deprecate any usnm_quality version < 103 (v1.3) and clear host daily quotas across all platforms
+        # Deprecate any usnm_quality version < 103 (v1.3) and lift the daily quota of usnm_quality's
+        # own versions. Other apps' quotas and hosts' daily counts are left alone: they are what
+        # stops a host that fails everything from taking more work.
         run_mysql("""
             UPDATE app_version SET deprecated = CASE WHEN version_num < 103 THEN 1 ELSE 0 END
             WHERE appid = (SELECT id FROM app WHERE name = 'usnm_quality');
-            UPDATE host_app_version SET max_jobs_per_day = 50000, n_jobs_today = 0;
-            UPDATE host SET nresults_today = 0;
+            UPDATE host_app_version SET max_jobs_per_day = 50000, n_jobs_today = 0
+            WHERE app_version_id IN (
+                SELECT id FROM app_version WHERE appid = (SELECT id FROM app WHERE name = 'usnm_quality'));
         """)
         shutil.rmtree(f"{LOCKS_DIR}/collect.lock", ignore_errors=True)
         for stale_p in glob.glob(f"{LOCKS_DIR}/shard-*.lock") + glob.glob(f"{LOCKS_DIR}/shard-*.done"):
