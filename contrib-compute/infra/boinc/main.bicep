@@ -177,7 +177,9 @@ module storage 'modules/storage.bicep' = {
     filesAccountName: names.files
     endpointName: names.filesEndpoint
     location: location
-    shareQuotaGb: 200
+    // Raised by hand to 250 GB for the quality wave's bundles; kept here so a provision
+    // doesn't shrink it under live data (#529).
+    shareQuotaGb: 250
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.filesDnsZoneId
   }
@@ -320,6 +322,9 @@ module publishJob 'modules/bridge-job.bicep' = if (withApp && !empty(publishImag
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     command: [ '/usr/local/lib/usnm-boinc/publish-appver.sh' ]
+    // Publish into the live project, keeping its credentials and config links
+    // (contrib-compute/docs/amd-885-release.md); set by hand for the AMD release (#529).
+    extraEnv: [ { name: 'APPVER_REUSE_PROJECT', value: '1' } ]
   }
 }
 
