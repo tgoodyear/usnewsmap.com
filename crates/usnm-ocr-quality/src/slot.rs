@@ -994,6 +994,114 @@ pub fn runtime_info(host: &mut Host, diag: &mut Diag) {
     diag.section("runtime", &body, 2048);
 }
 
+/// Default 2 GiB cap for NVIDIA's PTX JIT cache (`CUDA_CACHE_MAXSIZE`), lifted
+/// above the 256 MiB driver default so multi-model `ggml-cuda` PTX cubins (~85 MiB)
+/// are not evicted between workunits.
+pub const DEFAULT_CUDA_CACHE_MAXSIZE: &str = "2147483648";
+/// Default 2 GiB cap for Mesa's Vulkan pipeline/shader cache (`MESA_SHADER_CACHE_MAX_SIZE`).
+pub const DEFAULT_MESA_SHADER_CACHE_MAX_SIZE: &str = "2G";
+
+fn cache_user_tag() -> String {
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(uid) = status
+            .lines()
+            .find_map(|l| l.strip_prefix("Uid:"))
+            .and_then(|rest| rest.split_whitespace().nth(1))
+            .filter(|u| !u.is_empty() && u.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return uid.to_owned();
+        }
+    }
+    for var in ["USER", "LOGNAME", "USERNAME"] {
+        if let Ok(val) = std::env::var(var) {
+            let clean: String = val
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .take(32)
+                .collect();
+            if !clean.is_empty() {
+                return clean;
+            }
+        }
+    }
+    String::from("shared")
+}
+
+fn ensure_writable_cache_pair(dir: &Path) -> bool {
+    let cuda = dir.join("cuda");
+    let mesa = dir.join("mesa");
+    if std::fs::create_dir_all(&cuda).is_err() || std::fs::create_dir_all(&mesa).is_err() {
+        return false;
+    }
+    let probe = cuda.join(format!(".writable.{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Resolves a writable directory outside per-invocation scratch `TempDir`s so
+/// CUDA (`CUDA_CACHE_PATH`) and Mesa Vulkan (`MESA_SHADER_CACHE_DIR`) keep
+/// compiled PTX SASS cubins and SPIR-V shader pipelines across workunits and
+/// Surya input modes (#794).
+pub fn persistent_gpu_cache_dir(fallback_root: &Path) -> PathBuf {
+    let suffix = format!("usnm-gpu-cache-{}", cache_user_tag());
+    let candidates = [
+        #[cfg(unix)]
+        PathBuf::from("/var/tmp").join(&suffix),
+        std::env::temp_dir().join(&suffix),
+        fallback_root.join("gpu-cache"),
+    ];
+
+    for dir in candidates {
+        if ensure_writable_cache_pair(&dir) {
+            return dir;
+        }
+    }
+    fallback_root.to_path_buf()
+}
+
+/// Configures `CUDA_CACHE_PATH`, `CUDA_CACHE_MAXSIZE`, `MESA_SHADER_CACHE_DIR`,
+/// and `MESA_SHADER_CACHE_MAX_SIZE` on `cmd` (preserving any explicit caller
+/// environment overrides) so overriding `HOME` to an ephemeral `TempDir` does
+/// not discard ~85 MiB of compiled GPU kernels after every workunit (#794).
+pub fn apply_gpu_cache_env(cmd: &mut std::process::Command, fallback_root: &Path) {
+    let root = persistent_gpu_cache_dir(fallback_root);
+    if std::env::var_os("CUDA_CACHE_PATH").is_none() {
+        cmd.env("CUDA_CACHE_PATH", root.join("cuda"));
+    }
+    if std::env::var_os("CUDA_CACHE_MAXSIZE").is_none() {
+        cmd.env("CUDA_CACHE_MAXSIZE", DEFAULT_CUDA_CACHE_MAXSIZE);
+    }
+    if std::env::var_os("MESA_SHADER_CACHE_DIR").is_none() {
+        cmd.env("MESA_SHADER_CACHE_DIR", root.join("mesa"));
+    }
+    if std::env::var_os("MESA_SHADER_CACHE_MAX_SIZE").is_none() {
+        cmd.env(
+            "MESA_SHADER_CACHE_MAX_SIZE",
+            DEFAULT_MESA_SHADER_CACHE_MAX_SIZE,
+        );
+    }
+}
+
+/// Selects the CPU worker thread count (`--threads`) when offloading inference
+/// to a GPU: honors BOINC's `<ncpus>` allocation when higher, otherwise uses up
+/// to 4 available host CPU threads for image decoding and multimodal patch
+/// preparation (clamped to `2..=8`) (#794).
+pub fn gpu_threads(ncpus: Option<f64>, cpu_threads: Option<u32>) -> u32 {
+    let boinc_cpus = ncpus.map(|n| n.round().max(1.0) as u32).unwrap_or(0);
+    let hw_cap = cpu_threads.unwrap_or(2).min(4);
+    boinc_cpus.max(hw_cap).clamp(2, 8)
+}
+
 /// What one unit holds, in memory.
 #[derive(Debug, Clone)]
 pub struct Inputs<'a> {
@@ -2123,6 +2231,50 @@ mod tests {
         usnm_ocr_contract::quality::agree(&res_full, &res_resume).unwrap();
         let diag_str = std::fs::read_to_string(slot_resume.join(DIAG_FILE)).unwrap();
         assert!(diag_str.contains("resumed from checkpoint: 1 of 2 pages already complete"));
+    }
+
+    #[test]
+    fn gpu_cache_dir_and_gpu_threads_scale_outside_ephemeral_home() {
+        let tmp = TestDir::new("gpu-cache");
+        let dir = persistent_gpu_cache_dir(tmp.path());
+        assert!(dir.join("cuda").is_dir());
+        assert!(dir.join("mesa").is_dir());
+
+        let mut cmd = std::process::Command::new("sh");
+        apply_gpu_cache_env(&mut cmd, tmp.path());
+        let envs: BTreeMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_owned(), v?.to_str()?.to_owned())))
+            .collect();
+        if std::env::var_os("CUDA_CACHE_PATH").is_none() {
+            assert_eq!(
+                envs.get("CUDA_CACHE_PATH").map(String::as_str),
+                Some(dir.join("cuda").to_string_lossy().as_ref())
+            );
+        }
+        if std::env::var_os("CUDA_CACHE_MAXSIZE").is_none() {
+            assert_eq!(
+                envs.get("CUDA_CACHE_MAXSIZE").map(String::as_str),
+                Some(DEFAULT_CUDA_CACHE_MAXSIZE)
+            );
+        }
+        if std::env::var_os("MESA_SHADER_CACHE_DIR").is_none() {
+            assert_eq!(
+                envs.get("MESA_SHADER_CACHE_DIR").map(String::as_str),
+                Some(dir.join("mesa").to_string_lossy().as_ref())
+            );
+        }
+
+        // Default 1-CPU GPU plan class on a 4-core host scales up to 4 threads.
+        assert_eq!(gpu_threads(Some(1.0), Some(4)), 4);
+        // 2-core host stays at 2 threads.
+        assert_eq!(gpu_threads(Some(1.0), Some(2)), 2);
+        // 16-core host with default 1-CPU GPU slot caps opportunistic threads at 4,
+        // while an explicit <ncpus>6.0</ncpus> allocation scales to 6 (clamped at 8).
+        assert_eq!(gpu_threads(Some(1.0), Some(16)), 4);
+        assert_eq!(gpu_threads(Some(6.0), Some(16)), 6);
+        assert_eq!(gpu_threads(Some(12.0), Some(16)), 8);
+        assert_eq!(gpu_threads(None, None), 2);
     }
 
     #[cfg(windows)]

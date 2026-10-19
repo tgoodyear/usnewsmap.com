@@ -9,7 +9,10 @@ use super::{check_no_hold, units, JOB_FILE, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use image::GenericImageView as _;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 use usnm_ocr_contract::{
     quality::{
         BundleSlice, Input, Job as QualityJob, MAX_ALTO, MAX_BUNDLE_SCAN,
@@ -32,27 +35,48 @@ pub struct Options {
     pub cpu_timeout_secs: u32,
     pub max_tokens_per_1000px2: u32,
     pub max_pages: usize,
+    /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 64).
+    pub bundle_size: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Summary {
     pub staged: usize,
     pub no_crops: usize,
     pub already: usize,
+    pub bundles: usize,
 }
 
 /// Writes one unit per staged `usnm_quality` page (those with a
-/// `quality.json`), in doc id order, up to `max_pages` new ones. A page
+/// `quality.json`), in doc id order, up to `max_pages` new ones. When
+/// `bundle_size > 1`, single-page units are staged under `<root>/pages/` and
+/// packed into multi-page bundle workunits under `<root>/units/`. A page
 /// whose ALTO has no line the recipe can cut gets a `no_crops` marker and
 /// no unit. The quality unit's `sample.json`, when there, is copied along
 /// for `collect`.
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
+    let bundle_size = if opts.bundle_size == 0 {
+        1
+    } else {
+        opts.bundle_size
+    };
+    ensure!(
+        (1..=MAX_BUNDLE_PAGES).contains(&bundle_size),
+        "--bundle-size must be 1 to {MAX_BUNDLE_PAGES}"
+    );
     super::check_digest(&opts.engine.image, "--engine-image")?;
     super::check_digest(&opts.engine.llama, "--engine-llama")?;
     super::check_digest(&opts.engine.weights, "--engine-weights")?;
     check_no_hold(&opts.root)?;
-    let dir = units(&opts.root);
-    std::fs::create_dir_all(&dir)?;
+    let units_dir = units(&opts.root);
+    std::fs::create_dir_all(&units_dir)?;
+    let page_dir = if bundle_size > 1 {
+        let p = opts.root.join("pages");
+        std::fs::create_dir_all(&p)?;
+        p
+    } else {
+        units_dir.clone()
+    };
     let pages_dir = opts.quality_root.join("pages");
     let src = if pages_dir.exists() {
         pages_dir
@@ -75,7 +99,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let unit = dir.join(&name);
+        let unit = page_dir.join(&name);
         if unit.join(JOB_FILE).exists() || unit.join("no_crops").exists() {
             summary.already += 1;
             continue;
@@ -136,7 +160,91 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         atomic(&unit.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
         summary.staged += 1;
     }
+    if bundle_size > 1 {
+        summary.bundles = pack_bundles(&page_dir, &units_dir, bundle_size)?;
+    }
     Ok(summary)
+}
+
+/// Packs any staged single-page units in `page_dir` that are not yet present in
+/// a bundle under `units_dir` into multi-page bundle units of up to
+/// `bundle_size` pages (`MAX_BUNDLE_SCAN` and `MAX_BUNDLE_CROPS` bounded).
+fn pack_bundles(page_dir: &Path, units_dir: &Path, bundle_size: usize) -> anyhow::Result<usize> {
+    let mut bundled_docs = BTreeSet::new();
+    let mut existing_bundles = 0usize;
+    if units_dir.exists() {
+        for entry in std::fs::read_dir(units_dir)?.filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if p.join(JOB_FILE).exists() {
+                existing_bundles += 1;
+                if let Ok(job) =
+                    serde_json::from_slice::<Job>(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?)
+                {
+                    if job.pages.is_empty() {
+                        bundled_docs.insert(job.doc_id);
+                    } else {
+                        for bp in job.pages {
+                            bundled_docs.insert(bp.doc_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(page_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.join(JOB_FILE).exists())
+        .collect();
+    candidates.sort();
+    let mut unbundled: Vec<(PathBuf, usize)> = Vec::new();
+    for p in candidates {
+        let pj: Job = serde_json::from_slice(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?)
+            .with_context(|| format!("reading {}/qwen.json", p.display()))?;
+        if !bundled_docs.contains(&pj.doc_id) {
+            unbundled.push((p, pj.crops.len()));
+        }
+    }
+    let mut created = 0usize;
+    let mut chunk: Vec<PathBuf> = Vec::new();
+    let mut scan_bytes = 0usize;
+    let mut crop_count = 0usize;
+    let flush = |chunk: &mut Vec<PathBuf>, idx: usize| -> anyhow::Result<()> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        let first_doc = chunk[0]
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("bundle");
+        let dir = units_dir.join(format!("bundle-{idx:05}-{first_doc}"));
+        write_bundle(&dir, chunk)?;
+        chunk.clear();
+        Ok(())
+    };
+    for (u, u_crops) in unbundled {
+        let p_len = std::fs::metadata(u.join(PAGE_FILE))
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let over_size = !chunk.is_empty()
+            && (chunk.len() >= bundle_size
+                || scan_bytes + p_len > MAX_BUNDLE_SCAN
+                || crop_count + u_crops > MAX_BUNDLE_CROPS);
+        if over_size {
+            created += 1;
+            flush(&mut chunk, existing_bundles + created)?;
+            scan_bytes = 0;
+            crop_count = 0;
+        }
+        scan_bytes += p_len;
+        crop_count += u_crops;
+        chunk.push(u);
+    }
+    if !chunk.is_empty() {
+        created += 1;
+        flush(&mut chunk, existing_bundles + created)?;
+    }
+    Ok(created)
 }
 
 /// The crops of a page: LoC's ALTO in the image's pixels, the recipe's
@@ -499,6 +607,7 @@ pub(crate) mod tests {
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
             max_pages: 20,
+            bundle_size: 1,
         };
         let s = run(&opts).await.unwrap();
         assert_eq!((s.staged, s.no_crops, s.already), (1, 0, 0));
@@ -541,6 +650,73 @@ pub(crate) mod tests {
         assert!(units(&opts.root)
             .join("sn83045462_1890-05-04_ed-1_seq-1/no_crops")
             .exists());
+    }
+
+    #[tokio::test]
+    async fn stages_and_packs_multipage_qwen_bundles_idempotently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        for doc_id in [
+            "sn83045462_1890-05-03_ed-1_seq-1",
+            "sn83045462_1890-05-03_ed-1_seq-2",
+            "sn83045462_1890-05-03_ed-1_seq-3",
+        ] {
+            let u = qroot.join("pages").join(doc_id);
+            let mut qjob = crate::quality::work::tests::unit(&u);
+            qjob.doc_id = doc_id.into();
+            qjob.id = qjob.identity().unwrap();
+            std::fs::write(
+                u.join(crate::quality::JOB_FILE),
+                serde_json::to_vec_pretty(&qjob).unwrap(),
+            )
+            .unwrap();
+        }
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen-bundled"),
+            engine: engine(),
+            gpu_timeout_secs: 14_400,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            max_pages: 20,
+            bundle_size: 2,
+        };
+        let s = run(&opts).await.unwrap();
+        assert_eq!(
+            s,
+            Summary {
+                staged: 3,
+                no_crops: 0,
+                already: 0,
+                bundles: 2,
+            }
+        );
+        let b1: Job = serde_json::from_slice(
+            &std::fs::read(
+                units(&opts.root)
+                    .join("bundle-00001-sn83045462_1890-05-03_ed-1_seq-1")
+                    .join(JOB_FILE),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        b1.validate().unwrap();
+        assert_eq!(b1.pages.len(), 2);
+        assert!(b1.crops[0]
+            .id
+            .starts_with("sn83045462_1890-05-03_ed-1_seq-1:"));
+
+        // Re-running with the same inputs creates zero duplicate pages or bundles.
+        let s2 = run(&opts).await.unwrap();
+        assert_eq!(
+            s2,
+            Summary {
+                staged: 0,
+                no_crops: 0,
+                already: 3,
+                bundles: 0,
+            }
+        );
     }
 
     #[test]

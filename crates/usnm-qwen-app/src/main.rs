@@ -1433,6 +1433,7 @@ impl Server {
         if let Some(dev) = gpu.cuda_device {
             cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
         }
+        usnm_ocr_quality::slot::apply_gpu_cache_env(&mut cmd, work);
         // --device takes the names --list-devices printed. GGML_VK_VISIBLE_DEVICES would index
         // the unfiltered physical-device list instead, which can include llvmpipe.
         // The vision projector picks its backend separately (MTMD_BACKEND_DEVICE, else a
@@ -1772,12 +1773,15 @@ fn run_crops(
         }
     };
 
-    let threads = host
-        .ncpus
-        .map(|n| n.ceil() as u32)
-        .or(host.cpu_threads)
-        .unwrap_or(1)
-        .max(1);
+    let threads = if gpu.use_gpu {
+        usnm_ocr_quality::slot::gpu_threads(host.ncpus, host.cpu_threads)
+    } else {
+        host.ncpus
+            .map(|n| n.ceil() as u32)
+            .or(host.cpu_threads)
+            .unwrap_or(1)
+            .max(1)
+    };
 
     let (srv_guard, port, load_ms) = match existing_port {
         Some(p) => (None, p, 0),

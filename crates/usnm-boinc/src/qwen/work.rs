@@ -340,6 +340,7 @@ pub fn serve(
         cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
             .env("CUDA_VISIBLE_DEVICES", i.to_string());
     }
+    usnm_ocr_quality::slot::apply_gpu_cache_env(&mut cmd, scratch.path());
     let log_file = std::fs::File::create(&log)?;
     let child = cmd
         .args(["-m", &model_path.to_string_lossy()])
@@ -870,7 +871,7 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
         .is_some_and(|p| p.contains("cuda"))
         || host.gpu_type.as_deref() == Some("nvidia");
     let threads = if gpu.is_some() {
-        2
+        usnm_ocr_quality::slot::gpu_threads(host.ncpus, host.cpu_threads)
     } else {
         host.ncpus
             .map(|n| n.round().max(1.0) as u32)
