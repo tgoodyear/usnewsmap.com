@@ -936,16 +936,23 @@ check that a few of its JPEGs match CT 211's byte for byte (`--what-if` prints t
 compare the sha256 of pages both convert).
 
 ```sh
-# On the operator's machine: split what CT 211 hasn't done yet.
+# Stop CT 211's converter first: it loads its whole list at start, so a split taken while
+# it runs would leave pages queued on both hosts.
+pct exec 211 -- systemctl stop usnm-quality-jpeg-cache
+# On the operator's machine: what CT 211 hasn't done, split alternately.
 grep -vxFf <(cut -f1 done.txt) pages.txt > left.txt
 awk 'NR % 2 == 1' left.txt > pages-ct211.txt
 awk 'NR % 2 == 0' left.txt > pages-remote.txt
 az ad group member add --group <USNM_ONPREM_GROUP> --member-id <host's Arc principal id>
-# On the host, as root, after the Pillow wheel and the script are in place:
+# Install each half as its host's LIST (/usr/local/lib/usnm-quality-jpeg-cache/pages.txt),
+# then start both. A host added to the group needs a fresh Arc token: restart himdsd.
+# On the other host, as root, after the Pillow wheel and the script are in place:
 install -m 0644 usnm-quality-jpeg-cache-remote.service /etc/systemd/system/
 printf 'ACCOUNT=<exchange account>\nLIST=%s/pages.txt\nWORKERS=6\nSCAN_SERVER=http://<scan-fetch host>:8380\n' \
   /usr/local/lib/usnm-quality-jpeg-cache > /etc/usnm/quality-jpeg-cache.env
 systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache-remote
+# Later lists: append each host's half to its pages.txt and restart it; done.txt skips
+# what it has done.
 ```
 
 ## Allocation and recovery

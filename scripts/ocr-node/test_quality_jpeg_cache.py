@@ -174,8 +174,10 @@ class ScanServer(unittest.TestCase):
             qjc.read_master("http://scans.example:8380", "keep/b/2.jp2", opener=self.opener)
 
     def test_unreachable_server_skips_the_page(self):
-        with mock.patch.object(urllib.request, "urlopen", side_effect=urllib.error.URLError("down")):
+        # read_master binds urlopen at import, so patch the fetch itself: no real I/O.
+        with mock.patch.object(qjc, "_get", side_effect=urllib.error.URLError("down")) as get:
             name, outcome, _ = qjc.process("http://scans.example:8380", "keep/b/1.jp2", blobs=mock.Mock())
+        get.assert_called_once()
         self.assertTrue(outcome.startswith("skipped:"), outcome)
 
     def test_scan_server_must_be_a_bare_origin(self):
