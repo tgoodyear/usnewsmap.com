@@ -30,6 +30,42 @@ sys.exit(0 if ok else 1)
 
 
 class CheckAppver(unittest.TestCase):
+    def test_amd_identity_helper_is_signed_and_cannot_be_omitted(self):
+        proj = self.root / "amd-project"
+        proj.mkdir()
+        (proj / "config.xml").write_text("<boinc/>")
+        payload = self.root / "fixture"
+        payload.write_bytes(b"native-fixture")
+        directory = install.install(
+            proj, version="1.0", app="usnm_qwen", plan_class="amd_vulkan_8b",
+            kind="native", binary=payload,
+            extra_files=[f"{name}={payload}" for name in
+                         ("llama-server", "llama.lock", "weights.lock", "usnm-amd-device-map")])
+        signatures = self.root / "amd-sigs"
+        signatures.mkdir()
+        for path in directory.iterdir():
+            if path.name != "version.xml":
+                (signatures / (path.name + ".sig")).write_text("good " + hashlib.md5(path.read_bytes()).hexdigest())
+        ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
+        for signature in directory.glob("*.sig"):
+            signature.unlink()
+        helper = next(p for p in directory.iterdir() if p.name.endswith("_usnm-amd-device-map"))
+        helper.write_bytes(b"changed")
+        with self.assertRaisesRegex(ca.Refused, "does not verify"):
+            ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
+        for signature in directory.glob("*.sig"):
+            signature.unlink()
+        helper.unlink()
+        (directory / (helper.name + ".sig")).unlink(missing_ok=True)
+        (signatures / (helper.name + ".sig")).unlink()
+        tree = ca.ET.parse(directory / "version.xml")
+        for node in tree.getroot().findall("file"):
+            if node.findtext("logical_name") == "usnm-amd-device-map":
+                tree.getroot().remove(node)
+        tree.write(directory / "version.xml")
+        with self.assertRaisesRegex(ca.Refused, "missing required bundle files: usnm-amd-device-map"):
+            ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

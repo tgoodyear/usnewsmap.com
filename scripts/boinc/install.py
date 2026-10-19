@@ -236,6 +236,8 @@ def install(
             present_extras = {logical for logical, _ in parsed_extras}
             required_server = "llama-server.exe" if platform == "windows_x86_64" else "llama-server"
             required_extras = (required_server, "llama.lock", "weights.lock")
+            if plan_class == "amd_vulkan_8b":
+                required_extras += ("usnm-amd-device-map.exe" if platform == "windows_x86_64" else "usnm-amd-device-map",)
             if platform == "windows_x86_64":
                 required_extras += ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
                 if plan_class in ("nvidia_cuda_2b", "nvidia_cuda_8b"):
@@ -270,7 +272,7 @@ def install(
         ET.SubElement(main_file, "main_program")
         ET.SubElement(main_file, "copy_file")
         staged_files = [target / main_name]
-        executable_extras = {"llama-server", "llama-server.exe"}
+        executable_extras = {"llama-server", "llama-server.exe", "usnm-amd-device-map", "usnm-amd-device-map.exe"}
         for logical, src in parsed_extras:
             phys = f"{suffix}_{logical}"
             shutil.copyfile(src, target / phys)

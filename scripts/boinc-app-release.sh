@@ -166,7 +166,13 @@ else
   if [ "$APP" = usnm_qwen ]; then
     required_server="llama-server"
     [ "$PLATFORM" != windows_x86_64 ] || required_server="llama-server.exe"
-    for req_extra in "$required_server" "llama.lock" "weights.lock"; do
+    required_extras=("$required_server" "llama.lock" "weights.lock")
+    if [ "$PLAN_CLASS" = amd_vulkan_8b ]; then
+      required_helper=usnm-amd-device-map
+      [ "$PLATFORM" != windows_x86_64 ] || required_helper=usnm-amd-device-map.exe
+      required_extras+=("$required_helper")
+    fi
+    for req_extra in "${required_extras[@]}"; do
       found_extra=false
       for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
         if [ "${spec%%=*}" = "$req_extra" ]; then

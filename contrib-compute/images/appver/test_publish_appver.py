@@ -262,6 +262,7 @@ class BoincAppVersion {
         self.assertFalse((self.project / 'reread_db').exists())
         self.assertFalse((self.project / '.usnm-publish.lock').exists())
 
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_native_amd_publication_platforms_and_verification_contract(self):
         for platform in ('x86_64-pc-linux-gnu', 'windows_x86_64',
                          'aarch64-unknown-linux-gnu', 'arm64-apple-darwin', 'x86_64-apple-darwin'):
@@ -285,8 +286,7 @@ class BoincAppVersion { static function enum($query) {
                        'DB_HOST': 'fixture', 'DB_NAME': 'fixture', 'MASTER_HOST': 'fixture',
                        'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
                 # Use real PHP for the database readback allowlist, not the default stub.
-                if shutil.which('php'):
-                    (self.root / 'php').unlink(missing_ok=True)
+                (self.root / 'php').unlink(missing_ok=True)
                 result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
                 if platform in ('x86_64-pc-linux-gnu', 'windows_x86_64'):
                     self.assertEqual(result.returncode, 0, result.stderr)

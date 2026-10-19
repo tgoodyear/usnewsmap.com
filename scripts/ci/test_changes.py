@@ -505,7 +505,8 @@ class BuildInputs(unittest.TestCase):
                 self.assertNotIn("boinc_native", self.select(path))
 
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
-        for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json"]:
+        for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json",
+                     "ocr/boinc/qwen/amd-device-map.cpp", "scripts/boinc/test_amd_device_map.py"]:
             with self.subTest(path=path):
                 self.assertIn("boinc_native", self.select(path))
         # What only the images embed is not theirs.

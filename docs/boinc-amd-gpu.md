@@ -23,7 +23,9 @@ change. The existing Intel/NVIDIA measurements are not AMD acceptance evidence.
   Confirm `vulkaninfo --summary`, `clinfo`, and the BOINC event log all identify
   the real card, including under the BOINC service account. Mesa RADV may provide
   Vulkan, but does not by itself establish working OpenCL detection. No specific
-  RX 9070 XT Linux driver/runtime combination has been accepted yet.
+  RX 9070 XT Linux driver/runtime combination has been accepted yet. The host must
+  also satisfy the CI-built helper's glibc/libstdc++ runtime requirements; verify
+  both native executables launch before admission.
 - **Windows driver:** a current AMD graphics driver supporting the card, with
   Vulkan and OpenCL available to BOINC. The driver supplies `vulkan-1.dll`; do not
   copy an arbitrary loader into the application bundle. The signed native bundle
@@ -43,8 +45,11 @@ change. The existing Intel/NVIDIA measurements are not AMD acceptance evidence.
 Use the unchanged `ocr/boinc/qwen/llama.lock` b8799
 `ubuntu-vulkan-x64` or `win-vulkan-x64` asset, verified by its pinned SHA-256.
 Do not substitute the CPU or CUDA archive. Bundle `llama-server[.exe]`, all its
-runtime shared libraries, `llama.lock`, and `weights.lock` as signed native extra
-files. Windows requires `ggml-vulkan.dll`, the common llama/ggml/mtmd DLLs,
+runtime shared libraries, `llama.lock`, `weights.lock`, and the matching native
+CI artifact's `usnm-amd-device-map[.exe]` as signed native extra files. The helper
+is required for AMD only and uses the unchanged b8799 ggml device-properties ABI
+to verify PCI identity; it does not rebuild or replace llama.cpp. Windows requires
+`ggml-vulkan.dll`, the common llama/ggml/mtmd DLLs,
 `ggml-cpu-x64.dll`, `libomp140.x86_64.dll`, and the Microsoft CRT enforced by
 `scripts/boinc/install.py`. Keep the complete pinned Linux library set as well.
 Verify that the bundled server launches and lists the real AMD Vulkan device
@@ -54,9 +59,37 @@ Publish through the normal [reviewed app release path](../contrib-compute/docs/a
 with `--app usnm_qwen --kind native --plan-class amd_vulkan_8b` and the matching
 platform. Stage the unchanged Qwen3-VL-8B Q4_K_M model and Q8_0 projector from
 `weights.lock` as digest-qualified sticky inputs, using `usnm_qwen_8b_in`,
-native-8B batch 8, 18 GiB disk bound, quorum 2 and target replicas 2.
-Use the existing submission CLI and idempotency/provenance safeguards; do not
-edit scientific rows or relax independent/distinct-host validation.
+native-8B batch 8, 6 GiB host-memory/18 GiB disk bounds, quorum 2 and target
+replicas 2. Do not edit scientific rows or relax independent/distinct-host validation.
+
+### Stage, audit, admit, then resume the same workunit
+
+AMD acceptance does **not** use the runner's legacy create-on-dispatch path.
+Prepare a reviewed server fixture with the exact release/platform/plan, a
+dedicated assignment-only account, one distinct existing peer host, all four
+verified native-8B physical input names/hashes, native templates and output
+contracts. Set `batch: 8`, `min_quorum: 2`, and profile fields `gpu: "amd"`,
+`memory_bytes: 6442450944`, `disk_bytes: 19327352832`. Initially omit
+`audited_workunit_id`. Use a distinct numeric app version for this platform/plan;
+staging/reservation reject ambiguous app/version routing.
+The peer must be eligible for the same exact registered release; this path does
+not relax the existing app-version or distinct-host validation gates.
+
+While AMD is still closed, explicitly stage that fixture through the server adapter:
+
+```sh
+python3 scripts/boinc/acceptance_server.py --project /project/usnmocr \
+  --fixtures /project/acceptance --stage-fixture REVIEWED_FIXTURE
+```
+
+This hashes the existing inputs, verifies the native template bounds and release,
+and uses stock `create_work` with the exact numeric version and no host assignment.
+It journals intent before creation, never opens admission, and returns
+`audited_workunit_id`. Do not repeat after an uncertain outcome: reconcile the
+private `.stage.json` journal and database identity first. Wait for the ordinary
+transitioner to produce exactly two unsent results. Audit the workunit's ID/name,
+payload, template, batch, bounds and version, then add that ID to the same fixture
+as `audited_workunit_id` and use it as `ID` below.
 
 The reviewed scheduler policy ships **closed** (`min_wu_id=2`, `max_wu_id=1`).
 Only after signed publication and explicit operator authorization, preview and
@@ -67,6 +100,19 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --workunit ID
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --workunit ID --apply
+```
+
+Now run the existing-client acceptance runner with that fixture/config and exact
+release (see [release acceptance](../contrib-compute/docs/app-release.md)).
+Reservation verifies the audited ID/name, input references, native bounds,
+unaccepted scientific state and two unsent/unassigned results against the
+**exact** operator window. Dispatch rechecks those gates under database locks,
+adds only the client and reviewed peer host assignments to that same workunit,
+and journals intent; it never creates a replacement workunit. Closing the window
+after reservation prevents dispatch. Status, independent validation and canonical
+collection continue to track the reserved workunit identity. Finally:
+
+```sh
 # Close only AMD; allow in-flight results to report.
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --stop --apply
@@ -86,13 +132,25 @@ and maps `amd` plan names to `PROC_TYPE_AMD_GPU` in
 [`sched_util_basic.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp#L313-L332).
 No new scheduler source patch is needed. Inference uses Vulkan, not OpenCL.
 
-The app requires an explicit ATI/AMD assignment and nonnegative
-`gpu_device_num`. This is BOINC's **per-vendor ordinal**, not the global
-`VulkanN` index. It selects that hardware AMD device among AMD/ATI/Radeon or
-Advanced Micro Devices names, skipping llvmpipe/lavapipe/SwiftShader and all
-other vendors. A missing assignment, invisible assigned device, failed probe or
-insufficient free memory ends `no_gpu`; it never selects another adapter or
-falls back to CPU.
+The app requires an explicit ATI/AMD assignment, nonnegative `gpu_device_num`,
+and `gpu_opencl_dev_index`. The physical BOINC device number is **not** assumed
+to equal the index among visible Vulkan devices. Following the pinned
+`boinc_get_opencl_ids_aux` convention, the helper resolves the assigned OpenCL
+GPU index on AMD platforms and obtains its PCI identity (`cl_khr_pci_bus_info`
+or AMD PCI topology). It matches that identity against the bundled ggml Vulkan
+backend's PCI identities, returning exactly one `VulkanN`, regardless of order.
+AMD topology lacks a domain, so matches across multiple domains are ambiguous
+and refused. Conflicting AMD platform mappings, missing PCI support, duplicate
+identities, or an invisible assigned adapter are also refused, even if another
+AMD card is visible. There is no name-only or ordinal fallback. The Rust app
+also requires that exact device in the server listing with a real AMD/ATI/Radeon
+or Advanced Micro Devices name, skipping software and other vendors.
+
+The signed helper runs with a 30-second deadline and the same bundled backend
+and loader environment as the server. A missing helper/assignment, unverifiable
+identity, failed probe or insufficient free memory ends `no_gpu`; it never
+selects another adapter or falls back to CPU. Driver support for the required
+PCI properties remains a real-card acceptance prerequisite, not an assumption.
 
 ## Pending actual-device acceptance
 

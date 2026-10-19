@@ -273,6 +273,11 @@ class InstallTest(unittest.TestCase):
                 f"llama.lock={llama_lock}",
                 f"weights.lock={weights_lock}",
             ]
+            if plan_class == "amd_vulkan_8b":
+                with self.assertRaisesRegex(ValueError, "requires --extra-file.*usnm-amd-device-map"):
+                    module.install(self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
+                                   platform=platform, kind="native", binary=bin_for_plat, extra_files=extras)
+                extras.append(f"usnm-amd-device-map{ext}={srv_src}")
             runtime = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
             llama_dlls = ("ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
                           "ggml-cpu-x64.dll", "libomp140.x86_64.dll")

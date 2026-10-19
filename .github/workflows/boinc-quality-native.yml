@@ -12,6 +12,8 @@ on:
       - ocr/contract/**
       - ocr/boinc/qwen/llama.lock
       - ocr/boinc/qwen/weights.lock
+      - ocr/boinc/qwen/amd-device-map.cpp
+      - scripts/boinc/test_amd_device_map.py
       - "!**/*.md"
 
 permissions:
@@ -118,6 +120,33 @@ jobs:
                 "usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}" > SHA256SUMS
             fi
           )
+      - name: Build AMD PCI identity helper (Linux x86-64)
+        if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
+        shell: bash
+        run: |
+          out=boinc-native-x86_64-pc-linux-gnu
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror ocr/boinc/qwen/amd-device-map.cpp -ldl -o "$out/usnm-amd-device-map"
+          "$out/usnm-amd-device-map" --self-test
+          python3 -m unittest scripts.boinc.test_amd_device_map
+          (cd "$out" && sha256sum usnm-amd-device-map >> SHA256SUMS)
+      - name: Build AMD PCI identity helper (Windows x64)
+        if: matrix.boinc_platform == 'windows_x86_64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'MSVC installation not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS ocr\boinc\qwen\amd-device-map.cpp /Fo:boinc-native-windows_x86_64\amd-device-map.obj /Fe:boinc-native-windows_x86_64\usnm-amd-device-map.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'AMD identity helper build failed' }
+          & .\boinc-native-windows_x86_64\usnm-amd-device-map.exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'AMD identity helper tests failed' }
+          Remove-Item boinc-native-windows_x86_64\amd-device-map.obj
+          $out = Join-Path $env:GITHUB_WORKSPACE 'boinc-native-windows_x86_64'
+          $name = 'usnm-amd-device-map.exe'
+          $hash = (Get-FileHash (Join-Path $out $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::AppendAllText((Join-Path $out 'SHA256SUMS'), "$hash  $name`n", [Text.Encoding]::ASCII)
       - name: Bundle signed app-local Microsoft runtime (Windows)
         if: matrix.boinc_platform == 'windows_x86_64'
         shell: pwsh

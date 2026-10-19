@@ -338,8 +338,15 @@ fn library_env(server_bin: &Path) -> Option<(&'static str, std::ffi::OsString)> 
 /// `llama-server --list-devices`, bounded to 30 seconds.
 fn list_devices(server_bin: &Path) -> Result<String, String> {
     let mut cmd = Command::new(server_bin);
-    cmd.arg("--list-devices")
-        .stdin(Stdio::null())
+    cmd.arg("--list-devices");
+    let out = device_probe(&mut cmd, server_bin)?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(text)
+}
+
+fn device_probe(cmd: &mut Command, server_bin: &Path) -> Result<std::process::Output, String> {
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some((var, value)) = library_env(server_bin) {
@@ -355,16 +362,64 @@ fn list_devices(server_bin: &Path) -> Result<String, String> {
             Ok(None) if started.elapsed() > Duration::from_secs(30) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("llama-server --list-devices: no answer in 30s".into());
+                return Err("GPU device probe: no answer in 30s".into());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(e.to_string()),
         }
     }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    Ok(text)
+    if !out.status.success() {
+        return Err(format!(
+            "GPU device probe failed: {}",
+            tail(&String::from_utf8_lossy(&out.stderr), 1024)
+        ));
+    }
+    Ok(out)
+}
+
+fn assigned_amd_device(work: &Path, host: &Host, list: &str) -> Result<VulkanDevice, String> {
+    let init = std::fs::read_to_string(work.join("init_data.xml")).map_err(|e| e.to_string())?;
+    let opencl_index = tag(&init, "gpu_opencl_dev_index")
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or("missing assigned OpenCL index")?;
+    if host.gpu_device_num.is_none_or(|n| n < 0)
+        || !host
+            .gpu_type
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case("ati") || t.eq_ignore_ascii_case("amd"))
+    {
+        return Err("missing AMD resource assignment".into());
+    }
+    let server = find_llama_server(work).map_err(|e| e.to_string())?;
+    let dir = server.parent().ok_or("missing Vulkan bundle directory")?;
+    let helper = resolve_slot_file(
+        work,
+        if cfg!(windows) {
+            "usnm-amd-device-map.exe"
+        } else {
+            "usnm-amd-device-map"
+        },
+    );
+    let out = device_probe(
+        Command::new(helper).arg(dir).arg(opencl_index.to_string()),
+        &server,
+    )?;
+    let text = std::str::from_utf8(&out.stdout)
+        .map_err(|e| e.to_string())?
+        .trim();
+    let index = text
+        .strip_prefix("Vulkan")
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or("invalid PCI device mapping")?;
+    let matches: Vec<_> = (0..256)
+        .map_while(|n| vulkan_device(list, "amd", n))
+        .filter(|d| d.index == index)
+        .collect();
+    if matches.len() != 1 {
+        return Err("PCI-verified AMD device missing or duplicated in Vulkan listing".into());
+    }
+    Ok(matches[0].clone())
 }
 
 /// Why a Vulkan unit can't run on this host, if it can't: no hardware device, or less free
@@ -425,16 +480,7 @@ fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuState {
         let devices = find_llama_server(work)
             .map_err(|e| format!("{e:#}"))
             .and_then(|bin| list_devices(&bin));
-        let wanted = if plan == "amd_vulkan_8b" {
-            // A new AMD class must carry BOINC's explicit ATI/AMD resource assignment.
-            host.gpu_device_num
-                .filter(|_| {
-                    gpu_type.eq_ignore_ascii_case("ati") || gpu_type.eq_ignore_ascii_case("amd")
-                })
-                .and_then(|ordinal| u32::try_from(ordinal).ok())
-        } else {
-            u32::try_from(host.gpu_device_num.unwrap_or(0)).ok()
-        };
+        let wanted = u32::try_from(host.gpu_device_num.unwrap_or(0)).ok();
         let (vulkan_device, free_mb) = match &devices {
             Ok(text) => {
                 let _ = writeln!(body, "llama-server --list-devices:\n{}", text.trim());
@@ -447,7 +493,18 @@ fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuState {
                 } else {
                     "unsupported-vulkan-vendor"
                 };
-                match wanted.and_then(|ordinal| vulkan_device(text, vendor, ordinal)) {
+                let selected = if plan == "amd_vulkan_8b" {
+                    match assigned_amd_device(work, host, text) {
+                        Ok(d) => Some(d),
+                        Err(error) => {
+                            let _ = writeln!(body, "AMD PCI identity mapping refused: {error}");
+                            None
+                        }
+                    }
+                } else {
+                    wanted.and_then(|ordinal| vulkan_device(text, vendor, ordinal))
+                };
+                match selected {
                     Some(d) => {
                         host.gpu = Some(d.name.chars().take(64).collect());
                         host.gpu_mem_total_mib = Some(d.total_mib);
@@ -2082,10 +2139,23 @@ mod tests {
   Vulkan3: Intel Arc A770 (16384 MiB, 16000 MiB free)
   Vulkan4: Advanced Micro Devices, Inc. [RADV NAVI48] (16384 MiB, 6000 MiB free)";
         fake_llama_server(&slot, listing);
-        for (ordinal, expected) in [(0, Some(2)), (1, Some(4)), (2, None), (-1, None)] {
+        use std::os::unix::fs::PermissionsExt as _;
+        let helper = slot.join("usnm-amd-device-map");
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\ncase \"$2\" in 0) echo Vulkan2;; 1) echo Vulkan4;; *) exit 1;; esac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (physical, opencl, expected) in [
+            (12, 0, Some(2)),
+            (0, 1, Some(4)),
+            (0, 2, None),
+            (-1, 0, None),
+        ] {
             std::fs::write(
                 slot.join("init_data.xml"),
-                format!("<app_init_data><plan_class>amd_vulkan_8b</plan_class><gpu_type>ATI</gpu_type><gpu_device_num>{ordinal}</gpu_device_num></app_init_data>"),
+                format!("<app_init_data><plan_class>amd_vulkan_8b</plan_class><gpu_type>ATI</gpu_type><gpu_device_num>{physical}</gpu_device_num><gpu_opencl_dev_index>{opencl}</gpu_opencl_dev_index></app_init_data>"),
             )
             .unwrap();
             let mut host = Host::default();
@@ -2095,13 +2165,33 @@ mod tests {
             assert_eq!(gpu.vulkan_device, expected);
             assert_eq!(gpu.cuda_device, None);
             assert_eq!(gpu.use_gpu, expected.is_some());
-            assert_eq!(vulkan_refusal(&gpu, &job).is_none(), ordinal == 0);
-            if ordinal == 1 {
+            assert_eq!(vulkan_refusal(&gpu, &job).is_none(), expected == Some(2));
+            if expected == Some(4) {
                 assert!(vulkan_refusal(&gpu, &job)
                     .unwrap()
                     .contains("6000 MiB free"));
             }
         }
+        // Only the second AMD adapter remains visible. A PCI mapping of the assigned
+        // first adapter must not be reinterpreted as an ordinal into this shorter list.
+        fake_llama_server(
+            &slot,
+            "  Vulkan4: AMD Radeon RX 9070 XT (16384 MiB, 15000 MiB free)",
+        );
+        std::fs::write(slot.join("init_data.xml"), "<app_init_data><plan_class>amd_vulkan_8b</plan_class><gpu_type>ATI</gpu_type><gpu_device_num>0</gpu_device_num><gpu_opencl_dev_index>0</gpu_opencl_dev_index></app_init_data>").unwrap();
+        let mut host = Host::default();
+        let mut diag = Diag::new();
+        boinc_info(&slot, &mut host, &mut diag);
+        assert!(!detect_gpu(&slot, &mut host, &mut diag).use_gpu);
+        fake_llama_server(&slot, listing);
+        for response in ["Vulkan1", "Vulkan0", "Vulkan3", "Vulkan999", "ambiguous"] {
+            std::fs::write(&helper, format!("#!/bin/sh\necho {response}\n")).unwrap();
+            assert!(!detect_gpu(&slot, &mut host, &mut diag).use_gpu);
+        }
+        std::fs::remove_file(&helper).unwrap();
+        assert!(!detect_gpu(&slot, &mut host, &mut diag).use_gpu);
+        std::fs::write(&helper, "#!/bin/sh\necho Vulkan2\n").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
         for name in [
             "AMD Radeon RX 9070 XT",
             "Radeon RX 9070 XT (RADV NAVI48)",
@@ -2122,10 +2212,12 @@ mod tests {
             assert!(vulkan_device(&line, "amd", 0).is_none());
         }
         for assignment in [
-            "<gpu_type>NVIDIA</gpu_type><gpu_device_num>0</gpu_device_num>",
-            "<gpu_type>ATI</gpu_type>",
-            "<gpu_device_num>0</gpu_device_num>",
-            "<gpu_type>ATI</gpu_type><gpu_device_num>invalid</gpu_device_num>",
+            "<gpu_type>NVIDIA</gpu_type><gpu_device_num>0</gpu_device_num><gpu_opencl_dev_index>0</gpu_opencl_dev_index>",
+            "<gpu_type>ATI</gpu_type><gpu_opencl_dev_index>0</gpu_opencl_dev_index>",
+            "<gpu_device_num>0</gpu_device_num><gpu_opencl_dev_index>0</gpu_opencl_dev_index>",
+            "<gpu_type>ATI</gpu_type><gpu_device_num>invalid</gpu_device_num><gpu_opencl_dev_index>0</gpu_opencl_dev_index>",
+            "<gpu_type>ATI</gpu_type><gpu_device_num>0</gpu_device_num>",
+            "<gpu_type>ATI</gpu_type><gpu_device_num>0</gpu_device_num><gpu_opencl_dev_index>-1</gpu_opencl_dev_index>",
         ] {
             let init = format!(
                 "<app_init_data><plan_class>amd_vulkan_8b</plan_class>{assignment}</app_init_data>"
