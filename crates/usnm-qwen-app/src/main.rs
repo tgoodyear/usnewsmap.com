@@ -118,14 +118,11 @@ fn run_slot_reporting(work: &Path) -> anyhow::Result<()> {
     })
 }
 
-/// The last `n` bytes of a log, minus any partial first line, so a cut never leaves the end
-/// of a path (`Alice Smith\AppData\...`) that redaction can't recognise.
-fn line_tail(s: &str, n: usize) -> &str {
-    let t = tail(s, n);
-    if t.len() == s.len() || s[..s.len() - t.len()].ends_with('\n') {
-        return t;
-    }
-    t.find('\n').map_or("", |i| &t[i + 1..])
+/// The last `n` bytes of a log, redacted before the cut: a cut can then split only an
+/// already-redacted `.../<file>`, never a name, and a long single-line message (an HTTP error
+/// body) keeps its end.
+fn redacted_tail(s: &str, n: usize) -> String {
+    tail(&redact_paths(s), n).to_string()
 }
 
 /// Most of a failed task's diag.txt that its stderr carries. BOINC uploads no output files
@@ -514,7 +511,7 @@ fn device_probe(cmd: &mut Command, server_bin: &Path) -> Result<std::process::Ou
     if !out.status.success() {
         return Err(format!(
             "GPU device probe failed: {}",
-            line_tail(&String::from_utf8_lossy(&out.stderr), 1024)
+            redacted_tail(&String::from_utf8_lossy(&out.stderr), 1024)
         ));
     }
     Ok(out)
@@ -1333,7 +1330,7 @@ pub fn chat_completion(
     if status != 200 {
         bail!(
             "llama-server status {status}: {}",
-            line_tail(&String::from_utf8_lossy(&resp), 256)
+            redacted_tail(&String::from_utf8_lossy(&resp), 256)
         );
     }
     let v: serde_json::Value = serde_json::from_slice(&resp).context("chat response JSON")?;
@@ -1458,7 +1455,7 @@ impl Server {
                 let log_tail = std::fs::read_to_string(&srv.log_path).unwrap_or_default();
                 bail!(
                     "llama-server exited ({status}) before ready: {}",
-                    line_tail(&log_tail, 512)
+                    redacted_tail(&log_tail, 512)
                 );
             }
             if let Ok((200, _)) = http_request(port, "GET", "/health", None, Duration::from_secs(2))
@@ -1470,7 +1467,7 @@ impl Server {
                 bail!(
                     "llama-server did not become healthy in {}s: {}",
                     load_deadline.as_secs(),
-                    line_tail(&log_tail, 512)
+                    redacted_tail(&log_tail, 512)
                 );
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -1911,7 +1908,11 @@ fn run_crops(
     let engine_ms = ms(started);
     if let Some(ref srv) = srv_guard {
         if let Ok(log_text) = std::fs::read_to_string(&srv.log_path) {
-            diag.section("llama-server.log (tail)", line_tail(&log_text, 2048), 2048);
+            diag.section(
+                "llama-server.log (tail)",
+                &redacted_tail(&log_text, 2048),
+                2048,
+            );
         }
     }
     drop(srv_guard);
@@ -2190,16 +2191,24 @@ mod tests {
     }
 
     #[test]
-    fn log_tails_drop_a_partial_first_line() {
+    fn log_tails_are_redacted_before_the_cut() {
         let log = "load C:\\Users\\Alice Smith\\AppData\\BOINC\\model.gguf\nready\n";
-        // A cut inside the path line drops that line rather than leaving its end.
-        let cut = line_tail(log, 30);
-        assert_eq!(cut, "ready\n");
-        assert!(!redact_paths(cut).contains("Smith"));
-        // A cut on a line boundary, or no cut at all, keeps everything.
-        assert_eq!(line_tail(log, 6), "ready\n");
-        assert_eq!(line_tail(log, 4096), log);
-        assert_eq!(line_tail("no newline at all", 4), "");
+        // Any cut through the path line leaves no part of the name.
+        for n in 1..log.len() {
+            let t = redacted_tail(log, n);
+            assert!(
+                !t.contains("Alice") && !t.contains("Smith") && !t.contains("AppData"),
+                "{n}: {t}"
+            );
+        }
+        // A long single-line error body keeps its end.
+        let body = format!(
+            "{{\"error\":{{\"message\":\"{}model too large for /home/bob/x/llama.gguf\"}}}}",
+            "x".repeat(400)
+        );
+        let t = redacted_tail(&body, 256);
+        assert!(t.ends_with("model too large for .../llama.gguf\"}}"), "{t}");
+        assert!(!t.contains("bob"));
     }
 
     #[test]
