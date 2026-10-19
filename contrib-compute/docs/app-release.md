@@ -193,6 +193,10 @@ summary enters task stderr and the scheduler result report even if output upload
 fails. Windows appends it to the slot's `stderr.txt`; Unix uses stderr. Fields
 cover outcome, runtime and model identities, driver, memory, timings and failure
 category. They exclude raw paths, input text, prompts, account data and full logs.
+BOINC uploads no output files for a failed task, so `diag.txt` follows the summary
+between `USNM_QWEN_DIAG_BEGIN` and `USNM_QWEN_DIAG_END`. It is the same file a
+successful task uploads, cut to its first 2 KB and last 4 KB, with absolute paths
+reduced to file names. A slot I/O failure sends its error chain the same way.
 Successful tasks upload three checksummed outputs. Download, signature and loader
 failures can precede app startup and lack an application summary; inspect normal
 BOINC status, stderr and event reports. Verify server receipt with real canary
