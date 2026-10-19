@@ -20,6 +20,7 @@ RUN apt-get update \
 COPY scripts/boinc/patch-server-apple-gpu.py scripts/boinc/patch-server-intel-proc-type.py /opt/usnm-build/
 COPY scripts/boinc/patch-server-db-tls.py /usr/local/lib/patch-server-db-tls.py
 COPY scripts/boinc/patch-server-gold-routing.py scripts/boinc/gold-engine-routing.h /opt/usnm-build/
+COPY scripts/boinc/patch-server-stage-work.py scripts/boinc/test_stage_work.py /opt/usnm-build/
 RUN git init /usr/local/boinc \
  && cd /usr/local/boinc \
  && git remote add origin https://github.com/BOINC/boinc.git \
@@ -30,6 +31,8 @@ RUN git init /usr/local/boinc \
  && python3 /opt/usnm-build/patch-server-intel-proc-type.py --source /usr/local/boinc/sched/sched_util_basic.cpp \
  && python3 /usr/local/lib/patch-server-db-tls.py --source /usr/local/boinc \
  && python3 /opt/usnm-build/patch-server-gold-routing.py --sched-dir /usr/local/boinc/sched \
+ && BOINC_SOURCE_ROOT=/usr/local/boinc python3 /opt/usnm-build/test_stage_work.py \
+ && python3 /opt/usnm-build/patch-server-stage-work.py --source /usr/local/boinc/tools/create_work.cpp \
  && cp /opt/usnm-build/gold-engine-routing.h /usr/local/boinc/sched/ \
  && rm -f /opt/usnm-build/patch-server-apple-gpu.py /opt/usnm-build/patch-server-intel-proc-type.py \
  && ./_autosetup \

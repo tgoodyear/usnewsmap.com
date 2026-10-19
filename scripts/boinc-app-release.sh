@@ -109,7 +109,7 @@ sys.exit(0 if hashlib.sha256(a.binary.read_bytes()).hexdigest() == a.sha256 else
 PY
     fi
     case "$APP:$PLAN_CLASS" in
-      usnm_quality: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b | usnm_qwen:intel_vulkan_8b | usnm_qwen:nvidia_vulkan_8b) ;;
+      usnm_quality: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b | usnm_qwen:intel_vulkan_8b | usnm_qwen:nvidia_vulkan_8b | usnm_qwen:amd_vulkan_8b) ;;
       *) die "--app and --plan-class for --kind native must be usnm_quality with empty --plan-class, or a supported usnm_qwen native class (scripts/boinc/install.py)" ;;
     esac
     ;;
@@ -153,7 +153,7 @@ else
     *) die "unsupported --platform" ;;
   esac
   case "$PLAN_CLASS:$PLATFORM" in
-    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu) ;;
+    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu | amd_vulkan_8b:x86_64-pc-linux-gnu | amd_vulkan_8b:windows_x86_64) ;;
     *) die "native --plan-class $PLAN_CLASS is not supported on $PLATFORM" ;;
   esac
   for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
@@ -166,7 +166,18 @@ else
   if [ "$APP" = usnm_qwen ]; then
     required_server="llama-server"
     [ "$PLATFORM" != windows_x86_64 ] || required_server="llama-server.exe"
-    for req_extra in "$required_server" "llama.lock" "weights.lock"; do
+    required_extras=("$required_server" "llama.lock" "weights.lock")
+    if [ "$PLAN_CLASS" = amd_vulkan_8b ]; then
+      required_helper=usnm-amd-device-map
+      [ "$PLATFORM" != windows_x86_64 ] || required_helper=usnm-amd-device-map.exe
+      required_extras+=("$required_helper")
+      if [ "$PLATFORM" = windows_x86_64 ]; then
+        required_extras+=(ggml.dll ggml-base.dll ggml-vulkan.dll)
+      else
+        required_extras+=(libggml.so libggml-base.so libggml-vulkan.so)
+      fi
+    fi
+    for req_extra in "${required_extras[@]}"; do
       found_extra=false
       for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
         if [ "${spec%%=*}" = "$req_extra" ]; then

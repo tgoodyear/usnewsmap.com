@@ -124,7 +124,8 @@ def probe(root, url):
     gpus = []
     gpu_memory = {}
     gpu_capabilities = {}
-    for tag, vendor in [('coproc_cuda', 'nvidia'), ('coproc_intel_gpu', 'intel'), ('coproc_apple_gpu', 'apple')]:
+    for tag, vendor in [('coproc_cuda', 'nvidia'), ('coproc_ati', 'amd'),
+                        ('coproc_intel_gpu', 'intel'), ('coproc_apple_gpu', 'apple')]:
         node = state.find('.//' + tag)
         if node is not None and float(node.findtext('count', '0')) > 0:
             gpus.append(vendor)

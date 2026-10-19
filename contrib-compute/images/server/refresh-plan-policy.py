@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 
 COHORT_CLASSES = (
     "nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b",
-    "nvidia_vulkan_8b", "docker_nvidia_cuda_8b",
+    "nvidia_vulkan_8b", "amd_vulkan_8b", "docker_nvidia_cuda_8b",
 )
 
 
@@ -41,6 +41,8 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
         low, high = (int(field[0].text) for field in fields)
         if (low, high) != (2, 1) and not (2 <= low <= high and high - low < 10):
             raise ValueError(f"Invalid bounded cohort for {name}")
+        if name == "amd_vulkan_8b" and (low, high) != (2, 1) and low != high:
+            raise ValueError("AMD acceptance requires exactly one workunit")
         for tag, value in (("min_wu_id", low), ("max_wu_id", high)):
             targets = reviewed[name].findall(tag)
             if len(targets) > 1:

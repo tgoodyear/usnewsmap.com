@@ -262,6 +262,40 @@ class BoincAppVersion {
         self.assertFalse((self.project / 'reread_db').exists())
         self.assertFalse((self.project / '.usnm-publish.lock').exists())
 
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_native_amd_publication_platforms_and_verification_contract(self):
+        for platform in ('x86_64-pc-linux-gnu', 'windows_x86_64',
+                         'aarch64-unknown-linux-gnu', 'arm64-apple-darwin', 'x86_64-apple-darwin'):
+            with self.subTest(platform=platform):
+                subdir = f'{platform}__amd_vulkan_8b'
+                src = self.source / f'apps/usnm_qwen/1.0/{subdir}'
+                src.mkdir(parents=True)
+                (src / 'usnm_qwen').write_text('native-fixture')
+                # PHP checks the production verifier's allowlists without a real database.
+                (self.project / 'html/inc/boinc_db.inc').write_text('''<?php
+class BoincApp { static function lookup($query) { return (object)["id"=>1]; } }
+class BoincPlatform { static function lookup($query) { return (object)["id"=>2]; } }
+class BoincAppVersion { static function enum($query) {
+    if (strpos($query, "plan_class='amd_vulkan_8b'") === false) exit(9);
+    return [(object)["id"=>3]];
+} }
+''')
+                env = {**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'native',
+                       'APPVER_APP': 'usnm_qwen', 'APPVER_VERSION': '1.0',
+                       'APPVER_PLATFORM': platform, 'APPVER_PLAN_CLASS': 'amd_vulkan_8b',
+                       'DB_HOST': 'fixture', 'DB_NAME': 'fixture', 'MASTER_HOST': 'fixture',
+                       'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+                # Use real PHP for the database readback allowlist, not the default stub.
+                (self.root / 'php').unlink(missing_ok=True)
+                result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+                if platform in ('x86_64-pc-linux-gnu', 'windows_x86_64'):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f'Verified usnm_qwen 1.0 {platform} amd_vulkan_8b', result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('is not supported on', result.stderr)
+                    self.assertFalse((self.project / f'apps/usnm_qwen/1.0/{subdir}').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

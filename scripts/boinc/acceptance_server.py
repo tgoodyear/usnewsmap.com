@@ -16,6 +16,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+import uuid
 import xml.etree.ElementTree as ET
 
 SAFE = re.compile(r'[A-Za-z0-9_.-]{1,120}')
@@ -86,6 +88,10 @@ def file_hash(path):
 
 def bounds(manifest):
     quorum, profile = manifest['min_quorum'], manifest['profile']
+    if manifest['release']['plan_class'] == 'amd_vulkan_8b':
+        return dict(min_quorum=2, target_nresults=2, max_error_results=3,
+                    max_total_results=4, max_success_results=3,
+                    rsc_memory_bound=6442450944, rsc_disk_bound=19327352832, delay_bound=259200)
     return dict(min_quorum=quorum, target_nresults=quorum, max_error_results=1,
                 max_total_results=quorum + 1, max_success_results=quorum + 1,
                 rsc_memory_bound=profile['memory_bytes'], rsc_disk_bound=profile['disk_bytes'], delay_bound=14400)
@@ -135,7 +141,7 @@ def isolated_account(db, manifest, workunit=None, host_id=None, fingerprint=None
         raise ValueError('isolated account has unrelated assignments/in-progress work')
 
 
-def fixture_load(root, name, release):
+def fixture_load(root, name, release, *, staging=False):
     manifest = json.loads(below(root, name + '.json').read_text())
     if manifest['release'] != release:
         raise ValueError('fixture release mismatch')
@@ -146,7 +152,7 @@ def fixture_load(root, name, release):
     profile = manifest['profile']
     if (type(manifest['batch']) is not int or not 0 <= manifest['batch'] < 2**31
             or any(type(profile[k]) is not int or profile[k] <= 0 for k in ('cpus', 'memory_bytes', 'disk_bytes'))
-            or profile['gpu'] not in ('none', 'nvidia', 'intel', 'apple')
+            or profile['gpu'] not in ('none', 'nvidia', 'intel', 'apple', 'amd')
             or not manifest['outputs'] or not manifest['inputs']
             or type(manifest['min_quorum']) is not int or not 1 <= manifest['min_quorum'] <= 10):
         raise ValueError('invalid fixture requirements')
@@ -154,6 +160,16 @@ def fixture_load(root, name, release):
     if (not isinstance(peers, list) or len(peers) != manifest['min_quorum'] - 1
             or any(type(host) is not int or host <= 0 for host in peers) or len(set(peers)) != len(peers)):
         raise ValueError('quorum requires explicit distinct existing peer_host_ids')
+    audited = manifest.get('audited_workunit_id')
+    if audited is not None and (type(audited) is not int or audited <= 1):
+        raise ValueError('invalid audited workunit ID')
+    if audited is not None and release['plan_class'] != 'amd_vulkan_8b':
+        raise ValueError('audited workunit IDs require AMD zero-result targeted staging')
+    if release['plan_class'] == 'amd_vulkan_8b' and (
+            release['app'] != 'usnm_qwen' or (audited is None and not staging)
+            or manifest['batch'] != 8 or manifest['min_quorum'] != 2
+            or profile['disk_bytes'] != 19327352832 or profile['memory_bytes'] != 6442450944):
+        raise ValueError('AMD acceptance requires an audited native-8B workunit and quorum 2')
     for name in ('input_template', 'output_template'):
         if not SAFE.fullmatch(manifest[name]):
             raise ValueError('invalid template name')
@@ -207,6 +223,15 @@ def scheduler_profile(project, manifest):
             or batch > int(node.findtext('max_batch', str(2**31 - 1)))
             or int(node.findtext('min_wu_id', '0')) > int(node.findtext('max_wu_id', str(2**31 - 1)))):
         raise ValueError('fixture excluded by scheduler batch/workunit gate; never auto-open cohorts')
+    audited = manifest.get('audited_workunit_id')
+    if audited is not None and not (
+            int(node.findtext('min_wu_id', '0')) <= audited
+            <= int(node.findtext('max_wu_id', str(2**31 - 1)))):
+        raise ValueError('audited workunit outside operator admission window')
+    if plan == 'amd_vulkan_8b' and (
+            audited is None or node.findtext('min_wu_id') != str(audited)
+            or node.findtext('max_wu_id') != str(audited)):
+        raise ValueError('AMD acceptance requires exact audited-workunit admission')
     profile['cpus'] = max(profile['cpus'], float(node.findtext('min_ncpus', '1')),
                           float(node.findtext('avg_ncpus', '1')))
     profile['memory_bytes'] = max(profile['memory_bytes'], int(float(node.findtext('mem_usage_base_mb', '0')) * 1e6))
@@ -215,6 +240,8 @@ def scheduler_profile(project, manifest):
     profile['client_version'] = max(profile.get('client_version', 0),
                                     int(node.findtext('min_core_client_version', '0')))
     expected_gpu = node.findtext('gpu_type', 'none')
+    if expected_gpu == 'ati':
+        expected_gpu = 'amd'
     if profile['gpu'] != expected_gpu:
         raise ValueError('fixture GPU differs from scheduler plan')
     for field, tag in [('cuda_version', 'min_cuda_version'), ('compute_capability', 'min_nvidia_compcap'),
@@ -223,30 +250,98 @@ def scheduler_profile(project, manifest):
     return profile
 
 
+def registered_version(db, release):
+    versions = query(db, 'SELECT av.id FROM app_version av JOIN app a ON a.id=av.appid '
+                     'JOIN platform p ON p.id=av.platformid WHERE a.name=%s AND av.version_num=%s '
+                     'AND p.name=%s AND av.plan_class=%s AND av.deprecated=0',
+                     (release['app'], release['version_num'], release['platform'], release['plan_class']))
+    if len(versions) != 1:
+        raise ValueError('expected exactly one active registered app version')
+    alternatives = query(db, 'SELECT av.id FROM app_version av JOIN app a ON a.id=av.appid '
+                         'WHERE a.name=%s AND av.version_num=%s AND av.deprecated=0',
+                         (release['app'], release['version_num']))
+    if len(alternatives) != 1 or alternatives[0]['id'] != versions[0]['id']:
+        raise ValueError('ambiguous app/version routing; use distinct numeric versions per platform/plan')
+    return versions[0]['id']
+
+
+def fixture_inputs(project, manifest):
+    for key in ('input_template', 'output_template'):
+        below(project / 'templates', manifest[key])
+    for entry in manifest['inputs']:
+        location = subprocess.run([str(project / 'bin/dir_hier_path'), entry['name']], cwd=project,
+                                  check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+        path = Path(location)
+        path = path if path.is_absolute() else project / path
+        if file_hash(below(project / 'download', str(path.resolve()))) != entry['sha256']:
+            raise ValueError('fixture input changed')
+
+
+def audited_workunit(db, manifest):
+    """Verify the pre-staged identity and payload; never create or rewrite its scientific rows."""
+    rows = query(db, 'SELECT w.*, a.name AS app_name FROM workunit w JOIN app a ON a.id=w.appid '
+                 'WHERE w.id=%s AND w.name=%s FOR UPDATE',
+                 (manifest['audited_workunit_id'], manifest['workunit_name']))
+    if len(rows) != 1:
+        raise ValueError('audited workunit ID/name missing or changed')
+    wu = rows[0]
+    verify_bounds(wu, manifest)
+    if (wu['app_name'] != manifest['release']['app']
+            or wu['app_version_num'] != manifest['release']['version_num']
+            or wu['batch'] != manifest['batch'] or wu['canonical_resultid'] or wu['error_mask']
+            or wu['result_template_file'] != 'templates/' + manifest['output_template']):
+        raise ValueError('audited workunit release, template or scientific state mismatch')
+    xml = wu['xml_doc'].decode() if isinstance(wu['xml_doc'], bytes) else wu['xml_doc']
+    document = ET.fromstring('<workunit>' + xml + '</workunit>')
+    inputs = [n.text for n in document.findall('.//file_info/name')]
+    if sorted(inputs) != sorted(entry['name'] for entry in manifest['inputs']):
+        raise ValueError('audited workunit inputs differ from fixture')
+    results = query(db, 'SELECT id, server_state, sent_time, hostid, userid FROM result '
+                    'WHERE workunitid=%s FOR UPDATE', (wu['id'],))
+    # Stock targeted scheduling creates results; pre-created generic replicas
+    # consume its target_nresults budget and can never serve this isolated account.
+    # TRANSITION_NO_NEW_RESULTS=2 in pinned db/boinc_db_types.h.
+    if manifest['release']['plan_class'] == 'amd_vulkan_8b':
+        if (results or wu['transitioner_flags'] != 2 or wu['transition_time'] <= time.time()
+                or wu['need_validate']):
+            raise ValueError('audited workunit requires targeted staging, no results and a future transition')
+    elif len(results) != manifest['min_quorum'] or any(
+            r['server_state'] != 2 or r['sent_time'] or r['hostid'] or r['userid'] for r in results):
+        raise ValueError('audited workunit requires unsent, unassigned results')
+    if query(db, 'SELECT id FROM assignment WHERE workunitid=%s FOR UPDATE', (wu['id'],)):
+        raise ValueError('audited workunit already has assignments')
+    return wu
+
+
 def create_args(manifest, workunit, host_id):
     release, profile = manifest['release'], manifest['profile']
     quorum = manifest['min_quorum']
+    limits = bounds(manifest)
     return ['--appname', release['app'], '--wu_name', workunit,
             '--app_version_num', str(release['version_num']),
             '--wu_template', 'templates/' + manifest['input_template'],
             '--result_template', 'templates/' + manifest['output_template'],
             '--target_host', str(host_id), '--batch', str(manifest['batch']), '--min_quorum', str(quorum),
-            '--target_nresults', str(quorum), '--max_error_results', '1',
-            '--max_total_results', str(quorum + 1), '--max_success_results', str(quorum + 1),
+            '--target_nresults', str(quorum), '--max_error_results', str(limits['max_error_results']),
+            '--max_total_results', str(limits['max_total_results']), '--max_success_results', str(limits['max_success_results']),
             '--rsc_fpops_est', '1e12', '--rsc_fpops_bound', '1e17',
             '--rsc_memory_bound', str(profile['memory_bytes']),
-            '--rsc_disk_bound', str(profile['disk_bytes']), '--delay_bound', '14400',
+            '--rsc_disk_bound', str(profile['disk_bytes']), '--delay_bound', str(limits['delay_bound']),
             *[entry['name'] for entry in manifest['inputs']]]
 
 
 def status(db, project, record, manifest):
     base = dict(run_id=record['run_id'], release=record['release'], state='pending')
+    audited = record.get('audited_workunit_id')
+    identity = (record['workunit'], audited) if audited is not None else (record['workunit'],)
     rows = query(db, 'SELECT id, canonical_resultid, error_mask, batch, assimilate_state, min_quorum, target_nresults, '
                  'max_error_results, max_total_results, max_success_results, rsc_memory_bound, rsc_disk_bound, '
-                 'delay_bound FROM workunit WHERE name=%s',
-                 (record['workunit'],))
+                 'delay_bound FROM workunit WHERE name=%s' + (' AND id=%s' if audited is not None else ''),
+                 identity)
     if not rows:
         return base
+    if len(rows) != 1:
+        raise ValueError('ambiguous fixture workunit identity')
     wu = rows[0]
     verify_bounds(wu, manifest)
     if wu['error_mask'] or wu['batch'] != manifest['batch']:
@@ -338,44 +433,68 @@ def handle(request, project, fixtures, db):
                 durable(journal, record)
             # Never release another run after an uncertain reserve.
             return {'released': record is None or record['run_id'] == run_id}
-        manifest = fixture_load(fixtures, name, release)
+        manifest = fixture_load(fixtures, name, release, staging=True) if action == 'stage' else fixture_load(fixtures, name, release)
+        if action == 'stage':
+            if release['plan_class'] != 'amd_vulkan_8b' or manifest.get('audited_workunit_id') is not None:
+                raise ValueError('stage requires a new AMD fixture without an audited workunit ID')
+            stage_journal = fixtures / (name + '.stage.json')
+            if stage_journal.exists() or (record and not record.get('released')):
+                raise ValueError('staged or reserved fixture; reconcile journal before recovery')
+            nodes = [n for n in ET.parse(project / 'plan_class_spec.xml').getroot()
+                     if n.findtext('name') == release['plan_class']]
+            if len(nodes) != 1 or (nodes[0].findtext('min_wu_id'), nodes[0].findtext('max_wu_id')) != ('2', '1'):
+                raise ValueError('stage AMD while closed; audit and open only after staging')
+            isolated_account(db, manifest)
+            template_check(project, manifest)
+            registered_version(db, release)
+            fixture_inputs(project, manifest)
+            if query(db, 'SELECT id FROM workunit WHERE name=%s', (manifest['workunit_name'],)):
+                raise ValueError('fixture workunit already exists')
+            db.commit()
+            durable(stage_journal, dict(run_id=run_id, release=release, workunit=manifest['workunit_name'], stage_intent=True))
+            args = create_args(manifest, manifest['workunit_name'], 0)
+            start = args.index('--target_host')
+            del args[start:start + 2]
+            args.append('--no_new_results')
+            subprocess.run([str(project / 'bin/create_work'), *args], cwd=project, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+            units = query(db, 'SELECT id FROM workunit WHERE name=%s', (manifest['workunit_name'],))
+            if len(units) != 1:
+                raise ValueError('uncertain staged workunit creation; reconcile stage journal')
+            staged = {**manifest, 'audited_workunit_id': units[0]['id']}
+            audited_workunit(db, staged)
+            db.commit()
+            durable(stage_journal, dict(run_id=run_id, release=release, workunit=manifest['workunit_name'],
+                                       stage_intent=True, audited_workunit_id=units[0]['id']))
+            return dict(staged=True, audited_workunit_id=units[0]['id'], admission_changed=False)
         if action == 'reserve':
             if record and not record.get('released'):
                 raise ValueError('fixture already reserved; reconcile its journal before recovery')
             if ET.parse(project / 'config.xml').findtext('./config/enable_assignment') != '1':
                 raise ValueError('host-target assignment must already be enabled')
-            isolated_account(db, manifest, fingerprint=request.get('authenticator_sha256'))
+            isolated_account(db, manifest, workunit=manifest['workunit_name'],
+                             fingerprint=request.get('authenticator_sha256'))
             input_hash = template_check(project, manifest)
             profile = scheduler_profile(project, manifest)
-            versions = query(db, 'SELECT av.id FROM app_version av JOIN app a ON a.id=av.appid '
-                             'JOIN platform p ON p.id=av.platformid WHERE a.name=%s AND av.version_num=%s '
-                             'AND p.name=%s AND av.plan_class=%s AND av.deprecated=0',
-                             (release['app'], release['version_num'], release['platform'], release['plan_class']))
-            if len(versions) != 1:
-                raise ValueError('expected exactly one active registered app version')
-            alternatives = query(db, 'SELECT av.id FROM app_version av JOIN app a ON a.id=av.appid '
-                                 'WHERE a.name=%s AND av.version_num=%s AND av.deprecated=0',
-                                 (release['app'], release['version_num']))
-            if len(alternatives) != 1 or alternatives[0]['id'] != versions[0]['id']:
-                raise ValueError('ambiguous app/version routing; use distinct numeric versions per platform/plan')
+            version_id = registered_version(db, release)
             for peer in manifest.get('peer_host_ids', []):
                 if len(query(db, 'SELECT id FROM host WHERE id=%s', (peer,))) != 1:
                     raise ValueError('unknown independent fixture peer')
-            for key in ('input_template', 'output_template'):
-                below(project / 'templates', manifest[key])
-            for entry in manifest['inputs']:
-                location = subprocess.run([str(project / 'bin/dir_hier_path'), entry['name']], cwd=project,
-                                          check=True, capture_output=True, text=True, timeout=30).stdout.strip()
-                path = Path(location)
-                path = path if path.is_absolute() else project / path
-                if file_hash(below(project / 'download', str(path.resolve()))) != entry['sha256']:
-                    raise ValueError('fixture input changed')
-            if query(db, 'SELECT id FROM workunit WHERE name=%s', (manifest['workunit_name'],)):
+            fixture_inputs(project, manifest)
+            if manifest.get('audited_workunit_id') is not None:
+                unit = audited_workunit(db, manifest)
+            elif query(db, 'SELECT id FROM workunit WHERE name=%s', (manifest['workunit_name'],)):
                 raise ValueError('fixture workunit already exists; stage a fresh fixture identity')
-            record = dict(run_id=run_id, release=release, app_version_id=versions[0]['id'],
+            record = dict(run_id=run_id, release=release, app_version_id=version_id,
                           workunit=manifest['workunit_name'], released=False, input_template_sha256=input_hash,
                           manifest_sha256=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest())
+            if manifest.get('audited_workunit_id') is not None:
+                xml = unit['xml_doc']
+                record.update(audited_workunit_id=unit['id'],
+                              workunit_xml_sha256=hashlib.sha256(xml.encode() if isinstance(xml, str) else xml).hexdigest())
             durable(journal, record)
+            if manifest.get('audited_workunit_id') is not None:
+                db.commit()
             return dict(run_id=run_id, release=release, profile=profile, workunit=record['workunit'], isolation_verified=True)
         if not record or record['run_id'] != run_id or record.get('released') or record['release'] != release:
             raise ValueError('reservation not owned by this run')
@@ -393,6 +512,35 @@ def handle(request, project, fixtures, db):
                 raise ValueError('host-target assignment must already be enabled')
             if len(query(db, 'SELECT id FROM host WHERE id=%s', (host_id,))) != 1:
                 raise ValueError('unknown client host')
+            if manifest.get('audited_workunit_id') is not None:
+                # Serialize admission through commit with operator stop/policy refresh.
+                lock_path = project / '.native-qwen-cohort.lock'
+                if lock_path.is_symlink() or (project / 'plan_class_spec.xml').is_symlink():
+                    raise ValueError('refusing symlinked cohort policy or lock')
+                with lock_path.open('a') as policy_lock:
+                    fcntl.flock(policy_lock, fcntl.LOCK_SH)
+                    scheduler_profile(project, manifest)
+                    fixture_inputs(project, manifest)
+                    unit = audited_workunit(db, manifest)
+                    xml = unit['xml_doc']
+                    if record['workunit_xml_sha256'] != hashlib.sha256(xml.encode() if isinstance(xml, str) else xml).hexdigest():
+                        raise ValueError('audited workunit payload changed after reservation')
+                    record.update(host_id=host_id, dispatch_intent=True)
+                    durable(journal, record)
+                    cursor = db.cursor()
+                    try:
+                        for host in [host_id, *manifest['peer_host_ids']]:
+                            cursor.execute('INSERT INTO assignment (create_time, target_id, target_type, multi, workunitid) '
+                                           'VALUES (UNIX_TIMESTAMP(), %s, 1, 0, %s)', (host, unit['id']))
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+                    finally:
+                        cursor.close()
+                record['dispatched'] = True
+                durable(journal, record)
+                return {'dispatched': True}
             db.commit()  # End the host-lookup snapshot before external create_work commits.
             record.update(host_id=host_id, dispatch_intent=True)
             durable(journal, record)  # Persist before mutation: do not retry unknown outcomes.
@@ -426,10 +574,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project', required=True, type=Path)
     parser.add_argument('--fixtures', required=True, type=Path)
+    parser.add_argument('--stage-fixture', help='Stage a reviewed AMD fixture while closed; never opens admission')
     args = parser.parse_args()
     db = None
     try:
-        request = json.loads(sys.stdin.read(65536))
+        if args.stage_fixture:
+            if not SAFE.fullmatch(args.stage_fixture):
+                raise ValueError('invalid fixture name')
+            manifest = json.loads(below(args.fixtures, args.stage_fixture + '.json').read_text())
+            request = dict(action='stage', fixture=args.stage_fixture, run_id=uuid.uuid4().hex,
+                           release=manifest['release'])
+        else:
+            request = json.loads(sys.stdin.read(65536))
         db = db_connect(args.project)
         print(json.dumps(handle(request, args.project, args.fixtures, db)))
     except Exception:

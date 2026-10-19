@@ -37,6 +37,7 @@ QWEN_NATIVE_MODEL_TEMPLATES = {
     "nvidia_cuda_8b": "usnm_qwen_8b_in",
     "intel_vulkan_8b": "usnm_qwen_8b_in",
     "nvidia_vulkan_8b": "usnm_qwen_8b_in",
+    "amd_vulkan_8b": "usnm_qwen_8b_in",
     "nvidia_cuda_2b": "usnm_qwen_2b_in",
     "mt": "usnm_qwen_2b_in",
 }
@@ -76,8 +77,9 @@ NATIVE_PLAN_CLASSES = {
     # Intel GPUs through llama.cpp Vulkan (#786); llama.lock pins only x86_64 Vulkan builds.
     ("usnm_qwen", "intel_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
     ("usnm_qwen", "nvidia_vulkan_8b"): ("x86_64-pc-linux-gnu",),
+    ("usnm_qwen", "amd_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
 }
-GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b"})
+GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"})
 NATIVE_API_VERSION = "8.3.0"
 LOGICAL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
 
@@ -234,6 +236,10 @@ def install(
             present_extras = {logical for logical, _ in parsed_extras}
             required_server = "llama-server.exe" if platform == "windows_x86_64" else "llama-server"
             required_extras = (required_server, "llama.lock", "weights.lock")
+            if plan_class == "amd_vulkan_8b":
+                required_extras += ("usnm-amd-device-map.exe" if platform == "windows_x86_64" else "usnm-amd-device-map",)
+                required_extras += (("ggml.dll", "ggml-base.dll", "ggml-vulkan.dll") if platform == "windows_x86_64"
+                                    else ("libggml.so", "libggml-base.so", "libggml-vulkan.so"))
             if platform == "windows_x86_64":
                 required_extras += ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
                 if plan_class in ("nvidia_cuda_2b", "nvidia_cuda_8b"):
@@ -242,7 +248,7 @@ def install(
                         "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
                         "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
                     )
-                if plan_class == "intel_vulkan_8b":
+                if plan_class in ("intel_vulkan_8b", "amd_vulkan_8b"):
                     # vulkan-1.dll, the Vulkan loader, comes with the GPU driver.
                     required_extras += (
                         "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
@@ -268,7 +274,7 @@ def install(
         ET.SubElement(main_file, "main_program")
         ET.SubElement(main_file, "copy_file")
         staged_files = [target / main_name]
-        executable_extras = {"llama-server", "llama-server.exe"}
+        executable_extras = {"llama-server", "llama-server.exe", "usnm-amd-device-map", "usnm-amd-device-map.exe"}
         for logical, src in parsed_extras:
             phys = f"{suffix}_{logical}"
             shutil.copyfile(src, target / phys)

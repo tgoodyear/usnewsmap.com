@@ -1,11 +1,13 @@
 <?php
 // Operator-only dispatch window; never changes account preferences or scientific rows.
-// shared_8b opens both Vulkan classes over the same audited, bounded workunit range.
-const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b"];
+// shared_8b opens Intel/NVIDIA Vulkan classes over the same audited, bounded workunit range.
+const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"];
 const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
 
 function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null) {
-    $classes = NATIVE_QWEN_CLASSES;
+    // AMD has an independent one-workunit canary. Neither path resets the other's windows.
+    $classes = $plan_class === "amd_vulkan_8b" ? ["amd_vulkan_8b"]
+        : array_values(array_diff(NATIVE_QWEN_CLASSES, ["amd_vulkan_8b"]));
     if ($plan_class === "shared_8b") $classes[] = "docker_nvidia_cuda_8b";
     $last_id = $last_id ?? $workunit_id;
     if ((!in_array($plan_class, $classes, true) && $plan_class !== "shared_8b")
@@ -51,8 +53,12 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class) {
     if (intval($workunit->batch) !== $batch || intval($workunit->rsc_disk_bound) !== $disk
         || intval($workunit->min_quorum) !== 2 || intval($workunit->target_nresults) !== 2
         || intval($workunit->canonical_resultid) !== 0 || intval($workunit->error_mask) !== 0
-        || count($results) !== 2) {
-        throw new RuntimeException("Expected one unaccepted model-specific native workunit, quorum/replicas 2");
+        || ($plan_class === "amd_vulkan_8b" ? (
+            count($results) !== 0 || intval($workunit->transitioner_flags ?? 0) !== 2
+            || intval($workunit->transition_time ?? 0) <= time()
+            || intval($workunit->need_validate ?? 0) !== 0
+        ) : count($results) !== 2)) {
+        throw new RuntimeException("Expected unaccepted native quorum-2 work; AMD requires targeted staging without results");
     }
     foreach ($results as $result) {
         if (intval($result->server_state) !== 2 || intval($result->sent_time) !== 0) {
@@ -76,7 +82,8 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
         $proof = [
             "plan_class" => $plan_class, "workunit_id" => $workunit_id,
             "last_workunit_id" => $last_id ?? $workunit_id,
-            "other_native_class_closed" => true, "apply" => $apply,
+            "other_managed_class_closed" => true,
+            "independent_amd_window" => true, "apply" => $apply,
             "before_sha256" => hash("sha256", $original),
             "after_sha256" => hash("sha256", $updated),
         ];

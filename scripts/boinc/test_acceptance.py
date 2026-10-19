@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -104,13 +105,17 @@ class Eligibility(Workspace):
     def test_gpu_vendor_and_vram_and_native_do_not_require_docker(self):
         for plan, gpu, platform in [('nvidia_cuda_8b', 'nvidia', RELEASE['platform']),
                                     ('apple_gpu_8b', 'apple', 'arm64-apple-darwin'),
-                                    ('intel_vulkan_8b', 'intel', 'windows_x86_64')]:
+                                    ('intel_vulkan_8b', 'intel', 'windows_x86_64'),
+                                    ('nvidia_vulkan_8b', 'nvidia', RELEASE['platform']),
+                                    ('amd_vulkan_8b', 'amd', RELEASE['platform']),
+                                    ('amd_vulkan_8b', 'amd', 'windows_x86_64')]:
             release = {**RELEASE, 'plan_class': plan, 'platform': platform}
             profile = {**PROFILE, 'gpu': gpu, 'gpu_memory_bytes': 7_000_000_000}
             probe = {**PROBE, 'platform': platform, 'gpus': [gpu],
                      'gpu_memory_bytes': {gpu: 8_000_000_000}, 'container_runtime': False}
             A.eligible(probe, profile, release, URL)
-            for bad in ({'gpus': []}, {'gpu_memory_bytes': {gpu: 1}}, {'platform': 'wrong'}):
+            for bad in ({'gpus': []}, {'gpus': ['intel' if gpu != 'intel' else 'amd']},
+                        {'gpu_memory_bytes': {gpu: 1}}, {'platform': 'wrong'}):
                 with self.assertRaises(A.AcceptanceError):
                     A.eligible({**probe, **bad}, profile, release, URL)
 
@@ -591,6 +596,20 @@ class ClientProbe(Workspace):
         self.assertEqual(probe['gpu_capabilities']['nvidia'],
                          dict(cuda_version=12080, compute_capability=800, opencl_version=300))
 
+    def test_probe_reports_boinc_ati_as_amd_for_native_vulkan(self):
+        self.state()
+        state = C.ET.parse(self.root / 'client_state.xml')
+        node = C.ET.SubElement(C.ET.SubElement(state.getroot(), 'coprocs'), 'coproc_ati')
+        for key, value in {'count': '1', 'available_ram': str(16 * 1024**3),
+                           'opencl_device_version': 'OpenCL 3.0 AMD'}.items():
+            C.ET.SubElement(node, key).text = value
+        state.write(self.root / 'client_state.xml')
+        with patch.object(C, 'container_runtime', return_value=False):
+            probe = C.probe(self.root, URL)
+        self.assertEqual(probe['gpus'], ['amd'])
+        self.assertEqual(probe['gpu_memory_bytes']['amd'], 16 * 1024**3)
+        self.assertEqual(probe['gpu_capabilities']['amd']['opencl_version'], 300)
+
     def test_disk_quota_subtracts_existing_usage_and_zero_absolute_is_unlimited(self):
         total, free, used = 100_000_000_000, 60_000_000_000, 20_000_000_000
         self.assertEqual(C.disk_allowance(total, free, used, {'disk_max_used_pct': 25,
@@ -620,6 +639,239 @@ class ClientProbe(Workspace):
 
 
 class Server(Workspace):
+    def amd_manifest(self):
+        return {**self.manifest(), 'release': {**RELEASE, 'plan_class': 'amd_vulkan_8b'},
+                'batch': 8, 'profile': {**PROFILE, 'gpu': 'amd', 'disk_bytes': 19327352832,
+                                       'memory_bytes': 6442450944}}
+
+    def amd_unit(self, manifest):
+        return dict(id=300, name=manifest['workunit_name'], app_name='usnm_qwen', app_version_num=100,
+                    batch=8, canonical_resultid=0, error_mask=0,
+                    transitioner_flags=2, transition_time=2147483647, need_validate=0,
+                    result_template_file='templates/qwen_out',
+                    xml_doc=b'<file_info><name>page.jpg</name></file_info>', **S.bounds(manifest))
+
+    def test_amd_stage_audit_admit_reserve_dispatch_preserves_one_workunit(self):
+        manifest = self.amd_manifest()
+        release = manifest['release']
+        path = self.root / 'fixture.json'
+        path.write_text(json.dumps(manifest))
+        tree = C.ET.parse(ROOT / 'contrib-compute/boinc/plan_class_spec.xml')
+        tree.write(self.root / 'plan_class_spec.xml')
+        request = dict(action='stage', fixture='fixture', run_id='a' * 32, release=release)
+        state = {'created': False}
+        unit = self.amd_unit(manifest)
+        results = []
+        def query(db, sql, args):
+            if 'FROM app_version' in sql:
+                return [dict(id=7)]
+            if 'FROM host' in sql:
+                return [dict(id=args[0])]
+            if 'FROM workunit w JOIN app' in sql:
+                self.assertEqual(args, (300, manifest['workunit_name']))
+                return [unit] if state['created'] else []
+            if 'FROM workunit' in sql:
+                return [dict(id=300)] if state['created'] else []
+            if 'FROM result' in sql:
+                return results
+            if 'FROM assignment' in sql:
+                return []
+            raise AssertionError(sql)
+        def create(argv, **kwargs):
+            self.assertTrue(argv[0].endswith('/bin/create_work'))
+            self.assertNotIn('--target_host', argv)
+            self.assertIn('--no_new_results', argv)
+            self.assertEqual(argv[argv.index('--app_version_num') + 1], '100')
+            self.assertEqual(argv[argv.index('--delay_bound') + 1], '259200')
+            state['created'] = True
+        db = MagicMock()
+        with patch.object(S, 'query', side_effect=query), patch.object(S, 'isolated_account'), \
+                patch.object(S, 'template_check', return_value='approved'), patch.object(S, 'fixture_inputs'), \
+                patch.object(S.subprocess, 'run', side_effect=create) as run:
+            staged = S.handle(request, self.root, self.root, db)
+            self.assertEqual(staged, dict(staged=True, audited_workunit_id=300, admission_changed=False))
+            self.assertEqual(run.call_count, 1)
+            # No re-stage/duplicate mutation, even with a different transport run.
+            with self.assertRaisesRegex(ValueError, 'reconcile'):
+                S.handle({**request, 'run_id': 'b' * 32}, self.root, self.root, db)
+            manifest['audited_workunit_id'] = 300
+            path.write_text(json.dumps(manifest))
+            request['action'] = 'reserve'
+            with self.assertRaisesRegex(ValueError, 'never auto-open'):
+                S.handle(request, self.root, self.root, db)
+            node = next(n for n in tree.getroot() if n.findtext('name') == 'amd_vulkan_8b')
+            node.find('min_wu_id').text = node.find('max_wu_id').text = '300'
+            tree.write(self.root / 'plan_class_spec.xml')
+            reserved = S.handle(request, self.root, self.root, db)
+            self.assertEqual(reserved['workunit'], manifest['workunit_name'])
+            original_xml = unit['xml_doc']
+            unit['xml_doc'] += b'\n'
+            with self.assertRaisesRegex(ValueError, 'payload changed'):
+                S.handle({**request, 'action': 'dispatch', 'host_id': 2}, self.root, self.root, db)
+            unit['xml_doc'] = original_xml
+            results.append(dict(id=1, server_state=2, sent_time=0, hostid=0, userid=0))
+            with self.assertRaisesRegex(ValueError, 'no results'):
+                S.handle({**request, 'action': 'dispatch', 'host_id': 2}, self.root, self.root, db)
+            results.clear()
+            # A close after reserve must prevent dispatch without creating or assigning anything.
+            node.find('min_wu_id').text, node.find('max_wu_id').text = '2', '1'
+            tree.write(self.root / 'plan_class_spec.xml')
+            with self.assertRaisesRegex(ValueError, 'never auto-open'):
+                S.handle({**request, 'action': 'dispatch', 'host_id': 2}, self.root, self.root, db)
+            node.find('min_wu_id').text = node.find('max_wu_id').text = '300'
+            tree.write(self.root / 'plan_class_spec.xml')
+            self.assertTrue(S.handle({**request, 'action': 'dispatch', 'host_id': 2}, self.root, self.root, db)['dispatched'])
+            self.assertEqual(run.call_count, 1, 'dispatch must not create a fresh out-of-bound unit')
+            self.assertEqual([call.args[1] for call in db.cursor.return_value.execute.call_args_list],
+                             [(2, 300), (3, 300)])
+            with self.assertRaisesRegex(ValueError, 'duplicate dispatch'):
+                S.handle({**request, 'action': 'dispatch', 'host_id': 2}, self.root, self.root, db)
+            with patch.object(S, 'status', return_value={'state': 'validated'}) as status:
+                self.assertEqual(S.handle({**request, 'action': 'status'}, self.root, self.root, db)['state'], 'validated')
+                record = status.call_args.args[2]
+                self.assertEqual(record['workunit'], manifest['workunit_name'])
+                self.assertEqual(record['audited_workunit_id'], 300)
+                self.assertEqual(record['app_version_id'], 7)
+                self.assertEqual(record['host_id'], 2)
+
+    def test_audited_amd_rejects_changed_science_payload_and_sent_results(self):
+        manifest = {**self.amd_manifest(), 'audited_workunit_id': 300}
+        unit = self.amd_unit(manifest)
+        results = [dict(id=i, server_state=2, sent_time=0, hostid=0, userid=0) for i in (1, 2)]
+        def check(wu=unit, replicas=None, assignments=None):
+            with patch.object(S, 'query', side_effect=[[wu], replicas or [], assignments or []]):
+                return S.audited_workunit(None, manifest)
+        self.assertEqual(check()['id'], 300)
+        for key, bad in [('batch', 18), ('canonical_resultid', 1), ('error_mask', 1),
+                         ('app_name', 'usnm_surya'), ('app_version_num', 101),
+                         ('min_quorum', 1), ('target_nresults', 1), ('rsc_disk_bound', 1),
+                         ('transitioner_flags', 0), ('transition_time', 1), ('need_validate', 1),
+                         ('result_template_file', 'templates/other'),
+                         ('xml_doc', '<file_info><name>other</name></file_info>')]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                check(wu={**unit, key: bad})
+        for key, bad in [('server_state', 4), ('sent_time', 1), ('hostid', 2), ('userid', 42)]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                check(replicas=[{**results[0], key: bad}, results[1]])
+        with self.assertRaises(ValueError):
+            check(replicas=results)
+        with self.assertRaises(ValueError):
+            check(assignments=[dict(id=1)])
+        with patch.object(S, 'query', return_value=[]), self.assertRaises(ValueError):
+            S.audited_workunit(None, manifest)
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP required for concurrent operator stop')
+    def test_amd_dispatch_holds_policy_lock_until_commit_against_real_operator_stop(self):
+        manifest = {**self.amd_manifest(), 'audited_workunit_id': 300}
+        unit = self.amd_unit(manifest)
+        (self.root / 'fixture.json').write_text(json.dumps(manifest))
+        tree = C.ET.parse(ROOT / 'contrib-compute/boinc/plan_class_spec.xml')
+        node = next(n for n in tree.getroot() if n.findtext('name') == 'amd_vulkan_8b')
+        node.find('min_wu_id').text = node.find('max_wu_id').text = '300'
+        tree.write(self.root / 'plan_class_spec.xml')
+        record = dict(run_id='a' * 32, release=manifest['release'], workunit=manifest['workunit_name'],
+                      app_version_id=7, released=False, input_template_sha256='approved',
+                      manifest_sha256=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest(),
+                      audited_workunit_id=300, workunit_xml_sha256=hashlib.sha256(unit['xml_doc']).hexdigest())
+        journal = self.root / 'fixture.reservation.json'
+        journal.write_text(json.dumps(record))
+        request = dict(action='dispatch', fixture='fixture', run_id='a' * 32,
+                       release=manifest['release'], host_id=2)
+        stop = []
+        def hashing(_project, _manifest):
+            process = subprocess.Popen(
+                ['php', '-r', 'require $argv[1]; echo "started\\n"; flush(); '
+                 'native_qwen_cohort_write($argv[2], "amd_vulkan_8b", 0, true); echo "stopped\\n";',
+                 str(HERE / 'native-qwen-cohort.php'), str(self.root)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stop.append(process)
+            self.assertEqual(process.stdout.readline(), 'started\n')
+            with self.assertRaises(subprocess.TimeoutExpired):
+                process.wait(timeout=.2)
+        db = MagicMock()
+        def commit():
+            self.assertIsNone(stop[0].poll(), 'operator stop must remain blocked through assignment commit')
+            self.assertEqual(S.scheduler_profile(self.root, manifest)['gpu'], 'amd')
+        db.commit.side_effect = commit
+        try:
+            with patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
+                    patch.object(S, 'fixture_inputs', side_effect=hashing), \
+                    patch.object(S, 'audited_workunit', return_value=unit), \
+                    patch.object(S, 'query', return_value=[{'id': 2}]):
+                self.assertTrue(S.handle(request, self.root, self.root, db)['dispatched'])
+            self.assertEqual([call.args[1] for call in db.cursor.return_value.execute.call_args_list],
+                             [(2, 300), (3, 300)])
+            stdout, stderr = stop[0].communicate(timeout=5)
+            self.assertEqual(stop[0].returncode, 0, stderr)
+            self.assertEqual(stdout, 'stopped\n')
+            # When stop wins first, the same real policy refuses dispatch before hashing,
+            # durable intent or assignment mutations.
+            journal.write_text(json.dumps(record))
+            db.reset_mock()
+            with patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
+                    patch.object(S, 'query', return_value=[{'id': 2}]), \
+                    patch.object(S, 'fixture_inputs') as inputs, patch.object(S, 'durable') as durable, \
+                    self.assertRaisesRegex(ValueError, 'never auto-open'):
+                S.handle(request, self.root, self.root, db)
+            inputs.assert_not_called()
+            durable.assert_not_called()
+            db.cursor.assert_not_called()
+            db.commit.assert_not_called()
+        finally:
+            for process in stop:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate()
+
+    def test_audited_status_queries_exact_reserved_id_not_only_name(self):
+        manifest = {**self.amd_manifest(), 'audited_workunit_id': 300}
+        record = dict(run_id='a' * 32, release=manifest['release'],
+                      workunit=manifest['workunit_name'], audited_workunit_id=300)
+        with patch.object(S, 'query', return_value=[]) as query:
+            self.assertEqual(S.status(None, self.root, record, manifest)['state'], 'pending')
+            self.assertIn('AND id=%s', query.call_args.args[1])
+            self.assertEqual(query.call_args.args[2], (manifest['workunit_name'], 300))
+
+    def test_amd_uncertain_stage_persists_intent_and_never_recreates(self):
+        manifest = self.amd_manifest()
+        (self.root / 'fixture.json').write_text(json.dumps(manifest))
+        (self.root / 'plan_class_spec.xml').write_bytes((ROOT / 'contrib-compute/boinc/plan_class_spec.xml').read_bytes())
+        request = dict(action='stage', fixture='fixture', run_id='a' * 32, release=manifest['release'])
+        with patch.object(S, 'isolated_account'), patch.object(S, 'template_check'), \
+                patch.object(S, 'registered_version', return_value=7), patch.object(S, 'fixture_inputs'), \
+                patch.object(S, 'query', return_value=[]), \
+                patch.object(S.subprocess, 'run', side_effect=subprocess.TimeoutExpired('create_work', 60)) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                S.handle(request, self.root, self.root, MagicMock())
+            journal = json.loads((self.root / 'fixture.stage.json').read_text())
+            self.assertTrue(journal['stage_intent'])
+            with self.assertRaisesRegex(ValueError, 'reconcile'):
+                S.handle({**request, 'run_id': 'b' * 32}, self.root, self.root, MagicMock())
+            self.assertEqual(run.call_count, 1)
+
+    def test_amd_fixture_and_scheduler_profile_remain_closed_until_operator_admission(self):
+        release = {**RELEASE, 'plan_class': 'amd_vulkan_8b'}
+        manifest = {**self.manifest(), 'release': release, 'batch': 8,
+                    'audited_workunit_id': 300,
+                    'profile': {**PROFILE, 'gpu': 'amd', 'disk_bytes': 19327352832, 'memory_bytes': 6442450944}}
+        (self.root / 'fixture.json').write_text(json.dumps(manifest))
+        self.assertEqual(S.fixture_load(self.root, 'fixture', release), manifest)
+        source = ROOT / 'contrib-compute/boinc/plan_class_spec.xml'
+        tree = C.ET.parse(source)
+        target = self.root / 'plan_class_spec.xml'
+        tree.write(target)
+        with self.assertRaisesRegex(ValueError, 'never auto-open cohorts'):
+            S.scheduler_profile(self.root, manifest)
+        node = next(n for n in tree.getroot() if n.findtext('name') == 'amd_vulkan_8b')
+        node.find('min_wu_id').text = node.find('max_wu_id').text = '300'
+        tree.write(target)
+        profile = S.scheduler_profile(self.root, manifest)
+        self.assertEqual(profile['gpu'], 'amd')
+        self.assertEqual(profile['gpu_memory_bytes'], 7_000_000_000)
+        self.assertEqual(profile['client_version'], max(80211, PROFILE['client_version']))
+        with self.assertRaisesRegex(ValueError, 'GPU differs'):
+            S.scheduler_profile(self.root, {**manifest, 'profile': {**PROFILE, 'gpu': 'intel'}})
+
     def setUp(self):
         super().setUp()
         (self.root / 'config.xml').write_text('<boinc><config><enable_assignment>1</enable_assignment></config></boinc>')
@@ -741,6 +993,30 @@ class Server(Workspace):
                            ('--min_quorum', '2'), ('--target_nresults', '2')]:
             self.assertEqual(args[args.index(key) + 1], value)
 
+    def test_non_amd_audited_fixture_and_reservation_refuse_before_mutations(self):
+        path = self.root / 'fixture.json'
+        for plan in ('docker_mt_2b', 'mt', 'apple_gpu_8b', 'intel_vulkan_8b',
+                     'nvidia_vulkan_8b', 'nvidia_cuda_8b', 'nvidia_cuda_2b'):
+            release = {**RELEASE, 'plan_class': plan}
+            manifest = {**self.manifest(), 'release': release, 'audited_workunit_id': 300}
+            path.write_text(json.dumps(manifest))
+            with self.subTest(plan=plan):
+                for staging in (False, True):
+                    with self.assertRaisesRegex(ValueError, 'AMD zero-result targeted staging'):
+                        S.fixture_load(self.root, 'fixture', release, staging=staging)
+                db = MagicMock()
+                with patch.object(S, 'query') as query, patch.object(S, 'durable') as durable, \
+                        patch.object(S.subprocess, 'run') as run, \
+                        self.assertRaisesRegex(ValueError, 'AMD zero-result targeted staging'):
+                    S.handle(dict(action='reserve', fixture='fixture', run_id='a' * 32, release=release),
+                             self.root, self.root, db)
+                query.assert_not_called()
+                durable.assert_not_called()
+                run.assert_not_called()
+                self.assertEqual(db.mock_calls, [])
+                self.assertFalse((self.root / 'fixture.reservation.json').exists())
+                self.assertFalse((self.root / 'fixture.stage.json').exists())
+
     def test_output_contract_requires_real_inference_and_no_unit_error(self):
         rule = self.manifest()['outputs'][0]
         S.output_check(DATA, rule)
@@ -778,6 +1054,7 @@ class Server(Workspace):
 
     def test_dispatch_adds_only_exact_host_peer_assignments(self):
         manifest = self.manifest()
+        (self.root / 'fixture.json').write_text(json.dumps(manifest))
         record = dict(run_id='a' * 32, release=RELEASE, workunit=manifest['workunit_name'],
                       app_version_id=7, released=False, input_template_sha256='approved',
                       manifest_sha256=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest())
@@ -797,9 +1074,15 @@ class Server(Workspace):
             self.assertFalse(visibility['snapshot'], 'host lookup transaction must end before external create_work')
             visibility['created'] = True
         db.commit.side_effect = commit
-        with patch.object(S, 'fixture_load', return_value=manifest), patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
-                patch.object(S, 'query', side_effect=query), patch.object(S.subprocess, 'run', side_effect=create):
+        with patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
+                patch.object(S, 'query', side_effect=query), patch.object(S.subprocess, 'run', side_effect=create) as run:
             result = S.handle(request, self.root, self.root, db)
+        run.assert_called_once()
+        args = run.call_args.args[0]
+        self.assertEqual(args[0], str(self.root / 'bin/create_work'))
+        self.assertEqual(args[args.index('--target_host') + 1], '2')
+        self.assertEqual(args[args.index('--target_nresults') + 1], '2')
+        self.assertNotIn('--no_new_results', args)
         self.assertTrue(result['dispatched'])
         sql, values = db.cursor.return_value.execute.call_args.args
         self.assertIn('assignment', sql)
