@@ -49,8 +49,11 @@ before hardware qualification. After signed publication and runtime deployment,
 the reviewed AMD-only `--general --apply` promotion removes AMD workunit bounds
 and persists `usnm-amd-general-admission-v1` under the same journal/policy lock.
 Startup preserves that mode; a later explicit AMD stop removes it and remains
-closed across restart. Existing Intel/NVIDIA Vulkan `17099–17100` and every other
-class bound survive unchanged. No workunit/result, volunteer attachment/preference
+closed across restart. Every other class's **fresh live** bounds survive unchanged.
+The preparation snapshot had Intel/NVIDIA `17099–17100`, but #860 closed that
+pilot under its own guards at 03:08 UTC and restored the original container-18
+admission. Preserve that newer closure; never restore the stale open snapshot.
+No workunit/result, volunteer attachment/preference
 or forced-client-dispatch mutations are part of this publication/promotion.
 Initial volunteer use is **hardware-unverified**; actual RX 9070 XT qualification
 remains pending under #885, not a prerequisite for each eligible volunteer.
@@ -61,13 +64,16 @@ in the #885/#529 deployment receipts. Preparation is not publication.
 ## Immutable publication candidates
 
 All images are in `crusnmprodffapzy.azurecr.io`. Version **1.7** is reserved for
-both AMD sibling platforms (the fresh live inventory ended at 1.6).
+Linux and **1.8** for Windows (the fresh live inventory ended at 1.6). Distinct
+numeric versions preserve the optional diagnostic adapter's intentionally strict
+unambiguous app/version routing. Earlier same-number Windows candidates were
+never published or registered and are superseded, not reused.
 
 | Image repository / purpose                  | SHA256 digest                                                      | ACR build |
 | ------------------------------------------- | ------------------------------------------------------------------ | --------- |
 | `usnm-boinc-base`, new pinned staging tool  | `7526fa79c6259c4d12d3c057da4d3bcff24138f1ce44246de800786e218265a0` | `cha1`    |
 | `usnm-boinc-appver`, signed Linux x64 1.7   | `57b0de0793df18a15701103ce2b8061214cacc49c5c496ff5ae2f6240a9f5303` | `cha7`    |
-| `usnm-boinc-appver`, signed Windows x64 1.7 | `68a8811eb516d61d8dfa53696636118ed742ceb19b5e877eaff7534665281998` | `cha8`    |
+| `usnm-boinc-appver`, signed Windows x64 1.8 | `495f9c269291f13ec99439c83e6fd094f3c9cf343bcb42f4972130256693f02d` | `chaa`    |
 | `usnm-boinc-bridge`, additive runtime       | `d417a2ad0469c2b0c54787a0e466d6e76cb78577e40a1e776870bef252b4da9e` | `cha6`    |
 
 The runtime overlay source is `2cb09db4e8a8f77c3749ca7d41249eba4ecc2249`.
