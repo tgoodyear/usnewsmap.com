@@ -107,6 +107,21 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --stop --apply
 ```
 
+`nvidia_vulkan_8b` can also take general admission, as `amd_vulkan_8b` does: no workunit
+bounds, so any NVIDIA host the class admits takes any Qwen work. It qualified on 17 audited
+units on usnm-rtx-compute (RTX 2060 SUPER, 13 valid and none failed, October 2026). The
+CUDA classes have no such record and stay bounded. Preview, then apply:
+
+```sh
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --plan-class nvidia_vulkan_8b --general
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --plan-class nvidia_vulkan_8b --general --apply
+```
+
+The marker comment `usnm-nvidia-general-admission-v1` records it, and
+`refresh-plan-policy.py` keeps it across restarts. A bounded window for another class leaves
+it as it is; a window that includes `nvidia_vulkan_8b` (its own, or `shared_8b`) replaces it
+with that window's bounds, and the operator stop above closes it.
+
 The helper checks Qwen identity, model batch, disk bound, independent quorum and
 target of 2, and two unsent results. It journals the old plan, atomically opens
 one WU in one class and closes the other. Stock scheduler range and batch checks
