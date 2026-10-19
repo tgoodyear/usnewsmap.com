@@ -1100,7 +1100,9 @@ pub async fn seal_restarting(
         )),
     };
     let Err(e) = result else { return result };
-    let Some(original) = guard.disarm() else {
+    // The guard stays armed until the request is done: a release cancelled
+    // during it still puts the config back from the guard's own task.
+    let Some(original) = guard.pending() else {
         return Err(e);
     };
     let restored =
@@ -1111,6 +1113,7 @@ pub async fn seal_restarting(
                 RESTORE_TIMEOUT.as_secs()
             )),
         };
+    guard.disarm();
     match restored {
         Ok(()) => Err(anyhow::anyhow!(
             "{e:#}; `{index_id}`'s merge policy was put back"
@@ -1155,6 +1158,10 @@ impl RestoreOnDrop {
     }
 
     /// The config to put back, if it still has to be.
+    fn pending(&self) -> Option<Value> {
+        self.slot().clone()
+    }
+
     fn disarm(&self) -> Option<Value> {
         self.slot().take()
     }
@@ -1828,8 +1835,12 @@ mod tests {
 
     /// A settled writer node for `seal_restarting`: its config has a
     /// `limit_merge` policy with factor 10; every PUT of it is recorded,
-    /// and those after the first fail with `fail_restore`.
-    async fn config_node(fail_restore: bool) -> (String, Arc<Mutex<Vec<Value>>>) {
+    /// and those after the first fail with `fail_restore`; the second takes 3 s
+    /// with `slow_restore`.
+    async fn config_node(
+        fail_restore: bool,
+        slow_restore: bool,
+    ) -> (String, Arc<Mutex<Vec<Value>>>) {
         use axum::http::StatusCode;
         use axum::routing::get;
         let puts: Arc<Mutex<Vec<Value>>> = Arc::default();
@@ -1862,9 +1873,15 @@ mod tests {
                     }}))
                 })
                 .put(move |axum::Json(body): axum::Json<Value>| async move {
-                    let mut puts = p.lock().unwrap();
-                    puts.push(body);
-                    if fail_restore && puts.len() > 1 {
+                    let n = {
+                        let mut puts = p.lock().unwrap();
+                        puts.push(body);
+                        puts.len()
+                    };
+                    if slow_restore && n == 2 {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    }
+                    if fail_restore && n > 1 {
                         StatusCode::INTERNAL_SERVER_ERROR
                     } else {
                         StatusCode::OK
@@ -1904,7 +1921,7 @@ mod tests {
     }
 
     async fn seal_with(restarts: bool, fail_restore: bool) -> (String, Vec<u64>) {
-        let (base, puts) = config_node(fail_restore).await;
+        let (base, puts) = config_node(fail_restore, false).await;
         let http = reqwest::Client::new();
         let node = Node {
             http: &http,
@@ -1965,7 +1982,7 @@ mod tests {
                 std::future::pending().await
             }
         }
-        let (base, puts) = config_node(false).await;
+        let (base, puts) = config_node(false, false).await;
         let http = reqwest::Client::new();
         let node = Node {
             http: &http,
@@ -1985,6 +2002,41 @@ mod tests {
         .await
         .expect("the config was put back");
         assert_eq!(factors(&puts), [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    /// A release cancelled while it puts the config back after an error
+    /// still has the guard's task put it back.
+    #[tokio::test]
+    async fn a_release_cancelled_during_the_restore_still_puts_the_merge_policy_back() {
+        let (base, puts) = config_node(false, true).await;
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let events = NodeEvents::default();
+        let wait = quick();
+        let sealing = seal_restarting(
+            &node,
+            &FakeRestart(false),
+            "idx",
+            20,
+            T,
+            &events,
+            &wait,
+            None,
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(500), sealing)
+            .await
+            .is_err());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while factors(&puts).len() < 3 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the guard put the config back");
+        assert_eq!(factors(&puts), [FINAL_MERGE_FACTOR, 10, 10]);
     }
 
     fn quick() -> MergeWait {

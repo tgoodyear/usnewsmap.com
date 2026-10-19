@@ -1560,9 +1560,12 @@ impl WriterProcess {
                 .status()
                 .await;
         }
-        let mut stopped = tokio::time::timeout(self.grace, exit.wait_for(Option::is_some))
-            .await
-            .is_ok();
+        // Only the supervisor's own notice confirms the exit: a channel it
+        // closed without one (it was aborted) confirms nothing.
+        let mut stopped = matches!(
+            tokio::time::timeout(self.grace, exit.wait_for(Option::is_some)).await,
+            Ok(Ok(_))
+        );
         if !stopped {
             // Expected after a release: the closed index's ingest shards
             // have no pipeline left to drain them, and the ingester waits
@@ -1576,9 +1579,10 @@ impl WriterProcess {
                 self.grace.as_secs()
             );
             kill.notify_one();
-            stopped = tokio::time::timeout(self.kill_wait, exit.wait_for(Option::is_some))
-                .await
-                .is_ok();
+            stopped = matches!(
+                tokio::time::timeout(self.kill_wait, exit.wait_for(Option::is_some)).await,
+                Ok(Ok(_))
+            );
         }
         if !stopped {
             // Dropping the supervisor's child kills it (`kill_on_drop`),
@@ -2157,6 +2161,23 @@ mod tests {
         wait_for_file(&trapped).await;
         assert!(pid_alive(new));
         writer.abort();
+        health.abort();
+    }
+
+    /// A run whose supervisor was aborted (a stop cancelled earlier) has
+    /// no one left to confirm its exit: the restart fails.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_restart_fails_once_the_supervisor_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (writer, trapped, health) = stubborn_writer(dir.path(), Duration::from_secs(2)).await;
+        writer.spawn().unwrap();
+        wait_for_file(&trapped).await;
+        let old = writer.pid().unwrap();
+        writer.abort();
+        let err = format!("{:#}", writer.restart().await.unwrap_err());
+        assert!(err.contains("not confirmed to have exited"), "{err}");
+        assert_eq!(writer.pid(), Some(old), "no second writer was started");
         health.abort();
     }
 
