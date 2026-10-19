@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -758,6 +759,69 @@ class Server(Workspace):
             check(assignments=[dict(id=1)])
         with patch.object(S, 'query', return_value=[]), self.assertRaises(ValueError):
             S.audited_workunit(None, manifest)
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP required for concurrent operator stop')
+    def test_amd_dispatch_holds_policy_lock_until_commit_against_real_operator_stop(self):
+        manifest = {**self.amd_manifest(), 'audited_workunit_id': 300}
+        unit = self.amd_unit(manifest)
+        (self.root / 'fixture.json').write_text(json.dumps(manifest))
+        tree = C.ET.parse(ROOT / 'contrib-compute/boinc/plan_class_spec.xml')
+        node = next(n for n in tree.getroot() if n.findtext('name') == 'amd_vulkan_8b')
+        node.find('min_wu_id').text = node.find('max_wu_id').text = '300'
+        tree.write(self.root / 'plan_class_spec.xml')
+        record = dict(run_id='a' * 32, release=manifest['release'], workunit=manifest['workunit_name'],
+                      app_version_id=7, released=False, input_template_sha256='approved',
+                      manifest_sha256=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest(),
+                      audited_workunit_id=300, workunit_xml_sha256=hashlib.sha256(unit['xml_doc']).hexdigest())
+        journal = self.root / 'fixture.reservation.json'
+        journal.write_text(json.dumps(record))
+        request = dict(action='dispatch', fixture='fixture', run_id='a' * 32,
+                       release=manifest['release'], host_id=2)
+        stop = []
+        def hashing(_project, _manifest):
+            process = subprocess.Popen(
+                ['php', '-r', 'require $argv[1]; echo "started\\n"; flush(); '
+                 'native_qwen_cohort_write($argv[2], "amd_vulkan_8b", 0, true); echo "stopped\\n";',
+                 str(HERE / 'native-qwen-cohort.php'), str(self.root)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stop.append(process)
+            self.assertEqual(process.stdout.readline(), 'started\n')
+            with self.assertRaises(subprocess.TimeoutExpired):
+                process.wait(timeout=.2)
+        db = MagicMock()
+        def commit():
+            self.assertIsNone(stop[0].poll(), 'operator stop must remain blocked through assignment commit')
+            self.assertEqual(S.scheduler_profile(self.root, manifest)['gpu'], 'amd')
+        db.commit.side_effect = commit
+        try:
+            with patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
+                    patch.object(S, 'fixture_inputs', side_effect=hashing), \
+                    patch.object(S, 'audited_workunit', return_value=unit), \
+                    patch.object(S, 'query', return_value=[{'id': 2}]):
+                self.assertTrue(S.handle(request, self.root, self.root, db)['dispatched'])
+            self.assertEqual([call.args[1] for call in db.cursor.return_value.execute.call_args_list],
+                             [(2, 300), (3, 300)])
+            stdout, stderr = stop[0].communicate(timeout=5)
+            self.assertEqual(stop[0].returncode, 0, stderr)
+            self.assertEqual(stdout, 'stopped\n')
+            # When stop wins first, the same real policy refuses dispatch before hashing,
+            # durable intent or assignment mutations.
+            journal.write_text(json.dumps(record))
+            db.reset_mock()
+            with patch.object(S, 'isolated_account'), patch.object(S, 'template_check', return_value='approved'), \
+                    patch.object(S, 'query', return_value=[{'id': 2}]), \
+                    patch.object(S, 'fixture_inputs') as inputs, patch.object(S, 'durable') as durable, \
+                    self.assertRaisesRegex(ValueError, 'never auto-open'):
+                S.handle(request, self.root, self.root, db)
+            inputs.assert_not_called()
+            durable.assert_not_called()
+            db.cursor.assert_not_called()
+            db.commit.assert_not_called()
+        finally:
+            for process in stop:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate()
 
     def test_audited_status_queries_exact_reserved_id_not_only_name(self):
         manifest = {**self.amd_manifest(), 'audited_workunit_id': 300}

@@ -113,7 +113,11 @@ unaccepted scientific state and targeted staging without results against the
 **exact** operator window. Dispatch rechecks those gates under database locks,
 adds only the client and reviewed peer host assignments to that same workunit,
 and journals intent; it never creates a replacement workunit. Closing the window
-after reservation prevents dispatch. Status, independent validation and canonical
+after reservation prevents dispatch. Dispatch holds the shared cohort-policy
+lock from the admission recheck through assignment commit: a concurrent operator
+stop or policy refresh cannot complete in the middle of that interval. If stop
+wins the lock first, dispatch observes the closed policy and refuses.
+Status, independent validation and canonical
 collection continue to track the reserved workunit identity. Finally:
 
 ```sh

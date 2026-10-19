@@ -513,26 +513,31 @@ def handle(request, project, fixtures, db):
             if len(query(db, 'SELECT id FROM host WHERE id=%s', (host_id,))) != 1:
                 raise ValueError('unknown client host')
             if manifest.get('audited_workunit_id') is not None:
-                # Recheck admission and the locked staged unit immediately before assignments.
-                scheduler_profile(project, manifest)
-                fixture_inputs(project, manifest)
-                unit = audited_workunit(db, manifest)
-                xml = unit['xml_doc']
-                if record['workunit_xml_sha256'] != hashlib.sha256(xml.encode() if isinstance(xml, str) else xml).hexdigest():
-                    raise ValueError('audited workunit payload changed after reservation')
-                record.update(host_id=host_id, dispatch_intent=True)
-                durable(journal, record)
-                cursor = db.cursor()
-                try:
-                    for host in [host_id, *manifest['peer_host_ids']]:
-                        cursor.execute('INSERT INTO assignment (create_time, target_id, target_type, multi, workunitid) '
-                                       'VALUES (UNIX_TIMESTAMP(), %s, 1, 0, %s)', (host, unit['id']))
-                    db.commit()
-                except BaseException:
-                    db.rollback()
-                    raise
-                finally:
-                    cursor.close()
+                # Serialize admission through commit with operator stop/policy refresh.
+                lock_path = project / '.native-qwen-cohort.lock'
+                if lock_path.is_symlink() or (project / 'plan_class_spec.xml').is_symlink():
+                    raise ValueError('refusing symlinked cohort policy or lock')
+                with lock_path.open('a') as policy_lock:
+                    fcntl.flock(policy_lock, fcntl.LOCK_SH)
+                    scheduler_profile(project, manifest)
+                    fixture_inputs(project, manifest)
+                    unit = audited_workunit(db, manifest)
+                    xml = unit['xml_doc']
+                    if record['workunit_xml_sha256'] != hashlib.sha256(xml.encode() if isinstance(xml, str) else xml).hexdigest():
+                        raise ValueError('audited workunit payload changed after reservation')
+                    record.update(host_id=host_id, dispatch_intent=True)
+                    durable(journal, record)
+                    cursor = db.cursor()
+                    try:
+                        for host in [host_id, *manifest['peer_host_ids']]:
+                            cursor.execute('INSERT INTO assignment (create_time, target_id, target_type, multi, workunitid) '
+                                           'VALUES (UNIX_TIMESTAMP(), %s, 1, 0, %s)', (host, unit['id']))
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+                    finally:
+                        cursor.close()
                 record['dispatched'] = True
                 durable(journal, record)
                 return {'dispatched': True}
