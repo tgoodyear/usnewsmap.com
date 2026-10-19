@@ -102,12 +102,151 @@ fn report_failure(work: &Path, report: &str) -> std::io::Result<()> {
 }
 
 fn run_slot_reporting(work: &Path) -> anyhow::Result<()> {
-    run_slot(work).inspect_err(|_| {
+    run_slot(work).inspect_err(|e| {
+        // The error chain and whatever diag.txt was written, so the server sees why.
+        let mut evidence = format!("== error\n{e:#}\n");
+        if let Ok(diag) = std::fs::read(resolve_slot_file(work, DIAG_FILE)) {
+            evidence.push_str(&String::from_utf8_lossy(&diag));
+        }
         let _ = report_failure(
             work,
-            "USNM_QWEN_FAILURE {\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}",
+            &format!(
+                "USNM_QWEN_FAILURE {{\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}}\n{}",
+                diag_block(evidence.as_bytes())
+            ),
         );
     })
+}
+
+/// The last `n` bytes of a log, redacted before the cut: a cut can then split only an
+/// already-redacted `.../<file>`, never a name, and a long single-line message (an HTTP error
+/// body) keeps its end.
+fn redacted_tail(s: &str, n: usize) -> String {
+    tail(&redact_paths(s), n).to_string()
+}
+
+/// Most of a failed task's diag.txt that its stderr carries. BOINC uploads no output files
+/// for a failed task, so this is the only way the reason reaches the server.
+const DIAG_EXCERPT_BYTES: usize = 6144;
+const DIAG_HEAD_BYTES: usize = 2048;
+
+/// Replaces absolute paths (`/home/user/...`, `C:\\Users\\...`, `~/...`, `\\\\server\\...`)
+/// with `.../<file>`, so the excerpt names files without exposing a volunteer's name or
+/// directory layout. Paths can hold spaces and brackets (`C:\\Users\\Alice Smith\\...`,
+/// `Program Files (x86)`), so a path opened by a quote runs to the closing quote, and an
+/// unquoted one runs through the last chunk on its line that has a path separator. This errs
+/// toward redacting too much.
+fn redact_paths(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        out.push_str(&redact_line(line));
+    }
+    out
+}
+
+fn path_starts_at(s: &str) -> bool {
+    let b = s.as_bytes();
+    let sep = |c: u8| c == b'/' || c == b'\\';
+    if s.starts_with("~/") || s.starts_with("\\\\") {
+        return true;
+    }
+    if b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && sep(b[2]) {
+        return true;
+    }
+    // `/x/...`: a slash, a name, another slash (not `//` or a lone `/`).
+    b.first() == Some(&b'/')
+        && b.len() > 2
+        && b[1] != b'/'
+        && !b[1].is_ascii_whitespace()
+        && s[1..]
+            .split(char::is_whitespace)
+            .next()
+            .is_some_and(|t| t.contains('/'))
+}
+
+fn redact_line(line: &str) -> String {
+    let is_boundary = |c: char| c.is_whitespace() || "\"'`=,([{<:;|".contains(c);
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    let mut prev: Option<char> = None;
+    while let Some((i, c)) = rest.char_indices().find(|&(i, c)| {
+        let before = if i == 0 {
+            prev
+        } else {
+            rest[..i].chars().next_back()
+        };
+        before.is_none_or(is_boundary)
+            && (c == '/' || c == '~' || c == '\\' || c.is_ascii_alphabetic())
+            && path_starts_at(&rest[i..])
+    }) {
+        let _ = c;
+        out.push_str(&rest[..i]);
+        let quote = if i == 0 {
+            prev
+        } else {
+            rest[..i].chars().next_back()
+        }
+        .filter(|q| "\"'`".contains(*q));
+        let tail = &rest[i..];
+        let body_end = tail.find('\n').unwrap_or(tail.len());
+        // Through the last whitespace-separated chunk that holds a separator.
+        let mut sep_end = 0;
+        let mut pos = 0;
+        for chunk in tail[..body_end].split_inclusive(char::is_whitespace) {
+            let word = chunk.trim_end();
+            if word.contains(['/', '\\']) {
+                sep_end = pos + word.len();
+            }
+            pos += chunk.len();
+        }
+        // A quoted path ends at the last matching quote on its line, not the first: names
+        // like O'Connor hold the quote character. Whichever reaches further wins.
+        let end = match quote.and_then(|q| tail[..body_end].rfind(q)) {
+            Some(close) => close.max(sep_end),
+            None => sep_end,
+        };
+        let path = &tail[..end];
+        let name = path
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("");
+        out.push_str(".../");
+        out.push_str(name);
+        prev = path.chars().next_back();
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The diag excerpt for a failed task's stderr: paths redacted, at most
+/// `DIAG_EXCERPT_BYTES`, keeping the head (host, GPU and unit sections) and the tail (the
+/// llama-server log and the reason the unit stopped).
+fn diag_block(diag: &[u8]) -> String {
+    let text = redact_paths(&String::from_utf8_lossy(diag));
+    let body = if text.len() <= DIAG_EXCERPT_BYTES {
+        text
+    } else {
+        let mut head = DIAG_HEAD_BYTES;
+        while !text.is_char_boundary(head) {
+            head -= 1;
+        }
+        let mut tail = text.len() - (DIAG_EXCERPT_BYTES - DIAG_HEAD_BYTES);
+        while !text.is_char_boundary(tail) {
+            tail += 1;
+        }
+        format!(
+            "{}\n[... {} bytes omitted ...]\n{}",
+            &text[..head],
+            tail - head,
+            &text[tail..]
+        )
+    };
+    format!(
+        "USNM_QWEN_DIAG_BEGIN\n{}\nUSNM_QWEN_DIAG_END",
+        body.trim_end()
+    )
 }
 
 fn failure_report(result: &ResultManifest, diag: &[u8]) -> String {
@@ -372,7 +511,7 @@ fn device_probe(cmd: &mut Command, server_bin: &Path) -> Result<std::process::Ou
     if !out.status.success() {
         return Err(format!(
             "GPU device probe failed: {}",
-            tail(&String::from_utf8_lossy(&out.stderr), 1024)
+            redacted_tail(&String::from_utf8_lossy(&out.stderr), 1024)
         ));
     }
     Ok(out)
@@ -1191,7 +1330,7 @@ pub fn chat_completion(
     if status != 200 {
         bail!(
             "llama-server status {status}: {}",
-            tail(&String::from_utf8_lossy(&resp), 256)
+            redacted_tail(&String::from_utf8_lossy(&resp), 256)
         );
     }
     let v: serde_json::Value = serde_json::from_slice(&resp).context("chat response JSON")?;
@@ -1316,7 +1455,7 @@ impl Server {
                 let log_tail = std::fs::read_to_string(&srv.log_path).unwrap_or_default();
                 bail!(
                     "llama-server exited ({status}) before ready: {}",
-                    tail(&log_tail, 512)
+                    redacted_tail(&log_tail, 512)
                 );
             }
             if let Ok((200, _)) = http_request(port, "GET", "/health", None, Duration::from_secs(2))
@@ -1328,7 +1467,7 @@ impl Server {
                 bail!(
                     "llama-server did not become healthy in {}s: {}",
                     load_deadline.as_secs(),
-                    tail(&log_tail, 512)
+                    redacted_tail(&log_tail, 512)
                 );
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -1562,7 +1701,14 @@ pub fn run_slot_with(
     if result.outcome == Outcome::Ok {
         write_atomic(&finish_out, b"0\n")?;
     } else {
-        report_failure(work, &failure_report(&result, &diag_bytes))?;
+        report_failure(
+            work,
+            &format!(
+                "{}\n{}",
+                failure_report(&result, &diag_bytes),
+                diag_block(&diag_bytes)
+            ),
+        )?;
         write_atomic(&finish_out, b"1\n")?;
     }
     Ok(())
@@ -1762,7 +1908,11 @@ fn run_crops(
     let engine_ms = ms(started);
     if let Some(ref srv) = srv_guard {
         if let Ok(log_text) = std::fs::read_to_string(&srv.log_path) {
-            diag.section("llama-server.log (tail)", tail(&log_text, 2048), 2048);
+            diag.section(
+                "llama-server.log (tail)",
+                &redacted_tail(&log_text, 2048),
+                2048,
+            );
         }
     }
     drop(srv_guard);
@@ -1960,7 +2110,11 @@ mod tests {
             assert!(stderr.starts_with("existing BOINC diagnostic\nUSNM_QWEN_FAILURE "));
             assert_eq!(stderr.matches("USNM_QWEN_FAILURE ").count(), 1);
             assert!(stderr.contains("\"outcome\":\"unit_error\""));
-            assert!(stderr.len() < 2048);
+            assert!(
+                stderr.contains("USNM_QWEN_DIAG_BEGIN\n")
+                    && stderr.contains("\nUSNM_QWEN_DIAG_END")
+            );
+            assert!(stderr.len() < 2048 + DIAG_EXCERPT_BYTES + 128);
         }
         assert_eq!(
             std::fs::read_to_string(tmp.path().join(FINISH_FILE)).unwrap(),
@@ -1995,6 +2149,100 @@ mod tests {
     }
 
     #[test]
+    fn path_redaction_covers_spaces_brackets_and_quotes() {
+        let cases = [
+            (
+                "model C:\\Users\\Alice Smith\\AppData\\BOINC\\llama-server.exe failed",
+                "model .../llama-server.exe failed",
+            ),
+            (
+                "open \"C:\\Users\\Alice Smith\\x y\\Qwen3VL-8B.gguf\": access denied",
+                "open \".../Qwen3VL-8B.gguf\": access denied",
+            ),
+            (
+                "C:\\Program Files (x86)\\BOINC\\boinc.exe started",
+                ".../boinc.exe started",
+            ),
+            (
+                "spawning /home/alice smith/boinc/llama-server failed: os error 2",
+                "spawning .../llama-server failed: os error 2",
+            ),
+            ("cwd='/Users/bob/Library/BOINC Data/slots/3'", "cwd='.../3'"),
+            (
+                "GET http://127.0.0.1:8080/health ok; a/b stays",
+                "GET http://127.0.0.1:8080/health ok; a/b stays",
+            ),
+            ("\\\\nas\\share\\Alice\\f.txt", ".../f.txt"),
+            (
+                "failed to load 'C:\\Users\\O'Connor\\BOINC\\model.gguf' now",
+                "failed to load '.../model.gguf' now",
+            ),
+            (
+                "open \"/home/d'arcy/BOINC data/x.gguf\": denied",
+                "open \".../x.gguf\": denied",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact_paths(input), want, "{input}");
+        }
+        let two = redact_paths("a /home/alice/x\nb C:\\Users\\Bob Jones\\y.gguf\n");
+        assert_eq!(two, "a .../x\nb .../y.gguf\n");
+        assert!(!two.contains("alice") && !two.contains("Bob"));
+    }
+
+    #[test]
+    fn log_tails_are_redacted_before_the_cut() {
+        let log = "load C:\\Users\\Alice Smith\\AppData\\BOINC\\model.gguf\nready\n";
+        // Any cut through the path line leaves no part of the name.
+        for n in 1..log.len() {
+            let t = redacted_tail(log, n);
+            assert!(
+                !t.contains("Alice") && !t.contains("Smith") && !t.contains("AppData"),
+                "{n}: {t}"
+            );
+        }
+        // A long single-line error body keeps its end.
+        let body = format!(
+            "{{\"error\":{{\"message\":\"{}model too large for /home/bob/x/llama.gguf\"}}}}",
+            "x".repeat(400)
+        );
+        let t = redacted_tail(&body, 256);
+        assert!(t.ends_with("model too large for .../llama.gguf\"}}"), "{t}");
+        assert!(!t.contains("bob"));
+    }
+
+    #[test]
+    fn diag_excerpt_redacts_paths_and_keeps_head_and_tail() {
+        let text = "spawning /home/alice/boinc/slots/3/llama-server failed: os error 2\n\
+                    model C:\\Users\\bob\\AppData\\BOINC\\Qwen3VL-8B.gguf (\"~/x/y.txt\")\n\
+                    GET http://127.0.0.1:8080/health ok; relative a/b stays";
+        let r = redact_paths(text);
+        assert!(r.contains("spawning .../llama-server failed"), "{r}");
+        // Two paths on one line collapse to the last file name: redacting more is the safe side.
+        assert!(r.contains("model .../y.txt\")"), "{r}");
+        assert!(
+            r.contains("http://127.0.0.1:8080/health") && r.contains("a/b stays"),
+            "{r}"
+        );
+        assert!(!r.contains("alice") && !r.contains("bob"));
+
+        let short = diag_block(b"== gpu\nno hardware Vulkan device\n");
+        assert_eq!(
+            short,
+            "USNM_QWEN_DIAG_BEGIN\n== gpu\nno hardware Vulkan device\nUSNM_QWEN_DIAG_END"
+        );
+
+        let long = format!("HEAD-MARK{}TAIL-MARK", "x".repeat(20_000));
+        let block = diag_block(long.as_bytes());
+        assert!(block.len() <= DIAG_EXCERPT_BYTES + 128);
+        assert!(block.contains("HEAD-MARK") && block.contains("TAIL-MARK"));
+        assert!(block.contains("bytes omitted"));
+        // Multi-byte text is cut on character boundaries.
+        let wide = "é".repeat(10_000);
+        assert!(diag_block(wide.as_bytes()).len() <= DIAG_EXCERPT_BYTES + 128);
+    }
+
+    #[test]
     fn early_slot_io_error_uses_the_same_boinc_failure_transport() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join(RESULT_FILE)).unwrap();
@@ -2004,10 +2252,10 @@ mod tests {
         #[cfg(windows)]
         {
             let stderr = std::fs::read_to_string(tmp.path().join("stderr.txt")).unwrap();
-            assert_eq!(
-                stderr,
-                "existing BOINC diagnostic\nUSNM_QWEN_FAILURE {\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}\n"
-            );
+            assert!(stderr.starts_with(
+                "existing BOINC diagnostic\nUSNM_QWEN_FAILURE {\"v\":1,\"phase\":\"slot_io_or_serialization\",\"exit_status\":1}\nUSNM_QWEN_DIAG_BEGIN\n== error\n"
+            ));
+            assert!(stderr.ends_with("\nUSNM_QWEN_DIAG_END\n"));
         }
         assert!(!tmp.path().join(FINISH_FILE).exists());
     }
