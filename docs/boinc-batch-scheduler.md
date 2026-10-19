@@ -43,14 +43,17 @@ outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
 `/var/lib/usnm-priority-controller`, and the push command
 `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local, no SSH).
 
-Set `server_status_url` to
-`https://boinc.usnewsmap.com/server_status.php?xml=1` and
-`max_global_pending` to `1000`. Without per-app status, conservative inventory
+The service passes `--server-status-url
+https://boinc.usnewsmap.com/server_status.php?xml=1` and
+`--max-global-pending 1000`. Without per-app status, conservative inventory
 accounting treats every application's pending work as OCR and can prevent
 priority claims while unrelated GPU queues are full. Keep `max_pending: 40`,
 `pages_per_host: 2`, and `batch_size: 10`: OCR admission is bounded by
 `min(40, active_hosts * 2)` independently of the global safety cap. Status fetch
 or parsing failures stop the tick rather than admitting unmeasured work.
+Use these existing runtime flags rather than changing an initialized
+configuration's immutable hash; never delete or reset controller state to
+change admission settings.
 
 The systemd service `usnm-boinc-priority-controller.service` runs one tick with
 `--apply`; `usnm-boinc-priority-controller.timer` is enabled with
