@@ -37,6 +37,39 @@ class Order(unittest.TestCase):
         q = qjl.shard_queues(self.rows, 2, {}, {"keep/c/l/d/1/0.jp2"})
         self.assertNotIn("keep/c/l/d/1/0.jp2", q[0])
 
+    def test_tier1_follows_the_manifest_in_the_same_rotation(self):
+        damage = ["audit/damage/v2/e_ver01.parquet", "audit/damage/v2/e_ver01.summary.json",
+                  "audit/damage/v2/a_ver01.parquet", "audit/damage/v2/f_ver02.parquet",
+                  "audit/damage/v2/g_ver01.parquet"]
+        keep = ["keep/f/l/1900-01-02/1/10.jp2", "keep/f/l/1900-01-02/1/2.jp2",
+                "keep/e/l/1900-01-01/1/1.jp2", "keep/z/l/1900-01-01/1/1.jp2"]
+        manifest = {(b, int(v)) for b, v, _ in self.rows}
+        t1 = qjl.tier1_batches(manifest, damage, keep)
+        # a is in the manifest and g has no archived pages; e and f follow in name order.
+        self.assertEqual([k for k, _ in t1], [("e", 1), ("f", 2)])
+        self.assertEqual(t1[1][1], ["keep/f/l/1900-01-02/1/2.jp2", "keep/f/l/1900-01-02/1/10.jp2"])
+        # Global order a b c d e f: shard 0 gets a, c, e; shard 1 gets b, d, f.
+        q = qjl.shard_queues(self.rows, 2, {}, set(), t1)
+        self.assertEqual(q[0][-1], "keep/e/l/1900-01-01/1/1.jp2")
+        self.assertEqual(q[1][-2:], t1[1][1])
+
+    def test_current_names_the_batch_and_rejects_unknown_ones(self):
+        ordered = qjl.ordered_batches(self.rows)
+        left = qjl.resolve_current(ordered, 2, {0: "a_ver01", 1: "b_ver01"}, warn=lambda m: None)
+        self.assertEqual([k for k, _ in left[0]], [("c", 1)])
+        self.assertEqual([k for k, _ in left[1]], [("d", 1)])
+        with self.assertRaises(SystemExit):
+            qjl.resolve_current(ordered, 2, {1: "zz_ver01"})
+
+    def test_current_under_another_shard_continues_from_it_with_a_warning(self):
+        ordered = qjl.ordered_batches(self.rows)
+        warnings = []
+        left = qjl.resolve_current(ordered, 2, {1: "a_ver01"}, warn=warnings.append)
+        self.assertEqual([k for k, _ in left[1]], [("c", 1)])
+        self.assertEqual(len(warnings), 1)
+        q = qjl.shard_queues(self.rows, 2, {}, set(), remaining=left)
+        self.assertEqual({n.split("/")[1] for n in q[1]}, {"c"})
+
     def test_interleave_alternates_shards(self):
         self.assertEqual(qjl.interleave([["a1", "a2", "a3"], ["b1"]]), ["a1", "b1", "a2", "a3"])
 

@@ -9,28 +9,105 @@ ahead of every shard at once. JPEG masters are left out: most go to workers
 as they are.
 
     quality-jpeg-list.py --manifest wave9_manifest.parquet --out pages.txt \
-        [--shards 8] [--start-after 0=0,4=1] [--done done.txt]
+        [--shards 8] [--current 0=dlc_friendship_ver03,...] [--start-after 0=0,4=1] \
+        [--damage-index damage.txt --keep-files keep-jp2.txt] [--done done.txt]
 
---start-after s=k skips shard s's first k+1 batches (k is the index of the
-batch it is in now). Shards not named start at their first batch. --done
-drops pages already in the converter's done.txt. Needs duckdb.
+After the manifest's batches the runner takes tier 1: batches in the damage
+audit index (curated audit/damage/v2/<batch>_verNN.parquet, in name order)
+that are not in the manifest and have archived scans under keep/<batch>/.
+--damage-index lists those blob names and --keep-files the archived pages
+(`find keep -name '*.jp2'` under the scans root); with both, tier-1 batches
+follow the manifest's in the same shard rotation, their pages in date,
+edition and sequence order.
+
+--current s=<batch>_verNN skips shard s's batches up to and including the one
+its status file names now; an unknown batch is an error, since the rotation
+would then be wrong. --start-after s=k does the same by index (k is the index
+of the batch it is in now). Shards not named start at their first batch.
+--done drops pages already in the converter's done.txt. Needs duckdb.
 """
 
 import argparse
 import itertools
+import re
+
+DAMAGE = re.compile(r"^audit/damage/v2/(.+)_ver(\d+)\.parquet$")
 
 
-def shard_queues(rows, shards, start_after, done):
-    """rows: (batch, batch_version, blob_name) in the runner's doc_id order. One page list per shard."""
+def page_key(path):
+    """keep/<batch>/<lccn>/<date>/<edition>/<seq>.jp2 in date, edition, sequence order."""
+    parts = path.split("/")
+    try:
+        return (parts[2], parts[3], int(parts[4]), int(parts[5].split(".")[0]))
+    except (IndexError, ValueError):
+        return (path, "", 0, 0)
+
+
+def tier1_batches(manifest_batches, damage_names, keep_files):
+    """The runner's tier 1: damage-index batches, in name order, not in the manifest, with
+    archived pages. Returns [((batch, version), [pages])]."""
+    pages = {}
+    for p in keep_files:
+        parts = p.split("/")
+        if len(parts) > 2 and parts[0] == "keep":
+            pages.setdefault(parts[1], []).append(p)
+    seen = set(manifest_batches)
+    out = []
+    for name in sorted(damage_names):
+        m = DAMAGE.match(name)
+        if not m:
+            continue
+        key = (m.group(1), int(m.group(2)))
+        if key in seen:
+            continue
+        seen.add(key)
+        if key[0] in pages:
+            out.append((key, sorted(pages[key[0]], key=page_key)))
+    return out
+
+
+def ordered_batches(rows, tier1=()):
+    """Every batch in the runner's order with its pages: the manifest's by page count, then tier 1."""
     by = {}
     for b, bv, name in rows:
         by.setdefault((b, int(bv)), []).append(name)
     batches = sorted(by, key=lambda k: (-len(by[k]), k[0], k[1]))
+    return [(k, by[k]) for k in batches] + list(tier1)
+
+
+def resolve_current(ordered, shards, current, warn=print):
+    """{shard: "<batch>_verNN"} to {shard: the batches it has left}.
+
+    The runner lists the scan archive and the damage index once, when it starts; both grow,
+    so a later list can rotate tier 1 differently. A batch that is in the order but under
+    another shard is taken as that shard's position anyway (it continues every `shards`-th
+    batch from there), with a warning. A batch not in the order at all is an error."""
+    keys = [k for k, _ in ordered]
+    out = {}
+    for s, name in current.items():
+        batch, _, ver = name.rpartition("_ver")
+        try:
+            g = keys.index((batch, int(ver)))
+        except ValueError:
+            raise SystemExit(f"shard {s}: {name} is not in the batch order; check the inputs")
+        if g % shards != s:
+            warn(f"shard {s}: {name} is shard {g % shards}'s in this order; continuing from it")
+        out[s] = ordered[g + shards::shards]
+    return out
+
+
+def shard_queues(rows, shards, start_after, done, tier1=(), remaining=None):
+    """rows: (batch, batch_version, blob_name) in the runner's doc_id order. One page list per
+    shard. remaining: {shard: batches left} from resolve_current, which wins over start_after."""
+    ordered = ordered_batches(rows, tier1)
+    remaining = remaining or {}
     queues = []
     for s in range(shards):
-        mine = batches[s::shards]
-        skip = start_after[s] + 1 if s in start_after else 0
-        queues.append([n for k in mine[skip:] for n in by[k]
+        if s in remaining:
+            left = remaining[s]
+        else:
+            left = ordered[s::shards][start_after[s] + 1 if s in start_after else 0:]
+        queues.append([n for _, pages in left for n in pages
                        if n.endswith(".jp2") and n not in done])
     return queues
 
@@ -47,12 +124,23 @@ def parse_start_after(text):
     return out
 
 
+def parse_current(text):
+    out = {}
+    for part in filter(None, (text or "").split(",")):
+        s, name = part.split("=")
+        out[int(s)] = name.strip()
+    return out
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--manifest", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--shards", type=int, default=8)
     p.add_argument("--start-after", default="")
+    p.add_argument("--current", default="")
+    p.add_argument("--damage-index")
+    p.add_argument("--keep-files")
     p.add_argument("--done")
     a = p.parse_args(argv)
     import duckdb
@@ -65,7 +153,17 @@ def main(argv=None):
     if a.done:
         with open(a.done) as f:
             done = {line.split("\t")[0].strip() for line in f}
-    queues = shard_queues(rows, a.shards, parse_start_after(a.start_after), done)
+    tier1 = []
+    if bool(a.damage_index) != bool(a.keep_files):
+        p.error("--damage-index and --keep-files go together")
+    if a.damage_index:
+        with open(a.damage_index) as f:
+            damage = [line.strip() for line in f if line.strip()]
+        with open(a.keep_files) as f:
+            keep = [line.strip().removeprefix("./") for line in f if line.strip()]
+        tier1 = tier1_batches({(b, int(bv)) for b, bv, _ in rows}, damage, keep)
+    remaining = resolve_current(ordered_batches(rows, tier1), a.shards, parse_current(a.current))
+    queues = shard_queues(rows, a.shards, parse_start_after(a.start_after), done, tier1, remaining)
     out = interleave(queues)
     with open(a.out, "w") as f:
         f.write("".join(f"{n}\n" for n in out))

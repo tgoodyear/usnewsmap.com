@@ -862,7 +862,7 @@ The grant opens no network path: the exchange account takes the home IP through
 
 A quality wave's runner turns each archived page into the worker's `page.jpg`: grayscale,
 JPEG quality 75, and a JPEG2000 master over 4000 px decoded at half resolution. Decoding
-JPEG2000 is most of its CPU, and its Container Apps job has 2 vCPUs (#850). The scan-fetch
+JPEG2000 is most of its CPU, and its Container Apps job has 4 vCPUs (#850). The scan-fetch
 container holds the masters, so `scripts/ocr-node/quality-jpeg-cache.py` does the same
 conversion there and puts each page in the hand-off container as
 `quality-jpeg/l-q75-r1/<blob name>.jpg`. Blob metadata carries the master's sha256, the
@@ -871,11 +871,17 @@ when it is there and converts the master otherwise. A grayscale JPEG master unde
 20 MB goes to workers as it is, so the cache skips it.
 
 `scripts/ocr-node/quality-jpeg-list.py` builds the page list: JPEG2000 pages only, in the
-runner's shard order. The runner gives shard i every eighth batch, largest first, and walks
-each batch's pages in doc_id order. The list interleaves the shards, so the cache keeps
-ahead of all of them. Aim it past each shard's current batch: the runner skips pages that
-are already bundled or have no LoC text, so a shard's bundle count doesn't tell where it is
-in its list.
+runner's shard order. The runner gives shard i every eighth batch, the manifest's first
+(largest first), then tier 1: damage-index batches, in name order, that are not in the
+manifest and have archived scans. It walks each batch's pages in doc_id order. The list
+interleaves the shards, so the cache keeps ahead of all of them. Aim it past each shard's
+current batch with `--current s=<batch>_verNN`, from the shard's status file
+(`quality/v1-wave9/status/shard-<s>.json`, `current_batch`): the runner skips pages that are
+already bundled or have no LoC text, so a shard's bundle count doesn't tell where it is in
+its list. The runner lists the archive and the damage index once, when it starts, and both
+grow, so a later list can put a tier-1 batch under another shard. The builder then warns and
+continues that shard from the batch it names. Rebuild the list before the converter reaches
+its end, or the cache falls behind as shards move into tier 1.
 
 The output must be byte for byte what the runner would make, so the script runs only on
 Pillow 11.3.0 from the same pinned wheel as the bridge image
@@ -883,16 +889,21 @@ Pillow 11.3.0 from the same pinned wheel as the bridge image
 sidecar, never replaces a blob (one there with another size stops the run), and lists done
 pages in `/var/lib/usnm-quality-jpeg-cache/done.txt`. `usnm-quality-jpeg-cache.service`
 runs it under a dynamic user in the `himds` group, for the Arc token. It runs at low CPU
-and I/O priority, so the prefetcher and the scan server go first. In CT 211 (2 cores) it
-converts about 1.5 pages a second on its own, and about 0.9 while pve-big is busy.
+and I/O priority, so the prefetcher and the scan server go first. CT 211 has 6 cores and
+8 GiB for it (`WORKERS=6`), from 19 October 2026: with 2 cores it converted about 1.1
+pages a second, slower than the runner used pages, and with 6 about 2.9. This keeps the
+work on pve-big rather than adding vCPUs to the runner's job.
 
 ```sh
 # On the operator's machine: the page list from the wave's manifest. --start-after s=k
 # starts shard s after its batch k (0-based; the batch its status file names now), so the
 # cache stays ahead of the runner. Copy the list, the script and the unit into CT 211's
 # /root (pct push).
+# damage.txt: az storage blob list on the lake's curated container, --prefix audit/damage/v2/.
+# keep-jp2.txt: in CT 211, cd /tank/ocr/scans && find keep -name '*.jp2'.
 scripts/ocr-node/quality-jpeg-list.py --manifest wave9_manifest.parquet --out pages.txt \
-  --start-after 0=0,4=1 [--done done.txt]
+  --damage-index damage.txt --keep-files keep-jp2.txt --done done.txt \
+  --current 0=dlc_friendship_ver03,1=dlc_eject_ver01,...
 # In CT 211, as root: the pinned Pillow wheel, as the bridge image installs it.
 d=/usr/local/lib/usnm-quality-jpeg-cache
 mkdir -p "$d/py" && cd "$d"
@@ -901,7 +912,7 @@ echo "106064daa23a745510dabce1d84f29137a37224831d88eb4ce94bb187b1d7e5f  pillow.w
 python3 -m zipfile -e pillow.whl py && rm pillow.whl
 install -m 0755 /root/quality-jpeg-cache.py "$d/"
 install -m 0644 /root/usnm-quality-jpeg-cache.service /etc/systemd/system/
-printf 'ACCOUNT=<exchange account>\nLIST=%s/pages.txt\nWORKERS=2\n' "$d" > /etc/usnm/quality-jpeg-cache.env
+printf 'ACCOUNT=<exchange account>\nLIST=%s/pages.txt\nWORKERS=6\n' "$d" > /etc/usnm/quality-jpeg-cache.env
 install -m 0644 /root/pages.txt "$d/"
 systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache
 journalctl -fu usnm-quality-jpeg-cache
