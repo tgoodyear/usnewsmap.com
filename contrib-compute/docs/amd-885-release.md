@@ -51,3 +51,35 @@ follow-up, not a requirement for manual cohorts per volunteer.
 
 Final image digests, app-version IDs and public hash verification are recorded
 in the #885/#529 deployment receipts. Preparation is not publication.
+
+## Immutable publication candidates
+
+All images are in `crusnmprodffapzy.azurecr.io`. Version **1.7** is reserved for
+both AMD sibling platforms (the fresh live inventory ended at 1.6).
+
+| Image repository / purpose                  | SHA256 digest                                                      | ACR build |
+| ------------------------------------------- | ------------------------------------------------------------------ | --------- |
+| `usnm-boinc-base`, new pinned staging tool  | `7526fa79c6259c4d12d3c057da4d3bcff24138f1ce44246de800786e218265a0` | `cha1`    |
+| `usnm-boinc-appver`, signed Linux x64 1.7   | `a9f27d7307d05b68fa368105d1656e8dab6ddb3bb8ae027173012e4a80621647` | `cha2`    |
+| `usnm-boinc-appver`, signed Windows x64 1.7 | `8659f1444a416f333336d7885d26fc8a2dd6b6184fd98f7cb244a1c84e51e0f3` | `cha4`    |
+| `usnm-boinc-bridge`, additive runtime       | `067d640d8dce040ca226159beff64599dca2d8b9ea6f44805f65a501656876d5` | `cha5`    |
+
+The runtime overlay source is `bb6a06103e34d52d81efdc5dbf57d24398268983`.
+Actual-image verification compared **5,660 files** under `/etc` and `/usr/local`
+against the immutable live base (excluding only container-generated hostname,
+hosts and resolver files). Only the four intended replacements differ:
+`create_work`, the entrypoint adapter, plan template and policy refresh.
+The two operator adapters, dependency-check receipt and byte-identical saved
+entrypoint are the only added files. Docker runtime environment, entrypoint,
+command, user, working directory, volumes and exposed ports are unchanged.
+The actual image's policy merger preserves all 13 existing classes exactly
+while adding AMD closed `2/1`. Its real startup refresh passes first/repeat
+serve checks, retains non-serve delegation, and exposes `--no_new_results`;
+all dynamic dependencies resolve in that exact runtime.
+
+The server pin is reconciled to the **unchanged live init/secrets image**
+`3b6d73b4e56dfe9edd2290432a10d8e251234972bce49e2a366992bbd6728251`,
+not deployed to another image. The priority bridge and worker pins are unchanged.
+Only the web runtime and publish-job images are intended to change. Busy
+quality/gold templates retain their entire existing state; these differing
+per-job live images are not permission for a broad stack provision.
