@@ -14,8 +14,15 @@ param dnsZoneId string
 param filesAccountName string
 @description('Quota of the project share in GiB.')
 param shareQuotaGb int = 200
+@description('Keep the pay-as-you-go account (StorageV2, TransactionOptimized): every stage but provisioned-final.')
+param legacyShare bool = true
+@description('Create the provisioned v2 SSD account and share (projectShare copy and later).')
+param provisionedShare bool = false
+@description('The provisioned v2 account\'s name and its file private endpoint\'s.')
+param provisionedAccountName string = ''
+param provisionedEndpointName string = ''
 
-resource files 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+resource files 'Microsoft.Storage/storageAccounts@2023-05-01' = if (legacyShare) {
   name: filesAccountName
   location: location
   kind: 'StorageV2'
@@ -31,7 +38,7 @@ resource files 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
-resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
+resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (legacyShare) {
   name: endpointName
   location: location
   properties: {
@@ -42,18 +49,18 @@ resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   }
 }
 
-resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
+resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (legacyShare) {
   parent: endpoint
   name: 'default'
   properties: { privateDnsZoneConfigs: [ { name: 'file', properties: { privateDnsZoneId: dnsZoneId } } ] }
 }
 
-resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = {
+resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = if (legacyShare) {
   parent: files
   name: 'default'
 }
 
-resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = {
+resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = if (legacyShare) {
   parent: fileService
   name: 'project'
   properties: {
@@ -63,5 +70,58 @@ resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01
   }
 }
 
-output filesAccountName string = files.name
-output shareName string = share.name
+// The provisioned v2 SSD account (#917, #529): billed by the GiB provisioned (about $0.10/GiB
+// a month) with baseline IOPS (3,000 + 1 per GiB) and throughput included, and no charge per
+// operation. The pay-as-you-go share cost about $21 in operations in four days (51M, 83% of
+// them open, close and stat), against $0.61 of capacity. SMB, for the same Container Apps
+// mount; shared key stays on for that mount, as on the old account (docs/design.md).
+resource v2 'Microsoft.Storage/storageAccounts@2025-01-01' = if (provisionedShare) {
+  name: provisionedAccountName
+  location: location
+  kind: 'FileStorage'
+  sku: { name: 'PremiumV2_LRS' }
+  properties: {
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: true // required by the Container Apps Azure Files mount
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+    publicNetworkAccess: 'Disabled'
+    networkAcls: { defaultAction: 'Deny', bypass: 'None' }
+  }
+}
+
+resource v2Endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (provisionedShare) {
+  name: provisionedEndpointName
+  location: location
+  properties: {
+    subnet: { id: peSubnetId }
+    privateLinkServiceConnections: [
+      { name: 'file', properties: { privateLinkServiceId: v2.id, groupIds: [ 'file' ] } }
+    ]
+  }
+}
+
+resource v2EndpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (provisionedShare) {
+  parent: v2Endpoint
+  name: 'default'
+  properties: { privateDnsZoneConfigs: [ { name: 'file', properties: { privateDnsZoneId: dnsZoneId } } ] }
+}
+
+resource v2FileService 'Microsoft.Storage/storageAccounts/fileServices@2025-01-01' = if (provisionedShare) {
+  parent: v2
+  name: 'default'
+}
+
+// Provisioned size is the quota; baseline IOPS and throughput come with it.
+resource v2Share 'Microsoft.Storage/storageAccounts/fileServices/shares@2025-01-01' = if (provisionedShare) {
+  parent: v2FileService
+  name: 'project'
+  properties: {
+    shareQuota: shareQuotaGb
+    enabledProtocols: 'SMB'
+  }
+}
+
+output filesAccountName string = legacyShare ? files.name : ''
+output shareName string = 'project'
+output provisionedAccountName string = provisionedShare ? v2.name : ''

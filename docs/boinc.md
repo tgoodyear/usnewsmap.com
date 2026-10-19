@@ -955,6 +955,26 @@ systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache-remote
 # what it has done.
 ```
 
+## Moving the project share
+
+The project directory (`/project`: uploads, downloads, staging, results) is one Azure Files share mounted by the server and every job. On the pay-as-you-go Standard account (`usnmboincst…`, TransactionOptimized) it cost about $21 in operations in four days of October 2026: 51M operations, 83% of them open, close and stat. Capacity was $0.61. A provisioned v2 SSD share (`usnmboincv2st…`, `PremiumV2_LRS`) bills only for its provisioned size, about $0.10/GiB a month with 3,000 + 1 IOPS per GiB included, and nothing per operation (#917).
+
+`projectShare` in `contrib-compute/infra/boinc/env/<env>.json` moves the share in stages, each a pull request and a `scripts/provision-boinc.sh` run (claimed on #529):
+
+1. **`copy`.** Creates the provisioned account, share and private endpoint, and the server also mounts the new share at `/project-v2`.
+   - The server restarts, so re-apply GPU general admission (`native-qwen-cohort.php --general`).
+   - Fill the new share from inside the server: install `rsync` in the running container (`apt-get install -y rsync`), then run `rsync -a --delete /project/ /project-v2/` detached (`setsid nohup …`). Run it again until a pass changes little.
+2. **Cutover.** Stop new work so the tree is still:
+   - stop the BOINC daemons (`bin/stop` as `boincadm`);
+   - stop the quality wave job and the batch controller in CT 211;
+   - wait for running bridge executions.
+
+   Then run a last `rsync -a --delete` and set **`provisioned`**: `/project` is the provisioned share for the server and every job. Start everything again, re-apply GPU admission, and relaunch the quality wave (`launch-corpus`).
+
+3. **`provisioned-final`**, after a few days without trouble: the stack deletes the old account and its endpoint.
+
+To roll back before stage 3, set `standard` and provision: `/project` is the old share again. Anything written to the provisioned share after the cutover has to be copied back first.
+
 ## Allocation and recovery
 
 Export filters the manifest while decoding, retaining only selected batch and

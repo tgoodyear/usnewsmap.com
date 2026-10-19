@@ -466,6 +466,26 @@ class ProductionReconciliation(unittest.TestCase):
             self.assertEqual(actual["bridge"], "new-bridge")
             self.assertEqual(actual.get("web"), "new-bridge" if "web" in images else None)
 
+    def test_project_share_moves_to_provisioned_v2_in_stages(self):
+        source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()
+        storage = (ROOT / "contrib-compute/infra/boinc/modules/storage.bicep").read_text()
+        app = (ROOT / "contrib-compute/infra/boinc/modules/app.bicep").read_text()
+        # Provisioned v2 SSD: no per-operation billing; SMB for the same mount.
+        v2 = storage.split("resource v2 ")[1].split("resource v2Endpoint")[0]
+        self.assertIn("kind: 'FileStorage'", v2)
+        self.assertIn("sku: { name: 'PremiumV2_LRS' }", v2)
+        self.assertIn("enabledProtocols: 'SMB'", storage.split("resource v2Share")[1])
+        # The old account stays until the last stage, so the cutover can be rolled back.
+        self.assertIn("legacyShare: projectShare != 'provisioned-final'", source)
+        self.assertIn("provisionedShare: projectShare != 'standard'", source)
+        self.assertIn("var projectOnV2 = projectShare == 'provisioned' || projectShare == 'provisioned-final'", source)
+        # Only the copy stage mounts the new share beside the old one.
+        self.assertIn("copyAccountName: projectShare == 'copy' ? names.filesV2 : ''", source)
+        self.assertIn("mountPath: '/project-v2'", app)
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/schema.json").read_text())
+        self.assertEqual(settings["properties"]["projectShare"]["enum"],
+                         ["standard", "copy", "provisioned", "provisioned-final"])
+
     def test_live_iris_settings_quota_and_additive_endpoint_are_preserved(self):
         source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()
         bridge = source.split("module bridgeJob ")[1].split("module initJob ")[0]

@@ -21,6 +21,10 @@ param registryServer string
 param keyVaultName string
 param filesAccountName string
 param shareName string
+@description('The provisioned v2 share to mount at /project-v2 while projectShare is copy (its account, key); empty: none.')
+param copyAccountName string = ''
+@secure()
+param copyAccountKey string = ''
 @secure()
 param filesAccountKey string
 param mysqlHost string
@@ -55,6 +59,21 @@ resource projectStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' 
     azureFile: {
       accountName: filesAccountName
       accountKey: filesAccountKey
+      shareName: shareName
+      accessMode: 'ReadWrite'
+    }
+  }
+}
+
+// The provisioned v2 share while it is filled (projectShare copy): the server mounts it at
+// /project-v2, and the copy runs inside the server's VNet.
+resource copyStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = if (!empty(copyAccountName)) {
+  parent: env
+  name: 'project-v2'
+  properties: {
+    azureFile: {
+      accountName: copyAccountName
+      accountKey: copyAccountKey
       shareName: shareName
       accessMode: 'ReadWrite'
     }
@@ -101,7 +120,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'MASTER_HOST', value: masterHost }
             { name: 'PROJECT_DIR', value: '/project' }
           ]
-          volumeMounts: [ { volumeName: 'project', mountPath: '/project' } ]
+          volumeMounts: concat([ { volumeName: 'project', mountPath: '/project' } ], empty(copyAccountName) ? [] : [ { volumeName: 'project-v2', mountPath: '/project-v2' } ])
           probes: [
             {
               type: 'Liveness'
@@ -114,7 +133,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       // SMB has no symlinks or POSIX owners: mfsymlinks stores BOINC's symlinks (bin/stop ->
       // bin/start), and the share appears owned by boincadm (uid 1000).
-      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorage.name, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' } ]
+      volumes: concat([ { name: 'project', storageType: 'AzureFile', storageName: projectStorage.name, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' } ], empty(copyAccountName) ? [] : [
+        { name: 'project-v2', storageType: 'AzureFile', storageName: copyStorage.name, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' }
+      ])
       scale: { minReplicas: 1, maxReplicas: 1 }
     }
   }

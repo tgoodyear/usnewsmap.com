@@ -89,6 +89,11 @@
         }
       }
     },
+    "projectShare": {
+      "type": "string",
+      "enum": ["standard", "copy", "provisioned", "provisioned-final"],
+      "description": "The project share's billing (#917): standard (pay-as-you-go StorageV2), copy (the provisioned v2 SSD share also mounted at /project-v2 to fill it), provisioned (/project is the provisioned share; the old account kept for rollback), provisioned-final (the old account removed). main.bicep's projectShare parameter; docs/boinc.md, \"Moving the project share\"."
+    },
     "projectUrl": {
       "type": "string",
       "enum": [

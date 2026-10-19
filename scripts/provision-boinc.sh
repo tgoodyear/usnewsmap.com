@@ -120,6 +120,7 @@ jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --ar
     runtimePrincipalId: {value: $runtime}, keyWriterPrincipalId: {value: $secrets},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
+    projectShare: {value: ($s | fromjson | .projectShare // "standard")},
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
   }}' > "$work/params.json"
 }

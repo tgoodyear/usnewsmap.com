@@ -84,6 +84,10 @@ param operatorPrincipalIds array
 @description('The PUBLIC half of the offline code-signing key (code_sign_public). Empty until it is made offline.')
 param codeSignPublicKey string = ''
 
+@description('The project share\'s billing (#917): standard, the pay-as-you-go StorageV2 share; copy, the provisioned v2 SSD share is created and the server also mounts it at /project-v2 to fill it; provisioned, /project is the provisioned share everywhere and the old account is kept for rollback; provisioned-final, the old account is removed. docs/boinc.md, "Moving the project share".')
+@allowed([ 'standard', 'copy', 'provisioned', 'provisioned-final' ])
+param projectShare string = 'standard'
+
 @description('Create the workbook "usnm BOINC (<env>)" over the workspace (modules/workbook.bicep). On by default in prod.')
 param workbook bool = env == 'prod'
 
@@ -97,6 +101,8 @@ var names = {
   environment: usnmName('boinc', 'cae', envName)
   files: usnmCompactName('boinc', 'st', envName, sfx)
   filesEndpoint: usnmName('boinc-files', 'pep', envName)
+  filesV2: usnmCompactName('boincv2', 'st', envName, sfx)
+  filesV2Endpoint: usnmName('boinc-files-v2', 'pep', envName)
   identity: usnmName('boinc', 'id', envName)
   mysql: usnmGlobalName('boinc', 'mysql', envName, sfx)
   mysqlDnsZone: 'usnm-boinc-${envName}.private.mysql.database.azure.com'
@@ -178,8 +184,12 @@ module storage 'modules/storage.bicep' = {
     endpointName: names.filesEndpoint
     location: location
     // Raised by hand to 250 GB for the quality wave's bundles; kept here so a provision
-    // doesn't shrink it under live data (#529).
+    // doesn't shrink it under live data (#529). The provisioned share is the same size.
     shareQuotaGb: 250
+    legacyShare: projectShare != 'provisioned-final'
+    provisionedShare: projectShare != 'standard'
+    provisionedAccountName: names.filesV2
+    provisionedEndpointName: names.filesV2Endpoint
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.filesDnsZoneId
   }
@@ -209,6 +219,13 @@ resource filesAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = 
   name: names.files
 }
 
+resource filesV2Account 'Microsoft.Storage/storageAccounts@2025-01-01' existing = {
+  name: names.filesV2
+}
+
+// Which account /project is, by stage; during the copy the provisioned one is also mounted.
+var projectOnV2 = projectShare == 'provisioned' || projectShare == 'provisioned-final'
+
 resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
   name: names.workspace
 }
@@ -230,9 +247,11 @@ module app 'modules/app.bicep' = if (withApp) {
     command: assessment || !empty(webImage) ? [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--serve' ] : []
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    filesAccountName: storage.outputs.filesAccountName
+    filesAccountName: projectOnV2 ? names.filesV2 : names.files
     shareName: storage.outputs.shareName
-    filesAccountKey: filesAccount.listKeys().keys[0].value
+    filesAccountKey: projectOnV2 ? filesV2Account.listKeys().keys[0].value : filesAccount.listKeys().keys[0].value
+    copyAccountName: projectShare == 'copy' ? names.filesV2 : ''
+    copyAccountKey: projectShare == 'copy' ? filesV2Account.listKeys().keys[0].value : ''
     mysqlHost: mysql.outputs.host
     databaseName: mysql.outputs.databaseName
     masterHost: masterHost
