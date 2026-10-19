@@ -105,6 +105,9 @@ struct Events {
     /// Each index's `_ingest-api-source` merge pipeline starts, by index id:
     /// how many, and the last one's line (it has the merge policy).
     v1_spawns: BTreeMap<String, (u32, String)>,
+    /// The first failure of each index's `_ingest-api-source` merge
+    /// pipeline, by index id.
+    v1_failed: BTreeMap<String, String>,
 }
 
 /// What the writer's output has said about one index's `_ingest-source`
@@ -171,9 +174,11 @@ impl NodeEvents {
         let merge_failed = line.contains("failed to merge splits")
             || line.contains("merge scheduler service is dead");
         let event = PipelineEvent::of(line);
-        let v1_spawn = line.contains("spawning merge pipeline")
-            && line.contains(&format!("source_id={INGEST_V1_SOURCE} "));
-        if !(disk_full || merge_failed || event.is_some() || v1_spawn) {
+        let v1_source = format!("source_id={INGEST_V1_SOURCE}");
+        let v1 = line.split_whitespace().any(|w| w == v1_source);
+        let v1_spawn = v1 && line.contains("spawning merge pipeline");
+        let v1_failed = v1 && line.contains("merge pipeline failed");
+        if !(disk_full || merge_failed || event.is_some() || v1_spawn || v1_failed) {
             return;
         }
         let mut e = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -192,6 +197,11 @@ impl NodeEvents {
         if let (true, Some(id)) = (v1_spawn, id) {
             let s = e.v1_spawns.entry(id.to_owned()).or_default();
             *s = (s.0 + 1, line.to_owned());
+        }
+        if let (true, Some(id)) = (v1_failed, id) {
+            e.v1_failed
+                .entry(id.to_owned())
+                .or_insert_with(|| excerpt(line));
         }
         if let (Some(event), Some(id)) = (event, id) {
             let p = e.pipelines.entry(id.to_owned()).or_default();
@@ -226,6 +236,20 @@ impl NodeEvents {
     pub fn exit(&self) -> Option<String> {
         let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
         e.exited.clone()
+    }
+
+    /// Fails once `index_id`'s ingest v1 merge pipeline has failed: it is
+    /// not followed like v2's, so its merges could otherwise look settled
+    /// with splits left unmerged.
+    pub fn check_v1(&self, index_id: &str) -> anyhow::Result<()> {
+        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(line) = e.v1_failed.get(index_id) {
+            bail!(
+                "the merge pipeline of `{index_id}` failed; not publishing a half-merged index. \
+                 Its output: {line}"
+            );
+        }
+        Ok(())
     }
 
     /// Fails once the writer has exited, run out of disk, or failed a merge.
@@ -1014,6 +1038,7 @@ pub async fn seal_restarting(
             node, index_id, ev, wait, "settle", start, deadline, work_dir,
         )
         .await?;
+        events.check_v1(index_id)?;
         if expected == 0 && splits.is_empty() {
             return check(index_id, expected, split_target, &splits);
         }
@@ -1031,6 +1056,7 @@ pub async fn seal_restarting(
         let until = deadline.min(tokio::time::Instant::now() + wait.finalize_stall);
         loop {
             events.check()?;
+            events.check_v1(index_id)?;
             match events.v1_spawns(index_id) {
                 (n, Some(line)) if n > before && merges_with_factor(&line, FINAL_MERGE_FACTOR) => {
                     break
@@ -1054,6 +1080,7 @@ pub async fn seal_restarting(
             node, index_id, ev, wait, "finalize", start, deadline, work_dir,
         )
         .await?;
+        events.check_v1(index_id)?;
         explained(ev, node.update_index(index_id, &original).await).await?;
         check(index_id, expected, split_target, &splits)
     };
@@ -1375,6 +1402,24 @@ mod tests {
         assert!(e.check().is_err());
         e.clear_exit();
         assert!(e.check().is_ok());
+        // A v1 merge pipeline that fails stops a v1 release of its index.
+        let failed = |id: &str, source: &str| {
+            format!(
+                "2026-10-19T16:05:00.000Z ERROR quickwit_indexing::actors::merge_pipeline: merge pipeline \
+                 failed index_uid={id}:01M5AEGETSRZT3Y8CFRXV1RE8X source_id={source} generation=1 \
+                 healthy_actors=[] failed_or_unhealthy_actors=[\"MergePublisher-young-tVo8\"]"
+            )
+        };
+        e.observe(&failed("pages-delta-20261020-1", "_ingest-api-source"));
+        e.observe(&failed(id, "_ingest-source"));
+        assert!(e.check_v1(id).is_ok());
+        e.observe(&failed(id, "_ingest-api-source"));
+        let err = e.check_v1(id).unwrap_err().to_string();
+        assert!(
+            err.contains("merge pipeline of `pages-base-20261020-1` failed"),
+            "{err}"
+        );
+        assert!(err.contains("half-merged"), "{err}");
     }
 
     #[test]
