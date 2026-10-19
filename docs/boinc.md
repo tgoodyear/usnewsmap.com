@@ -920,6 +920,33 @@ systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache
 journalctl -fu usnm-quality-jpeg-cache
 ```
 
+Another LAN host with idle CPU can convert too, reading masters from the scan server
+(`--scan-server`, `usnm-quality-jpeg-cache-remote.service`) rather than `/tank`. It needs
+three things. The first is the hand-off writer role for its Arc machine identity: add the
+object id to the private setting `USNM_QUALITY_JPEG_WRITERS` (comma-separated), then
+provision. The second is the host on the scan server's `--allow`
+(`USNM_SCANSERVE_ALLOW` in CT 211's `/etc/usnm/scanserve.env`, then restart
+`usnm-scanserve`). The third is its own share of the list: split the pages that remain
+alternately, so the two hosts never convert the same page and both stay just ahead of
+the runner. Install the Pillow 11.3.0 wheel for the host's Python, as above (cp313:
+`pillow-11.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`, sha256
+`13f87d581e71d9189ab21fe0efb5a23e9f28552d5be6979e84001d3b8505abe8`). Before starting it,
+check that a few of its JPEGs match CT 211's byte for byte (`--what-if` prints the size;
+compare the sha256 of pages both convert).
+
+```sh
+# On the operator's machine: split what CT 211 hasn't done yet.
+grep -vxFf <(cut -f1 done.txt) pages.txt > left.txt
+awk 'NR % 2 == 1' left.txt > pages-ct211.txt
+awk 'NR % 2 == 0' left.txt > pages-remote.txt
+scripts/settings.sh --env prod --key USNM_QUALITY_JPEG_WRITERS --value <object id>[,<object id>]
+# On the host, as root, after the Pillow wheel and the script are in place:
+install -m 0644 usnm-quality-jpeg-cache-remote.service /etc/systemd/system/
+printf 'ACCOUNT=<exchange account>\nLIST=%s/pages.txt\nWORKERS=6\nSCAN_SERVER=http://<scan-fetch host>:8380\n' \
+  /usr/local/lib/usnm-quality-jpeg-cache > /etc/usnm/quality-jpeg-cache.env
+systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache-remote
+```
+
 ## Allocation and recovery
 
 Export filters the manifest while decoding, retaining only selected batch and

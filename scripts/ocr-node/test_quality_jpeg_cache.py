@@ -132,6 +132,45 @@ class Masters(unittest.TestCase):
             self.assertEqual(f.read(), "keep/b/1.jp2\tuploaded\n")
 
 
+class ScanServer(unittest.TestCase):
+    def setUp(self):
+        self.raw = encode(Image.new("L", (64, 48), 9), "JPEG2000")
+        self.files = {"keep/b/1.jp2": self.raw,
+                      "keep/b/1.jp2.json": json.dumps({"sha256": hashlib.sha256(self.raw).hexdigest()}).encode()}
+        self.urls = []
+
+    def opener(self, req, timeout):
+        self.urls.append(req.full_url)
+        rel = req.full_url.split("/scans/", 1)[1]
+        if rel not in self.files:
+            raise http_error(404)
+        return Resp(self.files[rel])
+
+    def test_reads_master_and_sidecar(self):
+        raw, sha = qjc.read_master("http://scans.example:8380/", "keep/b/1.jp2", opener=self.opener)
+        self.assertEqual(raw, self.raw)
+        self.assertEqual(self.urls, ["http://scans.example:8380/scans/keep/b/1.jp2.json",
+                                     "http://scans.example:8380/scans/keep/b/1.jp2"])
+
+    def test_mismatch_is_refused(self):
+        self.files["keep/b/1.jp2"] = self.raw + b"x"
+        with self.assertRaises(qjc.Refused):
+            qjc.read_master("http://scans.example:8380", "keep/b/1.jp2", opener=self.opener)
+
+    def test_missing_page_is_refused(self):
+        with self.assertRaises(qjc.Refused):
+            qjc.read_master("http://scans.example:8380", "keep/b/2.jp2", opener=self.opener)
+
+    def test_unreachable_server_skips_the_page(self):
+        with mock.patch.object(urllib.request, "urlopen", side_effect=urllib.error.URLError("down")):
+            name, outcome, _ = qjc.process("http://scans.example:8380", "keep/b/1.jp2", blobs=mock.Mock())
+        self.assertTrue(outcome.startswith("skipped:"), outcome)
+
+    def test_scan_server_must_be_a_bare_origin(self):
+        with mock.patch.object(qjc, "PILLOW_VERSION", PIL.__version__), self.assertRaises(SystemExit):
+            qjc.main(["--account", "acct123", "--list", "x", "--scan-server", "http://h:8380/scans?x"])
+
+
 class FakePool:
     def __init__(self, n, initializer=None, initargs=()):
         initializer(*initargs)

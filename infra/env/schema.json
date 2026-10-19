@@ -234,6 +234,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_QUALITY_JPEG_WRITERS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. Comma-separated object ids of other on-prem hosts' Arc machine identities that run the quality-wave JPEG cache from the scan server; each can list, read and create in boinc-handoff.",
+      "not": {}
+    },
     "USNM_SCAN_ARCHIVE_UPLOADER_ID": {
       "x-usnm-visibility": "private",
       "description": "Private: scan-host Arc principal granted only archive writer access.",
