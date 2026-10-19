@@ -56,7 +56,12 @@ configuration's immutable hash; never delete or reset controller state to
 change admission settings.
 
 The systemd service `usnm-boinc-priority-controller.service` runs one tick with
-`--apply`; `usnm-boinc-priority-controller.timer` is enabled with
+`--apply` and sets `Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap`.
+Set this explicitly: a system service need not inherit `HOME`, and the
+hand-off launcher otherwise cannot resolve its local environment file even
+though the bridge launcher's stack discovery works. Verify hand-off
+`--what-if` under systemd, not only an interactive shell.
+`usnm-boinc-priority-controller.timer` is enabled with
 `OnBootSec=5min` and `OnUnitInactiveSec=5min`. Read its structured events with
 `journalctl -u usnm-boinc-priority-controller.service`; stop the timer and wait
 for any active service to finish before changing its configuration or performing
