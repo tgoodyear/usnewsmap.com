@@ -17,8 +17,8 @@
   },
   "projectUrl": "https://boinc.usnewsmap.com/",
   "qualityWave": {
-    "script": "https://stusnmoffapzy.blob.core.windows.net/boinc-handoff/quality/v1-wave9/run_wave9-81320be5920f.py",
-    "sha256": "81320be5920f97dc9f4ed5706024e3657522f7a107f72367cb847c7bb23e3329"
+    "script": "https://stusnmoffapzy.blob.core.windows.net/boinc-handoff/quality/v1-wave9/run_wave9-e6034846b84d.py",
+    "sha256": "e6034846b84d51f1142d591ec9a2750f3bc9fd06711b1275de97a2abd254353b"
   },
   "requireSecureTransport": false,
   "subscriptionId": "25bf257c-c94e-4d61-bba3-edc635f46602"

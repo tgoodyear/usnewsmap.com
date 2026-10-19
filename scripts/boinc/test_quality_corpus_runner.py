@@ -34,6 +34,21 @@ class Scope(unittest.TestCase):
     def test_units_are_replaced_only_on_positive_evidence(self):
         self.assertIn("not in_mysql or mysql_wus[wu][1] != 0", SOURCE)
 
+    def test_a_failed_lookup_is_not_an_empty_database(self):
+        lookup = SOURCE.split("def query_mysql_workunits")[1].split("\ndef ")[0]
+        self.assertIn("raise", lookup)
+        self.assertIn('"skipped": f"workunit lookup failed: {e}"', SOURCE)
+
+    def test_an_existing_healthy_unit_keeps_its_bundle(self):
+        self.assertIn("or (in_mysql and mysql_wus[wu][1] == 0)", SOURCE)
+
+    def test_a_failed_submission_never_renames_existing_work(self):
+        # The only rename is the repair step's, for a unit the transitioner marked failed.
+        self.assertEqual(SOURCE.count("rename_colliding_workunit(wu)") - SOURCE.count("def rename_colliding_workunit(wu)"), 1)
+        submit = SOURCE.split("submit.lock")[1].split("transitioner -d 2 --one_pass")[0]
+        self.assertNotIn("rename_colliding_workunit", submit)
+        self.assertIn("existing and existing[1] == 0", submit)
+
 
 if __name__ == "__main__":
     unittest.main()

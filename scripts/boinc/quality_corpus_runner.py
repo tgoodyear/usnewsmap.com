@@ -449,7 +449,9 @@ def query_mysql_workunits():
                 act = int(parts[3].strip()) if parts[3].strip().lstrip("-").isdigit() else 0
                 mysql_wus[parts[0].strip()] = (int(parts[1].strip()), int(parts[2].strip()), act)
     except Exception as e:
-        print(f"query_mysql_workunits warning: {e}", file=sys.stderr, flush=True)
+        # A failed lookup is not an empty database: callers must not read it as "absent".
+        print(f"query_mysql_workunits error: {e}", file=sys.stderr, flush=True)
+        raise
     return mysql_wus
 
 
@@ -580,7 +582,19 @@ def repair_and_reclaim_download_space():
         pass
     os.makedirs(UNITS_DIR, exist_ok=True)
     os.makedirs(COLLECTED_DIR, exist_ok=True)
-    mysql_wus = query_mysql_workunits()
+    try:
+        mysql_wus = query_mysql_workunits()
+    except Exception as e:
+        # Without the database's view, no unit can be judged missing or failed: recover nothing.
+        return {
+            "reclaimed_mb": round(reclaimed_bytes / (1024 * 1024), 1),
+            "reclaimed_files": reclaimed_files,
+            "removed_ghost_bundles": 0,
+            "resubmitted_orphan_bundles": 0,
+            "recovered_terminal_bundles": 0,
+            "known_bundles": 0,
+            "diag": {"skipped": f"workunit lookup failed: {e}"},
+        }
 
     removed_ghosts = []
     resubmitted_orphans = 0
@@ -620,7 +634,10 @@ def repair_and_reclaim_download_space():
             active_in_mysql = in_mysql and mysql_wus[wu][2] > 0 and mysql_wus[wu][1] == 0
 
             if not (udir / "submitted").exists():
-                if active_in_mysql or spool_ready(wu):
+                # create_work may have succeeded without the marker being written: any unit in
+                # the database that isn't marked failed (even with all replicas returned and
+                # validation or assimilation pending) is this bundle's.
+                if active_in_mysql or spool_ready(wu) or (in_mysql and mysql_wus[wu][1] == 0):
                     (udir / "submitted").write_text(wu + "\n")
                 else:
                     rb, rf = purge_unit_downloads(jid)
@@ -792,7 +809,11 @@ def collect_and_purge(force=False):
             except Exception:
                 repair_info = {}
 
-        mysql_wus = query_mysql_workunits()
+        try:
+            mysql_wus = query_mysql_workunits()
+        except Exception:
+            # Empty: below, a unit is purged as a ghost only when the lookup returned rows.
+            mysql_wus = {}
         ready_units = []
         pending_units = 0
         already_collected_units = 0
@@ -1562,8 +1583,13 @@ def flush_bundle(shard_idx, chunk_rows, bundle_seq, stage_dir, scans_dir, texts_
         try:
             res = subprocess.run(cw_args, cwd=PROJ, capture_output=True, text=True)
             if res.returncode != 0:
-                rename_colliding_workunit(wu)
-                subprocess.run(cw_args, cwd=PROJ, check=True)
+                # Never invalidate an existing unit here. If one with this name exists and isn't
+                # marked failed, it is this bundle's work (a duplicate submission): reuse it.
+                # Otherwise stop; a failed unit is replaced only by the repair step.
+                existing = query_mysql_workunits().get(wu)
+                if not (existing and existing[1] == 0):
+                    raise RuntimeError(
+                        f"create_work failed for {wu} (rc {res.returncode}): {res.stderr.strip()[-300:]}")
             subprocess.run(
                 ["su", "-s", "/bin/bash", "boincadm", "-c", f"cd '{PROJ}' && ./bin/transitioner -d 2 --one_pass"],
                 capture_output=True, text=True, timeout=30
