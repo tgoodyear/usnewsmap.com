@@ -43,19 +43,37 @@ outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
 `/var/lib/usnm-priority-controller`, and the push command
 `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local, no SSH).
 
+Set `server_status_url` to
+`https://boinc.usnewsmap.com/server_status.php?xml=1` and
+`max_global_pending` to `1000`. Without per-app status, conservative inventory
+accounting treats every application's pending work as OCR and can prevent
+priority claims while unrelated GPU queues are full. Keep `max_pending: 40`,
+`pages_per_host: 2`, and `batch_size: 10`: OCR admission is bounded by
+`min(40, active_hosts * 2)` independently of the global safety cap. Status fetch
+or parsing failures stop the tick rather than admitting unmeasured work.
+
+The systemd service `usnm-boinc-priority-controller.service` runs one tick with
+`--apply`; `usnm-boinc-priority-controller.timer` is enabled with
+`OnBootSec=5min` and `OnUnitInactiveSec=5min`. Read its structured events with
+`journalctl -u usnm-boinc-priority-controller.service`; stop the timer and wait
+for any active service to finish before changing its configuration or performing
+exclusive lifecycle maintenance. Each tick takes the shared controller lease.
+Successful empty-queue ticks are not end-to-end priority-page acceptance:
+retain #866 for real-page publication, queue deletion, and turnaround evidence.
+
 ### Separate hand-off runtime
 
 The hand-off job is in the **main** resource group, not the BOINC runtime
 group. Updating the BOINC server and bridge pair does not update this job.
 `USNM_BOINC_HANDOFF_IMAGE` in `infra/env/prod.json` must name a reviewed bridge
 artifact containing the bounded export, exact-file reads and accepted-snapshot
-collection code. The existing production pin is the scoped-trust v4 bridge
-artifact built from merged #755 source `38893b3008708f6f25c2beab2dcba40ab7521fab`,
-also selected for the BOINC bridge. It includes the current-worker Gold routing
-registry and rejects unscoped legacy trust for publication. The v5 source changes
-in #756 do not update this image; a reviewed image rebuild and separately
-coordinated rollout are required. This pin alone is not a runtime rollout or host
-promotion.
+collection code. PR #888 pins both lifecycle jobs to bridge digest
+`sha256:91539ee197e3de29ac5e1eb3ccbee1d25237553d25b519feabb90aef9436100d`,
+built from main `1ac92dcb91fcc0b3bc4b1c900163d427df63aed1`, including
+language-scoped claims (#867) and priority user work (#868). Both job images
+were rolled out image-only under #529; server, web, worker, and TLS settings
+were unchanged. A future pin change alone is not a runtime rollout or host
+promotion; it requires a reviewed rebuild and separately coordinated deployment.
 
 After the pin PR passes review and CI and merges, serialize a hand-off-only
 update through #529. Verify the job and other lifecycle jobs are idle and retain
