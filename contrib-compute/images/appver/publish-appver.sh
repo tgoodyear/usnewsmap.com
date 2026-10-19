@@ -158,7 +158,15 @@ PYCONFIG
 esac
 # Stock update_versions has no app selector and can abort on an unrelated version's
 # immutable files. Keep its code and signed payloads unchanged, but isolate its apps tree.
-registration=$(private_directory "$PROJ" ".usnm-registration.")
+# Azure Files forces shared directory modes; executable PHP must stay on tmpfs.
+registration=$(private_directory "$SECRETS" "appver-registration.")
+python3 - "$registration" <<'PYPRIVATE'
+import os
+import sys
+info = os.stat(sys.argv[1], follow_symlinks=False)
+if info.st_mode & 0o777 != 0o700 or info.st_uid != os.geteuid():
+    raise PermissionError("registration storage must enforce private owner-only permissions")
+PYPRIVATE
 mkdir -p "$registration/html" "$registration/apps/$APPVER_APP/$APPVER_VERSION"
 cp -LR "$PROJ/html/inc" "$registration/html/inc"
 if [ "${APPVER_REUSE_PROJECT:-0}" = 1 ]; then

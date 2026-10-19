@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh image plan classes without resetting bounded Qwen admission."""
+"""Refresh image plan classes without resetting explicit Qwen admission."""
 import argparse
 import fcntl
 import os
@@ -11,6 +11,7 @@ COHORT_CLASSES = (
     "nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b",
     "nvidia_vulkan_8b", "amd_vulkan_8b", "docker_nvidia_cuda_8b",
 )
+AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1"
 
 
 def parse_policy(payload: bytes) -> tuple[ET.Element, dict[str, ET.Element]]:
@@ -34,6 +35,18 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
             continue
         old = existing[name]
         fields = [old.findall(tag) for tag in ("min_wu_id", "max_wu_id")]
+        if name == "amd_vulkan_8b":
+            markers = [node for node in old if node.tag is ET.Comment
+                       and (node.text or "").strip() == AMD_GENERAL_MARKER]
+            if markers:
+                if len(markers) != 1 or any(fields) or name not in reviewed:
+                    raise ValueError("Invalid explicit AMD general admission")
+                for node in list(reviewed[name]):
+                    if node.tag in ("min_wu_id", "max_wu_id") or (
+                            node.tag is ET.Comment and (node.text or "").strip() == AMD_GENERAL_MARKER):
+                        reviewed[name].remove(node)
+                reviewed[name].append(ET.Comment(AMD_GENERAL_MARKER))
+                continue
         if not any(fields):
             continue
         if any(len(field) != 1 for field in fields) or name not in reviewed:

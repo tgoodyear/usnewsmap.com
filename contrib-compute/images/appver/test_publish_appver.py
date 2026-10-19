@@ -80,7 +80,7 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(calls[0].endswith('update_versions'))
         self.assertFalse((self.project / 'project.xml').exists())
 
-    def test_registration_workspace_is_private_project_local_and_removed(self):
+    def test_registration_workspace_is_private_secrets_local_and_removed(self):
         update = self.project / 'bin/update_versions'
         update.write_text('#!/bin/sh\npwd > "$PROJ/registration-workspace"\n'
                           'python3 -c \'import os; assert os.stat(".").st_mode & 0o777 == 0o700\'\n')
@@ -91,10 +91,24 @@ class PublishTests(unittest.TestCase):
             result = self.publish('x86_64-pc-linux-gnu')
         self.assertEqual(result.returncode, 0, result.stderr)
         workspace = Path((self.project / 'registration-workspace').read_text().strip())
-        self.assertEqual(workspace.parent, self.project)
-        self.assertTrue(workspace.name.startswith('.usnm-registration.'))
+        self.assertEqual(workspace.parent, self.project / 'local-secrets')
+        self.assertTrue(workspace.name.startswith('appver-registration.'))
         self.assertFalse(workspace.exists())
-        self.assertFalse(list(self.project.glob('.usnm-registration.*')))
+        self.assertFalse(list((self.project / 'local-secrets').glob('appver-registration.*')))
+
+    def test_registration_refuses_fixed_share_modes_before_executing_php(self):
+        (self.project / 'html/inc/boinc_db.inc').write_text('existing configuration')
+        script = self.script.read_text().replace(
+            'path.mkdir(mode=0o700)',
+            'path.mkdir(mode=0o700)\npath.chmod(0o775)',
+        )
+        self.script.write_text(script)
+        with unittest.mock.patch.dict(os.environ, {'APPVER_REUSE_PROJECT': '1'}):
+            result = self.publish('x86_64-pc-linux-gnu')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('must enforce private owner-only permissions', result.stderr)
+        self.assertFalse((self.project / 'calls').exists())
+        self.assertFalse(list((self.project / 'local-secrets').glob('appver-registration.*')))
 
     def test_scoped_ownership_does_not_walk_live_download_tree(self):
         (self.project / 'html/inc/boinc_db.inc').write_text('existing configuration')

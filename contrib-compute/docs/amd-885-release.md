@@ -28,8 +28,10 @@ tool refresh. No other binary or startup configuration is replaced.
 Production publication uses the normal signed app-version image and
 `APPVER_REUSE_PROJECT=1`: existing live credentials/config symlinks are retained;
 registration is isolated to this app/platform/version. Publisher workspaces
-are private UUID directories on the project filesystem, not system temporary
-directories. The publish job's full existing template is preserved except its
+for public payloads are UUID directories on the project filesystem. Executed PHP
+registration files live only in private UUID directories under the existing
+permission-enforcing `$SECRETS` tmpfs (`/dev/shm/boinc`), never the Azure Files
+share, whose fixed `0775` modes cannot enforce `0700`. The publish job's full existing template is preserved except its
 image and the scoped-reuse variable. Only that job is gated idle under its start
 lease; other running jobs and their **entire templates** are untouched.
 
@@ -42,12 +44,16 @@ the #860 transaction; no system temporary path or lease takeover is used.
 The maintainer authorized preserving MySQL `require_secure_transport=OFF`
 **as found**; this release neither resumes #464 nor toggles enforcement.
 An actual verified encrypted read-only DB connection must pass independently.
-AMD remains **closed `2/1`**. Existing Intel/NVIDIA Vulkan `17099–17100` and
-every other class bound must survive unchanged. No workunit/result changes,
-volunteer attachment/preferences, dispatch or hardware acceptance are part of
-this publication. Initial real-card qualification remains pending under #885;
-steady-state compatible-host automatic scheduling is a separate admission/supply
-follow-up, not a requirement for manual cohorts per volunteer.
+The maintainer subsequently authorized **automatic general AMD admission ASAP**,
+before hardware qualification. After signed publication and runtime deployment,
+the reviewed AMD-only `--general --apply` promotion removes AMD workunit bounds
+and persists `usnm-amd-general-admission-v1` under the same journal/policy lock.
+Startup preserves that mode; a later explicit AMD stop removes it and remains
+closed across restart. Existing Intel/NVIDIA Vulkan `17099–17100` and every other
+class bound survive unchanged. No workunit/result, volunteer attachment/preference
+or forced-client-dispatch mutations are part of this publication/promotion.
+Initial volunteer use is **hardware-unverified**; actual RX 9070 XT qualification
+remains pending under #885, not a prerequisite for each eligible volunteer.
 
 Final image digests, app-version IDs and public hash verification are recorded
 in the #885/#529 deployment receipts. Preparation is not publication.
