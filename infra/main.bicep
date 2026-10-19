@@ -560,11 +560,11 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
       : ''
     handoffWriterIds: concat(
       boincHandoff ? [boincHandoffJob!.outputs.principalId, boincBridgeIdentity!.properties.principalId] : [],
-      empty(trim(boincHandoffRunner)) ? [] : [trim(boincHandoffRunner)],
-      // Every on-prem host, so any of them can run the quality-wave JPEG cache
-      // (scripts/ocr-node/quality-jpeg-cache.py) against the hand-off container.
-      empty(trim(onPremGroupId)) ? [] : [trim(onPremGroupId)]
+      empty(trim(boincHandoffRunner)) ? [] : [trim(boincHandoffRunner)]
     )
+    // Every on-prem host, so any of them can run the quality-wave JPEG cache
+    // (scripts/ocr-node/quality-jpeg-cache.py) against the hand-off container.
+    onPremGroupId: trim(onPremGroupId)
     // The hand-off job takes pages off the work queues beside the nodes (#296).
     handoffQueueIds: boincHandoff ? [boincHandoffJob!.outputs.principalId] : []
     nodeGroupId: trim(ocrNodeGroupId)

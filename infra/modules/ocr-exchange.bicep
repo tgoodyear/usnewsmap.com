@@ -21,6 +21,8 @@ param subnetId string
 param boincSubnetId string = ''
 @description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
 param handoffWriterIds array = []
+@description('Object id of the on-prem hosts\' Entra group (usnm-onprem-grp-<env>, scripts/ocr-node/group.sh --kind onprem): the node writer role on `boinc-handoff`, as the handoffWriterIds have. Empty grants none.')
+param onPremGroupId string = ''
 @description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296): Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`. Sender, so a page BOINC can\'t use goes back to the queue for the nodes. Nothing on `ocr-deadletter`, and no Update Message.')
 param handoffQueueIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
@@ -340,6 +342,17 @@ resource handoffWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
     }
   }
 ]
+
+// The same role for the on-prem hosts' group: a group's assignment needs principalType Group.
+resource handoffOnPremWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(onPremGroupId)) {
+  scope: handoff
+  name: guid(handoff.id, onPremGroupId, 'usnm-ocr-node-writer')
+  properties: {
+    principalId: onPremGroupId
+    principalType: 'Group'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
+  }
+}
 
 // The ingest identity: ocr-enqueue and the seeder add pages to the queues,
 // and ocr-sync drains the dead letters (reads and deletes them), so Queue
