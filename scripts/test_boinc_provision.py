@@ -25,7 +25,7 @@ case "$*" in
       echo "$count" > "$STUB_LOG.stack_show_count"
       [ "$count" -lt "$STUB_STACK_SHOW_FAIL_AFTER" ] || { echo "transient stack show error" >&2; exit 1; }
     fi
-    echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"},"goldBundleJobName":{"value":"gold"},"keyVaultName":{"value":"vault"},"mysqlHost":{"value":"db.example.org"}}' ;;
+    echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"},"goldBundleJobName":{"value":"gold"},"qualityWaveJobName":{"value":"'"${STUB_QUALITY_JOB:-}"'"},"keyVaultName":{"value":"vault"},"mysqlHost":{"value":"db.example.org"}}' ;;
   "containerapp env certificate list"*) echo Succeeded ;;
   "stack-whatif group create"*"--help"*) ;;
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
@@ -479,6 +479,12 @@ class ProductionReconciliation(unittest.TestCase):
         # updates it: the job is started by hand, and a running wave keeps the template it
         # started with.
         quality = source.split("module qualityWaveJob ")[1].split("module secretsJob ")[0]
+        # Each shard's exit status reaches the job's: a failed shard fails the run.
+        self.assertIn('wait "$p" || rc=1', quality)
+        self.assertIn('exit "$rc"', quality)
+        provision = (ROOT / "scripts/provision-boinc.sh").read_text()
+        # Removing qualityWave deletes the job, so it waits for a running wave.
+        self.assertIn("removing qualityWave would delete it", provision)
         self.assertIn("if (withApp && !empty(qualityWaveScript))", quality)
         self.assertIn("sha256sum -c -", quality)
 

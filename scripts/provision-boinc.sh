@@ -233,6 +233,17 @@ if [ -n "$existing_gold" ]; then
     fi
   fi
 fi
+# Removing qualityWave deletes the quality job (the stack deletes unmanaged resources), so it
+# must not happen mid-wave. Updating the job never blocks: a running wave keeps its template.
+existing_quality=""
+[ -n "${QUALITY_WAVE_SCRIPT:-}" ] || existing_quality=$(boinc_output qualityWaveJobName)
+if [ -n "$existing_quality" ]; then
+  active_quality=$(baz containerapp job execution list --name "$existing_quality" --resource-group "$BOINC_RG" \
+    --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv) ||
+    die "could not list the executions of $existing_quality"
+  [ -z "$active_quality" ] ||
+    die "$existing_quality has an active execution (${active_quality//$'\n'/ }) and removing qualityWave would delete it; wait for it to finish before removing qualityWave"
+fi
 active_bridge=""
 existing_bridge=$(boinc_output bridgeJobName)
 if [ -n "$existing_bridge" ]; then

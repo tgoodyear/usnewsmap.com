@@ -386,7 +386,7 @@ module qualityWaveJob 'modules/bridge-job.bicep' = if (withApp && !empty(quality
     command: [
       '/bin/bash'
       '-c'
-      'set -euo pipefail; tok="$(curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$AZURE_CLIENT_ID" | jq -er .access_token)"; curl -fsSL -H "Authorization: Bearer $tok" -H "x-ms-version: 2021-08-06" "$QUALITY_WAVE_SCRIPT" -o /tmp/run_wave9.py; echo "$QUALITY_WAVE_SHA256  /tmp/run_wave9.py" | sha256sum -c -; export NUM_SHARDS=8 BUNDLE_SIZE=200 MAX_IN_FLIGHT_BUNDLES=45 MIN_FREE_GB=35.0; for s in 0 1 2 3 4 5 6 7; do SHARD_ENV=$s python3 /tmp/run_wave9.py & sleep 3; done; wait'
+      'set -euo pipefail; tok="$(curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$AZURE_CLIENT_ID" | jq -er .access_token)"; curl -fsSL -H "Authorization: Bearer $tok" -H "x-ms-version: 2021-08-06" "$QUALITY_WAVE_SCRIPT" -o /tmp/run_wave9.py; echo "$QUALITY_WAVE_SHA256  /tmp/run_wave9.py" | sha256sum -c -; export NUM_SHARDS=8 BUNDLE_SIZE=200 MAX_IN_FLIGHT_BUNDLES=45 MIN_FREE_GB=35.0; pids=""; for s in 0 1 2 3 4 5 6 7; do SHARD_ENV=$s python3 /tmp/run_wave9.py & pids="$pids $!"; sleep 3; done; rc=0; for p in $pids; do wait "$p" || rc=1; done; exit "$rc"'
     ]
   }
 }
