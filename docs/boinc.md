@@ -922,9 +922,10 @@ journalctl -fu usnm-quality-jpeg-cache
 
 Another LAN host with idle CPU can convert too, reading masters from the scan server
 (`--scan-server`, `usnm-quality-jpeg-cache-remote.service`) rather than `/tank`. It needs
-three things. The first is the hand-off writer role for its Arc machine identity: add the
-object id to the private setting `USNM_QUALITY_JPEG_WRITERS` (comma-separated), then
-provision. The second is the host on the scan server's `--allow`
+three things. The first is its Arc machine identity in the on-prem hosts' group,
+`usnm-onprem-grp-<env>` (`USNM_ONPREM_GROUP`, `scripts/ocr-node/group.sh --kind onprem`),
+which has the hand-off writer role (list, read, create; no delete). Not the OCR nodes'
+group: its member count sets the nodes' LoC pacing. The second is the host on the scan server's `--allow`
 (`USNM_SCANSERVE_ALLOW` in CT 211's `/etc/usnm/scanserve.env`, then restart
 `usnm-scanserve`). The third is its own share of the list: split the pages that remain
 alternately, so the two hosts never convert the same page and both stay just ahead of
@@ -939,7 +940,7 @@ compare the sha256 of pages both convert).
 grep -vxFf <(cut -f1 done.txt) pages.txt > left.txt
 awk 'NR % 2 == 1' left.txt > pages-ct211.txt
 awk 'NR % 2 == 0' left.txt > pages-remote.txt
-scripts/settings.sh --env prod --key USNM_QUALITY_JPEG_WRITERS --value <object id>[,<object id>]
+az ad group member add --group <USNM_ONPREM_GROUP> --member-id <host's Arc principal id>
 # On the host, as root, after the Pillow wheel and the script are in place:
 install -m 0644 usnm-quality-jpeg-cache-remote.service /etc/systemd/system/
 printf 'ACCOUNT=<exchange account>\nLIST=%s/pages.txt\nWORKERS=6\nSCAN_SERVER=http://<scan-fetch host>:8380\n' \

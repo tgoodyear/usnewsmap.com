@@ -123,9 +123,6 @@ param serialSetRunner string = ''
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
 
-@description('Object ids of other on-prem hosts\' Arc machine identities that run the quality-wave JPEG cache (scripts/ocr-node/quality-jpeg-cache.py --scan-server, docs/boinc.md), comma-separated. Each gets the node writer role on boinc-handoff (list, read, create; no delete), as boincHandoffRunner has. Settings only, never in the repository.')
-param qualityJpegWriters string = ''
-
 @description('Let boincHandoffRunner run the BOINC batch controller on-prem (#866, docs/boinc-batch-scheduler.md): Reader on the subscription and a custom role that updates and starts the hand-off and bridge jobs (modules/boinc-controller.bicep). Needs the hand-off job and boincHandoffRunner. Off removes the grants.')
 param boincControllerOnPrem bool = false
 @description('The BOINC hand-off job\'s image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json, <registry>.azurecr.io/usnm-boinc-bridge@sha256:<digest>. Empty: no hand-off job. Needs the exchange account (ocrNodes), the registry (useAcr) and the BOINC group (deployBoincGroup).')
@@ -261,6 +258,9 @@ param ocrNodeIps string = ''
 
 @description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-grp-<env> (scripts/ocr-node/group.sh creates or relabels the saved group without changing its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
+
+@description('Object id of usnm-onprem-grp-<env> (scripts/ocr-node/group.sh --kind onprem): every on-prem host\'s Arc machine identity, the OCR nodes and any other host. It gets what any host needs for local work: the node writer role on the exchange account\'s boinc-handoff container (list, read, create; no delete), for the quality-wave JPEG cache. Unlike ocrNodeGroupId it carries no queue roles and doesn\'t set the nodes\' LoC pacing. Settings only, never in the repository.')
+param onPremGroupId string = ''
 
 @description('Arc service principal object id of the scan archive uploader. Grants only the archive writer role on scans, without OCR queue access or membership in the pacing-counted OCR node group.')
 param scanArchiveUploaderId string = ''
@@ -561,8 +561,9 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
     handoffWriterIds: concat(
       boincHandoff ? [boincHandoffJob!.outputs.principalId, boincBridgeIdentity!.properties.principalId] : [],
       empty(trim(boincHandoffRunner)) ? [] : [trim(boincHandoffRunner)],
-      // Only with the hand-off container, which the BOINC hand-off job brings.
-      boincHandoff ? map(filter(split(qualityJpegWriters, ','), w => !empty(trim(w))), w => trim(w)) : []
+      // Every on-prem host, so any of them can run the quality-wave JPEG cache
+      // (scripts/ocr-node/quality-jpeg-cache.py) against the hand-off container.
+      empty(trim(onPremGroupId)) ? [] : [trim(onPremGroupId)]
     )
     // The hand-off job takes pages off the work queues beside the nodes (#296).
     handoffQueueIds: boincHandoff ? [boincHandoffJob!.outputs.principalId] : []

@@ -234,11 +234,6 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
-    "USNM_QUALITY_JPEG_WRITERS": {
-      "x-usnm-visibility": "private",
-      "description": "Private: in the settings store, under the environment's label. Comma-separated object ids of other on-prem hosts' Arc machine identities that run the quality-wave JPEG cache from the scan server; each can list, read and create in boinc-handoff.",
-      "not": {}
-    },
     "USNM_SCAN_ARCHIVE_UPLOADER_ID": {
       "x-usnm-visibility": "private",
       "description": "Private: scan-host Arc principal granted only archive writer access.",
@@ -247,6 +242,11 @@
     "USNM_OCR_NODE_GROUP": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The OCR nodes' Entra group's object id.",
+      "not": {}
+    },
+    "USNM_ONPREM_GROUP": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The object id of usnm-onprem-grp-<env>, every on-prem host's Arc identity (scripts/ocr-node/group.sh --kind onprem); it gets the roles any host needs for local work.",
       "not": {}
     },
     "USNM_OCR_NODE_IPS": {
