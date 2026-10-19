@@ -880,7 +880,7 @@ current batch with `--current s=<batch>_verNN`, from the shard's status file
 already bundled or have no LoC text, so a shard's bundle count doesn't tell where it is in
 its list. The runner lists the archive and the damage index once, when it starts, and both
 grow, so a later list can put a tier-1 batch under another shard. The builder then warns and
-continues that shard from the batch it names. Rebuild the list before the converter reaches
+lists every batch after it for that shard, so no batch the runner still needs is left out. Rebuild the list before the converter reaches
 its end, or the cache falls behind as shards move into tier 1.
 
 The output must be byte for byte what the runner would make, so the script runs only on
@@ -900,9 +900,10 @@ work on pve-big rather than adding vCPUs to the runner's job.
 # cache stays ahead of the runner. Copy the list, the script and the unit into CT 211's
 # /root (pct push).
 # damage.txt: az storage blob list on the lake's curated container, --prefix audit/damage/v2/.
-# keep-jp2.txt: in CT 211, cd /tank/ocr/scans && find keep -name '*.jp2'.
+# keep-files.txt: in CT 211, cd /tank/ocr/scans && find keep -type f (all formats: JPEG-only
+# batches still take their turn in the rotation; only JPEG2000 pages are listed).
 scripts/ocr-node/quality-jpeg-list.py --manifest wave9_manifest.parquet --out pages.txt \
-  --damage-index damage.txt --keep-files keep-jp2.txt --done done.txt \
+  --damage-index damage.txt --keep-files keep-files.txt --done done.txt \
   --current 0=dlc_friendship_ver03,1=dlc_eject_ver01,...
 # In CT 211, as root: the pinned Pillow wheel, as the bridge image installs it.
 d=/usr/local/lib/usnm-quality-jpeg-cache

@@ -15,14 +15,17 @@ as they are.
 After the manifest's batches the runner takes tier 1: batches in the damage
 audit index (curated audit/damage/v2/<batch>_verNN.parquet, in name order)
 that are not in the manifest and have archived scans under keep/<batch>/.
---damage-index lists those blob names and --keep-files the archived pages
-(`find keep -name '*.jp2'` under the scans root); with both, tier-1 batches
-follow the manifest's in the same shard rotation, their pages in date,
-edition and sequence order.
+--damage-index lists those blob names and --keep-files every archived page
+(`find keep -type f` under the scans root, JPEG2000 or not: a batch with only
+JPEG masters still takes its place in the rotation); with both, tier-1
+batches follow the manifest's in the same shard rotation, their pages in the
+runner's doc_id order.
 
 --current s=<batch>_verNN skips shard s's batches up to and including the one
-its status file names now; an unknown batch is an error, since the rotation
-would then be wrong. --start-after s=k does the same by index (k is the index
+its status file names now; an unknown batch is an error. If the batch is in
+the order but under another shard, the listing has changed since the runner
+started, so its exact rotation is unknown: that shard then gets every later
+batch, not every Nth, so none it still needs is left out. --start-after s=k does the same by index (k is the index
 of the batch it is in now). Shards not named start at their first batch.
 --done drops pages already in the converter's done.txt. Needs duckdb.
 """
@@ -35,12 +38,12 @@ DAMAGE = re.compile(r"^audit/damage/v2/(.+)_ver(\d+)\.parquet$")
 
 
 def page_key(path):
-    """keep/<batch>/<lccn>/<date>/<edition>/<seq>.jp2 in date, edition, sequence order."""
+    """The runner's doc_id for keep/<batch>/<lccn>/<date>/<edition>/<seq>.<ext>,
+    <lccn>_<date>_ed-<edition>_seq-<seq>, which it sorts as a string (seq-10 before seq-2)."""
     parts = path.split("/")
-    try:
-        return (parts[2], parts[3], int(parts[4]), int(parts[5].split(".")[0]))
-    except (IndexError, ValueError):
-        return (path, "", 0, 0)
+    if len(parts) != 6:
+        return path
+    return f"{parts[2]}_{parts[3]}_ed-{parts[4]}_seq-{parts[5].rsplit('.', 1)[0]}"
 
 
 def tier1_batches(manifest_batches, damage_names, keep_files):
@@ -80,8 +83,9 @@ def resolve_current(ordered, shards, current, warn=print):
 
     The runner lists the scan archive and the damage index once, when it starts; both grow,
     so a later list can rotate tier 1 differently. A batch that is in the order but under
-    another shard is taken as that shard's position anyway (it continues every `shards`-th
-    batch from there), with a warning. A batch not in the order at all is an error."""
+    another shard means the runner's rotation is unknown, so that shard gets every later
+    batch (the queues are deduplicated when interleaved), with a warning. A batch not in the
+    order at all is an error."""
     keys = [k for k, _ in ordered]
     out = {}
     for s, name in current.items():
@@ -91,8 +95,10 @@ def resolve_current(ordered, shards, current, warn=print):
         except ValueError:
             raise SystemExit(f"shard {s}: {name} is not in the batch order; check the inputs")
         if g % shards != s:
-            warn(f"shard {s}: {name} is shard {g % shards}'s in this order; continuing from it")
-        out[s] = ordered[g + shards::shards]
+            warn(f"shard {s}: {name} is shard {g % shards}'s in this order; listing every later batch")
+            out[s] = ordered[g + 1:]
+        else:
+            out[s] = ordered[g + shards::shards]
     return out
 
 
@@ -164,7 +170,7 @@ def main(argv=None):
         tier1 = tier1_batches({(b, int(bv)) for b, bv, _ in rows}, damage, keep)
     remaining = resolve_current(ordered_batches(rows, tier1), a.shards, parse_current(a.current))
     queues = shard_queues(rows, a.shards, parse_start_after(a.start_after), done, tier1, remaining)
-    out = interleave(queues)
+    out = list(dict.fromkeys(interleave(queues)))
     with open(a.out, "w") as f:
         f.write("".join(f"{n}\n" for n in out))
     for s, q in enumerate(queues):
