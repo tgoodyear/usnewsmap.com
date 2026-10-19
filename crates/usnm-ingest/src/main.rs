@@ -8,7 +8,7 @@ use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::docs::{DocStore, FileDocs};
 use usnm_ingest::merges::{self, MergeWait};
 use usnm_ingest::release::{self, Published, PublishedUnrecorded, Release, TitlesLeft};
-use usnm_ingest::sink::{IndexSink, JsonlSink, QuickwitNode, QuickwitSink};
+use usnm_ingest::sink::{IndexSink, IngestApi, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::source::{self, ListedBatch};
 use usnm_ingest::state::{BatchStatus, Outcome, State, Step};
 use usnm_ingest::telemetry;
@@ -941,8 +941,13 @@ async fn release_locked(
         report: report.clone(),
         ..MergeWait::default()
     };
+    let ingest = IngestApi::from_env()?;
     let mut sink: Box<dyn IndexSink> = match (&t.index_dir, &t.quickwit_url, &t.quickwit_bin) {
         (Some(dir), None, None) => Box::new(JsonlSink::new(dir)),
+        (None, Some(_), None) if ingest == IngestApi::V1 => bail!(
+            "{}=v1 restarts the writer for its final merges: use --quickwit-bin",
+            IngestApi::VAR
+        ),
         (None, Some(url), None) => Box::new(QuickwitSink::new(url, root(t)?)?.merges(wait)),
         (None, None, Some(bin)) => {
             let metastore = t
@@ -954,9 +959,11 @@ async fn release_locked(
             remove_stale_spill(&dir)?;
             check_free_disk(&dir, t.min_free_gib)?;
             let n = QuickwitNode::start(bin, &dir, t.quickwit_port, metastore, root(t)?).await?;
+            tracing::info!(api = ingest.name(), "writer ingest api");
             let sink = QuickwitSink::new(&n.url, root(t)?)?
                 .watching(&n)
-                .merges(wait);
+                .merges(wait)
+                .ingest(ingest);
             node = Some(n);
             Box::new(sink)
         }

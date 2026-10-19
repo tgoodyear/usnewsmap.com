@@ -147,6 +147,10 @@ param pageLanguage bool = false
 @maxValue(999999)
 param splitDocs int = 0
 
+@description('The Quickwit writer\'s ingest API (#283). v2, Quickwit\'s default, is at least once: a persist it timed out and retried can be kept twice, and the release\'s count then refuses the index. v1 keeps each accepted page once, and the release restarts the writer for its final merges (docs/operations.md, "Duplicate-safe ingest").')
+@allowed(['v1', 'v2'])
+param writerIngest string = 'v2'
+
 @description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations.md, "Full rebuild").')
 param dedicatedProfile bool = false
 
@@ -914,6 +918,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     singleTextField: singleTextField
     pageLanguage: pageLanguage
     splitDocs: splitDocs
+    writerIngest: writerIngest
     workers: backfillWorkers
     backfillCron: backfillCron
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''

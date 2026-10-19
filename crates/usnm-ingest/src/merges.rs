@@ -48,6 +48,8 @@ use crate::state::MergeProgress;
 
 /// The ingest API's source in every index (Quickwit's ingest v2).
 pub const INGEST_SOURCE: &str = "_ingest-source";
+/// Ingest v1's source in every index (`sink::IngestApi::V1`).
+pub const INGEST_V1_SOURCE: &str = "_ingest-api-source";
 
 /// Splits listed per request.
 const PAGE: usize = 1000;
@@ -100,6 +102,12 @@ struct Events {
     merge_failed: Option<String>,
     /// Each index's `_ingest-source` merge pipeline, by index id.
     pipelines: BTreeMap<String, Pipeline>,
+    /// Each index's `_ingest-api-source` merge pipeline starts, by index id:
+    /// how many, and the last one's line (it has the merge policy).
+    v1_spawns: BTreeMap<String, (u32, String)>,
+    /// The first failure of each index's `_ingest-api-source` merge
+    /// pipeline, by index id.
+    v1_failed: BTreeMap<String, String>,
 }
 
 /// What the writer's output has said about one index's `_ingest-source`
@@ -166,7 +174,11 @@ impl NodeEvents {
         let merge_failed = line.contains("failed to merge splits")
             || line.contains("merge scheduler service is dead");
         let event = PipelineEvent::of(line);
-        if !(disk_full || merge_failed || event.is_some()) {
+        let v1_source = format!("source_id={INGEST_V1_SOURCE}");
+        let v1 = line.split_whitespace().any(|w| w == v1_source);
+        let v1_spawn = v1 && line.contains("spawning merge pipeline");
+        let v1_failed = v1 && line.contains("merge pipeline failed");
+        if !(disk_full || merge_failed || event.is_some() || v1_spawn || v1_failed) {
             return;
         }
         let mut e = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -182,6 +194,15 @@ impl NodeEvents {
             .split_whitespace()
             .find_map(|w| w.strip_prefix("index_uid="))
             .and_then(|uid| uid.split(':').next());
+        if let (true, Some(id)) = (v1_spawn, id) {
+            let s = e.v1_spawns.entry(id.to_owned()).or_default();
+            *s = (s.0 + 1, line.to_owned());
+        }
+        if let (true, Some(id)) = (v1_failed, id) {
+            e.v1_failed
+                .entry(id.to_owned())
+                .or_insert_with(|| excerpt(line));
+        }
         if let (Some(event), Some(id)) = (event, id) {
             let p = e.pipelines.entry(id.to_owned()).or_default();
             match event {
@@ -204,10 +225,31 @@ impl NodeEvents {
         e.exited.get_or_insert_with(|| why.to_owned());
     }
 
+    /// Forget that the writer exited: the release stopped it to start it
+    /// again (`sink::WriterProcess::restart`).
+    pub fn clear_exit(&self) {
+        let mut e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        e.exited = None;
+    }
+
     /// Why the writer process ended, if it has.
     pub fn exit(&self) -> Option<String> {
         let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
         e.exited.clone()
+    }
+
+    /// Fails once `index_id`'s ingest v1 merge pipeline has failed: it is
+    /// not followed like v2's, so its merges could otherwise look settled
+    /// with splits left unmerged.
+    pub fn check_v1(&self, index_id: &str) -> anyhow::Result<()> {
+        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(line) = e.v1_failed.get(index_id) {
+            bail!(
+                "the merge pipeline of `{index_id}` failed; not publishing a half-merged index. \
+                 Its output: {line}"
+            );
+        }
+        Ok(())
     }
 
     /// Fails once the writer has exited, run out of disk, or failed a merge.
@@ -263,6 +305,15 @@ impl NodeEvents {
     pub fn spawns(&self, index_id: &str) -> u32 {
         let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
         e.pipelines.get(index_id).map_or(0, |p| p.spawns)
+    }
+
+    /// How many times Quickwit has started `index_id`'s ingest v1 merge
+    /// pipeline, and the last start's line.
+    pub fn v1_spawns(&self, index_id: &str) -> (u32, Option<String>) {
+        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        e.v1_spawns
+            .get(index_id)
+            .map_or((0, None), |(n, line)| (*n, Some(line.clone())))
     }
 }
 
@@ -535,6 +586,44 @@ impl Node<'_> {
         let ingested = v["num_ingested_docs"].as_u64();
         if ingested != Some(0) || v["num_rejected_docs"].as_u64() != Some(1) {
             bail!("reopening `{index_id}`: the writer did not reject the empty document: {v}");
+        }
+        Ok(())
+    }
+
+    /// `index_id`'s config, as Quickwit has it.
+    pub async fn index_config(&self, index_id: &str) -> anyhow::Result<Value> {
+        let v: Value = self
+            .http
+            .get(format!("{}/api/v1/indexes/{index_id}", self.base))
+            .send()
+            .await?
+            .error_for_status()
+            .with_context(|| format!("reading the config of `{index_id}`"))?
+            .json()
+            .await?;
+        match &v["index_config"] {
+            Value::Object(_) => Ok(v["index_config"].clone()),
+            _ => bail!("the metadata of `{index_id}` has no index_config"),
+        }
+    }
+
+    /// Replace `index_id`'s config. Quickwit restarts its indexing pipelines
+    /// with it, but not its merge pipelines: those take it when the writer
+    /// starts again.
+    pub async fn update_index(&self, index_id: &str, config: &Value) -> anyhow::Result<()> {
+        let resp = self
+            .http
+            .put(format!("{}/api/v1/indexes/{index_id}", self.base))
+            .json(config)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            bail!(
+                "updating the config of `{index_id}` returned {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
         }
         Ok(())
     }
@@ -892,6 +981,186 @@ impl Drop for CloseOnDrop {
     }
 }
 
+/// Stops the writer node and starts it again on the same data, for
+/// [`seal_restarting`].
+#[async_trait::async_trait]
+pub trait Restart: Send + Sync {
+    async fn restart(&self) -> anyhow::Result<()>;
+}
+
+/// The merge factor of ingest v1's final merges: any two splits of a
+/// partition below the split target merge, so at most one is left in each.
+pub const FINAL_MERGE_FACTOR: u64 = 2;
+
+/// `config` with its merge policy's `merge_factor` set to `factor` (and its
+/// `max_merge_factor` at least that).
+pub fn with_merge_factor(config: &Value, factor: u64) -> anyhow::Result<Value> {
+    let mut out = config.clone();
+    let policy = out["indexing_settings"]["merge_policy"]
+        .as_object_mut()
+        .context("the index config has no indexing_settings.merge_policy")?;
+    let kind = policy.get("type").and_then(Value::as_str).unwrap_or("");
+    if !matches!(kind, "stable_log" | "limit_merge") {
+        bail!("final merges need the stable_log merge policy, not `{kind}`");
+    }
+    policy.insert("merge_factor".into(), factor.into());
+    let max = policy
+        .get("max_merge_factor")
+        .and_then(Value::as_u64)
+        .unwrap_or(factor);
+    policy.insert("max_merge_factor".into(), max.max(factor).into());
+    Ok(out)
+}
+
+/// [`seal`] for an index written through ingest v1, whose source can't be
+/// disabled to run its final merges (Quickwit manages it): settle, give the
+/// index a merge factor of [`FINAL_MERGE_FACTOR`], restart the writer (only
+/// a new merge pipeline takes a new policy), wait for the index's new merge
+/// pipeline to start with it, settle again, put the config back and check.
+/// The splits left are below `merge_factor` in every partition, so a later
+/// writer's merge pipeline has nothing to merge either way.
+#[allow(clippy::too_many_arguments)]
+pub async fn seal_restarting(
+    node: &Node<'_>,
+    writer: &dyn Restart,
+    index_id: &str,
+    expected: u64,
+    split_target: u64,
+    events: &NodeEvents,
+    wait: &MergeWait,
+    work_dir: Option<&Path>,
+) -> anyhow::Result<IndexLayout> {
+    let start = tokio::time::Instant::now();
+    let deadline = start + wait.timeout;
+    let sealing = async {
+        let ev = Some(events);
+        let splits = settled(
+            node, index_id, ev, wait, "settle", start, deadline, work_dir,
+        )
+        .await?;
+        events.check_v1(index_id)?;
+        if expected == 0 && splits.is_empty() {
+            return check(index_id, expected, split_target, &splits);
+        }
+        let original = explained(ev, node.index_config(index_id).await).await?;
+        let finals = with_merge_factor(&original, FINAL_MERGE_FACTOR)?;
+        explained(ev, node.update_index(index_id, &finals).await).await?;
+        let (before, _) = events.v1_spawns(index_id);
+        tracing::info!(
+            index = index_id,
+            splits = splits.len(),
+            merge_factor = FINAL_MERGE_FACTOR,
+            "merges settled; restarting the writer for the final merges"
+        );
+        writer.restart().await?;
+        let until = deadline.min(tokio::time::Instant::now() + wait.finalize_stall);
+        loop {
+            events.check()?;
+            events.check_v1(index_id)?;
+            match events.v1_spawns(index_id) {
+                (n, Some(line)) if n > before && merges_with_factor(&line, FINAL_MERGE_FACTOR) => {
+                    break
+                }
+                (n, Some(line)) if n > before => bail!(
+                    "the restarted writer merges `{index_id}` without the final merge factor; not \
+                     publishing a half-merged index. Its line: {}",
+                    excerpt(&line)
+                ),
+                _ => {}
+            }
+            if tokio::time::Instant::now() + wait.poll > until {
+                bail!(
+                    "the restarted writer started no merge pipeline for `{index_id}`; not \
+                     publishing a half-merged index"
+                );
+            }
+            tokio::time::sleep(wait.poll).await;
+        }
+        let splits = settled(
+            node, index_id, ev, wait, "finalize", start, deadline, work_dir,
+        )
+        .await?;
+        events.check_v1(index_id)?;
+        explained(ev, node.update_index(index_id, &original).await).await?;
+        check(index_id, expected, split_target, &splits)
+    };
+    match tokio::time::timeout(wait.timeout + wait.poll, sealing).await {
+        Ok(result) => result,
+        Err(_) => bail!(
+            "merges into `{index_id}` did not finish within {} s (a request to the writer was \
+             still waiting); not publishing",
+            wait.timeout.as_secs()
+        ),
+    }
+}
+
+/// Whether a "spawning merge pipeline" line's policy has `factor`:
+/// `stable_log` prints `{ min_level_num_docs: .., merge_factor: 2, ..`,
+/// `limit_merge` prints `{ merge_factor: 2, max_merge_factor: ..`.
+fn merges_with_factor(line: &str, factor: u64) -> bool {
+    line.contains(&format!(" merge_factor: {factor},"))
+}
+
+/// Poll until `index_id`'s merges have settled ([`Settle`]), reporting
+/// `step`; its splits then.
+#[allow(clippy::too_many_arguments)]
+async fn settled(
+    node: &Node<'_>,
+    index_id: &str,
+    events: Option<&NodeEvents>,
+    wait: &MergeWait,
+    step: &str,
+    start: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    work_dir: Option<&Path>,
+) -> anyhow::Result<Vec<Split>> {
+    let mut settle = Settle::new(wait.stable_polls);
+    let mut last_log: Option<tokio::time::Instant> = None;
+    loop {
+        if let Some(e) = events {
+            e.check()?;
+        }
+        let (running, queued) = explained(events, node.gauges().await).await?;
+        let splits = explained(events, node.splits(index_id).await).await?;
+        let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
+        let done = settle.observe(running == 0 && queued == 0, &ids);
+        wait.report.merges(MergeProgress {
+            step: step.to_owned(),
+            splits: splits.len() as u64,
+            merges_running: running,
+            merges_queued: queued,
+        });
+        if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
+            last_log = Some(tokio::time::Instant::now());
+            tracing::info!(
+                index = index_id,
+                step,
+                splits = splits.len(),
+                merges_running = running,
+                merges_queued = queued,
+                elapsed_secs = start.elapsed().as_secs(),
+                disk_free_mb = work_dir
+                    .and_then(progress::disk_free)
+                    .map(|b| b / (1024 * 1024)),
+                wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
+                "release merges"
+            );
+        }
+        if done {
+            return Ok(splits);
+        }
+        if tokio::time::Instant::now() + wait.poll > deadline {
+            bail!(
+                "merges into `{index_id}` did not finish within {} s ({step}: {} splits, {running} \
+                 merges running, {queued} queued); not publishing",
+                wait.timeout.as_secs(),
+                splits.len()
+            );
+        }
+        tokio::time::sleep(wait.poll).await;
+    }
+}
+
 /// The merged index holds every document, in no more splits than the
 /// merge policy leaves at its split target.
 fn check(
@@ -1090,6 +1359,97 @@ mod tests {
         // Another source's pipeline is not this one.
         e.observe(&spawned.replace("_ingest-source", "_ingest-api-source"));
         assert_eq!(e.spawns(id), 3);
+    }
+
+    /// Ingest v1's merge pipeline is tracked apart, with the policy it
+    /// started with; a restart the release asked for is not an exit.
+    #[test]
+    fn follows_ingest_v1_merge_pipelines_and_restarts() {
+        let id = "pages-base-20261020-1";
+        let e = NodeEvents::default();
+        let spawned = |factor: u32| {
+            format!(
+                "2026-10-19T16:04:28.154Z  INFO spawn_merge_pipeline{{index_uid={id}:01M5AEGETSRZT3Y8CFRXV1RE8X generation=0}}: \
+                 quickwit_indexing::actors::merge_pipeline: spawning merge pipeline \
+                 index_uid={id}:01M5AEGETSRZT3Y8CFRXV1RE8X source_id=_ingest-api-source root_dir=/work/x \
+                 merge_policy=StableLogMergePolicy {{ config: StableLogMergePolicyConfig {{ min_level_num_docs: 100000, \
+                 merge_factor: {factor}, max_merge_factor: 12, maturation_period: 604800s }}, split_num_docs_target: 60000 }}"
+            )
+        };
+        assert_eq!(e.v1_spawns(id), (0, None));
+        e.observe(&spawned(10));
+        assert_eq!(e.v1_spawns(id).0, 1);
+        // Not the v2 source's pipeline.
+        assert_eq!(e.spawns(id), 0);
+        e.observe(&spawned(2));
+        let (n, line) = e.v1_spawns(id);
+        assert_eq!(n, 2);
+        let line = line.unwrap();
+        assert!(merges_with_factor(&line, 2) && !merges_with_factor(&line, 12));
+        // `limit_merge` prints the factor first.
+        let limit = "merge_policy=ConstWriteAmplificationMergePolicy { config: \
+                     ConstWriteAmplificationMergePolicyConfig { merge_factor: 2, max_merge_factor: 12, \
+                     max_merge_ops: 4, maturation_period: 604800s } }";
+        assert!(merges_with_factor(limit, 2));
+        assert!(!merges_with_factor(
+            &limit.replace("merge_factor: 2,", "merge_factor: 10,"),
+            2
+        ));
+        // The v2 source's line doesn't count.
+        e.observe(&spawned(2).replace("_ingest-api-source", "_ingest-source"));
+        assert_eq!((e.v1_spawns(id).0, e.spawns(id)), (2, 1));
+        e.writer_exited("the Quickwit writer exited with status 0");
+        assert!(e.check().is_err());
+        e.clear_exit();
+        assert!(e.check().is_ok());
+        // A v1 merge pipeline that fails stops a v1 release of its index.
+        let failed = |id: &str, source: &str| {
+            format!(
+                "2026-10-19T16:05:00.000Z ERROR quickwit_indexing::actors::merge_pipeline: merge pipeline \
+                 failed index_uid={id}:01M5AEGETSRZT3Y8CFRXV1RE8X source_id={source} generation=1 \
+                 healthy_actors=[] failed_or_unhealthy_actors=[\"MergePublisher-young-tVo8\"]"
+            )
+        };
+        e.observe(&failed("pages-delta-20261020-1", "_ingest-api-source"));
+        e.observe(&failed(id, "_ingest-source"));
+        assert!(e.check_v1(id).is_ok());
+        e.observe(&failed(id, "_ingest-api-source"));
+        let err = e.check_v1(id).unwrap_err().to_string();
+        assert!(
+            err.contains("merge pipeline of `pages-base-20261020-1` failed"),
+            "{err}"
+        );
+        assert!(err.contains("half-merged"), "{err}");
+    }
+
+    #[test]
+    fn final_merges_lower_only_the_merge_factor() {
+        // As Quickwit 0.9.1 gives it (`GET /api/v1/indexes/{id}`).
+        let config = serde_json::json!({
+            "index_id": "i",
+            "indexing_settings": {
+                "split_num_docs_target": 60000,
+                "merge_policy": {"type": "limit_merge", "merge_factor": 10, "max_merge_factor": 12,
+                                 "max_merge_ops": 4, "max_finalize_merge_operations": 5,
+                                 "maturation_period": "7days"},
+            },
+        });
+        let finals = with_merge_factor(&config, FINAL_MERGE_FACTOR).unwrap();
+        let mut expected = config.clone();
+        expected["indexing_settings"]["merge_policy"]["merge_factor"] = 2.into();
+        assert_eq!(finals, expected);
+        // A max below the factor is raised to it.
+        let mut low = config.clone();
+        low["indexing_settings"]["merge_policy"]["max_merge_factor"] = 1.into();
+        assert_eq!(
+            with_merge_factor(&low, 2).unwrap()["indexing_settings"]["merge_policy"]
+                ["max_merge_factor"],
+            2
+        );
+        let mut other = config.clone();
+        other["indexing_settings"]["merge_policy"] = serde_json::json!({"type": "no_merge"});
+        assert!(with_merge_factor(&other, 2).is_err());
+        assert!(with_merge_factor(&serde_json::json!({}), 2).is_err());
     }
 
     #[test]

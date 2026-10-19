@@ -46,6 +46,7 @@ param partitionDecade = bool(readEnvironmentVariable('USNM_PARTITION_DECADE', 'f
 param singleTextField = bool(readEnvironmentVariable('USNM_SINGLE_TEXT_FIELD', 'false'))
 param pageLanguage = bool(readEnvironmentVariable('USNM_PAGE_LANGUAGE', 'false'))
 param splitDocs = int(readEnvironmentVariable('USNM_SPLIT_DOCS', '0'))
+param writerIngest = readEnvironmentVariable('USNM_WRITER_INGEST', 'v2')
 param dedicatedProfile = bool(readEnvironmentVariable('USNM_DEDICATED_PROFILE', 'false'))
 param ingestOnDedicated = bool(readEnvironmentVariable('USNM_INGEST_ON_DEDICATED', 'false'))
 param archiveAccountId = readEnvironmentVariable('USNM_ARCHIVE_ACCOUNT', '')

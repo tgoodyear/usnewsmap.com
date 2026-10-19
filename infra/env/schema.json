@@ -428,6 +428,12 @@
       "description": "Private: in the settings store, under the environment's label. The VNet's address space, an RFC 1918 block (no private addresses in the repository, #399).",
       "not": {}
     },
+    "USNM_WRITER_INGEST": {
+      "x-usnm-visibility": "public",
+      "description": "The Quickwit writer's ingest API: v2 (Quickwit's default, at least once) or v1 (each accepted page once; the release restarts the writer for its final merges). docs/operations.md, \"Duplicate-safe ingest\" (#283).",
+      "type": "string",
+      "pattern": "^v[12]$"
+    },
     "USNM_WWW_CERT_ID": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. A managed certificate's resource id, which names the subscription.",

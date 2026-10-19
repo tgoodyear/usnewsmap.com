@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -459,6 +459,66 @@ const MERGE_CONCURRENCY: u32 = 1;
 /// has already taken, and resending them would duplicate them.
 const INGEST_RETRY_FOR: Duration = Duration::from_secs(600);
 
+/// Which of Quickwit's ingest APIs the release writes through
+/// (`USNM_WRITER_INGEST`, #283).
+///
+/// Ingest v2 (the default) delivers at least once. Its router gives each
+/// persist to the ingester 6 s and then sends the whole request again, up
+/// to 5 times, but a persist that timed out isn't cancelled: it waits for
+/// the ingester's lock and appends its documents anyway. When the lock was
+/// held for longer (26 s, once in a 57-hour full rebuild), the node answered
+/// 200 and kept two to four copies of a request's pages: 121 extra
+/// documents in 23.7 million, which the exact count caught.
+///
+/// Ingest v1 (`?use_legacy_ingest=true`) appends a request to the node's
+/// queue once, before it answers. It answers 429 when the queue is full and
+/// 404 before the index's queue exists, both before it appends anything;
+/// those requests are sent again, and nothing else is. Its source can't be
+/// closed, so the release runs its final merges by restarting the writer
+/// (`merges::seal_restarting`). It needs a writer node the release runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IngestApi {
+    #[default]
+    V2,
+    V1,
+}
+
+impl IngestApi {
+    pub const VAR: &'static str = "USNM_WRITER_INGEST";
+
+    /// `v2` (or unset or empty) or `v1`.
+    pub fn parse(value: Option<&str>) -> anyhow::Result<Self> {
+        match value.map(str::trim) {
+            None | Some("") | Some("v2") => Ok(Self::V2),
+            Some("v1") => Ok(Self::V1),
+            Some(other) => bail!("{} must be `v1` or `v2`, not `{other}`", Self::VAR),
+        }
+    }
+
+    pub fn from_env() -> anyhow::Result<Self> {
+        Self::parse(std::env::var(Self::VAR).ok().as_deref())
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::V2 => "v2",
+            Self::V1 => "v1",
+        }
+    }
+
+    /// Whether a request answered `status` was certainly not appended, so
+    /// sending it again can't duplicate anything.
+    fn retry(self, status: reqwest::StatusCode) -> bool {
+        use reqwest::StatusCode as S;
+        match self {
+            // At least once: `finish` checks the count, so a duplicate
+            // fails the release rather than go unnoticed.
+            Self::V2 => status == S::SERVICE_UNAVAILABLE || status == S::TOO_MANY_REQUESTS,
+            Self::V1 => status == S::TOO_MANY_REQUESTS || status == S::NOT_FOUND,
+        }
+    }
+}
+
 #[async_trait]
 pub trait IndexSink: Send {
     /// Start a new, empty main index, laid out as `layout` says: by decade
@@ -507,8 +567,9 @@ pub struct SinkStats {
     retries_503: AtomicU64,
     /// The file system whose free space the progress line reports.
     pub work_dir: Option<PathBuf>,
-    /// The Quickwit writer node's process, for its memory use.
-    pub node_pid: Option<u32>,
+    /// The Quickwit writer node's process, for its memory use: 0 for none.
+    /// A restart (ingest v1's final merges) changes it.
+    node_pid: AtomicU32,
 }
 
 impl SinkStats {
@@ -524,6 +585,12 @@ impl SinkStats {
     pub fn retries_503(&self) -> u64 {
         self.retries_503.load(Ordering::Relaxed)
     }
+    pub fn node_pid(&self) -> Option<u32> {
+        Some(self.node_pid.load(Ordering::Relaxed)).filter(|&p| p != 0)
+    }
+    fn set_node_pid(&self, pid: Option<u32>) {
+        self.node_pid.store(pid.unwrap_or(0), Ordering::Relaxed);
+    }
 
     fn sent(&self, docs: u64, bytes: u64) {
         self.docs_sent.fetch_add(docs, Ordering::Relaxed);
@@ -536,7 +603,9 @@ impl SinkStats {
     fn retried(&self, status: u16) {
         match status {
             429 => self.retries_429.fetch_add(1, Ordering::Relaxed),
-            _ => self.retries_503.fetch_add(1, Ordering::Relaxed),
+            503 => self.retries_503.fetch_add(1, Ordering::Relaxed),
+            // v1's 404 before the index's queue exists: only the metric.
+            _ => 0,
         };
         telemetry::metrics()
             .retries
@@ -638,6 +707,10 @@ pub struct QuickwitSink {
     split_docs: Option<u64>,
     /// The writer node's output, when this release runs the node.
     events: Option<Arc<NodeEvents>>,
+    /// The writer node's process, when this release runs the node: ingest
+    /// v1 restarts it for the final merges.
+    process: Option<Arc<WriterProcess>>,
+    ingest: IngestApi,
 }
 
 impl QuickwitSink {
@@ -657,6 +730,8 @@ impl QuickwitSink {
             merge_wait: MergeWait::default(),
             split_docs: None,
             events: None,
+            process: None,
+            ingest: IngestApi::default(),
         })
     }
 
@@ -666,10 +741,17 @@ impl QuickwitSink {
     pub fn watching(mut self, node: &QuickwitNode) -> Self {
         self.stats = Arc::new(SinkStats {
             work_dir: Some(node.work_dir.clone()),
-            node_pid: node.pid(),
+            node_pid: AtomicU32::new(node.pid().unwrap_or(0)),
             ..SinkStats::default()
         });
         self.events = Some(node.events.clone());
+        self.process = Some(node.process.clone());
+        self
+    }
+
+    /// Write through `api` (`IngestApi::from_env` in a release).
+    pub fn ingest(mut self, api: IngestApi) -> Self {
+        self.ingest = api;
         self
     }
 
@@ -695,7 +777,13 @@ impl QuickwitSink {
         }
         let id = self.index.as_deref().context("no index created")?;
         let body = bytes::Bytes::from(std::mem::take(&mut self.buf));
-        let url = format!("{}/api/v1/{id}/ingest?commit={commit}", self.base);
+        let url = match self.ingest {
+            IngestApi::V2 => format!("{}/api/v1/{id}/ingest?commit={commit}", self.base),
+            IngestApi::V1 => format!(
+                "{}/api/v1/{id}/ingest?commit={commit}&use_legacy_ingest=true",
+                self.base
+            ),
+        };
         let deadline = tokio::time::Instant::now() + self.retry_for;
         let mut pause = self.retry_initial;
         let mut attempt = 1u32;
@@ -708,14 +796,13 @@ impl QuickwitSink {
                 .send()
                 .await
                 .map_err(anyhow::Error::from);
+            // A request with no answer (a timeout, a dropped connection) may
+            // have been taken: it is never sent again.
             let resp = merges::explained(self.events.as_deref(), sent).await?;
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            // The whole request is resent; `finish` checks the final count, so
-            // a duplicate would fail the release rather than go unnoticed.
-            let pushback = status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
-            if !pushback || tokio::time::Instant::now() + pause > deadline {
+            // The whole request is sent again.
+            if !self.ingest.retry(status) || tokio::time::Instant::now() + pause > deadline {
                 break (status, text);
             }
             tracing::warn!(
@@ -738,13 +825,19 @@ impl QuickwitSink {
             );
         }
         let v: Value = serde_json::from_str(&text).context("ingest response")?;
-        if v["num_rejected_docs"].as_u64() != Some(0) {
+        let docs = body.iter().filter(|&&b| b == b'\n').count() as u64;
+        // v1 doesn't count rejected documents (it drops them as it indexes);
+        // the final count catches them.
+        let accepted = match self.ingest {
+            IngestApi::V2 => v["num_rejected_docs"].as_u64() == Some(0),
+            IngestApi::V1 => v["num_docs_for_processing"].as_u64() == Some(docs),
+        };
+        if !accepted {
             bail!(
-                "ingest into `{id}` rejected documents: {}",
+                "ingest into `{id}` did not take all {docs} documents: {}",
                 text.chars().take(500).collect::<String>()
             );
         }
-        let docs = body.iter().filter(|&&b| b == b'\n').count() as u64;
         self.stats.sent(docs, body.len() as u64);
         Ok(())
     }
@@ -872,17 +965,47 @@ impl IndexSink for QuickwitSink {
         if last != expected {
             bail!("index `{id}` holds {last} documents, expected {expected}");
         }
-        let layout = merges::seal(
-            &self.node(),
-            &id,
-            expected,
-            self.split_docs
-                .unwrap_or_else(merges::template_split_target),
-            self.events.as_deref(),
-            &self.merge_wait,
-            self.stats.work_dir.as_deref(),
-        )
-        .await?;
+        let split_target = self
+            .split_docs
+            .unwrap_or_else(merges::template_split_target);
+        let layout = match self.ingest {
+            IngestApi::V2 => {
+                merges::seal(
+                    &self.node(),
+                    &id,
+                    expected,
+                    split_target,
+                    self.events.as_deref(),
+                    &self.merge_wait,
+                    self.stats.work_dir.as_deref(),
+                )
+                .await?
+            }
+            IngestApi::V1 => {
+                let (Some(process), Some(events)) = (&self.process, &self.events) else {
+                    bail!(
+                        "{}=v1 runs the final merges by restarting the writer: it needs a writer \
+                         the release runs (--quickwit-bin)",
+                        IngestApi::VAR
+                    );
+                };
+                let writer = Restarting {
+                    process,
+                    stats: &self.stats,
+                };
+                merges::seal_restarting(
+                    &self.node(),
+                    &writer,
+                    &id,
+                    expected,
+                    split_target,
+                    events,
+                    &self.merge_wait,
+                    self.stats.work_dir.as_deref(),
+                )
+                .await?
+            }
+        };
         tracing::info!(
             index = %id,
             splits = layout.splits,
@@ -926,6 +1049,30 @@ impl IndexSink for QuickwitSink {
 
     fn stats(&self) -> Arc<SinkStats> {
         self.stats.clone()
+    }
+}
+
+/// The sink's writer, restarted for ingest v1's final merges: the progress
+/// line follows the new process's memory.
+struct Restarting<'a> {
+    process: &'a WriterProcess,
+    stats: &'a SinkStats,
+}
+
+#[async_trait]
+impl merges::Restart for Restarting<'_> {
+    async fn restart(&self) -> anyhow::Result<()> {
+        let restarted = self.process.restart().await;
+        self.stats.set_node_pid(self.process.pid());
+        restarted
+    }
+}
+
+/// A node restarted directly (the tests of `merges::seal_restarting`).
+#[async_trait]
+impl merges::Restart for QuickwitNode {
+    async fn restart(&self) -> anyhow::Result<()> {
+        self.process.restart().await
     }
 }
 
@@ -1079,22 +1226,18 @@ fn writer_log_filter(inherited: Option<&str>) -> String {
 /// the job's console: warnings, errors and readiness through `tracing`, and
 /// the last lines into error messages.
 pub struct QuickwitNode {
-    pid: Option<u32>,
     pub url: String,
     work_dir: PathBuf,
-    tail: Tail,
     events: Arc<NodeEvents>,
-    /// Owns the process: waits for it to exit, then records why (`supervise`).
-    supervisor: tokio::task::JoinHandle<()>,
-    /// Why the process exited, once it has.
-    exit: tokio::sync::watch::Receiver<Option<String>>,
+    /// Shared with the sink, which restarts it for ingest v1's final merges.
+    process: Arc<WriterProcess>,
 }
 
 impl Drop for QuickwitNode {
     /// A node that wasn't stopped (a release that failed) is killed: the
     /// supervisor owns the child, which is killed when it is dropped.
     fn drop(&mut self) {
-        self.supervisor.abort();
+        self.process.abort();
     }
 }
 
@@ -1140,8 +1283,9 @@ pub fn describe_exit(
     why
 }
 
-// Quickwit 0.9.1 puts the v2 WAL in data_dir/wal. A fresh local directory
-// avoids NFS persist-lock stalls without moving the large merge/split files.
+// Quickwit 0.9.1 puts the v2 WAL in data_dir/wal and the v1 queues in
+// data_dir/queues. A fresh local directory for both avoids NFS persist-lock
+// stalls without moving the large merge/split files.
 fn prepare_local_wal(
     data: &Path,
     local_root: Option<&Path>,
@@ -1163,29 +1307,38 @@ fn prepare_local_wal(
         free >= min_free_bytes,
         "insufficient local WAL disk space: {free} bytes free, need {min_free_bytes}"
     );
-    let wal = tempfile::Builder::new()
+    let local = tempfile::Builder::new()
         .prefix("usnm-wal-")
         .tempdir_in(&root)
         .context("creating a fresh local writer WAL")?;
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(wal.path(), data.join("wal"))
-        .context("linking the writer WAL to local disk")?;
-    #[cfg(not(unix))]
-    anyhow::bail!("USNM_WRITER_WAL_DIR requires Unix symbolic links");
+    for dir in LOCAL_DIRS {
+        std::fs::create_dir(local.path().join(dir))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(local.path().join(dir), data.join(dir))
+            .with_context(|| format!("linking the writer's {dir} to local disk"))?;
+        #[cfg(not(unix))]
+        anyhow::bail!("USNM_WRITER_WAL_DIR requires Unix symbolic links");
+    }
     tracing::info!(
-        dir = %wal.path().display(),
+        dir = %local.path().display(),
         disk_free_mb = free / 1_048_576,
         max_queue_disk_bytes = WAL_DISK_BYTES,
-        "writer WAL on local disk"
+        "writer WAL and queues on local disk"
     );
-    Ok(Some(wal))
+    Ok(Some(local))
 }
 
+/// The writer's directories `prepare_local_wal` keeps on local disk: the
+/// ingest v2 WAL and the ingest v1 queues.
+const LOCAL_DIRS: [&str; 2] = ["wal", "queues"];
+
 // Construct this owner before spawning: even a never-polled supervisor must
-// signal the child before its local WAL is removed. Fields drop in this order.
+// signal the child before its local WAL is removed. Fields drop in this
+// order; a restarted writer's supervisors share the WAL, which goes with
+// the last of them.
 struct SupervisedWriter {
     child: tokio::process::Child,
-    _local_wal: Option<tempfile::TempDir>,
+    _local_wal: Option<Arc<tempfile::TempDir>>,
 }
 
 impl SupervisedWriter {
@@ -1207,7 +1360,7 @@ fn supervise(
     mut readers: Vec<tokio::task::JoinHandle<()>>,
     tail: Tail,
     events: Arc<NodeEvents>,
-    local_wal: Option<tempfile::TempDir>,
+    local_wal: Option<Arc<tempfile::TempDir>>,
 ) -> (
     tokio::task::JoinHandle<()>,
     tokio::sync::watch::Receiver<Option<String>>,
@@ -1234,6 +1387,200 @@ fn supervise(
         let _ = tx.send(Some(why));
     });
     (task, rx)
+}
+
+/// The writer node's process: started once by `QuickwitNode::start`, and
+/// again on the same data and config by `restart`.
+pub struct WriterProcess {
+    bin: PathBuf,
+    config_path: PathBuf,
+    url: String,
+    tail: Tail,
+    events: Arc<NodeEvents>,
+    local_wal: Option<Arc<tempfile::TempDir>>,
+    run: Mutex<Run>,
+}
+
+/// One run of the writer process.
+#[derive(Default)]
+struct Run {
+    pid: Option<u32>,
+    /// Owns the process: waits for it to exit, then records why (`supervise`).
+    supervisor: Option<tokio::task::JoinHandle<()>>,
+    /// Why the process exited, once it has.
+    exit: Option<tokio::sync::watch::Receiver<Option<String>>>,
+}
+
+impl WriterProcess {
+    fn run(&self) -> std::sync::MutexGuard<'_, Run> {
+        self.run.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Start the process, without waiting for it to be ready.
+    fn spawn(&self) -> anyhow::Result<()> {
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        // Quickwit's environment overrides its config file, and the official
+        // image sets QW_LISTEN_ADDRESS=0.0.0.0, QW_DATA_DIR and QW_CONFIG: the
+        // writer refused to start on it ("listen address `0.0.0.0` is
+        // unspecified"). None is passed through: the storage account is in
+        // the config above, and a QW_AZURE_STORAGE_ACCESS_KEY must never
+        // reach it (ADR-0009, Entra identities only).
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("QW_") {
+                cmd.env_remove(&key);
+            }
+        }
+        let mut child = cmd
+            .args(["run", "--config"])
+            .arg(&self.config_path)
+            .env("QW_DISABLE_TELEMETRY", "1")
+            .env(
+                "RUST_LOG",
+                writer_log_filter(std::env::var("RUST_LOG").ok().as_deref()),
+            )
+            // AZURE_CLIENT_ID selects the pipeline's user-assigned identity;
+            // Quickwit's credential chain uses the system-assigned one (08 §8.2).
+            .env_remove("AZURE_CLIENT_ID")
+            // The node's own telemetry setting isn't the pipeline's.
+            .env_remove(telemetry::CONNECTION_STRING_VAR)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("starting {}", self.bin.display()))?;
+        let mut readers = Vec::new();
+        if let Some(out) = child.stdout.take() {
+            readers.push(forward(out, false, self.tail.clone(), self.events.clone()));
+        }
+        if let Some(err) = child.stderr.take() {
+            readers.push(forward(err, true, self.tail.clone(), self.events.clone()));
+        }
+        let pid = child.id();
+        let (supervisor, exit) = supervise(
+            child,
+            readers,
+            self.tail.clone(),
+            self.events.clone(),
+            self.local_wal.clone(),
+        );
+        *self.run() = Run {
+            pid,
+            supervisor: Some(supervisor),
+            exit: Some(exit),
+        };
+        Ok(())
+    }
+
+    /// Wait for the process to answer as ready, or fail with its output.
+    async fn ready(&self) -> anyhow::Result<()> {
+        let mut exit = self
+            .run()
+            .exit
+            .clone()
+            .context("the writer was not started")?;
+        let http = reqwest::Client::new();
+        for _ in 0..120 {
+            // A node that has already exited won't become ready.
+            if exit.borrow().is_some() {
+                break;
+            }
+            if http
+                .get(format!("{}/health/readyz", self.url))
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success())
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        // An exited node: the supervisor records its last output first.
+        let _ = tokio::time::timeout(Duration::from_secs(5), exit.wait_for(Option::is_some)).await;
+        let lines = self.tail.lines().join("\n");
+        match self.exited() {
+            Some(why) => bail!("Quickwit writer did not become ready: {why}; its output:\n{lines}"),
+            None => bail!("Quickwit writer did not become ready; its last output:\n{lines}"),
+        }
+    }
+
+    /// The process id of its current run.
+    pub fn pid(&self) -> Option<u32> {
+        self.run().pid
+    }
+
+    /// Why its current run exited, if it has.
+    pub fn exited(&self) -> Option<String> {
+        self.run().exit.as_ref().and_then(|e| e.borrow().clone())
+    }
+
+    /// Kill the current run (by dropping its child), without waiting.
+    fn abort(&self) {
+        if let Some(s) = &self.run().supervisor {
+            s.abort();
+        }
+    }
+
+    /// Stop the current run: SIGTERM, then a kill after 60 s.
+    async fn terminate(&self) {
+        // The supervisor stays in `Run` until the run has stopped or been
+        // aborted: a release cancelled during the wait (a merge timeout, a
+        // lost lease) still leaves `stop`/`Drop` a handle to kill it with.
+        let (pid, exit) = {
+            let r = self.run();
+            (r.pid, r.exit.clone())
+        };
+        let Some(mut exit) = exit else { return };
+        let running = exit.borrow().is_none();
+        if let (Some(pid), true) = (pid, running) {
+            // SIGTERM lets Quickwit shut down cleanly; `kill` is a shell builtin.
+            let _ = tokio::process::Command::new("sh")
+                .args(["-c", "kill -TERM \"$0\"", &pid.to_string()])
+                .status()
+                .await;
+        }
+        let stopped = tokio::time::timeout(Duration::from_secs(60), exit.wait_for(Option::is_some))
+            .await
+            .is_ok();
+        if !stopped {
+            // Expected after a release: the closed index's ingest shards
+            // have no pipeline left to drain them, and the ingester waits
+            // for that. Everything is published by now, and the next
+            // writer starts from an empty data directory (a restart
+            // reads what is published from the metastore, and resumes
+            // ingest v1 queues from their checkpoints).
+            tracing::info!("the Quickwit writer did not stop within 60 s; killing it");
+            // Dropping the supervisor's child kills it (`kill_on_drop`).
+            self.abort();
+        }
+        let supervisor = self.run().supervisor.take();
+        if let Some(mut supervisor) = supervisor {
+            let _ = tokio::time::timeout(Duration::from_secs(5), &mut supervisor).await;
+        }
+    }
+
+    /// Stop the writer and start it again on the same data and config, for
+    /// ingest v1's final merges (`merges::seal_restarting`). A writer that
+    /// has exited on its own is not restarted: that fails the release.
+    pub async fn restart(&self) -> anyhow::Result<()> {
+        if let Some(why) = self.exited() {
+            bail!("{why}; not publishing");
+        }
+        tracing::info!(pid = self.pid(), "restarting the Quickwit writer");
+        self.terminate().await;
+        // The exit was asked for.
+        self.events.clear_exit();
+        self.spawn()?;
+        self.ready().await?;
+        tracing::info!(pid = self.pid(), "the Quickwit writer restarted");
+        Ok(())
+    }
+}
+
+impl Drop for WriterProcess {
+    fn drop(&mut self) {
+        self.abort();
+    }
 }
 
 impl QuickwitNode {
@@ -1279,81 +1626,27 @@ impl QuickwitNode {
         }
         let config_path = work_dir.join("writer.yaml");
         std::fs::write(&config_path, config)?;
-        let mut cmd = tokio::process::Command::new(bin);
-        // Quickwit's environment overrides its config file, and the official
-        // image sets QW_LISTEN_ADDRESS=0.0.0.0, QW_DATA_DIR and QW_CONFIG: the
-        // writer refused to start on it ("listen address `0.0.0.0` is
-        // unspecified"). None is passed through: the storage account is in
-        // the config above, and a QW_AZURE_STORAGE_ACCESS_KEY must never
-        // reach it (ADR-0009, Entra identities only).
-        for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with("QW_") {
-                cmd.env_remove(&key);
-            }
-        }
-        let mut child = cmd
-            .args(["run", "--config"])
-            .arg(&config_path)
-            .env("QW_DISABLE_TELEMETRY", "1")
-            .env(
-                "RUST_LOG",
-                writer_log_filter(std::env::var("RUST_LOG").ok().as_deref()),
-            )
-            // AZURE_CLIENT_ID selects the pipeline's user-assigned identity;
-            // Quickwit's credential chain uses the system-assigned one (08 §8.2).
-            .env_remove("AZURE_CLIENT_ID")
-            // The node's own telemetry setting isn't the pipeline's.
-            .env_remove(telemetry::CONNECTION_STRING_VAR)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("starting {}", bin.display()))?;
         let tail = Tail::default();
         let events = Arc::new(NodeEvents::default());
-        let mut readers = Vec::new();
-        if let Some(out) = child.stdout.take() {
-            readers.push(forward(out, false, tail.clone(), events.clone()));
-        }
-        if let Some(err) = child.stderr.take() {
-            readers.push(forward(err, true, tail.clone(), events.clone()));
-        }
-        let pid = child.id();
-        let (supervisor, mut exit) =
-            supervise(child, readers, tail.clone(), events.clone(), local_wal);
+        let url = format!("http://127.0.0.1:{port}");
+        let process = Arc::new(WriterProcess {
+            bin: bin.to_owned(),
+            config_path,
+            url: url.clone(),
+            tail: tail.clone(),
+            events: events.clone(),
+            local_wal: local_wal.map(Arc::new),
+            run: Mutex::default(),
+        });
+        process.spawn()?;
         let node = Self {
-            pid,
-            url: format!("http://127.0.0.1:{port}"),
+            url,
             work_dir: work_dir.to_owned(),
-            tail,
             events,
-            supervisor,
-            exit: exit.clone(),
+            process,
         };
-        let http = reqwest::Client::new();
-        for _ in 0..120 {
-            // A node that has already exited won't become ready.
-            if exit.borrow().is_some() {
-                break;
-            }
-            if http
-                .get(format!("{}/health/readyz", node.url))
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success())
-            {
-                return Ok(node);
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        // An exited node: the supervisor records its last output first.
-        let _ = tokio::time::timeout(Duration::from_secs(5), exit.wait_for(Option::is_some)).await;
-        let lines = node.tail.lines().join("\n");
-        match node.exited() {
-            Some(why) => bail!("Quickwit writer did not become ready: {why}; its output:\n{lines}"),
-            None => bail!("Quickwit writer did not become ready; its last output:\n{lines}"),
-        }
+        node.process.ready().await?;
+        Ok(node)
     }
 
     /// What the node's output has reported so far.
@@ -1363,36 +1656,17 @@ impl QuickwitNode {
 
     /// The node's process id.
     pub fn pid(&self) -> Option<u32> {
-        self.pid
+        self.process.pid()
     }
 
     /// Why the node exited, if it has.
     pub fn exited(&self) -> Option<String> {
-        self.exit.borrow().clone()
+        self.process.exited()
     }
 
     /// Stop the node and wait for it to exit.
-    pub async fn stop(mut self) -> anyhow::Result<()> {
-        if let (Some(pid), None) = (self.pid, self.exited()) {
-            // SIGTERM lets Quickwit shut down cleanly; `kill` is a shell builtin.
-            let _ = tokio::process::Command::new("sh")
-                .args(["-c", "kill -TERM \"$0\"", &pid.to_string()])
-                .status()
-                .await;
-        }
-        let stopped =
-            tokio::time::timeout(Duration::from_secs(60), self.exit.wait_for(Option::is_some))
-                .await;
-        if stopped.is_err() {
-            // Expected after a release: the closed index's ingest shards
-            // have no pipeline left to drain them, and the ingester waits
-            // for that. Everything is published by now, and the next
-            // writer starts from an empty data directory.
-            tracing::info!("the Quickwit writer did not stop within 60 s; killing it");
-            // Dropping the supervisor's child kills it (`kill_on_drop`).
-            self.supervisor.abort();
-        }
-        let _ = tokio::time::timeout(Duration::from_secs(5), &mut self.supervisor).await;
+    pub async fn stop(self) -> anyhow::Result<()> {
+        self.process.terminate().await;
         Ok(())
     }
 }
@@ -1421,22 +1695,37 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         let wal = prepare_local_wal(&data, Some(&local), 0).unwrap().unwrap();
         let previous = wal.path().to_owned();
-        assert!(std::fs::symlink_metadata(data.join("wal"))
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(data.join("wal").canonicalize().unwrap(), previous);
+        // The v2 WAL and the v1 queues.
+        for dir in ["wal", "queues"] {
+            assert!(std::fs::symlink_metadata(data.join(dir))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                data.join(dir).canonicalize().unwrap(),
+                previous.join(dir).canonicalize().unwrap()
+            );
+        }
         std::fs::write(data.join("wal/accepted"), b"page").unwrap();
+        std::fs::write(data.join("queues/queued"), b"page").unwrap();
         std::fs::write(local.join("unrelated"), b"keep").unwrap();
         std::fs::remove_dir_all(&data).unwrap();
-        assert_eq!(std::fs::read(previous.join("accepted")).unwrap(), b"page");
+        assert_eq!(
+            std::fs::read(previous.join("wal/accepted")).unwrap(),
+            b"page"
+        );
+        assert_eq!(
+            std::fs::read(previous.join("queues/queued")).unwrap(),
+            b"page"
+        );
         drop(wal);
         assert!(!previous.exists());
         assert!(local.join("unrelated").exists());
         std::fs::create_dir_all(&data).unwrap();
         let next = prepare_local_wal(&data, Some(&local), 0).unwrap().unwrap();
         assert_ne!(next.path(), previous);
-        assert!(!next.path().join("accepted").exists());
+        assert!(!next.path().join("wal/accepted").exists());
+        assert!(!next.path().join("queues/queued").exists());
     }
 
     #[tokio::test]
@@ -1456,7 +1745,7 @@ mod tests {
             vec![],
             Tail::default(),
             Arc::new(NodeEvents::default()),
-            Some(wal),
+            Some(Arc::new(wal)),
         );
         assert!(path.exists());
         drop(input);
@@ -1486,7 +1775,7 @@ mod tests {
             vec![],
             Tail::default(),
             Arc::new(NodeEvents::default()),
-            Some(wal),
+            Some(Arc::new(wal)),
         );
         // There has been no yield: the supervisor has not run even once.
         task.abort();
@@ -1672,6 +1961,61 @@ mod tests {
             "{err}"
         );
         assert!(err.contains("Error: data dir volume too small"), "{err}");
+    }
+
+    /// A release cancelled while it waits for the writer to stop (a merge
+    /// timeout, a lost lease) can still kill a writer that ignores SIGTERM.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancelled_stop_still_leaves_the_writer_to_kill() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("quickwit");
+        let trapped = dir.path().join("trapped");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ntrap '' TERM\ntouch '{}'\nwhile :; do sleep 1; done\n",
+                trapped.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let writer = WriterProcess {
+            bin,
+            config_path: dir.path().join("node.yaml"),
+            url: "http://127.0.0.1:1".into(),
+            tail: Tail::default(),
+            events: Arc::new(NodeEvents::default()),
+            local_wal: None,
+            run: Mutex::new(Run::default()),
+        };
+        writer.spawn().unwrap();
+        while !trapped.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let stopping = tokio::time::timeout(Duration::from_millis(500), writer.terminate()).await;
+        assert!(stopping.is_err(), "the writer ignores SIGTERM");
+        assert!(writer.exited().is_none());
+        assert!(writer.run().supervisor.is_some());
+        let pid = writer.pid().unwrap().to_string();
+        writer.abort();
+        // The aborted supervisor drops the child, which kills it.
+        let gone = || {
+            !std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        for _ in 0..100 {
+            if gone() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("the writer outlived its aborted supervisor");
     }
 
     #[cfg(unix)]
@@ -2099,5 +2443,287 @@ mod tests {
         let err = s.send("auto").await.unwrap_err().to_string();
         assert!(err.contains("400"), "{err}");
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_restarted_writer_keeps_its_local_wal_until_its_last_run_stops() {
+        let root = tempfile::tempdir().unwrap();
+        let wal = Arc::new(tempfile::Builder::new().tempdir_in(root.path()).unwrap());
+        let path = wal.path().to_owned();
+        let run = || {
+            let mut child = tokio::process::Command::new("sh")
+                .args(["-c", "read line"])
+                .stdin(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let input = child.stdin.take().unwrap();
+            let (task, _) = supervise(
+                child,
+                vec![],
+                Tail::default(),
+                Arc::new(NodeEvents::default()),
+                Some(wal.clone()),
+            );
+            (task, input)
+        };
+        let (first, input) = run();
+        let (second, input2) = run();
+        drop(wal);
+        drop(input);
+        tokio::time::timeout(Duration::from_secs(5), first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(path.exists(), "the restarted writer still uses it");
+        drop(input2);
+        tokio::time::timeout(Duration::from_secs(5), second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_ingest_api_is_v2_unless_set_to_v1() {
+        assert_eq!(IngestApi::parse(None).unwrap(), IngestApi::V2);
+        assert_eq!(IngestApi::parse(Some("")).unwrap(), IngestApi::V2);
+        assert_eq!(IngestApi::parse(Some("v2")).unwrap(), IngestApi::V2);
+        assert_eq!(IngestApi::parse(Some(" v1 ")).unwrap(), IngestApi::V1);
+        let err = IngestApi::parse(Some("legacy")).unwrap_err().to_string();
+        assert!(err.contains("USNM_WRITER_INGEST"), "{err}");
+        for api in [IngestApi::V1, IngestApi::V2] {
+            assert_eq!(IngestApi::parse(Some(api.name())).unwrap(), api);
+        }
+    }
+
+    /// What a fake writer does with one ingest request.
+    #[derive(Debug, Clone, Copy)]
+    enum Answer {
+        /// Answers with this status without taking the documents.
+        Refuse(u16),
+        /// Takes the documents, then answers with this status: what an
+        /// ingest v2 router does when one of its persists times out and
+        /// another one (or the client's resend) succeeds.
+        TakeThen(u16),
+        /// Takes the documents twice and answers 200: the router's own
+        /// persist retry, with the timed-out persist still appending
+        /// (the #283 rebuild).
+        TakeTwice,
+        /// Takes the documents and answers 200 after the client gave up.
+        TakeThenStall,
+    }
+
+    /// The fake writer's index: the query string of every ingest request
+    /// and the documents it holds.
+    #[derive(Default)]
+    struct FakeIndex {
+        requests: Vec<String>,
+        docs: Vec<Vec<u8>>,
+    }
+
+    /// A fake writer node that answers ingest requests with `answers` in
+    /// turn (then takes them and answers 200), as `api` would, and counts
+    /// the documents it holds for searches.
+    async fn fake_writer(
+        api: IngestApi,
+        answers: Vec<Answer>,
+    ) -> (QuickwitSink, Arc<Mutex<FakeIndex>>) {
+        use axum::extract::{RawQuery, State};
+        use axum::http::StatusCode;
+        type Shared = (
+            Arc<Mutex<FakeIndex>>,
+            Arc<Mutex<VecDeque<Answer>>>,
+            IngestApi,
+        );
+        async fn ingest(
+            State((index, answers, api)): State<Shared>,
+            RawQuery(query): RawQuery,
+            body: axum::body::Bytes,
+        ) -> (StatusCode, String) {
+            let lines: Vec<Vec<u8>> = body
+                .split(|&b| b == b'\n')
+                .filter(|l| !l.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect();
+            let answer = answers.lock().unwrap().pop_front();
+            let take = |times: usize| {
+                let mut i = index.lock().unwrap();
+                for _ in 0..times {
+                    i.docs.extend(lines.iter().cloned());
+                }
+            };
+            index
+                .lock()
+                .unwrap()
+                .requests
+                .push(query.unwrap_or_default());
+            let ok = match api {
+                IngestApi::V2 => format!(
+                    r#"{{"num_docs_for_processing":{n},"num_ingested_docs":{n},"num_rejected_docs":0}}"#,
+                    n = lines.len()
+                ),
+                IngestApi::V1 => format!(r#"{{"num_docs_for_processing":{}}}"#, lines.len()),
+            };
+            let status = |code: u16| StatusCode::from_u16(code).unwrap();
+            let error = r#"{"message":"ingest failed"}"#.to_owned();
+            match answer {
+                Some(Answer::Refuse(code)) => (status(code), error),
+                Some(Answer::TakeThen(code)) => {
+                    take(1);
+                    (status(code), error)
+                }
+                Some(Answer::TakeTwice) => {
+                    take(2);
+                    (StatusCode::OK, ok)
+                }
+                Some(Answer::TakeThenStall) => {
+                    take(1);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    (StatusCode::OK, ok)
+                }
+                None => {
+                    take(1);
+                    (StatusCode::OK, ok)
+                }
+            }
+        }
+        async fn search(State((index, _, _)): State<Shared>) -> String {
+            format!(r#"{{"num_hits":{}}}"#, index.lock().unwrap().docs.len())
+        }
+        let index: Arc<Mutex<FakeIndex>> = Arc::default();
+        let shared: Shared = (
+            index.clone(),
+            Arc::new(Mutex::new(VecDeque::from(answers))),
+            api,
+        );
+        let app = axum::Router::new()
+            .route("/api/v1/{id}/ingest", axum::routing::post(ingest))
+            .route("/api/v1/{id}/search", axum::routing::get(search))
+            .with_state(shared);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut s = QuickwitSink::new(&format!("http://{addr}"), "file:///tmp/x")
+            .unwrap()
+            .ingest(api);
+        s.index = Some("i".into());
+        s.retry_initial = Duration::from_millis(1);
+        s.retry_for = Duration::from_secs(5);
+        s.http = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap();
+        (s, index)
+    }
+
+    /// Two pages, one request.
+    const TWO: &[u8] = b"{\"doc_id\":\"a\"}\n{\"doc_id\":\"b\"}\n";
+
+    /// The #283 symptom: every request was answered 200 once and counted
+    /// once, but the writer kept extra copies. Only the count sees them.
+    #[tokio::test]
+    async fn v2_duplicates_that_the_writer_accepted_once_fail_the_count() {
+        let (mut s, index) = fake_writer(IngestApi::V2, vec![Answer::TakeTwice]).await;
+        s.buf = TWO.to_vec();
+        s.send("auto").await.unwrap();
+        assert_eq!(s.stats().docs_sent(), 2);
+        assert_eq!(index.lock().unwrap().docs.len(), 4);
+        let err = s.finish(2).await.unwrap_err().to_string();
+        assert!(err.contains("holds 4 documents, expected 2"), "{err}");
+    }
+
+    /// v2 resends a request the node answered 503 after it took it: at
+    /// least once, and the count fails the release.
+    #[tokio::test]
+    async fn v2_resends_a_request_it_cannot_tell_was_taken() {
+        let (mut s, index) = fake_writer(IngestApi::V2, vec![Answer::TakeThen(503)]).await;
+        s.buf = TWO.to_vec();
+        s.send("auto").await.unwrap();
+        {
+            let i = index.lock().unwrap();
+            assert_eq!((i.requests.len(), i.docs.len()), (2, 4));
+        }
+        let err = s.finish(2).await.unwrap_err().to_string();
+        assert!(err.contains("holds 4 documents, expected 2"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn v1_sends_through_the_legacy_ingest_api() {
+        let (mut s, index) = fake_writer(IngestApi::V1, vec![]).await;
+        s.buf = TWO.to_vec();
+        s.send("auto").await.unwrap();
+        let i = index.lock().unwrap();
+        assert_eq!(i.requests, ["commit=auto&use_legacy_ingest=true"]);
+        assert_eq!(i.docs.len(), 2);
+        assert_eq!(s.stats().docs_sent(), 2);
+    }
+
+    /// 429 (queue full) and 404 (no queue yet) come before v1 appends
+    /// anything: those are sent again, and the index holds each page once.
+    #[tokio::test]
+    async fn v1_retries_only_what_was_not_taken() {
+        let (mut s, index) = fake_writer(
+            IngestApi::V1,
+            vec![
+                Answer::Refuse(404),
+                Answer::Refuse(429),
+                Answer::Refuse(429),
+            ],
+        )
+        .await;
+        s.buf = TWO.to_vec();
+        s.send("auto").await.unwrap();
+        assert_eq!(index.lock().unwrap().requests.len(), 4);
+        assert_eq!(index.lock().unwrap().docs.len(), 2);
+        let stats = s.stats();
+        assert_eq!((stats.docs_sent(), stats.retries_429()), (2, 2));
+        assert_eq!(stats.retries_503(), 0);
+    }
+
+    /// Any other answer, and no answer at all, may come after v1 took the
+    /// request: it is never sent again, and the release stops.
+    #[tokio::test]
+    async fn v1_never_resends_a_request_that_may_have_been_taken() {
+        for answer in [
+            Answer::TakeThen(503),
+            Answer::TakeThen(500),
+            Answer::TakeThen(408),
+            Answer::TakeThenStall,
+        ] {
+            let (mut s, index) = fake_writer(IngestApi::V1, vec![answer]).await;
+            s.buf = TWO.to_vec();
+            let err = s.send("auto").await.unwrap_err();
+            let i = index.lock().unwrap();
+            assert_eq!(i.requests.len(), 1, "{answer:?}: {err:#}");
+            assert_eq!(i.docs.len(), 2, "{answer:?}");
+            assert_eq!(s.stats().docs_sent(), 0, "{answer:?}");
+        }
+        // A v2 writer that times out is not resent either.
+        let (mut s, index) = fake_writer(IngestApi::V2, vec![Answer::TakeThenStall]).await;
+        s.buf = TWO.to_vec();
+        assert!(s.send("auto").await.is_err());
+        assert_eq!(index.lock().unwrap().requests.len(), 1);
+    }
+
+    /// v1 must say it took every page of the request.
+    #[tokio::test]
+    async fn v1_checks_the_documents_it_took() {
+        let (mut s, _) = fake_writer(IngestApi::V1, vec![]).await;
+        s.buf = TWO.to_vec();
+        s.buf.extend_from_slice(b"\n");
+        // Three newlines, two documents: the node counts two.
+        let err = s.send("auto").await.unwrap_err().to_string();
+        assert!(err.contains("did not take all 3 documents"), "{err}");
+    }
+
+    /// v1's final merges restart the writer: without one there is nothing
+    /// to restart, and the release stops before it publishes.
+    #[tokio::test]
+    async fn v1_needs_a_writer_it_can_restart() {
+        let (mut s, _) = fake_writer(IngestApi::V1, vec![]).await;
+        s.buf = TWO.to_vec();
+        let err = s.finish(2).await.unwrap_err().to_string();
+        assert!(err.contains("--quickwit-bin"), "{err}");
     }
 }
