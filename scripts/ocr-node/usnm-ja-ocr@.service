@@ -27,7 +27,9 @@ ExecStart=/usr/bin/podman run --rm --name usnm-ja-ocr-%i --network host \
   -e IMDS_ENDPOINT=http://localhost:40342 \
   -e USNM_CURATED_URL -e USNM_REFERENCE_URL -e JAOCR_REPLICAS \
   ${JAOCR_IMAGE} run
-ExecStop=/usr/bin/podman stop --time 60 usnm-ja-ocr-%i
+# --ignore: after a clean finish, --rm has already removed the container; without it the
+# stop fails (125), systemd counts a failure and Restart=on-failure loops.
+ExecStop=/usr/bin/podman stop --ignore --time 60 usnm-ja-ocr-%i
 # A failure (loc.gov down past the script's retries, a write refused) starts it again
 # after 2 minutes, then backs off to 15; a clean finish stays stopped.
 Restart=on-failure
