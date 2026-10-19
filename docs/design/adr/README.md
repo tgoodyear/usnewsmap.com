@@ -26,3 +26,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0020](0020-boinc-buda-evaluation.md)           | Retain separate BOINC apps instead of BUDA                                                                             | Accepted; no migration                  |
 | [0021](0021-separate-index-storage.md)          | Separate private Quickwit index account, staged cutover and cross-account rollback (#283)                              | Accepted (behind settings)              |
 | [0022](0022-onprem-cold-storage.md)             | Cold data moves to `tank` first; live index and public serving stay in Azure                                           | Proposed                                |
+| [0023](0023-onprem-scan-access.md)              | On-prem scans reach the BOINC bridge by outbound-only staging into Azure                                               | Accepted as direction (design only)     |
