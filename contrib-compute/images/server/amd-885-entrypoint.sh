@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # make_project copied this tool once; refresh only it before the preserved startup.
-if [ "${1:-}" = --serve ]; then
+if [ "$#" -eq 1 ] && [ "$*" = --serve ]; then
   # shellcheck source=lib.sh
   . /usr/local/lib/usnm-boinc/lib.sh
   python3 "$TEMPLATES/refresh-scheduler.py" \
