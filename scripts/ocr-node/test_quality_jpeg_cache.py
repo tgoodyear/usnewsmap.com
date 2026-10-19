@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -117,6 +118,17 @@ class Masters(unittest.TestCase):
         self.assertEqual(meta["source_sha256"], hashlib.sha256(self.raw).hexdigest())
         self.assertEqual(meta["sha256"], hashlib.sha256(data).hexdigest())
         self.assertEqual((meta["width"], meta["height"], meta["recipe"]), (64, 48, "l-q75-r1"))
+
+    def test_storage_refusal_is_picklable(self):
+        import pickle
+        blobs = mock.Mock()
+        blobs.put_once.side_effect = http_error(403, {"x-ms-error-code": "AuthorizationPermissionMismatch"})
+        with self.assertRaises(qjc.Refused) as cm:
+            qjc.process(self.root, "keep/b/1.jp2", blobs=blobs)
+        self.assertIn("AuthorizationPermissionMismatch", str(cm.exception))
+        # The script runs as __main__ in both processes; here it needs a module name.
+        with mock.patch.dict(sys.modules, {"qjc": qjc}):
+            pickle.loads(pickle.dumps(cm.exception))
 
     def test_main_resumes_from_ledger(self):
         lst, state = f"{self.root}/list.txt", f"{self.root}/state"

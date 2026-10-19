@@ -213,10 +213,12 @@ def process(scans_root, name, what_if=False, blobs=None):
             up = (blobs or _blobs).put_once(blob, data, meta)
             break
         except (urllib.error.URLError, OSError) as e:
+            # An HTTPError holds its response stream and can't go back to the parent
+            # process, so stop the run with the status and Azure's error code instead.
             if isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429:
-                raise
+                raise Refused(f"{CONTAINER}/{blob}: HTTP {e.code} {e.headers.get('x-ms-error-code', '')}") from None
             if attempt == 4:
-                raise
+                raise Refused(f"{CONTAINER}/{blob}: {e}") from None
             time.sleep(2 ** attempt * 5)
     return name, "uploaded" if up else "already-there", time.monotonic() - t0
 
