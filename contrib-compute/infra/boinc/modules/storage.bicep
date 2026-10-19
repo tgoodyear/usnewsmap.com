@@ -132,7 +132,7 @@ resource copyWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (p
   properties: {
     principalId: copyWriterPrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69566ab7-960f-475b-8e7c-b8118f4c1e15')
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69566ab7-960f-475b-8e7c-b3118f30c6bd')
     description: 'The BOINC share copy job (#917): writes the provisioned project share during the move.'
   }
 }

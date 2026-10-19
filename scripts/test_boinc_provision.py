@@ -487,7 +487,7 @@ class ProductionReconciliation(unittest.TestCase):
         self.assertIn('sha256sum -c -', job)
         self.assertIn("azcopy sync /project", job)
         self.assertNotIn("mfsymlinks", job.split("mountOptions:")[1].split("\n")[0])
-        self.assertIn("69566ab7-960f-475b-8e7c-b8118f4c1e15", storage)
+        self.assertIn("69566ab7-960f-475b-8e7c-b3118f30c6bd", storage)
         self.assertIn("scope: v2", storage.split("resource copyWriter")[1])
         self.assertNotIn("SAS", job)
         self.assertNotIn("project-v2", app)
