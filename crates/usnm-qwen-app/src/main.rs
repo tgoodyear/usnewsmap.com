@@ -118,6 +118,16 @@ fn run_slot_reporting(work: &Path) -> anyhow::Result<()> {
     })
 }
 
+/// The last `n` bytes of a log, minus any partial first line, so a cut never leaves the end
+/// of a path (`Alice Smith\AppData\...`) that redaction can't recognise.
+fn line_tail(s: &str, n: usize) -> &str {
+    let t = tail(s, n);
+    if t.len() == s.len() || s[..s.len() - t.len()].ends_with('\n') {
+        return t;
+    }
+    t.find('\n').map_or("", |i| &t[i + 1..])
+}
+
 /// Most of a failed task's diag.txt that its stderr carries. BOINC uploads no output files
 /// for a failed task, so this is the only way the reason reaches the server.
 const DIAG_EXCERPT_BYTES: usize = 6144;
@@ -182,21 +192,21 @@ fn redact_line(line: &str) -> String {
         .filter(|q| "\"'`".contains(*q));
         let tail = &rest[i..];
         let body_end = tail.find('\n').unwrap_or(tail.len());
-        let end = match quote.and_then(|q| tail[..body_end].find(q)) {
-            Some(close) => close,
-            None => {
-                // Through the last whitespace-separated chunk that holds a separator.
-                let mut end = 0;
-                let mut pos = 0;
-                for chunk in tail[..body_end].split_inclusive(char::is_whitespace) {
-                    let word = chunk.trim_end();
-                    if word.contains(['/', '\\']) {
-                        end = pos + word.len();
-                    }
-                    pos += chunk.len();
-                }
-                end
+        // Through the last whitespace-separated chunk that holds a separator.
+        let mut sep_end = 0;
+        let mut pos = 0;
+        for chunk in tail[..body_end].split_inclusive(char::is_whitespace) {
+            let word = chunk.trim_end();
+            if word.contains(['/', '\\']) {
+                sep_end = pos + word.len();
             }
+            pos += chunk.len();
+        }
+        // A quoted path ends at the last matching quote on its line, not the first: names
+        // like O'Connor hold the quote character. Whichever reaches further wins.
+        let end = match quote.and_then(|q| tail[..body_end].rfind(q)) {
+            Some(close) => close.max(sep_end),
+            None => sep_end,
         };
         let path = &tail[..end];
         let name = path
@@ -504,7 +514,7 @@ fn device_probe(cmd: &mut Command, server_bin: &Path) -> Result<std::process::Ou
     if !out.status.success() {
         return Err(format!(
             "GPU device probe failed: {}",
-            tail(&String::from_utf8_lossy(&out.stderr), 1024)
+            line_tail(&String::from_utf8_lossy(&out.stderr), 1024)
         ));
     }
     Ok(out)
@@ -1323,7 +1333,7 @@ pub fn chat_completion(
     if status != 200 {
         bail!(
             "llama-server status {status}: {}",
-            tail(&String::from_utf8_lossy(&resp), 256)
+            line_tail(&String::from_utf8_lossy(&resp), 256)
         );
     }
     let v: serde_json::Value = serde_json::from_slice(&resp).context("chat response JSON")?;
@@ -1448,7 +1458,7 @@ impl Server {
                 let log_tail = std::fs::read_to_string(&srv.log_path).unwrap_or_default();
                 bail!(
                     "llama-server exited ({status}) before ready: {}",
-                    tail(&log_tail, 512)
+                    line_tail(&log_tail, 512)
                 );
             }
             if let Ok((200, _)) = http_request(port, "GET", "/health", None, Duration::from_secs(2))
@@ -1460,7 +1470,7 @@ impl Server {
                 bail!(
                     "llama-server did not become healthy in {}s: {}",
                     load_deadline.as_secs(),
-                    tail(&log_tail, 512)
+                    line_tail(&log_tail, 512)
                 );
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -1901,7 +1911,7 @@ fn run_crops(
     let engine_ms = ms(started);
     if let Some(ref srv) = srv_guard {
         if let Ok(log_text) = std::fs::read_to_string(&srv.log_path) {
-            diag.section("llama-server.log (tail)", tail(&log_text, 2048), 2048);
+            diag.section("llama-server.log (tail)", line_tail(&log_text, 2048), 2048);
         }
     }
     drop(srv_guard);
@@ -2162,6 +2172,14 @@ mod tests {
                 "GET http://127.0.0.1:8080/health ok; a/b stays",
             ),
             ("\\\\nas\\share\\Alice\\f.txt", ".../f.txt"),
+            (
+                "failed to load 'C:\\Users\\O'Connor\\BOINC\\model.gguf' now",
+                "failed to load '.../model.gguf' now",
+            ),
+            (
+                "open \"/home/d'arcy/BOINC data/x.gguf\": denied",
+                "open \".../x.gguf\": denied",
+            ),
         ];
         for (input, want) in cases {
             assert_eq!(redact_paths(input), want, "{input}");
@@ -2169,6 +2187,19 @@ mod tests {
         let two = redact_paths("a /home/alice/x\nb C:\\Users\\Bob Jones\\y.gguf\n");
         assert_eq!(two, "a .../x\nb .../y.gguf\n");
         assert!(!two.contains("alice") && !two.contains("Bob"));
+    }
+
+    #[test]
+    fn log_tails_drop_a_partial_first_line() {
+        let log = "load C:\\Users\\Alice Smith\\AppData\\BOINC\\model.gguf\nready\n";
+        // A cut inside the path line drops that line rather than leaving its end.
+        let cut = line_tail(log, 30);
+        assert_eq!(cut, "ready\n");
+        assert!(!redact_paths(cut).contains("Smith"));
+        // A cut on a line boundary, or no cut at all, keeps everything.
+        assert_eq!(line_tail(log, 6), "ready\n");
+        assert_eq!(line_tail(log, 4096), log);
+        assert_eq!(line_tail("no newline at all", 4), "");
     }
 
     #[test]
