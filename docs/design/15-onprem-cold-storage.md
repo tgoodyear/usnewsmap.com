@@ -1,0 +1,203 @@
+# 15. Moving cold storage on-prem
+
+**Status:** Plan (read-only inventory and design; nothing has been moved, deleted or reconfigured) · **Date:** 18 October 2026 · **Decision record:** [ADR-0022](adr/0022-onprem-cold-storage.md) · **Raw numbers:** [`docs/data/azure-storage-inventory-2026-10-18.json`](../data/azure-storage-inventory-2026-10-18.json)
+
+The maintainer's goal is to serve as much as is sensible from the on-prem host `pve-big`, and to move storage off Azure on the way. Decisions already made: Phase 1 is **cold data only**; the live Quickwit index (`usnmqwstprodffapzy`, about 1.26 TB) and the public API stay in Azure; the uplink is 1 Gbps symmetric; on-prem redundancy is a ZFS mirror only.
+
+## 15.1 How the numbers were taken
+
+| Source                                  | What it gives                                                                                                                                               | Limits                                                                                                                                    |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Azure Monitor storage metrics           | `UsedCapacity`, `BlobCapacity`, `BlobCount` by tier, `FileCapacity` for every account, with no data-plane access                                            | Account level only; no containers                                                                                                         |
+| Paged blob listings (versions, deleted) | Exact bytes, blob counts, tier and soft-deleted bytes per container, for `stusnmdffapzy`, `stusnmoffapzy` and the scans account                             | Only where the operator's IP is already in the account's network rules. No rule was added and no firewall was opened (ADR-0008, ADR-0009) |
+| Cost Management query                   | Actual cost for 18 September to 18 October 2026, by resource and meter                                                                                      | Accounts created recently show part-month storage cost                                                                                    |
+| Azure retail price API                  | List prices (eastus2): Hot $0.0184, Cool $0.010, Cold $0.0036 per GB-month; Cold retrieval $0.03/GB; internet egress $0.087/GB after 100 GB free each month | List, not negotiated                                                                                                                      |
+| `pve-big`, read-only                    | `zpool`/`zfs` state, SMART, `dmidecode`, `lspci`, `lsblk`, a file listing of `keep/`                                                                        | No pool or file changes                                                                                                                   |
+
+## 15.2 Inventory: size, tier and 30-day cost
+
+Sizes are GB (10⁹). "Run-rate" is today's size at list price, which differs from the 30-day cost where an account is new or its size changed in the window.
+
+| Account                    | Kind / SKU                                 | Size now              | Tier split            | 30-day cost                                                                                             | Run-rate (storage only)              | Access to containers                                    |
+| -------------------------- | ------------------------------------------ | --------------------- | --------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------- |
+| `stusnmdffapzy` (lake)     | Blob, Std LRS                              | **5,245**             | Hot 5,162; Cool 83    | **$74.69**: Hot data $45.91, Hot reads $23.20, writes $2.75, egress $2.55                               | ~$96 (~$29 after soft-delete expiry) | Yes (operator IP rule)                                  |
+| `usnmqwstprodffapzy`       | Blob, Std LRS                              | 1,257                 | Hot 1,257             | $0.84 (account is new: ~3 days)                                                                         | ~$23                                 | **No** (private endpoint only): gap                     |
+| `usnmscansstprodffapzy`    | Blob, Std LRS                              | 1,107 (236,420 blobs) | Cold 1,107            | **$16.18**: Cold retrieval $6.86, egress $4.57, writes $3.78 (one-time upload), reads $0.62, data $0.15 | ~$4.0 (+ ~$12 reads)                 | Yes                                                     |
+| `usnmboincstprodv7n7u6`    | Azure Files SMB, 250 GiB quota             | 122 (325,112 files)   | Transaction optimized | **$17.16**: writes $14.65, reads $1.09, protocol $1.02, data $0.40                                      | ~$7 at full month                    | No (private endpoint only): gap for per-directory sizes |
+| `stusnmsffapzy`            | Premium v2 Files NFS, 128 GiB `qw-scratch` | 19.7                  | SSD, provisioned      | **$8.78**: storage $6.74, IOPS $1.42, throughput $0.62                                                  | ~$8.8 (provisioned)                  | n/a (file share, no blob)                               |
+| `stusnmarchiveyjuocl`      | Blob, Std LRS                              | 66.9 (73 blobs)       | Cold 66.9             | $1.86: Cold retrieval $1.75, data $0.07                                                                 | ~$0.24                               | **No** (public off, no rule): gap                       |
+| `stusnmoffapzy` (exchange) | Blob + queues                              | 16.8 (37,874 blobs)   | Hot 16.8              | $0.39                                                                                                   | ~$0.31                               | Yes                                                     |
+| `statlasrelayprodffapzy`   | Functions host                             | 0                     | n/a                   | ~$0                                                                                                     | $0                                   | Yes (empty)                                             |
+| `stfnatlasrelayprodia55`   | Functions host                             | 0.001 (22 blobs)      | Hot                   | $0.02                                                                                                   | $0                                   | Yes                                                     |
+| Dev and retired accounts   | (not in the subscription now)              | n/a                   | n/a                   | About $2.3 total (`stusnmduw45ww` $1.84, the dev scratch/data/qw accounts, `goodyeartech` and others)   | n/a                                  | n/a                                                     |
+
+Nine accounts exist today; the cost query also shows leftovers from accounts that have been deleted since.
+
+**Private endpoints, 30 days:** `pe-usnm-blob` $5.43 (lake), `pe-usnm-cosmos` $5.43, `pe-usnm-file` $3.00 (Premium share), `usnm-boinc-files-pep-prod` $1.09, `usnm-boinc-vault-pep-prod` $1.09, `usnm-qw-blob-pep-prod` $0.55, `pe-usnm-archive-blob` $0.38, plus unrelated `pe-atlasrelay-dev-kv` $2.81 and `tghomenetsa-file-pep` $2.55. Total in the storage-related set: about $20.
+
+**All Storage, Private Link and Bandwidth cost in the window:** $149.51, of which the lake is half.
+
+### 15.2.1 What is in the lake (`stusnmdffapzy`)
+
+| Container                           | Current (GB)                             | Soft-deleted (GB)        | Tier     | Notes                                                                                                                                                               |
+| ----------------------------------- | ---------------------------------------- | ------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `qw-index`                          | **1,219** (651 blobs)                    | **3,588** (34,336 blobs) | Hot      | The old index (ADR-0021 moves it to `usnmqwstprodffapzy`). The soft-deleted bytes are replaced splits inside the 3-day window (`USNM_LAKE_BLOB_SOFT_DELETE_DAYS=3`) |
+| `curated`                           | 439 (314,663 Hot: 356; 114,383 Cool: 83) | 0.3                      | Hot/Cool | `american-stories/pages` 171; `ocr-local/alto` 15.4; `congress/serialset` 1.8; `pages/<batch>` and others the rest. All written in the last 30 days                 |
+| `reference`                         | 0.4                                      | 0                        | Hot      | Per-version snapshots, status files, catalog                                                                                                                        |
+| `cache`, `ocr-requests`, `searches` | ~0                                       | ~0                       | Hot      | Small, short-lived                                                                                                                                                  |
+
+No noncurrent versions were found, although versioning is on. 3,588 GB of soft-deleted splits is **69 % of the account** and about $66 a month at Hot rates while it lasts.
+
+### 15.2.2 Scan archive and exchange account
+
+| Container (account)               | Current (GB)                     | Notes                                                                                                                                                                           |
+| --------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scans` (`usnmscansstprodffapzy`) | 1,107 in 236,420 blobs, all Cold | `keep/`: 224,399 images, 1,056 GB. `buffer/`: 12,021 blobs, 50.8 GB, transient buffer copies. No versions, no soft delete. Management policy `scans-to-cold` (Cold after 1 day) |
+| `boinc-handoff` (`stusnmoffapzy`) | 57.2 in 36,521 blobs             | `quality-jpeg/l-q75-r1` 55.1; audit, texts, quality waves. Policies expire handoff scans and claims                                                                             |
+| `ocr-out` (`stusnmoffapzy`)       | 3.0 current, 12.9 soft-deleted   | 7-day soft delete, 30-day expiry (`expire-ocr-out`). `alto` is copied into the lake `curated` by a cloud job                                                                    |
+
+### 15.2.3 The scans are already on `tank`
+
+`tank/ocr/scans` already holds the keep set: 1.06 TB (`status-full.json`: 224,848 pages, state `done`, manifest `pages-v20261010-2`), fetched straight from LoC. Comparing a listing of `keep/` on `pve-big` (449,626 files: images plus one sidecar each) with the Azure `scans` listing:
+
+- 224,399 of 224,399 Azure `keep/` image blobs have an on-prem file of the same path, and **all 224,399 sizes match** (1,056 GB).
+- 414 images exist on-prem only (fetched after the upload). 12,021 blobs exist in Azure only, all under `buffer/` (50.8 GB). No `keep/` blob is missing on-prem.
+- Every Azure blob has a Content-MD5. Size equality is **not** checksum verification; the migration plan (§15.6) requires the sidecar sha256/md5 check before any deletion.
+
+So Phase 1 for scans moves **no bytes**: the on-prem copy is verified and Azure becomes the redundant (off-site) copy. It is also the _only_ off-site copy: see §15.5.
+
+## 15.3 Classification and savings
+
+Rules: **move-now** is cold, rarely read, with no Azure-hosted reader and either re-derivable or safely mirrored. **move-later** is cold but has an Azure reader or needs a decision first. **keep-in-Azure** is public serving, a Container Apps dependency, the BOINC handoff, or Premium shares.
+
+| Dataset                                                      | GB    | Class                                   | Why                                                                                                                                                                                  | Saving per month                                                                                         | Migration egress                                        |
+| ------------------------------------------------------------ | ----- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `stusnmarchiveyjuocl` (LoC raw archives, 73 blobs)           | 66.9  | **move-now** (needs access, see D2)     | Cold, read rarely (only the experiment `sets/` read, $1.75 retrieval in 30 days), no Container Apps reader                                                                           | ~$2.2 ($0.24 data, ~$1.75 retrieval, $0.38 private endpoint)                                             | $0 egress (under the 100 GB free) + $2.0 Cold retrieval |
+| `scans/keep` (1,056 GB, already on `tank`)                   | 1,056 | **move-now: verify only; delete later** | Cold; bytes already on-prem and size-matched. Azure's only readers are the BOINC bridge and the scan archive path; cutting those over is Phase 2                                     | $3.8 data now; **~$16** with the reads and egress ($6.86 + $4.57 + $0.62) after the bridge reads on-prem | **$0** (no copy needed); verification is metadata only  |
+| `scans/buffer` (12,021 blobs)                                | 50.8  | **move-now: not migrated, retire**      | Transient copies of pages already OCRed. Delete is a separate, approved action, not part of this task                                                                                | ~$0.18                                                                                                   | $0                                                      |
+| Lake `curated/american-stories/pages`                        | 171   | move-later                              | Re-derivable from the upstream dataset, but read by Azure ingest jobs and the index rebuild; moving the system of record changes ADR-0002                                            | ~$2.6 (Hot)                                                                                              | $6 to $15 (egress after the free 100 GB)                |
+| Lake `curated` (rest), `reference`                           | 269   | keep-in-Azure                           | Container Apps jobs read and write it; `ocr-local/alto` (15.4 GB) is the output of expensive OCR and has no second copy                                                              | n/a                                                                                                      | n/a                                                     |
+| Lake `qw-index` current (old index)                          | 1,219 | **retire in Azure, not migrate**        | After the ADR-0021 cutover (#632) the live index is `usnmqwstprodffapzy`. Deleting the old one is a separate Azure action with its own approval                                      | ~$22                                                                                                     | $0                                                      |
+| Lake `qw-index` soft-deleted                                 | 3,588 | **expires by itself in 3 days**         | Replaced splits; no migration. Recurs on every full re-index while the window is 3 days. See D5                                                                                      | ~$66 transient                                                                                           | $0                                                      |
+| `usnmqwstprodffapzy` live index                              | 1,257 | keep-in-Azure                           | Serves the public API (Phase 1 constraint). Phase 2 estimate: ~$100 egress and ~$23/month                                                                                            | n/a                                                                                                      | (Phase 2 ~$100)                                         |
+| `stusnmoffapzy` `boinc-handoff`, `ocr-out`, `ocr-quarantine` | 74    | keep-in-Azure                           | BOINC handoff and OCR exchange: low-latency, consistency-sensitive, written by Azure jobs and on-prem nodes                                                                          | n/a                                                                                                      | n/a                                                     |
+| `usnmboincstprodv7n7u6` project share (SMB)                  | 122   | keep-in-Azure                           | The BOINC server's live project directory (Container App mounts it); the cost is write operations, not capacity                                                                      | n/a                                                                                                      | n/a                                                     |
+| `stusnmsffapzy` Premium `qw-scratch` (NFS)                   | 19.7  | keep-in-Azure                           | Premium share for the searcher/benchmark (Container Apps dependency); revisit when the searcher mode that needs it is settled (#308). Candidate for deletion in Azure, not migration | up to $8.8 + $3.0 PE if retired                                                                          | n/a                                                     |
+
+**What Phase 1 really saves.** Cold-only is small money: **about $2 a month now**, rising to **about $18 a month** once the BOINC bridge reads scans from `pve-big` and the Azure scan copy can go (D1). The large lines are Azure-side and need no migration: the transient soft-deleted index splits (~$66, gone in 3 days, recurs on re-index), the old `qw-index` (~$22 after the cutover) and the lake's Hot read operations ($23, which follow the index). Those figures are in the cost table so the maintainer can decide where effort pays.
+
+**Migration egress for Phase 1:** about **$2** (Cold retrieval for the archive account) and $0 for scans; **$6 to $15** more if `american-stories/pages` moves. A fully moved lake `curated` would cost about $30 in egress. Request and listing costs are under $1.
+
+## 15.4 On-prem target on `tank`
+
+### Current state of `pve-big`
+
+MSI Z170A SLI PLUS, 8 cores, 48 GB RAM (ARC capped at 4 GiB), one 1 GbE NIC (Intel I219-V). Pool `tank`: two mirrors, 4.53 TB raw, 1.28 TB used (28 %), 3.25 TB free, healthy, fragmentation 1 %, `ashift=12`, `autoexpand=off`, scrubbed on the second Sunday of each month (last: 12 October, 0 errors). All six SATA ports are used (four `tank` disks, two SSDs for the host); a 1 TB USB disk holds the `usbbak` pool (220 GB used) which receives a daily `ocr` snapshot and weekly guest backups. `zed` and `smartd` are active; ZED mails root. No sanoid or syncoid is installed.
+
+**Disk health matters more than capacity.** SMART: `sdb` (ST3000DM001, mirror-1) has **48 reallocated and 88 pending/uncorrectable sectors**; `sdd` (Hitachi, mirror-0) has 91 reallocated. All four are about 10,000 hours old, and `sda` and `sdd` negotiate only 3 Gbit/s. Both mirrors still have a healthy partner, but a mirror is not a backup and the pending sectors on `sdb` mean replacing it comes before adding data.
+
+### Dataset layout
+
+Keep the existing `tank/ocr/scans` (1 MiB records, lz4: JP2 and JPEG do not compress, ratio 1.10×) and add siblings. Common properties on the parent: `atime=off`, `xattr=sa`, `dnodesize=auto`, `acltype=posixacl`, `compression=lz4`, a `quota` per dataset so no one fills the pool.
+
+| Dataset                     | recordsize | compression | Content                                                                           | Quota  |
+| --------------------------- | ---------- | ----------- | --------------------------------------------------------------------------------- | ------ |
+| `tank/ocr/scans` (existing) | 1M         | lz4         | Keep-set JP2/JPEG + sidecars (1.06 TB); `buffer/` stays an ephemeral staging area | 1.6 TB |
+| `tank/azure/archive`        | 1M         | lz4         | Contents of `stusnmarchiveyjuocl` (`.zst`, already compressed)                    | 150 GB |
+| `tank/azure/lake-curated`   | 1M         | lz4         | Parquet and ALTO moved from `curated` (only if D3 says yes)                       | 600 GB |
+| `tank/azure/lake-alto`      | 128K       | zstd-3      | ALTO XML, which compresses well                                                   | 100 GB |
+| `tank/azure/manifests`      | 128K       | zstd-3      | Inventories, checksums and migration receipts (small, snapshotted often)          | 10 GB  |
+
+### How services read it
+
+| Consumer                                        | Method                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OCR nodes, quality waves, CT211/CT212 (on-prem) | Unchanged: bind mounts (`ro=1` where read-only) and NFS to the VMs. POSIX files, no extra service                                                                                                                                                                                                                                                                                                                   |
+| BOINC bridge job (Azure) reading scans          | Phase 2 only. Keep the Azure copy until the bridge can read `pve-big`. Preferred: a read-only HTTPS endpoint (Caddy or nginx) behind a tunnel, signed URLs, no inbound firewall rules; a pull-model alternative is to stage the pages the bridge needs into the exchange account                                                                                                                                    |
+| Garage or MinIO (S3 API)                        | Not in Phase 1. An S3 store keeps objects in its own chunk format, so a mirror of files you still want to browse and re-use on the node becomes opaque, and a single node gives no extra redundancy. Revisit only if an Azure-hosted reader needs the S3 API. If so choose **Garage** (small, Rust, simple single node) over MinIO, whose community edition has moved to maintenance mode (confirm before choosing) |
+| Bulk movement                                   | `azcopy`-style or `az storage blob download-batch` with `--auth-mode login` to a dataset, checked against a manifest; rsync only between on-prem hosts                                                                                                                                                                                                                                                              |
+
+### How scans and OCR write there
+
+`usnm-ocr-worker` already writes the keep set to `tank/ocr/scans`. The `archive-scans` step (upload to Azure) becomes optional: a setting turns it off after D1. OCR outputs keep going to the Azure exchange account `stusnmoffapzy/ocr-out`, from which the cloud job copies them into the lake `curated`; that path stays in Azure in Phase 1 because the job is a Container Apps dependency. A new on-prem step appends a copy of `ocr-out/alto` to `tank/azure/lake-alto` (a second copy of the expensive output, which today lives in only one place).
+
+### Snapshots and backup (mirror only)
+
+A mirror protects against a disk failure, not against deletion, corruption in software, or loss of the house. Snapshots protect against deletion and ransomware on the pool; `usbbak` is the only other copy.
+
+| Dataset                             | Snapshots (sanoid)                                                              | Second copy                                                                                                                              |
+| ----------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `tank/ocr/scans`                    | daily 7, weekly 4, monthly 3 (write-once, so the snapshots cost almost nothing) | None needed while LoC is the source; the last run fetched 34,398 pages in about 17 hours, and the whole set took days under LoC's pacing |
+| `tank/azure/archive`                | daily 7, weekly 4, monthly 6                                                    | LoC remains the source                                                                                                                   |
+| `tank/azure/lake-alto`, `manifests` | hourly 24, daily 14, weekly 8, monthly 12                                       | **`syncoid` to `usbbak` daily** (about 20 GB; the USB pool has 708 GB free) because it is not re-derivable without OCR cost              |
+| `tank/azure/lake-curated`           | daily 14, weekly 8, monthly 6                                                   | Same as above for the non-re-derivable parts; `american-stories` can be re-downloaded                                                    |
+
+Anything not re-derivable stays dual-homed (Azure plus `tank`, or `tank` plus `usbbak`) until a second site exists. The rule "no Azure deletion until the on-prem copy has been scrubbed once and verified" applies to every dataset.
+
+### Capacity and expansion
+
+| Scenario                                    | Used after     | % of 4.53 TB raw | Comment                                                                                                                      |
+| ------------------------------------------- | -------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Today                                       | 1.28 TB        | 28 %             |                                                                                                                              |
+| Phase 1 (archive + ALTO copy)               | ~1.4 TB        | ~31 %            | Fits easily: scans are already there                                                                                         |
+| Phase 1 plus all of `curated`               | ~1.9 TB        | ~42 %            | Still fits                                                                                                                   |
+| Phase 2 (live index, 1.26 TB + 30 % growth) | ~3.0 to 3.5 TB | 67 to 78 %       | Technically fits under the 80 % limit (3.6 TB) but leaves no room for snapshots, the split cache or growth: **expand first** |
+
+Rule: expand before 70 % (3.2 TB used), or when the projected date of reaching 80 % is under six months. At 3.25 TB free **Phase 1 fits** with room; Phase 2 is the trigger, and the failing `sdb` makes it earlier.
+
+**NVMe, HBA or bigger disks?** In order of preference:
+
+1. **Replace the two mirror-0 disks (or `sdb` first) with larger CMR drives, one at a time** (`zpool replace`, then `autoexpand=on`). It needs no new ports, no new hardware class and also retires the worn disks. Two 16 TB CMR drives would add ~13 TB to the pool.
+2. **HBA** (a 9211-8i class card flashed to IT mode, in the second PCIe slot; about $40 to $60 used) only if a third mirror vdev is wanted. It frees the board's six SATA ports from a hard limit; check slot clearance next to the GPU first.
+3. **M.2 NVMe** is for _rebuildable_ data, not the archive: `lspci` shows no NVMe controller today and the board's one M.2 slot (the Z170A SLI PLUS has a single "Turbo M.2" PCIe 3.0 x4 slot per the vendor specification; `dmidecode` does not list M.2 slots, so confirm in the manual and BIOS) cannot hold the two devices a safe `special` vdev needs. Use it as a single non-redundant pool for the JPEG cache, the Quickwit split cache and builds. Note that on Z170 an M.2 in SATA mode can share lanes with SATA ports: use a PCIe NVMe drive.
+
+Only two physical constraints cannot be settled read-only: the board's free-slot geometry next to the GPU and the M.2 lane sharing. They are listed as gaps.
+
+### Monitoring and scrub
+
+- Scrub `tank` monthly (second Sunday, already scheduled); add a monthly `usbbak` scrub (none is scheduled today). The last scrub finished in 1m45s on 12 October; expect hours once the pool holds several TB.
+- `zed` mails root on any state change: confirm root's mail goes somewhere read. Add a weekly `zpool status -x` and `smartctl -H` summary, and an alert on `smartctl` attributes 5, 187, 197, 198 changing (these are already non-zero on `sdb` and `sdd`).
+- Alerts: pool above 70 % and 80 %, any dataset above 90 % of quota, a scrub with errors, snapshot age (no snapshot newer than 36 hours), `syncoid` last success.
+- Report these through the existing data-flow observer rather than a new stack.
+
+## 15.5 Risks
+
+- **Off-site copy.** The Azure scan archive is the only off-site copy of the fetched scans (ADR-0018's reason for it). Deleting it leaves LoC as the only other copy. That trade is the maintainer's call (D1).
+- **Uplink.** Scans served from the house use the same 1 Gbps pipe the OCR nodes and volunteers share. 1 TB is ~2.5 hours at line rate and about a day at 10 % of it.
+- **Weak disks.** See §15.4: `sdb` and `sdd` already show media errors.
+- **System of record.** ADR-0002 names the Azure curated lake as the system of record; moving any of it needs an amendment (D3).
+
+## 15.6 Phased plan
+
+Every phase ends with a checksum receipt in `tank/azure/manifests`. No phase deletes anything in Azure.
+
+| Phase | Scope                                                                                                                                                                                                              | Verification                                                                                                                                              | Rollback                                                                       |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 0     | Preconditions: replace `sdb` or confirm a good second copy; install sanoid and syncoid; create the datasets and quotas; confirm mail alerts; first scrub after any hardware change                                 | `zpool status -x` clean, a test snapshot and `syncoid` to `usbbak`                                                                                        | Destroy the new (empty) datasets                                               |
+| 1a    | Scans: compare Azure `keep/` against `tank/ocr/scans/keep` by path, size and **md5 (Azure) versus sidecar sha256/md5 and a fresh `md5sum` of the file** for the 224,399 images, in slices with a resumable receipt | 100 % match, zero mismatches, a second scrub with 0 errors; receipt committed as a manifest (hashes only)                                                 | Nothing changed; keep both copies                                              |
+| 1b    | Archive account: copy the 73 blobs after the maintainer approves the access route (D2); check the Content-MD5 and sha256                                                                                           | Per-blob md5 and sha256 equal; count and byte totals equal                                                                                                | Delete the on-prem copy; Azure untouched                                       |
+| 1c    | `ocr-out/alto` second copy to `lake-alto` and `syncoid` to `usbbak`                                                                                                                                                | Count and md5 equal to the lake `curated/ocr-local/alto`                                                                                                  | Stop the copy step; Azure untouched                                            |
+| 2     | Repoint readers: BOINC bridge scan source; make Azure `archive-scans` optional; optionally move `american-stories/pages`                                                                                           | Bridge acceptance run reads 100 % from on-prem with sha256 checks (existing fallback to LoC stays); a week of no Azure reads of `scans` (Storage metrics) | Flip the setting back; Azure copy still present                                |
+| 3     | Maintainer-approved Azure cleanup (not this task): delete `scans/buffer`, then `scans/keep` after one more scrub and D1                                                                                            | Receipt from 1a re-run the day before; delete a prefix with soft delete (≥7 days) first                                                                   | Restore from soft delete (7 days), or re-copy from `tank` or LoC               |
+| 4     | Revisit live-index move (Phase 2 of the programme): needs expansion (§15.4), a measured latency test against a local Quickwit split cache, and an egress budget (~$100)                                            | Query parity and latency vs Azure                                                                                                                         | Cut the searcher back to the Azure account (ADR-0021's cross-account rollback) |
+
+## 15.7 Gaps
+
+1. `usnmqwstprodffapzy` containers: private endpoint only; account-level size from metrics, no per-container or per-version listing.
+2. `stusnmarchiveyjuocl` containers: public access disabled and no operator IP rule. Contents (73 blobs) inferred from docs.
+3. `usnmboincstprodv7n7u6` (Azure Files, private endpoint only): per-directory sizes unknown; `usnm-boinc-vault-pep-prod` is not a storage endpoint.
+4. Per-prefix access recency: last-access-time tracking is not enabled, so "rarely read" for `curated` is inferred from cost meters (Hot reads $23 on the lake, mostly the index), not measured per container.
+5. Premium share `qw-scratch`: only the quota (128 GiB) and 19.7 GB use are known; the docs tie it to the searcher benchmark modes (§8, operations).
+6. Board slot geometry (M.2 lane sharing, free PCIe slot next to the GPU) was not confirmable read-only.
+7. Costs for accounts created inside the window (`usnmqwstprodffapzy`, scans, BOINC) are part-month; run-rates here are list-price estimates.
+8. Daily Cost Management rows lag by about a day; the last 14 days of the lake average ~$4.3 a day.
+9. Cost Management groups egress under Bandwidth, not under the account, apart from the rows matched above.
+
+## 15.8 Decisions for the maintainer
+
+- **D1 — off-site copy of the scans.** Is LoC (plus `tank`) enough once Azure's copy is deleted, or should a second on-prem or cloud copy (for example the `usbbak` pool, at 1.06 TB it does not fit its 708 GB free) exist first? Savings: ~$4 now, ~$16 once BOINC reads from the house.
+- **D2 — archive account access.** Approve a recorded, short window or an in-VNet admin job read for `stusnmarchiveyjuocl` (73 blobs); no firewall was changed in this task. Savings ~$2.2/month.
+- **D3 — system of record.** Amend ADR-0002 to let curated datasets live on `tank` (saves ~$2.6 for `american-stories/pages`; more only with larger moves), or keep the lake authoritative in Azure.
+- **D4 — hardware.** Approve replacing `sdb` now and which expansion path (bigger mirror disks, then an HBA only if needed, M.2 NVMe for rebuildable data).
+- **D5 — soft delete and the old index.** Lower the lake's soft-delete window for `qw-index` (or rely on ADR-0021's new account having none) and retire the old index after the #632 cutover. These save far more (~$66 transient and ~$22/month) than any cold move; they are Azure-side actions outside this plan.
+- **D6 — BOINC bridge source.** Whether the bridge may read scans over HTTPS from `pve-big` (new exposure) or from the exchange account, per ADR-0009's no-shared-key rule.
