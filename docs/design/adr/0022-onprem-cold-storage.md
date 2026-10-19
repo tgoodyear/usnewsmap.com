@@ -14,7 +14,7 @@ The maintainer wants as much storage off Azure as is sensible, with serving on-p
 
 ## Decision
 
-1. Phase 1 moves **no live or public-serving data**. It verifies the scans already on `tank`, copies the 73-blob archive account and a second copy of OCR ALTO to `tank`, and adds snapshots, a `usbbak` replica and monitoring.
+1. Phase 1 moves **no live or public-serving data**, and starts only after the failing `sdb` is replaced, resilvered and scrubbed. It verifies the scans already on `tank`, copies the 73-blob archive account and a second copy of OCR ALTO to `tank`, and adds snapshots, a `usbbak` replica and monitoring.
 2. Files stay files: ZFS datasets read by POSIX mounts for on-prem consumers. No S3 gateway until an Azure-hosted reader needs one (Garage, not MinIO, if so).
 3. Nothing is deleted in Azure until checksums are verified, the on-prem copy has been scrubbed, and the maintainer approves the specific deletion.
 4. Expansion path: larger mirror disks first, an HBA only for a third vdev, M.2 NVMe only for rebuildable data.
@@ -30,7 +30,7 @@ The maintainer wants as much storage off Azure as is sensible, with serving on-p
 
 ## Consequences
 
-- Cold-only savings are about $9/month if the archive account and its endpoint are retired, and about $25/month once the BOINC bridge reads scans on-prem and the Azure scan copy is retired.
+- Cold-only savings are about $9/month if the archive account and its endpoint are retired after the ingest jobs' archive integration is detached or repointed, and about $25/month once the BOINC bridge reads scans on-prem and the Azure scan copy is retired.
 - The larger Azure savings (soft-deleted index splits, the lake's `qw-index` after the ADR-0021 cutover, Premium `qw-scratch`) are Azure-side clean-ups and are separate decisions.
 - The scan archive's off-site role needs an explicit decision (D1).
 - `sdb` shows media errors; replacing it comes before moving more data.
