@@ -38,7 +38,7 @@ use usnm_ocr_contract::{
 };
 use usnm_ocr_worker::engine;
 use usnm_store::{
-    queue::{LeaseLost, Queue, Received},
+    queue::{LeaseLost, Queue, Received, PRIORITY},
     ObjectStore,
 };
 
@@ -180,8 +180,9 @@ fn judge(text: &str, src: &Sources<'_>) -> Verdict {
     Verdict::Use(LedgerRow::from_queued(row))
 }
 
-/// Take up to `opts.max` usable messages off the queues. A queue is
+/// Take up to `opts.max` usable messages off the queues. Bulk queues are
 /// peeked first, so one whose front holds nothing usable is not touched.
+/// Priority queues scan within `max_receives` even past an unusable front.
 /// Claim files are written to `out`; the caller puts them in the container
 /// before anything else, because the pop receipts exist nowhere else.
 ///
@@ -211,9 +212,10 @@ pub async fn pull(
         }
         match src.queue.peek(queue, PEEK).await {
             Ok(front)
-                if !front
-                    .iter()
-                    .any(|t| matches!(judge(t, src), Verdict::Use(_) | Verdict::Stale)) =>
+                if queue != PRIORITY
+                    && !front
+                        .iter()
+                        .any(|t| matches!(judge(t, src), Verdict::Use(_) | Verdict::Stale)) =>
             {
                 continue;
             }

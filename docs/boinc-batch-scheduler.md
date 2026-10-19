@@ -312,8 +312,14 @@ the variable and claims every language.
 
 A page whose ledger row is already answered is **deleted** from the queue. Any
 other message it can't use is **sent back** (a copy is sent, then the original is
-deleted), so it starts again at a dequeue count of zero for the node to read. The
-queue is peeked first, and one whose front holds nothing usable isn't touched.
+deleted), so it starts again at a dequeue count of zero for the node to read.
+Bulk queues are peeked first, and one whose front holds nothing usable isn't
+touched. Priority queues instead scan within the existing `--max-receives`
+budget (three times the claim limit by default), sending unusable messages back.
+This lets later cached, trusted pages progress across ticks when the front
+contains only uncached or untrusted pages. A repeated sent-back message stops
+that queue's scan; the receive budget is shared across queues. No eligibility
+check is relaxed, and an unusable message is never deliberately left hidden.
 
 Each usable message becomes `claims/<doc_id>.json`, holding the message text, its
 pop receipt, the lease end and the ledger row. The files go up **before** the

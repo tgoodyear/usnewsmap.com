@@ -1684,7 +1684,7 @@ mod queue_feed {
         fetched::{self, Fetched},
         message::{OcrMessage, Reason},
     };
-    use usnm_store::queue::BULK;
+    use usnm_store::queue::{BULK, PRIORITY};
 
     const PAGE: &str = "sn00000001/1900-01-01/ed-1/seq-1";
     const DOC: &str = "sn00000001_1900-01-01_ed-1_seq-1";
@@ -1768,6 +1768,26 @@ mod queue_feed {
         lease: Duration,
         languages: Option<&BTreeSet<String>>,
     ) -> claim::Report {
+        pull_options(
+            f,
+            dir,
+            languages,
+            &claim::Options {
+                queues: vec![BULK.into()],
+                max: 5,
+                max_receives: 10,
+                lease,
+            },
+        )
+        .await
+    }
+
+    async fn pull_options(
+        f: &Fed,
+        dir: &Path,
+        languages: Option<&BTreeSet<String>>,
+        opts: &claim::Options,
+    ) -> claim::Report {
         let snapshot = Snapshot::load(&f.fx.state, f.fx.stores.reference.as_ref())
             .await
             .unwrap();
@@ -1785,12 +1805,7 @@ mod queue_feed {
                 installed: &usnm_boinc::installed_models(),
                 languages,
             },
-            &claim::Options {
-                queues: vec![BULK.into()],
-                max: 5,
-                max_receives: 10,
-                lease,
-            },
+            opts,
             dir,
             &mut report,
         )
@@ -1913,6 +1928,95 @@ mod queue_feed {
                 .unwrap()
                 .unwrap();
         assert_eq!(m.dequeue_count, 1);
+    }
+
+    #[tokio::test]
+    async fn priority_scans_past_an_unusable_front_across_bounded_ticks() {
+        let f = fed(true).await;
+        let queue = f.fx.stores.queue.as_ref();
+        for number in 2..=34 {
+            let mut missing = f.message.clone();
+            missing.page = format!("sn00000001/1900-01-01/ed-1/seq-{number}");
+            queue.send(PRIORITY, &missing.encode()).await.unwrap();
+        }
+        queue.send(PRIORITY, &f.message.encode()).await.unwrap();
+        let opts = claim::Options {
+            queues: vec![PRIORITY.into()],
+            max: 1,
+            max_receives: 30,
+            lease: Duration::from_secs(3600),
+        };
+        let dir = f.fx.tmp.path().join("claims");
+        let first = pull_options(&f, &dir, None, &opts).await;
+        assert_eq!(
+            (first.claims.len(), first.received, first.released),
+            (0, 30, 30)
+        );
+        let second = pull_options(&f, &dir, None, &opts).await;
+        assert_eq!(
+            (second.claims.len(), second.received, second.released),
+            (1, 4, 3)
+        );
+        assert_eq!(second.claims[0].message().unwrap(), f.message);
+        assert_eq!(queue.peek(PRIORITY, 32).await.unwrap().len(), 32);
+    }
+
+    #[tokio::test]
+    async fn priority_does_not_hide_untrusted_pages_or_loop_on_send_back() {
+        let f = fed(true).await;
+        let queue = f.fx.stores.queue.as_ref();
+        queue.send(PRIORITY, &f.message.encode()).await.unwrap();
+        let eng: BTreeSet<String> = ["eng".to_string()].into();
+        let report = pull_options(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            Some(&eng),
+            &claim::Options {
+                queues: vec![PRIORITY.into()],
+                max: 1,
+                max_receives: 30,
+                lease: Duration::from_secs(3600),
+            },
+        )
+        .await;
+        assert_eq!(
+            (report.claims.len(), report.received, report.released),
+            (0, 2, 2)
+        );
+        assert_eq!(
+            queue.peek(PRIORITY, 32).await.unwrap(),
+            vec![f.message.encode()]
+        );
+    }
+
+    #[tokio::test]
+    async fn priority_does_not_claim_pages_without_cached_scans() {
+        let f = fed(false).await;
+        let queue = f.fx.stores.queue.as_ref();
+        queue.send(PRIORITY, &f.message.encode()).await.unwrap();
+        let report = pull_options(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            None,
+            &claim::Options {
+                queues: vec![PRIORITY.into()],
+                max: 1,
+                max_receives: 1,
+                lease: Duration::from_secs(3600),
+            },
+        )
+        .await;
+        assert_eq!(
+            (report.claims.len(), report.received, report.released),
+            (0, 1, 1)
+        );
+        let visible = queue
+            .receive(PRIORITY, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(visible.text, f.message.encode());
+        assert_eq!(visible.dequeue_count, 1);
     }
 
     #[tokio::test]
