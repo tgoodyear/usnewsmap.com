@@ -16,6 +16,10 @@
     "objectId": "0b398b81-9e13-427f-9dc2-e38d890554bc"
   },
   "projectUrl": "https://boinc.usnewsmap.com/",
+  "qualityWave": {
+    "script": "https://stusnmoffapzy.blob.core.windows.net/boinc-handoff/quality/v1-wave9/run_wave9-e6034846b84d.py",
+    "sha256": "e6034846b84d51f1142d591ec9a2750f3bc9fd06711b1275de97a2abd254353b"
+  },
   "requireSecureTransport": false,
   "subscriptionId": "25bf257c-c94e-4d61-bba3-edc635f46602"
 }

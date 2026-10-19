@@ -97,6 +97,27 @@
       ],
       "description": "The BOINC master URL. Permanent once volunteers attach."
     },
+    "qualityWave": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "script",
+        "sha256"
+      ],
+      "description": "Deploy the usnm_quality wave job (usnm-boinc-quality-caj-<env>): it downloads the runner with the BOINC identity, refuses it unless its sha256 matches, and runs its eight shards. scripts/boinc-quality-campaign.py launch-corpus uploads scripts/boinc/quality_corpus_runner.py as quality/<campaign>/run_wave9-<first 12 of its sha256>.py and prints this setting when the job pins another. Absent: no job. main.bicep's qualityWaveScript and qualityWaveScriptSha256.",
+      "properties": {
+        "script": {
+          "type": "string",
+          "pattern": "^https://[a-z0-9]+\\.blob\\.core\\.windows\\.net/[a-z0-9-]+/[A-Za-z0-9/._-]+\\.py$",
+          "description": "The script's blob URL, read with the BOINC identity."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "The script's sha256; the job stops on any other."
+        }
+      }
+    },
     "requireSecureTransport": {
       "type": "boolean",
       "default": false,

@@ -50,6 +50,12 @@ param assessment bool = false
 @description('Deploy the gold bundle job (docs/boinc.md#build-the-gold-bundle): the bridge image running the gold-bundle step, which builds the gold bundle v1 from its publishers onto the share. Off by default.')
 param goldBundle bool = false
 
+@description('The usnm_quality wave runner script\'s blob URL (qualityWave.script in env/<env>.json); empty: no quality wave job.')
+param qualityWaveScript string = ''
+
+@description('The runner script\'s sha256 (qualityWave.sha256); the job stops if the downloaded script has any other.')
+param qualityWaveScriptSha256 string = ''
+
 @description('Seconds before a bridge job run is stopped. assess-stage fetches at 5 s per request, so a longer limit lets one run stage more pages.')
 param bridgeTimeoutSeconds int = 1800
 
@@ -96,6 +102,7 @@ var names = {
   mysqlDnsZone: 'usnm-boinc-${envName}.private.mysql.database.azure.com'
   initJob: usnmName('boinc-init', 'caj', envName)
   goldBundleJob: usnmName('boinc-gold', 'caj', envName)
+  qualityWaveJob: usnmName('boinc-quality', 'caj', envName)
   publishJob: usnmName('boinc-publish', 'caj', envName)
   secretsIdentity: usnmName('boinc-secrets', 'id', envName)
   secretsJob: usnmName('boinc-secrets', 'caj', envName)
@@ -347,6 +354,43 @@ module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
   }
 }
 
+// The usnm_quality wave (scripts/boinc/quality_corpus_runner.py, uploaded by boinc-quality-campaign.py launch-corpus): eight shards
+// that stage page bundles onto the share and collect results. The script is fetched with the
+// BOINC identity and run only if its sha256 is the committed one. 4 vCPUs: the runner converts
+// any page the on-prem JPEG cache (docs/boinc.md) hasn't; more cache, not more vCPUs, is the
+// way to speed it up. A day per run; it is started by hand (az containerapp job start).
+module qualityWaveJob 'modules/bridge-job.bicep' = if (withApp && !empty(qualityWaveScript)) {
+  name: 'quality-wave-job'
+  dependsOn: [ registry ]
+  params: {
+    jobName: names.qualityWaveJob
+    location: location
+    environmentId: app!.outputs.environmentId
+    identityId: identity.id
+    identityClientId: identity.properties.clientId
+    image: bridgeImage
+    registryServer: registryServer
+    keyVaultName: vault.outputs.name
+    mysqlHost: mysql.outputs.host
+    databaseName: mysql.outputs.databaseName
+    masterHost: masterHost
+    projectStorageName: app!.outputs.projectStorageName
+    workloadProfileName: app!.outputs.workloadProfileName
+    timeoutSeconds: 86400
+    cpu: '4'
+    memory: '8Gi'
+    extraEnv: [
+      { name: 'QUALITY_WAVE_SCRIPT', value: qualityWaveScript }
+      { name: 'QUALITY_WAVE_SHA256', value: qualityWaveScriptSha256 }
+    ]
+    command: [
+      '/bin/bash'
+      '-c'
+      'set -euo pipefail; tok="$(curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$AZURE_CLIENT_ID" | jq -er .access_token)"; curl -fsSL -H "Authorization: Bearer $tok" -H "x-ms-version: 2021-08-06" "$QUALITY_WAVE_SCRIPT" -o /tmp/run_wave9.py; echo "$QUALITY_WAVE_SHA256  /tmp/run_wave9.py" | sha256sum -c -; export NUM_SHARDS=8 BUNDLE_SIZE=200 MAX_IN_FLIGHT_BUNDLES=45 MIN_FREE_GB=35.0; pids=""; for s in 0 1 2 3 4 5 6 7; do SHARD_ENV=$s python3 /tmp/run_wave9.py & pids="$pids $!"; sleep 3; done; rc=0; for p in $pids; do wait "$p" || rc=1; done; exit "$rc"'
+    ]
+  }
+}
+
 module secretsJob 'modules/secrets-job.bicep' = if (withApp) {
   name: 'secrets-job'
   dependsOn: [ registry ]
@@ -366,6 +410,7 @@ module secretsJob 'modules/secrets-job.bicep' = if (withApp) {
 output appFqdn string = withApp ? app!.outputs.fqdn : ''
 output bridgeJobName string = withApp ? bridgeJob!.outputs.name : ''
 output goldBundleJobName string = withApp && goldBundle ? goldBundleJob!.outputs.name : ''
+output qualityWaveJobName string = withApp && !empty(qualityWaveScript) ? qualityWaveJob!.outputs.name : ''
 output initJobName string = withApp ? initJob!.outputs.name : ''
 output keyVaultName string = vault.outputs.name
 output mysqlHost string = mysql.outputs.host

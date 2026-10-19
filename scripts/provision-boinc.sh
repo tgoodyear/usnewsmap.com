@@ -111,12 +111,12 @@ domain_stage() {
 }
 # write_params STAGE: the deployment parameters, with the custom domain stage.
 write_params() {
-jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --argjson tls "$REQUIRE_SECURE_TRANSPORT" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
+jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --arg qws "${QUALITY_WAVE_SCRIPT:-}" --arg qwh "${QUALITY_WAVE_SHA256:-}" --argjson tls "$REQUIRE_SECURE_TRANSPORT" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
   --arg web "${WEB_IMAGE:-}" --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   contentVersion: "1.0.0.0",
   parameters: {
-    env: {value: $env}, webImage: {value: $web}, requireSecureTransport: {value: $tls}, assessment: {value: $assess}, goldBundle: {value: $gold}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b}, publishImage: {value: $p},
+    env: {value: $env}, webImage: {value: $web}, requireSecureTransport: {value: $tls}, assessment: {value: $assess}, goldBundle: {value: $gold}, qualityWaveScript: {value: $qws}, qualityWaveScriptSha256: {value: $qwh}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b}, publishImage: {value: $p},
     runtimePrincipalId: {value: $runtime}, keyWriterPrincipalId: {value: $secrets},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
@@ -232,6 +232,17 @@ if [ -n "$existing_gold" ]; then
       die "$existing_gold already has an active execution (${active_gold//$'\n'/ }) and its template would change; wait for it to finish before updating the gold-bundle template"
     fi
   fi
+fi
+# Removing qualityWave deletes the quality job (the stack deletes unmanaged resources), so it
+# must not happen mid-wave. Updating the job never blocks: a running wave keeps its template.
+existing_quality=""
+[ -n "${QUALITY_WAVE_SCRIPT:-}" ] || existing_quality=$(boinc_output qualityWaveJobName)
+if [ -n "$existing_quality" ]; then
+  active_quality=$(baz containerapp job execution list --name "$existing_quality" --resource-group "$BOINC_RG" \
+    --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv) ||
+    die "could not list the executions of $existing_quality"
+  [ -z "$active_quality" ] ||
+    die "$existing_quality has an active execution (${active_quality//$'\n'/ }) and removing qualityWave would delete it; wait for it to finish before removing qualityWave"
 fi
 active_bridge=""
 existing_bridge=$(boinc_output bridgeJobName)
