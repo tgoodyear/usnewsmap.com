@@ -74,9 +74,10 @@ class Order(unittest.TestCase):
         # f, with only a JPEG master, still has its place: g follows it, at global index 2.
         self.assertEqual([k for k, _ in ordered], [("e", 1), ("f", 1), ("g", 1)])
         left = qjl.resolve_current(ordered, 2, {1: "f_ver01"}, warn=lambda m: None, n_manifest=0)
-        self.assertEqual([k for k, _ in left[1]], [("g", 1)])
+        # g next; e and f, before the position, come last.
+        self.assertEqual([k for k, _ in left[1]], [("g", 1), ("e", 1), ("f", 1)])
         q = qjl.shard_queues([], 2, {}, set(), t1, left)
-        self.assertEqual(q[1], ["keep/g/l/1900-01-01/1/1.jp2"])
+        self.assertEqual(q[1][0], "keep/g/l/1900-01-01/1/1.jp2")
 
     def test_current_names_the_batch_and_rejects_unknown_ones(self):
         ordered = qjl.ordered_batches(self.rows)
@@ -116,6 +117,24 @@ class Order(unittest.TestCase):
         listed, pending = self.tier1_case(frozen, ["a", "b", "c", "cc", "d", "e", "f", "g", "h"],
                                           {0: "c_ver01", 1: "f_ver01"})
         self.assertTrue(pending <= listed, (pending, listed))
+
+    def test_a_batch_archived_after_the_runner_started_is_still_listed(self):
+        # Startup: manifest m0 m1, tier 1 c d, tier 2 a b. Shards are at 0=c, 1=d, so a and b are
+        # pending. Once a and b are archived they sort into tier 1 ahead of c and d.
+        manifest = rows("m0", 9) + rows("m1", 8)
+        now = ["a", "b", "c", "d"]
+        keep = [f"keep/{b}/l/1900-01-01/1/1.jp2" for b in now]
+        damage = [f"audit/damage/v2/{b}_ver01.parquet" for b in now]
+        t1 = qjl.tier1_batches({(b, int(v)) for b, v, _ in manifest}, damage, keep)
+        ordered = qjl.ordered_batches(manifest, t1)
+        left = qjl.resolve_current(ordered, 2, {0: "c_ver01", 1: "d_ver01"}, warn=lambda m: None,
+                                   n_manifest=2)
+        q = qjl.shard_queues(manifest, 2, {}, set(), t1, left)
+        listed = [n.split("/")[1] for s in q for n in s]
+        self.assertIn("a", listed)
+        self.assertIn("b", listed)
+        # Behind the batches after each shard's position.
+        self.assertLess(q[0].index("keep/d/l/1900-01-01/1/1.jp2"), q[0].index("keep/a/l/1900-01-01/1/1.jp2"))
 
     def test_undetected_drift_keeps_pending_batches(self):
         frozen = ["a", "b", "c", "d", "e", "f", "g", "h"]

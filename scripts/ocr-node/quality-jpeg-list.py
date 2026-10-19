@@ -26,9 +26,11 @@ its status file names now; an unknown batch is an error. The manifest's
 batches never change, so each shard takes every Nth of them exactly. Tier 1
 comes from listings that grow after the runner starts, so its rotation can't
 be verified: each shard's queue continues with every tier-1 batch after its
-own position (all of tier 1 if it is still in the manifest), and the queues
-are deduplicated. That converts some pages another shard has passed, but none
-a shard still needs is left out. --start-after s=k does the same by index (k is the index
+own position (all of tier 1 if it is still in the manifest), then, last, the
+tier-1 batches before it: a batch archived after the runner started was in
+its tier 2 then and may still be pending. The queues are deduplicated. That
+converts some pages another shard has passed, but none a shard still needs
+is left out. --start-after s=k does the same by index (k is the index
 of the batch it is in now). Shards not named start at their first batch.
 --done drops pages already in the converter's done.txt. Needs duckdb.
 """
@@ -90,7 +92,10 @@ def remaining_batches(ordered, n_manifest, shards, s, after):
     """Shard s's batches after global index `after` (-1: from its first): its own manifest
     batches, every `shards`-th, then every tier-1 batch after `after`, unstrided."""
     mine = [k for i, k in enumerate(ordered[:n_manifest]) if i % shards == s and i > after]
-    return mine + ordered[max(n_manifest, after + 1):]
+    cut = max(n_manifest, after + 1)
+    # Then the tier-1 batches before `after`, last: a batch archived after the runner started
+    # was in its tier 2 then, and can sort ahead of every shard now while still pending.
+    return mine + ordered[cut:] + ordered[n_manifest:cut]
 
 
 def resolve_current(ordered, shards, current, warn=print, n_manifest=None):
