@@ -26,6 +26,8 @@ param ocrNodes bool = false
 param ocrNodeIps string = ''
 @description('As in main.bicep.')
 param serialSetOnPrem bool = false
+@description('The Japanese OCR runs on-prem (main.bicep jaOcrOnPrem): the data lake opens to the node IPs.')
+param jaOcrOnPrem bool = false
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)
@@ -43,7 +45,7 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
     parameters: {
       effect: { value: 'deny' }
       publicAccountIds: {
-        value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, lakeOpen(serialSetOnPrem, ocrNodeIps))
+        value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, lakeOpen(serialSetOnPrem || jaOcrOnPrem, ocrNodeIps))
       }
     }
   }

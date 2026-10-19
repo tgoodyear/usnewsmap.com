@@ -254,6 +254,9 @@ param jaOcrJob bool = false
 @maxValue(8)
 param jaOcrReplicas int = 2
 
+@description('Run the Japanese OCR on-prem (#917): the on-prem hosts\' group (onPremGroupId) gets read on the curated and reference containers and create-only writes under curated/ocr-ja/ (modules/jaocr-runner.bicep), and the data lake opens to the node IPs. Pair it with jaOcrJob false, so the Azure job goes. scripts/ocr-node/ja-ocr-onprem.sh runs it on a node.')
+param jaOcrOnPrem bool = false
+
 @description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
 param ocrNodes bool = false
 
@@ -432,7 +435,7 @@ module identities 'modules/identities.bicep' = {
 // runner (serialSetOnPrem); the public-network policy then exempts it by
 // resource id, like the accounts below. Provision writes the policy's
 // exemptions before the stack (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(serialSetOnPrem, ocrNodeIps)
+var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem, ocrNodeIps)
 
 module storage 'modules/storage.bicep' = {
   scope: rg
@@ -455,6 +458,18 @@ module indexStore 'modules/index-storage.bicep' = if (indexStorage) {
     location: location
     tags: tags
     name: n.indexAccount
+  }
+}
+
+// The on-prem Japanese OCR's grant (#917): read curated and reference, write under
+// curated/ocr-ja/ only, for every on-prem host.
+module jaOcrRunnerGrant 'modules/jaocr-runner.bicep' = if (jaOcrOnPrem && !empty(trim(onPremGroupId))) {
+  scope: rg
+  name: 'jaocr-runner'
+  params: {
+    storageName: storage.outputs.name
+    principalId: trim(onPremGroupId)
+    roleLabel: n.jaocrWriterRole
   }
 }
 

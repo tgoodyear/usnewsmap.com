@@ -95,5 +95,6 @@
   "stateEndpointNic": "",
   "vnet": "vnet-usnm-prod",
   "workspace": "log-usnm-prod",
-  "serialSetWriterRole": "usnm-sset-writer-role-prod"
+  "serialSetWriterRole": "usnm-sset-writer-role-prod",
+  "jaocrWriterRole": "usnm-jaocr-writer-role-prod"
 }

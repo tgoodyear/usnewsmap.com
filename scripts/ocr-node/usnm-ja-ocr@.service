@@ -1,0 +1,41 @@
+# The on-prem Japanese OCR (#917, #128): one replica (%i) of ja-ocr/jaocr.py `run`, the
+# usnewsmap-ja-ocr image under podman, as the host's Arc machine identity, in place of
+# the Azure job caj-usnm-jaocr-<env>. Replicas claim issues through create-only blobs, so
+# instances never take the same issue, and pace loc.gov together (JAOCR_REPLICAS).
+# scripts/ocr-node/ja-ocr-onprem.sh builds the image and installs this; settings are in
+# /etc/usnm/ja-ocr.env (docs/operations.md, "The Japanese OCR on-prem").
+#
+# A run ends when no target issue is left to claim; like the Azure job, start it again
+# until the status page (reference/status/ocr-ja.json) shows every target done.
+[Unit]
+Description=usnewsmap Japanese OCR replica %i (on-prem)
+Wants=network-online.target himdsd.service
+After=network-online.target himdsd.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/usnm/ja-ocr.env
+# The Arc agent's token endpoint is on localhost: host networking. Its challenge key
+# file is readable by the himds group: mount the directory read-only and add the group.
+# SELinux labels on that directory belong to the agent, so the container runs unlabeled
+# rather than relabelling them.
+ExecStart=/usr/bin/podman run --rm --name usnm-ja-ocr-%i --network host \
+  --user 10001:10001 --group-add ${HIMDS_GID} --security-opt label=disable \
+  --cpus 4 --memory 8g \
+  -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro \
+  -e IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token \
+  -e IMDS_ENDPOINT=http://localhost:40342 \
+  -e USNM_CURATED_URL -e USNM_REFERENCE_URL -e JAOCR_REPLICAS \
+  ${JAOCR_IMAGE} run
+ExecStop=/usr/bin/podman stop --time 60 usnm-ja-ocr-%i
+# A failure (loc.gov down past the script's retries, a write refused) starts it again
+# after 2 minutes, then backs off to 15; a clean finish stays stopped.
+Restart=on-failure
+RestartSec=120
+RestartSteps=3
+RestartMaxDelaySec=900
+TimeoutStopSec=90
+SyslogIdentifier=usnm-ja-ocr
+
+[Install]
+WantedBy=multi-user.target

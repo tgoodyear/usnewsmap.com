@@ -190,6 +190,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_JA_OCR_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Run the Japanese OCR on-prem (#917): grants for the on-prem hosts' group and the data lake open to the node IPs. Pair with USNM_JA_OCR_JOB false.",
+      "type": "boolean"
+    },
     "USNM_JA_OCR_REPLICAS": {
       "x-usnm-visibility": "public",
       "type": "integer"
