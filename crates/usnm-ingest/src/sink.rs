@@ -1354,13 +1354,16 @@ impl Drop for SupervisedWriter {
 }
 
 /// Wait for the writer to exit, let the readers take in its last output,
-/// then record why it exited in `events` and on the returned channel.
+/// then record why it exited in `events` and on the returned channel. A
+/// notification on `kill` sends the child SIGKILL: the supervisor owns it,
+/// so the signal can't reach a reused pid.
 fn supervise(
     child: tokio::process::Child,
     mut readers: Vec<tokio::task::JoinHandle<()>>,
     tail: Tail,
     events: Arc<NodeEvents>,
     local_wal: Option<Arc<tempfile::TempDir>>,
+    kill: Arc<tokio::sync::Notify>,
 ) -> (
     tokio::task::JoinHandle<()>,
     tokio::sync::watch::Receiver<Option<String>>,
@@ -1371,7 +1374,14 @@ fn supervise(
         _local_wal: local_wal,
     };
     let task = tokio::spawn(async move {
-        let status = writer.wait().await;
+        let status = loop {
+            tokio::select! {
+                status = writer.wait() => break status,
+                () = kill.notified() => {
+                    let _ = writer.child.start_kill();
+                }
+            }
+        };
         for r in readers.iter_mut() {
             let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
         }
@@ -1399,6 +1409,9 @@ pub struct WriterProcess {
     events: Arc<NodeEvents>,
     local_wal: Option<Arc<tempfile::TempDir>>,
     run: Mutex<Run>,
+    /// How long `terminate` waits after SIGTERM, then after SIGKILL.
+    grace: Duration,
+    kill_wait: Duration,
 }
 
 /// One run of the writer process.
@@ -1409,6 +1422,8 @@ struct Run {
     supervisor: Option<tokio::task::JoinHandle<()>>,
     /// Why the process exited, once it has.
     exit: Option<tokio::sync::watch::Receiver<Option<String>>>,
+    /// Asks the supervisor to SIGKILL the process.
+    kill: Arc<tokio::sync::Notify>,
 }
 
 impl WriterProcess {
@@ -1457,17 +1472,20 @@ impl WriterProcess {
             readers.push(forward(err, true, self.tail.clone(), self.events.clone()));
         }
         let pid = child.id();
+        let kill = Arc::new(tokio::sync::Notify::new());
         let (supervisor, exit) = supervise(
             child,
             readers,
             self.tail.clone(),
             self.events.clone(),
             self.local_wal.clone(),
+            kill.clone(),
         );
         *self.run() = Run {
             pid,
             supervisor: Some(supervisor),
             exit: Some(exit),
+            kill,
         };
         Ok(())
     }
@@ -1521,16 +1539,19 @@ impl WriterProcess {
         }
     }
 
-    /// Stop the current run: SIGTERM, then a kill after 60 s.
-    async fn terminate(&self) {
+    /// Stop the current run: SIGTERM, then SIGKILL after `grace` (60 s).
+    /// Fails unless the process is confirmed to have exited and been reaped
+    /// (its supervisor's `wait` returned): a restart must not start a second
+    /// process on the same port and data directory.
+    async fn terminate(&self) -> anyhow::Result<()> {
         // The supervisor stays in `Run` until the run has stopped or been
         // aborted: a release cancelled during the wait (a merge timeout, a
         // lost lease) still leaves `stop`/`Drop` a handle to kill it with.
-        let (pid, exit) = {
+        let (pid, exit, kill) = {
             let r = self.run();
-            (r.pid, r.exit.clone())
+            (r.pid, r.exit.clone(), r.kill.clone())
         };
-        let Some(mut exit) = exit else { return };
+        let Some(mut exit) = exit else { return Ok(()) };
         let running = exit.borrow().is_none();
         if let (Some(pid), true) = (pid, running) {
             // SIGTERM lets Quickwit shut down cleanly; `kill` is a shell builtin.
@@ -1539,7 +1560,7 @@ impl WriterProcess {
                 .status()
                 .await;
         }
-        let stopped = tokio::time::timeout(Duration::from_secs(60), exit.wait_for(Option::is_some))
+        let mut stopped = tokio::time::timeout(self.grace, exit.wait_for(Option::is_some))
             .await
             .is_ok();
         if !stopped {
@@ -1549,14 +1570,30 @@ impl WriterProcess {
             // writer starts from an empty data directory (a restart
             // reads what is published from the metastore, and resumes
             // ingest v1 queues from their checkpoints).
-            tracing::info!("the Quickwit writer did not stop within 60 s; killing it");
-            // Dropping the supervisor's child kills it (`kill_on_drop`).
+            tracing::info!(
+                pid,
+                "the Quickwit writer did not stop within {} s; killing it",
+                self.grace.as_secs()
+            );
+            kill.notify_one();
+            stopped = tokio::time::timeout(self.kill_wait, exit.wait_for(Option::is_some))
+                .await
+                .is_ok();
+        }
+        if !stopped {
+            // Dropping the supervisor's child kills it (`kill_on_drop`),
+            // but nothing then confirms it has gone.
             self.abort();
+            bail!(
+                "the Quickwit writer (pid {pid:?}) was not confirmed to have exited {} s after SIGKILL",
+                self.kill_wait.as_secs()
+            );
         }
         let supervisor = self.run().supervisor.take();
         if let Some(mut supervisor) = supervisor {
             let _ = tokio::time::timeout(Duration::from_secs(5), &mut supervisor).await;
         }
+        Ok(())
     }
 
     /// Stop the writer and start it again on the same data and config, for
@@ -1567,7 +1604,9 @@ impl WriterProcess {
             bail!("{why}; not publishing");
         }
         tracing::info!(pid = self.pid(), "restarting the Quickwit writer");
-        self.terminate().await;
+        self.terminate()
+            .await
+            .context("stopping the Quickwit writer to restart it; not restarting")?;
         // The exit was asked for.
         self.events.clear_exit();
         self.spawn()?;
@@ -1637,6 +1676,8 @@ impl QuickwitNode {
             events: events.clone(),
             local_wal: local_wal.map(Arc::new),
             run: Mutex::default(),
+            grace: Duration::from_secs(60),
+            kill_wait: Duration::from_secs(30),
         });
         process.spawn()?;
         let node = Self {
@@ -1666,7 +1707,11 @@ impl QuickwitNode {
 
     /// Stop the node and wait for it to exit.
     pub async fn stop(self) -> anyhow::Result<()> {
-        self.process.terminate().await;
+        // At the end of a release, which has published or failed by now;
+        // the job's exit takes the process with it.
+        if let Err(e) = self.process.terminate().await {
+            tracing::warn!("{e:#}");
+        }
         Ok(())
     }
 }
@@ -1746,6 +1791,7 @@ mod tests {
             Tail::default(),
             Arc::new(NodeEvents::default()),
             Some(Arc::new(wal)),
+            Default::default(),
         );
         assert!(path.exists());
         drop(input);
@@ -1776,6 +1822,7 @@ mod tests {
             Tail::default(),
             Arc::new(NodeEvents::default()),
             Some(Arc::new(wal)),
+            Default::default(),
         );
         // There has been no yield: the supervisor has not run even once.
         task.abort();
@@ -1989,6 +2036,8 @@ mod tests {
             events: Arc::new(NodeEvents::default()),
             local_wal: None,
             run: Mutex::new(Run::default()),
+            grace: Duration::from_secs(60),
+            kill_wait: Duration::from_secs(30),
         };
         writer.spawn().unwrap();
         while !trapped.exists() {
@@ -2016,6 +2065,124 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         panic!("the writer outlived its aborted supervisor");
+    }
+
+    /// A writer that ignores SIGTERM, and a `/health/readyz` that answers
+    /// for it, for the restart tests.
+    #[cfg(unix)]
+    async fn stubborn_writer(
+        dir: &Path,
+        kill_wait: Duration,
+    ) -> (WriterProcess, PathBuf, tokio::task::JoinHandle<()>) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("quickwit");
+        let trapped = dir.join("trapped");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ntrap '' TERM\ntouch '{}'\nwhile :; do sleep 1; done\n",
+                trapped.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let health = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let Ok((mut conn, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let _ = conn.read(&mut buf).await;
+                let _ = conn
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .await;
+            }
+        });
+        let writer = WriterProcess {
+            bin,
+            config_path: dir.join("node.yaml"),
+            url,
+            tail: Tail::default(),
+            events: Arc::new(NodeEvents::default()),
+            local_wal: None,
+            run: Mutex::new(Run::default()),
+            grace: Duration::from_millis(300),
+            kill_wait,
+        };
+        (writer, trapped, health)
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_file(path: &Path) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !path.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the writer started");
+    }
+
+    #[cfg(unix)]
+    fn pid_alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// The restart for ingest v1's final merges kills a writer that ignores
+    /// SIGTERM, and starts the next only once the old one has exited and
+    /// been reaped: two never share the port and data directory.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_restart_kills_a_stubborn_writer_before_starting_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let (writer, trapped, health) = stubborn_writer(dir.path(), Duration::from_secs(10)).await;
+        writer.spawn().unwrap();
+        wait_for_file(&trapped).await;
+        let old = writer.pid().unwrap();
+        std::fs::remove_file(&trapped).unwrap();
+        writer.restart().await.unwrap();
+        // `kill -0` fails for a reaped process (a zombie would still answer).
+        assert!(!pid_alive(old), "the old writer is gone");
+        let new = writer.pid().unwrap();
+        assert_ne!(new, old);
+        assert!(writer.exited().is_none(), "the new run is running");
+        wait_for_file(&trapped).await;
+        assert!(pid_alive(new));
+        writer.abort();
+        health.abort();
+    }
+
+    /// A writer that isn't confirmed gone after SIGKILL fails the restart,
+    /// and no second writer is started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_restart_fails_unless_the_old_writer_is_confirmed_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (writer, trapped, health) = stubborn_writer(dir.path(), Duration::ZERO).await;
+        writer.spawn().unwrap();
+        wait_for_file(&trapped).await;
+        let old = writer.pid().unwrap();
+        let err = format!("{:#}", writer.restart().await.unwrap_err());
+        assert!(err.contains("not restarting"), "{err}");
+        assert!(err.contains("not confirmed to have exited"), "{err}");
+        assert_eq!(writer.pid(), Some(old), "no second writer was started");
+        // The aborted supervisor still kills it.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while pid_alive(old) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the old writer was killed");
+        health.abort();
     }
 
     #[cfg(unix)]
@@ -2093,7 +2260,14 @@ mod tests {
                 events.clone(),
             ),
         ];
-        let (task, mut exit) = supervise(child, readers, tail, events.clone(), None);
+        let (task, mut exit) = supervise(
+            child,
+            readers,
+            tail,
+            events.clone(),
+            None,
+            Default::default(),
+        );
         tokio::time::timeout(Duration::from_secs(10), exit.wait_for(Option::is_some))
             .await
             .unwrap()
@@ -2464,6 +2638,7 @@ mod tests {
                 Tail::default(),
                 Arc::new(NodeEvents::default()),
                 Some(wal.clone()),
+                Default::default(),
             );
             (task, input)
         };
