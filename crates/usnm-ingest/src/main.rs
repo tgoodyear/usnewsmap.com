@@ -1015,11 +1015,13 @@ async fn release_locked(
             remove_stale_spill(&dir)?;
             check_free_disk(&dir, t.min_free_gib)?;
             let n = QuickwitNode::start(bin, &dir, t.quickwit_port, metastore, root(t)?).await?;
-            tracing::info!(api = ingest.name(), "writer ingest api");
+            let in_flight = usnm_ingest::sink::in_flight_from_env()?;
+            tracing::info!(api = ingest.name(), in_flight, "writer ingest api");
             let sink = QuickwitSink::new(&n.url, root(t)?)?
                 .watching(&n)
                 .merges(wait)
-                .ingest(ingest);
+                .ingest(ingest)
+                .in_flight(in_flight);
             node = Some(n);
             Box::new(sink)
         }
