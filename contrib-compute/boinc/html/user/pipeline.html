@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BOINC pipeline</title>
+<meta name="description" content="What is waiting at each stage of the usnewsmap BOINC project, per app. Aggregate counts only.">
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --ink-2: #55554f; --ink-3: #8a8a83; --rule: #e3e2dc;
+  --unsent: #7a8cb5; --progress: #3f6fd8; --stranded: #c4572f; --validation: #b08a1e; --assimilation: #6b8e3d;
+  --good: #2f7d4f; --warn: #a86a00; --bad: #b3322a; --spark: #3f6fd8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --ink-2: #b6b5ad; --ink-3: #85847c; --rule: #2e2d29;
+    --unsent: #8fa0c8; --progress: #6d93ea; --stranded: #e07a52; --validation: #d1aa3f; --assimilation: #8db35d;
+    --good: #5cb07d; --warn: #d79a2e; --bad: #e0675d; --spark: #6d93ea;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { color: var(--ink-2); margin: 0 0 20px; font-size: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 14px; }
+.tile .v { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tile .k { color: var(--ink-2); font-size: 13px; }
+.alerts { margin: 0 0 20px; padding: 0; list-style: none; }
+.alerts li { background: var(--panel); border: 1px solid var(--rule); border-left: 4px solid var(--warn); border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; font-size: 14px; }
+.alerts li.bad { border-left-color: var(--bad); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--ink-2); margin: 0 0 10px; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+tr.idle td { color: var(--ink-3); }
+td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+th.num { text-align: right; }
+.app { font-weight: 600; white-space: nowrap; }
+.bar { display: flex; height: 14px; border-radius: 4px; overflow: hidden; background: var(--rule); min-width: 120px; gap: 2px; }
+.bar i { display: block; height: 100%; }
+.bar-label { font-size: 12px; color: var(--ink-2); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.spark { display: block; }
+.when { white-space: nowrap; font-size: 13px; }
+.when.stale { color: var(--warn); }
+.foot { color: var(--ink-3); font-size: 12px; margin-top: 14px; }
+a { color: var(--progress); }
+.wrap { overflow-x: auto; }
+@media (max-width: 640px) { .hide-sm { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>BOINC pipeline</h1>
+  <p class="sub" id="sub">Loading…</p>
+  <div class="tiles" id="tiles"></div>
+  <ul class="alerts" id="alerts"></ul>
+  <div class="legend">
+    <span style="--c: var(--unsent)">Unsent</span>
+    <span style="--c: var(--progress)">In progress</span>
+    <span style="--c: var(--stranded)">Stranded (host silent a day)</span>
+    <span style="--c: var(--validation)">Awaiting validation</span>
+    <span style="--c: var(--assimilation)">Awaiting assimilation</span>
+  </div>
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>App</th><th>Waiting, by stage</th>
+        <th class="num">Returned 24 h</th><th class="num hide-sm">Errors 24 h</th>
+        <th class="hide-sm">Returns per hour, 24 h</th><th>Last result</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <p class="foot">Aggregate counts from <a href="pipeline_summary.php">pipeline_summary.php</a>, cached for two minutes. This page refreshes itself. Validated totals: <span id="validated"></span>.</p>
+</main>
+<script>
+"use strict";
+const STAGES = [
+  ["unsent", "--unsent", "unsent"],
+  ["active", "--progress", "in progress"],
+  ["stranded", "--stranded", "stranded"],
+  ["awaiting_validation", "--validation", "awaiting validation"],
+  ["awaiting_assimilation", "--assimilation", "awaiting assimilation"],
+];
+const fmt = n => n.toLocaleString("en-US");
+function ago(iso) {
+  if (!iso) return ["never", true];
+  const h = (Date.now() - Date.parse(iso)) / 3.6e6;
+  if (h < 1) return [Math.max(1, Math.round(h * 60)) + " min ago", false];
+  if (h < 48) return [Math.round(h) + " h ago", h > 6];
+  return [Math.round(h / 24) + " days ago", true];
+}
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k === "style") e.style.cssText = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids) e.append(k);
+  return e;
+}
+function spark(values) {
+  const w = 120, h = 26, max = Math.max(1, ...values), step = w / (values.length - 1);
+  const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - 2 - (v / max) * (h - 4)).toFixed(1)}`).join(" ");
+  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("width", w); svg.setAttribute("height", h); svg.setAttribute("class", "spark");
+  svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Results returned per hour: " + values.join(", "));
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("points", pts); line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "var(--spark)"); line.setAttribute("stroke-width", "2"); line.setAttribute("stroke-linejoin", "round");
+  const title = document.createElementNS(ns, "title");
+  title.textContent = "Peak " + max + " per hour";
+  svg.append(title, line);
+  return svg;
+}
+function render(d) {
+  const COUNTS = ["unsent", "in_progress", "overdue", "stranded", "awaiting_validation", "awaiting_assimilation",
+                  "returned_24h", "errors_24h", "validated"];
+  // A missing count (an older cached response) reads as 0.
+  const apps = d.apps.map(a => {
+    const b = { ...a, returned_by_hour: Array.isArray(a.returned_by_hour) ? a.returned_by_hour : Array(24).fill(0) };
+    for (const k of COUNTS) b[k] = Number.isFinite(a[k]) ? a[k] : 0;
+    b.active = Math.max(0, b.in_progress - b.stranded);
+    return b;
+  });
+  const sum = k => apps.reduce((n, a) => n + a[k], 0);
+  const waiting = sum("unsent") + sum("in_progress") + sum("awaiting_validation") + sum("awaiting_assimilation");
+  document.getElementById("sub").textContent = "Updated " + new Date(d.updated_at).toLocaleString() + ".";
+  const tiles = document.getElementById("tiles");
+  tiles.replaceChildren(...[
+    [d.hosts.active_1h + " / " + d.hosts.active_24h, "Hosts active, 1 h / 24 h"],
+    [fmt(waiting), "Tasks waiting anywhere"],
+    [fmt(sum("stranded")), "Stranded on silent hosts"],
+    [fmt(sum("returned_24h")), "Results returned, 24 h"],
+  ].map(([v, k]) => el("div", { class: "tile" }, el("div", { class: "v" }, v), el("div", { class: "k" }, k))));
+  const alerts = [];
+  for (const a of apps) {
+    const [when, stale] = ago(a.last_returned_at);
+    if (a.stranded) alerts.push(["warn", `${a.name}: ${fmt(a.stranded)} task(s) are on hosts silent for over a day; they wait out their deadline before being reissued.`]);
+    if (a.errors_24h) alerts.push(["bad", `${a.name}: ${fmt(a.errors_24h)} error result(s) in the last 24 h.`]);
+    if ((a.unsent || a.in_progress) && stale) alerts.push(["warn", `${a.name} has work out but its last result was ${when}.`]);
+    if (a.awaiting_assimilation > 20) alerts.push(["warn", `${a.name}: ${fmt(a.awaiting_assimilation)} validated workunit(s) not yet assimilated.`]);
+  }
+  document.getElementById("alerts").replaceChildren(...alerts.map(([c, t]) => el("li", { class: c }, t)));
+  const scale = Math.max(1, ...apps.map(a => STAGES.reduce((n, [k]) => n + a[k], 0)));
+  // Apps with work waiting or returned in the last day first; idle ones after, dimmed.
+  const busy = a => STAGES.some(([k]) => a[k]) || a.returned_24h > 0;
+  const rows = apps.filter(busy).concat(apps.filter(a => !busy(a)));
+  document.getElementById("rows").replaceChildren(...rows.map(a => {
+    const total = STAGES.reduce((n, [k]) => n + a[k], 0);
+    const bar = el("div", { class: "bar", title: STAGES.map(([k, , label]) => `${label}: ${a[k]}`).join(" · ") });
+    for (const [k, c] of STAGES) if (a[k]) bar.append(el("i", { style: `width:${(a[k] / scale) * 100}%;background:var(${c})` }));
+    const label = total ? STAGES.filter(([k]) => a[k]).map(([k, , l]) => `${fmt(a[k])} ${l}`).join(" · ") : "nothing waiting";
+    const [when, stale] = ago(a.last_returned_at);
+    const idle = !total && !a.returned_24h;
+    return el("tr", idle ? { class: "idle" } : {},
+      el("td", { class: "app" }, a.name),
+      el("td", {}, bar, el("div", { class: "bar-label" }, label)),
+      el("td", { class: "num" }, fmt(a.returned_24h)),
+      el("td", { class: "num hide-sm" }, fmt(a.errors_24h)),
+      el("td", { class: "hide-sm" }, spark(a.returned_by_hour)),
+      el("td", { class: "when" + (stale && total ? " stale" : "") }, when));
+  }));
+  document.getElementById("validated").textContent = apps.filter(a => a.validated).map(a => `${a.name} ${fmt(a.validated)}`).join(", ");
+}
+async function load() {
+  try {
+    const r = await fetch("pipeline_summary.php", { cache: "no-store" });
+    const d = await r.json();
+    if (!r.ok || !Array.isArray(d.apps)) throw new Error(d.error || r.status);
+    render(d);
+  } catch (e) {
+    document.getElementById("sub").textContent = "Counts are temporarily unavailable (" + e.message + "). Retrying.";
+  }
+}
+load();
+setInterval(load, 120000);
+</script>
+</body>
+</html>
