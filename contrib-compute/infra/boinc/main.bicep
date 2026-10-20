@@ -444,18 +444,21 @@ module shareCopyJob 'modules/bridge-job.bicep' = if (withApp && projectShare == 
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     timeoutSeconds: 21600
-    cpu: '2'
-    memory: '4Gi'
+    // Walking 345,000 files over the SMB mount is the whole cost of a pass (the second live
+    // pass took 156 minutes to send 28 files); more scanners and cores shorten it.
+    cpu: '4'
+    memory: '8Gi'
     mountOptions: 'uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict'
     extraEnv: [
       { name: 'AZCOPY_URL', value: azcopyUrl }
       { name: 'AZCOPY_SHA256', value: azcopySha256 }
       { name: 'SHARE_COPY_DEST', value: 'https://${names.filesV2}.file.${environment().suffixes.storage}/project' }
+      { name: 'AZCOPY_CONCURRENT_SCAN', value: '32' }
     ]
     command: [
       '/bin/bash'
       '-c'
-      'set -euo pipefail; cd /tmp; curl -fsSL -o azcopy.tgz "$AZCOPY_URL"; echo "$AZCOPY_SHA256  azcopy.tgz" | sha256sum -c -; tar -xzf azcopy.tgz --strip-components=1; export AZCOPY_AUTO_LOGIN_TYPE=MSI AZCOPY_MSI_CLIENT_ID="$AZURE_CLIENT_ID" AZCOPY_LOG_LOCATION=/tmp/azcopy-logs AZCOPY_JOB_PLAN_LOCATION=/tmp/azcopy-plans; ./azcopy --version; ./azcopy sync /project "$SHARE_COPY_DEST" --recursive --delete-destination=true --output-level=essential; ./azcopy jobs list | head -20'
+      'set -euo pipefail; cd /tmp; curl -fsSL -o azcopy.tgz "$AZCOPY_URL"; echo "$AZCOPY_SHA256  azcopy.tgz" | sha256sum -c -; tar -xzf azcopy.tgz --strip-components=1; export AZCOPY_AUTO_LOGIN_TYPE=MSI AZCOPY_MSI_CLIENT_ID="$AZURE_CLIENT_ID" AZCOPY_LOG_LOCATION=/tmp/azcopy-logs AZCOPY_JOB_PLAN_LOCATION=/tmp/azcopy-plans; ./azcopy --version; rc=0; ./azcopy sync /project "$SHARE_COPY_DEST" --recursive --delete-destination=true --output-level=essential || rc=$?; jid=$(./azcopy jobs list | sed -n "s/^JobId: //p" | head -1); [ -z "$jid" ] || ./azcopy jobs show "$jid" --with-status=Failed | head -60; exit "$rc"'
     ]
   }
 }
