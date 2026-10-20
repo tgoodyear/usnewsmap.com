@@ -376,6 +376,24 @@ enum Command {
         #[arg(long, requires = "every")]
         offset: Option<usize>,
     },
+    /// Copy objects from one store to another: the lake's `reference` into
+    /// the local mirror an on-prem release uses (docs/operations.md, "Full
+    /// rebuild on-prem"). Only the named prefixes and files; one already
+    /// there with other bytes stops it.
+    MirrorStore {
+        /// The source store (a Blob container URL or a directory).
+        #[arg(long)]
+        from: String,
+        /// The destination store.
+        #[arg(long)]
+        to: String,
+        /// Directory-like prefixes to copy everything under.
+        #[arg(long, value_delimiter = ',')]
+        prefixes: Vec<String>,
+        /// Single objects to copy.
+        #[arg(long, value_delimiter = ',')]
+        files: Vec<String>,
+    },
     /// Copy a release staged on an on-prem host into Azure: each index of the
     /// local `index-storage-pending.json` into the index account, then the
     /// version's reference snapshot and the pending pointer into the lake
@@ -1223,6 +1241,7 @@ impl Command {
             Command::Prune { .. } => "prune",
             Command::SeedState { .. } => "seed-state",
             Command::PublishStaged { .. } => "publish-staged",
+            Command::MirrorStore { .. } => "mirror-store",
             Command::OcrDamage { .. } => "ocr-damage",
             Command::OcrPrefetchManifest { .. } => "ocr-prefetch-manifest",
             Command::OcrSync { .. } => "ocr-sync",
@@ -1259,6 +1278,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::Prune { .. }
         | Command::SeedState { .. }
         | Command::PublishStaged { .. }
+        | Command::MirrorStore { .. }
         | Command::OcrDamage { .. }
         | Command::OcrPrefetchManifest { .. }
         | Command::OcrSync { .. }
@@ -1439,6 +1459,21 @@ async fn command(
                 index_root_uri: index_root_uri.clone(),
                 dry_run: *dry_run,
             })
+            .await?;
+            Ok(None)
+        }
+        Command::MirrorStore {
+            from,
+            to,
+            prefixes,
+            files,
+        } => {
+            usnm_ingest::onprem::mirror(
+                usnm_store::open(from)?.as_ref(),
+                usnm_store::open(to)?.as_ref(),
+                prefixes,
+                files,
+            )
             .await?;
             Ok(None)
         }

@@ -235,6 +235,50 @@ pub fn metastore_splits(meta: &Value) -> anyhow::Result<Vec<Split>> {
         .collect()
 }
 
+/// What [`mirror`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Mirrored {
+    pub copied: usize,
+    pub same: usize,
+    pub bytes: u64,
+}
+
+/// Copy the objects under each of `prefixes`, and each of `files`, from
+/// `from` to `to`: the on-prem release's local mirror of the lake's
+/// `reference`. One already in `to` with the same bytes is left; one with
+/// other bytes stops the copy (mirror into an empty directory).
+pub async fn mirror(
+    from: &dyn ObjectStore,
+    to: &dyn ObjectStore,
+    prefixes: &[String],
+    files: &[String],
+) -> anyhow::Result<Mirrored> {
+    let mut paths: Vec<String> = files.to_vec();
+    for p in prefixes {
+        let listed = from.list(p).await?;
+        ensure!(!listed.is_empty(), "nothing under {p}/");
+        paths.extend(listed);
+    }
+    let mut out = Mirrored::default();
+    for path in paths {
+        let body = from
+            .get(&path)
+            .await?
+            .with_context(|| format!("{path} isn't there"))?;
+        match to.get(&path).await? {
+            Some(there) if there == body => out.same += 1,
+            Some(_) => bail!("{path} is there already with other bytes"),
+            None => {
+                out.bytes += body.len() as u64;
+                to.put_new(&path, body, content_type(&path)).await?;
+                out.copied += 1;
+            }
+        }
+    }
+    tracing::info!(mirrored = ?out, "store mirrored");
+    Ok(out)
+}
+
 /// Copy a staged release from the host to Azure (module docs). Refuses
 /// unless the lake still serves the version the release took as its
 /// rollback, every index's splits are all published, and nothing in Azure
@@ -787,5 +831,39 @@ mod tests {
             .unwrap();
         let e = publish_staged(&staged(&f, false)).await.unwrap_err();
         assert!(format!("{e:#}").contains("not 20000000"), "{e:#}");
+    }
+
+    #[tokio::test]
+    async fn a_mirror_copies_the_named_prefixes_and_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = LocalStore::new(tmp.path().join("from"));
+        let to = LocalStore::new(tmp.path().join("to"));
+        for p in [
+            "current.json",
+            "catalog/titles.json",
+            "v1/titles.json",
+            "v0/titles.json",
+        ] {
+            from.put(p, p.as_bytes().to_vec(), "application/json")
+                .await
+                .unwrap();
+        }
+        let m = mirror(
+            &from,
+            &to,
+            &["catalog".into(), "v1".into()],
+            &["current.json".into()],
+        )
+        .await
+        .unwrap();
+        assert_eq!((m.copied, m.same), (3, 0));
+        assert!(to.get("v0/titles.json").await.unwrap().is_none());
+        let again = mirror(&from, &to, &["v1".into()], &[]).await.unwrap();
+        assert_eq!((again.copied, again.same), (0, 1));
+        to.put("v1/titles.json", b"other".to_vec(), "application/json")
+            .await
+            .unwrap();
+        assert!(mirror(&from, &to, &["v1".into()], &[]).await.is_err());
+        assert!(mirror(&from, &to, &["nothing".into()], &[]).await.is_err());
     }
 }
