@@ -209,6 +209,7 @@ var nameTypes = {
   searcherApp: 'ca'
   serialSetJob: 'caj'
   serialSetWriterRole: 'role'
+  releaseWriterRole: 'role'
   siteUnavailableAlert: 'alert'
   siteWebtest: 'webtest'
   stateEndpoint: 'pep'
@@ -316,6 +317,7 @@ type Names = {
   searcherApp: string
   serialSetJob: string
   serialSetWriterRole: string
+  releaseWriterRole: string
   siteUnavailableAlert: string
   siteWebtest: string
   stateEndpoint: string
@@ -412,6 +414,7 @@ func names(env string, sfx string, pinned bool) Names => {
   searcherApp: usnmName('search', 'ca', env)
   serialSetJob: usnmName('sset', 'caj', env)
   serialSetWriterRole: usnmName('sset-writer', 'role', env)
+  releaseWriterRole: usnmName('release-writer', 'role', env)
   siteUnavailableAlert: usnmName('site-unavailable', 'alert', env)
   siteWebtest: usnmName('site', 'webtest', env)
   stateEndpoint: pinned ? 'pe-usnm-cosmos' : usnmName('state-sql', 'pep', env)

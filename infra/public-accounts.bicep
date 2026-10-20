@@ -1,5 +1,3 @@
-// The separate Quickwit account (USNM_INDEX_STORAGE) is private-only and
-// deliberately never appears in publicAccountIds: the deny policy covers it.
 // The resources the public-network policy (usnm-audit-data-public-network,
 // guardrails.bicep) lets have public network access in one environment:
 // its publicAccountIds. main.bicep (the stack) and policy-exemptions.bicep
@@ -10,12 +8,16 @@
 //   the OCR nodes' Key Vault, whose firewalls allow only the node IPs (ADR-0015);
 // - with lakeOpen, the data lake, whose firewall allows only the node IPs
 //   while the on-prem Serial Set runner writes to it (ADR-0008, amendment
-//   of October 2026).
+//   of October 2026);
+// - with indexOpen, the separate index account, whose firewall allows only
+//   the node IPs while an on-prem release copies a staged version into it
+//   (onPremRelease, ADR-0021 amendment of October 2026). Otherwise it stays
+//   private-only, as before.
 
 import { Names } from 'naming.bicep'
 
 @export()
-func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bool) array =>
+func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bool, indexOpen bool) array =>
   concat(
     ocrNodes
       ? [
@@ -24,7 +26,8 @@ func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bo
           resourceId(subscriptionId, n.rg, 'Microsoft.KeyVault/vaults', n.ocrVault)
         ]
       : [],
-    lakeOpen ? [resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.dataLake)] : []
+    lakeOpen ? [resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.dataLake)] : [],
+    indexOpen ? [resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.indexAccount)] : []
   )
 
 // The data lake opens to the node IPs only for an on-prem runner that writes to it
@@ -32,6 +35,13 @@ func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bo
 @export()
 func lakeOpen(onPremLakeRunner bool, ocrNodeIps string) bool =>
   onPremLakeRunner && !empty(nodeIpList(ocrNodeIps))
+
+// The index account opens to the node IPs only while an on-prem release
+// publishes (onPremRelease), and only when there is an index account and
+// IPs to allow.
+@export()
+func indexOpen(onPremRelease bool, indexStorage bool, ocrNodeIps string) bool =>
+  onPremRelease && indexStorage && !empty(nodeIpList(ocrNodeIps))
 
 // USNM_OCR_NODE_IPS as a list: comma separated, blanks dropped.
 @export()

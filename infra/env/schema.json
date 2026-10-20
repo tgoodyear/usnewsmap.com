@@ -316,6 +316,15 @@
       "description": "Private: in the settings store, under the environment's label. Entra principals given access to Document Intelligence.",
       "not": {}
     },
+    "USNM_ONPREM_RELEASE": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_ONPREM_RELEASE_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The on-prem release container's Arc machine identity's object id (usnm-release-arcs-<env>).",
+      "not": {}
+    },
     "USNM_PAGE_LANGUAGE": {
       "x-usnm-visibility": "public",
       "type": "boolean"
