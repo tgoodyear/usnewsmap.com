@@ -21,6 +21,8 @@ param registryServer string
 param keyVaultName string
 param filesAccountName string
 param shareName string
+@description('The environment storage name for /project. It differs per account, so switching accounts changes the revision template and replaces running replicas: none keeps the old mount.')
+param projectStorageName string = 'project'
 param mysqlHost string
 param databaseName string
 param masterHost string
@@ -55,7 +57,7 @@ resource projectAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing 
 
 resource projectStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
   parent: env
-  name: 'project'
+  name: projectStorageName
   properties: {
     azureFile: {
       accountName: filesAccountName

@@ -137,6 +137,19 @@ resource copyWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (p
   }
 }
 
+// It lists and reads the old share over REST too: listing 345,000 files through the SMB mount
+// took most of every pass.
+resource copyReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (legacyShare && provisionedShare && !empty(copyWriterPrincipalId)) {
+  scope: files
+  name: guid(files.id, copyWriterPrincipalId, 'storage-file-data-privileged-reader')
+  properties: {
+    principalId: copyWriterPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b8eda974-7b85-4f76-af95-65846b26df6d')
+    description: 'The BOINC share copy job (#917): reads the old project share during the move.'
+  }
+}
+
 output filesAccountName string = legacyShare ? files.name : ''
 output shareName string = 'project'
 output provisionedAccountName string = provisionedShare ? v2.name : ''

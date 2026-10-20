@@ -101,10 +101,17 @@ domain_stage() {
   # No app yet (a base-only deploy): no environment, so no certificate to read. A failed
   # deployment leaves the stack with no outputs at all, so ask the app itself before deciding
   # there is none: stage 0 would unbind the live domain (#529, 2026-10-19).
-  [ -n "$(boinc_output appFqdn)" ] ||
-    [ -n "$(baz containerapp show --name "usnm-boinc-ca-$ENV_NAME" --resource-group "$BOINC_RG" \
-      --query properties.configuration.ingress.fqdn -o tsv 2> /dev/null)" ] ||
-    { echo 0; return; }
+  # Only a confirmed ResourceNotFound means no app; any other failed lookup stops the run.
+  if [ -z "$(boinc_output appFqdn)" ]; then
+    local out
+    if ! out=$(baz containerapp show --name "usnm-boinc-ca-$ENV_NAME" --resource-group "$BOINC_RG" \
+      --query properties.configuration.ingress.fqdn -o tsv 2>&1); then
+      grep -q ResourceNotFound <<< "$out" || die "could not look up usnm-boinc-ca-$ENV_NAME: $out"
+      echo 0
+      return
+    fi
+    [ -n "$out" ] || die "usnm-boinc-ca-$ENV_NAME exists but has no ingress fqdn"
+  fi
   # A failed read must stop the run: guessing a lower stage would unbind a working domain.
   state=$(baz containerapp env certificate list --name "usnm-boinc-cae-$ENV_NAME" --resource-group "$BOINC_RG" \
     --managed-certificates-only --query "[?name=='$CERT_NAME'].properties.provisioningState | [0]" -o tsv) ||
@@ -131,6 +138,26 @@ jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --ar
 }
 STAGE=$(domain_stage) || exit 1
 write_params "$STAGE"
+
+# Leaving the copy stage deletes the share copy job (deleteResources) and points /project at
+# the provisioned share: only after a final pass, run with the server stopped, has succeeded.
+# Its latest execution must have succeeded and ended within the hour, and none may be running.
+PROJECT_SHARE=$(jq -r '.projectShare // "standard"' "$BOINC_SETTINGS")
+if [[ $PROJECT_SHARE == provisioned* ]]; then
+  copy_job="usnm-boinc-sharecopy-caj-$ENV_NAME"
+  if out=$(baz containerapp job show --name "$copy_job" --resource-group "$BOINC_RG" --query name -o tsv 2>&1); then
+    execs=$(baz containerapp job execution list --name "$copy_job" --resource-group "$BOINC_RG" \
+      --query "sort_by([].{s:properties.status,t:properties.startTime,e:properties.endTime}, &t)" -o json) ||
+      die "could not list the executions of $copy_job"
+    jq -e 'all(.s != "Running" and .s != "Processing")' <<< "$execs" > /dev/null ||
+      die "$copy_job is still running: wait for it before leaving the copy stage"
+    jq -e 'length > 0 and (last | .s == "Succeeded" and .e != null
+      and (now - (.e | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601)) < 3600)' <<< "$execs" > /dev/null ||
+      die "the latest $copy_job execution did not succeed within the last hour: run the final pass (docs/boinc.md, \"Moving the project share\") first"
+  elif ! grep -q ResourceNotFound <<< "$out"; then
+    die "could not look up $copy_job: $out"
+  fi
+fi
 
 # The images must be in the shared registry: the app and the jobs pull with their identities,
 # which this stack gives AcrPull there only.

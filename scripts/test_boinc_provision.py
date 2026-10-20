@@ -479,18 +479,32 @@ class ProductionReconciliation(unittest.TestCase):
         self.assertIn("legacyShare: projectShare != 'provisioned-final'", source)
         self.assertIn("provisionedShare: projectShare != 'standard'", source)
         self.assertIn("var projectOnV2 = projectShare == 'provisioned' || projectShare == 'provisioned-final'", source)
-        # The copy stage fills the new share with AzCopy, pinned by sha256, as its own identity
-        # with the privileged Files role on the new account only; the old share is mounted
-        # without mfsymlinks, so symlinks copy as the files that store them.
+        # The copy stage fills the new share with AzCopy, pinned by sha256, as its own identity,
+        # REST to REST (listing the old share over SMB took most of every pass): privileged
+        # read on the old account, privileged write on the new one, nothing wider.
         job = source.split("module shareCopyJob ")[1].split("module secretsJob ")[0]
         self.assertIn("if (withApp && projectShare == 'copy')", job)
         self.assertIn('sha256sum -c -', job)
-        self.assertIn("azcopy sync /project", job)
-        self.assertNotIn("mfsymlinks", job.split("mountOptions:")[1].split("\n")[0])
-        self.assertIn("69566ab7-960f-475b-8e7c-b3118f30c6bd", storage)
+        self.assertIn('azcopy sync "$SHARE_COPY_SRC" "$SHARE_COPY_DEST"', job)
+        self.assertIn("'SHARE_COPY_SRC', value: 'https://${names.files}.file.", job)
+        self.assertIn("69566ab7-960f-475b-8e7c-b3118f30c6bd", storage.split("resource copyWriter")[1].split("resource ")[0])
         self.assertIn("scope: v2", storage.split("resource copyWriter")[1])
+        self.assertIn("b8eda974-7b85-4f76-af95-65846b26df6d", storage.split("resource copyReader")[1].split("output ")[0])
+        self.assertIn("scope: files", storage.split("resource copyReader")[1])
         self.assertNotIn("SAS", job)
-        self.assertNotIn("project-v2", app)
+        # Each account has its own environment storage name, so switching (or rolling back)
+        # changes the revision template and no running replica keeps the old mount.
+        self.assertIn("name: projectStorageName", app)
+        self.assertIn("projectStorageName: projectOnV2 ? 'project-v2' : 'project'", source)
+        # Leaving the copy stage needs a final copy that succeeded, and none running.
+        provision = (ROOT / "scripts/provision-boinc.sh").read_text()
+        gate = provision.split('if [[ $PROJECT_SHARE == provisioned* ]]')[1].split("\nfi\n")[0]
+        self.assertIn("is still running", gate)
+        self.assertIn('.s == "Succeeded"', gate)
+        self.assertIn("grep -q ResourceNotFound", gate)
+        # Uploads and scheduler requests stop during the final copy; Apache stays up.
+        runbook = (ROOT / "docs/boinc.md").read_text().split("## Moving the project share")[1].split("\n## ")[0]
+        self.assertIn("touch stop_sched stop_upload", runbook)
         settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/schema.json").read_text())
         self.assertEqual(settings["properties"]["projectShare"]["enum"],
                          ["standard", "copy", "provisioned", "provisioned-final"])

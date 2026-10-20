@@ -253,6 +253,8 @@ module app 'modules/app.bicep' = if (withApp) {
     registryServer: registryServer
     keyVaultName: vault.outputs.name
     filesAccountName: projectOnV2 ? names.filesV2 : names.files
+    // A new storage name on each switch (and back, on rollback) forces a new revision.
+    projectStorageName: projectOnV2 ? 'project-v2' : 'project'
     shareName: storage.outputs.shareName
     mysqlHost: mysql.outputs.host
     databaseName: mysql.outputs.databaseName
@@ -420,9 +422,9 @@ module qualityWaveJob 'modules/bridge-job.bicep' = if (withApp && !empty(quality
 }
 
 // The share copy job (projectShare copy; docs/boinc.md, "Moving the project share"): AzCopy,
-// pinned by version and sha256, syncs the old share (mounted at /project, without mfsymlinks,
-// so BOINC's symlinks copy as the files that store them) to the provisioned share over its
-// private endpoint, as the job's identity. Run it while live, then once more with the daemons
+// pinned by version and sha256, syncs the old share to the provisioned one, both over REST
+// through their private endpoints, as the job's identity. Over REST, BOINC's symlinks are the
+// mfsymlinks files that store them, so they copy byte for byte. Run it while live, then once more with the daemons
 // stopped; sync sends only what changed and deletes what's gone.
 var azcopyUrl = 'https://github.com/Azure/azure-storage-azcopy/releases/download/v10.32.8/azcopy_linux_amd64_10.32.8.tar.gz'
 var azcopySha256 = 'a95277dbc265912cefdddbaf251aa99ec648cb18ba657e8788066357a9022dc3'
@@ -444,21 +446,22 @@ module shareCopyJob 'modules/bridge-job.bicep' = if (withApp && projectShare == 
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     timeoutSeconds: 21600
-    // Walking 345,000 files over the SMB mount is the whole cost of a pass (the second live
-    // pass took 156 minutes to send 28 files); more scanners and cores shorten it.
+    // Walking 345,000 files over the SMB mount was the whole cost of a pass (156 minutes to
+    // send 28 files, 107 with 4 cores and 32 scanners); the source is now listed over REST.
     cpu: '4'
     memory: '8Gi'
     mountOptions: 'uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict'
     extraEnv: [
       { name: 'AZCOPY_URL', value: azcopyUrl }
       { name: 'AZCOPY_SHA256', value: azcopySha256 }
+      { name: 'SHARE_COPY_SRC', value: 'https://${names.files}.file.${environment().suffixes.storage}/project' }
       { name: 'SHARE_COPY_DEST', value: 'https://${names.filesV2}.file.${environment().suffixes.storage}/project' }
       { name: 'AZCOPY_CONCURRENT_SCAN', value: '32' }
     ]
     command: [
       '/bin/bash'
       '-c'
-      'set -euo pipefail; cd /tmp; curl -fsSL -o azcopy.tgz "$AZCOPY_URL"; echo "$AZCOPY_SHA256  azcopy.tgz" | sha256sum -c -; tar -xzf azcopy.tgz --strip-components=1; export AZCOPY_AUTO_LOGIN_TYPE=MSI AZCOPY_MSI_CLIENT_ID="$AZURE_CLIENT_ID" AZCOPY_LOG_LOCATION=/tmp/azcopy-logs AZCOPY_JOB_PLAN_LOCATION=/tmp/azcopy-plans; ./azcopy --version; rc=0; ./azcopy sync /project "$SHARE_COPY_DEST" --recursive --delete-destination=true --output-level=essential || rc=$?; jid=$(./azcopy jobs list | sed -n "s/^JobId: //p" | head -1); [ -z "$jid" ] || ./azcopy jobs show "$jid" --with-status=Failed | head -60; exit "$rc"'
+      'set -euo pipefail; cd /tmp; curl -fsSL -o azcopy.tgz "$AZCOPY_URL"; echo "$AZCOPY_SHA256  azcopy.tgz" | sha256sum -c -; tar -xzf azcopy.tgz --strip-components=1; export AZCOPY_AUTO_LOGIN_TYPE=MSI AZCOPY_MSI_CLIENT_ID="$AZURE_CLIENT_ID" AZCOPY_LOG_LOCATION=/tmp/azcopy-logs AZCOPY_JOB_PLAN_LOCATION=/tmp/azcopy-plans; ./azcopy --version; rc=0; ./azcopy sync "$SHARE_COPY_SRC" "$SHARE_COPY_DEST" --recursive --delete-destination=true --output-level=essential || rc=$?; jid=$(./azcopy jobs list | sed -n "s/^JobId: //p" | head -1); [ -z "$jid" ] || ./azcopy jobs show "$jid" --with-status=Failed | head -60; exit "$rc"'
     ]
   }
 }

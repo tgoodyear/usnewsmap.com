@@ -961,21 +961,24 @@ The project directory (`/project`: uploads, downloads, staging, results) is one 
 
 `projectShare` in `contrib-compute/infra/boinc/env/<env>.json` moves the share in stages, each a pull request and a `scripts/provision-boinc.sh` run (claimed on #529):
 
-1. **`copy`.** Creates the provisioned account, share and private endpoint, plus the share copy job `usnm-boinc-sharecopy-caj-<env>` and its own identity. That identity has Storage File Data Privileged Contributor on the new account only, and pull rights on the registry.
-   - The job runs AzCopy (pinned by version and SHA-256 in `main.bicep`): `azcopy sync /project https://<new account>.file.core.windows.net/project --delete-destination=true`, as the job's identity, over the private endpoint.
-   - It mounts the old share without `mfsymlinks`, so BOINC's symlinks copy byte for byte as the small files that store them, and the new share's normal mount reads them as symlinks again.
-   - Start it (`az containerapp job start`) while BOINC runs; repeat runs send only what changed.
+1. **`copy`.** Creates the provisioned account, share and private endpoint, plus the share copy job `usnm-boinc-sharecopy-caj-<env>` and its own identity. That identity has Storage File Data Privileged Reader on the old account, Storage File Data Privileged Contributor on the new one, and pull rights on the registry.
+   - The job runs AzCopy (pinned by version and SHA-256 in `main.bicep`): `azcopy sync https://<old account>.file.core.windows.net/project https://<new account>.file.core.windows.net/project --delete-destination=true`, as the job's identity, both over their private endpoints.
+   - Over REST, BOINC's symlinks are the small `mfsymlinks` files that store them, so they copy byte for byte, and the new share's normal mount reads them as symlinks again. Listing the old share over the SMB mount instead took 107 to 156 minutes a pass.
+   - Start it (`az containerapp job start`) while BOINC runs; repeat runs send only what changed. Files being written at that moment (logs, `run_state`, the web cache) fail and the execution shows Failed; that's expected while live.
    - The server isn't touched in this stage.
-2. **Cutover.** Stop new work so the tree is still:
-   - stop the BOINC daemons (`bin/stop` as `boincadm`);
-   - stop the quality wave job and the batch controller in CT 211;
-   - wait for running bridge executions.
+2. **Cutover.** Make the tree still:
+   - stop the quality wave job and the batch controller in CT 211, and wait for running bridge executions;
+   - as `boincadm` in `/project/usnmocr`: `bin/stop`, then `touch stop_sched stop_upload`. The scheduler then answers "temporarily shut down for maintenance" and the upload handler refuses uploads with a transient error that clients retry. Apache keeps running, so the liveness probe (`get_project_config.php`) stays healthy;
+   - wait a minute for requests already in flight to finish.
 
-   Then run the copy job once more and set **`provisioned`**: `/project` is the provisioned share for the server and every job. Start everything again, re-apply GPU admission, and relaunch the quality wave (`launch-corpus`).
+   Then start the copy job once more and wait for it to succeed: every file copies while nothing writes. Set **`provisioned`** and provision. `provision-boinc.sh` refuses this while a copy is running, or when the latest copy didn't succeed within the hour.
+   - The environment storage for `/project` is `project-v2` on the new account (`project` on the old one), so the change produces a new server revision and no replica keeps the old mount.
+   - Check that the new revision is the only one running and that `/project` on it is the new account, then, in `/project/usnmocr`, remove `stop_sched` and `stop_upload` (the copy carried them over), and `bin/start`.
+   - Start everything else again, re-apply GPU admission, and relaunch the quality wave (`launch-corpus`).
 
 3. **`provisioned-final`**, after a few days without trouble: the stack deletes the old account and its endpoint.
 
-To roll back before stage 3, set `standard` and provision: `/project` is the old share again. Anything written to the provisioned share after the cutover has to be copied back first.
+To roll back before stage 3, stop the server the same way (`bin/stop`, `stop_sched`, `stop_upload`), copy back what was written to the provisioned share after the cutover, set `standard` and provision: the storage name changes back to `project`, so again a new revision replaces the running one. Then remove the two files and `bin/start`.
 
 ## Allocation and recovery
 
