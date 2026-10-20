@@ -89,7 +89,13 @@ fn positions(text: &str, analyzer: Analyzer) -> Vec<Option<String>> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
         .map(|t| {
-            let w = atom(&fold(t, analyzer));
+            let folded = fold(t, analyzer);
+            // From V2 a folded word has no whitespace: no second copy.
+            let w = if folded.contains(char::is_whitespace) {
+                atom(&folded)
+            } else {
+                folded
+            };
             (!w.is_empty() && w.chars().count() <= MAX_TOKEN_CHARS).then_some(w)
         })
         .collect()
@@ -98,8 +104,17 @@ fn positions(text: &str, analyzer: Analyzer) -> Vec<Option<String>> {
 /// The `text_cg` field for a page's text: its tokens joined by spaces (the
 /// field's tokenizer is `whitespace`), with the words folded by `analyzer`.
 pub fn index_text(text: &str, analyzer: Analyzer) -> String {
+    pairs_of(&positions(text, analyzer), text.len())
+}
+
+/// [`index_words`] and [`index_text`] of `text`, its words folded once.
+pub fn index_both(text: &str, analyzer: Analyzer) -> (String, String) {
     let words = positions(text, analyzer);
-    let mut out = String::with_capacity(text.len() + text.len() / 8);
+    (words_of(&words, text.len()), pairs_of(&words, text.len()))
+}
+
+fn pairs_of(words: &[Option<String>], len: usize) -> String {
+    let mut out = String::with_capacity(len + len / 8);
     for (i, w) in words.iter().enumerate() {
         if i > 0 {
             out.push(' ');
@@ -124,8 +139,11 @@ pub fn index_text(text: &str, analyzer: Analyzer) -> String {
 /// them, but each word on its own, with [`GAP`] where the analyzer drops
 /// one. Folded by `analyzer`.
 pub fn index_words(text: &str, analyzer: Analyzer) -> String {
-    let words = positions(text, analyzer);
-    let mut out = String::with_capacity(text.len());
+    words_of(&positions(text, analyzer), text.len())
+}
+
+fn words_of(words: &[Option<String>], len: usize) -> String {
+    let mut out = String::with_capacity(len);
     for (i, w) in words.iter().enumerate() {
         if i > 0 {
             out.push(' ');
@@ -335,6 +353,24 @@ mod tests {
                 }
             }
             assert!(mapped > 500, "only {mapped} phrases were mapped");
+        }
+    }
+
+    #[test]
+    fn index_both_is_index_words_and_index_text() {
+        for a in [Analyzer::V1, Analyzer::V2] {
+            for t in [
+                "Upon a Cross of Gold, the end.",
+                "the of and ½ Straße ﷺ L·L  tab\there",
+                "",
+                " -- ",
+            ] {
+                assert_eq!(
+                    index_both(t, a),
+                    (index_words(t, a), index_text(t, a)),
+                    "{t:?}"
+                );
+            }
         }
     }
 }

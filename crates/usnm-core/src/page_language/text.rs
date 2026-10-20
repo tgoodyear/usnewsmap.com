@@ -333,8 +333,9 @@ pub fn text_words(text: &str) -> TextWords {
     // lru_cache does in Python.
     const CACHED: usize = 1 << 18;
     thread_local! {
-        static CACHE: std::cell::RefCell<std::collections::HashMap<String, TokenInfo>> =
-            std::cell::RefCell::new(std::collections::HashMap::new());
+        // A lookup cache, never iterated: a fast hasher for short keys.
+        static CACHE: std::cell::RefCell<rustc_hash::FxHashMap<String, TokenInfo>> =
+            std::cell::RefCell::new(rustc_hash::FxHashMap::default());
     }
     let mut out = TextWords::default();
     for line in text.lines() {
