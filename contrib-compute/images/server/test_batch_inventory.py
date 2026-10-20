@@ -81,6 +81,45 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inventory.inventory(self.root, self.root / "missing", [1, 2], "b" * 32)
 
+    def test_other_apps_nested_dirs_and_symlinks_as_with_rglob(self):
+        # #932: the scandir walk finds a job's spool in a nested directory, ignores other apps'
+        # files and unknown jobs, and neither follows nor yields symlinks.
+        nested = self.results / "0" / "deeper"
+        nested.mkdir(parents=True)
+        for suffix in ("__file_result.json", "__file_text.txt", "__file_layout.xml"):
+            (nested / ("usnm_" + self.job + suffix)).write_text("ok")
+        (self.results / "0" / ("usnm_quality_" + "c" * 64 + "_0")).write_text("other app")
+        (self.results / "0" / ("usnm_" + "d" * 64 + "_error")).write_text("unknown job")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / ("usnm_" + self.job + "_error")).write_text("outside")
+        (self.results / "link").symlink_to(outside, target_is_directory=True)
+        (self.spool / ("usnm_" + self.job + "_error")).symlink_to(outside / ("usnm_" + self.job + "_error"))
+        self.assertEqual(self.payload()["jobs"][self.job]["spool"], str(nested))
+
+    def test_every_entry_counts_towards_the_file_limit(self):
+        for i in range(3):
+            (self.spool / f"usnm_quality_{i}").write_text("other app")
+        with patch.object(inventory, "MAX_FILES", 4):  # batch1 and its 3 files
+            self.payload()
+        with patch.object(inventory, "MAX_FILES", 3), self.assertRaisesRegex(ValueError, "spool limit"):
+            self.payload()
+
+    def test_non_matching_files_are_never_statted(self):
+        # The walk must not stat entries it doesn't keep: that per-file stat over SMB was the cost.
+        for i in range(50):
+            (self.spool / f"usnm_quality_{i}").write_text("other app")
+        calls = []
+        real = Path.stat
+
+        def counting(path, *args, **kwargs):
+            calls.append(path.name)
+            return real(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", counting):
+            self.payload()
+        self.assertFalse([name for name in calls if name.startswith("usnm_quality_")])
+
     def test_query_and_bridge_integration_are_read_only(self):
         bridge = Path(__file__).with_name("bridge-job.sh").read_text()
         self.assertIn('if [ "$step" = batch-inventory ]; then', bridge)
