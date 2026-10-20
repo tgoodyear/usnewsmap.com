@@ -58,9 +58,9 @@ serving() { jq -r .index_version "$RUN/reference/current.json"; }
 case "$STEP" in
   mirror)
     [ ! -e "$RUN/reference" ] || die "$RUN/reference exists: mirror into a new run directory"
-    "$INGEST" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+    "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
       mirror-store --from "$LAKE_URL/reference" --to "$RUN/reference" --files current.json
-    "$INGEST" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+    "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
       mirror-store --from "$LAKE_URL/reference" --to "$RUN/reference" --prefixes "catalog,$(serving)"
     ;;
   seed)
