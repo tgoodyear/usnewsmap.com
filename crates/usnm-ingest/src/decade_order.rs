@@ -272,8 +272,9 @@ async fn send_files(
     };
     while let Some(full) = rx.recv().await {
         send_file(&full, &shared, &mut sender).await?;
+        sender.sender.end_file().await?;
     }
-    Ok(sender.sender.into_unsent())
+    sender.sender.into_unsent().await
 }
 
 /// The background sender, stopping once the writer lock is lost.

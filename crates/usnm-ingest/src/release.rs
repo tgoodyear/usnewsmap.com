@@ -1712,7 +1712,7 @@ impl Release {
                 Some(DecadeOrder::new(
                     &work,
                     layout.split_target(),
-                    sink.line_sender(),
+                    sink.line_sender().await?,
                     Some(lease.lost_flag()),
                 )?)
             }
