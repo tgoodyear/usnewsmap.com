@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use futures::stream::{self, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::field::Empty;
@@ -395,6 +396,8 @@ struct PublishedPointer {
 }
 
 /// How long the writer lock lasts without renewal, and how often it's renewed.
+/// Curated parts of a batch downloaded ahead of the one being read.
+const CURATED_PREFETCH: usize = 4;
 const LEASE_TTL: Duration = Duration::minutes(30);
 const LEASE_RENEW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -1773,13 +1776,21 @@ impl Release {
                 }
                 None => HashMap::new(),
             };
-            for path in &b.curated.parts {
+            // The next parts download while this one is read and sent; they
+            // are taken in order, as before.
+            let curated = self.curated.as_ref();
+            let mut fetched = stream::iter(&b.curated.parts)
+                .map(|path| async move {
+                    let bytes = curated
+                        .get(path)
+                        .await?
+                        .with_context(|| format!("curated part `{path}` is missing"))?;
+                    Ok::<_, anyhow::Error>((path, bytes))
+                })
+                .buffered(CURATED_PREFETCH);
+            while let Some(fetched_part) = fetched.next().await {
                 lease.check()?;
-                let bytes = self
-                    .curated
-                    .get(path)
-                    .await?
-                    .with_context(|| format!("curated part `{path}` is missing"))?;
+                let (path, bytes) = fetched_part?;
                 let mut part_docs = Vec::new();
                 let (mut with_as, mut only_as, mut without_locs) = (0u64, 0u64, 0u64);
                 read_part(bytes.into(), true, |row| {
