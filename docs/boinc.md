@@ -968,18 +968,18 @@ The project directory (`/project`: uploads, downloads, staging, results) is one 
    - The server isn't touched in this stage.
 2. **Cutover.** Make the tree still:
    - stop the quality wave job and the batch controller in CT 211, and wait for running bridge executions;
-   - as `boincadm` in `/project/usnmocr`: `bin/stop`, then `touch stop_sched stop_upload`. The scheduler then answers "temporarily shut down for maintenance" and the upload handler refuses uploads with a transient error that clients retry. Apache keeps running, so the liveness probe (`get_project_config.php`) stays healthy;
+   - as `boincadm` in `/project/usnmocr`: `touch stop_maintenance`, `bin/stop`, then `touch stop_sched stop_upload`. `stop_maintenance` keeps the server image's startup wrapper (`boinc-daemons.sh`) from running `bin/start`, which would reopen the scheduler on the new revision before it is checked. The scheduler then answers "temporarily shut down for maintenance" and the upload handler refuses uploads with a transient error that clients retry. Apache keeps running, so the liveness probe (`get_project_config.php`) stays healthy;
    - wait a minute for requests already in flight to finish.
 
    Then start the copy job once more and wait for it to succeed: every file copies while nothing writes. Set **`provisioned`** and provision with `BOINC_MAINTENANCE=1`, which lets the final health check accept the closed scheduler. `provision-boinc.sh` refuses this while a copy is running, or when the latest copy didn't succeed within two hours. After reading a pass's failed transfers, `BOINC_COPY_ACCEPTED=<execution name>` accepts that pass when the only failures are files the server regenerates on start (`run_state_*.xml`, `html/cache`).
    - The environment storage for `/project` is `project-v2` on the new account (`project` on the old one), so the change produces a new server revision and no replica keeps the old mount.
-   - The new revision runs `bin/start` as it boots, which clears `stop_sched` and starts the daemons; `stop_upload` stays. Check that it is the only revision running and that `/project` on it is the new account (`grep " /project " /proc/mounts`), then remove `/project/usnmocr/stop_upload`. In the October 2026 cutover the outage was 35 minutes, 24 of them the final copy.
+   - Check that the new revision is the only one running and that `/project` on it is the new account (`grep " /project " /proc/mounts`). Then, in `/project/usnmocr`, remove `stop_maintenance`, `stop_sched` and `stop_upload`, and `bin/start` as `boincadm` (the wrapper also starts it within a minute). A server image older than the `stop_maintenance` check runs `bin/start` as it boots, so it reopens the scheduler on its own; the October 2026 cutover ran on such an image, and only `stop_upload` was left to remove. In the October 2026 cutover the outage was 35 minutes, 24 of them the final copy.
    - Run `provision-boinc.sh` once more without `BOINC_MAINTENANCE`: the strict health check now passes, and nothing else changes.
    - Start everything else again, re-apply GPU admission, and relaunch the quality wave (`launch-corpus`).
 
 3. **`provisioned-final`**, after a few days without trouble: the stack deletes the old account and its endpoint.
 
-To roll back before stage 3, stop the server the same way (`bin/stop`, `stop_sched`, `stop_upload`), copy back what was written to the provisioned share after the cutover, set `standard` and provision: the storage name changes back to `project`, so again a new revision replaces the running one. Then remove the two files and `bin/start`.
+To roll back before stage 3, stop the server the same way (`stop_maintenance`, `bin/stop`, `stop_sched`, `stop_upload`), copy back what was written to the provisioned share after the cutover, set `standard` and provision: the storage name changes back to `project`, so again a new revision replaces the running one. Then remove the three files and `bin/start`.
 
 ## Allocation and recovery
 
