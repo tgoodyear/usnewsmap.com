@@ -21,8 +21,8 @@ param registryServer string
 param keyVaultName string
 param filesAccountName string
 param shareName string
-@secure()
-param filesAccountKey string
+@description('The environment storage name for /project. It differs per account, so switching accounts changes the revision template and replaces running replicas: none keeps the old mount.')
+param projectStorageName string = 'project'
 param mysqlHost string
 param databaseName string
 param masterHost string
@@ -48,13 +48,20 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
+// The account's key is read here, inside this module, which deploys after the storage
+// module has made the account (the Container Apps mount takes the account key, ADR-0019 decision 5;
+// nothing outside the deployment sees it).
+resource projectAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: filesAccountName
+}
+
 resource projectStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
   parent: env
-  name: 'project'
+  name: projectStorageName
   properties: {
     azureFile: {
       accountName: filesAccountName
-      accountKey: filesAccountKey
+      accountKey: projectAccount.listKeys().keys[0].value
       shareName: shareName
       accessMode: 'ReadWrite'
     }

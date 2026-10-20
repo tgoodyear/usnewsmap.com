@@ -98,8 +98,20 @@ secrets_principal=$(principal_id "usnm-boinc-secrets-id-$ENV_NAME") || die "inva
 domain_stage() {
   local record=${MASTER_HOST%".$DNS_ZONE"} state names
   [ -n "$DNS_ZONE" ] && [ -n "$SERVER_IMAGE" ] || { echo 0; return; }
-  # No app in the stack yet (a base-only deploy): no environment, so no certificate to read.
-  [ -n "$(boinc_output appFqdn)" ] || { echo 0; return; }
+  # No app yet (a base-only deploy): no environment, so no certificate to read. A failed
+  # deployment leaves the stack with no outputs at all, so ask the app itself before deciding
+  # there is none: stage 0 would unbind the live domain (#529, 2026-10-19).
+  # Only a confirmed ResourceNotFound means no app; any other failed lookup stops the run.
+  if [ -z "$(boinc_output appFqdn)" ]; then
+    local out
+    if ! out=$(baz containerapp show --name "usnm-boinc-ca-$ENV_NAME" --resource-group "$BOINC_RG" \
+      --query properties.configuration.ingress.fqdn -o tsv 2>&1); then
+      grep -q ResourceNotFound <<< "$out" || die "could not look up usnm-boinc-ca-$ENV_NAME: $out"
+      echo 0
+      return
+    fi
+    [ -n "$out" ] || die "usnm-boinc-ca-$ENV_NAME exists but has no ingress fqdn"
+  fi
   # A failed read must stop the run: guessing a lower stage would unbind a working domain.
   state=$(baz containerapp env certificate list --name "usnm-boinc-cae-$ENV_NAME" --resource-group "$BOINC_RG" \
     --managed-certificates-only --query "[?name=='$CERT_NAME'].properties.provisioningState | [0]" -o tsv) ||
@@ -120,11 +132,37 @@ jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --ar
     runtimePrincipalId: {value: $runtime}, keyWriterPrincipalId: {value: $secrets},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
+    projectShare: {value: ($s | fromjson | .projectShare // "standard")},
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
   }}' > "$work/params.json"
 }
 STAGE=$(domain_stage) || exit 1
 write_params "$STAGE"
+
+# Leaving the copy stage deletes the share copy job (deleteResources) and points /project at
+# the provisioned share: only after a final pass, run with the server stopped, has succeeded.
+# Its latest execution must have succeeded within two hours (a failed one has no end time:
+# its start counts), and none may be running.
+PROJECT_SHARE=$(jq -r '.projectShare // "standard"' "$BOINC_SETTINGS")
+# The environment storage /project comes from (app.bicep): its name follows the account.
+if [[ $PROJECT_SHARE == provisioned* ]]; then PROJECT_STORAGE=project-v2; else PROJECT_STORAGE=project; fi
+if [[ $PROJECT_SHARE == provisioned* ]]; then
+  copy_job="usnm-boinc-sharecopy-caj-$ENV_NAME"
+  if out=$(baz containerapp job show --name "$copy_job" --resource-group "$BOINC_RG" --query name -o tsv 2>&1); then
+    execs=$(baz containerapp job execution list --name "$copy_job" --resource-group "$BOINC_RG" \
+      --query "sort_by([].{n:name,s:properties.status,t:properties.startTime,e:properties.endTime}, &t)" -o json) ||
+      die "could not list the executions of $copy_job"
+    jq -e 'all(.s != "Running" and .s != "Processing")' <<< "$execs" > /dev/null ||
+      die "$copy_job is still running: wait for it before leaving the copy stage"
+    # BOINC_COPY_ACCEPTED=<execution name>: the operator has read that pass's failed transfers
+    # and accepts them (files regenerated on start, such as run_state and the web cache).
+    jq -e --arg ok "${BOINC_COPY_ACCEPTED:-}" 'length > 0 and (last | (.s == "Succeeded" or ($ok != "" and .n == $ok))
+      and (now - ((.e // .t) | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601)) < 7200)' <<< "$execs" > /dev/null ||
+      die "the latest $copy_job execution did not succeed within the last two hours: run the final pass (docs/boinc.md, \"Moving the project share\") first"
+  elif ! grep -q ResourceNotFound <<< "$out"; then
+    die "could not look up $copy_job: $out"
+  fi
+fi
 
 # The images must be in the shared registry: the app and the jobs pull with their identities,
 # which this stack gives AcrPull there only.
@@ -171,7 +209,7 @@ bridge_job_template_matches() {
   jq -e --arg img "$BRIDGE_IMAGE" --arg master_host "$MASTER_HOST" \
     --arg kv "$expected_kv" --arg db_host "$expected_db_host" \
     --argjson cpu "$cpu" --arg memory "$memory" \
-    --argjson extra_env "$extra_env_json" '
+    --argjson extra_env "$extra_env_json" --arg storage "$PROJECT_STORAGE" '
     (.containers | length) == 1 and
     .containers[0].name == "bridge" and
     .containers[0].image == $img and
@@ -182,7 +220,7 @@ bridge_job_template_matches() {
     (.volumes | length) == 1 and
     .volumes[0].name == "project" and
     .volumes[0].storageType == "AzureFile" and
-    .volumes[0].storageName == "project" and
+    .volumes[0].storageName == $storage and
     .volumes[0].mountOptions == "mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict" and
     ((.containers[0].env // []) | all(((keys - ["name", "value"]) | length) == 0 and (.value | type == "string" and length > 0))) and
     (
@@ -359,16 +397,23 @@ fi
 curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
   --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$work/project.xml" ||
   die "the public BOINC project endpoint is not healthy"
-python3 - "$work/project.xml" "$PROJECT_URL" <<'PY'
+# BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
+# (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
+python3 - "$work/project.xml" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
 
 config = ET.parse(sys.argv[1]).getroot()
+sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
 if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
-        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") != "0"):
+        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
     raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
 PY
-echo "BOINC deployment ready: ${PROJECT_URL} (secrets, project, app registration and public health verified)"
+if [ "${BOINC_MAINTENANCE:-0}" = 1 ]; then
+  echo "BOINC deployment up in maintenance: ${PROJECT_URL} (scheduler may be closed); after resuming, check again without BOINC_MAINTENANCE"
+else
+  echo "BOINC deployment ready: ${PROJECT_URL} (secrets, project, app registration and public health verified)"
+fi
 workspace=$(baz monitor log-analytics workspace list --resource-group "$BOINC_RG" \
   --query '[0].customerId' -o tsv) || workspace=""
 if [ -z "$workspace" ]; then

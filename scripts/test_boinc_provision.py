@@ -43,10 +43,13 @@ case "$*" in
         echo bridge-existing-execution
       fi
     fi ;;
+  "containerapp job show"*"--name usnm-boinc-sharecopy-caj-"*)
+    [ "${STUB_SHARECOPY_PRESENT:-0}" = 1 ] || { echo "ERROR: (ResourceNotFound) not found" >&2; exit 1; }
+    echo usnm-boinc-sharecopy-caj-prod ;;
   "containerapp job show"*)
     extra_secret='{"name":"PRIVATE_SETTING","secretRef":"runtime-secret"},'
     [ "${STUB_BRIDGE_CLEAN_ENV:-0}" != 1 ] || extra_secret=""
-    storage_name=${STUB_DEPLOYED_STORAGE_NAME:-project}
+    storage_name=${STUB_DEPLOYED_STORAGE_NAME:-$STUB_PROJECT_STORAGE}
     mount_options=${STUB_DEPLOYED_MOUNT_OPTIONS:-mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict}
     if [[ "$*" == *"--name gold "* ]]; then
       echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"$storage_name\",\"mountOptions\":\"$mount_options\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_GOLD_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":1,\"memory\":\"2Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_GOLD_STEP:-gold-bundle}\"},{\"name\":\"GOLD_CAMPAIGN\",\"value\":\"v1-tess550\"},${extra_secret}{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}"
@@ -98,6 +101,10 @@ class Provision(unittest.TestCase):
         self.env = {
             **os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
             "STUB_LOG": str(self.log), "STUB_SUB": SUB,
+            # The storage name /project's jobs mount follows prod.json's projectShare stage.
+            "STUB_PROJECT_STORAGE": "project-v2" if json.loads(
+                (ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text()
+            ).get("projectShare", "standard").startswith("provisioned") else "project",
             "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
             "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
                            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
@@ -465,6 +472,58 @@ class ProductionReconciliation(unittest.TestCase):
             self.assertEqual(actual["server"], "new-server")
             self.assertEqual(actual["bridge"], "new-bridge")
             self.assertEqual(actual.get("web"), "new-bridge" if "web" in images else None)
+
+    def test_project_share_moves_to_provisioned_v2_in_stages(self):
+        source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()
+        storage = (ROOT / "contrib-compute/infra/boinc/modules/storage.bicep").read_text()
+        app = (ROOT / "contrib-compute/infra/boinc/modules/app.bicep").read_text()
+        # Provisioned v2 SSD: no per-operation billing; SMB for the same mount.
+        v2 = storage.split("resource v2 ")[1].split("resource v2Endpoint")[0]
+        self.assertIn("kind: 'FileStorage'", v2)
+        self.assertIn("sku: { name: 'PremiumV2_LRS' }", v2)
+        self.assertIn("enabledProtocols: 'SMB'", storage.split("resource v2Share")[1])
+        # The old account stays until the last stage, so the cutover can be rolled back.
+        self.assertIn("legacyShare: projectShare != 'provisioned-final'", source)
+        self.assertIn("provisionedShare: projectShare != 'standard'", source)
+        self.assertIn("var projectOnV2 = projectShare == 'provisioned' || projectShare == 'provisioned-final'", source)
+        # The copy stage fills the new share with AzCopy, pinned by sha256, as its own identity,
+        # REST to REST (listing the old share over SMB took most of every pass): privileged
+        # read on the old account, privileged write on the new one, nothing wider.
+        job = source.split("module shareCopyJob ")[1].split("module secretsJob ")[0]
+        self.assertIn("if (withApp && projectShare == 'copy')", job)
+        self.assertIn('sha256sum -c -', job)
+        self.assertIn('azcopy sync "$SHARE_COPY_SRC" "$SHARE_COPY_DEST"', job)
+        self.assertIn("'SHARE_COPY_SRC', value: 'https://${names.files}.file.", job)
+        self.assertIn("69566ab7-960f-475b-8e7c-b3118f30c6bd", storage.split("resource copyWriter")[1].split("resource ")[0])
+        self.assertIn("scope: v2", storage.split("resource copyWriter")[1])
+        self.assertIn("b8eda974-7b85-4f76-af95-65846b26df6d", storage.split("resource copyReader")[1].split("output ")[0])
+        self.assertIn("scope: files", storage.split("resource copyReader")[1])
+        self.assertNotIn("SAS", job)
+        # It mounts neither share: the SMB mount would be read-write with the account key.
+        self.assertIn("mountProject: false", job)
+        bridge_job = (ROOT / "contrib-compute/infra/boinc/modules/bridge-job.bicep").read_text()
+        self.assertIn("volumes: mountProject ?", bridge_job)
+        # Each account has its own environment storage name, so switching (or rolling back)
+        # changes the revision template and no running replica keeps the old mount.
+        self.assertIn("name: projectStorageName", app)
+        self.assertIn("projectStorageName: projectOnV2 ? 'project-v2' : 'project'", source)
+        # Leaving the copy stage needs a final copy that succeeded, and none running.
+        provision = (ROOT / "scripts/provision-boinc.sh").read_text()
+        gate = provision.split('copy_job="usnm-boinc-sharecopy-caj-')[1].split("\nfi\n")[0]
+        self.assertIn("is still running", gate)
+        self.assertIn('.s == "Succeeded"', gate)
+        self.assertIn("grep -q ResourceNotFound", gate)
+        # Active-job checks expect the storage name of the selected stage.
+        self.assertIn('.volumes[0].storageName == $storage', provision)
+        self.assertIn("PROJECT_STORAGE=project-v2", provision)
+        # The cutover provision runs with the scheduler closed on purpose.
+        self.assertIn('sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)', provision)
+        # Uploads and scheduler requests stop during the final copy; Apache stays up.
+        runbook = (ROOT / "docs/boinc.md").read_text().split("## Moving the project share")[1].split("\n## ")[0]
+        self.assertIn("touch stop_sched stop_upload", runbook)
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/schema.json").read_text())
+        self.assertEqual(settings["properties"]["projectShare"]["enum"],
+                         ["standard", "copy", "provisioned", "provisioned-final"])
 
     def test_live_iris_settings_quota_and_additive_endpoint_are_preserved(self):
         source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()

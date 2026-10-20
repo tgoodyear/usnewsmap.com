@@ -32,13 +32,22 @@ local_pid_dir() {
   fi
 }
 
+# stop_maintenance in the project directory (docs/boinc.md, "Moving the project share") holds
+# the project stopped across container starts: bin/start would clear stop_sched and start the
+# daemons, so neither it nor the periodic start runs until an operator removes the marker.
+maintenance() {
+  [ -e "$proj/stop_maintenance" ] || return 1
+  echo "usnm-boinc: $proj/stop_maintenance is present; not starting the project" >&2
+}
+
 main() {
   : "${PROJECT_DIR:?}"
   proj="$PROJECT_DIR/${PROJECT:-usnmocr}"
   until [ -f "$proj/config.xml" ]; do sleep 5; done
   local_pid_dir
+  until ! maintenance; do sleep 60; done
   run 'bin/start'
-  while sleep 300; do run 'bin/start --cron' || true; done
+  while sleep 300; do maintenance || run 'bin/start --cron' || true; done
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
