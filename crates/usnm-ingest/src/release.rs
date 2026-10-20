@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::field::Empty;
@@ -1082,7 +1082,8 @@ impl Release {
                 unfinished_parts = source.unfinished_parts,
                 "American Stories' text"
             );
-            Some(source)
+            // Shared with the task that loads the next batch's text ahead.
+            Some(Arc::new(source))
         } else {
             None
         };
@@ -1188,7 +1189,7 @@ impl Release {
             };
             let added_latin = (latin_new.len() + replaced.len()) as u64;
             latin_after.pages.extend(replaced);
-            let stories_record = stories.as_ref().zip(stories_record.as_ref());
+            let stories_record = stories.as_deref().zip(stories_record.as_ref());
             // The pages the version holds with our OCR's text.
             let local_files = self
                 .ocr_local_files(
@@ -1667,7 +1668,7 @@ impl Release {
         scope: &[RunBatch],
         catalog: &Catalog,
         dedup: &Plan,
-        stories: Option<&american_stories::Source>,
+        stories: Option<&Arc<american_stories::Source>>,
         latin: &[(&ocr_ja::JaPage, String)],
         latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
         latin_owned: &HashMap<String, String>,
@@ -1745,7 +1746,27 @@ impl Release {
         // Our OCR from `ocr-local` weighed and given in place of LoC's (Step 9).
         let mut local_tally = ocr_local::replace::Tally::default();
         let mut local_replaced: LocalReplaced = Vec::new();
-        for b in scope {
+        // The next batch's American Stories text and curated parts download
+        // while this one is built (they're the release's network reads); one
+        // batch ahead, so two batches' downloads are held at most.
+        let fetch_ahead = |b: &RunBatch| {
+            Prefetch(tokio::spawn(prefetch_batch(
+                Arc::clone(&self.curated),
+                stories.cloned(),
+                b.clone(),
+            )))
+        };
+        let mut ahead = scope.first().map(fetch_ahead);
+        for (i, b) in scope.iter().enumerate() {
+            let current = ahead.take().context("no prefetch for the batch")?;
+            ahead = scope.get(i + 1).map(fetch_ahead);
+            let t_fetch = std::time::Instant::now();
+            lease.check()?;
+            let Prefetched {
+                stories: loaded_stories,
+                parts,
+            } = current.join().await?;
+            let fetch_secs = t_fetch.elapsed().as_secs_f64();
             // This batch's titles' readings of ours, dropped after the batch.
             let mine = match local {
                 Some(l)
@@ -1774,11 +1795,8 @@ impl Release {
                 _ => ocr_local::replace::Loaded::default(),
             };
             // This batch's American Stories texts, dropped after the batch.
-            let texts = match stories {
-                Some(source) => {
-                    lease.check()?;
-                    let counts = dedup::load_counts(self.curated.as_ref(), b).await?;
-                    let loaded = source.load(self.curated.as_ref(), &counts).await?;
+            let texts = match loaded_stories {
+                Some(loaded) => {
                     tracing::info!(
                         batch = %b.batch,
                         pages = loaded.texts.len(),
@@ -1799,7 +1817,6 @@ impl Release {
             // built: the documents and everything recorded about them come
             // out in part order, as when one thread read them, and only one
             // part's documents are held at a time.
-            let curated = self.curated.as_ref();
             let ctx = PartContext {
                 batch: b,
                 dedup,
@@ -1812,28 +1829,12 @@ impl Release {
                 format,
                 page_language: moves.is_some(),
             };
-            let mut fetched = stream::iter(&b.curated.parts)
-                .map(|path| async move {
-                    let bytes = curated
-                        .get(path)
-                        .await?
-                        .with_context(|| format!("curated part `{path}` is missing"))?;
-                    Ok::<_, anyhow::Error>((path, bytes::Bytes::from(bytes)))
-                })
-                .buffered(CURATED_PREFETCH);
-            let (mut fetch_secs, mut build_secs, mut lang_secs, mut add_secs) =
-                (0f64, 0f64, 0f64, 0f64);
+            let (mut build_secs, mut lang_secs, mut add_secs) = (0f64, 0f64, 0f64);
             let wait_before = order.as_ref().map_or(0.0, |o| o.queue_wait_secs());
-            loop {
-                let t_fetch = std::time::Instant::now();
-                let Some(next) = fetched.next().await else {
-                    break;
-                };
-                fetch_secs += t_fetch.elapsed().as_secs_f64();
-                let (path, bytes) = next?;
+            for (path, bytes) in parts {
                 lease.check()?;
                 let t_build = std::time::Instant::now();
-                let part = build_part_blocking(&ctx, path, &bytes)?;
+                let part = build_part_blocking(&ctx, &path, &bytes)?;
                 drop(bytes);
                 build_secs += t_build.elapsed().as_secs_f64();
                 let PartDocs {
@@ -2723,6 +2724,56 @@ async fn drain(
             bail!("the writer lock was lost while sending the held pages")
         }
     }
+}
+
+/// A batch's downloads, made ahead of its turn (`build_index`).
+struct Prefetched {
+    stories: Option<american_stories::Batch>,
+    parts: Vec<(String, bytes::Bytes)>,
+}
+
+/// The task loading a batch's downloads, aborted when dropped (a release
+/// that stops leaves nothing downloading).
+struct Prefetch(tokio::task::JoinHandle<anyhow::Result<Prefetched>>);
+
+impl Prefetch {
+    async fn join(mut self) -> anyhow::Result<Prefetched> {
+        (&mut self.0).await.context("the batch prefetch task")?
+    }
+}
+
+impl Drop for Prefetch {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// `b`'s American Stories text and curated parts, the parts a few at once.
+async fn prefetch_batch(
+    curated: Arc<dyn ObjectStore>,
+    stories: Option<Arc<american_stories::Source>>,
+    b: RunBatch,
+) -> anyhow::Result<Prefetched> {
+    let stories = match stories {
+        Some(source) => {
+            let counts = dedup::load_counts(curated.as_ref(), &b).await?;
+            Some(source.load(curated.as_ref(), &counts).await?)
+        }
+        None => None,
+    };
+    let store = curated.as_ref();
+    let parts = stream::iter(b.curated.parts.iter().cloned())
+        .map(|path| async move {
+            let bytes = store
+                .get(&path)
+                .await?
+                .with_context(|| format!("curated part `{path}` is missing"))?;
+            Ok::<_, anyhow::Error>((path, bytes::Bytes::from(bytes)))
+        })
+        .buffered(CURATED_PREFETCH)
+        .try_collect()
+        .await?;
+    Ok(Prefetched { stories, parts })
 }
 
 /// What reading one curated part needs, all read-only.
