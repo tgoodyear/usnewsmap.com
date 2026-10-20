@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::field::Empty;
@@ -396,8 +396,8 @@ struct PublishedPointer {
 }
 
 /// How long the writer lock lasts without renewal, and how often it's renewed.
-/// Curated parts of a batch downloaded ahead of the one being read.
-const CURATED_PREFETCH: usize = 4;
+/// A batch's curated parts downloaded at once.
+const CURATED_PREFETCH: usize = 8;
 const LEASE_TTL: Duration = Duration::minutes(30);
 const LEASE_RENEW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -1794,109 +1794,48 @@ impl Release {
                 }
                 None => HashMap::new(),
             };
-            // The next parts download while this one is read and sent; they
-            // are taken in order, as before.
+            // The batch's parts, downloaded a few at once, then read and
+            // turned into documents on several threads: the documents and
+            // everything recorded about them come out in part order, as
+            // when one thread read them.
             let curated = self.curated.as_ref();
-            let mut fetched = stream::iter(&b.curated.parts)
+            let parts: Vec<(&String, bytes::Bytes)> = stream::iter(&b.curated.parts)
                 .map(|path| async move {
                     let bytes = curated
                         .get(path)
                         .await?
                         .with_context(|| format!("curated part `{path}` is missing"))?;
-                    Ok::<_, anyhow::Error>((path, bytes))
+                    Ok::<_, anyhow::Error>((path, bytes::Bytes::from(bytes)))
                 })
-                .buffered(CURATED_PREFETCH);
-            while let Some(fetched_part) = fetched.next().await {
-                lease.check()?;
-                let (path, bytes) = fetched_part?;
-                let mut part_docs = Vec::new();
-                let (mut with_as, mut only_as, mut without_locs) = (0u64, 0u64, 0u64);
-                read_part(bytes.into(), true, |row| {
-                    if !dedup.keeps(&row.key, &b.batch) {
-                        return Ok(());
-                    }
-                    let doc_id = row.key.doc_id();
-                    let text_as = if texts.is_empty() {
-                        None
-                    } else {
-                        texts.get(&doc_id).map(String::as_str)
-                    };
-                    // Our reading of the page, where it reads more words, on
-                    // the copy the version keeps (whichever batch's copy we read).
-                    let ours = latin_curated
-                        .get(&doc_id)
-                        .filter(|(_, t)| ocr_ja::better_than_locs(t, row.text.as_deref()));
-                    let ok = row.status == TextStatus::Ok;
-                    let title = catalog.title(&row.key.lccn).context("title")?;
-                    // Our own OCR of the page, where rule v1 prefers it to
-                    // LoC's text (Step 9). The Japanese overlay wins.
-                    let mut local_text: Option<&str> = None;
-                    if let Some(c) = mine.pages.get(&doc_id) {
-                        if let (Some(l), None) = (local, ours) {
-                            if l.ja.contains(&doc_id) {
-                                local_tally.keep("japanese_ocr");
-                            } else {
-                                let langs: Vec<&str> =
-                                    title.languages.iter().map(String::as_str).collect();
-                                let (scores, _, verdict) =
-                                    ocr_local::rule::judge(&c.text, row.text.as_deref(), &langs);
-                                local_tally.weighed(c, &scores, verdict);
-                                if verdict.is_ok() {
-                                    local_text = Some(c.text.as_str());
-                                    local_replaced.push((
-                                        doc_id.clone(),
-                                        c.engine(),
-                                        b.batch.clone(),
-                                    ));
-                                }
-                            }
-                        } else {
-                            local_tally.keep("japanese_ocr");
-                        }
-                    } else if mine.revoked.contains(&doc_id) {
-                        local_tally.keep("revoked");
-                    }
-                    if !ok && text_as.is_none() && ours.is_none() && local_text.is_none() {
-                        return Ok(());
-                    }
-                    // A copy without LoC's text of a page whose document is
-                    // ours (an earlier index's, or a page LoC's archive had
-                    // no text for in another batch): ours stays the page's.
-                    if !ok
-                        && latin_owned
-                            .get(&doc_id)
-                            .is_some_and(|ours| *ours != b.batch)
-                    {
-                        return Ok(());
-                    }
-                    with_as += u64::from(text_as.is_some());
-                    only_as += u64::from(!ok && ours.is_none() && local_text.is_none());
-                    without_locs += u64::from(!ok);
-                    let place = catalog.place(&title.place_id).context("place")?;
-                    part_docs.push(match ours {
-                        Some((p, text)) => {
-                            replaced.push((
-                                doc_id,
-                                JaLatinPage {
-                                    // The document's batch, which hidden copies name.
-                                    batch: b.batch.clone(),
-                                    loc_text: p.loc_text.clone(),
-                                    ocr_source: p.ocr_source.clone(),
-                                    ocr_engine: p.ocr_engine.clone(),
-                                },
-                            ));
-                            main_doc(&row.key, &row.batch, text, title, place, text_as, format)
-                        }
-                        None => match local_text {
-                            Some(text) => {
-                                main_doc(&row.key, &row.batch, text, title, place, text_as, format)
-                            }
-                            None => page_doc(&row, title, place, text_as, format),
-                        },
-                    });
-                    Ok(())
-                })
-                .with_context(|| path.clone())?;
+                .buffered(CURATED_PREFETCH)
+                .try_collect()
+                .await?;
+            lease.check()?;
+            let ctx = PartContext {
+                batch: b,
+                dedup,
+                texts: &texts,
+                latin_curated,
+                latin_owned,
+                catalog,
+                mine: &mine,
+                local,
+                format,
+            };
+            let built = build_parts(&ctx, parts)?;
+            for part in built {
+                let PartDocs {
+                    docs: mut part_docs,
+                    replaced: part_replaced,
+                    tally,
+                    local_replaced: part_local,
+                    with_as,
+                    only_as,
+                    without_locs,
+                } = part;
+                replaced.extend(part_replaced);
+                local_tally.merge(tally);
+                local_replaced.extend(part_local);
                 // Each page's own languages (05 §5.5.8), on a few threads,
                 // and the pages that move to another set than their title's.
                 if let Some(m) = moves.as_deref_mut() {
@@ -2758,6 +2697,175 @@ async fn drain(
             bail!("the writer lock was lost while sending the held pages")
         }
     }
+}
+
+/// What reading one curated part needs, all read-only.
+struct PartContext<'a> {
+    batch: &'a RunBatch,
+    dedup: &'a Plan,
+    texts: &'a HashMap<String, String>,
+    latin_curated: &'a HashMap<String, (&'a ocr_ja::JaPage, String)>,
+    latin_owned: &'a HashMap<String, String>,
+    catalog: &'a Catalog,
+    mine: &'a ocr_local::replace::Loaded,
+    local: Option<&'a LocalRun>,
+    format: DocFormat,
+}
+
+/// One part's documents and what was recorded about them.
+#[derive(Default)]
+struct PartDocs {
+    docs: Vec<Value>,
+    replaced: Vec<(String, JaLatinPage)>,
+    tally: ocr_local::replace::Tally,
+    local_replaced: LocalReplaced,
+    with_as: u64,
+    only_as: u64,
+    without_locs: u64,
+}
+
+/// Threads that read a batch's parts (`USNM_RELEASE_THREADS`, default the
+/// CPUs, at most 32).
+fn part_threads() -> usize {
+    std::env::var("USNM_RELEASE_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+        .clamp(1, 32)
+}
+
+/// Read `parts` on [`part_threads`] threads; the results in part order.
+fn build_parts(
+    ctx: &PartContext<'_>,
+    parts: Vec<(&String, bytes::Bytes)>,
+) -> anyhow::Result<Vec<PartDocs>> {
+    let run = || -> anyhow::Result<Vec<PartDocs>> {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let slots: Vec<std::sync::Mutex<Option<anyhow::Result<PartDocs>>>> =
+            parts.iter().map(|_| std::sync::Mutex::new(None)).collect();
+        let threads = part_threads().min(parts.len().max(1));
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((path, bytes)) = parts.get(i) else {
+                        break;
+                    };
+                    let out = build_part(ctx, bytes).with_context(|| (*path).clone());
+                    *slots[i].lock().expect("slot") = Some(out);
+                });
+            }
+        });
+        slots
+            .into_iter()
+            .map(|s| s.into_inner().expect("slot").expect("every part read"))
+            .collect()
+    };
+    // On the release's multi-threaded runtime, tell it this thread blocks.
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(run)
+    } else {
+        run()
+    }
+}
+
+/// One curated part's documents, as the release builds them.
+fn build_part(ctx: &PartContext<'_>, bytes: &bytes::Bytes) -> anyhow::Result<PartDocs> {
+    let PartContext {
+        batch: b,
+        dedup,
+        texts,
+        latin_curated,
+        latin_owned,
+        catalog,
+        mine,
+        local,
+        format,
+    } = ctx;
+    let (b, format) = (*b, *format);
+    let mut out = PartDocs::default();
+    read_part(bytes.clone(), true, |row| {
+        if !dedup.keeps(&row.key, &b.batch) {
+            return Ok(());
+        }
+        let doc_id = row.key.doc_id();
+        let text_as = if texts.is_empty() {
+            None
+        } else {
+            texts.get(&doc_id).map(String::as_str)
+        };
+        // Our reading of the page, where it reads more words, on
+        // the copy the version keeps (whichever batch's copy we read).
+        let ours = latin_curated
+            .get(&doc_id)
+            .filter(|(_, t)| ocr_ja::better_than_locs(t, row.text.as_deref()));
+        let ok = row.status == TextStatus::Ok;
+        let title = catalog.title(&row.key.lccn).context("title")?;
+        // Our own OCR of the page, where rule v1 prefers it to
+        // LoC's text (Step 9). The Japanese overlay wins.
+        let mut local_text: Option<&str> = None;
+        if let Some(c) = mine.pages.get(&doc_id) {
+            if let (Some(l), None) = (local, ours) {
+                if l.ja.contains(&doc_id) {
+                    out.tally.keep("japanese_ocr");
+                } else {
+                    let langs: Vec<&str> = title.languages.iter().map(String::as_str).collect();
+                    let (scores, _, verdict) =
+                        ocr_local::rule::judge(&c.text, row.text.as_deref(), &langs);
+                    out.tally.weighed(c, &scores, verdict);
+                    if verdict.is_ok() {
+                        local_text = Some(c.text.as_str());
+                        out.local_replaced
+                            .push((doc_id.clone(), c.engine(), b.batch.clone()));
+                    }
+                }
+            } else {
+                out.tally.keep("japanese_ocr");
+            }
+        } else if mine.revoked.contains(&doc_id) {
+            out.tally.keep("revoked");
+        }
+        if !ok && text_as.is_none() && ours.is_none() && local_text.is_none() {
+            return Ok(());
+        }
+        // A copy without LoC's text of a page whose document is
+        // ours (an earlier index's, or a page LoC's archive had
+        // no text for in another batch): ours stays the page's.
+        if !ok
+            && latin_owned
+                .get(&doc_id)
+                .is_some_and(|ours| *ours != b.batch)
+        {
+            return Ok(());
+        }
+        out.with_as += u64::from(text_as.is_some());
+        out.only_as += u64::from(!ok && ours.is_none() && local_text.is_none());
+        out.without_locs += u64::from(!ok);
+        let place = catalog.place(&title.place_id).context("place")?;
+        out.docs.push(match ours {
+            Some((p, text)) => {
+                out.replaced.push((
+                    doc_id,
+                    JaLatinPage {
+                        // The document's batch, which hidden copies name.
+                        batch: b.batch.clone(),
+                        loc_text: p.loc_text.clone(),
+                        ocr_source: p.ocr_source.clone(),
+                        ocr_engine: p.ocr_engine.clone(),
+                    },
+                ));
+                main_doc(&row.key, &row.batch, text, title, place, text_as, format)
+            }
+            None => match local_text {
+                Some(text) => main_doc(&row.key, &row.batch, text, title, place, text_as, format),
+                None => page_doc(&row, title, place, text_as, format),
+            },
+        });
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// Each title's first and last day with a published page, as day numbers
