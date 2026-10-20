@@ -381,6 +381,15 @@ enum Command {
         #[arg(long, requires = "every")]
         offset: Option<usize>,
     },
+    /// Record in pipeline state (Cosmos) the run of a version built on-prem,
+    /// from its snapshot's `index_run.json`, before it is promoted
+    /// (docs/operations.md, "Full rebuild on-prem"): prune then keeps it as
+    /// a newer published run, rollback or not. A failed earlier attempt of
+    /// the same name is replaced; another published version of it stops this.
+    ImportStagedRun {
+        #[arg(long)]
+        version: String,
+    },
     /// Copy objects from one store to another: the lake's `reference` into
     /// the local mirror an on-prem release uses (docs/operations.md, "Full
     /// rebuild on-prem"). Only the named prefixes and files; one already
@@ -1247,6 +1256,7 @@ impl Command {
             Command::SeedState { .. } => "seed-state",
             Command::PublishStaged { .. } => "publish-staged",
             Command::MirrorStore { .. } => "mirror-store",
+            Command::ImportStagedRun { .. } => "import-staged-run",
             Command::OcrDamage { .. } => "ocr-damage",
             Command::OcrPrefetchManifest { .. } => "ocr-prefetch-manifest",
             Command::OcrSync { .. } => "ocr-sync",
@@ -1284,6 +1294,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::SeedState { .. }
         | Command::PublishStaged { .. }
         | Command::MirrorStore { .. }
+        | Command::ImportStagedRun { .. }
         | Command::OcrDamage { .. }
         | Command::OcrPrefetchManifest { .. }
         | Command::OcrSync { .. }
@@ -1476,6 +1487,17 @@ async fn command(
                 dry_run: *dry_run,
             })
             .await?;
+            Ok(None)
+        }
+        Command::ImportStagedRun { version } => {
+            let (run, _) = usnm_ingest::onprem::import_staged_run(
+                &state,
+                usnm_store::open(&cli.stores.reference)?.as_ref(),
+                version,
+            )
+            .await?
+            .with_context(|| format!("no run for {version} in the state or its snapshot"))?;
+            tracing::info!(version, new_index = %run.new_index, status = ?run.status, "staged run recorded");
             Ok(None)
         }
         Command::MirrorStore {

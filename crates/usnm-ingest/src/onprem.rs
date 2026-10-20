@@ -243,32 +243,69 @@ pub fn metastore_splits(meta: &Value) -> anyhow::Result<Vec<Split>> {
 }
 
 /// The run record a staged on-prem release left in `version`'s snapshot,
-/// recorded in `state` when `state` has none for it: what a Cosmos-backed
-/// release or prune does when `current.json` names a version built on-prem.
-/// `None` when the snapshot has no such record.
+/// recorded in `state`: what `import-staged-run` does in Azure before a
+/// promotion (docs/operations.md, "Full rebuild on-prem"), and a
+/// Cosmos-backed release or prune when `current.json` names a version built
+/// on-prem. `None` when the snapshot has no such record and `state` has no
+/// run for `version`.
+///
+/// A run `state` already has for the name is kept when it is the same
+/// version: published, with the same new index and batch list (a later
+/// repair may have changed its times). One that failed before writing a
+/// snapshot (no batch list) is an earlier attempt that never got far, and
+/// is replaced, conditionally on its ETag. Any other is refused: two
+/// versions under one name.
 pub async fn import_staged_run(
     state: &State,
     reference: &dyn ObjectStore,
     version: &str,
 ) -> anyhow::Result<Option<(IndexRun, String)>> {
-    if let Some(found) = state.run(version).await? {
-        return Ok(Some(found));
-    }
+    let existing = state.run(version).await?;
     let Some(bytes) = reference.get(&format!("{version}/{RUN_FILE}")).await? else {
-        return Ok(None);
+        return Ok(existing);
     };
-    let run: IndexRun = serde_json::from_slice(&bytes).context(RUN_FILE)?;
+    let staged: IndexRun = serde_json::from_slice(&bytes).context(RUN_FILE)?;
     ensure!(
-        run.index_version == version && run.id == version,
+        staged.index_version == version && staged.id == version,
         "{version}/{RUN_FILE} is the record of {}",
-        run.index_version
+        staged.index_version
     );
     ensure!(
-        run.status == RunStatus::Published,
+        staged.status == RunStatus::Published,
         "{version}/{RUN_FILE} records a run that wasn't published"
     );
-    if state.create_run(&run).await? {
-        tracing::warn!(version, "recorded the run of a version built on-prem");
+    match existing {
+        None => {
+            if state.create_run(&staged).await? {
+                tracing::warn!(version, "recorded the run of a version built on-prem");
+            }
+        }
+        Some((run, _))
+            if run.status == RunStatus::Published
+                && run.new_index == staged.new_index
+                && run.batch_list == staged.batch_list =>
+        {
+            return state.run(version).await;
+        }
+        Some((run, etag))
+            if run.status == RunStatus::Failed
+                && run.batch_list.is_none()
+                && run.batches.is_none() =>
+        {
+            state.update_run(&staged, &etag).await?;
+            tracing::warn!(
+                version,
+                replaced_error = run.last_error.as_deref().unwrap_or(""),
+                "replaced a failed attempt's run with the version built on-prem"
+            );
+        }
+        Some((run, _)) => bail!(
+            "the state has another run named {version} ({:?}, new index `{}`) than the one built \
+             on-prem (new index `{}`): two versions under one name; promote neither",
+            run.status,
+            run.new_index,
+            staged.new_index
+        ),
     }
     state.run(version).await
 }
@@ -1107,5 +1144,47 @@ mod tests {
         assert!(state.run("pages-v20261020-3").await.unwrap().is_none());
         // Again: nothing new, nothing replaced.
         assert_eq!(reserve_names(&state, &lake, day).await.unwrap().len(), 3);
+    }
+
+    /// A failed cloud attempt under the same name gives way; a different
+    /// published version under it is refused; a repeat changes nothing.
+    #[tokio::test]
+    async fn an_existing_run_of_the_same_name_is_reconciled_or_refused() {
+        let f = fixture().await;
+        publish_staged(&staged(&f, false)).await.unwrap();
+        let cosmos = State::new(Arc::new(MemoryDocs::default()));
+        let mut failed = published_run("v2");
+        failed.status = RunStatus::Failed;
+        failed.batch_list = None;
+        failed.new_index = "pages-base-other".into();
+        failed.last_error = Some("writer timed out".into());
+        cosmos.create_run(&failed).await.unwrap();
+        let (run, _) = import_staged_run(&cosmos, &f.reference, "v2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (run.status, run.new_index.as_str()),
+            (RunStatus::Published, "base2")
+        );
+        assert_eq!(run.batch_list.as_deref(), Some("v2/batches.json"));
+        // Again: kept as it is.
+        let (again, _) = import_staged_run(&cosmos, &f.reference, "v2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.new_index, "base2");
+
+        let other = State::new(Arc::new(MemoryDocs::default()));
+        let mut published = published_run("v2");
+        published.new_index = "pages-base-cloud".into();
+        other.create_run(&published).await.unwrap();
+        let e = import_staged_run(&other, &f.reference, "v2")
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{e:#}").contains("two versions under one name"),
+            "{e:#}"
+        );
     }
 }

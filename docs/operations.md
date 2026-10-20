@@ -503,6 +503,14 @@ scripts/onprem/release.sh --run-dir "$R" --step publish --dry-run
 scripts/onprem/release.sh --run-dir "$R" --step publish
 ```
 
+Before promotion ([Index storage cutover](#index-storage-cutover) step 4), record the staged run in Cosmos from the snapshot's `index_run.json`, in the ingest job (the host has no Cosmos access):
+
+```sh
+scripts/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
+```
+
+Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none.
+
 `seed` takes the batches the serving version was built from, not Cosmos's list: a batch curated after that version waits for the next release. `--sample 1pct` seeds the 1% set (every 100th batch by name from the 40th: 30 batches, 238,082 pages) for a rehearsal. A rehearsal stops before `publish`. `release` refuses a run directory that already holds a staged version; a failed one is started again in a new directory, since nothing in Azure changed. `publish` refuses unless the lake still serves the version the release took as its rollback (mirror and build again otherwise), every index's splits are published (none staged), and nothing of the same name in Azure differs; a rerun continues an interrupted copy. Resize the container's memory and cores live with `release-ct.sh --resize`.
 
 ## Index storage cutover
