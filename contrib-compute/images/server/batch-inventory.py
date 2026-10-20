@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import time
@@ -22,6 +23,32 @@ SELECT name, assimilate_state FROM workunit
  ORDER BY name
  LIMIT 10001
 """
+
+
+SPOOL_FILE = re.compile(
+    r"usnm_([0-9a-f]{64})(__file_(result\.json|text\.txt|layout\.xml)|_error|_no_output_files)")
+
+
+def spool_candidates(results, jobs):
+    """The regular files under `results` named as a known job's assimilator output, with their
+    name match. Walked with os.scandir: a directory listing carries each entry's type, so the
+    tens of thousands of other apps' results (usnm_quality's, mostly) cost no stat each, which
+    over the SMB project share made the inventory take minutes (#932). Symlinks are neither
+    followed nor yielded, as with rglob, and every entry counts towards MAX_FILES."""
+    count = 0
+    stack = [results]
+    while stack:
+        with os.scandir(stack.pop()) as entries:
+            for entry in entries:
+                count += 1
+                if count > MAX_FILES:
+                    raise ValueError("inventory spool limit reached; archive drained results")
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    match = SPOOL_FILE.fullmatch(entry.name)
+                    if match and match[1] in jobs:
+                        yield Path(entry.path), match
 
 
 def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None):
@@ -53,17 +80,7 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None):
         jobs[job_id] = {"stage": record["stage"], "spool": None}
     seen = {}
     locations = {}
-    for number, path in enumerate(results.rglob("*")):
-        if number >= MAX_FILES:
-            raise ValueError("inventory spool limit reached; archive drained results")
-        if not path.is_file() or path.is_symlink():
-            continue
-        match = re.fullmatch(
-            r"usnm_([0-9a-f]{64})(__file_(result\.json|text\.txt|layout\.xml)|_error|_no_output_files)",
-            path.name,
-        )
-        if not match or match[1] not in jobs:
-            continue
+    for path, match in spool_candidates(results, jobs):
         if not path.resolve().is_relative_to(results.resolve()):
             raise ValueError("spool escapes results directory")
         locations.setdefault(match[1], set()).add(str(path.parent))
