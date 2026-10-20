@@ -105,10 +105,13 @@
 #                               dispatch/jobs/<id>/ into $HANDOFF_DIR (checking the page's
 #                               size and sha256 against the request) and submits it. A job
 #                               already past reserved is left. LoC is never asked.
+#                               JOB_IDS=<id>[,<id>...] (up to 100) does a tick's jobs in one
+#                               execution, stopping at the first failure (#932).
 #   BRIDGE_STEP=spool-out       JOB_ID HANDOFF_SPOOL=<assimilator results directory under
 #                               $PROJ/results>; writes the job's spool files and the canonical
 #                               result's host id to spool/<id>/, and $SHARE_DIR/gold/trust.json
-#                               (when there) to gold/trust.json
+#                               (when there) to gold/trust.json. HANDOFF_SPOOLS=<id>=<spool>[,...]
+#                               (up to 100) does a tick's results in one execution (#932).
 #
 # Registering the apps after init (docs/boinc.md#register-the-apps):
 #   BRIDGE_STEP=register-apps   copies this image's project.xml into the project and runs
@@ -130,6 +133,35 @@ set -euo pipefail
 . /usr/local/lib/usnm-boinc/lib.sh
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
 step="${BRIDGE_STEP:-submit}"
+# A tick's jobs in one execution (#932): JOB_IDS for submit-remote, HANDOFF_SPOOLS for
+# spool-out. Each job runs this script's single-job path again, so every check is the same.
+# submit-remote stops at the first failure (the next tick reconciles that job before any other
+# submission); spool-out goes on and fails at the end, so one bad result holds back no other.
+if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
+  [ -z "${JOB_ID:-}" ] || fail "set JOB_ID or JOB_IDS, not both"
+  [[ $JOB_IDS =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
+  IFS=, read -r -a batch_ids <<< "$JOB_IDS"
+  for id in "${batch_ids[@]}"; do
+    log "submit-remote $id"
+    JOB_ID=$id JOB_IDS="" "${BASH_SOURCE[0]}" || fail "submit-remote stopped at $id; the jobs after it were not submitted"
+  done
+  exit 0
+fi
+if [ "$step" = spool-out ] && [ -n "${HANDOFF_SPOOLS:-}" ]; then
+  [ -z "${JOB_ID:-}" ] && [ -z "${HANDOFF_SPOOL:-}" ] || fail "set JOB_ID and HANDOFF_SPOOL, or HANDOFF_SPOOLS, not both"
+  IFS=, read -r -a batch_spools <<< "$HANDOFF_SPOOLS"
+  [ "${#batch_spools[@]}" -le 100 ] || fail "HANDOFF_SPOOLS holds at most 100 jobs"
+  failed=0
+  for pair in "${batch_spools[@]}"; do
+    [[ $pair =~ ^([0-9a-f]{64})=(/[A-Za-z0-9_./-]+)$ ]] || fail "HANDOFF_SPOOLS is <job id>=<spool>[,...]"
+    log "spool-out ${BASH_REMATCH[1]}"
+    JOB_ID=${BASH_REMATCH[1]} HANDOFF_SPOOL=${BASH_REMATCH[2]} HANDOFF_SPOOLS="" "${BASH_SOURCE[0]}" ||
+      { log "spool-out failed for ${BASH_REMATCH[1]}"; failed=$((failed + 1)); }
+  done
+  [ "$failed" -eq 0 ] || fail "spool-out failed for $failed of ${#batch_spools[@]} jobs"
+  exit 0
+fi
+# End of the batch modes (#932).
 TRAIN=""
 if [[ "$step" == train-* ]]; then
   [[ "${TRAIN_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "TRAIN_CAMPAIGN must be 1-41 of [a-z0-9-]"

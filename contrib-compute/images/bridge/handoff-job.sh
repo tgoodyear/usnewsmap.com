@@ -33,7 +33,8 @@
 #   HANDOFF_STEP=release  HANDOFF_DOCS=<doc_id>[,<doc_id>...]
 #                         gives claimed pages back to their queue, for the nodes (a scan that
 #                         wasn't on the scan server after all)
-#   HANDOFF_STEP=collect  JOB_ID [HOST_ID=<the canonical result's host id>]
+#   HANDOFF_STEP=collect  JOB_ID [HOST_ID=<the canonical result's host id>], or JOB_IDS=<id>[,<id>...]
+#                         (up to 100, one execution for a tick's results, #932)
 #                         copies the dispatch root, spool/<id>/ and gold/trust.json down, runs
 #                         usnm-boinc collect --trust into ocr-out (a terminal BOINC failure:
 #                         collect without a host or trust list, which marks the job failed) and
@@ -60,6 +61,21 @@ for v in HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL; do
 done
 [[ $HANDOFF_URL =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
   fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+# collect for a tick's jobs in one execution (#932): JOB_IDS. Each job runs this script's
+# single-job collect again, with its own work directory; a failed one doesn't stop the rest,
+# and the run fails at the end so the controller sees it.
+if [ "${HANDOFF_STEP:-}" = collect ] && [ -n "${JOB_IDS:-}" ]; then
+  [ -z "${JOB_ID:-}" ] && [ -z "${HOST_ID:-}" ] || fail "set JOB_ID (and HOST_ID), or JOB_IDS, not both"
+  [[ $JOB_IDS =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
+  IFS=, read -r -a batch_ids <<< "$JOB_IDS"
+  failed=0
+  for id in "${batch_ids[@]}"; do
+    log "collect $id"
+    JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; failed=$((failed + 1)); }
+  done
+  [ "$failed" -eq 0 ] || fail "collect failed for $failed of ${#batch_ids[@]} jobs"
+  exit 0
+fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 root="$work/dispatch"
