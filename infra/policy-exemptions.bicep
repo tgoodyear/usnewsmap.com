@@ -16,7 +16,7 @@ targetScope = 'resourceGroup'
 
 import { guardrailPolicyNames } from 'guardrails.bicep'
 import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
-import { lakeOpen, publicAccountIds } from 'public-accounts.bicep'
+import { indexOpen, lakeOpen, publicAccountIds } from 'public-accounts.bicep'
 
 @description('As in main.bicep.')
 param environmentName string
@@ -28,6 +28,10 @@ param ocrNodeIps string = ''
 param serialSetOnPrem bool = false
 @description('The Japanese OCR runs on-prem (main.bicep jaOcrOnPrem): the data lake opens to the node IPs.')
 param jaOcrOnPrem bool = false
+@description('As in main.bicep.')
+param onPremRelease bool = false
+@description('As in main.bicep.')
+param indexStorage bool = false
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)
@@ -45,7 +49,13 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
     parameters: {
       effect: { value: 'deny' }
       publicAccountIds: {
-        value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, lakeOpen(serialSetOnPrem || jaOcrOnPrem, ocrNodeIps))
+        value: publicAccountIds(
+          subscription().subscriptionId,
+          n,
+          ocrNodes,
+          lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease, ocrNodeIps),
+          indexOpen(onPremRelease, indexStorage, ocrNodeIps)
+        )
       }
     }
   }

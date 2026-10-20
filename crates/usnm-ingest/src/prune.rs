@@ -202,6 +202,8 @@ pub async fn kept(reference: &dyn ObjectStore, state: &State) -> anyhow::Result<
     indexes.extend(ids(&current["ja"]["indexes"]));
     indexes.extend(ids(&current["congress"]["indexes"]));
 
+    // A version built on-prem has its run in its snapshot (onprem.rs).
+    crate::onprem::import_staged_run(state, reference, &serving).await?;
     let runs = runs(state).await?;
     let Some(serving_run) = runs.get(&serving) else {
         bail!(

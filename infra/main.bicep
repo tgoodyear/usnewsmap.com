@@ -10,7 +10,7 @@ targetScope = 'subscription'
 import { replicaComputeSlots } from 'api-capacity.bicep'
 import { guardrailPolicyNames } from 'guardrails.bicep'
 import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
-import { lakeOpen, nodeIpList, publicAccountIds } from 'public-accounts.bicep'
+import { indexOpen, lakeOpen, nodeIpList, publicAccountIds } from 'public-accounts.bicep'
 
 @minLength(2)
 @maxLength(5)
@@ -119,6 +119,12 @@ param serialSetOnPrem bool = false
 
 @description('Object id of the on-prem Serial Set runner\'s identity: the OCR node\'s Arc machine identity (with serialSetOnPrem). Settings only, never in the repository.')
 param serialSetRunner string = ''
+
+@description('Build full releases on the on-prem release container and copy them into Azure (#283, #917; docs/operations.md, "Full rebuild on-prem"): onPremReleaseHost gets read on curated, writes to reference under pages-v*/ and index-storage-pending.json, writes to the index account\'s qw-index and AcrPull (modules/onprem-release.bicep); the data lake and, with indexStorage, the index account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay). Turn it off after a publish: the index account closes again.')
+param onPremRelease bool = false
+
+@description('Object id of the on-prem release container\'s Arc machine identity (usnm-release-arcs-<env>, with onPremRelease). Settings only, never in the repository.')
+param onPremReleaseHost string = ''
 
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
@@ -435,7 +441,8 @@ module identities 'modules/identities.bicep' = {
 // runner (serialSetOnPrem); the public-network policy then exempts it by
 // resource id, like the accounts below. Provision writes the policy's
 // exemptions before the stack (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem, ocrNodeIps)
+var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease, ocrNodeIps)
+var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 
 module storage 'modules/storage.bicep' = {
   scope: rg
@@ -458,6 +465,20 @@ module indexStore 'modules/index-storage.bicep' = if (indexStorage) {
     location: location
     tags: tags
     name: n.indexAccount
+    allowedIps: indexAccountOpen ? nodeIpList(ocrNodeIps) : []
+  }
+}
+
+// The on-prem release's grants (#283, #917): its own identity only.
+module onPremReleaseGrant 'modules/onprem-release.bicep' = if (onPremRelease && indexStorage && !empty(trim(onPremReleaseHost))) {
+  scope: rg
+  name: 'onprem-release'
+  params: {
+    storageName: storage.outputs.name
+    indexAccountName: indexStore!.outputs.name
+    registryName: registry.outputs.name
+    principalId: trim(onPremReleaseHost)
+    roleLabel: n.releaseWriterRole
   }
 }
 
@@ -1122,7 +1143,7 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
       '${guardrailPolicyNames.auditPublicAccess}': {
         effect: { value: 'deny' }
         publicAccountIds: {
-          value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, dataLakeOpen)
+          value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, dataLakeOpen, indexAccountOpen)
         }
       }
     }

@@ -481,6 +481,38 @@ per second with v2's before a long run.
 
 **Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why ordinary ingest has a 48 h replica timeout (#173). Explicit full rebuilds and staging runs now get 96 h, from the slower #283 dev measurement above. Benchmark afterwards with `scripts/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
 
+### Full rebuild on-prem
+
+A full rebuild can run on pve-big instead of the ingest job (#283, #917): the release container, CT 215 `usnm-release` (home-infra `scripts/lab/release-ct.sh`, connected to Arc as `usnm-release-arcs-<env>` by `release-ct-arc.sh`), builds a staged version with the Quickwit writer on its own disk, and `usnm-ingest publish-staged` copies it into the index account and the lake. It takes nothing from the E4 profile, the scratch share or the 96-hour replica timeout, and no Azure compute runs. The writer works on a local ZFS dataset (`/srv/usnm`), not NFS. Settings and checks are those of the [checklist](#full-rebuild) above; [Index storage cutover](#index-storage-cutover) applies from its step 3.
+
+What it uses in Azure, as the container's Arc identity (`USNM_ONPREM_RELEASE`, `USNM_ONPREM_RELEASE_HOST`, `modules/onprem-release.bicep`): read on `curated`; read on `reference`, with writes only under `pages-v*/` and to `index-storage-pending.json`; writes (no delete) on the index account's `qw-index`; AcrPull for the pinned Quickwit image. The lake and the index account open to `USNM_OCR_NODE_IPS` while the setting is on. Pipeline state is a local file, so the writer lock in Cosmos isn't taken: keep the ingest and prune jobs stopped and their schedules off, as the cutover already requires.
+
+In the container, as `usnm`, each step in one run directory (`scripts/onprem/release.sh`); start the long one as a unit so it outlives the session:
+
+```sh
+cd /srv/usnm/src && git pull --ff-only     # the commit to build; then cargo build --release -p usnm-ingest
+scripts/onprem/install-quickwit.sh --registry "$(scripts/settings.sh --env prod --key ACR_NAME)"   # once per Quickwit pin
+R=/srv/usnm/runs/full-$(date -u +%Y%m%d)
+scripts/onprem/release.sh --run-dir "$R" --step mirror    # current.json, catalog/, the serving version's snapshot
+scripts/onprem/release.sh --run-dir "$R" --step seed      # batch records from the serving version's batches.json
+# as root in the container:
+systemd-run --unit usnm-release --uid usnm --gid usnm -p SupplementaryGroups=himds \
+  -p StandardOutput=append:$R/release.log -p StandardError=append:$R/release.log \
+  /srv/usnm/src/scripts/onprem/release.sh --run-dir "$R" --step release
+scripts/onprem/release.sh --run-dir "$R" --step publish --dry-run
+scripts/onprem/release.sh --run-dir "$R" --step publish
+```
+
+Before promotion ([Index storage cutover](#index-storage-cutover) step 4), record the staged run in Cosmos from the snapshot's `index_run.json`, in the ingest job (the host has no Cosmos access):
+
+```sh
+scripts/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
+```
+
+Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none.
+
+`seed` takes the batches the serving version was built from, not Cosmos's list: a batch curated after that version waits for the next release. `--sample 1pct` seeds the 1% set (every 100th batch by name from the 40th: 30 batches, 238,082 pages) for a rehearsal. A rehearsal stops before `publish`. `release` refuses a run directory that already holds a staged version; a failed one is started again in a new directory, since nothing in Azure changed. `publish` refuses unless the lake still serves the version the release took as its rollback (mirror and build again otherwise), every index's splits are published (none staged), and nothing of the same name in Azure differs; a rerun continues an interrupted copy. Resize the container's memory and cores live with `release-ct.sh --resize`.
+
 ## Index storage cutover
 
 The move of #283, #245 and #416 is opt-in
