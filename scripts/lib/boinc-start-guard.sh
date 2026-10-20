@@ -62,9 +62,56 @@ boinc_start_guard_confirm() {
   done
 }
 
+# After a failed launch step the outcome is unknown. BOINC_START_UNCERTAIN says which step:
+# - start: the execution start, or its read-back. A known execution ($execution, the start
+#   returned a name) is released once the job's list shows it, so the next launcher's
+#   running-executions check refuses while it runs. With none known, it is released once the
+#   list has been read for the window boinc_start_guard_confirm allows a new execution to
+#   appear in.
+# - update: the job's template update. As for start, and only while the job's
+#   provisioningState is terminal: an update still in flight could change what the next
+#   launcher starts.
+# - deploy: a stack deployment, which can still rewrite job templates after the CLI fails, and
+#   which execution listings cannot see. Never released here.
+# A failed read, an update not yet terminal at the end of the window, or a known execution
+# still missing from the list leaves the outcome unknown and the lease held.
+BOINC_START_UNCERTAIN=""
+boinc_start_guard_reconcile() {
+  local deadline names state rg=${JOB_RG:-${BOINC_RG:-}}
+  [ "${BOINC_START_UNCERTAIN:-start}" != deploy ] || return 1
+  [ -n "${job:-}" ] && [ -n "$rg" ] || return 1
+  deadline=$(($(date +%s) + ${BOINC_START_RECONCILE_SECS:-120}))
+  while :; do
+    if [ "$BOINC_START_UNCERTAIN" = update ]; then
+      state=$(baz containerapp job show --name "$job" --resource-group "$rg" \
+        --query properties.provisioningState -o tsv) || return 1
+    else
+      state=Succeeded
+    fi
+    names=$(baz containerapp job execution list --name "$job" --resource-group "$rg" --query "[].name" -o tsv) ||
+      return 1
+    case "$state" in
+      Succeeded | Failed | Canceled)
+        if [ -n "${execution:-}" ] && grep -qxF "$execution" <<< "$names"; then return 0; fi ;;
+    esac
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      case "$state" in Succeeded | Failed | Canceled) ;; *) return 1 ;; esac
+      # Explicit statuses: this runs from the EXIT trap, where a bare `return` (bash 4+)
+      # returns the status that triggered the trap, not the last command's.
+      if [ -n "${execution:-}" ]; then return 1; fi
+      return 0
+    fi
+    sleep "${BOINC_START_RECONCILE_POLL:-10}"
+  done
+}
+
 boinc_start_guard_release() {
   local failed=0
   if [ -n "$BOINC_START_LEASE" ]; then
+    if [ "$BOINC_START_SAFE_TO_RELEASE" != true ] && boinc_start_guard_reconcile; then
+      echo "warning: template update/start outcome was uncertain; $job's executions listed for the settling window, releasing the cross-host lease" >&2
+      BOINC_START_SAFE_TO_RELEASE=true
+    fi
     if [ "$BOINC_START_SAFE_TO_RELEASE" = true ]; then
       boinc_start_blob lease release --blob-name "$BOINC_START_BLOB" --lease-id "$BOINC_START_LEASE" -o none || failed=1
       [ "$failed" -eq 0 ] || echo "error: cross-host start lease release failed for $job; reconcile it before another launch" >&2

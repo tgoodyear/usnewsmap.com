@@ -613,7 +613,9 @@ class StartBridge(unittest.TestCase):
         self.lock_dir = os.path.join(self.tmp, "boinc.lock")
         self.env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp,
                     "STUB_LOG": self.log, "STUB_SUB": SUB, "STUB_TEMPLATE": template(),
-                    "USNM_BOINC_LOCK_DIR": self.lock_dir}
+                    "USNM_BOINC_LOCK_DIR": self.lock_dir,
+                    # The guard's settling window after a failed start: none in tests.
+                    "BOINC_START_RECONCILE_SECS": "0", "BOINC_START_RECONCILE_POLL": "0"}
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -1539,6 +1541,15 @@ case "$*" in
     [ -z "${STUB_NO_EXCHANGE:-}" ] || { echo '{}'; exit; } ;;
   "containerapp job update"*)
     [ -z "${STUB_UPDATE_FAILURE:-}" ] || exit 9 ;;
+  "containerapp job show"*"provisioningState"*)
+    echo "${STUB_PROVISIONING:-Succeeded}"; exit ;;
+  "containerapp job execution list"*"[].name"*)
+    # The guard's reconciliation listing: counted, and scripted from a given call on.
+    printf '%s\n' "$*" >> "$STUB_LOG"
+    n=$(( $(cat "$STUB_REMOTE_STATE/lists" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_REMOTE_STATE/lists"
+    if [ -n "${STUB_LIST_FAIL_FROM:-}" ] && [ "$n" -ge "$STUB_LIST_FAIL_FROM" ]; then exit 9; fi
+    if [ -n "${STUB_LIST_VISIBLE_FROM:-}" ] && [ "$n" -ge "$STUB_LIST_VISIBLE_FROM" ]; then echo usnm-boinc-bridge-caj-prod-abc12; fi
+    exit ;;
   "containerapp job execution list"*)
     if [ -n "${STUB_ACTIVE_VISIBLE:-}" ] && [ -f "$STUB_REMOTE_STATE/started" ]; then
       printf '%s\n' "$*" >> "$STUB_LOG"
@@ -1619,18 +1630,84 @@ esac
         self.assertNotIn("status=='Running'", query)
         self.assertFalse((self.remote / "held").exists())
 
-    def test_ambiguous_update_start_and_failed_readback_retain_remote_lease(self):
+    def test_ambiguous_update_start_and_failed_readback_release_once_listed(self):
+        # A failed update, start or read-back: the job's executions are listed for the settling
+        # window; when every listing succeeds, the lease is released (the next launcher sees
+        # anything that did start) and the run still fails.
+        # The update and start failures leave no execution name; the status and settings
+        # failures have one, released once the list shows it.
         for failure in ({"STUB_UPDATE_FAILURE": "1"}, {"STUB_START_FAILURE": "1"},
-                        {"STUB_STATUS_FAILURE": "1"},
-                        {"STUB_EXEC_ENV": '[{"name":"BRIDGE_STEP","value":"wrong"}]'}):
+                        {"STUB_STATUS_FAILURE": "1", "STUB_LIST_VISIBLE_FROM": "1"},
+                        {"STUB_EXEC_ENV": '[{"name":"BRIDGE_STEP","value":"wrong"}]', "STUB_LIST_VISIBLE_FROM": "1"}):
             with self.subTest(failure=failure):
+                for f in ("started", "lists"):
+                    (self.remote / f).unlink(missing_ok=True)
                 result = self.run_script("--step", "register-apps", **failure)
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn("lease retained", result.stderr)
-                self.assertTrue((self.remote / "held").exists())
+                self.assertIn("releasing the cross-host lease", result.stderr)
+                self.assertNotIn("lease retained", result.stderr)
+                self.assertFalse((self.remote / "held").exists())
+                self.assertTrue(any(c.startswith("containerapp job execution list") and "[].name" in c
+                                    for c in self.calls()))
                 self.assertFalse(Path(self.lock_dir).exists())
                 self.assertFalse(list(Path(ROOT).glob(".boinc-start-*")))
-                (self.remote / "held").rmdir()  # Test-only operator reconciliation.
+
+    def ticking_clock(self):
+        # Each `date` call is 10 s later, so the settling window is walked deterministically.
+        clock = Path(self.tmp, "bin", "date")
+        clock.write_text('#!/usr/bin/env bash\n'
+                         'n=$(( $(cat "$STUB_REMOTE_STATE/now" 2>/dev/null || echo 1000) + 10 ))\n'
+                         'echo "$n" > "$STUB_REMOTE_STATE/now"; echo "$n"\n')
+        clock.chmod(0o755)
+        return {"BOINC_START_RECONCILE_SECS": "30", "BOINC_START_RECONCILE_POLL": "0"}
+
+    def reconcile_lists(self):
+        f = self.remote / "lists"
+        return int(f.read_text()) if f.exists() else 0
+
+    def test_unknown_start_holds_the_lease_for_the_whole_settling_window(self):
+        result = self.run_script("--step", "register-apps", STUB_START_FAILURE="1", **self.ticking_clock())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("releasing the cross-host lease", result.stderr)
+        # 30 s at 10 s a tick: listed until the deadline, not released on the first clean list.
+        self.assertGreaterEqual(self.reconcile_lists(), 3)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_known_execution_is_released_when_a_later_poll_shows_it(self):
+        result = self.run_script("--step", "register-apps", STUB_STATUS_FAILURE="1",
+                                 STUB_LIST_VISIBLE_FROM="2", **self.ticking_clock())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("releasing the cross-host lease", result.stderr)
+        self.assertEqual(self.reconcile_lists(), 2)
+        self.assertFalse((self.remote / "held").exists())
+
+    def test_a_later_listing_failure_retains_the_lease(self):
+        result = self.run_script("--step", "register-apps", STUB_START_FAILURE="1",
+                                 STUB_LIST_FAIL_FROM="2", **self.ticking_clock())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+
+    def test_template_update_still_in_flight_retains_the_lease(self):
+        result = self.run_script("--step", "register-apps", STUB_UPDATE_FAILURE="1",
+                                 STUB_PROVISIONING="InProgress", **self.ticking_clock())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+
+    def test_known_execution_missing_from_the_list_retains_remote_lease(self):
+        result = self.run_script("--step", "register-apps", STUB_STATUS_FAILURE="1")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+
+    def test_ambiguous_start_retains_remote_lease_when_listing_fails(self):
+        result = self.run_script("--step", "register-apps", STUB_START_FAILURE="1",
+                                 STUB_LIST_FAIL_FROM="1")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertFalse(Path(self.lock_dir).exists())
 
     def test_simultaneous_marker_creation_is_safe(self):
         result = self.run_script("--step", "register-apps", STUB_UPLOAD_RACE="1")
