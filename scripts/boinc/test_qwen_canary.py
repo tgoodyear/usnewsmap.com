@@ -199,6 +199,7 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertEqual(shared.findtext("plan_class[name='nvidia_vulkan_8b']/min_wu_id"), "17300")
         self.assertEqual(shared.findtext("plan_class[name='nvidia_vulkan_8b']/max_wu_id"), "17305")
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_nvidia_general_promotes_from_a_shared_range_and_amd_stays_singleton(self):
         helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
         def run(expr, check=True):
@@ -219,6 +220,7 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("Invalid amd_vulkan_8b admission state", refused.stdout + refused.stderr)
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_proof_reports_preserved_nvidia_general_admission_as_open(self):
         helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
         def run(expr):
