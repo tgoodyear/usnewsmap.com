@@ -63,14 +63,15 @@ systemctl daemon-reload
 echo "image $image; /etc/usnm/ja-ocr.env written"
 
 if $START; then
-  for i in $(seq 1 "$REPLICAS"); do
-    systemctl enable "usnm-ja-ocr@$i" > /dev/null 2>&1
-    systemctl restart "usnm-ja-ocr@$i"
-  done
-  # Instances above --replicas (from an earlier, larger setting) stop.
+  # Instances above --replicas (from an earlier, larger setting) stop first, so the
+  # old and new replica counts never pace loc.gov at the same time.
   for unit in $(systemctl list-units --all --plain --no-legend 'usnm-ja-ocr@*' | awk '{print $1}'); do
     n=${unit#usnm-ja-ocr@}; n=${n%.service}
     [ "$n" -le "$REPLICAS" ] || { systemctl disable --now "$unit" > /dev/null 2>&1; echo "stopped $unit"; }
+  done
+  for i in $(seq 1 "$REPLICAS"); do
+    systemctl enable "usnm-ja-ocr@$i" > /dev/null 2>&1
+    systemctl restart "usnm-ja-ocr@$i"
   done
   echo "started $REPLICAS replica(s): journalctl -fu 'usnm-ja-ocr@*'"
 fi
