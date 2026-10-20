@@ -19,8 +19,11 @@
 // on-prem").
 
 param storageName string
-@description('Object id of the runner\'s identity (the node\'s Arc machine identity).')
+@description('Object id of the runner: the on-prem hosts\' group (usnm-onprem-grp-<env>), or one host\'s Arc machine identity.')
 param principalId string
+@description('Group for the on-prem hosts\' group; ServicePrincipal for one host\'s identity.')
+@allowed([ 'Group', 'ServicePrincipal' ])
+param principalType string = 'ServicePrincipal'
 @description('The writer role\'s name, before its scope (infra/naming.bicep).')
 param roleLabel string
 var blobs = 'Microsoft.Storage/storageAccounts/blobServices/containers/blobs'
@@ -87,7 +90,7 @@ resource grant 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(account::blobService::curated.id, principalId, 'usnm-sset-writer')
   properties: {
     principalId: principalId
-    principalType: 'ServicePrincipal'
+    principalType: principalType
     // Custom roles are addressed at subscription level wherever they're defined.
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
     description: 'The on-prem Serial Set runner (#229): list, read and create blobs under congress/serialset/ only; no delete.'

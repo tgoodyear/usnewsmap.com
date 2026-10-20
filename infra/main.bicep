@@ -474,12 +474,15 @@ module jaOcrRunnerGrant 'modules/jaocr-runner.bicep' = if (jaOcrOnPrem && !empty
 }
 
 // The on-prem Serial Set runner's grant: curated/congress/serialset/ only.
-module serialSetRunnerGrant 'modules/serialset-runner.bicep' = if (serialSetOnPrem && !empty(trim(serialSetRunner))) {
+// With the on-prem hosts' group set, the group holds it, so the fetch can move between
+// hosts (#919: from node3 to the batch LXC); serialSetRunner is the single-host fallback.
+module serialSetRunnerGrant 'modules/serialset-runner.bicep' = if (serialSetOnPrem && (!empty(trim(onPremGroupId)) || !empty(trim(serialSetRunner)))) {
   scope: rg
   name: 'serialset-runner'
   params: {
     storageName: storage.outputs.name
-    principalId: trim(serialSetRunner)
+    principalId: !empty(trim(onPremGroupId)) ? trim(onPremGroupId) : trim(serialSetRunner)
+    principalType: !empty(trim(onPremGroupId)) ? 'Group' : 'ServicePrincipal'
     roleLabel: n.serialSetWriterRole
   }
 }
