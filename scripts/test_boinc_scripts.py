@@ -613,7 +613,9 @@ class StartBridge(unittest.TestCase):
         self.lock_dir = os.path.join(self.tmp, "boinc.lock")
         self.env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp,
                     "STUB_LOG": self.log, "STUB_SUB": SUB, "STUB_TEMPLATE": template(),
-                    "USNM_BOINC_LOCK_DIR": self.lock_dir}
+                    "USNM_BOINC_LOCK_DIR": self.lock_dir,
+                    # The guard's settling window after a failed start: none in tests.
+                    "BOINC_START_RECONCILE_SECS": "0", "BOINC_START_RECONCILE_POLL": "0"}
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -1540,6 +1542,7 @@ case "$*" in
   "containerapp job update"*)
     [ -z "${STUB_UPDATE_FAILURE:-}" ] || exit 9 ;;
   "containerapp job execution list"*)
+    if [ -n "${STUB_LIST_FAILURE_AFTER_START:-}" ] && [ -f "$STUB_REMOTE_STATE/started" ]; then exit 9; fi
     if [ -n "${STUB_ACTIVE_VISIBLE:-}" ] && [ -f "$STUB_REMOTE_STATE/started" ]; then
       printf '%s\n' "$*" >> "$STUB_LOG"
       echo usnm-boinc-bridge-caj-prod-abc12
@@ -1619,18 +1622,40 @@ esac
         self.assertNotIn("status=='Running'", query)
         self.assertFalse((self.remote / "held").exists())
 
-    def test_ambiguous_update_start_and_failed_readback_retain_remote_lease(self):
+    def test_ambiguous_update_start_and_failed_readback_release_once_listed(self):
+        # A failed update, start or read-back: the job's executions are listed for the settling
+        # window; when every listing succeeds, the lease is released (the next launcher sees
+        # anything that did start) and the run still fails.
+        # The update and start failures leave no execution name; the status and settings
+        # failures have one, released once the list shows it.
         for failure in ({"STUB_UPDATE_FAILURE": "1"}, {"STUB_START_FAILURE": "1"},
-                        {"STUB_STATUS_FAILURE": "1"},
-                        {"STUB_EXEC_ENV": '[{"name":"BRIDGE_STEP","value":"wrong"}]'}):
+                        {"STUB_STATUS_FAILURE": "1", "STUB_ACTIVE_VISIBLE": "1"},
+                        {"STUB_EXEC_ENV": '[{"name":"BRIDGE_STEP","value":"wrong"}]', "STUB_ACTIVE_VISIBLE": "1"}):
             with self.subTest(failure=failure):
+                (self.remote / "started").unlink(missing_ok=True)
                 result = self.run_script("--step", "register-apps", **failure)
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn("lease retained", result.stderr)
-                self.assertTrue((self.remote / "held").exists())
+                self.assertIn("releasing the cross-host lease", result.stderr)
+                self.assertNotIn("lease retained", result.stderr)
+                self.assertFalse((self.remote / "held").exists())
+                self.assertTrue(any(c.startswith("containerapp job execution list") and "[].name" in c
+                                    for c in self.calls()))
                 self.assertFalse(Path(self.lock_dir).exists())
                 self.assertFalse(list(Path(ROOT).glob(".boinc-start-*")))
-                (self.remote / "held").rmdir()  # Test-only operator reconciliation.
+
+    def test_known_execution_missing_from_the_list_retains_remote_lease(self):
+        result = self.run_script("--step", "register-apps", STUB_STATUS_FAILURE="1")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+
+    def test_ambiguous_start_retains_remote_lease_when_listing_fails(self):
+        result = self.run_script("--step", "register-apps", STUB_START_FAILURE="1",
+                                 STUB_LIST_FAILURE_AFTER_START="1")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lease retained", result.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertFalse(Path(self.lock_dir).exists())
 
     def test_simultaneous_marker_creation_is_safe(self):
         result = self.run_script("--step", "register-apps", STUB_UPLOAD_RACE="1")

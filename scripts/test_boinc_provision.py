@@ -106,6 +106,7 @@ class Provision(unittest.TestCase):
                 (ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text()
             ).get("projectShare", "standard").startswith("provisioned") else "project",
             "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
+            "BOINC_START_RECONCILE_SECS": "0", "BOINC_START_RECONCILE_POLL": "0",
             "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
                            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
         }
@@ -209,13 +210,16 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
                 self.assertEqual(sum(call.startswith("storage blob lease release") for call in self.calls()), 1)
                 self.assertNotIn("lease retained", result.stderr)
 
-    def test_uncertain_registration_start_retains_lease_for_reconciliation(self):
+    def test_failed_registration_start_releases_lease_once_listed(self):
+        # The start call failed and returned no execution: once the job's executions have been
+        # listed for the settling window, anything it did start is visible, so the lease goes.
         result = self.run_script(STUB_REGISTRATION_START_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("lease retained", result.stderr)
+        self.assertIn("releasing the cross-host lease", result.stderr)
+        self.assertNotIn("lease retained", result.stderr)
         self.assertTrue(any(call.startswith("containerapp job start") and "--yaml" in call
                             for call in self.calls()))
-        self.assertFalse(any(call.startswith("storage blob lease release") for call in self.calls()))
+        self.assertTrue(any(call.startswith("storage blob lease release") for call in self.calls()))
 
     def test_failed_init_or_publish_never_reports_readiness(self):
         for variable in ["STUB_INIT_STATUS", "STUB_PUBLISH_STATUS"]:

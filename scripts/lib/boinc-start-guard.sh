@@ -62,9 +62,39 @@ boinc_start_guard_confirm() {
   done
 }
 
+# After a failed template update, start or read-back the outcome is unknown, but only for as
+# long as an execution the failed call did create might still be missing from the job's list.
+# - A known execution ($execution, the start returned a name): released once the job's list
+#   shows it, so the next launcher's running-executions check refuses while it runs.
+# - None known (the update or start call failed): released once the list has been read for the
+#   window boinc_start_guard_confirm allows a new execution to appear in.
+# A failed listing, or a known execution still missing at the end of the window, leaves the
+# outcome unknown and the lease held.
+boinc_start_guard_reconcile() {
+  local deadline names
+  [ -n "${job:-}" ] && [ -n "${JOB_RG:-}" ] || return 1
+  deadline=$(($(date +%s) + ${BOINC_START_RECONCILE_SECS:-120}))
+  while :; do
+    names=$(baz containerapp job execution list --name "$job" --resource-group "$JOB_RG" --query "[].name" -o tsv) ||
+      return 1
+    if [ -n "${execution:-}" ]; then
+      grep -qxF "$execution" <<< "$names" && return 0
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      [ -z "${execution:-}" ]
+      return
+    fi
+    sleep "${BOINC_START_RECONCILE_POLL:-10}"
+  done
+}
+
 boinc_start_guard_release() {
   local failed=0
   if [ -n "$BOINC_START_LEASE" ]; then
+    if [ "$BOINC_START_SAFE_TO_RELEASE" != true ] && boinc_start_guard_reconcile; then
+      echo "warning: template update/start outcome was uncertain; $job's executions listed for the settling window, releasing the cross-host lease" >&2
+      BOINC_START_SAFE_TO_RELEASE=true
+    fi
     if [ "$BOINC_START_SAFE_TO_RELEASE" = true ]; then
       boinc_start_blob lease release --blob-name "$BOINC_START_BLOB" --lease-id "$BOINC_START_LEASE" -o none || failed=1
       [ "$failed" -eq 0 ] || echo "error: cross-host start lease release failed for $job; reconcile it before another launch" >&2
