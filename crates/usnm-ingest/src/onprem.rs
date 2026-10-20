@@ -448,6 +448,14 @@ pub async fn publish_staged(s: &Staged<'_>) -> anyhow::Result<Published> {
         version: version.clone(),
         ..Published::default()
     };
+    // The release writes its snapshot's manifest last: without it the
+    // snapshot is incomplete, and the API couldn't load the version.
+    ensure!(
+        s.local_reference
+            .exists(&format!("{version}/manifest.json"))
+            .await?,
+        "the local reference has no {version}/manifest.json: the release didn't finish its snapshot"
+    );
     // Check every index before copying any, so a bad one stops the copy
     // with nothing written.
     let mut plans = Vec::new();
@@ -512,9 +520,14 @@ pub async fn publish_staged(s: &Staged<'_>) -> anyhow::Result<Published> {
             }
         }
     }
+    // The API loads a version from its manifest: no manifest in the lake,
+    // no pointer.
     ensure!(
-        out.reference_files + out.reference_skipped > 0,
-        "the local reference has no {prefix} snapshot"
+        s.dry_run
+            || s.reference
+                .exists(&format!("{version}/manifest.json"))
+                .await?,
+        "the lake's reference has no {version}/manifest.json after the copy"
     );
     if !s.dry_run {
         s.reference
@@ -1186,5 +1199,16 @@ mod tests {
             format!("{e:#}").contains("two versions under one name"),
             "{e:#}"
         );
+    }
+
+    /// No snapshot manifest, no copy and no pointer.
+    #[tokio::test]
+    async fn a_snapshot_without_its_manifest_stops_it() {
+        let f = fixture().await;
+        std::fs::remove_file(f.local_reference.root().join("v2/manifest.json")).unwrap();
+        let e = publish_staged(&staged(&f, false)).await.unwrap_err();
+        assert!(format!("{e:#}").contains("v2/manifest.json"), "{e:#}");
+        assert!(f.index.get("base2/sA.split").await.unwrap().is_none());
+        assert!(f.reference.get(PENDING_POINTER).await.unwrap().is_none());
     }
 }

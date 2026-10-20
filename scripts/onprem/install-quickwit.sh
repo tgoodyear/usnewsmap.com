@@ -39,9 +39,18 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 chmod 700 "$work"
 u="http://localhost:40342/metadata/identity/oauth2/token?api-version=2020-06-01&resource=https%3A%2F%2Fmanagement.azure.com%2F"
-key=$(curl -s -D - -o /dev/null -H Metadata:true "$u" | tr -d '\r' | sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: Basic realm=//p')
+# The agent's endpoint is on loopback: never through a proxy.
+key=$(curl -s --noproxy '*' -D - -o /dev/null -H Metadata:true "$u" | tr -d '\r' | sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: Basic realm=//p')
 [ -n "$key" ] || die "no challenge from the Arc agent's identity endpoint"
-arm=$(curl -s -H Metadata:true -H "Authorization: Basic $(cat "$key")" "$u" | jq -r .access_token)
+# Only one of the agent's own challenge files, as usnm-store's ArcIdentity
+# checks it: a .key file directly in its token directory, regular, at most
+# 4 KiB. Anything else answering on the port could otherwise name any file.
+tokens=$(realpath /var/opt/azcmagent/tokens)
+file=$(realpath -e -- "$key" 2> /dev/null) || die "the challenge names a file that can't be read"
+[[ $file == *.key && $(dirname "$file") == "$tokens" && -f $file && ! -L $key ]] ||
+  die "the challenge file isn't one of the agent's"
+[ "$(stat -c %s "$file")" -le 4096 ] || die "the challenge file is too large"
+arm=$(curl -s --noproxy '*' -H Metadata:true -H "Authorization: Basic $(cat "$file")" "$u" | jq -r .access_token)
 [ -n "$arm" ] && [ "$arm" != null ] || die "no token from the Arc identity (is this user in himds?)"
 refresh=$(curl -s -X POST "https://$HOST/oauth2/exchange" \
   --data-urlencode grant_type=access_token --data-urlencode "service=$HOST" \
@@ -63,5 +72,5 @@ for layer in $(jq -r '.layers[].digest | sub("sha256:"; "")' "$work/image/manife
 done
 $found || die "no usr/local/bin/quickwit in $IMAGE@$DIGEST"
 install -m 0755 "$work/usr/local/bin/quickwit" "$out"
-ln -sfn "$out" "$DEST/quickwit"
+ln -sfn "$(basename "$out")" "$DEST/quickwit"
 "$DEST/quickwit" --version
