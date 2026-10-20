@@ -799,6 +799,26 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
 
 4. **Close.** When it's done, set `USNM_SERIALSET_ONPREM` to false and provision: the lake closes, the grant goes and the policy drops the exemption. Remove the private setting with `scripts/settings.sh --env prod --key USNM_SERIALSET_RUNNER --unset`.
 
+### The Japanese OCR on-prem
+
+The Japanese OCR (`ja-ocr/jaocr.py run`, #128) runs on an OCR node instead of the Azure job `caj-usnm-jaocr-<env>` (#917: Azure keeps only the search cluster, the API and the web app). It's the same image, built on the node from a pinned commit (`Dockerfile.ja-ocr`), as the node's Arc machine identity.
+
+1. **Settings.** `USNM_JA_OCR_ONPREM=true` and `USNM_JA_OCR_JOB=false` in `infra/env/<env>.json` (through a pull request), with `USNM_ONPREM_GROUP` set and the node's Arc identity in that group. Provision. That grants the group read on `curated` and `reference` and create-only writes under `curated/ocr-ja/` and to `reference/status/ocr-ja.json`, with no delete (`infra/modules/jaocr-runner.bicep`). It opens the lake to `USNM_OCR_NODE_IPS` and removes the Azure job.
+2. **Install and start**, on the node as root, from a checkout of the scripts:
+
+   ```sh
+   scripts/ocr-node/ja-ocr-onprem.sh --commit <sha on main> \
+     --curated-url https://<lake>.blob.core.windows.net/curated \
+     --reference-url https://<lake>.blob.core.windows.net/reference --replicas 2 --start
+   journalctl -fu 'usnm-ja-ocr@*'
+   ```
+
+   Each replica (`usnm-ja-ocr@N`) gets 4 CPUs and 8 GiB, as in Azure. The script multiplies loc.gov's gaps by `JAOCR_REPLICAS`, so the replicas stay under LoC's limits together. Don't run them while another host is fetching from LoC at full pace.
+
+3. **Until done.** A run ends when no target issue is left to claim; like the Azure job, start it again (`systemctl start usnm-ja-ocr@1 usnm-ja-ocr@2`) until the status page shows every target done. A newly added host needs a fresh Arc token before its group grants apply: restart `himdsd`.
+
+The one-off measurements (`mixed`, `american-stories`, `quality`), which ran on `caj-usnm-jaone-<env>`, aren't covered by this grant: it only lets the runner write under `ocr-ja/`.
+
 ## OCR quality audit
 
 `jaocr.py quality` (`ja-ocr/quality.py`) measures how good LoC's OCR text is, by language and decade, to show where reading pages again would pay off, and how often a page's language differs from its title's first catalog language. It runs in the Japanese OCR job's image because the curated store is reachable only from the VNet. It reads every curated part of every batch in the published version once, keeps a fixed sample of pages (2% by default; a page is in it when a hash of its `doc_id` falls under the cut, so a rerun takes the same pages) and scores each sampled page's stored text. Word tokens are letters only (surrounding punctuation stripped, a word hyphenated across a line break joined), at least 2, case-folded.

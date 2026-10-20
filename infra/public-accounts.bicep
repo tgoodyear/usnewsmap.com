@@ -27,11 +27,11 @@ func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bo
     lakeOpen ? [resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.dataLake)] : []
   )
 
-// The data lake opens to the node IPs only for the on-prem Serial Set
-// runner, and only when there are IPs to allow.
+// The data lake opens to the node IPs only for an on-prem runner that writes to it
+// (the Serial Set's, the Japanese OCR's), and only when there are IPs to allow.
 @export()
-func lakeOpen(serialSetOnPrem bool, ocrNodeIps string) bool =>
-  serialSetOnPrem && !empty(nodeIpList(ocrNodeIps))
+func lakeOpen(onPremLakeRunner bool, ocrNodeIps string) bool =>
+  onPremLakeRunner && !empty(nodeIpList(ocrNodeIps))
 
 // USNM_OCR_NODE_IPS as a list: comma separated, blanks dropped.
 @export()
