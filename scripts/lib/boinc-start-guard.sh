@@ -96,8 +96,10 @@ boinc_start_guard_reconcile() {
     esac
     if [ "$(date +%s)" -ge "$deadline" ]; then
       case "$state" in Succeeded | Failed | Canceled) ;; *) return 1 ;; esac
-      [ -z "${execution:-}" ]
-      return
+      # Explicit statuses: this runs from the EXIT trap, where a bare `return` (bash 4+)
+      # returns the status that triggered the trap, not the last command's.
+      if [ -n "${execution:-}" ]; then return 1; fi
+      return 0
     fi
     sleep "${BOINC_START_RECONCILE_POLL:-10}"
   done
