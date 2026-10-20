@@ -86,8 +86,24 @@ struct Shared {
 /// The background sender: its queue and its task.
 struct Background {
     queue: tokio::sync::mpsc::Sender<Full>,
-    /// Ends with the lines it hadn't sent yet.
-    task: tokio::task::JoinHandle<anyhow::Result<Vec<u8>>>,
+    task: Task,
+}
+
+/// The sender's task, aborted when dropped: a release that gives up (its
+/// writer lock lost, `release::drain`) mid-wait leaves no sender posting.
+/// Ends with the lines it hadn't sent yet.
+struct Task(tokio::task::JoinHandle<anyhow::Result<Vec<u8>>>);
+
+impl Task {
+    async fn join(&mut self) -> anyhow::Result<Vec<u8>> {
+        (&mut self.0).await.context("the decade sender's task")?
+    }
+}
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Holds pages back by decade and sends them a decade at a time.
@@ -116,7 +132,7 @@ impl DecadeOrder {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let background = sender.map(|sender| {
             let (queue, rx) = tokio::sync::mpsc::channel(QUEUED_FILES);
-            let task = tokio::spawn(send_files(rx, sender, Arc::clone(&shared)));
+            let task = Task(tokio::spawn(send_files(rx, sender, Arc::clone(&shared))));
             Background { queue, task }
         });
         Ok(Self {
@@ -183,9 +199,10 @@ impl DecadeOrder {
         for d in decades {
             self.send(sink, d).await?;
         }
-        if let Some(Background { queue, task }) = self.background.take() {
+        if let Some(Background { queue, mut task }) = self.background.take() {
             drop(queue);
-            let unsent = task.await.context("the decade sender's task")??;
+            // `task` aborts the sender if this future is dropped mid-wait.
+            let unsent = task.join().await?;
             // Back to the sink, so its `finish` sends them with the forced
             // commit, as in line.
             for line in unsent.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
@@ -203,7 +220,9 @@ impl DecadeOrder {
         };
         let mut file = spill.file.finish()?;
         file.flush()?;
-        let disk_bytes = self.disk_bytes() + file.get_ref().metadata()?.len();
+        // Every file in the directory: open ones, queued ones and the one
+        // being sent.
+        let disk_bytes = spill_bytes(&self.dir);
         drop(file);
         let full = Full {
             decade,
@@ -215,23 +234,14 @@ impl DecadeOrder {
             Some(bg) => {
                 if bg.queue.send(full).await.is_err() {
                     // The sender stopped: its error says why.
-                    let Background { task, .. } = self.background.take().expect("background");
-                    task.await.context("the decade sender's task")??;
+                    let Background { mut task, .. } = self.background.take().expect("background");
+                    task.join().await?;
                     anyhow::bail!("the decade sender stopped");
                 }
                 Ok(())
             }
             None => send_file(&full, &self.shared, &mut InLine(sink)).await,
         }
-    }
-
-    /// The compressed bytes of the other decades' open files, as flushed so far.
-    fn disk_bytes(&self) -> u64 {
-        self.open
-            .values()
-            .filter_map(|s| s.file.get_ref().get_ref().metadata().ok())
-            .map(|m| m.len())
-            .sum()
     }
 }
 
@@ -313,11 +323,23 @@ async fn send_file(full: &Full, shared: &Mutex<Shared>, to: &mut dyn Lines) -> a
     Ok(())
 }
 
+/// The bytes of the files in the spill directory now.
+fn spill_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok()?.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
 impl Drop for DecadeOrder {
     fn drop(&mut self) {
-        if let Some(bg) = self.background.take() {
-            bg.task.abort();
-        }
+        // Drops the task, which aborts the sender.
+        self.background = None;
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
