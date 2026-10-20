@@ -492,16 +492,25 @@ class ProductionReconciliation(unittest.TestCase):
         self.assertIn("b8eda974-7b85-4f76-af95-65846b26df6d", storage.split("resource copyReader")[1].split("output ")[0])
         self.assertIn("scope: files", storage.split("resource copyReader")[1])
         self.assertNotIn("SAS", job)
+        # It mounts neither share: the SMB mount would be read-write with the account key.
+        self.assertIn("mountProject: false", job)
+        bridge_job = (ROOT / "contrib-compute/infra/boinc/modules/bridge-job.bicep").read_text()
+        self.assertIn("volumes: mountProject ?", bridge_job)
         # Each account has its own environment storage name, so switching (or rolling back)
         # changes the revision template and no running replica keeps the old mount.
         self.assertIn("name: projectStorageName", app)
         self.assertIn("projectStorageName: projectOnV2 ? 'project-v2' : 'project'", source)
         # Leaving the copy stage needs a final copy that succeeded, and none running.
         provision = (ROOT / "scripts/provision-boinc.sh").read_text()
-        gate = provision.split('if [[ $PROJECT_SHARE == provisioned* ]]')[1].split("\nfi\n")[0]
+        gate = provision.split('copy_job="usnm-boinc-sharecopy-caj-')[1].split("\nfi\n")[0]
         self.assertIn("is still running", gate)
         self.assertIn('.s == "Succeeded"', gate)
         self.assertIn("grep -q ResourceNotFound", gate)
+        # Active-job checks expect the storage name of the selected stage.
+        self.assertIn('.volumes[0].storageName == $storage', provision)
+        self.assertIn("PROJECT_STORAGE=project-v2", provision)
+        # The cutover provision runs with the scheduler closed on purpose.
+        self.assertIn('sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)', provision)
         # Uploads and scheduler requests stop during the final copy; Apache stays up.
         runbook = (ROOT / "docs/boinc.md").read_text().split("## Moving the project share")[1].split("\n## ")[0]
         self.assertIn("touch stop_sched stop_upload", runbook)

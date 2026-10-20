@@ -27,8 +27,10 @@ param extraEnv array = []
 @description('CPU cores and memory of a run.')
 param cpu string = '0.5'
 param memory string = '1Gi'
-@description('The project share\'s mount options. Without mfsymlinks, BOINC\'s symlinks appear as the small files that store them, which is what a byte-for-byte copy needs.')
+@description('The project share\'s mount options. mfsymlinks stores BOINC\'s symlinks as small files on SMB.')
 param mountOptions string = 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict'
+@description('Whether /project is mounted. The share copy job reaches both shares over REST only, so it mounts neither: the mount is read-write with the account key.')
+param mountProject bool = true
 
 resource job 'Microsoft.App/jobs@2024-03-01' = {
   name: jobName
@@ -63,12 +65,12 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
             { name: 'PROJECT_DIR', value: '/project' }
             { name: 'HANDOFF_DIR', value: '/project/handoff' }
           ], extraEnv)
-          volumeMounts: [ { volumeName: 'project', mountPath: '/project' } ]
+          volumeMounts: mountProject ? [ { volumeName: 'project', mountPath: '/project' } ] : []
         }
       ]
       // SMB has no symlinks or POSIX owners: mfsymlinks stores BOINC's symlinks (bin/stop ->
       // bin/start), and the share appears owned by boincadm (uid 1000).
-      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorageName, mountOptions: mountOptions } ]
+      volumes: mountProject ? [ { name: 'project', storageType: 'AzureFile', storageName: projectStorageName, mountOptions: mountOptions } ] : []
     }
   }
 }

@@ -450,7 +450,7 @@ module shareCopyJob 'modules/bridge-job.bicep' = if (withApp && projectShare == 
     // send 28 files, 107 with 4 cores and 32 scanners); the source is now listed over REST.
     cpu: '4'
     memory: '8Gi'
-    mountOptions: 'uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict'
+    mountProject: false
     extraEnv: [
       { name: 'AZCOPY_URL', value: azcopyUrl }
       { name: 'AZCOPY_SHA256', value: azcopySha256 }

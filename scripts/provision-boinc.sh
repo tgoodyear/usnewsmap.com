@@ -143,6 +143,8 @@ write_params "$STAGE"
 # the provisioned share: only after a final pass, run with the server stopped, has succeeded.
 # Its latest execution must have succeeded and ended within the hour, and none may be running.
 PROJECT_SHARE=$(jq -r '.projectShare // "standard"' "$BOINC_SETTINGS")
+# The environment storage /project comes from (app.bicep): its name follows the account.
+if [[ $PROJECT_SHARE == provisioned* ]]; then PROJECT_STORAGE=project-v2; else PROJECT_STORAGE=project; fi
 if [[ $PROJECT_SHARE == provisioned* ]]; then
   copy_job="usnm-boinc-sharecopy-caj-$ENV_NAME"
   if out=$(baz containerapp job show --name "$copy_job" --resource-group "$BOINC_RG" --query name -o tsv 2>&1); then
@@ -204,7 +206,7 @@ bridge_job_template_matches() {
   jq -e --arg img "$BRIDGE_IMAGE" --arg master_host "$MASTER_HOST" \
     --arg kv "$expected_kv" --arg db_host "$expected_db_host" \
     --argjson cpu "$cpu" --arg memory "$memory" \
-    --argjson extra_env "$extra_env_json" '
+    --argjson extra_env "$extra_env_json" --arg storage "$PROJECT_STORAGE" '
     (.containers | length) == 1 and
     .containers[0].name == "bridge" and
     .containers[0].image == $img and
@@ -215,7 +217,7 @@ bridge_job_template_matches() {
     (.volumes | length) == 1 and
     .volumes[0].name == "project" and
     .volumes[0].storageType == "AzureFile" and
-    .volumes[0].storageName == "project" and
+    .volumes[0].storageName == $storage and
     .volumes[0].mountOptions == "mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict" and
     ((.containers[0].env // []) | all(((keys - ["name", "value"]) | length) == 0 and (.value | type == "string" and length > 0))) and
     (
@@ -392,16 +394,23 @@ fi
 curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
   --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$work/project.xml" ||
   die "the public BOINC project endpoint is not healthy"
-python3 - "$work/project.xml" "$PROJECT_URL" <<'PY'
+# BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
+# (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
+python3 - "$work/project.xml" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
 
 config = ET.parse(sys.argv[1]).getroot()
+sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
 if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
-        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") != "0"):
+        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
     raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
 PY
-echo "BOINC deployment ready: ${PROJECT_URL} (secrets, project, app registration and public health verified)"
+if [ "${BOINC_MAINTENANCE:-0}" = 1 ]; then
+  echo "BOINC deployment up in maintenance: ${PROJECT_URL} (scheduler may be closed); after resuming, check again without BOINC_MAINTENANCE"
+else
+  echo "BOINC deployment ready: ${PROJECT_URL} (secrets, project, app registration and public health verified)"
+fi
 workspace=$(baz monitor log-analytics workspace list --resource-group "$BOINC_RG" \
   --query '[0].customerId' -o tsv) || workspace=""
 if [ -z "$workspace" ]; then
