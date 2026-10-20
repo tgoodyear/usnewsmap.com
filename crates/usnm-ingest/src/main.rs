@@ -371,6 +371,11 @@ enum Command {
         /// The version whose `batches.json` (in the reference store) to take.
         #[arg(long)]
         from_version: String,
+        /// The lake's `reference` container URL: its version names for
+        /// today and the next two days are recorded as taken, so the
+        /// release picks a name nothing else has.
+        #[arg(long)]
+        reserve_from: Option<String>,
         #[arg(long, requires = "offset")]
         every: Option<usize>,
         #[arg(long, requires = "every")]
@@ -1423,6 +1428,7 @@ async fn command(
             from_version,
             every,
             offset,
+            reserve_from,
         } => {
             if cli.stores.cosmos.is_some() || cli.stores.state_file.is_none() {
                 bail!("seed-state writes a local state file only: set --state-file, not --cosmos");
@@ -1439,6 +1445,15 @@ async fn command(
             )
             .await?;
             tracing::info!(?seeded, "state seeded");
+            if let Some(lake) = reserve_from {
+                let reserved = usnm_ingest::onprem::reserve_names(
+                    &state,
+                    usnm_store::open(lake)?.as_ref(),
+                    chrono::Utc::now().date_naive(),
+                )
+                .await?;
+                tracing::info!(?reserved, "version names reserved");
+            }
             Ok(None)
         }
         Command::PublishStaged {
@@ -1452,6 +1467,7 @@ async fn command(
             let reference = usnm_store::open(to_reference)?;
             let index = usnm_store::open(to_index)?;
             usnm_ingest::onprem::publish_staged(&usnm_ingest::onprem::Staged {
+                state: &state,
                 local_reference: local_reference.as_ref(),
                 local_index_root: local_index_root.clone(),
                 reference: reference.as_ref(),

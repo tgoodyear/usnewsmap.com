@@ -27,16 +27,21 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
-use usnm_state::state::{Batch, BatchStatus, State};
+use usnm_state::state::{Batch, BatchStatus, IndexRun, RunStatus, State};
 use usnm_store::{ObjectStore, StoreError};
 
-use crate::cluster::local::{manifest, rewrite_metastore, METASTORE_FILE};
+use crate::cluster::local::{rewrite_metastore, METASTORE_FILE};
 use crate::cluster::sample::run_batches;
 
 /// The staged pointer a release with `--stage-index-storage` writes.
 pub const PENDING_POINTER: &str = "index-storage-pending.json";
 /// The file-backed metastore's list of indexes, at the metastore's root.
 pub const METASTORE_MANIFEST: &str = "manifest.json";
+/// The staged run's record in its version's snapshot (`{version}/index_run.json`),
+/// for [`import_staged_run`]: the on-prem host has no Cosmos access.
+pub const RUN_FILE: &str = "index_run.json";
+/// Days from today whose version names `seed_state` reserves.
+const RESERVE_DAYS: i64 = 3;
 /// Objects copied at once.
 const COPIES: usize = 4;
 /// Bytes per chunk read from a local split.
@@ -124,6 +129,8 @@ pub async fn seed_state(
 
 /// Where [`publish_staged`] copies from and to.
 pub struct Staged<'a> {
+    /// The release's local pipeline state (its run record).
+    pub state: &'a State,
     /// The release's local reference store (the mirror it wrote to).
     pub local_reference: &'a dyn ObjectStore,
     /// The writer's local metastore and index root (the directory of its
@@ -235,6 +242,91 @@ pub fn metastore_splits(meta: &Value) -> anyhow::Result<Vec<Split>> {
         .collect()
 }
 
+/// The run record a staged on-prem release left in `version`'s snapshot,
+/// recorded in `state` when `state` has none for it: what a Cosmos-backed
+/// release or prune does when `current.json` names a version built on-prem.
+/// `None` when the snapshot has no such record.
+pub async fn import_staged_run(
+    state: &State,
+    reference: &dyn ObjectStore,
+    version: &str,
+) -> anyhow::Result<Option<(IndexRun, String)>> {
+    if let Some(found) = state.run(version).await? {
+        return Ok(Some(found));
+    }
+    let Some(bytes) = reference.get(&format!("{version}/{RUN_FILE}")).await? else {
+        return Ok(None);
+    };
+    let run: IndexRun = serde_json::from_slice(&bytes).context(RUN_FILE)?;
+    ensure!(
+        run.index_version == version && run.id == version,
+        "{version}/{RUN_FILE} is the record of {}",
+        run.index_version
+    );
+    ensure!(
+        run.status == RunStatus::Published,
+        "{version}/{RUN_FILE} records a run that wasn't published"
+    );
+    if state.create_run(&run).await? {
+        tracing::warn!(version, "recorded the run of a version built on-prem");
+    }
+    state.run(version).await
+}
+
+/// Record a failed placeholder run for every version name the lake's
+/// `reference` already has for today and the next days, so a release on
+/// this state (`Release::next_names`, which reads only the state) picks a
+/// name nothing else uses. Returns the names reserved.
+pub async fn reserve_names(
+    state: &State,
+    lake_reference: &dyn ObjectStore,
+    today: chrono::NaiveDate,
+) -> anyhow::Result<Vec<String>> {
+    let mut reserved = Vec::new();
+    for d in 0..RESERVE_DAYS {
+        let stamp = (today + chrono::Duration::days(d)).format("%Y%m%d");
+        for n in 1..1000 {
+            let version = format!("pages-v{stamp}-{n}");
+            let used = lake_reference
+                .exists(&format!("{version}/manifest.json"))
+                .await?
+                || lake_reference
+                    .exists(&format!("{version}/batches.json"))
+                    .await?;
+            if !used {
+                break;
+            }
+            if state.run(&version).await?.is_none() {
+                let now = Utc::now();
+                state
+                    .create_run(&IndexRun {
+                        id: version.clone(),
+                        index_version: version.clone(),
+                        full: false,
+                        indexes: Vec::new(),
+                        new_index: String::new(),
+                        batch_count: None,
+                        batch_list: None,
+                        batches: None,
+                        status: RunStatus::Failed,
+                        docs: 0,
+                        pages: 0,
+                        duplicate_pages: 0,
+                        started_at: now,
+                        published_at: None,
+                        previous_version: None,
+                        last_error: Some("reserved: the lake's reference has this version".into()),
+                        failed_at: Some(now),
+                        build: None,
+                    })
+                    .await?;
+            }
+            reserved.push(version);
+        }
+    }
+    Ok(reserved)
+}
+
 /// What [`mirror`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Mirrored {
@@ -332,6 +424,26 @@ pub async fn publish_staged(s: &Staged<'_>) -> anyhow::Result<Published> {
     if !s.dry_run {
         add_to_manifest(s.index, &ids).await?;
     }
+
+    // The run's record goes with the snapshot, for the Cosmos-backed
+    // release (or prune) that next finds the version serving.
+    let (run, _) = s
+        .state
+        .run(&version)
+        .await?
+        .with_context(|| format!("the local state has no run for {version}"))?;
+    ensure!(
+        run.status == RunStatus::Published,
+        "the local run for {version} is {:?}, not published",
+        run.status
+    );
+    s.local_reference
+        .put(
+            &format!("{version}/{RUN_FILE}"),
+            serde_json::to_vec_pretty(&run)?,
+            "application/json",
+        )
+        .await?;
 
     // The reference snapshot: create-only, as the release writes it.
     let prefix = format!("{version}/");
@@ -539,9 +651,11 @@ async fn upload_file(store: &dyn ObjectStore, path: &str, file: &Path) -> anyhow
 /// Add `ids` to the index account's metastore manifest as active indexes,
 /// keeping every index and template it lists.
 async fn add_to_manifest(index: &dyn ObjectStore, ids: &[String]) -> anyhow::Result<()> {
-    let mut m: Value = match index.get(METASTORE_MANIFEST).await? {
+    let existing = index.get(METASTORE_MANIFEST).await?;
+    let absent = existing.is_none();
+    let mut m: Value = match existing {
         Some(b) => serde_json::from_slice(&b).context("the index account's manifest.json")?,
-        None => serde_json::from_slice(&manifest(&ids[0]))?,
+        None => serde_json::json!({"version": "0.9", "indexes": {}, "templates": []}),
     };
     let list = m
         .get_mut("indexes")
@@ -558,7 +672,7 @@ async fn add_to_manifest(index: &dyn ObjectStore, ids: &[String]) -> anyhow::Res
             }
         }
     }
-    if added > 0 {
+    if added > 0 || absent {
         index
             .put(
                 METASTORE_MANIFEST,
@@ -582,6 +696,7 @@ fn content_type(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cluster::local::manifest;
     use serde_json::json;
     use std::sync::Arc;
     use usnm_state::docs::MemoryDocs;
@@ -680,6 +795,7 @@ mod tests {
 
     struct Fixture {
         _tmp: tempfile::TempDir,
+        state: State,
         local_reference: LocalStore,
         index_root: PathBuf,
         reference: LocalStore,
@@ -734,8 +850,11 @@ mod tests {
             .unwrap();
             std::fs::write(dir.join(format!("{split}.split")), vec![7u8; 20_000_000]).unwrap();
         }
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        state.create_run(&published_run("v2")).await.unwrap();
         Fixture {
             _tmp: tmp,
+            state,
             local_reference,
             index_root,
             reference,
@@ -743,8 +862,32 @@ mod tests {
         }
     }
 
+    fn published_run(v: &str) -> IndexRun {
+        IndexRun {
+            id: v.into(),
+            index_version: v.into(),
+            full: true,
+            indexes: vec!["base2".into()],
+            new_index: "base2".into(),
+            batch_count: Some(1),
+            batch_list: Some(format!("{v}/batches.json")),
+            batches: None,
+            status: RunStatus::Published,
+            docs: 5,
+            pages: 5,
+            duplicate_pages: 0,
+            started_at: Utc::now(),
+            published_at: Some(Utc::now()),
+            previous_version: Some("v1".into()),
+            last_error: None,
+            failed_at: None,
+            build: None,
+        }
+    }
+
     fn staged(f: &Fixture, dry_run: bool) -> Staged<'_> {
         Staged {
+            state: &f.state,
             local_reference: &f.local_reference,
             local_index_root: f.index_root.clone(),
             reference: &f.reference,
@@ -792,7 +935,8 @@ mod tests {
         let again = publish_staged(&staged(&f, false)).await.unwrap();
         assert_eq!(again.indexes[0].skipped, 1);
         assert_eq!(again.indexes[0].bytes, 0);
-        assert_eq!(again.reference_skipped, 1);
+        // The snapshot file and the run record.
+        assert_eq!(again.reference_skipped, 2);
     }
 
     #[tokio::test]
@@ -865,5 +1009,103 @@ mod tests {
             .unwrap();
         assert!(mirror(&from, &to, &["v1".into()], &[]).await.is_err());
         assert!(mirror(&from, &to, &["nothing".into()], &[]).await.is_err());
+    }
+
+    /// Cosmos (here another state) gets the on-prem run from the snapshot.
+    #[tokio::test]
+    async fn the_run_record_travels_with_the_snapshot() {
+        let f = fixture().await;
+        publish_staged(&staged(&f, false)).await.unwrap();
+        assert!(f
+            .reference
+            .get("v2/index_run.json")
+            .await
+            .unwrap()
+            .is_some());
+        let cosmos = State::new(Arc::new(MemoryDocs::default()));
+        let (run, _) = import_staged_run(&cosmos, &f.reference, "v2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (run.index_version.as_str(), run.status),
+            ("v2", RunStatus::Published)
+        );
+        assert!(cosmos.run("v2").await.unwrap().is_some());
+        assert!(import_staged_run(&cosmos, &f.reference, "v9")
+            .await
+            .unwrap()
+            .is_none());
+        // Another version's record under this name is refused.
+        f.reference
+            .put(
+                "v3/index_run.json",
+                serde_json::to_vec(&published_run("v2")).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        assert!(import_staged_run(&cosmos, &f.reference, "v3")
+            .await
+            .is_err());
+    }
+
+    /// An index account with no metastore manifest yet gets one, even for
+    /// a single index.
+    #[tokio::test]
+    async fn an_empty_account_gets_a_manifest() {
+        let f = fixture().await;
+        std::fs::remove_file(f.index.root().join(METASTORE_MANIFEST)).unwrap();
+        f.local_reference
+            .put(
+                PENDING_POINTER,
+                serde_json::to_vec(
+                    &json!({"index_version": "v2", "previous_version": "v1", "indexes": ["base2"]}),
+                )
+                .unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        publish_staged(&staged(&f, false)).await.unwrap();
+        let list: Value =
+            serde_json::from_slice(&f.index.get(METASTORE_MANIFEST).await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(list["indexes"], json!({"base2": "active"}));
+    }
+
+    #[tokio::test]
+    async fn names_the_lake_has_are_reserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lake = LocalStore::new(tmp.path());
+        for v in [
+            "pages-v20261020-1",
+            "pages-v20261020-2",
+            "pages-v20261021-1",
+        ] {
+            lake.put(
+                &format!("{v}/manifest.json"),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        }
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+        let r = reserve_names(&state, &lake, day).await.unwrap();
+        assert_eq!(
+            r,
+            [
+                "pages-v20261020-1",
+                "pages-v20261020-2",
+                "pages-v20261021-1"
+            ]
+        );
+        let (run, _) = state.run("pages-v20261020-2").await.unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(state.run("pages-v20261020-3").await.unwrap().is_none());
+        // Again: nothing new, nothing replaced.
+        assert_eq!(reserve_names(&state, &lake, day).await.unwrap().len(), 3);
     }
 }

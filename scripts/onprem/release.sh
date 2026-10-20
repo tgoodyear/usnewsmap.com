@@ -11,7 +11,9 @@
 # mirror   copies the lake's current.json, catalog/ and the serving
 #          version's snapshot into DIR/reference.
 # seed     writes DIR/state.json's batch records from the serving version's
-#          batch list; --sample 1pct takes every 100th batch from the 40th.
+#          batch list (--sample 1pct: every 100th batch from the 40th), and
+#          reserves the version names the lake has for today and the next
+#          two days. Run it the day the release starts.
 # release  builds a full staged version: the Quickwit writer on DIR/qw
 #          (file://), the WAL in DIR/wal, curated read from the lake, with the
 #          #283 settings (one text field, decades, page languages, American
@@ -67,7 +69,7 @@ case "$STEP" in
     every=()
     [ "$SAMPLE" != 1pct ] || every=(--every 100 --offset 39)
     "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
-      seed-state --from-version "$(serving)" "${every[@]}"
+      seed-state --from-version "$(serving)" --reserve-from "$LAKE_URL/reference" "${every[@]}"
     ;;
   release)
     [ -x "$QUICKWIT" ] || die "no quickwit at $QUICKWIT"

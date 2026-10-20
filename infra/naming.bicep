@@ -82,6 +82,7 @@ var functionWords = [
   'ocrs'
   'pipeline'
   'qw'
+  'release'
   'scans'
   'scratch'
   'search'

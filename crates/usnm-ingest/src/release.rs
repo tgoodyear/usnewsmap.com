@@ -1384,7 +1384,14 @@ impl Release {
         let version = pointer["index_version"]
             .as_str()
             .context("current.json has no index_version")?;
-        let (mut run, etag) = self.state.run(version).await?.with_context(|| {
+        // A version built on-prem has its run in its snapshot (onprem.rs).
+        let (mut run, etag) = crate::onprem::import_staged_run(
+            &self.state,
+            self.reference.as_ref(),
+            version,
+        )
+        .await?
+        .with_context(|| {
             format!("current.json names `{version}`, which has no index run in the pipeline state")
         })?;
         if run.status != RunStatus::Published {
