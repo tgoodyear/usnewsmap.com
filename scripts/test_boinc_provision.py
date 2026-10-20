@@ -471,7 +471,9 @@ class ProductionReconciliation(unittest.TestCase):
         bridge = source.split("module bridgeJob ")[1].split("module initJob ")[0]
         self.assertIn("value: 'iris-bundle-collect'", bridge)
         self.assertIn("value: 'overproof-100-v12'", bridge)
-        self.assertIn("shareQuotaGb: 200", source)
+        # The live share quota (raised by hand from 200 GB after #858), so a provision never
+        # shrinks it under live data.
+        self.assertIn("shareQuotaGb: 250", source)
         self.assertIn("!empty(webImage) ? webImage", source)
         self.assertIn("command: assessment || !empty(webImage)", source)
         self.assertTrue((ROOT / "contrib-compute/boinc/html/user/work_summary.php").is_file())

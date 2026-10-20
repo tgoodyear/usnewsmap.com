@@ -104,6 +104,13 @@ NUM_SHARDS = int(os.environ.get("NUM_SHARDS", "8"))
 MAX_IN_FLIGHT_BUNDLES = max(500, int(os.environ.get("MAX_IN_FLIGHT_BUNDLES", "500")))
 MIN_FREE_GB = float(os.environ.get("MIN_FREE_GB", "35.0"))
 LOC_GAP_SECS = 5.0
+# The last pass fetches every page the scan archive lacks from tile.loc.gov, through one
+# 5-second pacer shared by all shards: at most a few hundred pages an hour across the wave,
+# against millions of pages in tier 2. Off by default, so a wave stages what the archive
+# holds and ends; scans come from the one on-prem fetcher instead (#914). Set
+# QUALITY_LOC_FALLBACK=1 to run it anyway.
+LOC_FALLBACK = os.environ.get("QUALITY_LOC_FALLBACK", "0") == "1"
+PASSES = ("jpeg_cached", "jpeg_cached", "archived") + (("loc_fallback",) if LOC_FALLBACK else ())
 
 ALL_LANGS = [
     "ces", "dan", "deu", "eng", "fin", "fra", "haw", "hrv", "hun", "ita",
@@ -1887,7 +1894,7 @@ def process_shard(shard_idx):
     staged_rows = []
     cache_lock = threading.Lock()
 
-    for pass_mode in ("jpeg_cached", "jpeg_cached", "archived", "loc_fallback"):
+    for pass_mode in PASSES:
         archived_only = pass_mode != "loc_fallback"
         status["current_pass"] = pass_mode
         jc_pfx = JPEG_CACHE_PREFIX.rstrip("/")

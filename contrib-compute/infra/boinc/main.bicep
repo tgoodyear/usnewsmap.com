@@ -177,7 +177,9 @@ module storage 'modules/storage.bicep' = {
     filesAccountName: names.files
     endpointName: names.filesEndpoint
     location: location
-    shareQuotaGb: 200
+    // Raised by hand to 250 GB for the quality wave's bundles; kept here so a provision
+    // doesn't shrink it under live data (#529).
+    shareQuotaGb: 250
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.filesDnsZoneId
   }
@@ -320,6 +322,9 @@ module publishJob 'modules/bridge-job.bicep' = if (withApp && !empty(publishImag
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     command: [ '/usr/local/lib/usnm-boinc/publish-appver.sh' ]
+    // Publish into the live project, keeping its credentials and config links
+    // (contrib-compute/docs/amd-885-release.md); set by hand for the AMD release (#529).
+    extraEnv: [ { name: 'APPVER_REUSE_PROJECT', value: '1' } ]
   }
 }
 
@@ -359,6 +364,8 @@ module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
 // BOINC identity and run only if its sha256 is the committed one. 4 vCPUs: the runner converts
 // any page the on-prem JPEG cache (docs/boinc.md) hasn't; more cache, not more vCPUs, is the
 // way to speed it up. A day per run; it is started by hand (az containerapp job start).
+// It stages only pages the scan archive holds and then ends: the LoC fallback pass, one
+// 5-second pacer across every shard, is off unless QUALITY_LOC_FALLBACK=1 (#914).
 module qualityWaveJob 'modules/bridge-job.bicep' = if (withApp && !empty(qualityWaveScript)) {
   name: 'quality-wave-job'
   dependsOn: [ registry ]
