@@ -263,6 +263,9 @@ param ocrNodeIps string = ''
 @description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-grp-<env> (scripts/ocr-node/group.sh creates or relabels the saved group without changing its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
 
+@description('Object id of usnm-onprem-grp-<env> (scripts/ocr-node/group.sh --kind onprem): every on-prem host\'s Arc machine identity, the OCR nodes and any other host. It gets what any host needs for local work: the node writer role on the exchange account\'s boinc-handoff container (list, read, create; no delete), for the quality-wave JPEG cache. Unlike ocrNodeGroupId it carries no queue roles and doesn\'t set the nodes\' LoC pacing. Settings only, never in the repository.')
+param onPremGroupId string = ''
+
 @description('Arc service principal object id of the scan archive uploader. Grants only the archive writer role on scans, without OCR queue access or membership in the pacing-counted OCR node group.')
 param scanArchiveUploaderId string = ''
 
@@ -563,6 +566,9 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
       boincHandoff ? [boincHandoffJob!.outputs.principalId, boincBridgeIdentity!.properties.principalId] : [],
       empty(trim(boincHandoffRunner)) ? [] : [trim(boincHandoffRunner)]
     )
+    // Every on-prem host, so any of them can run the quality-wave JPEG cache
+    // (scripts/ocr-node/quality-jpeg-cache.py) against the hand-off container.
+    onPremGroupId: trim(onPremGroupId)
     // The hand-off job takes pages off the work queues beside the nodes (#296).
     handoffQueueIds: boincHandoff ? [boincHandoffJob!.outputs.principalId] : []
     nodeGroupId: trim(ocrNodeGroupId)

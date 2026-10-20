@@ -920,6 +920,41 @@ systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache
 journalctl -fu usnm-quality-jpeg-cache
 ```
 
+Another LAN host with idle CPU can convert too, reading masters from the scan server
+(`--scan-server`, `usnm-quality-jpeg-cache-remote.service`) rather than `/tank`. It needs
+three things. The first is its Arc machine identity in the on-prem hosts' group,
+`usnm-onprem-grp-<env>` (`USNM_ONPREM_GROUP`, `scripts/ocr-node/group.sh --kind onprem`),
+which has the hand-off writer role (list, read, create; no delete). Not the OCR nodes'
+group: its member count sets the nodes' LoC pacing. The second is the host on the scan server's `--allow`
+(`USNM_SCANSERVE_ALLOW` in CT 211's `/etc/usnm/scanserve.env`, then restart
+`usnm-scanserve`). The third is its own share of the list: split the pages that remain
+alternately, so the two hosts never convert the same page and both stay just ahead of
+the runner. Install the Pillow 11.3.0 wheel for the host's Python, as above (cp313:
+`pillow-11.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`, sha256
+`13f87d581e71d9189ab21fe0efb5a23e9f28552d5be6979e84001d3b8505abe8`). Before starting it,
+check that a few of its JPEGs match CT 211's byte for byte (`--what-if` prints the size;
+compare the sha256 of pages both convert).
+
+```sh
+# Stop CT 211's converter first: it loads its whole list at start, so a split taken while
+# it runs would leave pages queued on both hosts.
+pct exec 211 -- systemctl stop usnm-quality-jpeg-cache
+# On the operator's machine: what CT 211 hasn't done, split alternately.
+grep -vxFf <(cut -f1 done.txt) pages.txt > left.txt
+awk 'NR % 2 == 1' left.txt > pages-ct211.txt
+awk 'NR % 2 == 0' left.txt > pages-remote.txt
+az ad group member add --group <USNM_ONPREM_GROUP> --member-id <host's Arc principal id>
+# Install each half as its host's LIST (/usr/local/lib/usnm-quality-jpeg-cache/pages.txt),
+# then start both. A host added to the group needs a fresh Arc token: restart himdsd.
+# On the other host, as root, after the Pillow wheel and the script are in place:
+install -m 0644 usnm-quality-jpeg-cache-remote.service /etc/systemd/system/
+printf 'ACCOUNT=<exchange account>\nLIST=%s/pages.txt\nWORKERS=6\nSCAN_SERVER=http://<scan-fetch host>:8380\n' \
+  /usr/local/lib/usnm-quality-jpeg-cache > /etc/usnm/quality-jpeg-cache.env
+systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache-remote
+# Later lists: append each host's half to its pages.txt and restart it; done.txt skips
+# what it has done.
+```
+
 ## Allocation and recovery
 
 Export filters the manifest while decoding, retaining only selected batch and

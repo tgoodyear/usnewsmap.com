@@ -244,6 +244,11 @@
       "description": "Private: in the settings store, under the environment's label. The OCR nodes' Entra group's object id.",
       "not": {}
     },
+    "USNM_ONPREM_GROUP": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The object id of usnm-onprem-grp-<env>, every on-prem host's Arc identity (scripts/ocr-node/group.sh --kind onprem); it gets the roles any host needs for local work.",
+      "not": {}
+    },
     "USNM_OCR_NODE_IPS": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The OCR nodes' public IP addresses (the operator's home IP).",

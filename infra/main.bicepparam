@@ -66,6 +66,7 @@ param deployBoincGroup = bool(readEnvironmentVariable('USNM_BOINC_GROUP', 'false
 param ocrNodes = bool(readEnvironmentVariable('USNM_OCR_NODES', 'false'))
 param ocrNodeIps = readEnvironmentVariable('USNM_OCR_NODE_IPS', '')
 param ocrNodeGroupId = readEnvironmentVariable('USNM_OCR_NODE_GROUP', '')
+param onPremGroupId = readEnvironmentVariable('USNM_ONPREM_GROUP', '')
 param scanArchiveUploaderId = readEnvironmentVariable('USNM_SCAN_ARCHIVE_UPLOADER_ID', '')
 param ocrKeyVaultAdmins = readEnvironmentVariable('USNM_OCR_KEYVAULT_ADMINS', '')
 param ocrSyncCron = readEnvironmentVariable('USNM_OCR_SYNC_CRON', '17 * * * *')

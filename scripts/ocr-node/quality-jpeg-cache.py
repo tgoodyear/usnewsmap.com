@@ -16,8 +16,12 @@ leaves alone (grayscale JPEGs under 40 Mpx and 20 MB) aren't uploaded: the
 runner sends their bytes as they are.
 
     quality-jpeg-cache.py --account <exchange account> --list pages.txt \
-        [--scans-root /tank/ocr/scans] [--state /var/lib/usnm-quality-jpeg-cache] \
-        [--workers 2] [--limit N] [--what-if]
+        [--scans-root /tank/ocr/scans | --scan-server http://<host>:8380] \
+        [--state /var/lib/usnm-quality-jpeg-cache] [--workers 2] [--limit N] [--what-if]
+
+With --scan-server it runs on another LAN host instead, reading each master
+and its sidecar from the scan server (GET /scans/keep/...), which must list
+that host in its --allow.
 
 pages.txt has one blob name per line (keep/<batch>/<lccn>/<date>/<ed>/<seq>.jp2),
 in the order to convert. Each master's sha256 must match its fetcher sidecar
@@ -91,7 +95,24 @@ def convert(raw, is_jp2):
     return None
 
 
-def read_master(scans_root, name):
+def _get(url, opener):
+    try:
+        return opener(urllib.request.Request(url), timeout=120).read()
+    except urllib.error.HTTPError as e:
+        # 404: not fetched (or not there any more); 403: this host isn't on the server's --allow.
+        raise Refused(f"{url}: HTTP {e.code}") from e
+
+
+def read_master(scans_root, name, opener=urllib.request.urlopen):
+    """The master's bytes and sha256, from a local scan root or a scan server URL."""
+    if scans_root.startswith(("http://", "https://")):
+        url = f"{scans_root.rstrip('/')}/scans/{name}"
+        want = json.loads(_get(f"{url}.json", opener)).get("sha256")
+        raw = _get(url, opener)
+        got = hashlib.sha256(raw).hexdigest()
+        if not want or got != want:
+            raise Refused(f"{url}: sha256 {got} doesn't match its sidecar ({want})")
+        return raw, got
     path = os.path.join(scans_root, name)
     if os.path.islink(path) or not os.path.isfile(path):
         raise Refused(f"{path}: not a regular file")
@@ -174,6 +195,7 @@ def process(scans_root, name, what_if=False, blobs=None):
     try:
         raw, sha = read_master(scans_root, name)
     except (Refused, OSError, ValueError) as e:
+        # URLError is an OSError: an unreachable scan server skips the page for the next run.
         return name, f"skipped: {e}", time.monotonic() - t0
     done = convert(raw, name.endswith(".jp2"))
     if done is None:
@@ -191,10 +213,12 @@ def process(scans_root, name, what_if=False, blobs=None):
             up = (blobs or _blobs).put_once(blob, data, meta)
             break
         except (urllib.error.URLError, OSError) as e:
+            # An HTTPError holds its response stream and can't go back to the parent
+            # process, so stop the run with the status and Azure's error code instead.
             if isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429:
-                raise
+                raise Refused(f"{CONTAINER}/{blob}: HTTP {e.code} {e.headers.get('x-ms-error-code', '')}") from None
             if attempt == 4:
-                raise
+                raise Refused(f"{CONTAINER}/{blob}: {e}") from None
             time.sleep(2 ** attempt * 5)
     return name, "uploaded" if up else "already-there", time.monotonic() - t0
 
@@ -207,7 +231,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--account", required=True)
     p.add_argument("--list", required=True)
-    p.add_argument("--scans-root", default="/tank/ocr/scans")
+    src = p.add_mutually_exclusive_group()
+    src.add_argument("--scans-root", default="/tank/ocr/scans")
+    src.add_argument("--scan-server", help="read masters from this scan server, e.g. http://host:8380")
     p.add_argument("--state", default="/var/lib/usnm-quality-jpeg-cache")
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--limit", type=int, default=0)
@@ -216,6 +242,9 @@ def main(argv=None):
     a = p.parse_args(argv)
     if not re.fullmatch(r"[a-z0-9]{3,24}", a.account):
         p.error("--account is a storage account name")
+    if a.scan_server and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]+)?/?", a.scan_server):
+        p.error("--scan-server is http://<host>[:port]")
+    source = a.scan_server or a.scans_root
     from PIL import __version__ as pil
 
     if pil != PILLOW_VERSION:
@@ -236,7 +265,7 @@ def main(argv=None):
     with open(ledger, "a") as out, ProcessPoolExecutor(
         a.workers, initializer=_init, initargs=(a.account, a.blob_base)
     ) as ex:
-        for name, outcome, secs in ex.map(_work, [(a.scans_root, x, a.what_if) for x in todo], chunksize=4):
+        for name, outcome, secs in ex.map(_work, [(source, x, a.what_if) for x in todo], chunksize=4):
             n += 1
             key = outcome.split(" ")[0]
             counts[key] = counts.get(key, 0) + 1

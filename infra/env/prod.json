@@ -2,7 +2,7 @@
   "$schema": "./schema.json",
   "USNM_AMERICAN_STORIES": true,
   "USNM_AMERICAN_STORIES_SEARCH": true,
-  "USNM_API_IMAGE_TAG": "00fbdd968f3cc87a619d5ec05916a4e34a9c9ee7",
+  "USNM_API_IMAGE_TAG": "126c198fff9d97fb48cc8eafc0db0ab24446ad8c",
   "USNM_BOINC_CONTROLLER_ONPREM": true,
   "USNM_BOINC_GROUP": true,
   "USNM_BOINC_HANDOFF_IMAGE": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:b4f2f00b2128b7eb32206f210e0673be7f9edc7017133e1684e493ed2922b877",
