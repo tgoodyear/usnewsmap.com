@@ -560,23 +560,44 @@ class Transport:
                   HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
 
     def collect_batch(self, pairs):
-        """Collect these (job, spool) pairs: the spool-outs, then the collects, each in one
-        execution when its flag is on. Both steps go on past a failed job and fail at the end,
-        so one held page doesn't stop the others; the tick then stops as before."""
+        """Collect these (job, spool) pairs. With both flags off, exactly the per-job flow
+        (spool-out then collect, job by job, stopping at the first failure). Batched, a failed
+        spool-out doesn't stop collection: every job is still collected (one whose spool-out
+        failed then fails in its own collect), and the first failure is raised only after all
+        of them were tried, so one held page never keeps the others unpublished."""
         if not pairs:
             return
+        if not (self.batch_spool_out or self.batch_collect):
+            for job_id, spool in pairs:
+                self.collect(job_id, spool)
+            return
         url = f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff"
+        errors = []
         if self.batch_spool_out:
-            self.step("bridge", "spool-out", HANDOFF_SPOOLS=",".join(f"{j}={s}" for j, s in pairs),
-                      HANDOFF_URL=url)
+            try:
+                self.step("bridge", "spool-out",
+                          HANDOFF_SPOOLS=",".join(f"{j}={s}" for j, s in pairs), HANDOFF_URL=url)
+            except RuntimeError as error:
+                errors.append(error)
         else:
             for job_id, spool in pairs:
-                self.step("bridge", "spool-out", JOB_ID=job_id, HANDOFF_SPOOL=spool, HANDOFF_URL=url)
+                try:
+                    self.step("bridge", "spool-out", JOB_ID=job_id, HANDOFF_SPOOL=spool, HANDOFF_URL=url)
+                except RuntimeError as error:
+                    errors.append(error)
         if self.batch_collect:
-            self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in pairs))
+            try:
+                self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in pairs))
+            except RuntimeError as error:
+                errors.append(error)
         else:
             for job_id, _ in pairs:
-                self.step("handoff", "collect", JOB_ID=job_id)
+                try:
+                    self.step("handoff", "collect", JOB_ID=job_id)
+                except RuntimeError as error:
+                    errors.append(error)
+        if errors:
+            raise errors[0]
 
     def server_status(self, url=None, path=None):
         path = self.status_file if path is None else path

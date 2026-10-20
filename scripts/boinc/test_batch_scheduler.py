@@ -795,9 +795,59 @@ class BatchedStepsTests(unittest.TestCase):
         self.assertEqual([(x[0], x[1], x[2]["JOB_ID"]) for x in sent],
                          [("bridge", "submit-remote", self.J1), ("bridge", "submit-remote", self.J2)])
         sent = self.steps(t, lambda: t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)]))
+        # Off: the per-job flow, spool-out then collect for each job in turn.
         self.assertEqual([(x[0], x[1], x[2]["JOB_ID"]) for x in sent], [
-            ("bridge", "spool-out", self.J1), ("bridge", "spool-out", self.J2),
-            ("handoff", "collect", self.J1), ("handoff", "collect", self.J2)])
+            ("bridge", "spool-out", self.J1), ("handoff", "collect", self.J1),
+            ("bridge", "spool-out", self.J2), ("handoff", "collect", self.J2)])
+
+    def test_off_a_failure_stops_the_per_job_flow_as_before(self):
+        t = batch.Transport(queue_config(), Path("."))
+        sent = []
+
+        def step(target, name, **v):
+            sent.append((target, name, v.get("JOB_ID")))
+            if (name, v.get("JOB_ID")) == ("spool-out", self.J1):
+                raise RuntimeError("bridge/spool-out failed")
+
+        with patch.object(t, "step", side_effect=step), self.assertRaises(RuntimeError):
+            t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)])
+        self.assertEqual(sent, [("bridge", "spool-out", self.J1)])
+
+    def test_batched_spool_out_failure_still_collects_every_job_then_fails(self):
+        # A failed batch spool-out (B's) must not keep A unpublished: collection runs for all,
+        # and the spool-out error is raised afterwards.
+        for collect_flag in (True, False):
+            with self.subTest(batch_collect=collect_flag):
+                t = batch.Transport(queue_config(), Path("."), batch_spool_out=True,
+                                    batch_collect=collect_flag)
+                sent = []
+
+                def step(target, name, **v):
+                    sent.append((target, name, v.get("JOB_ID") or v.get("JOB_IDS")))
+                    if name == "spool-out":
+                        raise RuntimeError("bridge/spool-out failed")
+
+                with patch.object(t, "step", side_effect=step), \
+                        self.assertRaisesRegex(RuntimeError, "spool-out"):
+                    t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)])
+                collects = [x for x in sent if x[1] == "collect"]
+                if collect_flag:
+                    self.assertEqual(collects, [("handoff", "collect", f"{self.J1},{self.J2}")])
+                else:
+                    self.assertEqual(collects, [("handoff", "collect", self.J1), ("handoff", "collect", self.J2)])
+
+    def test_per_job_collect_goes_on_past_a_failure_when_spool_out_is_batched(self):
+        t = batch.Transport(queue_config(), Path("."), batch_spool_out=True)
+        sent = []
+
+        def step(target, name, **v):
+            sent.append((name, v.get("JOB_ID")))
+            if (name, v.get("JOB_ID")) == ("collect", self.J1):
+                raise RuntimeError("handoff/collect failed")
+
+        with patch.object(t, "step", side_effect=step), self.assertRaisesRegex(RuntimeError, "collect"):
+            t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)])
+        self.assertEqual([x for x in sent if x[0] == "collect"], [("collect", self.J1), ("collect", self.J2)])
 
     def test_batched_one_execution_per_step(self):
         t = batch.Transport(queue_config(), Path("."), batch_submit=True, batch_spool_out=True,
