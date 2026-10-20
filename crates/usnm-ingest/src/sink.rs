@@ -1179,6 +1179,16 @@ impl IndexSink for QuickwitSink {
         if last != expected {
             bail!("index `{id}` holds {last} documents, expected {expected}");
         }
+        // Every page is in: the remote indexers stop (#936), and the final
+        // merges run here. Their splits stay as they are.
+        if via_kafka {
+            if let Some(marker) = crate::kafka::Cluster::from_env()?.and_then(|c| c.done_marker) {
+                std::fs::write(&marker, format!("{id}\n"))
+                    .with_context(|| format!("writing {}", marker.display()))?;
+                tracing::info!(marker = %marker.display(), "told the remote indexers to stop");
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        }
 
         let split_target = self
             .split_docs
@@ -1878,12 +1888,21 @@ impl QuickwitNode {
         let queue = WriterTuning::from_env()?.queue;
         // A Kafka source's pipelines each take 4 cores of the indexer's
         // capacity; without room, Quickwit schedules fewer (`crate::kafka`).
-        let cpu = match crate::kafka::Kafka::from_env()? {
-            Some(k) => format!("cpu_capacity: {}\n  ", k.cpu_capacity()),
-            None => String::new(),
+        // In a cluster (#936), this node takes only its share of them, and
+        // listens on the LAN for the remote indexers.
+        let cluster = crate::kafka::Cluster::from_env()?;
+        let cpu = match (crate::kafka::Kafka::from_env()?, &cluster) {
+            (Some(_), Some(c)) => format!("cpu_capacity: {}\n  ", 4 * c.local_pipelines),
+            (Some(k), None) => format!("cpu_capacity: {}\n  ", k.cpu_capacity()),
+            (None, _) => String::new(),
+        };
+        let listen = if cluster.is_some() {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
         };
         let mut config = format!(
-            "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
+            "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: {listen}\n\
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
              metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n\
              ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n  \
@@ -1897,6 +1916,10 @@ impl QuickwitNode {
         );
         if let Ok(account) = std::env::var("QW_AZURE_STORAGE_ACCOUNT") {
             config.push_str(&format!("storage:\n  azure:\n    account: {account}\n"));
+        }
+        if let Some(c) = &cluster {
+            config.push_str(&c.node_yaml()?);
+            tracing::info!(advertise = %c.advertise, peers = ?c.peers, local_pipelines = c.local_pipelines, "writer in a cluster");
         }
         let config_path = work_dir.join("writer.yaml");
         std::fs::write(&config_path, config)?;

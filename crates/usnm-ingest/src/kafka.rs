@@ -197,6 +197,96 @@ impl Kafka {
     }
 }
 
+/// The writer node in a Quickwit cluster with remote indexers (#936):
+/// `USNM_WRITER_ADVERTISE` names this host on the LAN (resolved when the node
+/// starts, so no address is configured), `USNM_WRITER_PEERS` the other
+/// nodes (`host:port`, comma separated), `USNM_WRITER_KAFKA_LOCAL_PIPELINES`
+/// how many of the Kafka source's pipelines this node takes (the control
+/// plane gives the rest to the peers), and `USNM_WRITER_CLUSTER_DONE` the
+/// file the release writes once the index holds every page, which stops the
+/// remote indexers (`scripts/onprem/indexer.sh`) before the final merges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cluster {
+    pub advertise: String,
+    pub peers: Vec<String>,
+    pub local_pipelines: i32,
+    pub done_marker: Option<std::path::PathBuf>,
+}
+
+impl Cluster {
+    pub fn from_env() -> anyhow::Result<Option<Self>> {
+        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        Self::from_lookup(
+            get("USNM_WRITER_ADVERTISE"),
+            get("USNM_WRITER_PEERS"),
+            get("USNM_WRITER_KAFKA_LOCAL_PIPELINES"),
+            get("USNM_WRITER_CLUSTER_DONE"),
+        )
+    }
+
+    pub fn from_lookup(
+        advertise: Option<String>,
+        peers: Option<String>,
+        local: Option<String>,
+        done: Option<String>,
+    ) -> anyhow::Result<Option<Self>> {
+        let Some(advertise) = advertise.map(|a| a.trim().to_owned()) else {
+            return Ok(None);
+        };
+        let peers: Vec<String> = peers
+            .unwrap_or_default()
+            .split(',')
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if peers.is_empty() {
+            bail!("USNM_WRITER_ADVERTISE needs USNM_WRITER_PEERS: the remote indexers, host:port");
+        }
+        for p in &peers {
+            let ok = p
+                .rsplit_once(':')
+                .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok_and(|n| n > 0));
+            if !ok {
+                bail!("USNM_WRITER_PEERS: `{p}` isn't host:port");
+            }
+        }
+        let local_pipelines = match local {
+            None => 1,
+            Some(v) => match v.trim().parse::<i32>() {
+                Ok(n @ 1..=64) => n,
+                _ => bail!("USNM_WRITER_KAFKA_LOCAL_PIPELINES must be 1 to 64, not `{v}`"),
+            },
+        };
+        Ok(Some(Self {
+            advertise,
+            peers,
+            local_pipelines,
+            done_marker: done.map(std::path::PathBuf::from),
+        }))
+    }
+
+    /// The advertised host's IPv4 address, looked up now.
+    pub fn advertise_ip(&self) -> anyhow::Result<std::net::IpAddr> {
+        use std::net::ToSocketAddrs;
+        (self.advertise.as_str(), 0)
+            .to_socket_addrs()
+            .with_context(|| format!("resolving USNM_WRITER_ADVERTISE `{}`", self.advertise))?
+            .map(|a| a.ip())
+            .find(std::net::IpAddr::is_ipv4)
+            .with_context(|| format!("`{}` has no IPv4 address", self.advertise))
+    }
+
+    /// The node config lines that make the writer a cluster member.
+    pub fn node_yaml(&self) -> anyhow::Result<String> {
+        let peers: Vec<String> = self.peers.iter().map(|p| format!("  - {p}")).collect();
+        Ok(format!(
+            "advertise_address: {}\npeer_seeds:\n{}\n",
+            self.advertise_ip()?,
+            peers.join("\n")
+        ))
+    }
+}
+
 /// The backoff that stops at the first error.
 pub fn no_retries() -> BackoffConfig {
     BackoffConfig {
@@ -395,6 +485,36 @@ mod tests {
         assert_eq!(lost(100, 10, 105), Lost::Unexplained);
         assert_eq!(lost(100, 10, 120), Lost::Unexplained);
         assert_eq!(lost(100, 10, 99), Lost::Unexplained);
+    }
+
+    #[test]
+    fn a_cluster_needs_peers_and_takes_few_pipelines_here() {
+        assert_eq!(Cluster::from_lookup(None, None, None, None).unwrap(), None);
+        assert!(Cluster::from_lookup(Some("localhost".into()), None, None, None).is_err());
+        let c = Cluster::from_lookup(
+            Some("localhost".into()),
+            Some("index2.example.org:7380, index3.example.org:7380".into()),
+            None,
+            Some("/srv/usnm/runs/x/cluster-done".into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.peers.len(), 2);
+        assert_eq!(c.local_pipelines, 1);
+        let y = c.node_yaml().unwrap();
+        assert!(
+            y.contains("peer_seeds:\n  - index2.example.org:7380"),
+            "{y}"
+        );
+        assert!(y.starts_with("advertise_address: 127."), "{y}");
+        assert!(Cluster::from_lookup(Some("h".into()), Some("nope".into()), None, None).is_err());
+        assert!(Cluster::from_lookup(
+            Some("h".into()),
+            Some("h2:1".into()),
+            Some("0".into()),
+            None
+        )
+        .is_err());
     }
 
     #[test]
