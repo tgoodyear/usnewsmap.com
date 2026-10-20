@@ -43,10 +43,13 @@ case "$*" in
         echo bridge-existing-execution
       fi
     fi ;;
+  "containerapp job show"*"--name usnm-boinc-sharecopy-caj-"*)
+    [ "${STUB_SHARECOPY_PRESENT:-0}" = 1 ] || { echo "ERROR: (ResourceNotFound) not found" >&2; exit 1; }
+    echo usnm-boinc-sharecopy-caj-prod ;;
   "containerapp job show"*)
     extra_secret='{"name":"PRIVATE_SETTING","secretRef":"runtime-secret"},'
     [ "${STUB_BRIDGE_CLEAN_ENV:-0}" != 1 ] || extra_secret=""
-    storage_name=${STUB_DEPLOYED_STORAGE_NAME:-project}
+    storage_name=${STUB_DEPLOYED_STORAGE_NAME:-$STUB_PROJECT_STORAGE}
     mount_options=${STUB_DEPLOYED_MOUNT_OPTIONS:-mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict}
     if [[ "$*" == *"--name gold "* ]]; then
       echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"$storage_name\",\"mountOptions\":\"$mount_options\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_GOLD_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":1,\"memory\":\"2Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_GOLD_STEP:-gold-bundle}\"},{\"name\":\"GOLD_CAMPAIGN\",\"value\":\"v1-tess550\"},${extra_secret}{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}"
@@ -98,6 +101,10 @@ class Provision(unittest.TestCase):
         self.env = {
             **os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
             "STUB_LOG": str(self.log), "STUB_SUB": SUB,
+            # The storage name /project's jobs mount follows prod.json's projectShare stage.
+            "STUB_PROJECT_STORAGE": "project-v2" if json.loads(
+                (ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text()
+            ).get("projectShare", "standard").startswith("provisioned") else "project",
             "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
             "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
                            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
