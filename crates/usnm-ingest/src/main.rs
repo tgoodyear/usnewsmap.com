@@ -362,6 +362,44 @@ enum Command {
         #[command(flatten)]
         target: IndexTarget,
     },
+    /// Give a local state file (`--state-file`) a curated record for each
+    /// batch of a published version's batch list, for a release built on an
+    /// on-prem host (docs/operations.md, "Full rebuild on-prem"). With
+    /// `--every`, only every `every`th batch by name from `--offset` (the
+    /// 1% set: 100 and 39). Refuses Cosmos.
+    SeedState {
+        /// The version whose `batches.json` (in the reference store) to take.
+        #[arg(long)]
+        from_version: String,
+        #[arg(long, requires = "offset")]
+        every: Option<usize>,
+        #[arg(long, requires = "every")]
+        offset: Option<usize>,
+    },
+    /// Copy a release staged on an on-prem host into Azure: each index of the
+    /// local `index-storage-pending.json` into the index account, then the
+    /// version's reference snapshot and the pending pointer into the lake
+    /// (docs/operations.md, "Full rebuild on-prem"). The stores of the
+    /// release (`--reference`, the writer's `file://` index root) are the
+    /// local side. A rerun skips what is already copied.
+    PublishStaged {
+        /// The writer's local index root: the directory its `file://`
+        /// metastore and index root URI named.
+        #[arg(long)]
+        local_index_root: PathBuf,
+        /// The lake's `reference` container URL.
+        #[arg(long)]
+        to_reference: String,
+        /// The index account's `qw-index` container URL.
+        #[arg(long)]
+        to_index: String,
+        /// The index root as the searchers name it.
+        #[arg(long, default_value = "azure://qw-index")]
+        index_root_uri: String,
+        /// Check and list only.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Score every curated page of an index version with the OCR damage
     /// metric (12 §12.5 Step 6, #296): tables under
     /// `audit/damage/v<VERSION>/` in the curated store, one per batch
@@ -1183,6 +1221,8 @@ impl Command {
             Command::Duplicates => "duplicates",
             Command::ArchiveCopy { .. } => "archive-copy",
             Command::Prune { .. } => "prune",
+            Command::SeedState { .. } => "seed-state",
+            Command::PublishStaged { .. } => "publish-staged",
             Command::OcrDamage { .. } => "ocr-damage",
             Command::OcrPrefetchManifest { .. } => "ocr-prefetch-manifest",
             Command::OcrSync { .. } => "ocr-sync",
@@ -1217,6 +1257,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::Duplicates
         | Command::ArchiveCopy { .. }
         | Command::Prune { .. }
+        | Command::SeedState { .. }
+        | Command::PublishStaged { .. }
         | Command::OcrDamage { .. }
         | Command::OcrPrefetchManifest { .. }
         | Command::OcrSync { .. }
@@ -1355,6 +1397,49 @@ async fn command(
                 ),
                 (Some(_), false) => tracing::info!(?seeded, "title records seeded"),
             }
+            Ok(None)
+        }
+        Command::SeedState {
+            from_version,
+            every,
+            offset,
+        } => {
+            if cli.stores.cosmos.is_some() || cli.stores.state_file.is_none() {
+                bail!("seed-state writes a local state file only: set --state-file, not --cosmos");
+            }
+            let every = every.map(|every| usnm_ingest::onprem::Every {
+                every,
+                offset: offset.unwrap_or(0),
+            });
+            let seeded = usnm_ingest::onprem::seed_state(
+                &state,
+                usnm_store::open(&cli.stores.reference)?.as_ref(),
+                from_version,
+                every,
+            )
+            .await?;
+            tracing::info!(?seeded, "state seeded");
+            Ok(None)
+        }
+        Command::PublishStaged {
+            local_index_root,
+            to_reference,
+            to_index,
+            index_root_uri,
+            dry_run,
+        } => {
+            let local_reference = usnm_store::open(&cli.stores.reference)?;
+            let reference = usnm_store::open(to_reference)?;
+            let index = usnm_store::open(to_index)?;
+            usnm_ingest::onprem::publish_staged(&usnm_ingest::onprem::Staged {
+                local_reference: local_reference.as_ref(),
+                local_index_root: local_index_root.clone(),
+                reference: reference.as_ref(),
+                index: index.as_ref(),
+                index_root_uri: index_root_uri.clone(),
+                dry_run: *dry_run,
+            })
+            .await?;
             Ok(None)
         }
         Command::ArchiveCopy { from, to, batches } => {
