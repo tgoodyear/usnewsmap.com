@@ -82,10 +82,10 @@ pub fn index_fields(text: &str, text_as: Option<&str>, analyzer: Analyzer) -> (S
     let mut words = Vec::new();
     let mut pairs = Vec::new();
     for t in std::iter::once(text).chain(text_as) {
-        let w = common_grams::index_words(t, analyzer);
+        let (w, p) = common_grams::index_both(t, analyzer);
         if !w.is_empty() {
             words.push(w);
-            pairs.push(common_grams::index_text(t, analyzer));
+            pairs.push(p);
         }
     }
     let gap = format!(" {} ", vec![common_grams::GAP; GAP_POSITIONS].join(" "));
