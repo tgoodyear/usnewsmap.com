@@ -113,6 +113,8 @@ pub struct DecadeOrder {
     open: BTreeMap<u16, Spill>,
     /// Files made so far, for unique names.
     made: u64,
+    /// Seconds the release waited for room in the background queue.
+    waited: f64,
     shared: Arc<Mutex<Shared>>,
     background: Option<Background>,
 }
@@ -140,9 +142,15 @@ impl DecadeOrder {
             chunk: chunk.max(1),
             open: BTreeMap::new(),
             made: 0,
+            waited: 0.0,
             shared,
             background,
         })
+    }
+
+    /// Seconds the release has waited for the background sender so far.
+    pub fn queue_wait_secs(&self) -> f64 {
+        self.waited
     }
 
     pub fn stats(&self) -> OrderStats {
@@ -232,7 +240,10 @@ impl DecadeOrder {
         };
         match &self.background {
             Some(bg) => {
-                if bg.queue.send(full).await.is_err() {
+                let t = std::time::Instant::now();
+                let sent = bg.queue.send(full).await;
+                self.waited += t.elapsed().as_secs_f64();
+                if sent.is_err() {
                     // The sender stopped: its error says why.
                     let Background { mut task, .. } = self.background.take().expect("background");
                     task.join().await?;

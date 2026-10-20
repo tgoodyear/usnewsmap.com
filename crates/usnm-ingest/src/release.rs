@@ -1792,6 +1792,7 @@ impl Release {
             // everything recorded about them come out in part order, as
             // when one thread read them.
             let curated = self.curated.as_ref();
+            let t_fetch = std::time::Instant::now();
             let parts: Vec<(&String, bytes::Bytes)> = stream::iter(&b.curated.parts)
                 .map(|path| async move {
                     let bytes = curated
@@ -1815,7 +1816,12 @@ impl Release {
                 local,
                 format,
             };
+            let fetch_secs = t_fetch.elapsed().as_secs_f64();
+            let t_build = std::time::Instant::now();
             let built = build_parts(&ctx, parts)?;
+            let build_secs = t_build.elapsed().as_secs_f64();
+            let (mut lang_secs, mut add_secs) = (0f64, 0f64);
+            let wait_before = order.as_ref().map_or(0.0, |o| o.queue_wait_secs());
             for part in built {
                 let PartDocs {
                     docs: mut part_docs,
@@ -1831,26 +1837,40 @@ impl Release {
                 local_replaced.extend(part_local);
                 // Each page's own languages (05 §5.5.8), on a few threads,
                 // and the pages that move to another set than their title's.
+                let t_lang = std::time::Instant::now();
                 if let Some(m) = moves.as_deref_mut() {
                     page_lang::annotate(&mut part_docs);
                     for d in &part_docs {
                         m.record(d)?;
                     }
                 }
+                lang_secs += t_lang.elapsed().as_secs_f64();
                 // Pages LoC has no usable text for are documents with another's.
                 progress.add_expected(without_locs);
                 if let Some(r) = record.as_mut() {
                     r.docs += with_as;
                     r.only += only_as;
                 }
+                let t_add = std::time::Instant::now();
                 for d in &part_docs {
                     match order.as_mut() {
                         Some(o) => o.add(sink, d).await?,
                         None => sink.add(d).await?,
                     }
                 }
+                add_secs += t_add.elapsed().as_secs_f64();
                 docs += part_docs.len() as u64;
             }
+            // Where the batch's time went, to find what bounds a release.
+            tracing::info!(
+                batch = %b.batch,
+                fetch_secs = (fetch_secs * 10.0).round() / 10.0,
+                build_secs = (build_secs * 10.0).round() / 10.0,
+                lang_secs = (lang_secs * 10.0).round() / 10.0,
+                add_secs = (add_secs * 10.0).round() / 10.0,
+                queue_wait_secs = ((order.as_ref().map_or(0.0, |o| o.queue_wait_secs()) - wait_before) * 10.0).round() / 10.0,
+                "batch timing"
+            );
             progress.snapshot().log(Some(&b.batch));
         }
         if let Some(r) = &record {
