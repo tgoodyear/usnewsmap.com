@@ -2929,7 +2929,7 @@ mod tests {
         let (mut inline, inline_index) = fake_writer(IngestApi::V1, vec![]).await;
         inline.http = reqwest::Client::new();
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 3, None).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 3, None, None).unwrap();
         for d in &docs {
             order.add(&mut inline, d).await.unwrap();
         }
@@ -2941,7 +2941,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sender = IndexSink::line_sender(&s);
         assert!(sender.is_some());
-        let mut order = DecadeOrder::new(dir.path(), 3, sender).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 3, sender, None).unwrap();
         for d in &docs {
             order.add(&mut s, d).await.unwrap();
         }
@@ -2974,7 +2974,7 @@ mod tests {
         let (mut s, _) = fake_writer(IngestApi::V1, vec![Answer::Refuse(500)]).await;
         s.http = reqwest::Client::new();
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 2, IndexSink::line_sender(&s)).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 2, IndexSink::line_sender(&s), None).unwrap();
         let mut err = None;
         for d in &big_docs(40) {
             if let Err(e) = order.add(&mut s, d).await {
@@ -2989,6 +2989,36 @@ mod tests {
         assert!(format!("{err:#}").contains("returned 500"), "{err:#}");
     }
 
+    /// A lost writer lock stops the background sender at its next line,
+    /// even while the release itself is busy elsewhere.
+    #[tokio::test]
+    async fn a_lost_lease_stops_the_background_sender() {
+        use crate::decade_order::DecadeOrder;
+        let (mut s, index) = fake_writer(IngestApi::V1, vec![Answer::TakeAfterASecond; 40]).await;
+        s.http = reqwest::Client::new();
+        let dir = tempfile::tempdir().unwrap();
+        let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut order = DecadeOrder::new(
+            dir.path(),
+            2,
+            IndexSink::line_sender(&s),
+            Some(Arc::clone(&lost)),
+        )
+        .unwrap();
+        for d in &big_docs(20) {
+            order.add(&mut s, d).await.unwrap();
+        }
+        lost.store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = order.finish(&mut s).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("writer lock could not be renewed"),
+            "{err:#}"
+        );
+        let seen = index.lock().unwrap().requests.len();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(index.lock().unwrap().requests.len(), seen);
+    }
+
     /// A release that gives up while the sender waits on the writer (its
     /// lock lost) stops the sender: nothing is posted after that.
     #[tokio::test]
@@ -2997,7 +3027,7 @@ mod tests {
         let (mut s, index) = fake_writer(IngestApi::V1, vec![Answer::TakeAfterASecond; 40]).await;
         s.http = reqwest::Client::new();
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 2, IndexSink::line_sender(&s)).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 2, IndexSink::line_sender(&s), None).unwrap();
         for d in &big_docs(30) {
             order.add(&mut s, d).await.unwrap();
         }

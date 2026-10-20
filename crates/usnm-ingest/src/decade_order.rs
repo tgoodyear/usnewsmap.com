@@ -122,7 +122,15 @@ impl DecadeOrder {
     /// that stopped may have left some. Only the release holding the writer
     /// lock writes there. With `sender`, full files are sent in the
     /// background (module docs); without, in line.
-    pub fn new(work_dir: &Path, chunk: u64, sender: Option<LineSender>) -> anyhow::Result<Self> {
+    /// The background sender stops at its next line once `lease_lost` is
+    /// set (the writer lock couldn't be renewed), as the release does at its
+    /// next `WriterLease::check`.
+    pub fn new(
+        work_dir: &Path,
+        chunk: u64,
+        sender: Option<LineSender>,
+        lease_lost: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> anyhow::Result<Self> {
         let dir = work_dir.join(SPILL_DIR);
         if dir.exists() {
             tracing::info!(dir = %dir.display(), "removing a previous release's decade files");
@@ -132,7 +140,12 @@ impl DecadeOrder {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let background = sender.map(|sender| {
             let (queue, rx) = tokio::sync::mpsc::channel(QUEUED_FILES);
-            let task = Task(tokio::spawn(send_files(rx, sender, Arc::clone(&shared))));
+            let task = Task(tokio::spawn(send_files(
+                rx,
+                sender,
+                Arc::clone(&shared),
+                lease_lost,
+            )));
             Background { queue, task }
         });
         Ok(Self {
@@ -249,13 +262,38 @@ impl DecadeOrder {
 /// hadn't sent yet.
 async fn send_files(
     mut rx: tokio::sync::mpsc::Receiver<Full>,
-    mut sender: LineSender,
+    sender: LineSender,
     shared: Arc<Mutex<Shared>>,
+    lease_lost: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> anyhow::Result<Vec<u8>> {
+    let mut sender = Leased {
+        sender,
+        lost: lease_lost,
+    };
     while let Some(full) = rx.recv().await {
         send_file(&full, &shared, &mut sender).await?;
     }
-    Ok(sender.into_unsent())
+    Ok(sender.sender.into_unsent())
+}
+
+/// The background sender, stopping once the writer lock is lost.
+struct Leased {
+    sender: LineSender,
+    lost: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+#[async_trait::async_trait]
+impl Lines for Leased {
+    async fn line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        if self
+            .lost
+            .as_ref()
+            .is_some_and(|l| l.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            anyhow::bail!("the writer lock could not be renewed; the decade sender stopped");
+        }
+        self.sender.add_line(line).await
+    }
 }
 
 /// Where a file's lines go: the background sender, or the sink in line.
@@ -385,7 +423,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(SPILL_DIR)).unwrap();
         std::fs::write(dir.path().join(SPILL_DIR).join("1890.jsonl.zst"), b"x").unwrap();
         let mut sink = Recorder::default();
-        let mut order = DecadeOrder::new(dir.path(), 3, None).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 3, None, None).unwrap();
         // Archive order: decades interleaved.
         let input = [1890, 1900, 1890, 1880, 1900, 1890, 1900, 1880, 1890];
         for (i, d) in input.iter().enumerate() {
@@ -442,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn a_page_without_a_decade_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 3, None).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 3, None, None).unwrap();
         let err = order
             .add(&mut Recorder::default(), &json!({"doc_id": "x"}))
             .await
