@@ -152,8 +152,10 @@ running_executions() {
 running=$(running_executions) || die "can't list the executions of $job"
 [ -z "$running" ] || die "$job is still running $(echo "$running" | tr '\n' ' ')- wait for it to end first"
 BOINC_START_SAFE_TO_RELEASE=false
+BOINC_START_UNCERTAIN=update
 baz containerapp job update --name "$job" --resource-group "$JOB_RG" --container-name "$container" \
   --replace-env-vars "${base[@]}" "${run[@]}" -o none || die "can't set the run's settings on $job"
+BOINC_START_UNCERTAIN=start
 execution=$(baz containerapp job start --name "$job" --resource-group "$JOB_RG" --query name -o tsv) ||
   die "can't start $job"
 [ -n "$execution" ] || die "$job started no execution"

@@ -62,25 +62,40 @@ boinc_start_guard_confirm() {
   done
 }
 
-# After a failed template update, start or read-back the outcome is unknown, but only for as
-# long as an execution the failed call did create might still be missing from the job's list.
-# - A known execution ($execution, the start returned a name): released once the job's list
-#   shows it, so the next launcher's running-executions check refuses while it runs.
-# - None known (the update or start call failed): released once the list has been read for the
-#   window boinc_start_guard_confirm allows a new execution to appear in.
-# A failed listing, or a known execution still missing at the end of the window, leaves the
-# outcome unknown and the lease held.
+# After a failed launch step the outcome is unknown. BOINC_START_UNCERTAIN says which step:
+# - start: the execution start, or its read-back. A known execution ($execution, the start
+#   returned a name) is released once the job's list shows it, so the next launcher's
+#   running-executions check refuses while it runs. With none known, it is released once the
+#   list has been read for the window boinc_start_guard_confirm allows a new execution to
+#   appear in.
+# - update: the job's template update. As for start, and only while the job's
+#   provisioningState is terminal: an update still in flight could change what the next
+#   launcher starts.
+# - deploy: a stack deployment, which can still rewrite job templates after the CLI fails, and
+#   which execution listings cannot see. Never released here.
+# A failed read, an update not yet terminal at the end of the window, or a known execution
+# still missing from the list leaves the outcome unknown and the lease held.
+BOINC_START_UNCERTAIN=""
 boinc_start_guard_reconcile() {
-  local deadline names
-  [ -n "${job:-}" ] && [ -n "${JOB_RG:-}" ] || return 1
+  local deadline names state rg=${JOB_RG:-${BOINC_RG:-}}
+  [ "${BOINC_START_UNCERTAIN:-start}" != deploy ] || return 1
+  [ -n "${job:-}" ] && [ -n "$rg" ] || return 1
   deadline=$(($(date +%s) + ${BOINC_START_RECONCILE_SECS:-120}))
   while :; do
-    names=$(baz containerapp job execution list --name "$job" --resource-group "$JOB_RG" --query "[].name" -o tsv) ||
-      return 1
-    if [ -n "${execution:-}" ]; then
-      grep -qxF "$execution" <<< "$names" && return 0
+    if [ "$BOINC_START_UNCERTAIN" = update ]; then
+      state=$(baz containerapp job show --name "$job" --resource-group "$rg" \
+        --query properties.provisioningState -o tsv) || return 1
+    else
+      state=Succeeded
     fi
+    names=$(baz containerapp job execution list --name "$job" --resource-group "$rg" --query "[].name" -o tsv) ||
+      return 1
+    case "$state" in
+      Succeeded | Failed | Canceled)
+        if [ -n "${execution:-}" ] && grep -qxF "$execution" <<< "$names"; then return 0; fi ;;
+    esac
     if [ "$(date +%s)" -ge "$deadline" ]; then
+      case "$state" in Succeeded | Failed | Canceled) ;; *) return 1 ;; esac
       [ -z "${execution:-}" ]
       return
     fi

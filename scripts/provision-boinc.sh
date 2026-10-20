@@ -305,9 +305,9 @@ if [ -n "$existing_bridge" ]; then
 fi
 
 echo "deploying stack $BOINC_STACK (custom domain stage $STAGE)"
-[ -z "$BOINC_START_LEASE" ] || BOINC_START_SAFE_TO_RELEASE=false
+[ -z "$BOINC_START_LEASE" ] || { BOINC_START_SAFE_TO_RELEASE=false; BOINC_START_UNCERTAIN=deploy; }
 baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed"
-[ -z "$BOINC_START_LEASE" ] || BOINC_START_SAFE_TO_RELEASE=true
+[ -z "$BOINC_START_LEASE" ] || { BOINC_START_SAFE_TO_RELEASE=true; BOINC_START_UNCERTAIN=""; }
 echo "deployed stack $BOINC_STACK"
 # Wait for DNS/certificate readiness instead of requiring another manual deployment.
 for _ in $(seq 1 60); do
@@ -321,9 +321,9 @@ for _ in $(seq 1 60); do
   STAGE=$next
   write_params "$STAGE"
   echo "deploying stack $BOINC_STACK again for custom domain stage $STAGE"
-  [ -z "$BOINC_START_LEASE" ] || BOINC_START_SAFE_TO_RELEASE=false
+  [ -z "$BOINC_START_LEASE" ] || { BOINC_START_SAFE_TO_RELEASE=false; BOINC_START_UNCERTAIN=deploy; }
   baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed at custom domain stage $STAGE"
-  [ -z "$BOINC_START_LEASE" ] || BOINC_START_SAFE_TO_RELEASE=true
+  [ -z "$BOINC_START_LEASE" ] || { BOINC_START_SAFE_TO_RELEASE=true; BOINC_START_UNCERTAIN=""; }
   [ "$STAGE" -lt 2 ] || break
 done
 [ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || [ "$STAGE" -eq 2 ] ||
@@ -343,7 +343,7 @@ run_job() {
     --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv) ||
     die "could not list the executions of $job"
   [ -z "$running" ] || die "$job already has an active execution ($running); refusing concurrent lifecycle changes"
-  [ -z "$template" ] || BOINC_START_SAFE_TO_RELEASE=false
+  [ -z "$template" ] || { BOINC_START_SAFE_TO_RELEASE=false; BOINC_START_UNCERTAIN=start; }
   execution=$(baz containerapp job start --name "$job" --resource-group "$BOINC_RG" ${start_args[@]+"${start_args[@]}"} --query name -o tsv) ||
     die "could not start $job"
   [ -n "$execution" ] || die "$job returned no execution"

@@ -29,7 +29,7 @@ case "$*" in
   "containerapp env certificate list"*) echo Succeeded ;;
   "stack-whatif group create"*"--help"*) ;;
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
-  "stack group create"*) ;;
+  "stack group create"*) [ -z "${STUB_STACK_FAILURE:-}" ] || exit 9 ;;
   "containerapp job execution list"*)
     if [[ "$*" == *"--name quality "* ]] || [[ "$*" == *"--name usnm-boinc-quality-caj-prod "* ]]; then
       [ "${STUB_QUALITY_ACTIVE:-0}" != 1 ] || echo quality-existing-execution
@@ -209,6 +209,17 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
                 self.assertEqual(sum(call.startswith("storage blob lease acquire") for call in self.calls()), 1)
                 self.assertEqual(sum(call.startswith("storage blob lease release") for call in self.calls()), 1)
                 self.assertNotIn("lease retained", result.stderr)
+
+    def test_failed_stack_deployment_never_auto_releases_the_lease(self):
+        # A failed `stack group create` can still be rewriting job templates in Azure, which no
+        # execution listing shows: the lease stays for the operator.
+        result = self.run_script(STUB_STACK_FAILURE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed", result.stderr)
+        self.assertTrue(any(call.startswith("storage blob lease acquire") for call in self.calls()))
+        self.assertIn("lease retained", result.stderr)
+        self.assertNotIn("releasing the cross-host lease", result.stderr)
+        self.assertFalse(any(call.startswith("storage blob lease release") for call in self.calls()))
 
     def test_failed_registration_start_releases_lease_once_listed(self):
         # The start call failed and returned no execution: once the job's executions have been
