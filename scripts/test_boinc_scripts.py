@@ -1278,6 +1278,95 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(len(export), 1)
         self.assertNotIn("--claims", export[0])
 
+    def test_handoff_collect_batch_goes_on_past_a_failed_job(self):
+        # #932: JOB_IDS collects a tick's results in one execution; each runs the single-job path.
+        j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64
+        self.stub('case "$*" in\n'
+                  '  "handoff get-spool"*) for a in "$@"; do [ "$prev" = --trust-out ] && echo "{}" > "$a"; prev=$a; done; echo 8 ;;\n'
+                  f'  "collect"*"--job {j2}"*) exit 4 ;;\n'
+                  'esac')
+        r = self.handoff("collect", JOB_IDS=f"{j1},{j2},{j3}")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("collect failed for 1 of 3 jobs", r.stderr)
+        collects = [c for c in self.calls() if c.startswith("collect ")]
+        self.assertEqual([c.split("--job ")[1].split()[0] for c in collects], [j1, j2, j3])
+        self.assertTrue(all("--host-id 8" in c for c in collects))
+
+    def test_handoff_collect_batch_rejects_mixed_or_malformed_ids(self):
+        j1 = "1" * 64
+        for extra in ({"JOB_IDS": j1, "JOB_ID": j1}, {"JOB_IDS": "not-a-job"},
+                      {"JOB_IDS": ",".join([j1] * 101)}):
+            with self.subTest(extra=extra):
+                r = self.handoff("collect", **extra)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith("collect ")])
+
+    def bridge_copy(self):
+        share = os.path.join(self.tmp, "share")
+        proj = os.path.join(share, "usnmocr")
+        os.makedirs(proj, exist_ok=True)
+        open(os.path.join(proj, ".usnm-initialised"), "w").close()
+        bridge = os.path.join(self.tmp, "bridge-job.sh")
+        lib_path = os.path.join(ROOT, "contrib-compute/images/server/lib.sh")
+        with open(BRIDGE_JOB_SCRIPT) as src, open(bridge, "w") as dst:
+            dst.write(src.read().replace("/usr/local/lib/usnm-boinc/lib.sh", lib_path))
+        os.chmod(bridge, 0o755)
+        env = {**self.env, "KEY_VAULT_NAME": "usnmboinckvprod", "DB_HOST": "db.example.org",
+               "DB_NAME": "usnmocr", "MASTER_HOST": "boinc.usnewsmap.com", "PROJECT_DIR": share,
+               "HANDOFF_DIR": os.path.join(share, "handoff"),
+               "HANDOFF_URL": "https://usnmst.blob.core.windows.net/boinc-handoff"}
+        return bridge, env
+
+    def bridge_batch_copy(self, fail_job):
+        """bridge-job.sh's header and batch modes, with the single-job path after them replaced by
+        a stub that logs each run and fails for `fail_job` (the real path needs Key Vault)."""
+        bridge, env = self.bridge_copy()
+        text = open(bridge).read()
+        marker = "# End of the batch modes (#932).\n"
+        self.assertIn(marker, text)
+        stub = ('printf "single %s %s %s\\n" "$step" "${JOB_ID:-}" "${HANDOFF_SPOOL:-}" >> "$STUB_LOG"\n'
+                f'[ "${{JOB_ID:-}}" != {fail_job} ] || exit 4\nexit 0\n')
+        with open(bridge, "w") as f:
+            f.write(text.split(marker)[0] + marker + stub)
+        return bridge, env
+
+    def test_bridge_submit_remote_batch_stops_at_the_first_failure(self):
+        # #932: JOB_IDS submits a tick's jobs in one execution, stopping at the first failure
+        # (the next tick reconciles that job before submitting anything else).
+        j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64
+        bridge, env = self.bridge_batch_copy(j2)
+        r = subprocess.run([bridge], cwd=ROOT, env={**env, "BRIDGE_STEP": "submit-remote",
+                                                    "JOB_IDS": f"{j1},{j2},{j3}"},
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"submit-remote stopped at {j2}", r.stderr)
+        self.assertEqual([c.split()[1:3] for c in self.calls() if c.startswith("single ")],
+                         [["submit-remote", j1], ["submit-remote", j2]])
+
+    def test_bridge_spool_out_batch_goes_on_past_a_failed_job(self):
+        j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64
+        spools = {j: f"/project/usnmocr/results/{i}" for i, j in enumerate((j1, j2, j3))}
+        bridge, env = self.bridge_batch_copy(j2)
+        r = subprocess.run([bridge], cwd=ROOT, env={**env, "BRIDGE_STEP": "spool-out",
+                                                    "HANDOFF_SPOOLS": ",".join(f"{j}={s}" for j, s in spools.items())},
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("spool-out failed for 1 of 3 jobs", r.stderr)
+        self.assertEqual([c.split()[1:4] for c in self.calls() if c.startswith("single ")],
+                         [["spool-out", j, spools[j]] for j in (j1, j2, j3)])
+
+    def test_bridge_batches_reject_mixed_or_malformed_input(self):
+        j1 = "1" * 64
+        bridge, env = self.bridge_copy()
+        for extra in ({"BRIDGE_STEP": "submit-remote", "JOB_IDS": j1, "JOB_ID": j1},
+                      {"BRIDGE_STEP": "submit-remote", "JOB_IDS": "x"},
+                      {"BRIDGE_STEP": "spool-out", "HANDOFF_SPOOLS": f"{j1}=/etc/passwd/..", "JOB_ID": j1},
+                      {"BRIDGE_STEP": "spool-out", "HANDOFF_SPOOLS": "nope"}):
+            with self.subTest(extra=extra):
+                r = subprocess.run([bridge], cwd=ROOT, env={**env, **extra}, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith(("submit ", "handoff put-spool"))])
+
     def test_bridge_quality_and_qwen_steps(self):
         share = os.path.join(self.tmp, "share")
         proj = os.path.join(share, "usnmocr")

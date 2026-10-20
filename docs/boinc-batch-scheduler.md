@@ -69,6 +69,27 @@ exclusive lifecycle maintenance. Each tick takes the shared controller lease.
 Successful empty-queue ticks are not end-to-end priority-page acceptance:
 the real-page receipt for #866 is recorded below.
 
+### Batched steps (#932)
+
+A tick submits, spools out and collects one page per job execution unless told otherwise.
+Each execution costs one to two minutes of Container Apps start and stop, so a 10-page tick
+spends about 40 minutes on them (measured 20 October 2026), whatever the volunteers' capacity.
+Three runtime flags put a tick's pages into one execution per step instead. They aren't part
+of the configuration, so turning them on or off changes no hash:
+
+- `--batch-submit`: `submit-remote` with `JOB_IDS=<id>,...`. It stops at the first job that
+  fails, as one execution per job would; the next tick reconciles that job before any other
+  submission.
+- `--batch-spool-out`: `spool-out` with `HANDOFF_SPOOLS=<id>=<spool>,...`.
+- `--batch-collect`: the hand-off `collect` with `JOB_IDS=<id>,...`.
+
+Spool-out and collect go on past a job that fails and fail at the end, so one held page doesn't
+hold up the others; the tick then stops as before. Each job in a batch runs the step's
+single-job path, with the same checks. A flag needs the image whose step takes the batch
+variable: the bridge image for the first two (usnm-boinc-prod), the hand-off image for the
+third (usnm-prod's `USNM_BOINC_HANDOFF_IMAGE`). Add a flag to the service's `ExecStart` only
+once that image is live, with the timer stopped.
+
 ### Production priority canary
 
 On 19 October 2026, cached English page

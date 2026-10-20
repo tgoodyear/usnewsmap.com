@@ -359,11 +359,18 @@ class ClaimFailed(RuntimeError):
 
 
 class Transport:
-    def __init__(self, config, directory, *, status_url=None, status_file=None):
+    def __init__(self, config, directory, *, status_url=None, status_file=None,
+                 batch_submit=False, batch_spool_out=False, batch_collect=False):
         self.config = config
         self.directory = directory
         self.status_url = status_url
         self.status_file = status_file
+        # One job execution for a whole tick's submissions, spool-outs or collects (#932),
+        # instead of one per page. Each needs the image whose step takes JOB_IDS: off until
+        # that image is live.
+        self.batch_submit = batch_submit
+        self.batch_spool_out = batch_spool_out
+        self.batch_collect = batch_collect
 
     def run(self, argv, label, timeout=2100, ok=(0,)):
         try:
@@ -539,6 +546,58 @@ class Transport:
         self.step("bridge", "spool-out", JOB_ID=job_id, HANDOFF_SPOOL=spool,
                   HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
         self.step("handoff", "collect", JOB_ID=job_id)
+
+    def submit_batch(self, job_ids):
+        """Submit these jobs: one bridge execution for all of them when batch_submit is on.
+        The bridge stops at the first failure, as one execution per job would have."""
+        if not job_ids:
+            return
+        if not self.batch_submit:
+            for job_id in job_ids:
+                self.submit(job_id)
+            return
+        self.step("bridge", "submit-remote", JOB_IDS=",".join(job_ids),
+                  HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
+
+    def collect_batch(self, pairs):
+        """Collect these (job, spool) pairs. With both flags off, exactly the per-job flow
+        (spool-out then collect, job by job, stopping at the first failure). Batched, a failed
+        spool-out doesn't stop collection: every job is still collected (one whose spool-out
+        failed then fails in its own collect), and the first failure is raised only after all
+        of them were tried, so one held page never keeps the others unpublished."""
+        if not pairs:
+            return
+        if not (self.batch_spool_out or self.batch_collect):
+            for job_id, spool in pairs:
+                self.collect(job_id, spool)
+            return
+        url = f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff"
+        errors = []
+        if self.batch_spool_out:
+            try:
+                self.step("bridge", "spool-out",
+                          HANDOFF_SPOOLS=",".join(f"{j}={s}" for j, s in pairs), HANDOFF_URL=url)
+            except RuntimeError as error:
+                errors.append(error)
+        else:
+            for job_id, spool in pairs:
+                try:
+                    self.step("bridge", "spool-out", JOB_ID=job_id, HANDOFF_SPOOL=spool, HANDOFF_URL=url)
+                except RuntimeError as error:
+                    errors.append(error)
+        if self.batch_collect:
+            try:
+                self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in pairs))
+            except RuntimeError as error:
+                errors.append(error)
+        else:
+            for job_id, _ in pairs:
+                try:
+                    self.step("handoff", "collect", JOB_ID=job_id)
+                except RuntimeError as error:
+                    errors.append(error)
+        if errors:
+            raise errors[0]
 
     def server_status(self, url=None, path=None):
         path = self.status_file if path is None else path
@@ -837,19 +896,24 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     for page in owned:
         selected.setdefault(page, now)
     persist()
-    count = 0
+    to_collect = []
     for page, record in owned.items():
         job_id = record["job"]["id"]
         remote = server.get(job_id)
         require(not remote or remote["stage"] != "submitting",
                 "uncertain BOINC submission; reconcile explicitly, never automatically resubmit")
         require(record["stage"] != "failed", "terminal failed page; operator investigation required")
-        if record["stage"] != "published" and remote and remote["spool"] and count < config["batch_size"]:
+        if record["stage"] != "published" and remote and remote["spool"] and len(to_collect) < config["batch_size"]:
             spool = remote["spool"]
             require(re.fullmatch(r"/[A-Za-z0-9_./-]+/results/[A-Za-z0-9_./-]+", spool)
                     and ".." not in spool, "invalid assimilator spool")
+            to_collect.append((job_id, spool))
+    if hasattr(transport, "collect_batch"):
+        transport.collect_batch(to_collect)
+    else:
+        for job_id, spool in to_collect:
             transport.collect(job_id, spool)
-            count += 1
+    count = len(to_collect)
     if count:
         records = transport.records()
         owned = owned_records(config, records)
@@ -950,15 +1014,21 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         cohort_submit_room = max(0, target - ocr_in_flight - backlog)
         global_submit_room = max(0, global_cap - global_in_flight - backlog)
         submit_limit = min(config["batch_size"], cohort_submit_room, global_submit_room)
+        to_submit = []
         for record in owned.values():
             job_id = record["job"]["id"]
             if record["stage"] == "reserved" and \
                     server.get(job_id, {}).get("stage") in (None, "reserved") and \
-                    submitted < submit_limit:
+                    len(to_submit) < submit_limit:
                 require(job_id not in existing_jobs,
                         "SQL/journal mismatch; reconcile existing work before any automatic submission")
+                to_submit.append(job_id)
+        if hasattr(transport, "submit_batch"):
+            transport.submit_batch(to_submit)
+        else:
+            for job_id in to_submit:
                 transport.submit(job_id)
-                submitted += 1
+        submitted += len(to_submit)
 
     post_uncollected_not_pending = sum(
         record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
@@ -1092,6 +1162,12 @@ def main(argv=None):
                         help="optional https server_status.php?xml=1 URL for per-app queue counts")
     parser.add_argument("--server-status-file", type=Path, default=None,
                         help="optional local file with server_status.php?xml=1 or structured status")
+    parser.add_argument("--batch-submit", action="store_true",
+                        help="submit a tick's jobs in one bridge execution (needs a bridge image whose submit-remote takes JOB_IDS)")
+    parser.add_argument("--batch-spool-out", action="store_true",
+                        help="spool out a tick's results in one bridge execution (needs spool-out with HANDOFF_SPOOLS)")
+    parser.add_argument("--batch-collect", action="store_true",
+                        help="collect a tick's results in one hand-off execution (needs a hand-off image whose collect takes JOB_IDS)")
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
@@ -1138,6 +1214,8 @@ def main(argv=None):
             transport = Transport(
                 config, args.state_dir,
                 status_url=args.server_status_url, status_file=args.server_status_file,
+                batch_submit=args.batch_submit, batch_spool_out=args.batch_spool_out,
+                batch_collect=args.batch_collect,
             )
             tick_kwargs = {"drain": args.drain}
             if args.low_watermark is not None:
