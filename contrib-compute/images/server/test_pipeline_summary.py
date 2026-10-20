@@ -89,7 +89,8 @@ class Rows {
     def test_stage_semantics_and_no_identities(self):
         self.run_endpoint()
         queries = (self.root / "queries").read_text()
-        self.assertIn("r.server_state = 5 AND r.outcome = 1 AND r.validate_state = 0", queries)
+        # Both pending validation states: not yet compared (0) and inconclusive (4).
+        self.assertIn("r.server_state = 5 AND r.outcome = 1 AND r.validate_state IN (0, 4)", queries)
         self.assertIn("h.rpc_time IS NULL OR h.rpc_time <", queries)
         self.assertIn("r.report_deadline <", queries)
         self.assertEqual(queries.count("MAX_EXECUTION_TIME(5000)"), 4)
@@ -111,6 +112,9 @@ class Rows {
         self.assertIn('fetch("pipeline_summary.php"', page)
         self.assertIn("Number.isFinite(a[k]) ? a[k] : 0", page)
         self.assertNotIn("<script src=", page)
+        # The muted text tokens pass WCAG AA (4.5:1) on both backgrounds of their theme.
+        self.assertIn("--ink-3: #6b6b64", page)
+        self.assertIn("--ink-3: #9a998f", page)
 
 
 if __name__ == "__main__":

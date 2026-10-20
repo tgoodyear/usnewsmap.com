@@ -60,8 +60,9 @@ try {
         $now = time();
         // Results by stage. Stranded: in progress on a host not heard from in a day, which
         // waits out its deadline before BOINC reissues it. Overdue: in progress past its report
-        // deadline. Awaiting validation: a successful result whose quorum partner hasn't
-        // returned yet.
+        // deadline. Awaiting validation: a successful result not yet validated, its quorum
+        // partner not back (VALIDATE_STATE_INIT, 0) or another replica wanted after a
+        // mismatch (VALIDATE_STATE_INCONCLUSIVE, 4; quality and qwen compare replicas).
         $apps = [];
         foreach (pipeline_rows($db, "
             SELECT /*+ MAX_EXECUTION_TIME(5000) */ a.id, a.name,
@@ -69,7 +70,7 @@ try {
                 SUM(r.server_state = 4) AS in_progress,
                 SUM(r.server_state = 4 AND r.report_deadline < $now) AS overdue,
                 SUM(r.server_state = 4 AND (h.rpc_time IS NULL OR h.rpc_time < $now - 86400)) AS stranded,
-                SUM(r.server_state = 5 AND r.outcome = 1 AND r.validate_state = 0) AS awaiting_validation,
+                SUM(r.server_state = 5 AND r.outcome = 1 AND r.validate_state IN (0, 4)) AS awaiting_validation,
                 SUM(r.server_state = 5 AND r.received_time > $now - 86400) AS returned_24h,
                 SUM(r.server_state = 5 AND r.received_time > $now - 86400 AND r.outcome <> 1) AS errors_24h,
                 SUM(r.server_state = 5 AND r.outcome = 1 AND r.validate_state = 1) AS validated,
