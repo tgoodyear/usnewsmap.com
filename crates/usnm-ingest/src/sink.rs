@@ -711,63 +711,86 @@ pub struct QuickwitSink {
     /// v1 restarts it for the final merges.
     process: Option<Arc<WriterProcess>>,
     ingest: IngestApi,
-    /// Ingest requests sent at once (`USNM_WRITER_INFLIGHT`, default 1).
-    in_flight: usize,
-    /// Those in flight; dropping the sink (a failed release) aborts them.
-    sending: tokio::task::JoinSet<anyhow::Result<()>>,
 }
 
-/// `USNM_WRITER_INFLIGHT`: ingest requests a release keeps in flight, 1 to
-/// 8 (default 1, one at a time). More keep the writer's indexer fed: with
-/// one, it idles while each request is read and answered (#283 on-prem
-/// rehearsal). Each request is still sent once, and v1 fails rather than
-/// resend; the release's exact count checks the total.
-pub const IN_FLIGHT_VAR: &str = "USNM_WRITER_INFLIGHT";
-
-pub fn in_flight_from_env() -> anyhow::Result<usize> {
-    in_flight_from(
-        std::env::var(IN_FLIGHT_VAR)
-            .ok()
-            .filter(|v| !v.is_empty())
-            .as_deref(),
-    )
-}
-
-fn in_flight_from(v: Option<&str>) -> anyhow::Result<usize> {
-    match v {
-        None => Ok(1),
-        Some(v) => match v.parse::<usize>() {
-            Ok(n @ 1..=8) => Ok(n),
-            _ => bail!("{IN_FLIGHT_VAR} must be 1 to 8, not `{v}`"),
-        },
+impl QuickwitSink {
+    /// `index_root` is where new indexes live (`azure://qw-index` or `file:///…`).
+    pub fn new(base_url: &str, index_root: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            base: base_url.trim_end_matches('/').to_owned(),
+            index_root: index_root.trim_end_matches('/').to_owned(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(300))
+                .build()?,
+            index: None,
+            buf: Vec::new(),
+            retry_initial: Duration::from_millis(500),
+            retry_for: INGEST_RETRY_FOR,
+            stats: Arc::default(),
+            merge_wait: MergeWait::default(),
+            split_docs: None,
+            events: None,
+            process: None,
+            ingest: IngestApi::default(),
+        })
     }
-}
 
-/// One ingest request, sent on its own so several can be in flight.
-struct IngestRequest {
-    http: reqwest::Client,
-    url: String,
-    id: String,
-    body: bytes::Bytes,
-    ingest: IngestApi,
-    retry_initial: Duration,
-    retry_for: Duration,
-    stats: Arc<SinkStats>,
-    events: Option<Arc<NodeEvents>>,
-}
+    /// Report the free disk of `node`'s work directory and its memory in
+    /// release progress, and stop the release if its output reports a full
+    /// disk or a failed merge. Call before sending anything.
+    pub fn watching(mut self, node: &QuickwitNode) -> Self {
+        self.stats = Arc::new(SinkStats {
+            work_dir: Some(node.work_dir.clone()),
+            node_pid: AtomicU32::new(node.pid().unwrap_or(0)),
+            ..SinkStats::default()
+        });
+        self.events = Some(node.events.clone());
+        self.process = Some(node.process.clone());
+        self
+    }
 
-impl IngestRequest {
-    /// Post it, retrying only what `ingest` says is safe to resend, and
-    /// check that the node took every document.
-    async fn post(self) -> anyhow::Result<()> {
-        let (id, url, body) = (self.id.as_str(), self.url.as_str(), &self.body);
+    /// Write through `api` (`IngestApi::from_env` in a release).
+    pub fn ingest(mut self, api: IngestApi) -> Self {
+        self.ingest = api;
+        self
+    }
+
+    /// How long `finish` may wait for merges, and how it polls.
+    pub fn merges(mut self, wait: MergeWait) -> Self {
+        self.merge_wait = wait;
+        self
+    }
+
+    fn node(&self) -> merges::Node<'_> {
+        merges::Node {
+            http: &self.http,
+            base: &self.base,
+        }
+    }
+
+    async fn send(&mut self, commit: &str) -> anyhow::Result<()> {
+        if self.buf.is_empty() && commit != "force" {
+            return Ok(());
+        }
+        if let Some(e) = &self.events {
+            e.check()?;
+        }
+        let id = self.index.as_deref().context("no index created")?;
+        let body = bytes::Bytes::from(std::mem::take(&mut self.buf));
+        let url = match self.ingest {
+            IngestApi::V2 => format!("{}/api/v1/{id}/ingest?commit={commit}", self.base),
+            IngestApi::V1 => format!(
+                "{}/api/v1/{id}/ingest?commit={commit}&use_legacy_ingest=true",
+                self.base
+            ),
+        };
         let deadline = tokio::time::Instant::now() + self.retry_for;
         let mut pause = self.retry_initial;
         let mut attempt = 1u32;
         let (status, text) = loop {
             let sent = self
                 .http
-                .post(url)
+                .post(&url)
                 .header("content-type", "application/json")
                 .body(body.clone())
                 .send()
@@ -816,133 +839,6 @@ impl IngestRequest {
             );
         }
         self.stats.sent(docs, body.len() as u64);
-        Ok(())
-    }
-}
-
-impl QuickwitSink {
-    /// `index_root` is where new indexes live (`azure://qw-index` or `file:///…`).
-    pub fn new(base_url: &str, index_root: &str) -> anyhow::Result<Self> {
-        Ok(Self {
-            base: base_url.trim_end_matches('/').to_owned(),
-            index_root: index_root.trim_end_matches('/').to_owned(),
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(300))
-                .build()?,
-            index: None,
-            buf: Vec::new(),
-            retry_initial: Duration::from_millis(500),
-            retry_for: INGEST_RETRY_FOR,
-            stats: Arc::default(),
-            merge_wait: MergeWait::default(),
-            split_docs: None,
-            events: None,
-            process: None,
-            ingest: IngestApi::default(),
-            in_flight: 1,
-            sending: tokio::task::JoinSet::new(),
-        })
-    }
-
-    /// Report the free disk of `node`'s work directory and its memory in
-    /// release progress, and stop the release if its output reports a full
-    /// disk or a failed merge. Call before sending anything.
-    pub fn watching(mut self, node: &QuickwitNode) -> Self {
-        self.stats = Arc::new(SinkStats {
-            work_dir: Some(node.work_dir.clone()),
-            node_pid: AtomicU32::new(node.pid().unwrap_or(0)),
-            ..SinkStats::default()
-        });
-        self.events = Some(node.events.clone());
-        self.process = Some(node.process.clone());
-        self
-    }
-
-    /// Keep up to `n` ingest requests in flight ([`in_flight_from_env`] in
-    /// a release); 1 sends one at a time.
-    pub fn in_flight(mut self, n: usize) -> Self {
-        self.in_flight = n.max(1);
-        self
-    }
-
-    /// Write through `api` (`IngestApi::from_env` in a release).
-    pub fn ingest(mut self, api: IngestApi) -> Self {
-        self.ingest = api;
-        self
-    }
-
-    /// How long `finish` may wait for merges, and how it polls.
-    pub fn merges(mut self, wait: MergeWait) -> Self {
-        self.merge_wait = wait;
-        self
-    }
-
-    fn node(&self) -> merges::Node<'_> {
-        merges::Node {
-            http: &self.http,
-            base: &self.base,
-        }
-    }
-
-    /// Send the buffered documents. An `auto` request goes out alongside
-    /// up to `in_flight` others (`USNM_WRITER_INFLIGHT`), so the writer
-    /// isn't left waiting between requests; a `force` commit waits for all
-    /// of them first, so it commits every document sent before it.
-    async fn send(&mut self, commit: &str) -> anyhow::Result<()> {
-        if self.buf.is_empty() && commit != "force" {
-            return Ok(());
-        }
-        if let Some(e) = &self.events {
-            e.check()?;
-        }
-        let request = self.request(commit)?;
-        if commit == "auto" && self.in_flight > 1 {
-            while self.sending.len() >= self.in_flight {
-                self.settle_one().await?;
-            }
-            self.sending.spawn(request.post());
-            return Ok(());
-        }
-        self.settle_all().await?;
-        request.post().await
-    }
-
-    /// The next request, taking the buffered documents.
-    fn request(&mut self, commit: &str) -> anyhow::Result<IngestRequest> {
-        let id = self.index.clone().context("no index created")?;
-        let url = match self.ingest {
-            IngestApi::V2 => format!("{}/api/v1/{id}/ingest?commit={commit}", self.base),
-            IngestApi::V1 => format!(
-                "{}/api/v1/{id}/ingest?commit={commit}&use_legacy_ingest=true",
-                self.base
-            ),
-        };
-        Ok(IngestRequest {
-            http: self.http.clone(),
-            url,
-            id,
-            body: bytes::Bytes::from(std::mem::take(&mut self.buf)),
-            ingest: self.ingest,
-            retry_initial: self.retry_initial,
-            retry_for: self.retry_for,
-            stats: Arc::clone(&self.stats),
-            events: self.events.clone(),
-        })
-    }
-
-    /// Wait for one request in flight; its failure fails the release.
-    async fn settle_one(&mut self) -> anyhow::Result<()> {
-        match self.sending.join_next().await {
-            Some(r) => r.context("an ingest request's task")?,
-            None => Ok(()),
-        }
-    }
-
-    /// Wait for every request in flight.
-    async fn settle_all(&mut self) -> anyhow::Result<()> {
-        while !self.sending.is_empty() {
-            self.settle_one().await?;
-        }
         Ok(())
     }
 
@@ -2812,8 +2708,6 @@ mod tests {
         TakeTwice,
         /// Takes the documents and answers 200 after the client gave up.
         TakeThenStall,
-        /// Takes the documents and answers 200 after 100 ms.
-        TakeSlowly,
     }
 
     /// The fake writer's index: the query string of every ingest request
@@ -2822,9 +2716,6 @@ mod tests {
     struct FakeIndex {
         requests: Vec<String>,
         docs: Vec<Vec<u8>>,
-        /// Requests being answered now, and the most at once.
-        open: usize,
-        most_open: usize,
     }
 
     /// A fake writer node that answers ingest requests with `answers` in
@@ -2885,17 +2776,6 @@ mod tests {
                 Some(Answer::TakeThenStall) => {
                     take(1);
                     tokio::time::sleep(Duration::from_secs(5)).await;
-                    (StatusCode::OK, ok)
-                }
-                Some(Answer::TakeSlowly) => {
-                    {
-                        let mut i = index.lock().unwrap();
-                        i.open += 1;
-                        i.most_open = i.most_open.max(i.open);
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    take(1);
-                    index.lock().unwrap().open -= 1;
                     (StatusCode::OK, ok)
                 }
                 None => {
@@ -2962,51 +2842,6 @@ mod tests {
         }
         let err = s.finish(2).await.unwrap_err().to_string();
         assert!(err.contains("holds 4 documents, expected 2"), "{err}");
-    }
-
-    /// With `in_flight`, requests overlap, a forced commit goes only after
-    /// every one of them, and the count sees every page once.
-    #[tokio::test]
-    async fn requests_in_flight_overlap_and_settle_before_the_commit() {
-        let (s, index) = fake_writer(IngestApi::V1, vec![Answer::TakeSlowly; 7]).await;
-        let mut s = s.in_flight(3);
-        for _ in 0..6 {
-            s.buf = TWO.to_vec();
-            s.send("auto").await.unwrap();
-        }
-        assert!(s.sending.len() <= 3);
-        s.buf = TWO.to_vec();
-        s.send("force").await.unwrap();
-        assert!(s.sending.is_empty());
-        let i = index.lock().unwrap();
-        assert_eq!(i.most_open, 3);
-        assert_eq!(i.docs.len(), 14);
-        assert_eq!(
-            i.requests.last().map(String::as_str),
-            Some("commit=force&use_legacy_ingest=true")
-        );
-        assert_eq!(s.stats().docs_sent(), 14);
-    }
-
-    /// A request in flight that fails stops the release at the next send.
-    #[tokio::test]
-    async fn a_failed_request_in_flight_fails_the_release() {
-        let (s, _) = fake_writer(IngestApi::V1, vec![Answer::Refuse(500)]).await;
-        let mut s = s.in_flight(2);
-        s.buf = TWO.to_vec();
-        s.send("auto").await.unwrap();
-        s.buf = TWO.to_vec();
-        let err = s.send("force").await.unwrap_err().to_string();
-        assert!(err.contains("returned 500"), "{err}");
-    }
-
-    #[test]
-    fn in_flight_comes_from_the_environment() {
-        assert_eq!(in_flight_from(None).unwrap(), 1);
-        assert_eq!(in_flight_from(Some("4")).unwrap(), 4);
-        for bad in ["0", "9", "x"] {
-            assert!(in_flight_from(Some(bad)).is_err(), "{bad}");
-        }
     }
 
     #[tokio::test]

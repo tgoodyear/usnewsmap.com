@@ -15,8 +15,7 @@
 # release  builds a full staged version: the Quickwit writer on DIR/qw
 #          (file://), the WAL in DIR/wal, curated read from the lake, with the
 #          #283 settings (one text field, decades, page languages, American
-#          Stories, our OCR, the Latin text, v1 ingest with 4 requests in
-#          flight, USNM_WRITER_INFLIGHT). It writes
+#          Stories, our OCR, the Latin text, v1 ingest). It writes
 #          DIR/reference/index-storage-pending.json and nothing in Azure.
 # publish  copies the staged version into the index account and the lake
 #          (usnm-ingest publish-staged). Promotion is a separate operator step.
@@ -78,8 +77,7 @@ case "$STEP" in
     # run here compares with the Azure ones.
     USNM_WORK_DIR=$RUN/work USNM_WRITER_WAL_DIR=$RUN/wal \
       USNM_WRITER_HEAP=6GiB USNM_WRITER_COMMIT_SECS=120 USNM_WRITER_QUEUE=4GiB \
-      USNM_WRITER_INGEST=v1 USNM_WRITER_INFLIGHT=${USNM_WRITER_INFLIGHT:-4} \
-      USNM_MERGE_TIMEOUT_SECS=14400 QW_DISABLE_TELEMETRY=1 \
+      USNM_WRITER_INGEST=v1 USNM_MERGE_TIMEOUT_SECS=14400 QW_DISABLE_TELEMETRY=1 \
       "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
       release --full --stage-index-storage \
       --american-stories --ja-latin --ocr-local \
