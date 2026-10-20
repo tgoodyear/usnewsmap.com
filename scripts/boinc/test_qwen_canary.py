@@ -199,6 +199,43 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertEqual(shared.findtext("plan_class[name='nvidia_vulkan_8b']/min_wu_id"), "17300")
         self.assertEqual(shared.findtext("plan_class[name='nvidia_vulkan_8b']/max_wu_id"), "17305")
 
+    def test_nvidia_general_promotes_from_a_shared_range_and_amd_stays_singleton(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        def run(expr, check=True):
+            code = ("$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; "
+                    "echo " + expr + ";")
+            return subprocess.run(["php", "-r", code], text=True, capture_output=True, check=check)
+        source = json.dumps(self.source.read_text())
+        shared = run("native_qwen_cohort_xml(" + source + ", 'shared_8b', 17300, 17305)").stdout
+        promoted = run("native_qwen_general_xml(" + json.dumps(shared) + ", 'nvidia_vulkan_8b')").stdout
+        self.assertIn(POLICY.NVIDIA_GENERAL_MARKER, promoted)
+        self.assertIsNone(ET.fromstring(promoted.encode()).find("plan_class[name='nvidia_vulkan_8b']/min_wu_id"))
+        # AMD's own window is still one workunit.
+        amd_range = ET.fromstring(shared.encode())
+        node = amd_range.find("plan_class[name='amd_vulkan_8b']")
+        node.find("min_wu_id").text, node.find("max_wu_id").text = "17300", "17305"
+        refused = run("native_qwen_general_xml(" + json.dumps(ET.tostring(amd_range, encoding="unicode"))
+                      + ", 'amd_vulkan_8b')", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Invalid amd_vulkan_8b admission state", refused.stdout + refused.stderr)
+
+    def test_proof_reports_preserved_nvidia_general_admission_as_open(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        def run(expr):
+            code = ("$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; "
+                    "echo json_encode(" + expr + ");")
+            return json.loads(subprocess.run(["php", "-r", code], text=True, capture_output=True, check=True).stdout)
+        source = json.dumps(self.source.read_text())
+        general = json.dumps(subprocess.run(
+            ["php", "-r", "$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper))
+             + "; echo native_qwen_general_xml(" + source + ", 'nvidia_vulkan_8b');"],
+            text=True, capture_output=True, check=True).stdout)
+        intel = "native_qwen_cohort_xml(" + general + ", 'intel_vulkan_8b', 17300)"
+        self.assertFalse(run("native_qwen_other_closed(" + intel + ", 'intel_vulkan_8b')"))
+        closed = "native_qwen_cohort_xml(" + source + ", 'intel_vulkan_8b', 17300)"
+        self.assertTrue(run("native_qwen_other_closed(" + closed + ", 'intel_vulkan_8b')"))
+        self.assertTrue(run("native_qwen_other_closed(" + source + ", 'amd_vulkan_8b')"))
+
     def test_nvidia_general_marker_malformed_states_fail_closed(self):
         for count, bounds in ((1, ("2", "1")), (2, None)):
             with self.subTest(markers=count, bounds=bounds):

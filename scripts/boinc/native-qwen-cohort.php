@@ -30,7 +30,11 @@ function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
         || !preg_match('/^[1-9][0-9]*$/D', $low->item(0)->nodeValue)
         || !preg_match('/^[1-9][0-9]*$/D', $high->item(0)->nodeValue)
         || !(($low->item(0)->nodeValue === "2" && $high->item(0)->nodeValue === "1")
-            || (intval($low->item(0)->nodeValue) > 1 && $low->item(0)->nodeValue === $high->item(0)->nodeValue))) {
+            || (intval($low->item(0)->nodeValue) > 1 && ($plan_class === "amd_vulkan_8b"
+                // AMD's window is one workunit; NVIDIA's can be a shared_8b range (up to ten).
+                ? $low->item(0)->nodeValue === $high->item(0)->nodeValue
+                : intval($high->item(0)->nodeValue) >= intval($low->item(0)->nodeValue)
+                    && intval($high->item(0)->nodeValue) - intval($low->item(0)->nodeValue) < 10)))) {
         throw new RuntimeException("Invalid $plan_class admission state");
     }
     $node->removeChild($low->item(0));
@@ -92,6 +96,24 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
     return $doc->saveXML();
 }
 
+// Whether every class in this operation's scope, other than the ones it opens, is closed
+// (min_wu_id 2, max_wu_id 1) in the resulting policy. A preserved general admission is open.
+// AMD's window is its own scope, so an AMD operation has no other class to close.
+function native_qwen_other_closed($xml, $plan_class) {
+    if ($plan_class === "amd_vulkan_8b") return true;
+    $scope = array_values(array_diff(NATIVE_QWEN_CLASSES, ["amd_vulkan_8b"]));
+    $opened = $plan_class === "shared_8b" ? SHARED_QWEN_CLASSES : [$plan_class];
+    $doc = new DOMDocument();
+    if (!$doc->loadXML($xml, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
+    $xpath = new DOMXPath($doc);
+    foreach (array_diff($scope, $opened) as $name) {
+        $node = $xpath->query("//plan_class[name='$name']")->item(0);
+        if (!$node || $xpath->query("min_wu_id", $node)->item(0)?->nodeValue !== "2"
+            || $xpath->query("max_wu_id", $node)->item(0)?->nodeValue !== "1") return false;
+    }
+    return true;
+}
+
 function native_qwen_cohort_validate($workunit, $results, $plan_class) {
     if (!in_array($plan_class, NATIVE_QWEN_CLASSES, true)) {
         throw new RuntimeException("Unsupported native class");
@@ -135,7 +157,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
         $proof = [
             "plan_class" => $plan_class, "workunit_id" => $workunit_id,
             "last_workunit_id" => $last_id ?? $workunit_id,
-            "other_managed_class_closed" => !$general,
+            "other_managed_class_closed" => !$general && native_qwen_other_closed($updated, $plan_class),
             "admission_mode" => $general ? "general" : ($workunit_id > 1 ? "bounded" : "closed"),
             "independent_amd_window" => true, "apply" => $apply,
             "before_sha256" => hash("sha256", $original),
