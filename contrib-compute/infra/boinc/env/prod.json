@@ -15,7 +15,7 @@
     "login": "Trevor Goodyear",
     "objectId": "0b398b81-9e13-427f-9dc2-e38d890554bc"
   },
-  "projectShare": "copy",
+  "projectShare": "provisioned",
   "projectUrl": "https://boinc.usnewsmap.com/",
   "qualityWave": {
     "script": "https://stusnmoffapzy.blob.core.windows.net/boinc-handoff/quality/v1-wave9/run_wave9-07ad7aa68230.py",
