@@ -1706,7 +1706,7 @@ impl Release {
                 Some(DecadeOrder::new(
                     &work,
                     layout.split_target(),
-                    sink.line_sender(),
+                    sink.line_sender().await?,
                 )?)
             }
             _ => None,

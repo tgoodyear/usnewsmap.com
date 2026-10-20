@@ -1033,7 +1033,8 @@ async fn release_locked(
             let sink = QuickwitSink::new(&n.url, root(t)?)?
                 .watching(&n)
                 .merges(wait)
-                .ingest(ingest);
+                .ingest(ingest)
+                .kafka(usnm_ingest::kafka::Kafka::from_env()?);
             node = Some(n);
             Box::new(sink)
         }

@@ -254,8 +254,9 @@ async fn send_files(
 ) -> anyhow::Result<Vec<u8>> {
     while let Some(full) = rx.recv().await {
         send_file(&full, &shared, &mut sender).await?;
+        sender.end_file().await?;
     }
-    Ok(sender.into_unsent())
+    sender.into_unsent().await
 }
 
 /// Where a file's lines go: the background sender, or the sink in line.
