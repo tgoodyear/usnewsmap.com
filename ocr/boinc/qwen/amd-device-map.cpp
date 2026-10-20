@@ -78,14 +78,31 @@ struct Props {
 };
 struct Adapter { std::string name; Pci pci; };
 
+// PCI identity as dddd:bb:dd.f, with ????: when OpenCL's AMD topology gives no domain.
+static std::string format_pci(const Pci &p) {
+    char text[32];
+    if (p.domain_known) std::snprintf(text, sizeof text, "%04x:%02x:%02x.%x", p.domain, p.bus, p.device, p.function);
+    else std::snprintf(text, sizeof text, "????:%02x:%02x.%x", p.bus, p.device, p.function);
+    return text;
+}
+
+// What was compared, so a refusal on a volunteer's machine can be diagnosed from its report.
+static std::string describe(const std::vector<Pci> &assigned, const std::vector<Adapter> &devices) {
+    std::string text = "OpenCL [";
+    for (size_t i = 0; i < assigned.size(); ++i) text += (i ? ", " : "") + format_pci(assigned[i]);
+    text += "], Vulkan [";
+    for (size_t i = 0; i < devices.size(); ++i) text += (i ? ", " : "") + devices[i].name + "=" + format_pci(devices[i].pci);
+    return text + "]";
+}
+
 static std::string unique_match(const std::vector<Pci> &assigned, const std::vector<Adapter> &devices) {
-    if (assigned.empty()) throw std::runtime_error("assigned OpenCL device has no PCI identity");
+    if (assigned.empty()) throw std::runtime_error("assigned OpenCL device has no PCI identity; " + describe(assigned, devices));
     std::string selected;
     for (const auto &identity : assigned) {
         std::vector<std::string> found;
         for (const auto &device : devices) if (matches(identity, device.pci)) found.push_back(device.name);
         if (found.size() != 1 || (!selected.empty() && selected != found[0])) {
-            throw std::runtime_error("missing or ambiguous assigned Vulkan device");
+            throw std::runtime_error("missing or ambiguous assigned Vulkan device; " + describe(assigned, devices));
         }
         selected = found[0];
     }

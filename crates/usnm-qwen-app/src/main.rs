@@ -51,6 +51,23 @@ pub const ENV_LLAMA_SERVER: &str = "USNM_LLAMA_SERVER";
 pub const DEFAULT_MODEL_DIR: &str = "/opt/qwen/models";
 pub const EMBEDDED_LLAMA_LOCK: &[u8] = include_bytes!("../../../ocr/boinc/qwen/llama.lock");
 pub const EMBEDDED_WEIGHTS_LOCK: &[u8] = include_bytes!("../../../ocr/boinc/qwen/weights.lock");
+
+/// Whether `bytes` holds a carriage return. A CRLF checkout (Windows CI's default) would embed
+/// locks that never match the LF copies shipped in the slot (.gitattributes pins them to LF).
+const fn has_cr(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+const _: () = assert!(
+    !has_cr(EMBEDDED_LLAMA_LOCK) && !has_cr(EMBEDDED_WEIGHTS_LOCK),
+    "llama.lock or weights.lock was checked out with CRLF; see .gitattributes"
+);
 const CTX_SIZE: u32 = 4096;
 const LOAD_DEADLINE: Duration = Duration::from_secs(300);
 
