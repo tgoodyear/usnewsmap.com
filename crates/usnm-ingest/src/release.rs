@@ -423,6 +423,12 @@ impl WriterLease {
     /// 4 hours by default) race against it, so a writer that may no longer hold the
     /// lock stops within a second instead of at its next checkpoint, long
     /// before the lock expires and another writer could take it.
+    /// Set once a renewal failed: for work beside the release, such as the
+    /// background decade sender, to stop on as `check` does.
+    pub fn lost_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.lost)
+    }
+
     pub(crate) async fn lost(&self) {
         while !self.lost.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -1703,7 +1709,12 @@ impl Release {
                     .work_dir
                     .clone()
                     .unwrap_or_else(std::env::temp_dir);
-                Some(DecadeOrder::new(&work, layout.split_target())?)
+                Some(DecadeOrder::new(
+                    &work,
+                    layout.split_target(),
+                    sink.line_sender(),
+                    Some(lease.lost_flag()),
+                )?)
             }
             _ => None,
         };
@@ -2869,7 +2880,7 @@ mod tests {
     #[tokio::test]
     async fn a_lost_lease_stops_sending_the_held_pages() {
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 1000).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 1000, None, None).unwrap();
         let mut sink = Stuck;
         order
             .add(&mut sink, &json!({"doc_id": "a", "decade": 1890}))
