@@ -26,6 +26,7 @@ use anyhow::{bail, Context};
 use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
 use rskafka::client::{Client, ClientBuilder};
 use rskafka::record::Record;
+use rskafka::BackoffConfig;
 
 use crate::sink::SinkStats;
 
@@ -95,6 +96,19 @@ impl Kafka {
             .with_context(|| format!("connecting to Kafka at {}", self.bootstrap))
     }
 
+    /// A client that never sends a request again: `rskafka` retries I/O and
+    /// connection errors by default, with no deadline, and a produce whose
+    /// answer was lost may have been appended. A zero deadline ends the
+    /// retries at the first error (a throttle, which appended nothing, is
+    /// still waited out).
+    async fn producer_client(&self) -> anyhow::Result<Client> {
+        ClientBuilder::new(vec![self.bootstrap.clone()])
+            .backoff_config(no_retries())
+            .build()
+            .await
+            .with_context(|| format!("connecting to Kafka at {}", self.bootstrap))
+    }
+
     /// Create `index_id`'s topic, empty: one that exists already is an
     /// earlier attempt's, whose records would be indexed again.
     pub async fn create_topic(&self, index_id: &str) -> anyhow::Result<()> {
@@ -155,7 +169,7 @@ impl Kafka {
         stats: Arc<SinkStats>,
     ) -> anyhow::Result<Producer> {
         let topic = Self::topic(index_id);
-        let client = self.client().await?;
+        let client = self.producer_client().await?;
         let mut partitions = Vec::new();
         for p in 0..self.partitions {
             partitions.push(
@@ -172,6 +186,14 @@ impl Kafka {
             batch_bytes: 0,
             stats,
         })
+    }
+}
+
+/// The backoff that stops at the first error.
+pub fn no_retries() -> BackoffConfig {
+    BackoffConfig {
+        deadline: Some(std::time::Duration::ZERO),
+        ..BackoffConfig::default()
     }
 }
 
@@ -255,6 +277,11 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn the_producer_never_retries() {
+        assert_eq!(no_retries().deadline, Some(std::time::Duration::ZERO));
     }
 
     #[test]

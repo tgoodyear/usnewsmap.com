@@ -1066,7 +1066,9 @@ impl IndexSink for QuickwitSink {
         self.create_with(index_id, &template).await?;
         self.split_docs = layout.split_docs;
         // A partitioned base's decade files go through Kafka (`crate::kafka`).
-        if let (Some(k), true) = (self.kafka.clone(), layout.decades.on()) {
+        // Only a partitioned base sends decade files (`crate::decade_order`); a
+        // delta tagged by decade goes in line, through v1.
+        if let (Some(k), Decades::Partitioned) = (self.kafka.clone(), layout.decades) {
             k.create_topic(index_id).await?;
             self.add_source(index_id, &k.source_yaml(index_id)).await?;
             self.kafka_index = Some(index_id.to_owned());
@@ -1137,9 +1139,16 @@ impl IndexSink for QuickwitSink {
         }
         let id = self.index.clone().context("no index created")?;
         let via_kafka = self.kafka_index.as_ref() == Some(&id);
-        // Kafka's backlog can take a while to index: wait while the count
-        // grows, up to 20 minutes without progress. Otherwise 4 minutes.
-        let patience = if via_kafka { 600 } else { 120 };
+        // Kafka's backlog can take a while to index, and its pipelines' last
+        // splits wait for their commit timeout (the forced commit is v1's
+        // only): wait while the count grows, for the longer of 20 minutes
+        // and the commit timeout plus 10 without progress. Otherwise 4 minutes.
+        let patience = if via_kafka {
+            let commit = u64::from(WriterTuning::from_env()?.commit_timeout_secs);
+            (1200u64.max(commit + 600) / 2) as u32
+        } else {
+            120
+        };
         let mut last = 0;
         let mut still = 0;
         while still < patience {
@@ -1155,15 +1164,7 @@ impl IndexSink for QuickwitSink {
         if last != expected {
             bail!("index `{id}` holds {last} documents, expected {expected}");
         }
-        if via_kafka {
-            // Every record is in: the source goes, so the restart for the
-            // final merges doesn't open it again.
-            self.delete_source(&id, "kafka").await?;
-            self.kafka_index = None;
-            if let Some(k) = &self.kafka {
-                k.delete_topic(&id).await?;
-            }
-        }
+
         let split_target = self
             .split_docs
             .unwrap_or_else(merges::template_split_target);
@@ -1205,6 +1206,16 @@ impl IndexSink for QuickwitSink {
                 .await?
             }
         };
+        // The Kafka source stays through the final merges, so its splits
+        // get the final merge factor too (Quickwit merges by source); then
+        // it and its topic go: every record is in the index.
+        if via_kafka {
+            self.delete_source(&id, "kafka").await?;
+            self.kafka_index = None;
+            if let Some(k) = &self.kafka {
+                k.delete_topic(&id).await?;
+            }
+        }
         tracing::info!(
             index = %id,
             splits = layout.splits,
