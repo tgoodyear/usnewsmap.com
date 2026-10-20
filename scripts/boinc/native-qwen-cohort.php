@@ -4,16 +4,25 @@
 const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"];
 const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
 const AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1";
+// General admission: the class takes any of the app's work, with no workunit bounds. The
+// marker records the operator's choice, so a plan-policy refresh keeps it (refresh-plan-policy.py).
+// nvidia_vulkan_8b qualified on usnm-rtx-compute's 17 audited units (13 valid, none failed).
+const GENERAL_MARKERS = [
+    "amd_vulkan_8b" => AMD_GENERAL_MARKER,
+    "nvidia_vulkan_8b" => "usnm-nvidia-general-admission-v1",
+];
 
-function native_qwen_general_xml($xml) {
+function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
+    if (!isset(GENERAL_MARKERS[$plan_class])) throw new RuntimeException("No general admission for $plan_class");
+    $marker = GENERAL_MARKERS[$plan_class];
     $doc = new DOMDocument();
     if (!$doc->loadXML($xml, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
     $xpath = new DOMXPath($doc);
-    $nodes = $xpath->query("//plan_class[name='amd_vulkan_8b']");
-    if ($nodes->length !== 1) throw new RuntimeException("Missing or duplicate AMD class");
+    $nodes = $xpath->query("//plan_class[name='$plan_class']");
+    if ($nodes->length !== 1) throw new RuntimeException("Missing or duplicate $plan_class class");
     $node = $nodes->item(0);
-    if ($xpath->query("project_prefs_tag", $node)->length) throw new RuntimeException("Unexpected AMD account gate");
-    $markers = $xpath->query("comment()[normalize-space(.)='".AMD_GENERAL_MARKER."']", $node);
+    if ($xpath->query("project_prefs_tag", $node)->length) throw new RuntimeException("Unexpected $plan_class account gate");
+    $markers = $xpath->query("comment()[normalize-space(.)='$marker']", $node);
     $low = $xpath->query("min_wu_id", $node);
     $high = $xpath->query("max_wu_id", $node);
     if ($markers->length === 1 && $low->length === 0 && $high->length === 0) return $xml;
@@ -21,12 +30,16 @@ function native_qwen_general_xml($xml) {
         || !preg_match('/^[1-9][0-9]*$/D', $low->item(0)->nodeValue)
         || !preg_match('/^[1-9][0-9]*$/D', $high->item(0)->nodeValue)
         || !(($low->item(0)->nodeValue === "2" && $high->item(0)->nodeValue === "1")
-            || (intval($low->item(0)->nodeValue) > 1 && $low->item(0)->nodeValue === $high->item(0)->nodeValue))) {
-        throw new RuntimeException("Invalid AMD admission state");
+            || (intval($low->item(0)->nodeValue) > 1 && ($plan_class === "amd_vulkan_8b"
+                // AMD's window is one workunit; NVIDIA's can be a shared_8b range (up to ten).
+                ? $low->item(0)->nodeValue === $high->item(0)->nodeValue
+                : intval($high->item(0)->nodeValue) >= intval($low->item(0)->nodeValue)
+                    && intval($high->item(0)->nodeValue) - intval($low->item(0)->nodeValue) < 10)))) {
+        throw new RuntimeException("Invalid $plan_class admission state");
     }
     $node->removeChild($low->item(0));
     $node->removeChild($high->item(0));
-    $node->appendChild($doc->createComment(AMD_GENERAL_MARKER));
+    $node->appendChild($doc->createComment($marker));
     return $doc->saveXML();
 }
 
@@ -52,12 +65,17 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
         if ($xpath->query("project_prefs_tag", $node)->length) {
             throw new RuntimeException("Deploy project-participation policy first");
         }
-        if ($name === "amd_vulkan_8b") {
-            $markers = $xpath->query("comment()[normalize-space(.)='".AMD_GENERAL_MARKER."']", $node);
+        $open_here = $workunit_id > 1 && ($name === $plan_class
+            || ($plan_class === "shared_8b" && in_array($name, SHARED_QWEN_CLASSES, true)));
+        if (isset(GENERAL_MARKERS[$name])) {
+            $markers = $xpath->query("comment()[normalize-space(.)='".GENERAL_MARKERS[$name]."']", $node);
             if ($markers->length) {
                 if ($markers->length !== 1 || $xpath->query("min_wu_id|max_wu_id", $node)->length) {
-                    throw new RuntimeException("Invalid explicit AMD general admission");
+                    throw new RuntimeException("Invalid explicit $name general admission");
                 }
+                // A window for another class leaves this one generally admitted; --stop, or a
+                // window for this class itself, replaces general admission with bounds.
+                if ($name !== "amd_vulkan_8b" && $workunit_id > 1 && !$open_here) continue;
                 $node->removeChild($markers->item(0));
                 $node->appendChild($doc->createElement("min_wu_id"));
                 $node->appendChild($doc->createElement("max_wu_id"));
@@ -70,14 +88,30 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
                 $fields = $xpath->query($tag, $node);
             }
             if ($fields->length !== 1) throw new RuntimeException("Missing bounded cohort field");
-            $open = $workunit_id > 1 && ($name === $plan_class
-                || ($plan_class === "shared_8b" && in_array($name, SHARED_QWEN_CLASSES, true)));
-            $fields->item(0)->nodeValue = $open
+            $fields->item(0)->nodeValue = $open_here
                 ? ($tag === "min_wu_id" ? $workunit_id : $last_id)
                 : ($tag === "min_wu_id" ? 2 : 1);
         }
     }
     return $doc->saveXML();
+}
+
+// Whether every class in this operation's scope, other than the ones it opens, is closed
+// (min_wu_id 2, max_wu_id 1) in the resulting policy. A preserved general admission is open.
+// AMD's window is its own scope, so an AMD operation has no other class to close.
+function native_qwen_other_closed($xml, $plan_class) {
+    if ($plan_class === "amd_vulkan_8b") return true;
+    $scope = array_values(array_diff(NATIVE_QWEN_CLASSES, ["amd_vulkan_8b"]));
+    $opened = $plan_class === "shared_8b" ? SHARED_QWEN_CLASSES : [$plan_class];
+    $doc = new DOMDocument();
+    if (!$doc->loadXML($xml, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
+    $xpath = new DOMXPath($doc);
+    foreach (array_diff($scope, $opened) as $name) {
+        $node = $xpath->query("//plan_class[name='$name']")->item(0);
+        if (!$node || $xpath->query("min_wu_id", $node)->item(0)?->nodeValue !== "2"
+            || $xpath->query("max_wu_id", $node)->item(0)?->nodeValue !== "1") return false;
+    }
+    return true;
 }
 
 function native_qwen_cohort_validate($workunit, $results, $plan_class) {
@@ -105,8 +139,8 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class) {
 }
 
 function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false) {
-    if ($general && ($plan_class !== "amd_vulkan_8b" || $workunit_id !== 0 || ($last_id !== null && $last_id !== 0))) {
-        throw new RuntimeException("General admission is AMD-only and has no workunit identity");
+    if ($general && (!isset(GENERAL_MARKERS[$plan_class]) || $workunit_id !== 0 || ($last_id !== null && $last_id !== 0))) {
+        throw new RuntimeException("General admission is for ".implode(" and ", array_keys(GENERAL_MARKERS))." only and has no workunit identity");
     }
     $path = "$project/plan_class_spec.xml";
     if (is_link($path)) throw new RuntimeException("Refusing symlinked plan XML");
@@ -118,12 +152,12 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
     try {
         $original = file_get_contents($path);
         if ($original === false) throw new RuntimeException("Cannot read plan XML");
-        $updated = $general ? native_qwen_general_xml($original)
+        $updated = $general ? native_qwen_general_xml($original, $plan_class)
             : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id);
         $proof = [
             "plan_class" => $plan_class, "workunit_id" => $workunit_id,
             "last_workunit_id" => $last_id ?? $workunit_id,
-            "other_managed_class_closed" => !$general,
+            "other_managed_class_closed" => !$general && native_qwen_other_closed($updated, $plan_class),
             "admission_mode" => $general ? "general" : ($workunit_id > 1 ? "bounded" : "closed"),
             "independent_amd_window" => true, "apply" => $apply,
             "before_sha256" => hash("sha256", $original),
@@ -179,9 +213,9 @@ function native_qwen_cohort_main() {
         || (!$stop && !$general && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
         || (isset($options["workunit-end"]) && !preg_match('/^[1-9][0-9]*$/', $options["workunit-end"]))
         || ($stop && (isset($options["workunit"]) || isset($options["workunit-end"])))
-        || ($general && ($stop || $plan_class !== "amd_vulkan_8b"
+        || ($general && ($stop || !isset(GENERAL_MARKERS[$plan_class])
             || isset($options["workunit"]) || isset($options["workunit-end"])))) {
-        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b --general | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
     }
     $id = ($stop || $general) ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;
