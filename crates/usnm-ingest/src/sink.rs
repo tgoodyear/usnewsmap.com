@@ -1160,6 +1160,9 @@ impl IndexSink for QuickwitSink {
             // final merges doesn't open it again.
             self.delete_source(&id, "kafka").await?;
             self.kafka_index = None;
+            if let Some(k) = &self.kafka {
+                k.delete_topic(&id).await?;
+            }
         }
         let split_target = self
             .split_docs

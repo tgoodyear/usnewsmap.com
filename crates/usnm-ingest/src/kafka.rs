@@ -118,6 +118,22 @@ impl Kafka {
         Ok(())
     }
 
+    /// Delete `index_id`'s topic once the index holds every record and the
+    /// source is gone: the next build of a version of the same name (a
+    /// rehearsal, a retry the same day) needs the name, and the records
+    /// are in the index.
+    pub async fn delete_topic(&self, index_id: &str) -> anyhow::Result<()> {
+        let topic = Self::topic(index_id);
+        self.client()
+            .await?
+            .controller_client()?
+            .delete_topic(&topic, 30_000)
+            .await
+            .with_context(|| format!("deleting Kafka topic {topic}"))?;
+        tracing::info!(topic, "Kafka topic deleted");
+        Ok(())
+    }
+
     /// The index's Kafka source, as Quickwit takes it: one pipeline per
     /// partition, from the start of the topic.
     pub fn source_yaml(&self, index_id: &str) -> String {
