@@ -173,6 +173,18 @@ impl DecadeOrder {
     /// Hold `doc` (with its `decade`) back, and send its decade's pages
     /// once there are `chunk` of them.
     pub async fn add(&mut self, sink: &mut dyn IndexSink, doc: &Value) -> anyhow::Result<()> {
+        let line = serde_json::to_vec(doc)?;
+        self.add_line(sink, doc, line).await
+    }
+
+    /// [`DecadeOrder::add`] with `doc` already written as its JSON `line`
+    /// (the release builds both on its threads).
+    pub async fn add_line(
+        &mut self,
+        sink: &mut dyn IndexSink,
+        doc: &Value,
+        line: Vec<u8>,
+    ) -> anyhow::Result<()> {
         let decade = doc["decade"]
             .as_u64()
             .and_then(|d| u16::try_from(d).ok())
@@ -182,7 +194,6 @@ impl DecadeOrder {
                     doc["doc_id"].as_str().unwrap_or("?")
                 )
             })?;
-        let line = serde_json::to_vec(doc)?;
         let spill = match self.open.entry(decade) {
             std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::btree_map::Entry::Vacant(e) => {
