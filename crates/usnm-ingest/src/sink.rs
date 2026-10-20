@@ -556,6 +556,12 @@ pub trait IndexSink: Send {
     fn stats(&self) -> Arc<SinkStats> {
         Arc::default()
     }
+    /// An owned sender to the current index, which `crate::decade_order`
+    /// runs beside the release so reading goes on while a decade is sent.
+    /// `None`: the sink is fed in line, as before.
+    fn line_sender(&self) -> Option<LineSender> {
+        None
+    }
 }
 
 /// What a sink has sent so far, and where to look for its resources.
@@ -713,70 +719,26 @@ pub struct QuickwitSink {
     ingest: IngestApi,
 }
 
-impl QuickwitSink {
-    /// `index_root` is where new indexes live (`azure://qw-index` or `file:///…`).
-    pub fn new(base_url: &str, index_root: &str) -> anyhow::Result<Self> {
-        Ok(Self {
-            base: base_url.trim_end_matches('/').to_owned(),
-            index_root: index_root.trim_end_matches('/').to_owned(),
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(300))
-                .build()?,
-            index: None,
-            buf: Vec::new(),
-            retry_initial: Duration::from_millis(500),
-            retry_for: INGEST_RETRY_FOR,
-            stats: Arc::default(),
-            merge_wait: MergeWait::default(),
-            split_docs: None,
-            events: None,
-            process: None,
-            ingest: IngestApi::default(),
-        })
-    }
+/// Posts ingest requests to one index on the writer node: the request,
+/// v1/v2's retries, and the check that the node took every document.
+#[derive(Clone)]
+struct Poster {
+    http: reqwest::Client,
+    base: String,
+    id: String,
+    ingest: IngestApi,
+    retry_initial: Duration,
+    retry_for: Duration,
+    stats: Arc<SinkStats>,
+    events: Option<Arc<NodeEvents>>,
+}
 
-    /// Report the free disk of `node`'s work directory and its memory in
-    /// release progress, and stop the release if its output reports a full
-    /// disk or a failed merge. Call before sending anything.
-    pub fn watching(mut self, node: &QuickwitNode) -> Self {
-        self.stats = Arc::new(SinkStats {
-            work_dir: Some(node.work_dir.clone()),
-            node_pid: AtomicU32::new(node.pid().unwrap_or(0)),
-            ..SinkStats::default()
-        });
-        self.events = Some(node.events.clone());
-        self.process = Some(node.process.clone());
-        self
-    }
-
-    /// Write through `api` (`IngestApi::from_env` in a release).
-    pub fn ingest(mut self, api: IngestApi) -> Self {
-        self.ingest = api;
-        self
-    }
-
-    /// How long `finish` may wait for merges, and how it polls.
-    pub fn merges(mut self, wait: MergeWait) -> Self {
-        self.merge_wait = wait;
-        self
-    }
-
-    fn node(&self) -> merges::Node<'_> {
-        merges::Node {
-            http: &self.http,
-            base: &self.base,
-        }
-    }
-
-    async fn send(&mut self, commit: &str) -> anyhow::Result<()> {
-        if self.buf.is_empty() && commit != "force" {
-            return Ok(());
-        }
+impl Poster {
+    async fn post(&self, commit: &str, body: bytes::Bytes) -> anyhow::Result<()> {
         if let Some(e) = &self.events {
             e.check()?;
         }
-        let id = self.index.as_deref().context("no index created")?;
-        let body = bytes::Bytes::from(std::mem::take(&mut self.buf));
+        let id = self.id.as_str();
         let url = match self.ingest {
             IngestApi::V2 => format!("{}/api/v1/{id}/ingest?commit={commit}", self.base),
             IngestApi::V1 => format!(
@@ -841,6 +803,127 @@ impl QuickwitSink {
         self.stats.sent(docs, body.len() as u64);
         Ok(())
     }
+}
+
+/// JSON lines to one index, in requests of at most [`CHUNK_BYTES`], one at
+/// a time: [`QuickwitSink::line_sender`].
+pub struct LineSender {
+    poster: Poster,
+    buf: Vec<u8>,
+}
+
+impl LineSender {
+    pub async fn add_line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        if line.len() + 1 > CHUNK_BYTES {
+            bail!(
+                "a document is {} bytes, over the {CHUNK_BYTES}-byte ingest request limit",
+                line.len() + 1
+            );
+        }
+        if self.buf.len() + line.len() + 1 > CHUNK_BYTES {
+            let body = bytes::Bytes::from(std::mem::take(&mut self.buf));
+            self.poster.post("auto", body).await?;
+        }
+        self.buf.extend_from_slice(line);
+        self.buf.push(b'\n');
+        Ok(())
+    }
+
+    /// The lines not sent yet (never none once a line was added: a request
+    /// goes only when the next line wouldn't fit). The release gives them
+    /// back to the sink, whose `finish` sends them with the forced commit,
+    /// as when the pages went out in line.
+    pub fn into_unsent(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
+impl QuickwitSink {
+    /// `index_root` is where new indexes live (`azure://qw-index` or `file:///…`).
+    pub fn new(base_url: &str, index_root: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            base: base_url.trim_end_matches('/').to_owned(),
+            index_root: index_root.trim_end_matches('/').to_owned(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(300))
+                .build()?,
+            index: None,
+            buf: Vec::new(),
+            retry_initial: Duration::from_millis(500),
+            retry_for: INGEST_RETRY_FOR,
+            stats: Arc::default(),
+            merge_wait: MergeWait::default(),
+            split_docs: None,
+            events: None,
+            process: None,
+            ingest: IngestApi::default(),
+        })
+    }
+
+    /// Report the free disk of `node`'s work directory and its memory in
+    /// release progress, and stop the release if its output reports a full
+    /// disk or a failed merge. Call before sending anything.
+    pub fn watching(mut self, node: &QuickwitNode) -> Self {
+        self.stats = Arc::new(SinkStats {
+            work_dir: Some(node.work_dir.clone()),
+            node_pid: AtomicU32::new(node.pid().unwrap_or(0)),
+            ..SinkStats::default()
+        });
+        self.events = Some(node.events.clone());
+        self.process = Some(node.process.clone());
+        self
+    }
+
+    /// Write through `api` (`IngestApi::from_env` in a release).
+    pub fn ingest(mut self, api: IngestApi) -> Self {
+        self.ingest = api;
+        self
+    }
+
+    /// How long `finish` may wait for merges, and how it polls.
+    pub fn merges(mut self, wait: MergeWait) -> Self {
+        self.merge_wait = wait;
+        self
+    }
+
+    fn node(&self) -> merges::Node<'_> {
+        merges::Node {
+            http: &self.http,
+            base: &self.base,
+        }
+    }
+
+    async fn send(&mut self, commit: &str) -> anyhow::Result<()> {
+        if self.buf.is_empty() && commit != "force" {
+            return Ok(());
+        }
+        let body = bytes::Bytes::from(std::mem::take(&mut self.buf));
+        self.poster()?.post(commit, body).await
+    }
+
+    /// What posting a request to this sink's index needs, owned.
+    fn poster(&self) -> anyhow::Result<Poster> {
+        Ok(Poster {
+            http: self.http.clone(),
+            base: self.base.clone(),
+            id: self.index.clone().context("no index created")?,
+            ingest: self.ingest,
+            retry_initial: self.retry_initial,
+            retry_for: self.retry_for,
+            stats: Arc::clone(&self.stats),
+            events: self.events.clone(),
+        })
+    }
+
+    /// An owned sender of JSON lines to this sink's index, for
+    /// `crate::decade_order` to send a decade's file while the release
+    /// reads on. It posts the same requests `add_line` would, one at a time.
+    pub fn line_sender(&self) -> anyhow::Result<LineSender> {
+        Ok(LineSender {
+            poster: self.poster()?,
+            buf: Vec::new(),
+        })
+    }
 
     async fn count(&self, id: &str) -> anyhow::Result<u64> {
         let counted = self.count_once(id).await;
@@ -867,6 +950,10 @@ impl QuickwitSink {
 
 #[async_trait]
 impl IndexSink for QuickwitSink {
+    fn line_sender(&self) -> Option<LineSender> {
+        QuickwitSink::line_sender(self).ok()
+    }
+
     async fn create(&mut self, index_id: &str, layout: MainLayout) -> anyhow::Result<()> {
         // The main index takes this run's writer tuning and layout; the
         // Japanese index (about 11k pages) keeps its template's.
@@ -2811,6 +2898,76 @@ mod tests {
             .build()
             .unwrap();
         (s, index)
+    }
+
+    /// A decade's full file goes out in the background in the order the
+    /// in-line path sends it, every page once.
+    #[tokio::test]
+    async fn decades_sent_in_the_background_keep_their_order() {
+        use crate::decade_order::DecadeOrder;
+        let docs: Vec<Value> = (0..20u32)
+            .map(|i| serde_json::json!({"doc_id": format!("p{i}"), "decade": 1850 + 10 * (i % 3)}))
+            .collect();
+        // In line: the order the release sent before.
+        let (mut inline, inline_index) = fake_writer(IngestApi::V1, vec![]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 3, None).unwrap();
+        for d in &docs {
+            order.add(&mut inline, d).await.unwrap();
+        }
+        order.finish(&mut inline).await.unwrap();
+        inline.send("auto").await.unwrap();
+        // In the background.
+        let (mut s, index) = fake_writer(IngestApi::V1, vec![]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let sender = IndexSink::line_sender(&s);
+        assert!(sender.is_some());
+        let mut order = DecadeOrder::new(dir.path(), 3, sender).unwrap();
+        for d in &docs {
+            order.add(&mut s, d).await.unwrap();
+        }
+        let stats = order.finish(&mut s).await.unwrap();
+        assert_eq!((stats.docs, stats.runs), (20, 8));
+        // The last pages are back in the sink, for `finish`'s forced commit.
+        assert!(!s.buf.is_empty());
+        s.send("force").await.unwrap();
+        let got = index.lock().unwrap().docs.clone();
+        let want = inline_index.lock().unwrap().docs.clone();
+        assert_eq!(got.len(), 20);
+        assert_eq!(got, want);
+        assert_eq!(s.stats().docs_sent(), 20);
+        let requests = index.lock().unwrap().requests.clone();
+        assert_eq!(
+            requests.last().map(String::as_str),
+            Some("commit=force&use_legacy_ingest=true")
+        );
+    }
+
+    /// The background sender's failure stops the release.
+    #[tokio::test]
+    async fn a_failed_background_send_fails_the_release() {
+        use crate::decade_order::DecadeOrder;
+        let (mut s, _) = fake_writer(IngestApi::V1, vec![Answer::Refuse(500)]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 2, IndexSink::line_sender(&s)).unwrap();
+        let mut err = None;
+        for i in 0..40u32 {
+            // 3 MB each, so the background sender posts requests.
+            let d = serde_json::json!({"doc_id": format!("p{i}"), "decade": 1900, "pad": "x".repeat(3_000_000)});
+            if let Err(e) = order.add(&mut s, &d).await {
+                err = Some(e);
+                break;
+            }
+        }
+        let err = match err {
+            Some(e) => e,
+            None => order.finish(&mut s).await.unwrap_err(),
+        };
+        // Refused (the fake node's body limit answers before its 500).
+        assert!(
+            format!("{err:#}").contains("ingest into `i` returned"),
+            "{err:#}"
+        );
     }
 
     /// Two pages, one request.

@@ -287,7 +287,7 @@ async fn measure(bin: &Path, run: Run, docs: u64, port: u16) {
     let started = Instant::now();
     let mut order = (run == Run::PartitionedByDecade).then(|| {
         let chunk = usnm_ingest::merges::template_setting("split_num_docs_target").unwrap();
-        DecadeOrder::new(dir.path(), chunk).unwrap()
+        DecadeOrder::new(dir.path(), chunk, None).unwrap()
     });
     // Generated on a thread of its own, a few thousand pages ahead.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(2_000);

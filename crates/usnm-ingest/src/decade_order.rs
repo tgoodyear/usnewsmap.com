@@ -17,16 +17,26 @@
 //! bounded: under `chunk` pages per decade, at most 15 × `chunk` pages (a
 //! few GB compressed at 30,000), never the whole corpus. Each page is read from the
 //! curated store once, as without partitions.
+//!
+//! With a sink that hands out a [`LineSender`] (the Quickwit writer), a
+//! decade's full file is sent by a task of its own while the release reads
+//! on into a new file for that decade (#283: the writer takes v1 ingest at
+//! most `shard_throughput_limit`, 20 MB/s, and reading stopped for every
+//! decade sent). Files go out one at a time, in the order they filled, so
+//! the pages reach the writer in the same order as when they were sent in
+//! line. At most [`QUEUED_FILES`] full files wait; past that, the release
+//! waits for the sender, which bounds the disk.
 
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use serde_json::Value;
 
-use crate::sink::IndexSink;
+use crate::sink::{IndexSink, LineSender};
 
 /// The directory under the writer's work directory that holds the files.
 pub const SPILL_DIR: &str = "decade-spill";
@@ -34,11 +44,22 @@ pub const SPILL_DIR: &str = "decade-spill";
 /// zstd's level for the files: fast, and about a quarter of the JSON.
 const LEVEL: i32 = 1;
 
+/// Full files waiting for the background sender before the release waits.
+pub const QUEUED_FILES: usize = 4;
+
 /// One decade's pages not sent yet.
 struct Spill {
     path: PathBuf,
     file: zstd::stream::write::Encoder<'static, BufWriter<File>>,
     docs: u64,
+}
+
+/// A closed file to send.
+struct Full {
+    decade: u16,
+    path: PathBuf,
+    docs: u64,
+    disk_bytes: u64,
 }
 
 /// What [`DecadeOrder`] has done, for the release log and the tests.
@@ -54,37 +75,62 @@ pub struct OrderStats {
     pub peak_bytes: u64,
 }
 
+/// What the files and the sender share.
+#[derive(Default)]
+struct Shared {
+    stats: OrderStats,
+    /// Pages written to files and not sent yet.
+    held: u64,
+}
+
+/// The background sender: its queue and its task.
+struct Background {
+    queue: tokio::sync::mpsc::Sender<Full>,
+    /// Ends with the lines it hadn't sent yet.
+    task: tokio::task::JoinHandle<anyhow::Result<Vec<u8>>>,
+}
+
 /// Holds pages back by decade and sends them a decade at a time.
 pub struct DecadeOrder {
     dir: PathBuf,
     chunk: u64,
     open: BTreeMap<u16, Spill>,
-    held: u64,
-    stats: OrderStats,
+    /// Files made so far, for unique names.
+    made: u64,
+    shared: Arc<Mutex<Shared>>,
+    background: Option<Background>,
 }
 
 impl DecadeOrder {
     /// Files in `work_dir/decade-spill`, emptied first: a previous release
     /// that stopped may have left some. Only the release holding the writer
-    /// lock writes there.
-    pub fn new(work_dir: &Path, chunk: u64) -> anyhow::Result<Self> {
+    /// lock writes there. With `sender`, full files are sent in the
+    /// background (module docs); without, in line.
+    pub fn new(work_dir: &Path, chunk: u64, sender: Option<LineSender>) -> anyhow::Result<Self> {
         let dir = work_dir.join(SPILL_DIR);
         if dir.exists() {
             tracing::info!(dir = %dir.display(), "removing a previous release's decade files");
             std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
         }
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let background = sender.map(|sender| {
+            let (queue, rx) = tokio::sync::mpsc::channel(QUEUED_FILES);
+            let task = tokio::spawn(send_files(rx, sender, Arc::clone(&shared)));
+            Background { queue, task }
+        });
         Ok(Self {
             dir,
             chunk: chunk.max(1),
             open: BTreeMap::new(),
-            held: 0,
-            stats: OrderStats::default(),
+            made: 0,
+            shared,
+            background,
         })
     }
 
     pub fn stats(&self) -> OrderStats {
-        self.stats
+        self.shared.lock().expect("stats").stats
     }
 
     /// Hold `doc` (with its `decade`) back, and send its decade's pages
@@ -103,7 +149,8 @@ impl DecadeOrder {
         let spill = match self.open.entry(decade) {
             std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::btree_map::Entry::Vacant(e) => {
-                let path = self.dir.join(format!("{decade}.jsonl.zst"));
+                self.made += 1;
+                let path = self.dir.join(format!("{decade}-{}.jsonl.zst", self.made));
                 let file =
                     File::create(&path).with_context(|| format!("creating {}", path.display()))?;
                 let file = zstd::stream::write::Encoder::new(BufWriter::new(file), LEVEL)?;
@@ -117,69 +164,68 @@ impl DecadeOrder {
         spill.file.write_all(&line)?;
         spill.file.write_all(b"\n")?;
         spill.docs += 1;
-        self.held += 1;
-        self.stats.peak_docs = self.stats.peak_docs.max(self.held);
-        if spill.docs >= self.chunk {
+        let full = spill.docs >= self.chunk;
+        {
+            let mut sh = self.shared.lock().expect("held");
+            sh.held += 1;
+            sh.stats.peak_docs = sh.stats.peak_docs.max(sh.held);
+        }
+        if full {
             self.send(sink, decade).await?;
         }
         Ok(())
     }
 
-    /// Send every decade's pages left, oldest first.
+    /// Send every decade's pages left, oldest first, and wait for the
+    /// background sender to finish.
     pub async fn finish(&mut self, sink: &mut dyn IndexSink) -> anyhow::Result<OrderStats> {
         let decades: Vec<u16> = self.open.keys().copied().collect();
         for d in decades {
             self.send(sink, d).await?;
         }
-        Ok(self.stats)
+        if let Some(Background { queue, task }) = self.background.take() {
+            drop(queue);
+            let unsent = task.await.context("the decade sender's task")??;
+            // Back to the sink, so its `finish` sends them with the forced
+            // commit, as in line.
+            for line in unsent.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+                sink.add_line(line).await?;
+            }
+        }
+        Ok(self.stats())
     }
 
+    /// Close `decade`'s file and send it: queued for the background sender,
+    /// or in line through `sink`.
     async fn send(&mut self, sink: &mut dyn IndexSink, decade: u16) -> anyhow::Result<()> {
         let Some(spill) = self.open.remove(&decade) else {
             return Ok(());
         };
         let mut file = spill.file.finish()?;
         file.flush()?;
-        let bytes = self.disk_bytes() + file.get_ref().metadata()?.len();
-        self.stats.peak_bytes = self.stats.peak_bytes.max(bytes);
+        let disk_bytes = self.disk_bytes() + file.get_ref().metadata()?.len();
         drop(file);
-        let mut lines = BufReader::new(zstd::stream::read::Decoder::new(
-            File::open(&spill.path).with_context(|| format!("opening {}", spill.path.display()))?,
-        )?);
-        let mut line = Vec::new();
-        let mut sent = 0u64;
-        loop {
-            line.clear();
-            if lines.read_until(b'\n', &mut line)? == 0 {
-                break;
-            }
-            if line.last() == Some(&b'\n') {
-                line.pop();
-            }
-            sink.add_line(&line).await?;
-            sent += 1;
-        }
-        anyhow::ensure!(
-            sent == spill.docs,
-            "{} held {} pages, but {sent} came back",
-            spill.path.display(),
-            spill.docs
-        );
-        std::fs::remove_file(&spill.path)?;
-        self.held -= sent;
-        self.stats.runs += 1;
-        self.stats.docs += sent;
-        tracing::info!(
+        let full = Full {
             decade,
-            pages = sent,
-            held_pages = self.held,
-            disk_mb = bytes / (1024 * 1024),
-            "sent a decade's pages"
-        );
-        Ok(())
+            path: spill.path,
+            docs: spill.docs,
+            disk_bytes,
+        };
+        match &self.background {
+            Some(bg) => {
+                if bg.queue.send(full).await.is_err() {
+                    // The sender stopped: its error says why.
+                    let Background { task, .. } = self.background.take().expect("background");
+                    task.await.context("the decade sender's task")??;
+                    anyhow::bail!("the decade sender stopped");
+                }
+                Ok(())
+            }
+            None => send_file(&full, &self.shared, &mut InLine(sink)).await,
+        }
     }
 
-    /// The compressed bytes of the other decades' files, as flushed so far.
+    /// The compressed bytes of the other decades' open files, as flushed so far.
     fn disk_bytes(&self) -> u64 {
         self.open
             .values()
@@ -189,8 +235,89 @@ impl DecadeOrder {
     }
 }
 
+/// The background sender: each queued file in turn. Ends with the lines it
+/// hadn't sent yet.
+async fn send_files(
+    mut rx: tokio::sync::mpsc::Receiver<Full>,
+    mut sender: LineSender,
+    shared: Arc<Mutex<Shared>>,
+) -> anyhow::Result<Vec<u8>> {
+    while let Some(full) = rx.recv().await {
+        send_file(&full, &shared, &mut sender).await?;
+    }
+    Ok(sender.into_unsent())
+}
+
+/// Where a file's lines go: the background sender, or the sink in line.
+#[async_trait::async_trait]
+trait Lines: Send {
+    async fn line(&mut self, line: &[u8]) -> anyhow::Result<()>;
+}
+
+#[async_trait::async_trait]
+impl Lines for LineSender {
+    async fn line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        self.add_line(line).await
+    }
+}
+
+struct InLine<'a>(&'a mut dyn IndexSink);
+
+#[async_trait::async_trait]
+impl Lines for InLine<'_> {
+    async fn line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        self.0.add_line(line).await
+    }
+}
+
+/// Send one file's lines to `to`, check the count, and delete it.
+async fn send_file(full: &Full, shared: &Mutex<Shared>, to: &mut dyn Lines) -> anyhow::Result<()> {
+    let mut lines = BufReader::new(zstd::stream::read::Decoder::new(
+        File::open(&full.path).with_context(|| format!("opening {}", full.path.display()))?,
+    )?);
+    let mut line = Vec::new();
+    let mut sent = 0u64;
+    loop {
+        line.clear();
+        if lines.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        to.line(&line).await?;
+        sent += 1;
+    }
+    anyhow::ensure!(
+        sent == full.docs,
+        "{} held {} pages, but {sent} came back",
+        full.path.display(),
+        full.docs
+    );
+    std::fs::remove_file(&full.path)?;
+    let held = {
+        let mut sh = shared.lock().expect("held");
+        sh.held -= sent;
+        sh.stats.runs += 1;
+        sh.stats.docs += sent;
+        sh.stats.peak_bytes = sh.stats.peak_bytes.max(full.disk_bytes);
+        sh.held
+    };
+    tracing::info!(
+        decade = full.decade,
+        pages = sent,
+        held_pages = held,
+        disk_mb = full.disk_bytes / (1024 * 1024),
+        "sent a decade's pages"
+    );
+    Ok(())
+}
+
 impl Drop for DecadeOrder {
     fn drop(&mut self) {
+        if let Some(bg) = self.background.take() {
+            bg.task.abort();
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -236,7 +363,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(SPILL_DIR)).unwrap();
         std::fs::write(dir.path().join(SPILL_DIR).join("1890.jsonl.zst"), b"x").unwrap();
         let mut sink = Recorder::default();
-        let mut order = DecadeOrder::new(dir.path(), 3).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 3, None).unwrap();
         // Archive order: decades interleaved.
         let input = [1890, 1900, 1890, 1880, 1900, 1890, 1900, 1880, 1890];
         for (i, d) in input.iter().enumerate() {
@@ -293,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn a_page_without_a_decade_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 3).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 3, None).unwrap();
         let err = order
             .add(&mut Recorder::default(), &json!({"doc_id": "x"}))
             .await

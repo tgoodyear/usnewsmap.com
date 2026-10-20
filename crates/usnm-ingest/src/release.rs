@@ -1703,7 +1703,11 @@ impl Release {
                     .work_dir
                     .clone()
                     .unwrap_or_else(std::env::temp_dir);
-                Some(DecadeOrder::new(&work, layout.split_target())?)
+                Some(DecadeOrder::new(
+                    &work,
+                    layout.split_target(),
+                    sink.line_sender(),
+                )?)
             }
             _ => None,
         };
@@ -2869,7 +2873,7 @@ mod tests {
     #[tokio::test]
     async fn a_lost_lease_stops_sending_the_held_pages() {
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 1000).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 1000, None).unwrap();
         let mut sink = Stuck;
         order
             .add(&mut sink, &json!({"doc_id": "a", "decade": 1890}))
