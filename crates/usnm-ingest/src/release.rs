@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::field::Empty;
@@ -1794,24 +1794,12 @@ impl Release {
                 }
                 None => HashMap::new(),
             };
-            // The batch's parts, downloaded a few at once, then read and
-            // turned into documents on several threads: the documents and
-            // everything recorded about them come out in part order, as
-            // when one thread read them.
+            // The batch's parts, a few downloading ahead, each turned into
+            // documents on several threads and sent before the next is
+            // built: the documents and everything recorded about them come
+            // out in part order, as when one thread read them, and only one
+            // part's documents are held at a time.
             let curated = self.curated.as_ref();
-            let t_fetch = std::time::Instant::now();
-            let parts: Vec<(&String, bytes::Bytes)> = stream::iter(&b.curated.parts)
-                .map(|path| async move {
-                    let bytes = curated
-                        .get(path)
-                        .await?
-                        .with_context(|| format!("curated part `{path}` is missing"))?;
-                    Ok::<_, anyhow::Error>((path, bytes::Bytes::from(bytes)))
-                })
-                .buffered(CURATED_PREFETCH)
-                .try_collect()
-                .await?;
-            lease.check()?;
             let ctx = PartContext {
                 batch: b,
                 dedup,
@@ -1824,13 +1812,30 @@ impl Release {
                 format,
                 page_language: moves.is_some(),
             };
-            let fetch_secs = t_fetch.elapsed().as_secs_f64();
-            let t_build = std::time::Instant::now();
-            let built = build_parts(&ctx, parts)?;
-            let build_secs = t_build.elapsed().as_secs_f64();
-            let (mut lang_secs, mut add_secs) = (0f64, 0f64);
+            let mut fetched = stream::iter(&b.curated.parts)
+                .map(|path| async move {
+                    let bytes = curated
+                        .get(path)
+                        .await?
+                        .with_context(|| format!("curated part `{path}` is missing"))?;
+                    Ok::<_, anyhow::Error>((path, bytes::Bytes::from(bytes)))
+                })
+                .buffered(CURATED_PREFETCH);
+            let (mut fetch_secs, mut build_secs, mut lang_secs, mut add_secs) =
+                (0f64, 0f64, 0f64, 0f64);
             let wait_before = order.as_ref().map_or(0.0, |o| o.queue_wait_secs());
-            for part in built {
+            loop {
+                let t_fetch = std::time::Instant::now();
+                let Some(next) = fetched.next().await else {
+                    break;
+                };
+                fetch_secs += t_fetch.elapsed().as_secs_f64();
+                let (path, bytes) = next?;
+                lease.check()?;
+                let t_build = std::time::Instant::now();
+                let part = build_part_blocking(&ctx, path, &bytes)?;
+                drop(bytes);
+                build_secs += t_build.elapsed().as_secs_f64();
                 let PartDocs {
                     docs: part_docs,
                     lines: part_lines,
@@ -1844,9 +1849,8 @@ impl Release {
                 replaced.extend(part_replaced);
                 local_tally.merge(tally);
                 local_replaced.extend(part_local);
-                // Each page's own languages (05 §5.5.8), on a few threads,
-                // and the pages that move to another set than their title's.
-                // The pages' own languages were found as they were built.
+                // The pages that move to another set than their title's
+                // (05 §5.5.8); their own languages were found as they were built.
                 let t_lang = std::time::Instant::now();
                 if let Some(m) = moves.as_deref_mut() {
                     for d in &part_docs {
@@ -2763,20 +2767,16 @@ fn part_threads() -> usize {
 /// Rows a thread builds at a time.
 const ROWS_PER_CHUNK: usize = 256;
 
-/// Each of `parts`' documents: its rows decoded, then built (with their page
-/// languages and JSON lines) on [`part_threads`] threads, a chunk of rows
-/// each. Everything comes out in row order, as when one thread built them.
-fn build_parts(
+/// One part's documents ([`build_part`]): its rows decoded, then built
+/// (with their page languages and JSON lines) on [`part_threads`] threads, a
+/// chunk of rows each, in row order. On the release's multi-threaded
+/// runtime, the runtime is told this thread blocks.
+fn build_part_blocking(
     ctx: &PartContext<'_>,
-    parts: Vec<(&String, bytes::Bytes)>,
-) -> anyhow::Result<Vec<PartDocs>> {
-    let run = || -> anyhow::Result<Vec<PartDocs>> {
-        parts
-            .iter()
-            .map(|(path, bytes)| build_part(ctx, bytes).with_context(|| (*path).clone()))
-            .collect()
-    };
-    // On the release's multi-threaded runtime, tell it this thread blocks.
+    path: &str,
+    bytes: &bytes::Bytes,
+) -> anyhow::Result<PartDocs> {
+    let run = || build_part(ctx, bytes).with_context(|| path.to_owned());
     if tokio::runtime::Handle::try_current()
         .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
     {
