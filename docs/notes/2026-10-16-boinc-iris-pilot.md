@@ -58,7 +58,7 @@ substantially understates memory use.
 
 ## Prepare, dispatch, inspect
 
-OCR benchmark release v1.0.0 ([docs/ocr-bench.md](ocr-bench.md)) preserves the pilot's exact
+OCR benchmark release v1.0.0 ([docs/ocr-bench.md](../ocr-bench.md)) preserves the pilot's exact
 images and references, and those of the paired and German campaigns. Subset
 `legacy/overproof-en-100` is this acceptance set byte for byte. When comparing against it, cite
 its subset digest and the release's content digest.
@@ -183,7 +183,7 @@ f16 hint and container limits. They are experiment tools, not shipped in the wor
 BOINC behavior. On Computer 9 pipeline construction was about 70% of each task; N=8 gave 3.8x and
 a warm compile cache plus N=8 gave 6.4x end-to-end crops/min with no truncations or OOMs. Reference-scored CER, the
 multi-crop contract and a signed release are still required: see
-[the report](reports/2026-10-iris-model-reuse/README.md). Rollback needs nothing: the published
+[the report](../reports/2026-10-iris-model-reuse/README.md). Rollback needs nothing: the published
 single-crop app version is unchanged. To rerun, stop BOINC on the host first
 (`systemctl stop boinc-client` in the CT) and restore it with `systemctl start boinc-client` afterwards.
 

@@ -3,7 +3,7 @@
 For [#738](https://github.com/tgoodyear/usnewsmap.com/issues/738). This audits the
 published v1.0.0 manifest and newly staged v1.1.0 public ground truth, not the
 size of a language's newspaper collection. No production data or queues changed.
-The [annotation policy](ocr-bench-annotation-policy.md) defines admission, damage
+The [annotation policy](../ocr-bench-annotation-policy.md) defines admission, damage
 and masks. No new human transcription or damage review is claimed in this pass.
 
 ## Included sources and rights
@@ -11,7 +11,7 @@ and masks. No new human transcription or damage review is claimed in this pass.
 | Track             | Source and human GT evidence                                                                                                      | Image / reference rights                                                                          | This audit's evidence                                                                                    |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | English crops     | Overproof dataset 3 via HIPE, hand-corrected articles                                                                             | LoC public domain / **CC BY-NC-SA 4.0** structured copy                                           | Published v1.0.0 manifest and source notices; not relicensed, not asserted permissive for commercial use |
-| German line pairs | Mannheim Reichsanzeiger GT, Transkribus OCR-D Level 2                                                                             | Public Domain Mark 1.0 / CC BY 4.0 (follow stricter Zenodo statement, notwithstanding GitHub CC0) | Published v1.0.0 manifest; [source survey](ocr-gold-set.md#source-policy)                                |
+| German line pairs | Mannheim Reichsanzeiger GT, Transkribus OCR-D Level 2                                                                             | Public Domain Mark 1.0 / CC BY 4.0 (follow stricter Zenodo statement, notwithstanding GitHub CC0) | Published v1.0.0 manifest; [source survey](../ocr-gold-set.md#source-policy)                             |
 | French regions    | [NewsEye BnF 4293602](https://doi.org/10.5281/zenodo.4293602), carefully corrected PAGE text, Muehlberger/Hackl, BnF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0**                                                                         | Current Zenodo record pinned in inputs; validation archive MD5 checked against publisher; SHA-256 below  |
 | Finnish regions   | [NewsEye NLF 4599472](https://doi.org/10.5281/zenodo.4599472), carefully corrected PAGE text, Muehlberger/Hackl, NLF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0**                                                                         | Same checks; publisher describes 8 validation pages, but eligible selected regions cover only 6          |
 | Swedish regions   | [NewsEye NLF 4599624](https://doi.org/10.5281/zenodo.4599624), carefully corrected PAGE text, Muehlberger/Hackl, NLF/NewsEye/READ | **CC BY 4.0 / CC BY 4.0**                                                                         | Same checks; publisher describes 6 validation pages, but eligible selected regions cover only 4          |
@@ -92,12 +92,12 @@ region contains only that language. The pooled `multilingual/all-52` combines
 three tracks, not three languages on each page. Typeface remains unlabelled.
 
 Machine-readable evidence:
-[`v1.0.0-coverage.json`](../ocr/bench/audits/v1.0.0-coverage.json),
-[`v1.1.0-coverage.json`](../ocr/bench/audits/v1.1.0-coverage.json).
+[`v1.0.0-coverage.json`](../../ocr/bench/audits/v1.0.0-coverage.json),
+[`v1.1.0-coverage.json`](../../ocr/bench/audits/v1.1.0-coverage.json).
 Both pin manifest SHA-256. Regenerate after a verified fetch:
 
 ```sh
-python3 scripts/ocr-bench/coverage.py --manifest RELEASE/manifest.json --out NEW-coverage.json
+python3 scripts/archive/2026-10/coverage.py --manifest RELEASE/manifest.json --out NEW-coverage.json
 ```
 
 No per-language `standard-1000` or `extended-10000` target is met. v1.0.0's
@@ -109,7 +109,7 @@ corruption labelled as historical damage.
 
 ## Other sources: disposition and remaining work
 
-The broader [source audit](ocr-gold-set.md#source-policy) is evidence inherited
+The broader [source audit](../ocr-gold-set.md#source-policy) is evidence inherited
 from its dated checks, not a new live licence audit of all URLs in this pass:
 
 - **Austrian NewsEye (German)**: CC BY 4.0, documented GT; the recent German

@@ -10,14 +10,14 @@ Credentials and held-out validation and test references never go to volunteers.
 Status: signed GPU training app published and two bounded trials queued
 (`transcription-lora-v1`, workunits 68 and 69). The AMD and Windows hardware
 currently attached is ineligible for the Linux NVIDIA app, so GPU execution is
-pending. See the [live evidence](notes/2026-10-15-transcription-pilot.md). An
+pending. See the [live evidence](2026-10-15-transcription-pilot.md). An
 adapted checkpoint, its GGUF export, training resource measurements and accuracy
 gains are UNVERIFIED. A baseline campaign does not establish a post-training
 improvement.
 
 ## Dataset preparation
 
-Use the existing [public ground-truth fetch and conversion](ocr-scoring-guide.md).
+Use the existing [public ground-truth fetch and conversion](../ocr-scoring-guide.md).
 Do not use LoC, American Stories or engine consensus as human truth.
 Before an Overproof-CA accuracy run, inspect the alignment between each crop
 and its reference text, and exclude the oversized boxes described in
@@ -69,7 +69,7 @@ The test split never supplies training conversations.
 
 ## Volunteer GPU adaptation
 
-The [training worker](../ocr/boinc/train/worker.py) starts from
+The [training worker](../../ocr/boinc/train/worker.py) starts from
 `Qwen/Qwen3-VL-2B-Instruct@89644892e4d85e24eaac8bacfd4f463576704203`.
 It freezes the base and vision encoder, trains language-attention Q/V LoRA only,
 masks image and prompt tokens, and refuses target truncation, non-finite losses

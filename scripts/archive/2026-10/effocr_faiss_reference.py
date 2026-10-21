@@ -26,7 +26,7 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
     lock = json.loads(args.adapter_lock.read_text(encoding="utf-8"))
-    runtime_lock = Path(__file__).resolve().parents[2] / lock["runtime"]["requirements_lock"]
+    runtime_lock = Path(__file__).resolve().parents[3] / lock["runtime"]["requirements_lock"]
     if sha256(runtime_lock) != lock["runtime"]["requirements_lock_sha256"]:
         raise SystemExit("EffOCR runtime requirements lock checksum mismatch")
     if platform.python_version() != lock["runtime"]["python"]:

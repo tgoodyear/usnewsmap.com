@@ -1,6 +1,6 @@
 # JP2 against IIIF JPEG on BOINC
 
-Issue: [#456](https://github.com/tgoodyear/usnewsmap.com/issues/456). Background: the [#435 report](reports/2026-10-jp2-vs-jpeg-ocr/report.md), which compared the two formats on 80 pages that were not a random sample. This page covers the second BOINC app, `usnm_assess`, which runs the same comparison on a stratified random sample of the corpus on volunteer hosts, and the server steps around it. The OCR pilot (`usnm_ocr`) is described in [boinc.md](boinc.md); the server hosting is in [contrib-compute/docs](../contrib-compute/docs/design.md).
+Issue: [#456](https://github.com/tgoodyear/usnewsmap.com/issues/456). Background: the [#435 report](../reports/2026-10-jp2-vs-jpeg-ocr/report.md), which compared the two formats on 80 pages that were not a random sample. This page covers the second BOINC app, `usnm_assess`, which runs the same comparison on a stratified random sample of the corpus on volunteer hosts, and the server steps around it. The OCR pilot (`usnm_ocr`) is described in [boinc.md](../boinc.md); the server hosting is in [contrib-compute/docs](../../contrib-compute/docs/design.md).
 
 Status: written and unit-tested. No assessment campaign has run; the production server
 deployment is recorded in #470.

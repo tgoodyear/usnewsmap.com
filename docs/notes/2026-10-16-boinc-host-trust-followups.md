@@ -129,7 +129,7 @@ retries may have been issued and purged. A marker with unresolved native results
 fails collection. This records an execution failure, not measured OCR quality.
 Server cancellation, send failure, no reply, validator error, a missing spool
 artifact or a result without authoritative host/time does not automatically
-revoke. See [the Gold trust policy](boinc.md#host-trust-for-usnm_ocr).
+revoke. See [the Gold trust policy](../boinc.md#host-trust-for-usnm_ocr).
 In production, the bridge's `gold-onboard` step runs one pass with the bridge's
 own database credentials, the campaign's prepared inputs and
 `$SHARE_DIR/gold/trust.json` (when there); the controller root is `$SHARE_DIR/host-trust`:
