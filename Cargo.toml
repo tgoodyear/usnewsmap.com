@@ -5,7 +5,6 @@ members = [
     "crates/usnm-boinc",
     "crates/usnm-core",
     "crates/usnm-search",
-    "crates/usnm-scan-reader",
     "crates/usnm-store",
     "crates/usnm-api",
     "crates/usnm-ingest",

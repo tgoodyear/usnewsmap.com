@@ -55,7 +55,7 @@ The tiers are those of 13 §13.7.2 and ADR-0016, as of the licence decisions of 
 | czech | 15 | 1876-1920 | Pokrok Západu | 0.500 | 0.311 | 2424 |
 | polish | 5 | 1890-1936 | Polish-language titles | 0.123 | 0.485 | 2217 |
 
-**Engines.** Each engine ran in its own podman container built from `scripts/ocr-survey/containers/`. The versions are the ones the engines reported in their results.
+**Engines.** Each engine ran in its own podman container built from `scripts/ocr-survey/containers/`; those survey containers have since been removed, and the two retained engines live under `ocr/engines/`. The versions are the ones the engines reported in their results.
 
 | Engine | Version | Models or variant | Groups | Node |
 |---|---|---|---|---|
