@@ -33,13 +33,16 @@ kv_token() {
       jq -er .access_token
   elif [ -n "${IDENTITY_ENDPOINT:-}" ] && [ -n "${IMDS_ENDPOINT:-}" ]; then
     url="$IDENTITY_ENDPOINT?api-version=2020-06-01&resource=https://vault.azure.net"
-    realm="$(curl -sS -o /dev/null -D - -H "Metadata: true" "$url" | tr -d '\r' |
+    # The identity endpoint is local: never through a proxy, which would also see the key.
+    realm="$(curl --noproxy '*' -sS -o /dev/null -D - -H "Metadata: true" "$url" | tr -d '\r' |
       sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: *Basic realm=\([^[:space:]]*\).*/\1/p')"
+    # The realm may be quoted (realm="/var/opt/azcmagent/tokens/<id>.key").
+    realm=${realm#\"}; realm=${realm%\"}
     case "$realm" in
       /var/opt/azcmagent/tokens/*.key) [[ $realm != *..* ]] && [ -f "$realm" ] || fail "unexpected Arc challenge file" ;;
       *) fail "no Arc challenge from $IDENTITY_ENDPOINT" ;;
     esac
-    curl -fsS -H "Metadata: true" -H @<(printf 'Authorization: Basic %s\n' "$(cat "$realm")") "$url" |
+    curl --noproxy '*' -fsS -H "Metadata: true" -H @<(printf 'Authorization: Basic %s\n' "$(cat "$realm")") "$url" |
       jq -er .access_token
   else
     fail "no managed identity endpoint in the environment"
