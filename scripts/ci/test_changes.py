@@ -723,7 +723,7 @@ class Wiring(unittest.TestCase):
         job = job_text(self.workflow("ci.yml"), "infra")
         always = ("actions/checkout", "No shared-key authentication", "Scripts and CLIs take named arguments")
         steps = re.split(r"(?m)^      - ", job.split("    steps:\n", 1)[1])[1:]
-        self.assertGreaterEqual(len(steps), 20)
+        self.assertGreaterEqual(len(steps), 12)  # the split found the steps; script unit tests are one step
         for step in steps:
             if any(marker in step for marker in always):
                 self.assertNotIn("outputs.infra", step)

@@ -83,6 +83,10 @@ for Markdown-only changes.
 
 Run `npm run format` in `web/` before pushing. It runs Prettier (pinned in `web/package.json`) from the repository root, with the root's `.prettierrc.json` and `.prettierignore`: it formats the web app's TypeScript, JavaScript, CSS, HTML and JSON, except `package-lock.json`, build output and `web/src/examples.json`, which keeps each example's view on one line. It also formats every Markdown file in the repository except the reports under `docs/reports/`, because pandoc builds their PDFs and sizes table columns from the Markdown's layout. In Markdown it keeps prose lines and code blocks as written. It leaves data JSON outside `web/`, YAML, Bicep, Rust and Python alone. `npm run format:check` is the check CI runs. Where Prettier's layout would change how a Markdown block renders, wrap the block in `<!-- prettier-ignore-start -->` and `<!-- prettier-ignore-end -->`.
 
+### Script tests
+
+`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, so a new test file runs in CI without being added to a list in `ci.yml` (the `infra` job's "script unit tests" step). Run it from anywhere in the checkout; `--list` shows what it would run. `python3 -m unittest discover -s scripts` is not a substitute: with no `__init__.py` under `scripts/` it reads only the files directly in `scripts/`, not those in `scripts/boinc/` and the other directories. The runner leaves out the tests that need something the generic job lacks (Pillow, the ops venv, the C++ headers, or a workflow of their own) and the archived scripts under `scripts/archive/`, with the reason for each in its `EXCLUDE` table; those run in steps of their own. Run one file with `python3 -m unittest -v scripts/boinc/test_install.py`.
+
 ### JSON data files
 
 Each JSON data file in the repository has a spec and a check that CI runs:
