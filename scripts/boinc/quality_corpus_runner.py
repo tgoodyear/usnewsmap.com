@@ -4,6 +4,7 @@ Distributed full-corpus (3,011 batches / 23.77M pages) staging + submission + ro
 runner for usnm_quality 1.3 across all 5 native BOINC platforms.
 Runs inside usnm-boinc-quality-caj-prod (Python 3.11 + Pillow 11.3.0 + /usr/local/bin/usnm-boinc).
 """
+import contextlib
 import fcntl
 import gc
 import glob
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -211,10 +213,18 @@ def mysql_defaults_file():
         pw = open("/dev/shm/boinc/db-runtime").read().strip()
         user = os.environ.get("DB_RUNTIME_USER", "usnmboincrun")
         quote = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
-        fd = os.open(f"{path}.new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(f"[client]\nhost={quote(os.environ['DB_HOST'])}\nuser={quote(user)}\npassword={quote(pw)}\n")
-        os.replace(f"{path}.new", path)
+        # The quality job runs several runners at once: each writes its own temporary file
+        # (mkstemp: unique, 0600) and renames it into place. The contents are the same, so
+        # whichever rename lands last is fine, and no reader sees a partial file.
+        fd, tmp = tempfile.mkstemp(prefix=".mysql-runtime.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(f"[client]\nhost={quote(os.environ['DB_HOST'])}\nuser={quote(user)}\npassword={quote(pw)}\n")
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
     return str(path)
 
 
