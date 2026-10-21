@@ -222,10 +222,14 @@ fn transport(op: &'static str, path: &str, e: reqwest::Error) -> StoreError {
     StoreError::Io(format!("{op} `{path}`: {}", e.without_url()))
 }
 
-/// Tries of a whole-object GET ([`ObjectStore::get`]).
-const GET_TRIES: u32 = 5;
-/// The wait after a GET's first failed try, doubling after each.
+/// Tries of a whole-object GET ([`ObjectStore::get`]): with the waits
+/// below, about 6 minutes in all, enough to ride out a host's network
+/// adapter resetting for a few minutes (#283).
+const GET_TRIES: u32 = 12;
+/// The wait after a GET's first failed try, doubling after each up to
+/// [`GET_BACKOFF_MAX`].
 const GET_BACKOFF: Duration = Duration::from_millis(500);
+const GET_BACKOFF_MAX: Duration = Duration::from_secs(60);
 
 /// Whether a failed GET may succeed when tried again: a transport failure
 /// (connection, timeout, a body cut short), 408, 429 or a 5xx.
@@ -238,6 +242,28 @@ fn retryable(e: &StoreError) -> bool {
 }
 
 impl BlobStore {
+    /// [`ObjectStore::get`] with `tries` tries, the first wait `backoff`.
+    async fn get_retrying(
+        &self,
+        path: &str,
+        tries: u32,
+        backoff: Duration,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut wait = backoff;
+        let mut attempt = 1;
+        loop {
+            match self.get_once(path).await {
+                Err(e) if attempt < tries && retryable(&e) => {
+                    tracing::warn!(path, attempt, error = %e, "blob get failed; trying again");
+                    tokio::time::sleep(wait).await;
+                    wait = (wait * 2).min(GET_BACKOFF_MAX);
+                    attempt += 1;
+                }
+                r => return r,
+            }
+        }
+    }
+
     /// One try of [`ObjectStore::get`].
     async fn get_once(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let resp = self
@@ -401,21 +427,9 @@ impl ObjectStore for BlobStore {
     /// A whole object, read again when a try fails on the way (a dropped
     /// connection or a body cut short, a timeout, 408, 429 or a 5xx): GET
     /// changes nothing, so another try is always safe. [`GET_TRIES`] tries,
-    /// [`GET_BACKOFF`] apart and doubling.
+    /// [`GET_BACKOFF`] apart and doubling, at most [`GET_BACKOFF_MAX`].
     async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        let mut wait = GET_BACKOFF;
-        let mut attempt = 1;
-        loop {
-            match self.get_once(path).await {
-                Err(e) if attempt < GET_TRIES && retryable(&e) => {
-                    tracing::warn!(path, attempt, error = %e, "blob get failed; trying again");
-                    tokio::time::sleep(wait).await;
-                    wait *= 2;
-                    attempt += 1;
-                }
-                r => return r,
-            }
-        }
+        self.get_retrying(path, GET_TRIES, GET_BACKOFF).await
     }
 
     async fn put(&self, path: &str, body: Vec<u8>, content_type: &str) -> Result<(), StoreError> {
@@ -833,9 +847,20 @@ mod tests {
         assert_eq!(n.load(Ordering::SeqCst), 1);
         let (url, n) = scripted(vec![CUT_SHORT]).await;
         let store = BlobStore::new(&url, cred()).unwrap();
-        let err = store.get("pages/a.parquet").await.unwrap_err();
+        let err = store
+            .get_retrying("pages/a.parquet", 4, Duration::from_millis(10))
+            .await
+            .unwrap_err();
         assert!(matches!(err, StoreError::Io(_)), "{err}");
-        assert_eq!(n.load(Ordering::SeqCst), GET_TRIES as usize);
+        assert_eq!(n.load(Ordering::SeqCst), 4);
+        // The real schedule rides out about 6 minutes.
+        let mut total = Duration::ZERO;
+        let mut wait = GET_BACKOFF;
+        for _ in 1..GET_TRIES {
+            total += wait;
+            wait = (wait * 2).min(GET_BACKOFF_MAX);
+        }
+        assert!(total >= Duration::from_secs(300), "{total:?}");
     }
 
     #[tokio::test]
