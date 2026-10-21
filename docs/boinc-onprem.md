@@ -34,8 +34,8 @@ Azure server uses. They are kept in `/etc/usnm-boinc/secrets` (0600). The root p
 The project share's storage account allows no public access, so data leaves Azure from inside the
 BOINC environment and goes through R2 (bucket `usnm-boinc-project`, private):
 
-- `r2-relay-job.sh` copies the share as a bridge-job execution with its command overridden. It skips old uploads, the html cache, logs and the `tls464-*` backups. Each pass fits in the job's timeout and resumes on the next run.
-- `db-dump-job.sh` dumps the database (`--single-transaction`) to `db/<name>.sql.gz`.
+- `r2-relay-job.sh` copies the share as a bridge-job execution with its command overridden. It skips the html cache, logs, the `tls464-*` backups, and every upload the database no longer needs. Each pass fits in the job's timeout and resumes on the next run. `RELAY_PART` (`download`, `uploads`, `rest`) splits a full pass across executions run side by side.
+- `db-dump-job.sh` dumps the database (`--single-transaction`) to `db/<name>.sql.gz`. It also writes `db/<name>.uploads-filter`, which names the upload files of every result whose workunit isn't assimilated yet. With `RELAY_UPLOADS_FILTER` set to it, the uploads part copies exactly those.
 - On the host, `r2-pull.sh` copies the tree into `/srv/usnm-boinc/project`, and `db-import.sh --name <dump> --replace` loads a dump.
 
 The R2 token is limited to this bucket and expires once the move is done.
@@ -53,7 +53,7 @@ than the images. After each pull, before the server starts:
 ## Cutover order
 
 1. On Azure, make the tree still, as for the share move (`docs/boinc.md`, "Moving the project share"): stop the priority controller and wait for running bridge executions. Then, as `boincadm` in `/project/usnmocr`, run `touch stop_maintenance`, `bin/stop`, then `touch stop_sched stop_upload`, and wait a minute for requests in flight. The scheduler and the upload handler then refuse with errors that clients retry, so no result lands on Azure after the final copy. Keep these files on Azure through the cutover.
-2. Final `db-dump-job.sh` and a delta `r2-relay-job.sh` pass (both `RELAY_PART`s). Each relay execution must log `RELAY complete`.
+2. Final `db-dump-job.sh`, then the three `RELAY_PART`s side by side, with `RELAY_UPLOADS_FILTER` set to that dump's filter. Each relay execution must log `RELAY complete`.
 3. On the host: `r2-pull.sh`, `db-import.sh --replace`, then the project tree steps above.
 4. On the host, remove `stop_maintenance`, `stop_sched` and `stop_upload` (they came over in the copy) and start the server. Point `boinc.usnewsmap.com` at the tunnel (proxied CNAME).
 5. Start the controller under a new plan whose `step_command` reaches `usnm-boinc-step` (plans are immutable, so the change needs a drain).

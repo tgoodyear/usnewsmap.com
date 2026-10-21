@@ -23,11 +23,18 @@ die() { echo "error: $*" >&2; exit 1; }
 
 if [ "${1:-}" = --from-ssh ]; then
   [ $# -eq 1 ] && [ -n "${SSH_ORIGINAL_COMMAND:-}" ] || die "--from-ssh takes its arguments from SSH_ORIGINAL_COMMAND"
-  mapfile -t args < <(python3 -c 'import shlex, sys; print("\n".join(shlex.split(sys.argv[1])))' "$SSH_ORIGINAL_COMMAND")
+  args=()
+  while IFS= read -r a; do args+=("$a"); done < <(python3 -c 'import shlex, sys; print("\n".join(shlex.split(sys.argv[1])))' "$SSH_ORIGINAL_COMMAND")
   # The controller may send the command name first; drop it.
   case ${args[0]:-} in onprem-step.sh | */onprem-step.sh | usnm-boinc-step) args=("${args[@]:1}") ;; esac
-  exec "$0" ${args[@]+"${args[@]}"}
+  for a in ${args[@]+"${args[@]}"}; do [ "$a" != --from-ssh ] || die "--from-ssh once only"; done
+  USNM_BOINC_STEP_FROM_SSH=1 exec "$0" ${args[@]+"${args[@]}"}
 fi
+# Over ssh the controller's key may set only the inputs the controller's bridge steps take
+# (scripts/boinc/batch_scheduler.py). Run as root on the host, any step input is allowed, but
+# never a variable that steers the shell, the loader or an interpreter in the container.
+SSH_VARS=" BATCH_NONCE HANDOFF_SPOOL HANDOFF_SPOOLS HANDOFF_URL JOB_ID JOB_IDS "
+CONTROL_VARS='^(BASH.*|ENV|SHELLOPTS|BASHOPTS|PS[0-9]|PROMPT_COMMAND|IFS|PATH|CDPATH|GLOBIGNORE|HOME|TMPDIR|LD_.*|PYTHON.*|PERL.*|RUBY.*|NODE_.*|LANG|LC_.*|TZ|HOSTALIASES|SSL_.*|CURL_.*|HTTPS?_PROXY|NO_PROXY|ALL_PROXY|IDENTITY_.*|IMDS_.*|AZURE_.*|MYSQL.*|RCLONE_.*)$'
 
 CONF=${USNM_BOINC_CONF:-/etc/usnm-boinc}
 ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge
@@ -68,6 +75,9 @@ for v in ${VARS[@]+"${VARS[@]}"}; do
   [[ $v == *=* ]] && [[ $name =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || die "--var is NAME=VALUE with an upper-case NAME: $v"
   [[ ${v#*=} != *$'\n'* ]] || die "--var $name has a newline"
   [[ $seen != *" $name "* ]] || die "--var $name is set by the host or given twice"
+  [[ ! $name =~ $CONTROL_VARS ]] || die "--var $name would steer the shell or an interpreter; not allowed"
+  [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || [[ $SSH_VARS == *" $name "* ]] ||
+    die "--var $name is not a controller bridge-step input; over ssh only$SSH_VARS"
   seen+="$name "
 done
 
