@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
-use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
+use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::{Client, ClientBuilder};
 use rskafka::record::Record;
 use rskafka::BackoffConfig;
@@ -171,16 +171,24 @@ impl Kafka {
         let topic = Self::topic(index_id);
         let client = self.producer_client().await?;
         let mut partitions = Vec::new();
+        let mut offsets = Vec::new();
         for p in 0..self.partitions {
-            partitions.push(
-                client
-                    .partition_client(topic.clone(), p, UnknownTopicHandling::Retry)
+            let pc = client
+                .partition_client(topic.clone(), p, UnknownTopicHandling::Retry)
+                .await
+                .with_context(|| format!("Kafka partition {p} of {topic}"))?;
+            offsets.push(
+                pc.get_offset(OffsetAt::Latest)
                     .await
-                    .with_context(|| format!("Kafka partition {p} of {topic}"))?,
+                    .with_context(|| format!("Kafka partition {p} of {topic}: its end"))?,
             );
+            partitions.push(pc);
         }
         Ok(Producer {
+            kafka: self.clone(),
+            topic,
             partitions,
+            offsets,
             next: 0,
             batch: Vec::new(),
             batch_bytes: 0,
@@ -287,9 +295,41 @@ pub fn no_retries() -> BackoffConfig {
     }
 }
 
+/// How long a produce whose answer was lost is worked out for: the broker
+/// can stall for seconds when the disk is busy (21 October 2026, #283).
+const LOST_PRODUCE_SECS: u64 = 600;
+
+/// What a partition's end says about a produce whose answer was lost, given
+/// the end before it (`expected`) and its record count: this producer is
+/// the topic's only one, and a produce to one partition is one record
+/// batch, appended whole or not at all.
+#[derive(Debug, PartialEq, Eq)]
+enum Lost {
+    /// The batch is there: go on.
+    Written,
+    /// Nothing was appended: send it again.
+    NotWritten,
+    /// Anything else: someone else wrote, or records went missing.
+    Unexplained,
+}
+
+fn lost(expected: i64, n: i64, end: i64) -> Lost {
+    if end == expected + n {
+        Lost::Written
+    } else if end == expected {
+        Lost::NotWritten
+    } else {
+        Lost::Unexplained
+    }
+}
+
 /// Records to one partition at a time; [`Producer::end_file`] moves on.
 pub struct Producer {
+    kafka: Kafka,
+    topic: String,
     partitions: Vec<PartitionClient>,
+    /// Each partition's end as this producer last saw it.
+    offsets: Vec<i64>,
     next: usize,
     batch: Vec<Record>,
     batch_bytes: usize,
@@ -331,15 +371,84 @@ impl Producer {
         let records = std::mem::take(&mut self.batch);
         let (n, bytes) = (records.len() as u64, self.batch_bytes as u64);
         self.batch_bytes = 0;
-        let partition = &self.partitions[self.next];
-        // Not retried: a produce whose answer was lost may have been
-        // written, and a second one would duplicate it.
-        partition
-            .produce(records, Compression::Zstd)
+        let p = self.next;
+        let expected = self.offsets[p];
+        // The client never retries by itself (`no_retries`): a produce whose
+        // answer was lost may have been appended, and sending it blind could
+        // duplicate it. The partition's end says which (`lost`).
+        let first = self.partitions[p]
+            .produce(records.clone(), Compression::Zstd)
+            .await;
+        let err = match first {
+            Ok(_) => {
+                self.offsets[p] = expected + n as i64;
+                self.stats.sent(n, bytes);
+                return Ok(());
+            }
+            Err(e) => anyhow::Error::new(e),
+        };
+        let started = std::time::Instant::now();
+        let mut wait = std::time::Duration::from_secs(1);
+        let mut last = err;
+        loop {
+            if started.elapsed().as_secs() > LOST_PRODUCE_SECS {
+                return Err(last).with_context(|| {
+                    format!(
+                        "producing to Kafka partition {p}: unresolved after {LOST_PRODUCE_SECS} s"
+                    )
+                });
+            }
+            tracing::warn!(partition = p, error = %format!("{last:#}"), "Kafka produce failed; checking the partition's end");
+            tokio::time::sleep(wait).await;
+            wait = (wait * 2).min(std::time::Duration::from_secs(30));
+            // A new connection: the old one may be poisoned.
+            let pc = match self.reconnect(p).await {
+                Ok(pc) => pc,
+                Err(e) => {
+                    last = e;
+                    continue;
+                }
+            };
+            let end = match pc.get_offset(OffsetAt::Latest).await {
+                Ok(end) => end,
+                Err(e) => {
+                    last = e.into();
+                    continue;
+                }
+            };
+            self.partitions[p] = pc;
+            match lost(expected, n as i64, end) {
+                Lost::Written => {
+                    tracing::warn!(partition = p, records = n, "the lost produce was written");
+                }
+                Lost::NotWritten => {
+                    if let Err(e) = self.partitions[p]
+                        .produce(records.clone(), Compression::Zstd)
+                        .await
+                    {
+                        last = e.into();
+                        continue;
+                    }
+                    tracing::warn!(partition = p, records = n, "sent the lost produce again");
+                }
+                Lost::Unexplained => bail!(
+                    "Kafka partition {p} ends at {end}, not {expected} or {}: \
+                     a lost produce can't be accounted for",
+                    expected + n as i64
+                ),
+            }
+            self.offsets[p] = expected + n as i64;
+            self.stats.sent(n, bytes);
+            return Ok(());
+        }
+    }
+
+    async fn reconnect(&self, p: usize) -> anyhow::Result<PartitionClient> {
+        let client = self.kafka.producer_client().await?;
+        client
+            .partition_client(self.topic.clone(), p as i32, UnknownTopicHandling::Retry)
             .await
-            .with_context(|| format!("producing to Kafka partition {}", partition.partition()))?;
-        self.stats.sent(n, bytes);
-        Ok(())
+            .with_context(|| format!("Kafka partition {p} of {}", self.topic))
     }
 }
 
@@ -397,6 +506,15 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_lost_produce_is_told_by_the_partition_end() {
+        assert_eq!(lost(100, 10, 110), Lost::Written);
+        assert_eq!(lost(100, 10, 100), Lost::NotWritten);
+        assert_eq!(lost(100, 10, 105), Lost::Unexplained);
+        assert_eq!(lost(100, 10, 120), Lost::Unexplained);
+        assert_eq!(lost(100, 10, 99), Lost::Unexplained);
     }
 
     #[test]
