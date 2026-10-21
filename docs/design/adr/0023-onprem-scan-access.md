@@ -20,7 +20,7 @@
 
 Unselected; kept for the record, none approved:
 
-- **Authenticated read-only gateway on `pve-big`** (reusing `usnm-scan-reader`; Entra token with issuer, tenant, own audience, `oid` and `Scans.Read` checks; restricted filesystem namespace; sidecar headers from a manifest of verified local sidecars). Needs a new Entra app registration and new internet-facing code. Specified in design 16 §16.6 as an alternative only.
+- **Authenticated read-only gateway on `pve-big`** (reusing the router and integrity checks of the since-removed `usnm-scan-reader`; Entra token with issuer, tenant, own audience, `oid` and `Scans.Read` checks; restricted filesystem namespace; sidecar headers from a manifest of verified local sidecars). Needs a new Entra app registration and new internet-facing code. Specified in design 16 §16.6 as an alternative only.
 - **Outbound tunnel or port forward** for such a gateway. A tunnel connector carries a non-Entra credential, so it would need an explicit ADR-0009 exception.
 - **VPN gateway:** about $139 a month, more than the saving; contradicts ADR-0015.
 - **Reuse `serve-scans`:** unauthenticated, plain HTTP, has write verbs.
