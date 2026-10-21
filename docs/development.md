@@ -85,7 +85,7 @@ Run `npm run format` in `web/` before pushing. It runs Prettier (pinned in `web/
 
 ### Script tests
 
-`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, so a new test file runs in CI without being added to a list in `ci.yml` (the `infra` job's "script unit tests" step). Run it from anywhere in the checkout; `--list` shows what it would run. `python3 -m unittest discover -s scripts` is not a substitute: with no `__init__.py` under `scripts/` it reads only the files directly in `scripts/`, not those in `scripts/boinc/` and the other directories. The runner leaves out the tests that need something the generic job lacks (Pillow, the ops venv, the C++ headers, or a workflow of their own), with the reason for each in its `EXCLUDE` table; those run in steps of their own. Run one file with `python3 -m unittest -v scripts/boinc/test_install.py`.
+`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, so a new test file runs in CI without being added to a list in `ci.yml` (the `infra` job's "script unit tests" step). Run it from anywhere in the checkout; `--list` shows what it would run. `python3 -m unittest discover -s scripts` is not a substitute: with no `__init__.py` under `scripts/` it reads only the files directly in `scripts/`, not those in `scripts/boinc/` and the other directories. The runner leaves out the tests that need something the generic job lacks (Pillow, the ops venv, the C++ headers, or a workflow of their own) and the archived scripts under `scripts/archive/`, with the reason for each in its `EXCLUDE` table; those run in steps of their own. Run one file with `python3 -m unittest -v scripts/boinc/test_install.py`.
 
 ### JSON data files
 

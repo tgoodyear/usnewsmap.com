@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 # Path or directory (relative to the repository root) -> why the generic run leaves it out.
 EXCLUDE = {
+    "scripts/archive": "archived scripts are not maintained and not run by CI (scripts/archive/README.md)",
     "scripts/ocr-bench": "has its own workflow, .github/workflows/ocr-bench.yml",
     "scripts/ocr-survey": "needs Pillow; ci.yml's OCR gold set step runs it (test_transcription imports by directory)",
     "scripts/ocr-node/test_quality_jpeg_cache.py": "needs Pillow; ci.yml's OCR nodes step installs it",
