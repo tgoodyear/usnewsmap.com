@@ -81,7 +81,13 @@ REGISTRY_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
 # in stages, because each needs the last: 0, the DNS records (CNAME and asuid TXT, written by
 # this stack into the zone's group); 1, the name on the app unbound and its managed
 # certificate; 2, the name bound with the certificate. domain_stage reads where it is.
+# server: onprem (#942, docs/boinc-onprem.md): the server, its jobs, MySQL, the project storage,
+# the workspace and the private endpoints leave this stack (the stack deletes them); only the
+# identities, the vault, the VNet and the static site stay. The master URL is the on-prem host's
+# tunnel, outside Azure DNS, so there is no custom domain to stage.
+SERVER_MODE=$(jq -r '.server // "azure"' "$BOINC_SETTINGS")
 DNS_ZONE=$(jq -r '.USNM_DNS_ZONE // empty' "$(dirname "$0")/../infra/env/$ENV_NAME.json")
+[ "$SERVER_MODE" != onprem ] || DNS_ZONE=""
 [ -z "$DNS_ZONE" ] || [[ $MASTER_HOST == *".$DNS_ZONE" ]] || die "$MASTER_HOST is not in the zone $DNS_ZONE"
 CERT_NAME="cert-${MASTER_HOST//./-}"
 identities=$(baz identity list --resource-group "$BOINC_RG" --query '[].{name:name,principalId:principalId}' -o json) ||
@@ -135,6 +141,7 @@ jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --ar
     projectShare: {value: ($s | fromjson | .projectShare // "standard")},
     keyVaultAllowedIps: {value: ($s | fromjson | .keyVaultAllowedIps // [])},
     onPremGroupId: {value: ($s | fromjson | .onPremGroupId // "")},
+    serverOnPrem: {value: (($s | fromjson | .server // "azure") == "onprem")},
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
   }}' > "$work/params.json"
 }
@@ -331,6 +338,15 @@ done
 [ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || [ "$STAGE" -eq 2 ] ||
   die "custom domain $MASTER_HOST did not reach its bound-certificate state"
 
+if [ "$SERVER_MODE" = onprem ]; then
+  # Nothing in Azure to start: check that the on-prem server answers at the master URL.
+  curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors \
+    --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$work/project.xml" ||
+    die "the on-prem BOINC server does not answer at ${PROJECT_URL}"
+  grep -q '<master_url>' "$work/project.xml" || die "${PROJECT_URL} answered without a project config"
+  echo "BOINC Azure resources reduced to the on-prem set; the server answers at ${PROJECT_URL}"
+  exit 0
+fi
 if [ -z "$SERVER_IMAGE" ]; then
   echo "base resources deployed. Next: scripts/build-boinc-images.sh --env $ENV_NAME, commit $BOINC_SETTINGS, then run this again."
   exit 0

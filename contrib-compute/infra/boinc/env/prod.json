@@ -26,5 +26,6 @@
     "sha256": "07ad7aa6823082587b8a3b4c1f4817025af89dbf37f4de81997027f630e7f22b"
   },
   "requireSecureTransport": false,
+  "server": "onprem",
   "subscriptionId": "25bf257c-c94e-4d61-bba3-edc635f46602"
 }
