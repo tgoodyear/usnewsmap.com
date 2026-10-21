@@ -171,8 +171,17 @@ module network 'modules/network.bicep' = {
   params: { vnetName: names.vnet, mysqlDnsZoneName: names.mysqlDnsZone, location: location }
 }
 
+module vaultExemption 'modules/keyvault-exemption.bicep' = if (!empty(keyVaultAllowedIps)) {
+  name: 'vault-exemption'
+  params: {
+    vaultName: names.vault
+    policyAssignmentId: '${resourceGroup().id}/providers/Microsoft.Authorization/policyAssignments/usnm-audit-data-public-network'
+  }
+}
+
 module vault 'modules/keyvault.bicep' = {
   name: 'vault'
+  dependsOn: [ vaultExemption ]
   params: {
     vaultName: names.vault
     endpointName: names.vaultEndpoint
@@ -186,7 +195,6 @@ module vault 'modules/keyvault.bicep' = {
     mysqlAdminPassword: mysqlAdminPassword
     codeSignPublicKey: codeSignPublicKey
     allowedIps: keyVaultAllowedIps
-    publicNetworkPolicyAssignmentId: '${resourceGroup().id}/providers/Microsoft.Authorization/policyAssignments/usnm-audit-data-public-network'
   }
 }
 

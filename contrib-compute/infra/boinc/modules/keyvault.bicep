@@ -4,7 +4,7 @@
 // opens, but its firewall admits only those addresses (the home network's), so the operator
 // and the on-prem hosts can read and set secrets while BOINC moves on-prem. Access still
 // needs an RBAC role. The resource group's deny-public-network policy is exempted for this
-// vault alone (a policy exemption on it), not for the group.
+// vault alone, by modules/keyvault-exemption.bicep, not for the group.
 //
 // Who writes what:
 // - this template: mysql-admin-password (a new random value each deployment, from main.bicep)
@@ -29,28 +29,7 @@ param mysqlAdminPassword string
 param codeSignPublicKey string = ''
 @description('Public IPv4 addresses the vault firewall admits; empty keeps the vault private-only.')
 param allowedIps array = []
-@description('The id of the resource group\'s deny-public-network policy assignment, exempted for this vault when allowedIps is set.')
-param publicNetworkPolicyAssignmentId string = ''
-
 var open = !empty(allowedIps)
-
-// The exemption must exist before the vault turns public (the policy denies the update
-// otherwise), so it is scoped to the existing vault and the vault depends on it. A first-ever
-// deployment with allowedIps set therefore fails; deploy private-only first.
-resource existingVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (open) {
-  name: vaultName
-}
-
-resource publicExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = if (open && !empty(publicNetworkPolicyAssignmentId)) {
-  name: 'usnm-boinc-kv-home-ip'
-  scope: existingVault
-  properties: {
-    policyAssignmentId: publicNetworkPolicyAssignmentId
-    exemptionCategory: 'Mitigated'
-    displayName: 'BOINC Key Vault: public endpoint behind an IP firewall (#917)'
-    description: 'The vault admits only the home network\'s address(es) on its public endpoint, while BOINC moves on-prem (maintainer decision, 20 October 2026). RBAC still governs access.'
-  }
-}
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: vaultName
@@ -65,7 +44,6 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     publicNetworkAccess: open ? 'Enabled' : 'Disabled'
     networkAcls: { defaultAction: 'Deny', bypass: 'None', ipRules: [for ip in allowedIps: { value: ip }] }
   }
-  dependsOn: [ publicExemption ]
 }
 
 resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
