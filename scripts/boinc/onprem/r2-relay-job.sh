@@ -28,10 +28,22 @@ up=$!
 echo "RELAY start $(date -u +%FT%TZ)"
 echo "RELAY top $(cd /project && echo *)"; echo "RELAY proj $(cd /project/usnmocr && echo *)"
 common=(--links --local-no-check-updated --transfers 48 --checkers 32 --cutoff-mode hard --timeout 60s --contimeout 15s --low-level-retries 5 --stats 120s --stats-one-line --stats-log-level NOTICE)
-rc=0; timeout 600 ./rclone copy /project/usnmocr/upload r2:usnm-boinc-project/project/usnmocr/upload "${common[@]}" --max-age 72h --max-duration 540s --transfers 96 || rc=$?
-echo "RELAY pass2 rc=$rc $(date -u +%FT%TZ)"
-rc=0; timeout 1000 ./rclone copy /project r2:usnm-boinc-project/project "${common[@]}" --max-duration 900s \
-  --exclude "/tls464-*/**" --exclude "/usnmocr/upload/**" --exclude "/usnmocr/log_*/**" --exclude "/usnmocr/tmp_*/**" --exclude "/usnmocr/pid_*/**" --exclude "/usnmocr/html/cache/**" || rc=$?
-echo "RELAY pass1 rc=$rc $(date -u +%FT%TZ)"
+# RELAY_PART splits one full pass across two executions run side by side, because listing the
+# whole share takes longer than one execution may run: "download" is usnmocr/download, "rest" is
+# everything else and the recent uploads. Unset, one execution does both, resuming run by run.
+part=${RELAY_PART:-all}
+case $part in all | download | rest) ;; *) echo "RELAY_PART is download, rest or unset" >&2; exit 2 ;; esac
+extra=()
+[ "$part" = rest ] && extra=(--exclude "/usnmocr/download/**")
+if [ "$part" != download ]; then
+  rc=0; timeout 600 ./rclone copy /project/usnmocr/upload r2:usnm-boinc-project/project/usnmocr/upload "${common[@]}" --max-age 72h --max-duration 540s --transfers 96 || rc=$?
+  echo "RELAY pass2 rc=$rc $(date -u +%FT%TZ)"
+  rc=0; timeout "$([ "$part" = rest ] && echo 1100 || echo 1000)" ./rclone copy /project r2:usnm-boinc-project/project "${common[@]}" --max-duration "$([ "$part" = rest ] && echo 1000s || echo 900s)" \
+    --exclude "/tls464-*/**" --exclude "/usnmocr/upload/**" --exclude "/usnmocr/log_*/**" --exclude "/usnmocr/tmp_*/**" --exclude "/usnmocr/pid_*/**" --exclude "/usnmocr/html/cache/**" ${extra[@]+"${extra[@]}"} || rc=$?
+  echo "RELAY pass1 rc=$rc $(date -u +%FT%TZ)"
+else
+  rc=0; timeout 1600 ./rclone copy /project/usnmocr/download r2:usnm-boinc-project/project/usnmocr/download "${common[@]}" --max-duration 1500s || rc=$?
+  echo "RELAY download rc=$rc $(date -u +%FT%TZ)"
+fi
 kill $up 2>/dev/null || true; ./rclone copyto "$L" "r2:usnm-boinc-project/relay-logs/$run.log" -q || true
 exit 0
