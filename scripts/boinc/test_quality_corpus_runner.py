@@ -50,6 +50,19 @@ class Scope(unittest.TestCase):
         self.assertIn("existing and existing[1] == 0", submit)
 
 
+class NoPasswordOnCommandLines(unittest.TestCase):
+    # A failed mysql call's traceback prints its command, and job logs keep it: on 20 Oct 2026
+    # the runtime password reached Log Analytics that way. It goes in a 0600 options file.
+    def test_mysql_reads_credentials_from_a_private_options_file(self):
+        body = SOURCE.split("def run_mysql(sql):")[1].split("\ndef ")[0]
+        self.assertIn("--defaults-extra-file=", body)
+        self.assertNotRegex(body, r"-p\{|-u\{|-h\{")
+        self.assertIn("0o600", SOURCE.split("def mysql_defaults_file():")[1].split("\ndef ")[0])
+
+    def test_no_secret_on_any_command_line(self):
+        self.assertNotRegex(SOURCE, r'f"-p\{')
+
+
 class LocFallback(unittest.TestCase):
     def test_off_unless_asked_for(self):
         # One 5-second pacer for every shard can't fetch a corpus (#914): the LoC pass runs

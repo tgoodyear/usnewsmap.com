@@ -200,16 +200,29 @@ def put_status(name, obj):
         print(f"put_status({name}) warning: {e}", file=sys.stderr, flush=True)
 
 
+MYSQL_DEFAULTS = "/dev/shm/boinc/mysql-runtime.cnf"
+
+
+def mysql_defaults_file():
+    """A private MySQL options file for the runtime user, so the password is never on a
+    command line: a failed call's traceback prints the command, and job logs keep it."""
+    path = Path(MYSQL_DEFAULTS)
+    if not path.exists():
+        pw = open("/dev/shm/boinc/db-runtime").read().strip()
+        user = os.environ.get("DB_RUNTIME_USER", "usnmboincrun")
+        quote = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        fd = os.open(f"{path}.new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"[client]\nhost={quote(os.environ['DB_HOST'])}\nuser={quote(user)}\npassword={quote(pw)}\n")
+        os.replace(f"{path}.new", path)
+    return str(path)
+
+
 def run_mysql(sql):
-    pw = open("/dev/shm/boinc/db-runtime").read().strip()
-    host = os.environ["DB_HOST"]
-    user = os.environ.get("DB_RUNTIME_USER", "usnmboincrun")
     db = os.environ.get("DB_NAME", "usnmocr")
     cmd = [
         "mysql",
-        f"-h{host}",
-        f"-u{user}",
-        f"-p{pw}",
+        f"--defaults-extra-file={mysql_defaults_file()}",
         "--ssl",
         "--ssl-verify-server-cert",
         "--ssl-ca=/usr/local/share/usnm/mysql-ca.pem",
