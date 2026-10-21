@@ -18,7 +18,6 @@
   "USNM_INGEST_FULL": true,
   "USNM_INGEST_JOBS": true,
   "USNM_INGEST_ON_DEDICATED": true,
-  "USNM_INGEST_SCRATCH_GIB": 128,
   "USNM_JA_LATIN": true,
   "USNM_JA_OCR_JOB": false,
   "USNM_JA_OCR_ONPREM": true,
