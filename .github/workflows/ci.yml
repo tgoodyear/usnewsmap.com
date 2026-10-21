@@ -157,7 +157,7 @@ jobs:
           python3 -m unittest -v scripts/boinc/test_iris_campaign.py scripts/boinc/test_iris_worker.py scripts/boinc/test_iris_cache.py scripts/boinc/test_iris_stage_pages.py
           python3 -m unittest -v scripts/boinc/test_volunteer.py scripts/boinc/test_qwen_disk.py scripts/boinc/test_qwen_canary.py scripts/boinc/test_hold_legacy_qwen.py
           python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
-          python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
+          python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_mac_volunteer.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
           python3 -m unittest -v scripts/boinc/test_patch_server_intel_proc_type.py
           python3 -m unittest -v scripts/boinc/test_patch_server_gold_routing.py
