@@ -10,6 +10,7 @@ use std::{
     path::{Component, Path, PathBuf},
     time::Duration,
 };
+use usnm_core::digest::hex;
 use usnm_ocr_contract::boinc::MAX_SCAN;
 
 /// Explicitly opt in to local bulk hosting for the native OCR pilot.
@@ -129,10 +130,6 @@ impl Download {
             md5: hex(&Md5::digest(scan)),
         })
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn public_ip(ip: IpAddr) -> bool {

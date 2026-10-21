@@ -43,6 +43,7 @@ use parquet::arrow::ProjectionMask;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use usnm_core::damage;
+use usnm_core::digest::hex;
 use usnm_core::ids::PageKey;
 use usnm_ocr_contract::prefetch::{self, ManifestRow};
 use usnm_state::state::DUPLICATES_FILE;
@@ -297,10 +298,6 @@ pub fn count(rows: &[ManifestRow], summary: &mut Summary) {
             .or_default() += 1;
     }
     summary.pages = rows.len() as u64;
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Build the manifest and its summary and write them. `exchange` is the

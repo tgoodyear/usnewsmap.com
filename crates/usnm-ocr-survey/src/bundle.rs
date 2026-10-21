@@ -34,10 +34,7 @@ pub const MAX_REMOTE: u64 = 256 << 20;
 /// The largest manifest a client reads.
 pub const MAX_MANIFEST: u64 = 16 << 20;
 
-pub fn sha256_hex(b: &[u8]) -> String {
-    let d = Sha256::digest(b);
-    d.iter().map(|x| format!("{x:02x}")).collect()
-}
+pub use usnm_core::digest::sha256_hex;
 
 fn sha256_file(p: &Path) -> anyhow::Result<String> {
     let mut f = std::fs::File::open(p).with_context(|| format!("opening {}", p.display()))?;
