@@ -32,6 +32,10 @@ kv_token() {
       "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://vault.azure.net&client_id=${AZURE_CLIENT_ID:?}" |
       jq -er .access_token
   elif [ -n "${IDENTITY_ENDPOINT:-}" ] && [ -n "${IMDS_ENDPOINT:-}" ]; then
+    # The agent's key goes only to a loopback http endpoint, as ArcIdentity::check_endpoint
+    # (crates/usnm-store/src/credential.rs) requires: never to a host named by the environment.
+    [[ $IDENTITY_ENDPOINT =~ ^http://(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|\[::1\])(:[0-9]{1,5})?/[^[:space:]?#]*$ ]] ||
+      fail "the Arc identity endpoint must be http on loopback"
     url="$IDENTITY_ENDPOINT?api-version=2020-06-01&resource=https://vault.azure.net"
     # The identity endpoint is local: never through a proxy, which would also see the key.
     realm="$(curl --noproxy '*' -sS -o /dev/null -D - -H "Metadata: true" "$url" | tr -d '\r' |
