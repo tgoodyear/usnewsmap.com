@@ -1028,13 +1028,16 @@ async fn release_locked(
             std::fs::create_dir_all(&dir)?;
             remove_stale_spill(&dir)?;
             check_free_disk(&dir, t.min_free_gib)?;
+            // Before the writer starts: Kafka needs the v1 ingest API.
+            let kafka = usnm_ingest::kafka::Kafka::from_env()?;
+            ingest.check_kafka(kafka.is_some())?;
             let n = QuickwitNode::start(bin, &dir, t.quickwit_port, metastore, root(t)?).await?;
             tracing::info!(api = ingest.name(), "writer ingest api");
             let sink = QuickwitSink::new(&n.url, root(t)?)?
                 .watching(&n)
                 .merges(wait)
                 .ingest(ingest)
-                .kafka(usnm_ingest::kafka::Kafka::from_env()?);
+                .kafka(kafka);
             node = Some(n);
             Box::new(sink)
         }
