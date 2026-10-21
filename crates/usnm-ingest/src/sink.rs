@@ -506,6 +506,20 @@ impl IngestApi {
         }
     }
 
+    /// Kafka (`crate::kafka`) only with v1: the restart-based final merges
+    /// (`merges::seal_restarting`) are v1's; v2's `merges::seal` would wait
+    /// for `_ingest-source`, which a Kafka build never uses.
+    pub fn check_kafka(self, kafka: bool) -> anyhow::Result<()> {
+        if kafka && self != Self::V1 {
+            bail!(
+                "USNM_WRITER_KAFKA needs {}=v1, not `{}`",
+                Self::VAR,
+                self.name()
+            );
+        }
+        Ok(())
+    }
+
     /// Whether a request answered `status` was certainly not appended, so
     /// sending it again can't duplicate anything.
     fn retry(self, status: reqwest::StatusCode) -> bool {
@@ -559,8 +573,8 @@ pub trait IndexSink: Send {
     /// An owned sender to the current index, which `crate::decade_order`
     /// runs beside the release so reading goes on while a decade is sent.
     /// `None`: the sink is fed in line, as before.
-    fn line_sender(&self) -> Option<LineSender> {
-        None
+    async fn line_sender(&mut self) -> anyhow::Result<Option<LineSender>> {
+        Ok(None)
     }
 }
 
@@ -598,7 +612,7 @@ impl SinkStats {
         self.node_pid.store(pid.unwrap_or(0), Ordering::Relaxed);
     }
 
-    fn sent(&self, docs: u64, bytes: u64) {
+    pub(crate) fn sent(&self, docs: u64, bytes: u64) {
         self.docs_sent.fetch_add(docs, Ordering::Relaxed);
         self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
         let m = telemetry::metrics();
@@ -717,12 +731,16 @@ pub struct QuickwitSink {
     /// v1 restarts it for the final merges.
     process: Option<Arc<WriterProcess>>,
     ingest: IngestApi,
+    /// The broker a partitioned main index's pages go through (`crate::kafka`).
+    kafka: Option<crate::kafka::Kafka>,
+    /// The index with a Kafka topic and source, when it is the current one.
+    kafka_index: Option<String>,
 }
 
 /// Posts ingest requests to one index on the writer node: the request,
 /// v1/v2's retries, and the check that the node took every document.
 #[derive(Clone)]
-struct Poster {
+pub struct Poster {
     http: reqwest::Client,
     base: String,
     id: String,
@@ -805,36 +823,56 @@ impl Poster {
     }
 }
 
-/// JSON lines to one index, in requests of at most [`CHUNK_BYTES`], one at
-/// a time: [`QuickwitSink::line_sender`].
-pub struct LineSender {
-    poster: Poster,
-    buf: Vec<u8>,
+/// JSON lines to one index: in v1 requests of at most [`CHUNK_BYTES`], one
+/// at a time, or to its Kafka topic (`crate::kafka`):
+/// [`QuickwitSink::line_sender`].
+pub enum LineSender {
+    Http { poster: Poster, buf: Vec<u8> },
+    Kafka(crate::kafka::Producer),
 }
 
 impl LineSender {
     pub async fn add_line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        let (poster, buf) = match self {
+            Self::Kafka(p) => return p.add_line(line).await,
+            Self::Http { poster, buf } => (poster, buf),
+        };
         if line.len() + 1 > CHUNK_BYTES {
             bail!(
                 "a document is {} bytes, over the {CHUNK_BYTES}-byte ingest request limit",
                 line.len() + 1
             );
         }
-        if self.buf.len() + line.len() + 1 > CHUNK_BYTES {
-            let body = bytes::Bytes::from(std::mem::take(&mut self.buf));
-            self.poster.post("auto", body).await?;
+        if buf.len() + line.len() + 1 > CHUNK_BYTES {
+            let body = bytes::Bytes::from(std::mem::take(buf));
+            poster.post("auto", body).await?;
         }
-        self.buf.extend_from_slice(line);
-        self.buf.push(b'\n');
+        buf.extend_from_slice(line);
+        buf.push(b'\n');
         Ok(())
     }
 
-    /// The lines not sent yet (never none once a line was added: a request
-    /// goes only when the next line wouldn't fit). The release gives them
-    /// back to the sink, whose `finish` sends them with the forced commit,
-    /// as when the pages went out in line.
-    pub fn into_unsent(self) -> Vec<u8> {
-        self.buf
+    /// A decade file's last line went in: Kafka moves to the next partition.
+    pub async fn end_file(&mut self) -> anyhow::Result<()> {
+        match self {
+            Self::Kafka(p) => p.end_file().await,
+            Self::Http { .. } => Ok(()),
+        }
+    }
+
+    /// The lines not sent yet. Over HTTP, never none once a line was added (a
+    /// request goes only when the next line wouldn't fit): the release gives
+    /// them back to the sink, whose `finish` sends them with the forced
+    /// commit, as when the pages went out in line. Kafka sends its last
+    /// records and returns none: its source commits on its own.
+    pub async fn into_unsent(self) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Self::Kafka(mut p) => {
+                p.end_file().await?;
+                Ok(Vec::new())
+            }
+            Self::Http { buf, .. } => Ok(buf),
+        }
     }
 }
 
@@ -857,6 +895,8 @@ impl QuickwitSink {
             events: None,
             process: None,
             ingest: IngestApi::default(),
+            kafka: None,
+            kafka_index: None,
         })
     }
 
@@ -871,6 +911,13 @@ impl QuickwitSink {
         });
         self.events = Some(node.events.clone());
         self.process = Some(node.process.clone());
+        self
+    }
+
+    /// Send a partitioned main index's pages through `kafka`
+    /// (`crate::kafka`); the rest stays on the ingest API.
+    pub fn kafka(mut self, kafka: Option<crate::kafka::Kafka>) -> Self {
+        self.kafka = kafka;
         self
     }
 
@@ -917,12 +964,67 @@ impl QuickwitSink {
 
     /// An owned sender of JSON lines to this sink's index, for
     /// `crate::decade_order` to send a decade's file while the release
-    /// reads on. It posts the same requests `add_line` would, one at a time.
-    pub fn line_sender(&self) -> anyhow::Result<LineSender> {
-        Ok(LineSender {
+    /// reads on: to the index's Kafka topic when it has one, otherwise the
+    /// same requests `add_line` would post, one at a time.
+    pub async fn line_sender(&self) -> anyhow::Result<LineSender> {
+        if let (Some(k), Some(id)) = (&self.kafka, &self.kafka_index) {
+            if self.index.as_ref() == Some(id) {
+                return Ok(LineSender::Kafka(
+                    k.producer(id, Arc::clone(&self.stats)).await?,
+                ));
+            }
+        }
+        Ok(LineSender::Http {
             poster: self.poster()?,
             buf: Vec::new(),
         })
+    }
+
+    async fn add_source(&self, index_id: &str, yaml: &str) -> anyhow::Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/api/v1/indexes/{index_id}/sources", self.base))
+            .header("content-type", "application/yaml")
+            .body(yaml.to_owned())
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            bail!(
+                "adding a source to `{index_id}` returned {status}: {}",
+                resp.text()
+                    .await
+                    .unwrap_or_default()
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
+            );
+        }
+        Ok(())
+    }
+
+    async fn delete_source(&self, index_id: &str, source_id: &str) -> anyhow::Result<()> {
+        let resp = self
+            .http
+            .delete(format!(
+                "{}/api/v1/indexes/{index_id}/sources/{source_id}",
+                self.base
+            ))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            bail!(
+                "deleting source `{source_id}` of `{index_id}` returned {status}: {}",
+                resp.text()
+                    .await
+                    .unwrap_or_default()
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
+            );
+        }
+        Ok(())
     }
 
     async fn count(&self, id: &str) -> anyhow::Result<u64> {
@@ -950,8 +1052,8 @@ impl QuickwitSink {
 
 #[async_trait]
 impl IndexSink for QuickwitSink {
-    fn line_sender(&self) -> Option<LineSender> {
-        QuickwitSink::line_sender(self).ok()
+    async fn line_sender(&mut self) -> anyhow::Result<Option<LineSender>> {
+        QuickwitSink::line_sender(self).await.map(Some)
     }
 
     async fn create(&mut self, index_id: &str, layout: MainLayout) -> anyhow::Result<()> {
@@ -977,6 +1079,16 @@ impl IndexSink for QuickwitSink {
         let template = main_template(&tuning, layout)?;
         self.create_with(index_id, &template).await?;
         self.split_docs = layout.split_docs;
+        // A partitioned base's decade files go through Kafka (`crate::kafka`).
+        // Only a partitioned base sends decade files (`crate::decade_order`); a
+        // delta tagged by decade goes in line, through v1.
+        if let (Some(k), Decades::Partitioned) = (self.kafka.clone(), layout.decades) {
+            self.ingest.check_kafka(true)?;
+            k.create_topic(index_id).await?;
+            self.add_source(index_id, &k.source_yaml(index_id)).await?;
+            self.kafka_index = Some(index_id.to_owned());
+            tracing::info!(index = index_id, pipelines = k.partitions, "Kafka source");
+        }
         Ok(())
     }
 
@@ -1041,17 +1153,33 @@ impl IndexSink for QuickwitSink {
             self.send("force").await?;
         }
         let id = self.index.clone().context("no index created")?;
+        let via_kafka = self.kafka_index.as_ref() == Some(&id);
+        // Kafka's backlog can take a while to index, and its pipelines' last
+        // splits wait for their commit timeout (the forced commit is v1's
+        // only): wait while the count grows, for the longer of 20 minutes
+        // and the commit timeout plus 10 without progress. Otherwise 4 minutes.
+        let patience = if via_kafka {
+            let commit = u64::from(WriterTuning::from_env()?.commit_timeout_secs);
+            (1200u64.max(commit + 600) / 2) as u32
+        } else {
+            120
+        };
         let mut last = 0;
-        for _ in 0..120 {
-            last = self.count(&id).await?;
-            if last >= expected {
+        let mut still = 0;
+        while still < patience {
+            let n = self.count(&id).await?;
+            if n >= expected {
+                last = n;
                 break;
             }
+            still = if n > last { 0 } else { still + 1 };
+            last = n;
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
         if last != expected {
             bail!("index `{id}` holds {last} documents, expected {expected}");
         }
+
         let split_target = self
             .split_docs
             .unwrap_or_else(merges::template_split_target);
@@ -1093,6 +1221,16 @@ impl IndexSink for QuickwitSink {
                 .await?
             }
         };
+        // The Kafka source stays through the final merges, so its splits
+        // get the final merge factor too (Quickwit merges by source); then
+        // it and its topic go: every record is in the index.
+        if via_kafka {
+            self.delete_source(&id, "kafka").await?;
+            self.kafka_index = None;
+            if let Some(k) = &self.kafka {
+                k.delete_topic(&id).await?;
+            }
+        }
         tracing::info!(
             index = %id,
             splits = layout.splits,
@@ -1738,6 +1876,12 @@ impl QuickwitNode {
         let local_root = std::env::var_os("USNM_WRITER_WAL_DIR").map(PathBuf::from);
         let local_wal = prepare_local_wal(&data, local_root.as_deref(), 8 * 1024 * 1024 * 1024)?;
         let queue = WriterTuning::from_env()?.queue;
+        // A Kafka source's pipelines each take 4 cores of the indexer's
+        // capacity; without room, Quickwit schedules fewer (`crate::kafka`).
+        let cpu = match crate::kafka::Kafka::from_env()? {
+            Some(k) => format!("cpu_capacity: {}\n  ", k.cpu_capacity()),
+            None => String::new(),
+        };
         let mut config = format!(
             "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
@@ -1745,7 +1889,7 @@ impl QuickwitNode {
              ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n  \
              max_queue_memory_usage: {queue}\n  \
              max_queue_disk_usage: {WAL_DISK_BYTES}\n\
-             indexer:\n  split_store_max_num_bytes: {SPLIT_STORE_BYTES}\n  \
+             indexer:\n  split_store_max_num_bytes: {SPLIT_STORE_BYTES}\n  {cpu}\
              merge_concurrency: {MERGE_CONCURRENCY}\n",
             port.checked_add(1)
                 .context("--quickwit-port must be below 65535")?,
@@ -2778,6 +2922,10 @@ mod tests {
         for api in [IngestApi::V1, IngestApi::V2] {
             assert_eq!(IngestApi::parse(Some(api.name())).unwrap(), api);
         }
+        IngestApi::V1.check_kafka(true).unwrap();
+        IngestApi::V2.check_kafka(false).unwrap();
+        let err = IngestApi::V2.check_kafka(true).unwrap_err().to_string();
+        assert!(err.contains("USNM_WRITER_INGEST=v1"), "{err}");
     }
 
     /// What a fake writer does with one ingest request.
@@ -2939,7 +3087,7 @@ mod tests {
         let (mut s, index) = fake_writer(IngestApi::V1, vec![]).await;
         s.http = reqwest::Client::new();
         let dir = tempfile::tempdir().unwrap();
-        let sender = IndexSink::line_sender(&s);
+        let sender = IndexSink::line_sender(&mut s).await.unwrap();
         assert!(sender.is_some());
         let mut order = DecadeOrder::new(dir.path(), 3, sender, None).unwrap();
         for d in &docs {
@@ -2974,7 +3122,13 @@ mod tests {
         let (mut s, _) = fake_writer(IngestApi::V1, vec![Answer::Refuse(500)]).await;
         s.http = reqwest::Client::new();
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 2, IndexSink::line_sender(&s), None).unwrap();
+        let mut order = DecadeOrder::new(
+            dir.path(),
+            2,
+            IndexSink::line_sender(&mut s).await.unwrap(),
+            None,
+        )
+        .unwrap();
         let mut err = None;
         for d in &big_docs(40) {
             if let Err(e) = order.add(&mut s, d).await {
@@ -3001,7 +3155,7 @@ mod tests {
         let mut order = DecadeOrder::new(
             dir.path(),
             2,
-            IndexSink::line_sender(&s),
+            IndexSink::line_sender(&mut s).await.unwrap(),
             Some(Arc::clone(&lost)),
         )
         .unwrap();
@@ -3027,7 +3181,13 @@ mod tests {
         let (mut s, index) = fake_writer(IngestApi::V1, vec![Answer::TakeAfterASecond; 40]).await;
         s.http = reqwest::Client::new();
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 2, IndexSink::line_sender(&s), None).unwrap();
+        let mut order = DecadeOrder::new(
+            dir.path(),
+            2,
+            IndexSink::line_sender(&mut s).await.unwrap(),
+            None,
+        )
+        .unwrap();
         for d in &big_docs(30) {
             order.add(&mut s, d).await.unwrap();
         }

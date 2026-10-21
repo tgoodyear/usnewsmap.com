@@ -382,6 +382,27 @@ impl Tally {
         }
     }
 
+    /// Another tally's counts added to this one's (the release's parts,
+    /// built in parallel, merged in order).
+    pub fn merge(&mut self, other: Tally) {
+        self.considered += other.considered;
+        self.replaced += other.replaced;
+        for (k, n) in other.kept {
+            *self.kept.entry(k).or_default() += n;
+        }
+        for (mine, theirs) in [
+            (&mut self.by_language, other.by_language),
+            (&mut self.by_engine, other.by_engine),
+        ] {
+            for (k, c) in theirs {
+                let t = mine.entry(k).or_default();
+                t.considered += c.considered;
+                t.replaced += c.replaced;
+            }
+        }
+        self.parts.extend(other.parts);
+    }
+
     pub fn add_parts(&mut self, parts: &[(String, u64)]) {
         for (p, b) in parts {
             self.parts.insert(p.clone(), *b);
