@@ -161,6 +161,24 @@ pub async fn load(
     })
 }
 
+#[cfg(test)]
+impl JaPage {
+    /// A page of ours, for other modules' tests.
+    pub fn for_test(key: PageKey, batch: &str, loc_text: &str, printed: &str) -> Self {
+        Self {
+            key,
+            batch: batch.into(),
+            loc_text: loc_text.into(),
+            ok: true,
+            printed: Some(printed.into()),
+            ocr_source: "usnm-ndlocr-lite".into(),
+            ocr_engine: "ndlocr-lite test".into(),
+            ocred_at: 0,
+            part: "p".into(),
+        }
+    }
+}
+
 /// The rows of one overlay part (the schema `jaocr.py write_part` writes,
 /// [`usnm_overlay::schema`]).
 pub fn read_part(bytes: Bytes, path: &str) -> anyhow::Result<Vec<JaPage>> {

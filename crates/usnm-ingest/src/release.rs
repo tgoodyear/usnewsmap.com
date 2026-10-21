@@ -2788,6 +2788,16 @@ fn build_part_blocking(
 
 /// One curated part's documents, as the release builds them.
 fn build_part(ctx: &PartContext<'_>, bytes: &bytes::Bytes) -> anyhow::Result<PartDocs> {
+    build_part_with(ctx, bytes, part_threads())
+}
+
+/// [`build_part`] on `threads` threads: the same documents, in the same
+/// order, however many there are.
+fn build_part_with(
+    ctx: &PartContext<'_>,
+    bytes: &bytes::Bytes,
+    threads: usize,
+) -> anyhow::Result<PartDocs> {
     let mut rows = Vec::new();
     read_part(bytes.clone(), true, |row| {
         rows.push(row);
@@ -2797,7 +2807,7 @@ fn build_part(ctx: &PartContext<'_>, bytes: &bytes::Bytes) -> anyhow::Result<Par
     let next = std::sync::atomic::AtomicUsize::new(0);
     let slots: Vec<std::sync::Mutex<Option<anyhow::Result<PartDocs>>>> =
         chunks.iter().map(|_| std::sync::Mutex::new(None)).collect();
-    let threads = part_threads().min(chunks.len()).max(1);
+    let threads = threads.min(chunks.len()).max(1);
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| loop {
@@ -3030,6 +3040,223 @@ mod tests {
                 "sn2": {"first": "1890-05-01", "last": "1890-05-01"},
             })
         );
+    }
+
+    /// LoC's reading of an English page, garbled, and ours of it, clean
+    /// (`ocr_local::rule`'s golden texts).
+    const LOC_GARBLED: &str = "Tbe cify councll met on Tuesdav and votcd for tbe ncw scbool. \
+        Tlie mayor said tbe railroad wouid bring more trade to tlie town. Cotton prices \
+        rosc in tbe market and tbe farmers were glad. The weatber was fair aud tbe roads \
+        were dry. A new cburch will be built on Main street ncxt spring by the people.";
+    const OURS_CLEAN: &str = "The city council met on Tuesday and voted for the new school. \
+        The mayor said the railroad would bring more trade to the town. Cotton prices \
+        rose in the market and the farmers were glad. The weather was fair and the roads \
+        were dry. A new church will be built on Main street next spring by the people.";
+    /// LoC's reading of a page with few words in it, which our Latin
+    /// reading beats.
+    const NOISE: &str = "T1e c0unc1l m3t 0n Tu3sd4y 4nd v0t3d f0r th3 n3w sch00l; th3 m4y0r \
+        s41d th3 r41lr04d w0u1d br1ng m0r3 tr4d3 t0 th3 t0wn 4nd c0tt0n pr1c3s r0s3.";
+    const GERMAN: &str = "Die Stadt hat gestern einen neuen Bürgermeister gewählt, und die \
+        Bauern sind mit dem Wetter und den Preisen auf dem Markt sehr zufrieden. Die neue \
+        Kirche wird im Frühjahr gebaut, sagte der Pfarrer nach der Versammlung im Rathaus.";
+
+    /// Our own OCR of a page.
+    fn candidate(doc_id: &str, text: &str) -> ocr_local::replace::Candidate {
+        ocr_local::replace::Candidate {
+            row: ocr_local::pages::StoredRow {
+                doc_id: doc_id.into(),
+                lccn: "sn1".into(),
+                batch: "batch_a".into(),
+                ocr_source: "usnm-local".into(),
+                ocr_engine: "tesseract/5 profile=fast".into(),
+                node: "node1".into(),
+                metric_version: usnm_core::damage::VERSION,
+                ocred_at: 0,
+                ours: Default::default(),
+                loc: Default::default(),
+            },
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn parts_build_the_same_on_any_number_of_threads() {
+        let catalog = Catalog::new(
+            vec![Title {
+                lccn: "sn1".into(),
+                name: "sn1".into(),
+                ordinal: 1,
+                place_id: "P1".into(),
+                state: "IL".into(),
+                languages: vec!["eng".into(), "ger".into()],
+                extra: BTreeMap::new(),
+            }],
+            vec![Place {
+                id: "P1".into(),
+                ordinal: 1,
+                name: "P1".into(),
+                state: "IL".into(),
+                lat: 41.0,
+                lon: -87.0,
+                precision: "city".into(),
+                coordinates_from: None,
+                variants: vec![],
+            }],
+        )
+        .unwrap();
+        let batch = RunBatch {
+            batch: "batch_a".into(),
+            curated: Curated {
+                version: 1,
+                parts: vec![],
+                counts: String::new(),
+                pages: 0,
+                ok_pages: 0,
+                lccns: vec![],
+                source_sha256: String::new(),
+                first: String::new(),
+                last: String::new(),
+            },
+        };
+        // 700 rows (three chunks of `ROWS_PER_CHUNK`), each tenth one kind.
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let mut part = crate::curated::PartWriter::new();
+        let mut dropped = Vec::new();
+        let mut texts = HashMap::new();
+        let mut ja_pages = Vec::new();
+        let mut latin_owned = HashMap::new();
+        let mut mine = ocr_local::replace::Loaded::default();
+        let mut ja = HashSet::new();
+        let mut kept = Vec::new();
+        for i in 0..700u16 {
+            let date = NaiveDate::from_ymd_opt(1896, 7, 1 + u32::from(i / 100)).unwrap();
+            let key = usnm_core::ids::PageKey::new("sn1", date, 1, i % 100 + 1).unwrap();
+            let id = key.doc_id();
+            let raw = match i % 10 {
+                1 | 2 => "a few words".to_owned(),
+                9 if (i / 10) % 2 == 0 => "a few words".to_owned(),
+                9 => format!("{GERMAN} {i}"),
+                4 => format!("{NOISE} {i}"),
+                5 => format!("{LOC_GARBLED} {i}"),
+                _ => format!("{OURS_CLEAN} {i}"),
+            };
+            match i % 10 {
+                // Another batch's copy is kept.
+                0 => dropped.push((key.clone(), "batch_b")),
+                // Only American Stories' text, or both.
+                2 | 3 => {
+                    texts.insert(id.clone(), format!("American Stories' page {i}"));
+                }
+                // Our Latin reading of the page (and some of our own OCR,
+                // which it wins over).
+                4 => {
+                    ja_pages.push((
+                        id.clone(),
+                        ocr_ja::JaPage::for_test(key.clone(), "batch_a", "garbled", "x"),
+                    ));
+                    if (i / 10) % 3 == 0 {
+                        mine.pages
+                            .insert(id.clone(), candidate(&id, &format!("{OURS_CLEAN} {i}")));
+                    }
+                }
+                // Our own OCR: cleaner, no better, or the overlay's page.
+                5 | 7 => {
+                    mine.pages
+                        .insert(id.clone(), candidate(&id, &format!("{OURS_CLEAN} {i}")));
+                    if i % 10 == 7 {
+                        ja.insert(id.clone());
+                    }
+                }
+                6 => {
+                    mine.pages
+                        .insert(id.clone(), candidate(&id, &format!("{LOC_GARBLED} {i}")));
+                }
+                8 => {
+                    mine.revoked.insert(id.clone());
+                }
+                // American Stories' text of a page another batch's
+                // document is ours.
+                9 if (i / 10) % 2 == 0 => {
+                    texts.insert(id.clone(), format!("American Stories' page {i}"));
+                    latin_owned.insert(id.clone(), "batch_b".to_owned());
+                }
+                _ => {}
+            }
+            if !matches!(i % 10, 0 | 1) && !(i % 10 == 9 && (i / 10) % 2 == 0) {
+                kept.push(id.clone());
+            }
+            let row = CuratedRow::from_ocr(key, &raw, "batch_a", 1, "ndnp-original", at);
+            assert!(part.push(row).unwrap().is_none());
+        }
+        let bytes = bytes::Bytes::from(part.finish_part().unwrap().unwrap());
+        let latin_curated: HashMap<String, (&ocr_ja::JaPage, String)> = ja_pages
+            .iter()
+            .map(|(id, p)| (id.clone(), (p, format!("{OURS_CLEAN} {id}"))))
+            .collect();
+        let dedup = Plan::keeping(dropped);
+        let local = LocalRun {
+            listing: Default::default(),
+            revoked: vec![],
+            ja,
+            estimate: None,
+        };
+        let ctx = PartContext {
+            batch: &batch,
+            dedup: &dedup,
+            texts: &texts,
+            latin_curated: &latin_curated,
+            latin_owned: &latin_owned,
+            catalog: &catalog,
+            mine: &mine,
+            local: Some(&local),
+            format: DocFormat {
+                decade: true,
+                analyzer: Analyzer::V2,
+                text: TextLayout::Separate,
+            },
+            page_language: true,
+        };
+
+        let one = build_part_with(&ctx, &bytes, 1).unwrap();
+        // Every path the fixture means to cover, so it can't stop quietly.
+        assert_eq!(one.docs.len(), 525);
+        assert_eq!((one.with_as, one.only_as, one.without_locs), (140, 70, 70));
+        assert_eq!(one.replaced.len(), 70);
+        assert_eq!(one.local_replaced.len(), 70);
+        assert_eq!(one.tally.replaced, 70);
+        assert_eq!(one.tally.kept.get("margin"), Some(&70), "{:?}", one.tally);
+        assert_eq!(one.tally.kept.get("revoked"), Some(&70));
+        assert_eq!(one.tally.kept.get("japanese_ocr"), Some(&(70 + 24)));
+        let langs: BTreeSet<String> = one
+            .docs
+            .iter()
+            .map(|d| d[usnm_core::page_language::SET_FIELD].to_string())
+            .collect();
+        assert_eq!(langs.len(), 3, "{langs:?}");
+        assert_eq!(one.lines.len(), one.docs.len());
+        for (doc, line) in one.docs.iter().zip(&one.lines) {
+            assert_eq!(*line, serde_json::to_vec(doc).unwrap());
+        }
+        let ids: Vec<&str> = one
+            .docs
+            .iter()
+            .map(|d| d["doc_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, kept, "documents in row order");
+
+        for threads in [2, 3, 4, 8] {
+            let many = build_part_with(&ctx, &bytes, threads).unwrap();
+            assert_eq!(many.docs, one.docs, "{threads} threads");
+            assert_eq!(many.lines, one.lines, "{threads} threads");
+            assert_eq!(many.replaced, one.replaced, "{threads} threads");
+            assert_eq!(many.local_replaced, one.local_replaced, "{threads} threads");
+            assert_eq!(many.tally, one.tally, "{threads} threads");
+            assert_eq!(
+                (many.with_as, many.only_as, many.without_locs),
+                (one.with_as, one.only_as, one.without_locs),
+                "{threads} threads"
+            );
+        }
     }
 
     /// A sink that never answers, like a writer that stopped taking pages.
