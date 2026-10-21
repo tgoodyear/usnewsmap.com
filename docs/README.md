@@ -15,11 +15,11 @@
 
 ## Design
 
-The [design documents](design/README.md) (01–11) record the background, requirements and architecture, and the reasoning behind each part of the system; the [architecture decision records](design/adr/README.md) record each major decision and the alternatives rejected. References such as "05 §5.5.1" in the code and docs point into them.
+The [design documents](design/README.md) (01–14) record the background, requirements and architecture, and the reasoning behind each part of the system; the [architecture decision records](design/adr/README.md) record each major decision and the alternatives rejected. References such as "05 §5.5.1" in the code and docs point into them.
 
 ## Notes
 
-The [technical notes](notes/README.md) are dated write-ups of work on the index, the OCR and the corpus's coverage: what was tried, what was measured, what was decided and what is left. The design documents say how the system stands now; a note says what was true when.
+The [technical notes](notes/README.md) are dated write-ups of work on the index, the OCR and the corpus's coverage: what was tried, what was measured, what was decided and what is left. The design documents say how the system stands now; a note says what was true when. The BOINC pilot write-ups (assessment, Iris, transcription, host trust), the OCR benchmark audits and trials, the Serial Set audit, the on-prem storage plans (formerly design 15 and 16) and the former experiments directories are notes too; the scripts only they cite are in [`scripts/archive/`](../scripts/archive/README.md).
 
 - [BOINC batch pilot](boinc.md): opt-in cached-page volunteer processing and recovery.
 - [Linux BOINC quick start](boinc-linux.md): account, per-node setup and headless cluster attachment.

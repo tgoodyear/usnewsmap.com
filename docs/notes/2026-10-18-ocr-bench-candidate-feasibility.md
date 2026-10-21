@@ -68,7 +68,7 @@ The OCR loop took 926.040 s for ten images (0.65 images/min); first image 97.404
 
 On this same smoke subset, Tesseract `eng` previously scored 2.4027% (`legacy-ws-v1`) and 2.6316% (`raw-v1`), with much higher CPU throughput. CHURRO's unusually low CER should be treated especially cautiously: the images are public-eval Overproof/Chronicling America crops, the training corpus includes Chronicling America/American Stories, and page-level exposure is unknown. These ten samples cannot distinguish OCR quality from possible training-set recall and are not a held-out/generalization result or an adoption decision. The #813 extended measures were not used: this crop-only subset has no paired-page, full-page region, or human-adjudication annotations; token-cap status is captured in the run receipt.
 
-The adapter, checksum lock, input manifest, raw/transformed outputs, per-sample scorer reports, and run receipt are committed under `scripts/ocr-bench/churro_trial.py`, `scripts/ocr-bench/test_churro_trial.py`, `ocr/bench/adapters/churro/`, and `ocr/bench/results/churro-overproof-en-smoke-10-v1/`. The transformed output SHA-256 is `57eab5ead48d125a5049621d3d834d744cde9757a56665a1f701181db865612c`; exact raw XML SHA-256 is `a103f719071ef48efadf04f4f2cc4cc421d119caa11c78bc41f63012230bbb66`.
+The adapter, checksum lock, input manifest, raw/transformed outputs, per-sample scorer reports, and run receipt are committed under `scripts/archive/2026-10/churro_trial.py`, `scripts/archive/2026-10/test_churro_trial.py`, `ocr/bench/adapters/churro/`, and `ocr/bench/results/churro-overproof-en-smoke-10-v1/`. The transformed output SHA-256 is `57eab5ead48d125a5049621d3d834d744cde9757a56665a1f701181db865612c`; exact raw XML SHA-256 is `a103f719071ef48efadf04f4f2cc4cc421d119caa11c78bc41f63012230bbb66`.
 
 After fetching/verifying the release and installing the versions recorded in `run.json`, create an editable checkout at the locked source revision, then rerun from the repository root with:
 
@@ -78,7 +78,7 @@ git -C .local/churro-src checkout 23c3ac65781443b18d87c8cdac5f77445c3319e6
 python3.13 -m venv .local/churro-venv
 .local/churro-venv/bin/pip install -e .local/churro-src
 scripts/ocr-bench/fetch --version v1.0.0 --verify --dest .local/bench-v1.0.0
-.local/churro-venv/bin/python scripts/ocr-bench/churro_trial.py \
+.local/churro-venv/bin/python scripts/archive/2026-10/churro_trial.py \
   --churro-source-dir .local/churro-src \
   --adapter-lock ocr/bench/adapters/churro/overproof-en-smoke-10-v1.json \
   --input-manifest ocr/bench/results/churro-overproof-en-smoke-10-v1/input-manifest.json \
@@ -113,12 +113,12 @@ python3.11 -m venv .local/effocr/venv
 .local/effocr/venv/bin/pip install --no-deps --editable .local/effocr/source
 export TMPDIR=.local/effocr/tmp HF_HOME=.local/effocr/hf-home
 scripts/ocr-bench/fetch --version v1.0.0 --verify --dest .local/bench-v1.0.0
-.local/effocr/venv/bin/python scripts/ocr-bench/fetch_effocr_assets.py \
+.local/effocr/venv/bin/python scripts/archive/2026-10/fetch_effocr_assets.py \
   --adapter-lock ocr/bench/adapters/effocr-overproof-en-smoke-10-v1.json --out-dir .local/effocr/models
-.local/effocr/venv/bin/python scripts/ocr-bench/effocr_faiss_reference.py \
+.local/effocr/venv/bin/python scripts/archive/2026-10/effocr_faiss_reference.py \
   --adapter-lock ocr/bench/adapters/effocr-overproof-en-smoke-10-v1.json \
   --model-dir .local/effocr/models/effocr_en --out-dir .local/effocr/reference-vectors
-.local/effocr/venv/bin/python scripts/ocr-bench/effocr_trial.py \
+.local/effocr/venv/bin/python scripts/archive/2026-10/effocr_trial.py \
   --adapter-lock ocr/bench/adapters/effocr-overproof-en-smoke-10-v1.json \
   --release .local/bench-v1.0.0/usnm-ocr-bench-v1.0.0 \
   --model-dir .local/effocr/models/effocr_en --source-dir .local/effocr/source \
@@ -154,10 +154,10 @@ python3.11 -m venv .local/venvs/nlbin
 .local/venvs/nlbin/bin/pip install 'nlbin @ git+https://github.com/jahtz/nlbin.git@940773e0810bb166155c0d5cc47a8027a25d9531'
 mkdir -p .local/models
 curl -fsSL https://github.com/Calamari-OCR/calamari_models/archive/308697f2fe2f0143d687107e6157688ea4116157.tar.gz | tar -xz -C .local/models
-.local/venvs/calamari/bin/python scripts/ocr-bench/calamari_trial.py --release .local/bench-v1.0.0/usnm-ocr-bench-v1.0.0 --subset reichsanzeiger-de/smoke-10 --segments ocr/bench/adapters/calamari/fraktur-historical-reichsanzeiger-smoke-10-v1.json --checkpoint-dir .local/models/calamari_models-308697f2fe2f0143d687107e6157688ea4116157/fraktur_historical --out-dir .local/calamari-rerun --calamari-predict .local/venvs/calamari/bin/calamari-predict --nlbin .local/venvs/nlbin/bin/nlbin
+.local/venvs/calamari/bin/python scripts/archive/2026-10/calamari_trial.py --release .local/bench-v1.0.0/usnm-ocr-bench-v1.0.0 --subset reichsanzeiger-de/smoke-10 --segments ocr/bench/adapters/calamari/fraktur-historical-reichsanzeiger-smoke-10-v1.json --checkpoint-dir .local/models/calamari_models-308697f2fe2f0143d687107e6157688ea4116157/fraktur_historical --out-dir .local/calamari-rerun --calamari-predict .local/venvs/calamari/bin/calamari-predict --nlbin .local/venvs/nlbin/bin/nlbin
 ```
 
-The end-to-end time includes segmentation, nlbin and one fresh Calamari process startup/model load plus inference; model inference was 20.466 s. The local file cache was not cleared, and no warm pass was measured. The output JSONL SHA-256 is `240e1504b4e7ab74ca63e1b2fd4a4550a4c0fbd3d4dd610e9d658d22860845e1`; two full runs produced byte-identical outputs. Reproducible adapter, segmentation lock, raw outputs, score reports and run receipt are committed under `scripts/ocr-bench/calamari_trial.py`, `ocr/bench/adapters/calamari/`, and `ocr/bench/results/calamari-fraktur-historical-reichsanzeiger-smoke-10-v1/`.
+The end-to-end time includes segmentation, nlbin and one fresh Calamari process startup/model load plus inference; model inference was 20.466 s. The local file cache was not cleared, and no warm pass was measured. The output JSONL SHA-256 is `240e1504b4e7ab74ca63e1b2fd4a4550a4c0fbd3d4dd610e9d658d22860845e1`; two full runs produced byte-identical outputs. Reproducible adapter, segmentation lock, raw outputs, score reports and run receipt are committed under `scripts/archive/2026-10/calamari_trial.py`, `ocr/bench/adapters/calamari/`, and `ocr/bench/results/calamari-fraktur-historical-reichsanzeiger-smoke-10-v1/`.
 
 The model catalog is MIT-licensed and names GT4HistOCR as training data (CC BY 4.0); Calamari 2.3.1's engine is GPL-3.0; the nlbin implementation is Apache-2.0. These licenses are compatible with noncommercial research; no output-redistribution prohibition was found, though source attribution remains applicable. The #813 extended measures were not applied because there is no human-adjudicated historical-glyph review or full-page/region annotation here. No cgroup peak memory is available on this Mac; results are smoke feasibility evidence, not held-out accuracy. The existing Tesseract `deu_latf` run scored 20.6196% on both canonical rules on this same subset, so this Calamari model is a drop candidate for this track unless a later, separately controlled run justifies more work.
 

@@ -45,15 +45,15 @@ Sources checked (2026-10-18):
 - Three public GovInfo PDFs were retrieved one at a time, with three-second gaps, no retries,
   and no API key; four corresponding page ALTO files were retrieved. Retrieval date, exact URLs,
   package metadata, PDF/ALTO SHA-256 values, sizes and OCR provenance are in
-  [`selection.json`](../ocr/bench/serialset-pilot/selection.json). Full PDFs are not committed.
+  [`selection.json`](../../ocr/bench/serialset-pilot/selection.json). Full PDFs are not committed.
 - The fixed purposive selection has four page-disjoint pages from three documents and two serial
   numbers: two prose pages, two table/layout pages, and three pages noted to show scan irregularities
   (overlapping descriptive strata, not prevalence estimates). Coverage strata are 2 prose, 2 tables,
   and 3 with visible scan irregularities; counts are generated from the selection tags. Three pages have image-checked
   references; the dense comparative table on p. 4 remains unscored and has no reference. Coverage,
   fixture checksums, and the reason for the gap are in
-  [`coverage.json`](../ocr/bench/serialset-pilot/coverage.json) and
-  [`outputs/annotation-gap.json`](../ocr/bench/serialset-pilot/outputs/annotation-gap.json).
+  [`coverage.json`](../../ocr/bench/serialset-pilot/coverage.json) and
+  [`outputs/annotation-gap.json`](../../ocr/bench/serialset-pilot/outputs/annotation-gap.json).
 - Reference transcriptions were written from the full-page images, not copied from PDF text or
   ALTO. The explicit `serialset-full-page-v1` policy preserves print capitalization, punctuation,
   historic spelling, and line-end hyphens with their line breaks; reads tables by region and then row; and omits blank
@@ -62,7 +62,7 @@ Sources checked (2026-10-18):
   geometry-level layout annotation schema. No third-party reference data is included.
 - Source images are public-domain U.S. federal government works in the United States. Attribution,
   copyright and reference provenance are in
-  [`LICENSES/govinfo/NOTICE.txt`](../ocr/bench/serialset-pilot/LICENSES/govinfo/NOTICE.txt).
+  [`LICENSES/govinfo/NOTICE.txt`](../../ocr/bench/serialset-pilot/LICENSES/govinfo/NOTICE.txt).
 
 ## Scored comparison
 
@@ -105,7 +105,7 @@ Local Tesseract 5.5.1 used Leptonica 1.87.0, English traineddata SHA-256
 full-page 200-dpi Poppler 26.06.0 JPEGs. On a CPU-only Apple M1/macOS host, one cold process per
 page took 28.19 seconds for four pages (8.51 pages/minute, including process/model startup),
 with p50 5.12 s, nearest-rank p95 15.01 s and max process RSS 170,033,152 bytes. The measurements
-are recorded in [`tesseract-runtime.json`](../ocr/bench/serialset-pilot/tesseract-runtime.json).
+are recorded in [`tesseract-runtime.json`](../../ocr/bench/serialset-pilot/tesseract-runtime.json).
 They are a tiny local timing sample, not container/cgroup or production measurements, and are
 not comparable to the newspaper crop rates in #738.
 

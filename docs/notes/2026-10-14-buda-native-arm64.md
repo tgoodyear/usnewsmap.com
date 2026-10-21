@@ -57,6 +57,6 @@ The namespace directory retains `source/`, `source.tar.gz`, `base-pins.json`, `b
 
 ## What is left
 
-Resolve and retest the pause-restart failure in the wrapper and helper. Complete the [server spike](../experiments/2026-10-14-buda/README.md) with a registered native Mac app version, signed wrapper, native science variant, task distribution, upload, custom validation and recovery. A public native worker release must receive its own immutable registry digest and fresh cohort metadata; this locally built image does not update the existing production worker setting.
+Resolve and retest the pause-restart failure in the wrapper and helper. Complete the [server spike](2026-10-14-buda/README.md) with a registered native Mac app version, signed wrapper, native science variant, task distribution, upload, custom validation and recovery. A public native worker release must receive its own immutable registry digest and fresh cohort metadata; this locally built image does not update the existing production worker setting.
 
 The native build establishes that the OCR worker can run on ARM. It does not remove ADR-0020's validation, code-authorization or mutable-variant concerns, and does not establish the minimum Mac client version from testing one development release.

@@ -5,7 +5,7 @@
 #   JOB_ID=<id>              the exported job (required for submit and reconcile)
 #   BRIDGE_STEP=submit       or: reconcile (then BRIDGE_FOUND=present|absent is required)
 #
-# The JP2 against IIIF JPEG assessment (#456, docs/boinc-assessment.md), under
+# The JP2 against IIIF JPEG assessment (#456, docs/notes/2026-10-16-boinc-assessment.md), under
 # $PROJECT_DIR/assess/<ASSESS_CAMPAIGN> on the share (one campaign per engine build;
 # ASSESS_CAMPAIGN is required, lower-case letters, digits and hyphens):
 #   BRIDGE_STEP=assess-stage    ASSESS_MODE=ocr|crash ASSESS_ENGINE_IMAGE=sha256:... (worker image)
@@ -559,7 +559,7 @@ case "$step" in
     exit "$rc" ;;
   gold-onboard)
     # One bounded host-trust onboard pass: a targeted gold unit for each untrusted host
-    # without one outstanding, including hosts whose last unit failed (docs/boinc-host-trust-followups.md).
+    # without one outstanding, including hosts whose last unit failed (docs/notes/2026-10-16-boinc-host-trust-followups.md).
     [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
     write_mycnf
     controller="$SECRETS/host-trust.json"

@@ -107,8 +107,10 @@ BOINC preference or host trust override. Startup refresh preserves this explicit
 mode while restoring reviewed resource gates. Removing bounds without that marker
 does **not** opt in: refresh restores closed bounds. An explicit AMD `--stop`
 removes the marker and restores `2/1`, which remains stopped across restarts.
-Neither general promotion nor stop changes any Intel/NVIDIA window. The deployed
-helper is also available at `/usr/local/lib/usnm-boinc/amd-885/native-qwen-cohort.php`.
+Neither general promotion nor stop changes any Intel/NVIDIA window. The live
+image, which was built from a one-off overlay (since removed from the tree), also has the
+helper at `/usr/local/lib/usnm-boinc/amd-885/native-qwen-cohort.php`; images built from
+main do not.
 
 ### Optional bounded diagnostic: stage, audit, admit, then resume the same workunit
 

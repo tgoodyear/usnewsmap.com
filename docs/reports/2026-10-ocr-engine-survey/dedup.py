@@ -31,7 +31,7 @@ import statistics
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "ocr-survey"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "archive" / "2026-10"))
 
 from PIL import Image  # noqa: E402
 

@@ -155,7 +155,7 @@ def run() -> None:
         raise SystemExit("--threads must be positive")
     lock_path = args.adapter_lock.resolve()
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    runtime_lock = Path(__file__).resolve().parents[2] / lock["runtime"]["requirements_lock"]
+    runtime_lock = Path(__file__).resolve().parents[3] / lock["runtime"]["requirements_lock"]
     if sha256(runtime_lock) != lock["runtime"]["requirements_lock_sha256"]:
         raise SystemExit("EffOCR runtime requirements lock checksum mismatch")
     if lock.get("format") != "usnm-ocr-bench-effocr-adapter-v1" or lock.get("model_used") != MODEL_KEY:

@@ -51,8 +51,10 @@ import sys
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "ja-ocr"))
-sys.path.insert(0, HERE)
+# Archived under scripts/archive/2026-10/: altotext.py and xsd/ stay in scripts/ocr-survey/.
+SURVEY = os.path.join(HERE, "..", "..", "ocr-survey")
+sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "ja-ocr"))
+sys.path.insert(0, SURVEY)
 
 import altotext  # noqa: E402
 import quality  # noqa: E402
@@ -118,7 +120,7 @@ def schema(version: str):
     from lxml import etree
 
     if version not in _schemas:
-        _schemas[version] = etree.XMLSchema(etree.parse(os.path.join(HERE, "xsd", SCHEMAS[version])))
+        _schemas[version] = etree.XMLSchema(etree.parse(os.path.join(SURVEY, "xsd", SCHEMAS[version])))
     return _schemas[version]
 
 

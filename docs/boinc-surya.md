@@ -1,6 +1,6 @@
 # Surya 2 on BOINC
 
-Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](boinc-assessment.md).
+Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md).
 
 Status: a probe of a few pages, to find out whether volunteers' container runtimes can give the job a GPU, how long a page takes, and how far two hosts' texts agree. The larger sample comes after it.
 
@@ -71,7 +71,7 @@ A unit that can't run at all (an input whose checksum doesn't match, an engine t
 `create_work` makes each unit with `min_quorum` 2 and `target_nresults` 2, and at most 4 results. `script_validator` runs:
 
 - `usnm_surya_check` (`usnm-boinc surya check`) on each result: shape, sizes, UTF-8 and checksums. It also copies the result to `<project>/surya/seen/<result>/`, so every host's timings and diagnostics are kept, not only the canonical result's.
-- `usnm_surya_compare` (`usnm-boinc surya compare`) on each pair. Two results agree when they have the same job and engine; when, in each mode both ran, both read the page or neither did; and when, where both read it, their word-bag Dice (the measure in [boinc-assessment.md](boinc-assessment.md)) is at least the threshold. A mode only one of them ran is not compared, and two results with no mode in common don't agree. Two results that both could not run the unit (`unit_error`) do agree. Every pair is appended to `<project>/surya/pairs.jsonl` with its Dice per mode and both hosts' devices.
+- `usnm_surya_compare` (`usnm-boinc surya compare`) on each pair. Two results agree when they have the same job and engine; when, in each mode both ran, both read the page or neither did; and when, where both read it, their word-bag Dice (the measure in [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md)) is at least the threshold. A mode only one of them ran is not compared, and two results with no mode in common don't agree. Two results that both could not run the unit (`unit_error`) do agree. Every pair is appended to `<project>/surya/pairs.jsonl` with its Dice per mode and both hosts' devices.
 
 Vision-language output can differ between GPUs, and between CPU and GPU, so the threshold is measured, not assumed. Until the probe has measured it, `compare` accepts any Dice of 0.5 or more (`PROBE_MIN_DICE`), which only rejects unrelated text, and the logged pairs give the distribution to set it from.
 
@@ -120,7 +120,7 @@ For each page, staging (`crates/usnm-boinc/src/scans.rs`, shared with the assess
 3. each batch in turn on tile.loc.gov's storage service: the bag manifest and the issue's METS (kept in `<campaign>/batch-cache`) give the IIIF base, then the JPEG;
 4. none: the page is marked `missing`.
 
-Requests to LoC go one at a time, at least 5 s apart, with no retries, as for the assessment (docs/boinc-assessment.md, "Where the inputs come from"). The job's `input.url` is always the page's tile.loc.gov JPEG URL, wherever the bytes came from.
+Requests to LoC go one at a time, at least 5 s apart, with no retries, as for the assessment (docs/notes/2026-10-16-boinc-assessment.md, "Where the inputs come from"). The job's `input.url` is always the page's tile.loc.gov JPEG URL, wherever the bytes came from.
 
 To clear a hold, read `<campaign>/HOLD`, deal with the cause, and delete it (on the share, for example with `az storage file delete`).
 
