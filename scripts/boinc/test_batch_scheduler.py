@@ -1037,6 +1037,18 @@ class QueueTransportTests(unittest.TestCase):
         self.assertEqual(argv[:4], cfg["step_command"])
         self.assertEqual(argv[4:8], ["--env", "dev", "--target", "bridge"])
 
+    def test_handoff_steps_keep_the_azure_launcher_with_step_command(self):
+        cfg = copy.deepcopy(self.config)
+        cfg["step_command"] = ["ssh", "-o", "BatchMode=yes", "usnm-boinc-step@boinc.example"]
+        transport = batch.Transport(cfg, Path("."))
+        with patch.object(transport, "run", return_value="") as run:
+            transport.step("handoff", "collect", JOB_IDS="a" * 64)
+            transport.release(["a_b"])
+        for call in run.call_args_list:
+            argv = call.args[0]
+            self.assertEqual(argv[:2], ["bash", str(batch.REPO / "scripts/start-boinc-bridge.sh")])
+            self.assertIn("handoff", argv)
+
     def test_step_command_must_be_literal(self):
         for bad in ([], "ssh host", ["ssh", "host; rm -rf /"], ["ssh", "$(id)"]):
             cfg = config()

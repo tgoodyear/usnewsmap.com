@@ -33,17 +33,21 @@ common=(--links --local-no-check-updated --transfers 48 --checkers 32 --cutoff-m
 # everything else and the recent uploads. Unset, one execution does both, resuming run by run.
 part=${RELAY_PART:-all}
 case $part in all | download | rest) ;; *) echo "RELAY_PART is download, rest or unset" >&2; exit 2 ;; esac
+rc_up=0 rc_tree=0 rc_dl=0
 extra=()
 [ "$part" = rest ] && extra=(--exclude "/usnmocr/download/**")
 if [ "$part" != download ]; then
-  rc=0; timeout 600 ./rclone copy /project/usnmocr/upload r2:usnm-boinc-project/project/usnmocr/upload "${common[@]}" --max-age 72h --max-duration 540s --transfers 96 || rc=$?
-  echo "RELAY pass2 rc=$rc $(date -u +%FT%TZ)"
-  rc=0; timeout "$([ "$part" = rest ] && echo 1100 || echo 1000)" ./rclone copy /project r2:usnm-boinc-project/project "${common[@]}" --max-duration "$([ "$part" = rest ] && echo 1000s || echo 900s)" \
-    --exclude "/tls464-*/**" --exclude "/usnmocr/upload/**" --exclude "/usnmocr/log_*/**" --exclude "/usnmocr/tmp_*/**" --exclude "/usnmocr/pid_*/**" --exclude "/usnmocr/html/cache/**" ${extra[@]+"${extra[@]}"} || rc=$?
-  echo "RELAY pass1 rc=$rc $(date -u +%FT%TZ)"
+  timeout 600 ./rclone copy /project/usnmocr/upload r2:usnm-boinc-project/project/usnmocr/upload "${common[@]}" --max-age 72h --max-duration 540s --transfers 96 || rc_up=$?
+  echo "RELAY pass2 rc=$rc_up $(date -u +%FT%TZ)"
+  rc_tree=0; timeout "$([ "$part" = rest ] && echo 1100 || echo 1000)" ./rclone copy /project r2:usnm-boinc-project/project "${common[@]}" --max-duration "$([ "$part" = rest ] && echo 1000s || echo 900s)" \
+    --exclude "/tls464-*/**" --exclude "/usnmocr/upload/**" --exclude "/usnmocr/log_*/**" --exclude "/usnmocr/tmp_*/**" --exclude "/usnmocr/pid_*/**" --exclude "/usnmocr/html/cache/**" ${extra[@]+"${extra[@]}"} || rc_tree=$?
+  echo "RELAY pass1 rc=$rc_tree $(date -u +%FT%TZ)"
 else
-  rc=0; timeout 1600 ./rclone copy /project/usnmocr/download r2:usnm-boinc-project/project/usnmocr/download "${common[@]}" --max-duration 1500s || rc=$?
-  echo "RELAY download rc=$rc $(date -u +%FT%TZ)"
+  rc_dl=0; timeout 1600 ./rclone copy /project/usnmocr/download r2:usnm-boinc-project/project/usnmocr/download "${common[@]}" --max-duration 1500s || rc_dl=$?
+  echo "RELAY download rc=$rc_dl $(date -u +%FT%TZ)"
 fi
 kill $up 2>/dev/null || true; ./rclone copyto "$L" "r2:usnm-boinc-project/relay-logs/$run.log" -q || true
-exit 0
+# Nonzero unless every copy this run made completed: a duration cutoff (rclone 10, timeout 124)
+# or a failed transfer means the next run has more to send, so the final pass must end 0.
+[ "$rc_up" = 0 ] && [ "$rc_tree" = 0 ] && [ "$rc_dl" = 0 ] && { echo "RELAY complete"; exit 0; }
+echo "RELAY incomplete (uploads $rc_up, tree $rc_tree, download $rc_dl)"; exit 1

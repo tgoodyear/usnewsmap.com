@@ -16,8 +16,8 @@ The scripts are in `scripts/boinc/onprem/`, and the step runner is `scripts/boin
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.
 
-**Identity.** The host is an Azure Arc machine in the on-prem group. `lib.sh`'s `kv_token` and
-`usnm-store`'s credential both follow the Arc challenge flow when `IDENTITY_ENDPOINT` and
+**Identity.** The host is an Azure Arc machine in the on-prem group. `lib.sh`'s `kv_token` (its Arc
+path is #943, which this needs) and `usnm-store`'s credential both follow the Arc challenge flow when `IDENTITY_ENDPOINT` and
 `IMDS_ENDPOINT` are set with no `IDENTITY_HEADER`. The containers mount `/var/opt/azcmagent/tokens`
 read-only for the challenge file.
 
@@ -52,10 +52,10 @@ than the images. After each pull, before the server starts:
 
 ## Cutover order
 
-1. On Azure: create `stop_maintenance` and stop the daemons, let the assimilator drain, and pause the priority controller.
-2. Final `db-dump-job.sh` and a delta `r2-relay-job.sh` pass.
+1. On Azure, make the tree still, as for the share move (`docs/boinc.md`, "Moving the project share"): stop the priority controller and wait for running bridge executions. Then, as `boincadm` in `/project/usnmocr`, run `touch stop_maintenance`, `bin/stop`, then `touch stop_sched stop_upload`, and wait a minute for requests in flight. The scheduler and the upload handler then refuse with errors that clients retry, so no result lands on Azure after the final copy. Keep these files on Azure through the cutover.
+2. Final `db-dump-job.sh` and a delta `r2-relay-job.sh` pass (both `RELAY_PART`s). Each relay execution must log `RELAY complete`.
 3. On the host: `r2-pull.sh`, `db-import.sh --replace`, then the project tree steps above.
-4. Remove `stop_maintenance` on the host and start the server. Point `boinc.usnewsmap.com` at the tunnel (proxied CNAME).
+4. On the host, remove `stop_maintenance`, `stop_sched` and `stop_upload` (they came over in the copy) and start the server. Point `boinc.usnewsmap.com` at the tunnel (proxied CNAME).
 5. Start the controller under a new plan whose `step_command` reaches `usnm-boinc-step` (plans are immutable, so the change needs a drain).
 6. After it is verified: delete the project storage accounts and their private endpoints, and remove them from Bicep.
 

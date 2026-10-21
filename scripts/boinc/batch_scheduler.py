@@ -413,9 +413,12 @@ class Transport:
             self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
 
     def step(self, target, step, **variables):
-        # step_command runs the steps somewhere other than the Azure jobs, such as the on-prem
-        # BOINC host's scripts/boinc/onprem-step.sh over ssh (#942). It takes the same arguments.
-        command = self.config.get("step_command") or ["bash", str(REPO / "scripts/start-boinc-bridge.sh")]
+        # step_command runs the bridge steps somewhere other than the Azure bridge job, such as
+        # the on-prem BOINC host's scripts/boinc/onprem-step.sh over ssh (#942), with the same
+        # arguments. Hand-off steps have no project tree and stay on the Azure launcher.
+        command = ["bash", str(REPO / "scripts/start-boinc-bridge.sh")]
+        if target == "bridge" and self.config.get("step_command"):
+            command = self.config["step_command"]
         argv = command + ["--env", self.config["env"],
                           "--target", target, "--step", step, "--wait-mins", "30"]
         for key, value in variables.items():
