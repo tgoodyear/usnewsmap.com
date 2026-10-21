@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the on-prem Japanese OCR (#917) on an OCR node, as root: build the
-# usnewsmap-ja-ocr image from a pinned commit of the public repository (Dockerfile.ja-ocr;
-# no registry), write /etc/usnm/ja-ocr.env and install usnm-ja-ocr@.service.
+# usnewsmap-ja-ocr image from a pinned commit of the public repository
+# (docker/Dockerfile.ja-ocr; no registry), write /etc/usnm/ja-ocr.env and install usnm-ja-ocr@.service.
 #
 #   ja-ocr-onprem.sh --commit SHA --curated-url URL --reference-url URL
 #     [--replicas 2] [--start]
@@ -45,7 +45,10 @@ if ! podman image exists "$image"; then
   work=$(mktemp -d /var/tmp/usnm-ja-ocr-build.XXXXXX)
   trap 'rm -rf "$work"' EXIT
   curl -fsSL "https://codeload.github.com/$REPO/tar.gz/$COMMIT" | tar -xz -C "$work" --strip-components=1
-  podman build --pull=missing -f "$work/Dockerfile.ja-ocr" -t "$image" "$work"
+  # Commits before the Dockerfiles moved to docker/ keep it at the root.
+  dockerfile="$work/docker/Dockerfile.ja-ocr"
+  [ -f "$dockerfile" ] || dockerfile="$work/Dockerfile.ja-ocr"
+  podman build --pull=missing -f "$dockerfile" -t "$image" "$work"
 fi
 
 install -d -m 0755 /etc/usnm

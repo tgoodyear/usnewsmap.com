@@ -475,6 +475,11 @@ class BuildInputs(unittest.TestCase):
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
 
+    def test_a_dockerfile_under_docker_runs_the_image_job(self):
+        for path in ["docker/Dockerfile.api", "docker/Dockerfile.ingest", "docker/Dockerfile.ja-ocr"]:
+            with self.subTest(path=path):
+                self.assertIn("image", self.select(path))
+
     def test_a_workflow_or_its_action_runs_only_its_own_job(self):
         for path, job in [
             (".github/workflows/boinc-worker.yml", "boinc_worker"),

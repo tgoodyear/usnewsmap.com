@@ -16,7 +16,7 @@ works it out:
   the execution it ran in started (a run can start hours into its
   execution, after titles-sync, so the run's own start time won't do).
 - Everything else from that commit in git: the ingest crate version, the
-  Quickwit image `Dockerfile.ingest` pins, the feature versions in
+  Quickwit image `docker/Dockerfile.ingest` pins, the feature versions in
   `usnm-core`, and the index templates' sha256 (`pages`, and `pages-ja`
   once releases built a Japanese index).
 
@@ -60,6 +60,11 @@ def az(*args: str):
 def git(*args: str) -> str | None:
     r = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else None
+
+
+def ingest_dockerfile(commit: str) -> str:
+    """The ingest Dockerfile at a commit: docker/Dockerfile.ingest, or the repository root's before it moved."""
+    return git("show", f"{commit}:docker/Dockerfile.ingest") or git("show", f"{commit}:Dockerfile.ingest") or ""
 
 
 def when(s: str) -> datetime:
@@ -138,7 +143,7 @@ def main() -> None:
         if ex_name is None:
             sys.exit(f"no execution found for {run['index_version']}")
         pushed, commit, digest = max(t for t in tags if t[0] <= ex_start)
-        qw = re.search(r"quickwit/quickwit:v([\d.]+)", git("show", f"{commit}:Dockerfile.ingest") or "")
+        qw = re.search(r"quickwit/quickwit:v([\d.]+)", ingest_dockerfile(commit))
         cargo = re.search(r'^version = "([^"]+)"', git("show", f"{commit}:crates/usnm-ingest/Cargo.toml") or "",
                           re.M)
         templates = {"pages": {"sha256": sha256_at(commit, "infra/quickwit/pages-index.yaml")}}

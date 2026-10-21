@@ -44,7 +44,7 @@ ALLOW
 # Everything tracked that can authenticate: infra, scripts, workflows,
 # Dockerfiles, the Rust crates and the web app. Docs, tests and lockfiles
 # may name the patterns.
-files=$(git ls-files infra scripts .github 'Dockerfile*' crates web \
+files=$(git ls-files infra scripts .github docker crates web \
   | grep -v -e '^scripts/ci/no-shared-keys\.sh$' -e '\.md$' -e '_test\.rs$' -e '/tests/' \
     -e '\.test\.tsx\?$' -e '^web/e2e/' -e 'package-lock\.json$')
 
