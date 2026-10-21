@@ -71,7 +71,8 @@ Choose the section below for your operating system (`Linux`, `macOS`, or `Window
 
 ### 1.1 Linux (`x86_64-pc-linux-gnu` and `aarch64-unknown-linux-gnu`)
 
-Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit) and `aarch64-unknown-linux-gnu` (64-bit ARM, `UNVERIFIED` on live volunteer hosts).
+The short version is the [Linux quick start](boinc-linux.md); this section is
+the full reference. Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit) and `aarch64-unknown-linux-gnu` (64-bit ARM, `UNVERIFIED` on live volunteer hosts).
 
 #### Native CPU app (`usnm_quality`)
 
