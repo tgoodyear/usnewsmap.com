@@ -65,6 +65,15 @@
         }
       }
     },
+    "keyVaultAllowedIps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$"
+      },
+      "maxItems": 4,
+      "description": "Public IPv4 addresses (the home network) the BOINC Key Vault admits on its public endpoint, behind its firewall and a policy exemption for that vault alone (#917, 20 October 2026). Empty or absent: private-only. main.bicep's keyVaultAllowedIps parameter."
+    },
     "location": {
       "type": "string",
       "pattern": "^[a-z0-9]+$",
@@ -91,7 +100,12 @@
     },
     "projectShare": {
       "type": "string",
-      "enum": ["standard", "copy", "provisioned", "provisioned-final"],
+      "enum": [
+        "standard",
+        "copy",
+        "provisioned",
+        "provisioned-final"
+      ],
       "description": "The project share's billing (#917): standard (pay-as-you-go StorageV2), copy (the provisioned v2 SSD share also mounted at /project-v2 to fill it), provisioned (/project is the provisioned share; the old account kept for rollback), provisioned-final (the old account removed). main.bicep's projectShare parameter; docs/boinc.md, \"Moving the project share\"."
     },
     "projectUrl": {
