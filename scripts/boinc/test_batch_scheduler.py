@@ -1019,6 +1019,33 @@ class QueueTransportTests(unittest.TestCase):
         self.assertIn("HANDOFF_BATCH=bb_two", argvs[1])
         self.assertTrue(all("--scan" not in argv for argv in argvs))
 
+    def test_steps_use_the_azure_launcher_by_default(self):
+        with patch.object(self.transport, "run", return_value="") as run:
+            self.transport.step("bridge", "submit", JOB_ID="a" * 64)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:2], ["bash", str(batch.REPO / "scripts/start-boinc-bridge.sh")])
+        self.assertEqual(argv[2:], ["--env", "dev", "--target", "bridge", "--step", "submit",
+                                    "--wait-mins", "30", "--var", "JOB_ID=" + "a" * 64])
+
+    def test_step_command_replaces_the_launcher(self):
+        cfg = copy.deepcopy(self.config)
+        cfg["step_command"] = ["ssh", "-o", "BatchMode=yes", "usnm-boinc-step@boinc.example"]
+        transport = batch.Transport(cfg, Path("."))
+        with patch.object(transport, "run", return_value="") as run:
+            transport.step("bridge", "submit", JOB_ID="a" * 64)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], cfg["step_command"])
+        self.assertEqual(argv[4:8], ["--env", "dev", "--target", "bridge"])
+
+    def test_step_command_must_be_literal(self):
+        for bad in ([], "ssh host", ["ssh", "host; rm -rf /"], ["ssh", "$(id)"]):
+            cfg = config()
+            cfg["step_command"] = bad
+            with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+                json.dump(cfg, f); f.flush()
+                with self.assertRaisesRegex(ValueError, "step_command"):
+                    batch.load_config(Path(f.name))
+
     def test_release_step(self):
         with patch.object(self.transport, "run", return_value="") as run:
             self.transport.release(["a_b", "c_d"])

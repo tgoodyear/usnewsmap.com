@@ -49,7 +49,7 @@ PAGES_FIELDS = COMMON | {"batch", "pages"}
 QUEUE_FIELDS = COMMON | {"source", "claim_queues", "lease_hours"}
 OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
-    "low_watermark", "high_watermark", "max_global_pending", "server_status_url",
+    "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
 }
 QUEUES = ("ocr-bulk", "ocr-priority")
 PAGE_KEY = re.compile(r"[A-Za-z0-9_-]+/\d{4}-\d{2}-\d{2}/ed-\d+/seq-\d+")
@@ -289,10 +289,13 @@ def load_config(path):
                 1 <= config["max_global_pending"] <= MAX_GLOBAL_PENDING, "invalid max_global_pending")
     if "server_status_url" in config:
         _validate_status_url(config["server_status_url"])
-    command = config["push_command"]
-    require(isinstance(command, list) and command and
-            all(isinstance(arg, str) and re.fullmatch(r"[A-Za-z0-9_/@=.:+-]+", arg)
-                for arg in command), "push_command must be a trusted, literal argv prefix")
+    for key in ("push_command", "step_command"):
+        if key not in config:
+            continue
+        command = config[key]
+        require(isinstance(command, list) and command and
+                all(isinstance(arg, str) and re.fullmatch(r"[A-Za-z0-9_/@=.:+-]+", arg)
+                    for arg in command), f"{key} must be a trusted, literal argv prefix")
     if queue:
         # BOINC is a second consumer of the work queues, beside the on-prem nodes
         # (docs/boinc-batch-scheduler.md#queue-fed-work). The page list is whatever it claims.
@@ -410,8 +413,11 @@ class Transport:
             self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
 
     def step(self, target, step, **variables):
-        argv = ["bash", str(REPO / "scripts/start-boinc-bridge.sh"), "--env", self.config["env"],
-                "--target", target, "--step", step, "--wait-mins", "30"]
+        # step_command runs the steps somewhere other than the Azure jobs, such as the on-prem
+        # BOINC host's scripts/boinc/onprem-step.sh over ssh (#942). It takes the same arguments.
+        command = self.config.get("step_command") or ["bash", str(REPO / "scripts/start-boinc-bridge.sh")]
+        argv = command + ["--env", self.config["env"],
+                          "--target", target, "--step", step, "--wait-mins", "30"]
         for key, value in variables.items():
             argv += ["--var", f"{key}={value}"]
         self.run(argv, f"{target}/{step}")
