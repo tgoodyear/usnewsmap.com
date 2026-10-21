@@ -38,7 +38,10 @@ MAC_PREFS = {
 }
 
 MIN_RAM_QWEN_BYTES = 6 * (1024 ** 3)
-MIN_FREE_DISK_QWEN_BYTES = 12 * (1024 ** 3)
+# The apple_gpu_8b workunits advertise 18 GiB (ocr/boinc/usnm_qwen_8b_in);
+# a Mac with less is refused that work by the scheduler, so don't call it
+# eligible here.
+MIN_FREE_DISK_QWEN_BYTES = 18 * (1024 ** 3)
 MIN_FREE_DISK_QUALITY_BYTES = 2 * (1024 ** 3)
 
 

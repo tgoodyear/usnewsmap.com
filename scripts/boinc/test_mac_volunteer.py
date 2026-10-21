@@ -12,6 +12,7 @@ try:
         DEFAULT_PROJECT_URL,
         MAC_PREFS,
         MacSetupError,
+        detect_host_resources,
         is_project_attached,
         merge_prefs_xml,
         setup_mac,
@@ -21,6 +22,7 @@ except ModuleNotFoundError:
         DEFAULT_PROJECT_URL,
         MAC_PREFS,
         MacSetupError,
+        detect_host_resources,
         is_project_attached,
         merge_prefs_xml,
         setup_mac,
@@ -90,6 +92,22 @@ class TestMacVolunteerSetup(unittest.TestCase):
             self.assertEqual(applied["mode"], "apply")
             self.assertTrue((d / "global_prefs_override.xml").is_file())
             self.assertTrue(applied["project_attached"])
+
+    def test_apple_gpu_eligibility_needs_the_workunit_disk_bound(self) -> None:
+        # ocr/boinc/usnm_qwen_8b_in advertises 18 GiB; 12 GiB is the 2B bound.
+        gib = 1024 ** 3
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("platform.machine", return_value="arm64"), \
+                mock.patch("subprocess.run") as run_mock, \
+                mock.patch("shutil.disk_usage") as usage_mock:
+            run_mock.return_value = mock.Mock(returncode=0, stdout=f"{16 * gib}\n", stderr="")
+            usage_mock.return_value = mock.Mock(free=12 * gib)
+            info = detect_host_resources(Path(tmp))
+            self.assertEqual(info["boinc_platform"], "arm64-apple-darwin")
+            self.assertEqual(info["eligible_apps"], ["usnm_quality (native CPU)"])
+            usage_mock.return_value = mock.Mock(free=18 * gib)
+            info = detect_host_resources(Path(tmp))
+            self.assertIn("usnm_qwen (native apple_gpu_8b Metal GPU)", info["eligible_apps"])
 
     def test_setup_mac_rejects_missing_boinc_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

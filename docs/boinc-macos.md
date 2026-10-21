@@ -12,9 +12,12 @@ joined Mac can sit idle for a while. That is normal.
 ## 1. What you need
 
 - An Apple Silicon Mac (M1 or later) or an Intel Mac, on a current macOS.
-- 2 GB of free disk for the CPU app. For the GPU app, an Apple Silicon Mac
-  with at least 8 GB of memory and 12 GB of free disk; it runs on the Mac's
-  own GPU, so there is nothing to install for it. Intel Macs do CPU work only.
+- Free disk that BOINC is allowed to use: 2 GB for the quality app, 12 GB for
+  the Qwen CPU app, and 18 GB for the Qwen GPU app. BOINC's own disk limit
+  (**Options → Computing preferences → Disk**) must allow it as well.
+- The GPU app needs an Apple Silicon Mac with at least 8 GB of memory. It
+  runs on the Mac's own GPU, so there is nothing to install for it. Intel
+  Macs do CPU work only.
 - A plugged-in Mac. BOINC does not compute on battery.
 
 ## 2. Install BOINC and join the project
