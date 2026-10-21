@@ -12,6 +12,7 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use usnm_core::digest::hex;
 use usnm_core::params::{ParamError, RawParams, SearchRequest, Source};
 use usnm_core::query::Node;
 use usnm_core::text::{Analyzer, Analyzers};
@@ -1037,10 +1038,6 @@ async fn fetch(store: &dyn ObjectStore, path: &str) -> Result<Vec<u8>, String> {
 
 fn parse<T: for<'de> Deserialize<'de>>(path: &str, bytes: &[u8]) -> Result<T, String> {
     serde_json::from_slice(bytes).map_err(|e| format!("{path}: {e}"))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

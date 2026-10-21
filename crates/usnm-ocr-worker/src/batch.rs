@@ -36,9 +36,7 @@ pub fn md5(bytes: &[u8]) -> Md5Sum {
     Md5::digest(bytes).into()
 }
 
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use usnm_core::digest::hex;
 
 /// A 32-character hex md5.
 pub fn parse_md5(s: &str) -> Option<Md5Sum> {

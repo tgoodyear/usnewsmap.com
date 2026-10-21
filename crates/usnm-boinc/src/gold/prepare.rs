@@ -77,7 +77,7 @@ pub fn md5_sha256(p: &Path) -> anyhow::Result<(u64, String, String)> {
         m.update(&buf[..k]);
         s.update(&buf[..k]);
     }
-    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    use usnm_core::digest::hex;
     Ok((n, hex(&m.finalize()), hex(&s.finalize())))
 }
 

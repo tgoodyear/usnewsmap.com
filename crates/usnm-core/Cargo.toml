@@ -18,6 +18,7 @@ form_urlencoded.workspace = true
 httpdate.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
+sha2.workspace = true
 thiserror.workspace = true
 unicode-general-category.workspace = true
 unicode-normalization.workspace = true
@@ -29,7 +30,6 @@ damage = ["dep:serde_json"]
 
 [dev-dependencies]
 serde_json.workspace = true
-sha2.workspace = true
 zstd.workspace = true
 
 [lints]

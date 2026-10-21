@@ -579,9 +579,7 @@ impl std::io::Read for ChannelReader {
     }
 }
 
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use usnm_core::digest::hex;
 
 #[cfg(test)]
 mod tests {
