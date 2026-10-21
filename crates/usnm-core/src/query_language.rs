@@ -38,11 +38,12 @@ use std::sync::OnceLock;
 use crate::query::{is_japanese, Node};
 
 /// Folded words that make a query English, sorted, one per line.
-pub const ENGLISH_WORDS: &str = include_str!("../data/english-words.txt");
+pub const ENGLISH_WORDS: &str = include_str!(concat!(env!("OUT_DIR"), "/data/english-words.txt"));
 
 /// Folded English words that other languages use as much, up to 10 times as
 /// often: allowed beside an English word, never enough alone.
-pub const SHARED_WORDS: &str = include_str!("../data/english-shared-words.txt");
+pub const SHARED_WORDS: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/data/english-shared-words.txt"));
 
 /// Why the baseline counts the pages it does (06 §6.3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
