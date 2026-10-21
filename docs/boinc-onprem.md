@@ -6,12 +6,12 @@ The scripts are in `scripts/boinc/onprem/`, and the step runner is `scripts/boin
 
 ## What runs on the host
 
-| Unit | What | Notes |
-|---|---|---|
-| `usnm-boinc-mysql.service` | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh` | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON` |
-| `usnm-boinc-server.service` | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job` |
-| `usnm-boinc-step` | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh` |
-| `cloudflared` | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80` | Public ingress with no inbound port |
+| Unit                        | What                                                                            | Notes                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `usnm-boinc-mysql.service`  | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh` | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`             |
+| `usnm-boinc-server.service` | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons  | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                   |
+| `usnm-boinc-step`           | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job   | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh` |
+| `cloudflared`               | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`  | Public ingress with no inbound port                                                             |
 
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.

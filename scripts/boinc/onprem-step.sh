@@ -21,15 +21,6 @@ set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 
-if [ "${1:-}" = --from-ssh ]; then
-  [ $# -eq 1 ] && [ -n "${SSH_ORIGINAL_COMMAND:-}" ] || die "--from-ssh takes its arguments from SSH_ORIGINAL_COMMAND"
-  args=()
-  while IFS= read -r a; do args+=("$a"); done < <(python3 -c 'import shlex, sys; print("\n".join(shlex.split(sys.argv[1])))' "$SSH_ORIGINAL_COMMAND")
-  # The controller may send the command name first; drop it.
-  case ${args[0]:-} in onprem-step.sh | */onprem-step.sh | usnm-boinc-step) args=("${args[@]:1}") ;; esac
-  for a in ${args[@]+"${args[@]}"}; do [ "$a" != --from-ssh ] || die "--from-ssh once only"; done
-  USNM_BOINC_STEP_FROM_SSH=1 exec "$0" ${args[@]+"${args[@]}"}
-fi
 # Over ssh the controller's key may set only the inputs the controller's bridge steps take
 # (scripts/boinc/batch_scheduler.py). Run as root on the host, any step input is allowed, but
 # never a variable that steers the shell, the loader or an interpreter in the container.
@@ -37,10 +28,11 @@ SSH_VARS=" BATCH_NONCE HANDOFF_SPOOL HANDOFF_SPOOLS HANDOFF_URL JOB_ID JOB_IDS "
 CONTROL_VARS='^(BASH.*|ENV|SHELLOPTS|BASHOPTS|PS[0-9]|PROMPT_COMMAND|IFS|PATH|CDPATH|GLOBIGNORE|HOME|TMPDIR|LD_.*|PYTHON.*|PERL.*|RUBY.*|NODE_.*|LANG|LC_.*|TZ|HOSTALIASES|SSL_.*|CURL_.*|HTTPS?_PROXY|NO_PROXY|ALL_PROXY|IDENTITY_.*|IMDS_.*|AZURE_.*|MYSQL.*|RCLONE_.*)$'
 
 CONF=${USNM_BOINC_CONF:-/etc/usnm-boinc}
-ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge
+ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge FROM_SSH=false NARGS=$#
 VARS=()
 while [ $# -gt 0 ]; do
   case $1 in
+    --from-ssh) FROM_SSH=true; shift ;;
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --step) [ $# -ge 2 ] || usage; STEP=$2; shift 2 ;;
     --target) [ $# -ge 2 ] || usage; TARGET=$2; shift 2 ;;
@@ -54,6 +46,17 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+if $FROM_SSH; then
+  # The forced command is `onprem-step.sh --from-ssh` and nothing else; the real arguments are
+  # the client's command, split without a shell, and checked like any others on the re-exec.
+  [ "$NARGS" -eq 1 ] && [ -n "${SSH_ORIGINAL_COMMAND:-}" ] || die "--from-ssh takes its arguments from SSH_ORIGINAL_COMMAND"
+  args=()
+  while IFS= read -r a; do args+=("$a"); done < <(python3 -c 'import shlex, sys; print("\n".join(shlex.split(sys.argv[1])))' "$SSH_ORIGINAL_COMMAND")
+  # The controller may send the command name first; drop it.
+  case ${args[0]:-} in onprem-step.sh | */onprem-step.sh | usnm-boinc-step) args=("${args[@]:1}") ;; esac
+  for a in ${args[@]+"${args[@]}"}; do [ "$a" != --from-ssh ] || die "--from-ssh once only"; done
+  USNM_BOINC_STEP_FROM_SSH=1 exec "$0" ${args[@]+"${args[@]}"}
+fi
 [ -n "$ENV_NAME" ] && [ -n "$STEP" ] || usage
 [[ $ENV_NAME =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "--env is an environment name"
 [ "$TARGET" = bridge ] || die "--target $TARGET does not run on-prem; only bridge steps do"
