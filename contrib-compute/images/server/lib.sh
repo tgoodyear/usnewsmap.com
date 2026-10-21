@@ -18,11 +18,39 @@ TEMPLATES=/usr/local/lib/usnm-boinc
 log() { echo "usnm-boinc: $*" >&2; }
 fail() { log "$*"; exit 1; }
 
+# kv_token: a Key Vault access token for this host's identity, on stdout.
+# - Container Apps (IDENTITY_ENDPOINT and IDENTITY_HEADER): the user-assigned identity
+#   AZURE_CLIENT_ID.
+# - Azure Arc (IDENTITY_ENDPOINT and IMDS_ENDPOINT, no header; the on-prem server, #942): the
+#   machine identity. himds answers the first request with a 401 whose Basic realm names a key
+#   file under /var/opt/azcmagent/tokens; the retry carries that file's contents. The key goes to
+#   curl in a header file (process substitution), never on its command line.
 kv_token() {
-  [ -n "${IDENTITY_ENDPOINT:-}" ] && [ -n "${IDENTITY_HEADER:-}" ] || fail "no managed identity endpoint in the environment"
-  curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" \
-    "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://vault.azure.net&client_id=${AZURE_CLIENT_ID:?}" |
-    jq -er .access_token
+  local url realm
+  if [ -n "${IDENTITY_ENDPOINT:-}" ] && [ -n "${IDENTITY_HEADER:-}" ]; then
+    curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" \
+      "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://vault.azure.net&client_id=${AZURE_CLIENT_ID:?}" |
+      jq -er .access_token
+  elif [ -n "${IDENTITY_ENDPOINT:-}" ] && [ -n "${IMDS_ENDPOINT:-}" ]; then
+    # The agent's key goes only to a loopback http endpoint, as ArcIdentity::check_endpoint
+    # (crates/usnm-store/src/credential.rs) requires: never to a host named by the environment.
+    [[ $IDENTITY_ENDPOINT =~ ^http://(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|\[::1\])(:[0-9]{1,5})?/[^[:space:]?#]*$ ]] ||
+      fail "the Arc identity endpoint must be http on loopback"
+    url="$IDENTITY_ENDPOINT?api-version=2020-06-01&resource=https://vault.azure.net"
+    # The identity endpoint is local: never through a proxy, which would also see the key.
+    realm="$(curl --noproxy '*' -sS -o /dev/null -D - -H "Metadata: true" "$url" | tr -d '\r' |
+      sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: *Basic realm=\([^[:space:]]*\).*/\1/p')"
+    # The realm may be quoted (realm="/var/opt/azcmagent/tokens/<id>.key").
+    realm=${realm#\"}; realm=${realm%\"}
+    case "$realm" in
+      /var/opt/azcmagent/tokens/*.key) [[ $realm != *..* ]] && [ -f "$realm" ] || fail "unexpected Arc challenge file" ;;
+      *) fail "no Arc challenge from $IDENTITY_ENDPOINT" ;;
+    esac
+    curl --noproxy '*' -fsS -H "Metadata: true" -H @<(printf 'Authorization: Basic %s\n' "$(cat "$realm")") "$url" |
+      jq -er .access_token
+  else
+    fail "no managed identity endpoint in the environment"
+  fi
 }
 
 # kv_get NAME FILE: writes the secret value to FILE (mode 0600). Never prints it.

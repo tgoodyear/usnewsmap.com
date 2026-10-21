@@ -136,6 +136,8 @@ jobs:
         run: python3 -m unittest -v boinc/test_config.py
       - name: The daemon runner keeps bin/start's pid directory off the share
         run: python3 -m unittest -v images/server/test_boinc_daemons.py
+      - name: The Arc token path sends its key only to a loopback endpoint
+        run: python3 -m unittest -v images/server/test_lib_kv_token.py
       - name: The work-volume export and workbook queries pass
         run: python3 -m unittest -v images/server/test_work_volume.py
         env:
