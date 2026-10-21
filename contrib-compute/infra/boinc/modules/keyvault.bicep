@@ -4,7 +4,9 @@
 // opens, but its firewall admits only those addresses (the home network's), so the operator
 // and the on-prem hosts can read and set secrets while BOINC moves on-prem. Access still
 // needs an RBAC role. The resource group's deny-public-network policy is exempted for this
-// vault alone, by modules/keyvault-exemption.bicep, not for the group.
+// vault alone (policy exemption usnm-boinc-kv-home-ip on it, not on the group). The exemption
+// is created outside this stack (a stack that depends on an extension resource of the vault
+// sees the vault as a potential deletion); the guardrails' publicAccountIds is its Bicep home.
 //
 // Who writes what:
 // - this template: mysql-admin-password (a new random value each deployment, from main.bicep)

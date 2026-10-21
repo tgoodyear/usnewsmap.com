@@ -545,10 +545,7 @@ class ProductionReconciliation(unittest.TestCase):
         vault = (ROOT / "contrib-compute/infra/boinc/modules/keyvault.bicep").read_text()
         self.assertIn("publicNetworkAccess: open ? 'Enabled' : 'Disabled'", vault)
         self.assertIn("defaultAction: 'Deny', bypass: 'None', ipRules: [for ip in allowedIps: { value: ip }]", vault)
-        exemption = (ROOT / "contrib-compute/infra/boinc/modules/keyvault-exemption.bicep").read_text()
-        self.assertIn("scope: vault", exemption)  # this vault alone, not the resource group
-        main = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()
-        self.assertIn("dependsOn: [ vaultExemption ]", main)
+        self.assertIn("usnm-boinc-kv-home-ip", vault)  # the exemption is on this vault alone
         settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
         self.assertTrue(all(re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) for ip in settings.get("keyVaultAllowedIps", [])))
 
