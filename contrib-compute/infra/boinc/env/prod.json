@@ -10,7 +10,11 @@
     "web": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:f6da5c435bc490162c948f4d342b54a2eb8d0ae206be7242376a7b4e432cdcab",
     "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa"
   },
+  "keyVaultAllowedIps": [
+    "107.205.227.23"
+  ],
   "location": "westus2",
+  "onPremGroupId": "40effb39-70a4-4d15-bb36-ea9b45e2f80f",
   "operator": {
     "login": "Trevor Goodyear",
     "objectId": "0b398b81-9e13-427f-9dc2-e38d890554bc"

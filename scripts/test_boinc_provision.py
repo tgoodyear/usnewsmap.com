@@ -1,5 +1,6 @@
 """Exercise deployment ordering and failure gates without Azure or project mutation."""
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -539,6 +540,14 @@ class ProductionReconciliation(unittest.TestCase):
         settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/schema.json").read_text())
         self.assertEqual(settings["properties"]["projectShare"]["enum"],
                          ["standard", "copy", "provisioned", "provisioned-final"])
+
+    def test_key_vault_opens_only_to_listed_ips_behind_a_vault_scoped_exemption(self):
+        vault = (ROOT / "contrib-compute/infra/boinc/modules/keyvault.bicep").read_text()
+        self.assertIn("publicNetworkAccess: open ? 'Enabled' : 'Disabled'", vault)
+        self.assertIn("defaultAction: 'Deny', bypass: 'None', ipRules: [for ip in allowedIps: { value: ip }]", vault)
+        self.assertIn("usnm-boinc-kv-home-ip", vault)  # the exemption is on this vault alone
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        self.assertTrue(all(re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) for ip in settings.get("keyVaultAllowedIps", [])))
 
     def test_live_iris_settings_quota_and_additive_endpoint_are_preserved(self):
         source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()

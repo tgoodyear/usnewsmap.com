@@ -87,6 +87,10 @@ param codeSignPublicKey string = ''
 @description('The project share\'s billing (#917): standard, the pay-as-you-go StorageV2 share; copy, the provisioned v2 SSD share is created and the server also mounts it at /project-v2 to fill it; provisioned, /project is the provisioned share everywhere and the old account is kept for rollback; provisioned-final, the old account is removed. docs/boinc.md, "Moving the project share".')
 @allowed([ 'standard', 'copy', 'provisioned', 'provisioned-final' ])
 param projectShare string = 'standard'
+@description('Public IPv4 addresses the BOINC Key Vault admits on its public endpoint (the home network); empty keeps it private-only. modules/keyvault.bicep.')
+param keyVaultAllowedIps array = []
+@description('The on-prem hosts\' Entra group (usnm-onprem-grp-<env>): Key Vault Secrets User on the project vault, for the on-prem BOINC server (#942). Empty: none.')
+param onPremGroupId string = ''
 
 @description('Create the workbook "usnm BOINC (<env>)" over the workspace (modules/workbook.bicep). On by default in prod.')
 param workbook bool = env == 'prod'
@@ -183,6 +187,8 @@ module vault 'modules/keyvault.bicep' = {
     logAnalyticsWorkspaceId: monitor.outputs.id
     mysqlAdminPassword: mysqlAdminPassword
     codeSignPublicKey: codeSignPublicKey
+    allowedIps: keyVaultAllowedIps
+    onPremReaderGroupId: onPremGroupId
   }
 }
 

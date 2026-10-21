@@ -48,7 +48,7 @@ boinc_load_settings() {
   err=$(jq -r '
     def guid: test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
     def acr: test("^$|^[a-z0-9.-]+\\.azurecr\\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$");
-    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "location", "operator", "projectShare", "projectUrl", "qualityWave", "requireSecureTransport", "subscriptionId"]
+    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "keyVaultAllowedIps", "location", "onPremGroupId", "operator", "projectShare", "projectUrl", "qualityWave", "requireSecureTransport", "subscriptionId"]
         | if length > 0 then "unknown keys: \(join(", "))" else empty end),
       (if keys_unsorted != keys then "keys are not sorted" else empty end),
       (if (.assessment | type) != "boolean" then "assessment must be true or false" else empty end),
@@ -60,6 +60,8 @@ boinc_load_settings() {
         then "qualityWave must be {script: an https blob URL of a .py file, sha256: 64 hex}" else empty end),
       (if has("requireSecureTransport") and (.requireSecureTransport | type) != "boolean" then "requireSecureTransport must be true or false" else empty end),
       (if has("projectShare") and ([.projectShare] | inside(["standard", "copy", "provisioned", "provisioned-final"]) | not) then "projectShare must be standard, copy, provisioned or provisioned-final" else empty end),
+      (if has("keyVaultAllowedIps") and ((.keyVaultAllowedIps | type) != "array" or (.keyVaultAllowedIps | length) > 4 or any(.keyVaultAllowedIps[]; type != "string" or (test("^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$") | not))) then "keyVaultAllowedIps must be up to 4 public IPv4 addresses" else empty end),
+      (if has("onPremGroupId") and ((.onPremGroupId | type) != "string" or (.onPremGroupId | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$") | not)) then "onPremGroupId must be an object id" else empty end),
       (if (.images | type) != "object" or ((.images | keys) - ["web"]) != ["appver", "bridge", "server", "worker"] then "images must have appver, bridge, server and worker, with optional web" else empty end),
       (if has("images") and (.images | has("web")) and (.images.web | type) != "string" then "images.web must be a string" else empty end),
       (if (.images.web // "" | acr) then empty else "images.web must be empty or an immutable ACR image" end),
