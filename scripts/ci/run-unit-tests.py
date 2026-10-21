@@ -55,12 +55,16 @@ def main():
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(proc.stdout, end="", flush=True)
         ran = re.search(r"^Ran (\d+) tests? in", proc.stdout, re.M)
-        total += int(ran.group(1)) if ran else 0
+        count = int(ran.group(1)) if ran else 0
+        total += count
         if proc.returncode:
-            failed.append(rel)
+            failed.append((rel, "failed"))
+        elif count == 0:
+            # unittest exits 0 for a module with no tests; a file this runs must contribute some.
+            failed.append((rel, "collected no tests"))
     print(f"\n{total} tests in {len(run)} files; {len(left_out)} files left out (see --list)")
-    for rel in failed:
-        print(f"FAILED: {rel}")
+    for rel, why in failed:
+        print(f"FAILED: {rel} ({why})")
     return 1 if failed else 0
 
 
