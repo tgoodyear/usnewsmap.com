@@ -144,7 +144,7 @@ jobs:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       - name: The bounded volunteer batch scheduler tests pass
         working-directory: .
-        run: python3 -m unittest -v scripts/boinc/test_batch_scheduler.py contrib-compute/images/server/test_batch_inventory.py
+        run: python3 -m unittest -v scripts/boinc/test_batch_scheduler.py scripts/boinc/test_onprem_step.py contrib-compute/images/server/test_batch_inventory.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
