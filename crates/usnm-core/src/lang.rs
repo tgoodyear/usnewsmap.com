@@ -16,9 +16,9 @@
 //!   Welsh...) has none, as in `damage_v2.py`.
 //!
 //! With the cargo feature `damage`, [`wordlist`] returns a list's words,
-//! embedded from `data/damage-words/` (`scripts/build-damage-words.py`
-//! exports them from wordfreq 3.1.1; `data/README.md` has their
-//! sources and licences).
+//! embedded from `data/damage-words/*.txt.zst`, which `build.rs`
+//! decompresses (`scripts/build-damage-words.py` exports them from wordfreq
+//! 3.1.1; `data/README.md` has their sources and licences).
 
 /// One language in the three code systems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +145,12 @@ pub fn wordlist(code: &str) -> Option<&'static str> {
     macro_rules! lists {
         ($($code:literal),* $(,)?) => {
             match code {
-                $($code => Some(include_str!(concat!("../data/damage-words/", $code, ".txt"))),)*
+                $($code => Some(include_str!(concat!(
+                    env!("OUT_DIR"),
+                    "/data/damage-words/",
+                    $code,
+                    ".txt"
+                ))),)*
                 _ => None,
             }
         };
@@ -261,7 +266,8 @@ mod tests {
         }
         assert_eq!(wordlist("ja"), None);
         // Every file in the directory is one the table names.
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/data/damage-words");
+        // build.rs decompresses data/damage-words/*.txt.zst there.
+        let dir = concat!(env!("OUT_DIR"), "/data/damage-words");
         let files: BTreeSet<String> = std::fs::read_dir(dir)
             .unwrap()
             .filter_map(|e| e.unwrap().file_name().into_string().ok())
