@@ -506,6 +506,20 @@ impl IngestApi {
         }
     }
 
+    /// Kafka (`crate::kafka`) only with v1: the restart-based final merges
+    /// (`merges::seal_restarting`) are v1's; v2's `merges::seal` would wait
+    /// for `_ingest-source`, which a Kafka build never uses.
+    pub fn check_kafka(self, kafka: bool) -> anyhow::Result<()> {
+        if kafka && self != Self::V1 {
+            bail!(
+                "USNM_WRITER_KAFKA needs {}=v1, not `{}`",
+                Self::VAR,
+                self.name()
+            );
+        }
+        Ok(())
+    }
+
     /// Whether a request answered `status` was certainly not appended, so
     /// sending it again can't duplicate anything.
     fn retry(self, status: reqwest::StatusCode) -> bool {
@@ -1069,6 +1083,7 @@ impl IndexSink for QuickwitSink {
         // Only a partitioned base sends decade files (`crate::decade_order`); a
         // delta tagged by decade goes in line, through v1.
         if let (Some(k), Decades::Partitioned) = (self.kafka.clone(), layout.decades) {
+            self.ingest.check_kafka(true)?;
             k.create_topic(index_id).await?;
             self.add_source(index_id, &k.source_yaml(index_id)).await?;
             self.kafka_index = Some(index_id.to_owned());
@@ -2907,6 +2922,10 @@ mod tests {
         for api in [IngestApi::V1, IngestApi::V2] {
             assert_eq!(IngestApi::parse(Some(api.name())).unwrap(), api);
         }
+        IngestApi::V1.check_kafka(true).unwrap();
+        IngestApi::V2.check_kafka(false).unwrap();
+        let err = IngestApi::V2.check_kafka(true).unwrap_err().to_string();
+        assert!(err.contains("USNM_WRITER_INGEST=v1"), "{err}");
     }
 
     /// What a fake writer does with one ingest request.
