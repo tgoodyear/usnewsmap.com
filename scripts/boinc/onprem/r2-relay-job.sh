@@ -24,20 +24,22 @@ export RCLONE_CONFIG_R2_ACCESS_KEY_ID RCLONE_CONFIG_R2_SECRET_ACCESS_KEY RCLONE_
 b=$(mktemp -d /tmp/rclone.XXXXXX); cd "$b"; curl -fsSL -o rc.zip https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-amd64.zip
 echo "0e6fa18051e67fc600d803a2dcb10ddedb092247fc6eee61be97f64ec080a13c  rc.zip" | sha256sum -c --quiet
 python3 -c 'import zipfile; open("rclone","wb").write(zipfile.ZipFile("rc.zip").read("rclone-v1.68.2-linux-amd64/rclone"))'; chmod 755 rclone; ./rclone version | head -1
-run=$(date -u +%Y%m%dT%H%M%SZ); L=/tmp/relay-$run.log; exec > >(tee -a "$L") 2>&1
+# Parallel parts can start in the same second, so the log name carries the part and a random tag.
+run=$(date -u +%Y%m%dT%H%M%SZ)-${RELAY_PART:-all}-$(od -An -N4 -tx4 /dev/urandom | tr -d " "); L=/tmp/relay-$run.log; exec > >(tee -a "$L") 2>&1
 ( while sleep 120; do ./rclone copyto "$L" "r2:usnm-boinc-project/relay-logs/$run.log" -q || true; done ) &
 up=$!
 echo "RELAY start $(date -u +%FT%TZ)"
 echo "RELAY top $(cd /project && echo *)"; echo "RELAY proj $(cd /project/usnmocr && echo *)"
-common=(--links --local-no-check-updated --transfers 48 --checkers 32 --cutoff-mode hard --timeout 60s --contimeout 15s --low-level-retries 5 --stats 120s --stats-one-line --stats-log-level NOTICE)
+common=(--links --local-no-check-updated --modify-window 2s --transfers 48 --checkers 32 --cutoff-mode hard --timeout 60s --contimeout 15s --low-level-retries 5 --stats 120s --stats-one-line --stats-log-level NOTICE)
 # RELAY_PART splits one full pass across executions run side by side, because listing the whole
-# share takes longer than one execution may run: "download" is usnmocr/download, "uploads" the
-# uploads pass, "rest" everything else. Unset, one execution does all three, resuming run by run.
+# share takes longer than one execution may run: "download" is usnmocr/download, "quality" the
+# quality wave's tree (tens of thousands of small files), "uploads" the uploads pass, "rest"
+# everything else. Unset, one execution does them all, resuming run by run.
 part=${RELAY_PART:-all}
-case $part in all | download | uploads | rest) ;; *) echo "RELAY_PART is download, uploads, rest or unset" >&2; exit 2 ;; esac
+case $part in all | download | quality | uploads | rest) ;; *) echo "RELAY_PART is download, quality, uploads, rest or unset" >&2; exit 2 ;; esac
 rc_up=0 rc_tree=0 rc_dl=0
 extra=()
-[ "$part" = rest ] && extra=(--exclude "/usnmocr/download/**")
+[ "$part" = rest ] && extra=(--exclude "/usnmocr/download/**" --exclude "/quality/**")
 if [ "$part" = all ] || [ "$part" = uploads ]; then
   if [ -n "${RELAY_UPLOADS_FILTER:-}" ]; then
     [[ $RELAY_UPLOADS_FILTER =~ ^db/[A-Za-z0-9._-]+\.uploads-filter$ ]] || { echo "RELAY_UPLOADS_FILTER is db/<name>.uploads-filter" >&2; exit 2; }
@@ -50,9 +52,13 @@ if [ "$part" = all ] || [ "$part" = uploads ]; then
   echo "RELAY uploads rc=$rc_up $(date -u +%FT%TZ)"
 fi
 if [ "$part" = all ] || [ "$part" = rest ]; then
-  rc_tree=0; timeout "$([ "$part" = rest ] && echo 1100 || echo 1000)" ./rclone copy /project r2:usnm-boinc-project/project "${common[@]}" --max-duration "$([ "$part" = rest ] && echo 1000s || echo 900s)" \
+  rc_tree=0; timeout "$([ "$part" = rest ] && echo 1600 || echo 1000)" ./rclone copy /project r2:usnm-boinc-project/project "${common[@]}" --max-duration "$([ "$part" = rest ] && echo 1500s || echo 900s)" \
     --exclude "/tls464-*/**" --exclude "/usnmocr/upload/**" --exclude "/usnmocr/log_*/**" --exclude "/usnmocr/tmp_*/**" --exclude "/usnmocr/pid_*/**" --exclude "/usnmocr/html/cache/**" ${extra[@]+"${extra[@]}"} || rc_tree=$?
   echo "RELAY tree rc=$rc_tree $(date -u +%FT%TZ)"
+fi
+if [ "$part" = quality ]; then
+  rc_tree=0; timeout 1600 ./rclone copy /project/quality r2:usnm-boinc-project/project/quality "${common[@]}" --transfers 128 --checkers 64 --max-duration 1500s || rc_tree=$?
+  echo "RELAY quality rc=$rc_tree $(date -u +%FT%TZ)"
 fi
 if [ "$part" = download ]; then
   rc_dl=0; timeout 1600 ./rclone copy /project/usnmocr/download r2:usnm-boinc-project/project/usnmocr/download "${common[@]}" --max-duration 1500s || rc_dl=$?
