@@ -50,6 +50,39 @@ class Scope(unittest.TestCase):
         self.assertIn("existing and existing[1] == 0", submit)
 
 
+class NoPasswordOnCommandLines(unittest.TestCase):
+    # A failed mysql call's traceback prints its command, and job logs keep it: on 20 Oct 2026
+    # the runtime password reached Log Analytics that way. It goes in a 0600 options file.
+    def test_mysql_reads_credentials_from_a_private_options_file(self):
+        body = SOURCE.split("def run_mysql(sql):")[1].split("\ndef ")[0]
+        self.assertIn("--defaults-extra-file=", body)
+        self.assertNotRegex(body, r"-p\{|-u\{|-h\{")
+        self.assertIn("tempfile.mkstemp(", SOURCE.split("def mysql_defaults_file():")[1].split("\ndef ")[0])
+
+    def test_concurrent_writers_publish_one_private_file(self):
+        # The quality job runs eight runners; their first calls can overlap.
+        import multiprocessing, os, stat, tempfile
+        body = "def mysql_defaults_file():" + SOURCE.split("def mysql_defaults_file():")[1].split("\ndef ")[0]
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "db-runtime").write_text("pw\"x\n")
+            source = (body.replace("/dev/shm/boinc/db-runtime", f"{d}/db-runtime")
+                      .replace("Path(MYSQL_DEFAULTS)", f"Path({d!r}) / 'mysql-runtime.cnf'"))
+            ctx = multiprocessing.get_context("fork")
+            procs = [ctx.Process(target=_write_defaults, args=(source,)) for _ in range(16)]
+            for proc in procs:
+                proc.start()
+            for proc in procs:
+                proc.join()
+            self.assertTrue(all(proc.exitcode == 0 for proc in procs))
+            path = Path(d, "mysql-runtime.cnf")
+            self.assertEqual(path.read_text(), '[client]\nhost="db.example"\nuser="usnmboincrun"\npassword="pw\\"x"\n')
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(sorted(os.listdir(d)), ["db-runtime", "mysql-runtime.cnf"])
+
+    def test_no_secret_on_any_command_line(self):
+        self.assertNotRegex(SOURCE, r'f"-p\{')
+
+
 class LocFallback(unittest.TestCase):
     def test_off_unless_asked_for(self):
         # One 5-second pacer for every shard can't fetch a corpus (#914): the LoC pass runs
@@ -57,6 +90,15 @@ class LocFallback(unittest.TestCase):
         self.assertIn('LOC_FALLBACK = os.environ.get("QUALITY_LOC_FALLBACK", "0") == "1"', SOURCE)
         self.assertIn('PASSES = ("jpeg_cached", "jpeg_cached", "archived") + (("loc_fallback",) if LOC_FALLBACK else ())', SOURCE)
         self.assertNotRegex(SOURCE, r'for pass_mode in \("')
+
+
+def _write_defaults(source):
+    import contextlib, os, tempfile
+    os.environ["DB_HOST"] = "db.example"
+    os.environ.pop("DB_RUNTIME_USER", None)
+    scope = {"Path": Path, "os": os, "tempfile": tempfile, "contextlib": contextlib}
+    exec(source, scope)
+    scope["mysql_defaults_file"]()
 
 
 if __name__ == "__main__":
