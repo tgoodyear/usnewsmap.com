@@ -16,7 +16,10 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-DEFAULT_PROJECT_URL = "https://boinc.usnewsmap.com/usnewsmap/"
+# The master URL, the same one every other client helper and the volunteer
+# guide use. The project's web pages live under /usnmocr/, but a client
+# attaches to the root.
+DEFAULT_PROJECT_URL = "https://boinc.usnewsmap.com/"
 DEFAULT_DATA_DIR = Path("/Library/Application Support/BOINC Data")
 APP_RESOURCES = Path("/Applications/BOINCManager.app/Contents/Resources")
 

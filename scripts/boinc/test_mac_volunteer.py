@@ -9,6 +9,7 @@ from unittest import mock
 
 try:
     from setup_mac_volunteer import (
+        DEFAULT_PROJECT_URL,
         MAC_PREFS,
         MacSetupError,
         is_project_attached,
@@ -17,6 +18,7 @@ try:
     )
 except ModuleNotFoundError:
     from scripts.boinc.setup_mac_volunteer import (
+        DEFAULT_PROJECT_URL,
         MAC_PREFS,
         MacSetupError,
         is_project_attached,
@@ -42,15 +44,25 @@ class TestMacVolunteerSetup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             (d / "client_state.xml").write_text(
-                "<client_state><project><master_url>https://boinc.usnewsmap.com/usnewsmap/</master_url></project></client_state>",
+                "<client_state><project><master_url>https://boinc.usnewsmap.com/</master_url></project></client_state>",
                 encoding="utf-8",
             )
+            self.assertTrue(is_project_attached(d, DEFAULT_PROJECT_URL))
             self.assertTrue(
-                is_project_attached(d, "https://boinc.usnewsmap.com/usnewsmap")
+                is_project_attached(d, "https://boinc.usnewsmap.com")
+            )
+            self.assertFalse(
+                is_project_attached(d, "https://boinc.usnewsmap.com/usnewsmap/")
             )
             self.assertFalse(
                 is_project_attached(d, "https://example.invalid/boinc/")
             )
+
+    def test_default_project_url_is_the_master_url(self) -> None:
+        # The volunteer guide, client_account.py and the Windows helper all
+        # attach to the project root; a different default would never match
+        # an attached host and would attach a new one to a URL that 404s.
+        self.assertEqual(DEFAULT_PROJECT_URL, "https://boinc.usnewsmap.com/")
 
     def test_setup_mac_check_only_and_apply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,3 +24,4 @@ The [technical notes](notes/README.md) are dated write-ups of work on the index,
 - [BOINC batch pilot](boinc.md): opt-in cached-page volunteer processing and recovery.
 - [Linux BOINC quick start](boinc-linux.md): account, per-node setup and headless cluster attachment.
 - [Windows BOINC quick start](boinc-windows.md): the one-script setup for a Windows PC, in five short steps.
+- [macOS BOINC quick start](boinc-macos.md): the same five steps for an Apple Silicon or Intel Mac.

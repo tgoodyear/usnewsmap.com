@@ -38,13 +38,13 @@ work finishes. Local computing preferences affect other BOINC projects too.
 This pilot may have no work or supported app for your device. You can install
 BOINC and register or attach later. Start with the
 [Linux quick start](boinc-linux.md), [Windows quick start](boinc-windows.md),
-[macOS setup](#12-macos-arm64-apple-darwin-apple-silicon-and-x86_64-apple-darwin-intel)
+[macOS quick start](boinc-macos.md)
 or the [Linux reference](#11-linux-x86_64-pc-linux-gnu-and-aarch64-unknown-linux-gnu),
 then review [resources, network and privacy](#4-resources-network-and-privacy).
 
 ## Single-Script Onboarding (One Script per Platform)
 
-Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/usnewsmap/`):
+Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/`):
 
 | Platform                          | Onboarding Script                                          | Preview (Read-Only)                                                                                   | Apply & Attach                                                                              |
 | --------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -199,7 +199,8 @@ option; this helper and its rootless guarantees apply to Podman only.
 
 ### 1.2 macOS (`arm64-apple-darwin` Apple Silicon and `x86_64-apple-darwin` Intel)
 
-Install the official **recommended stable** universal macOS BOINC client
+The short version is the [macOS quick start](boinc-macos.md); this section is
+the full reference. Install the official **recommended stable** universal macOS BOINC client
 (currently **8.2.11**) from [BOINC's Mac downloads](https://boinc.berkeley.edu/download_all.php?platform=mac).
 Do not install a development client just to volunteer. Upstream 8.2.12 and
 8.2.13 are Linux hotfix releases, not Mac container prerequisites; stable
@@ -216,7 +217,7 @@ After installing BOINC Manager and launching it once so `/Library/Application Su
 python3 scripts/boinc/setup_mac_volunteer.py
 
 # 2. Apply preferences and attach (or update if already attached):
-python3 scripts/boinc/setup_mac_volunteer.py --apply --account-key <YOUR_ACCOUNT_KEY>
+python3 scripts/boinc/setup_mac_volunteer.py --apply --authenticator <YOUR_ACCOUNT_KEY>
 ```
 
 #### Native CPU app (`usnm_quality`)
