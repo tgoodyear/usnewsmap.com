@@ -137,6 +137,13 @@ step="${BRIDGE_STEP:-submit}"
 # spool-out. Each job runs this script's single-job path again, so every check is the same.
 # submit-remote stops at the first failure (the next tick reconciles that job before any other
 # submission); spool-out goes on and fails at the end, so one bad result holds back no other.
+# The secrets are read from Key Vault once for the whole batch (#958): the per-job runs reuse the
+# files in tmpfs (BRIDGE_SECRETS_READY), and fetch them again only if one is missing.
+if { [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; } || { [ "$step" = spool-out ] && [ -n "${HANDOFF_SPOOLS:-}" ]; }; then
+  fetch_secrets
+  render_config
+  export BRIDGE_SECRETS_READY=1
+fi
 if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
   [ -z "${JOB_ID:-}" ] || fail "set JOB_ID or JOB_IDS, not both"
   [[ $JOB_IDS =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
@@ -462,7 +469,11 @@ if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then
   fi
   exit 0
 fi
-fetch_secrets
+if [ "${BRIDGE_SECRETS_READY:-}" = 1 ] && secrets_present; then
+  log "reusing this batch's secrets"
+else
+  fetch_secrets
+fi
 render_config
 umask 0002
 case "$step" in

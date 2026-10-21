@@ -53,28 +53,53 @@ kv_token() {
   fi
 }
 
+# KV_TRIES attempts, KV_BACKOFF seconds apart (doubling): one TLS timeout to Key Vault from the
+# on-prem host stopped a whole batch (#958).
+KV_TRIES="${KV_TRIES:-3}"
+KV_BACKOFF="${KV_BACKOFF:-2}"
+
 # kv_get NAME FILE: writes the secret value to FILE (mode 0600). Never prints it.
 kv_get() {
-  local name=$1 out=$2 token
-  token="$(kv_token)" || fail "cannot get a Key Vault token"
-  (umask 077; curl -fsS -H "Authorization: Bearer $token" \
-    "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=7.4" | jq -er .value > "$out") ||
-    fail "cannot read Key Vault secret $name"
+  local name=$1 out=$2 token try=1 wait=$KV_BACKOFF
+  while :; do
+    if token="$(kv_token)" && (umask 077; curl -fsS --max-time 30 -H @<(printf 'Authorization: Bearer %s\n' "$token") \
+        "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=7.4" | jq -er .value > "$out"); then
+      return 0
+    fi
+    [ "$try" -lt "$KV_TRIES" ] || fail "cannot read Key Vault secret $name"
+    log "Key Vault read of $name failed (try $try of $KV_TRIES); retrying in ${wait}s"
+    sleep "$wait"; try=$((try + 1)); wait=$((wait * 2))
+  done
 }
 
 # kv_get_optional NAME FILE: as kv_get, but a secret that does not exist (404) is skipped with
 # a log line and returns 1; any other failure stops, as kv_get does.
 kv_get_optional() {
-  local name=$1 out=$2 token code
-  token="$(kv_token)" || fail "cannot get a Key Vault token"
-  code="$(umask 077; curl -sS -o "$out.json" -w '%{http_code}' -H "Authorization: Bearer $token" \
-    "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=7.4")" || { rm -f "$out.json"; fail "cannot read Key Vault secret $name"; }
+  local name=$1 out=$2 token code try=1 wait=$KV_BACKOFF
+  while :; do
+    code=000
+    if token="$(kv_token)"; then
+      code="$(umask 077; curl -sS --max-time 30 -o "$out.json" -w '%{http_code}' -H @<(printf 'Authorization: Bearer %s\n' "$token") \
+        "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=7.4")" || code=000
+    fi
+    # Retry what may be transient (no answer, throttling, a server error); a 200 or 404 is final.
+    case "$code" in 000 | 429 | 5??) ;; *) break ;; esac
+    rm -f "$out.json"
+    [ "$try" -lt "$KV_TRIES" ] || fail "cannot read Key Vault secret $name"
+    log "Key Vault read of $name failed (try $try of $KV_TRIES); retrying in ${wait}s"
+    sleep "$wait"; try=$((try + 1)); wait=$((wait * 2))
+  done
   case "$code" in
     200) (umask 077; jq -er .value "$out.json" > "$out") || { rm -f "$out.json"; fail "cannot read Key Vault secret $name"; } ;;
     404) rm -f "$out.json"; log "no $name in Key Vault yet"; return 1 ;;
     *) rm -f "$out.json"; fail "cannot read Key Vault secret $name (HTTP $code)" ;;
   esac
   rm -f "$out.json"
+}
+
+# secrets_present: true when an earlier fetch_secrets in this container left every required file.
+secrets_present() {
+  [ -s "$SECRETS/db-runtime" ] && [ -s "$SECRETS/keys/upload_private" ] && [ -s "$SECRETS/keys/upload_public" ]
 }
 
 fetch_secrets() {
