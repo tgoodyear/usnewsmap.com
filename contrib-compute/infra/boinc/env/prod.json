@@ -14,6 +14,7 @@
     "107.205.227.23"
   ],
   "location": "westus2",
+  "onPremGroupId": "40effb39-70a4-4d15-bb36-ea9b45e2f80f",
   "operator": {
     "login": "Trevor Goodyear",
     "objectId": "0b398b81-9e13-427f-9dc2-e38d890554bc"

@@ -134,6 +134,7 @@ jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --ar
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
     projectShare: {value: ($s | fromjson | .projectShare // "standard")},
     keyVaultAllowedIps: {value: ($s | fromjson | .keyVaultAllowedIps // [])},
+    onPremGroupId: {value: ($s | fromjson | .onPremGroupId // "")},
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
   }}' > "$work/params.json"
 }

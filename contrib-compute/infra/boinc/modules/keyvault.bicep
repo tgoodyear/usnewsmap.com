@@ -31,6 +31,8 @@ param mysqlAdminPassword string
 param codeSignPublicKey string = ''
 @description('Public IPv4 addresses the vault firewall admits; empty keeps the vault private-only.')
 param allowedIps array = []
+@description('The on-prem hosts\' Entra group (usnm-onprem-grp-<env>): Key Vault Secrets User, so the on-prem BOINC server reads the project secrets with its Arc identity (#942). Empty: no grant.')
+param onPremReaderGroupId string = ''
 var open = !empty(allowedIps)
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
@@ -80,6 +82,17 @@ resource readerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 // Key Vault Secrets Officer, as infra/modules/ocr-vault.bicep grants its operators.
 var secretsOfficer = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+
+// The on-prem BOINC server (#942) reads the same secrets as the app, with its Arc identity.
+resource onPremReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(onPremReaderGroupId)) {
+  scope: vault
+  name: guid(vault.id, onPremReaderGroupId, secretsUser)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsUser)
+    principalId: onPremReaderGroupId
+    principalType: 'Group'
+  }
+}
 
 resource officers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for operator in operatorPrincipalIds: {

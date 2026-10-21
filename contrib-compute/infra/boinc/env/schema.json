@@ -79,6 +79,11 @@
       "pattern": "^[a-z0-9]+$",
       "description": "Azure region; the resource group's own."
     },
+    "onPremGroupId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Object id of usnm-onprem-grp-<env> (the on-prem hosts' Arc identities): Key Vault Secrets User on the project vault, so the on-prem BOINC server reads the project secrets (#942). main.bicep's onPremGroupId."
+    },
     "operator": {
       "type": "object",
       "additionalProperties": false,
