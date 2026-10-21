@@ -222,7 +222,60 @@ fn transport(op: &'static str, path: &str, e: reqwest::Error) -> StoreError {
     StoreError::Io(format!("{op} `{path}`: {}", e.without_url()))
 }
 
+/// Tries of a whole-object GET ([`ObjectStore::get`]).
+const GET_TRIES: u32 = 5;
+/// The wait after a GET's first failed try, doubling after each.
+const GET_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Whether a failed GET may succeed when tried again: a transport failure
+/// (connection, timeout, a body cut short), 408, 429 or a 5xx.
+fn retryable(e: &StoreError) -> bool {
+    match e {
+        StoreError::Io(_) => true,
+        StoreError::Http { status, .. } => matches!(*status, 408 | 429 | 500..=599),
+        _ => false,
+    }
+}
+
 impl BlobStore {
+    /// One try of [`ObjectStore::get`].
+    async fn get_once(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let resp = self
+            .request(Method::GET, path)
+            .await?
+            .send()
+            .await
+            .map_err(|e| transport("get", path, e))?;
+        match resp.status() {
+            StatusCode::NOT_FOUND => return Ok(None),
+            s if !s.is_success() => {
+                return Err(StoreError::Http {
+                    op: "get",
+                    path: path.into(),
+                    status: s.as_u16(),
+                })
+            }
+            _ => {}
+        }
+        if resp.content_length().is_some_and(|n| n > MAX_OBJECT_BYTES) {
+            return Err(StoreError::TooLarge(path.into()));
+        }
+        // Stream, so a response without an honest Content-Length still stops
+        // at the limit instead of being buffered whole.
+        let mut resp = resp;
+        let mut body = Vec::with_capacity(
+            resp.content_length()
+                .map_or(0, |n| usize::try_from(n).unwrap_or(0)),
+        );
+        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
+            if (body.len() + chunk.len()) as u64 > MAX_OBJECT_BYTES {
+                return Err(StoreError::TooLarge(path.into()));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Some(body))
+    }
+
     async fn put_block(&self, path: &str, id: &str, body: Vec<u8>) -> Result<(), StoreError> {
         let resp = self
             .request(Method::PUT, path)
@@ -345,41 +398,24 @@ impl ObjectStore for BlobStore {
         }
     }
 
+    /// A whole object, read again when a try fails on the way (a dropped
+    /// connection or a body cut short, a timeout, 408, 429 or a 5xx): GET
+    /// changes nothing, so another try is always safe. [`GET_TRIES`] tries,
+    /// [`GET_BACKOFF`] apart and doubling.
     async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        let resp = self
-            .request(Method::GET, path)
-            .await?
-            .send()
-            .await
-            .map_err(|e| transport("get", path, e))?;
-        match resp.status() {
-            StatusCode::NOT_FOUND => return Ok(None),
-            s if !s.is_success() => {
-                return Err(StoreError::Http {
-                    op: "get",
-                    path: path.into(),
-                    status: s.as_u16(),
-                })
+        let mut wait = GET_BACKOFF;
+        let mut attempt = 1;
+        loop {
+            match self.get_once(path).await {
+                Err(e) if attempt < GET_TRIES && retryable(&e) => {
+                    tracing::warn!(path, attempt, error = %e, "blob get failed; trying again");
+                    tokio::time::sleep(wait).await;
+                    wait *= 2;
+                    attempt += 1;
+                }
+                r => return r,
             }
-            _ => {}
         }
-        if resp.content_length().is_some_and(|n| n > MAX_OBJECT_BYTES) {
-            return Err(StoreError::TooLarge(path.into()));
-        }
-        // Stream, so a response without an honest Content-Length still stops
-        // at the limit instead of being buffered whole.
-        let mut resp = resp;
-        let mut body = Vec::with_capacity(
-            resp.content_length()
-                .map_or(0, |n| usize::try_from(n).unwrap_or(0)),
-        );
-        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
-            if (body.len() + chunk.len()) as u64 > MAX_OBJECT_BYTES {
-                return Err(StoreError::TooLarge(path.into()));
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(Some(body))
     }
 
     async fn put(&self, path: &str, body: Vec<u8>, content_type: &str) -> Result<(), StoreError> {
@@ -746,6 +782,61 @@ mod tests {
     }
 
     use axum::response::IntoResponse;
+
+    /// A server that answers each connection with the next of `replies`
+    /// (raw HTTP/1.1, then closes), repeating the last, and counts them.
+    async fn scripted(replies: Vec<&'static str>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let n = Arc::new(AtomicUsize::new(0));
+        let count = n.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let i = count.fetch_add(1, Ordering::SeqCst);
+                let reply = replies[i.min(replies.len() - 1)];
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock.write_all(reply.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/c"), n)
+    }
+
+    const CUT_SHORT: &str = "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhel";
+    const BUSY: &str =
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const DENIED: &str = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const WHOLE: &str =
+        "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world";
+
+    #[tokio::test]
+    async fn get_tries_again_after_a_cut_body_or_a_busy_server() {
+        use std::sync::atomic::Ordering;
+        let (url, n) = scripted(vec![CUT_SHORT, BUSY, WHOLE]).await;
+        let store = BlobStore::new(&url, cred()).unwrap();
+        let got = store.get("pages/a.parquet").await.unwrap().unwrap();
+        assert_eq!(got, b"hello world");
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn get_gives_up_on_a_refusal_and_after_its_tries() {
+        use std::sync::atomic::Ordering;
+        let (url, n) = scripted(vec![DENIED]).await;
+        let store = BlobStore::new(&url, cred()).unwrap();
+        let err = store.get("pages/a.parquet").await.unwrap_err();
+        assert!(matches!(err, StoreError::Http { status: 403, .. }), "{err}");
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        let (url, n) = scripted(vec![CUT_SHORT]).await;
+        let store = BlobStore::new(&url, cred()).unwrap();
+        let err = store.get("pages/a.parquet").await.unwrap_err();
+        assert!(matches!(err, StoreError::Io(_)), "{err}");
+        assert_eq!(n.load(Ordering::SeqCst), GET_TRIES as usize);
+    }
 
     #[tokio::test]
     async fn conditional_reads_and_deletes() {
