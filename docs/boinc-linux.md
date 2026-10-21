@@ -17,13 +17,15 @@ setting up a whole cluster for it.
 - A BOINC client 8.2.13 or newer. Some distributions ship an older one; check
   with `boinc --version` and use [BOINC's own packages](https://boinc.berkeley.edu/linux_install.php)
   if yours is too old.
-- For GPU work, an NVIDIA GPU with a driver that supports CUDA 12 and at least
-  3 GB of free video memory (7 GB for the larger model), plus two free CPU
+- For GPU work, an NVIDIA GPU with a driver that supports CUDA 12.4 or newer
+  and at least 3 GB of free video memory (7 GB for the larger model), plus two free CPU
   cores per GPU task. Without one, the computer gets CPU work: the quality app
   on any machine, the Qwen CPU app on 4 to 8 cores.
-- Free disk that BOINC is allowed to use: 2 GB for the quality app, 12 GB for
-  the Qwen CPU app, and 18 GB for the Qwen GPU app. BOINC's own disk limit
-  (**Options → Computing preferences → Disk**) must allow it as well.
+- Free disk that BOINC is allowed to use: 2 GiB for the quality app, 12 GiB
+  for the Qwen CPU app, and 18 GiB for the Qwen GPU app (those are binary
+  gigabytes, so about 2.2, 13 and 20 GB as most disk tools show them).
+  BOINC's own disk limit (**Options → Computing preferences → Disk**) must
+  allow it as well.
 
 ## 2. Install BOINC and join the project
 
@@ -66,19 +68,22 @@ In Manager, **Options → Computing preferences**: compute only while the
 computer is idle and not on battery, and set CPU, memory and disk limits you
 are comfortable with. These apply to every BOINC project on this computer. On
 a headless machine, Manager can connect to it from another computer, or set
-the same limits in the project preferences on the website, which apply to
-every host on your account.
+the same limits in **Computing preferences** on the project website (not
+Project preferences, which only choose CPU and GPU work for this project).
+Website limits apply to every host on your account; limits set locally in
+Manager take precedence over them.
 
 ## 4. Check that it works
 
 ```sh
 boinccmd --get_project_status
 boinccmd --get_tasks
-boinccmd --get_messages 0 | grep -i usnewsmap
+boinccmd --get_messages 0
 ```
 
 The first should list `https://boinc.usnewsmap.com/`. A **Scheduler request
-completed** line in the messages means you are joined and waiting for a batch.
+completed** line for usnewsmap in the messages means you are joined and
+waiting for a batch.
 A task that downloads, runs and uploads is a success; its validation shows
 under **Tasks** on your account page. For GPU work, the messages at startup
 should name the NVIDIA GPU; without that line the computer gets CPU work only.
