@@ -41,6 +41,7 @@ param onPremRelease = bool(readEnvironmentVariable('USNM_ONPREM_RELEASE', 'false
 param onPremReleaseHost = readEnvironmentVariable('USNM_ONPREM_RELEASE_HOST', '')
 param boincHandoffRunner = readEnvironmentVariable('USNM_BOINC_HANDOFF_RUNNER', '')
 param boincControllerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_CONTROLLER_ONPREM', 'false'))
+param boincServerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_SERVER_ONPREM', 'false'))
 param boincHandoffImage = readEnvironmentVariable('USNM_BOINC_HANDOFF_IMAGE', '')
 param jaLatin = bool(readEnvironmentVariable('USNM_JA_LATIN', 'false'))
 param ocrLocal = bool(readEnvironmentVariable('USNM_OCR_LOCAL', 'false'))
