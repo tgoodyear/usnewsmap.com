@@ -630,19 +630,39 @@ def build_database(
         ).fetchall()
     ]
     comparison_cols = []
+    comparison_names = []
     for reader in comparison_readers:
         lit = reader.replace("'", "''")
         col = reader.replace("-", "_").replace('"', '""')
-        comparison_cols.append(
-            f"MAX(CASE WHEN reader = '{lit}' THEN mean_est_cer END) AS \"{col}_page_cer\""
-        )
-        comparison_cols.append(
-            f"MAX(CASE WHEN reader = '{lit}' THEN mean_crop_hat_est_cer END) AS \"{col}_crop_cer\""
-        )
+        for measure, suffix in (("mean_est_cer", "page_cer"), ("mean_crop_hat_est_cer", "crop_cer")):
+            comparison_names.append(f'"{col}_{suffix}"')
+            comparison_cols.append(
+                f"MAX(CASE WHEN reader = '{lit}' THEN {measure} END) AS {comparison_names[-1]}"
+            )
+    # The counts are the language's distinct samples, not one reader's: readers can cover
+    # different pages (a campaign stages only the readers it asked for), so the largest
+    # per-reader count would understate a language whose readers share few pages. Crops
+    # keep the per-reader policy of one count per campaign a crop appears in.
+    # The collector names the crop column crop_id; the empty fallback view above names it id.
+    crop_id_col = "crop_id" if any(
+        r[0] == "crop_id" for r in con.execute("DESCRIBE raw_boinc_crops").fetchall()
+    ) else "id"
     con.execute(
-        "CREATE TABLE reader_language_comparison AS SELECT language, "
-        + ", ".join(["MAX(pages) AS pages", "MAX(crops) AS crops"] + comparison_cols)
-        + " FROM reader_language_summary GROUP BY language ORDER BY language"
+        "CREATE TABLE reader_language_comparison AS "
+        "WITH readers AS (SELECT language, "
+        + ", ".join(comparison_cols)
+        + " FROM reader_language_summary GROUP BY language), "
+        "page_counts AS (SELECT language, COUNT(DISTINCT doc_id) AS pages "
+        "FROM boinc_reader_rows GROUP BY language), "
+        "crop_counts AS (SELECT d.language, "
+        f"COUNT(DISTINCT c.campaign || '|' || c.doc_id || '|' || c.{crop_id_col}) AS crops "
+        "FROM raw_boinc_crops c JOIN doc_language d USING (doc_id) GROUP BY d.language) "
+        "SELECT p.language, COALESCE(pc.pages, 0) AS pages, COALESCE(cc.crops, 0) AS crops, "
+        + ", ".join(f"p.{name}" for name in comparison_names)
+        + " FROM readers p "
+        "LEFT JOIN page_counts pc ON pc.language IS NOT DISTINCT FROM p.language "
+        "LEFT JOIN crop_counts cc ON cc.language IS NOT DISTINCT FROM p.language "
+        "ORDER BY p.language"
     )
 
     con.execute(
