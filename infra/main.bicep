@@ -637,6 +637,8 @@ module scanArchive 'modules/scan-archive.bicep' = if (ocrNodes) {
       ? resourceId(subscription().subscriptionId, n.boincRg, 'Microsoft.Network/virtualNetworks/subnets', n.boincVnet, 'aca')
       : ''
     readerIds: boincHandoff ? [boincBridgeIdentity!.properties.principalId] : []
+    // The on-prem BOINC server's quality wave (#962) reads the archive as the on-prem group.
+    onPremReaderGroupId: boincServerOnPrem ? trim(onPremGroupId) : ''
     nodeGroupId: trim(ocrNodeGroupId)
     writerRoleLabel: n.scansWriterRole
     uploaderId: trim(scanArchiveUploaderId)

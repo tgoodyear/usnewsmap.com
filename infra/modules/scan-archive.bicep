@@ -23,6 +23,8 @@ param subnetId string
 param boincSubnetId string = ''
 @description('Principals given Storage Blob Data Reader on `scans`: the BOINC bridge\'s identity (usnm-boinc-id-<env>), which stages pages from the archive before going to LoC (ADR-0018, decision 7).')
 param readerIds array = []
+@description('Object id of the on-prem hosts\' Entra group (usnm-onprem-grp-<env>), given Storage Blob Data Reader on `scans` when the BOINC server runs on-prem: the quality wave there reads the archive (#962). Empty grants none.')
+param onPremReaderGroupId string = ''
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>). It gets the writer role; empty grants none.')
 param nodeGroupId string = ''
 @description('Optional scan-host Arc identity; archive-only access, not OCR queue permissions.')
@@ -163,6 +165,16 @@ resource read 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
     }
   }
 ]
+
+resource onPremRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(onPremReaderGroupId)) {
+  scope: scans
+  name: guid(scans.id, onPremReaderGroupId, 'usnm-scans-reader')
+  properties: {
+    principalId: onPremReaderGroupId
+    principalType: 'Group'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
+  }
+}
 
 output id string = account.id
 output name string = account.name
