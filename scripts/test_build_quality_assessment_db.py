@@ -306,6 +306,203 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
                 regimes["sn83045462-1910-05-02-ed-1-seq-3"], "multi_script_fraktur"
             )
 
+    @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
+    def test_reader_language_summary_rolls_up_pages_and_crops_per_language_and_reader(self):
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quality_root = root / "quality"
+            cdir = quality_root / "v1-wave9"
+            cdir.mkdir(parents=True)
+            con = duckdb.connect()
+
+            # Two English pages (loc, ours-surya) and one German page (loc, ours-tesseract, ours-surya).
+            con.execute(
+                f"""
+                COPY (
+                    SELECT *, 'cpu'::VARCHAR AS plan_class, '{{}}'::VARCHAR AS pairs_json,
+                        0.8::DOUBLE AS findable_places, 0.1::DOUBLE AS damage_rate,
+                        0.2::DOUBLE AS function_share, 0.01::DOUBLE AS garbage_share,
+                        500::BIGINT AS known_words, 900::BIGINT AS consensus_words,
+                        0.8::DOUBLE AS legibility_ceiling, 3000::BIGINT AS width,
+                        4000::BIGINT AS height, 0.1::DOUBLE AS skew_deg,
+                        5000.0::DOUBLE AS blur, 180.0::DOUBLE AS contrast,
+                        2.0::DOUBLE AS noise, 0.05::DOUBLE AS bleed_through,
+                        0.2::DOUBLE AS ink_density, 10::BIGINT AS blocks,
+                        200::BIGINT AS lines, 900::BIGINT AS line_words,
+                        30.0::DOUBLE AS line_height_px, 5::BIGINT AS columns,
+                        0.8::DOUBLE AS mean_word_conf FROM (VALUES
+                        ('doc-en-1', 'english', 'eng', 'loc', 1000, TRUE, 0.10, 0.90, 0.92, 0.80, NULL, NULL),
+                        ('doc-en-1', 'english', 'eng', 'ours-surya', 1100, TRUE, 0.04, 0.96, 0.97, 0.90, 0.06, 0.94),
+                        ('doc-en-2', 'english', 'eng', 'loc', 900, FALSE, 0.20, 0.80, 0.82, 0.70, NULL, NULL),
+                        ('doc-en-2', 'english', 'eng', 'ours-surya', 950, FALSE, 0.08, 0.92, 0.93, 0.80, 0.10, 0.90),
+                        ('doc-de-1', 'german', 'deu', 'loc', 800, TRUE, 0.30, 0.70, 0.72, 0.60, NULL, NULL),
+                        ('doc-de-1', 'german', 'deu', 'ours-tesseract', 820, TRUE, 0.12, 0.88, 0.90, 0.75, 0.15, 0.85),
+                        ('doc-de-1', 'german', 'deu', 'ours-surya', 830, TRUE, 0.06, 0.94, 0.95, 0.85, 0.20, 0.80)
+                    ) AS t(doc_id, "group", language, reader, words, hat_determined, est_cer,
+                           completeness, precision, findable_content, cer_vs_loc, dice_vs_loc)
+                ) TO '{cdir / "pages.parquet"}' (FORMAT PARQUET)
+                """
+            )
+            # Crops carry no language: it comes from the page rows of the same doc_id.
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (VALUES
+                        ('doc-en-1', 'c0', 'body', 'vlm', 'qwen text', 'qwen text', NULL, NULL, NULL),
+                        ('doc-en-1', 'c0', 'body', 'surya', 'surya text', 'qwen text', 0.05, 0.95, 0.04),
+                        ('doc-en-2', 'c1', 'body', 'surya', 'surya text', 'qwen text', 0.15, 0.85, 0.08),
+                        ('doc-en-2', 'c1', 'body', 'loc', 'loc text', NULL, 0.30, 0.70, 0.25),
+                        ('doc-de-1', 'c2', 'headline', 'surya', 'surya text', 'qwen text', 0.20, 0.80, 0.10)
+                    ) AS t(doc_id, crop_id, stratum, reader, text, vlm_text, cer_vs_vlm, dice_vs_vlm, hat_est_cer)
+                ) TO '{cdir / "crops.parquet"}' (FORMAT PARQUET)
+                """
+            )
+            manifest_pq = root / "manifest.parquet"
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (VALUES
+                        ('doc-en-1', 'sn1', '1895-01-01', 1, 1, 'b1', 'v1', 'eng', 'reocr', 0.2, 'u1'),
+                        ('doc-en-2', 'sn1', '1895-01-02', 1, 1, 'b1', 'v1', 'eng', 'reocr', 0.2, 'u2'),
+                        ('doc-de-1', 'sn2', '1910-05-02', 1, 3, 'b2', 'v1', 'ger', 'reocr', 0.2, 'u3')
+                    ) AS t(doc_id, lccn, date, edition, seq, batch, batch_version, lang, decision, damage_rate, item_url)
+                ) TO '{manifest_pq}' (FORMAT PARQUET)
+                """
+            )
+
+            out_dir = root / "out"
+            mod.build_database(quality_root, manifest_pq, out_dir, None)
+
+            rows = con.execute(
+                f"""
+                SELECT language, reader, pages, mean_est_cer, median_est_cer, mean_cer_vs_loc,
+                       pages_hat_determined, crops, mean_crop_hat_est_cer, mean_cer_vs_vlm,
+                       crops_with_vlm
+                FROM read_parquet('{out_dir / "reader_language_summary.parquet"}')
+                ORDER BY language, reader
+                """
+            ).fetchall()
+            by_key = {(r[0], r[1]): r for r in rows}
+            self.assertEqual(
+                [(r[0], r[1]) for r in rows],
+                [
+                    ("deu", "loc"),
+                    ("deu", "ours-surya"),
+                    ("deu", "ours-tesseract"),
+                    ("deu", "surya"),
+                    ("eng", "loc"),
+                    ("eng", "ours-surya"),
+                    ("eng", "surya"),
+                    ("eng", "vlm"),
+                ],
+            )
+            # English ours-surya: two pages, one hat-determined.
+            en_surya = by_key[("eng", "ours-surya")]
+            self.assertEqual(en_surya[2], 2)
+            self.assertAlmostEqual(en_surya[3], 0.06)
+            self.assertAlmostEqual(en_surya[4], 0.06)
+            self.assertAlmostEqual(en_surya[5], 0.08)
+            self.assertEqual(en_surya[6], 1)
+            self.assertEqual(en_surya[7], 0)
+            self.assertIsNone(en_surya[8])
+            # English surya crops exist only in the crop table: no page measures.
+            en_crop = by_key[("eng", "surya")]
+            self.assertEqual(en_crop[2], 0)
+            self.assertIsNone(en_crop[3])
+            self.assertEqual(en_crop[7], 2)
+            self.assertAlmostEqual(en_crop[8], 0.06)
+            self.assertAlmostEqual(en_crop[9], 0.10)
+            self.assertEqual(en_crop[10], 2)
+            # The vlm reader has a crop row and no scores; loc crops have no vlm text.
+            en_vlm = by_key[("eng", "vlm")]
+            self.assertEqual((en_vlm[2], en_vlm[7], en_vlm[10]), (0, 1, 1))
+            self.assertIsNone(en_vlm[9])
+            self.assertEqual(by_key[("eng", "loc")][7], 1)
+            self.assertEqual(by_key[("eng", "loc")][10], 0)
+            self.assertAlmostEqual(by_key[("deu", "surya")][9], 0.20)
+
+            group_rows = con.execute(
+                f"""
+                SELECT COUNT(*) FROM read_parquet('{out_dir / "reader_language_group_summary.parquet"}')
+                WHERE language = 'eng' AND "group" = 'english'
+                """
+            ).fetchone()
+            self.assertEqual(group_rows[0], 4)
+            summary = (out_dir / "summary.md").read_text(encoding="utf-8")
+            self.assertIn("reader_language_summary", summary)
+
+    @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
+    def test_reader_language_summary_averages_all_null_varchar_crop_scores(self):
+        # The collector's to_parquet types an all-null column as UTF-8, so a campaign whose
+        # crops were never scored against a VLM arrives with VARCHAR score columns.
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quality_root = root / "quality"
+            cdir = quality_root / "v1-wave10"
+            cdir.mkdir(parents=True)
+            con = duckdb.connect()
+            con.execute(
+                f"""
+                COPY (
+                    SELECT *, 'cpu'::VARCHAR AS plan_class, '{{}}'::VARCHAR AS pairs_json,
+                        0.8::DOUBLE AS findable_places, 0.1::DOUBLE AS damage_rate,
+                        0.2::DOUBLE AS function_share, 0.01::DOUBLE AS garbage_share,
+                        500::BIGINT AS known_words, 900::BIGINT AS consensus_words,
+                        0.8::DOUBLE AS legibility_ceiling, 3000::BIGINT AS width,
+                        4000::BIGINT AS height, 0.1::DOUBLE AS skew_deg,
+                        5000.0::DOUBLE AS blur, 180.0::DOUBLE AS contrast,
+                        2.0::DOUBLE AS noise, 0.05::DOUBLE AS bleed_through,
+                        0.2::DOUBLE AS ink_density, 10::BIGINT AS blocks,
+                        200::BIGINT AS lines, 900::BIGINT AS line_words,
+                        30.0::DOUBLE AS line_height_px, 5::BIGINT AS columns,
+                        0.8::DOUBLE AS mean_word_conf FROM (VALUES
+                        ('doc-en-1', 'english', 'eng', 'loc', 1000, TRUE, 0.10, 0.90, 0.92, 0.80, NULL, NULL),
+                        ('doc-en-1', 'english', 'eng', 'ours-surya', 1100, TRUE, 0.04, 0.96, 0.97, 0.90, 0.06, 0.94)
+                    ) AS t(doc_id, "group", language, reader, words, hat_determined, est_cer,
+                           completeness, precision, findable_content, cer_vs_loc, dice_vs_loc)
+                ) TO '{cdir / "pages.parquet"}' (FORMAT PARQUET)
+                """
+            )
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (VALUES
+                        ('doc-en-1', 'c0', 'body', 'surya', 'surya text', NULL::VARCHAR,
+                         NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR),
+                        ('doc-en-1', 'c0', 'body', 'loc', 'loc text', NULL::VARCHAR,
+                         NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR)
+                    ) AS t(doc_id, crop_id, stratum, reader, text, vlm_text, cer_vs_vlm, dice_vs_vlm, hat_est_cer)
+                ) TO '{cdir / "crops.parquet"}' (FORMAT PARQUET)
+                """
+            )
+            self.assertEqual(
+                con.execute(f"SELECT typeof(cer_vs_vlm) FROM read_parquet('{cdir / 'crops.parquet'}') LIMIT 1").fetchone()[0],
+                "VARCHAR",
+            )
+            manifest_pq = root / "manifest.parquet"
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (VALUES
+                        ('doc-en-1', 'sn1', '1895-01-01', 1, 1, 'b1', 'v1', 'eng', 'reocr', 0.2, 'u1')
+                    ) AS t(doc_id, lccn, date, edition, seq, batch, batch_version, lang, decision, damage_rate, item_url)
+                ) TO '{manifest_pq}' (FORMAT PARQUET)
+                """
+            )
+            out_dir = root / "out"
+            mod.build_database(quality_root, manifest_pq, out_dir, None)
+            rows = con.execute(
+                f"""
+                SELECT reader, crops, mean_crop_hat_est_cer, mean_cer_vs_vlm, mean_dice_vs_vlm, crops_with_vlm
+                FROM read_parquet('{out_dir / "reader_language_summary.parquet"}')
+                WHERE language = 'eng' ORDER BY reader
+                """
+            ).fetchall()
+            self.assertEqual(rows, [("loc", 1, None, None, None, 0), ("ours-surya", 0, None, None, None, 0),
+                                    ("surya", 1, None, None, None, 0)])
+
 
 if __name__ == "__main__":
     unittest.main()
