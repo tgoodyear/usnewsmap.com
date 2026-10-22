@@ -62,6 +62,10 @@ pub struct Options {
     pub engine: Engine,
     /// The hand-off job's `texts/` export, one `<doc_id>.json` per page.
     pub texts_dir: PathBuf,
+    /// `surya collect`'s export (#968): `<doc_id>.surya.json`, the page's
+    /// Surya text as the reader `ours-surya`, joined into the unit's texts
+    /// when `--readers` names it.
+    pub surya_texts: Option<PathBuf>,
     /// The hand-off container's `scans/`, when the pages were fetched by
     /// the node: `<doc_id>.jpg` and `<doc_id>.xml`.
     pub scans_dir: Option<PathBuf>,
@@ -413,7 +417,7 @@ async fn page(
     };
     // The export, with LoC's text added from the ALTO.
     let export_path = opts.texts_dir.join(format!("{}.json", p.doc_id));
-    let exported: Texts = if export_path.exists() {
+    let mut exported: Texts = if export_path.exists() {
         serde_json::from_slice(&read(&export_path, MAX_TEXTS)?)
             .with_context(|| format!("reading {}", export_path.display()))?
     } else {
@@ -422,6 +426,10 @@ async fn page(
             readers: vec![],
         }
     };
+    if let Some(reader) = surya_reader(opts.surya_texts.as_deref(), &p.doc_id)? {
+        exported.readers.retain(|r| r.name != reader.name);
+        exported.readers.push(reader);
+    }
     let (width, height) = image::load_from_memory(&scan.page)
         .context("decoding page.jpg")?
         .to_luma8()
@@ -460,6 +468,28 @@ async fn page(
     }
     debug_assert_eq!(job.doc_id, p.doc_id);
     Ok(Some(loc_only))
+}
+
+/// The page's `ours-surya` reader from `surya collect`'s export, when the
+/// directory is given and the page has one.
+pub fn surya_reader(dir: Option<&Path>, doc_id: &str) -> anyhow::Result<Option<TextReader>> {
+    let Some(dir) = dir else {
+        return Ok(None);
+    };
+    let path = dir.join(crate::surya::collect::export_name(doc_id));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let reader: TextReader = serde_json::from_slice(&read(&path, MAX_TEXTS)?)
+        .with_context(|| format!("reading {}", path.display()))?;
+    anyhow::ensure!(
+        reader.name == crate::surya::collect::READER,
+        "{}: reader is {:?}, not {}",
+        path.display(),
+        reader.name,
+        crate::surya::collect::READER
+    );
+    Ok(Some(reader))
 }
 
 /// The unit's `texts.json`: LoC's text first, then the exported readers,
@@ -1332,6 +1362,7 @@ pub(crate) mod tests {
             root: tmp.path().join("root"),
             engine: j.engine.clone(),
             texts_dir,
+            surya_texts: None,
             scans_dir: Some(scans),
             places: tmp.path().join("places.txt"),
             function_words_dir: fw,
@@ -1371,6 +1402,58 @@ pub(crate) mod tests {
         // A second run stages nothing new.
         let s = run(&opts).await.unwrap();
         assert_eq!((s.staged, s.already), (0, 1));
+        // With surya collect's export and the reader named, the page's Surya
+        // text joins the unit as ours-surya, after the hand-off's readers.
+        let surya_dir = tmp.path().join("surya-texts");
+        std::fs::create_dir_all(&surya_dir).unwrap();
+        std::fs::write(
+            surya_dir.join(crate::surya::collect::export_name(doc_id)),
+            serde_json::to_vec(&TextReader {
+                alto: false,
+                name: crate::surya::collect::READER.into(),
+                regions: vec![],
+                source: "surya:whole:abc".into(),
+                text: "The mayor spoke to the council\n".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let with_surya = Options {
+            root: tmp.path().join("root-surya"),
+            surya_texts: Some(surya_dir.clone()),
+            readers: vec![
+                "loc".into(),
+                "as".into(),
+                "ours-tesseract".into(),
+                "ours-surya".into(),
+            ],
+            ..opts.clone()
+        };
+        let s = run(&with_surya).await.unwrap();
+        assert_eq!((s.staged, s.loc_only), (1, 0));
+        let unit = units(&with_surya.root).join(doc_id);
+        let texts: Texts =
+            serde_json::from_slice(&std::fs::read(unit.join(TEXTS_FILE)).unwrap()).unwrap();
+        let names: Vec<&str> = texts.readers.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["loc", "as", "ours-tesseract", "ours-surya"]);
+        let surya = texts.readers.last().unwrap();
+        assert_eq!(surya.source, "surya:whole:abc");
+        assert!(surya.text.contains("mayor"));
+        let job: Job =
+            serde_json::from_slice(&std::fs::read(unit.join(JOB_FILE)).unwrap()).unwrap();
+        assert_eq!(job.readers.len(), 4);
+        // Not named in --readers: left out, as any exported reader is.
+        let unnamed = Options {
+            root: tmp.path().join("root-unnamed"),
+            surya_texts: Some(surya_dir),
+            ..opts.clone()
+        };
+        run(&unnamed).await.unwrap();
+        let texts: Texts = serde_json::from_slice(
+            &std::fs::read(units(&unnamed.root).join(doc_id).join(TEXTS_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(texts.readers.len(), 3);
         // A page the scans lack would go to LoC; a language without a list stops first.
         let bad = Options {
             pages: vec!["probe:xxx:sn83045462_1890-05-04_ed-1_seq-1:dlc_abc_ver01"
@@ -1461,6 +1544,7 @@ pub(crate) mod tests {
             root: tmp.path().join("root"),
             engine: j.engine.clone(),
             texts_dir,
+            surya_texts: None,
             scans_dir: None,
             places: tmp.path().join("places.txt"),
             function_words_dir: fw,
@@ -1722,6 +1806,7 @@ pub(crate) mod tests {
             root: tmp.path().join("root"),
             engine: j.engine.clone(),
             texts_dir,
+            surya_texts: None,
             scans_dir: Some(scans),
             places: tmp.path().join("places.txt"),
             function_words_dir: fw,

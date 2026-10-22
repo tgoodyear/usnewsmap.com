@@ -50,6 +50,9 @@
 #                               (its USNM_SURYA_LLAMA_IMAGE and USNM_SURYA_WEIGHTS)
 #                               gets each page's IIIF JPEG from the scan archive, else from
 #                               tile.loc.gov through its batch, one request at a time, 5 s apart
+#   BRIDGE_STEP=surya-collect   SURYA_SPOOL=<assimilator results directory> [SURYA_MODES=whole,capped,tiled]
+#                               reads the canonical results and writes <campaign>/texts/<doc_id>.surya.json,
+#                               the page's text as the ours-surya reader for quality-stage (#968)
 #   BRIDGE_STEP=surya-stage-crops QUALITY_CAMPAIGN=<quality campaign> SURYA_ENGINE_IMAGE=...
 #                               SURYA_ENGINE_LLAMA=... SURYA_ENGINE_WEIGHTS=... [SURYA_MAX=50 pages]
 #                               [SURYA_TIMEOUT_SECS=600]: one unit per crop of every staged
@@ -69,11 +72,15 @@
 #                               [QUALITY_PAGES=group:lang:doc_id:batch[+batch...],...]
 #                               [QUALITY_SAMPLE=<path, default <campaign>/sample.jsonl>]
 #                               [QUALITY_GROUP=sample] [QUALITY_READERS=loc,as,ours-tesseract]
+#                               [SURYA_CAMPAIGN=<surya campaign>] (its texts/ from surya-collect join
+#                               each unit as ours-surya when QUALITY_READERS names it, #968)
 #                               [QUALITY_PLACES=<campaign>/places.txt]
 #                               QUALITY_ENGINE_IMAGE=sha256:... [QUALITY_MAX=100]
 #   BRIDGE_STEP=quality-submit  [QUALITY_MAX=500]
 #   BRIDGE_STEP=quality-collect QUALITY_SPOOL=<assimilator results directory>
 #                               [QWEN_CAMPAIGN=... QWEN_SPOOL=...]
+#                               [SURYA_CAMPAIGN=... SURYA_SPOOL=...] (crop units' texts join
+#                               crops.parquet as the reader surya, #968)
 #                               [QUALITY_CURATED_URL=...] (else writes <campaign>/out)
 #   BRIDGE_STEP=quality-summary writes <campaign>/summary.md from <project>/quality
 #   BRIDGE_STEP=qwen-stage      QUALITY_CAMPAIGN=<quality campaign>
@@ -296,6 +303,11 @@ case "$step" in
       --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
       --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" \
       --timeout-secs "${SURYA_TIMEOUT_SECS:-600}" --max-pages "${SURYA_MAX:-50}" ;;
+  surya-collect)
+    # No database or secrets: reads the assimilated results and writes the share.
+    [[ "${SURYA_MODES:-whole,capped,tiled}" =~ ^[a-z,]+$ ]] || fail "SURYA_MODES must be comma-separated modes"
+    exec usnm-boinc surya collect --root "$SURYA" --spool "${SURYA_SPOOL:?set SURYA_SPOOL}" \
+      --texts-dir "$SURYA/texts" --modes "${SURYA_MODES:-whole,capped,tiled}" ;;
   surya-summary)
     # No database or secrets: reads what the validator kept and writes the campaign's summary.
     usnm-boinc surya summary --root "$SURYA" --seen "$PROJ/surya/seen" --pairs "$PROJ/surya/pairs.jsonl" \
@@ -343,8 +355,13 @@ case "$step" in
     [[ "${QUALITY_READERS:-loc,as,ours-tesseract}" =~ ^[a-z0-9_,-]+$ ]] ||
       fail "QUALITY_READERS must be comma-separated reader names"
     [[ "${QUALITY_BUNDLE_SIZE:-300}" =~ ^[1-9][0-9]*$ ]] || fail "QUALITY_BUNDLE_SIZE must be a positive integer"
+    surya_args=()
+    if [ -n "${SURYA_CAMPAIGN:-}" ]; then
+      [[ "$SURYA_CAMPAIGN" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "SURYA_CAMPAIGN must be 1-41 of [a-z0-9-]"
+      surya_args=(--surya-texts "$SHARE_DIR/surya/$SURYA_CAMPAIGN/texts")
+    fi
     exec usnm-boinc quality stage "${page_args[@]}" --root "$QUALITY" \
-      --texts-dir "$QUALITY/texts" --scans-dir "${QUALITY_SCANS_DIR:-$QUALITY/texts}" \
+      --texts-dir "$QUALITY/texts" --scans-dir "${QUALITY_SCANS_DIR:-$QUALITY/texts}" "${surya_args[@]}" \
       --places "${QUALITY_PLACES:-$QUALITY/places.txt}" \
       --function-words-dir "$QUALITY/function-words" \
       --readers "${QUALITY_READERS:-loc,as,ours-tesseract}" \
@@ -360,11 +377,16 @@ case "$step" in
       qwen_root="$SHARE_DIR/qwen/$QWEN_CAMPAIGN"
       qwen_spool="${QWEN_SPOOL:?set QWEN_SPOOL}"
     fi
+    surya_args=()
+    if [ -n "${SURYA_CAMPAIGN:-}" ]; then
+      [[ "$SURYA_CAMPAIGN" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "SURYA_CAMPAIGN must be 1-41 of [a-z0-9-]"
+      surya_args=(--surya-root "$SHARE_DIR/surya/$SURYA_CAMPAIGN" --surya-spool "${SURYA_SPOOL:?set SURYA_SPOOL}")
+    fi
     out_args=(--out-dir "$QUALITY/out")
     [ -n "${QUALITY_CURATED_URL:-}" ] && out_args=(--curated-url "$QUALITY_CURATED_URL")
     exec usnm-boinc quality collect --campaign "$QUALITY_CAMPAIGN" --root "$QUALITY" \
       --spool "${QUALITY_SPOOL:?set QUALITY_SPOOL}" --qwen-root "$qwen_root" --qwen-spool "$qwen_spool" \
-      "${out_args[@]}" ;;
+      "${surya_args[@]}" "${out_args[@]}" ;;
   quality-summary)
     usnm-boinc quality summary --root "$QUALITY" --seen "$PROJ/quality/seen" --pairs "$PROJ/quality/pairs.jsonl" \
       | tee "$QUALITY/summary.md"
@@ -653,5 +675,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-submit, surya-collect, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
 esac

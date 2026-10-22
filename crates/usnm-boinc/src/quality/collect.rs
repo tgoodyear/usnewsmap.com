@@ -53,6 +53,8 @@ use usnm_ocr_quality::{align, crops, hat, report::round6};
 pub const OURS_FILE: &str = "ours.xml";
 /// The vision-language reader's name in the crop tables.
 pub const VLM: &str = "vlm";
+/// Surya's name in the crop tables, read from its crop units (#968).
+pub const SURYA: &str = crate::surya::collect::CROP_READER;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -63,6 +65,10 @@ pub struct Options {
     /// The `usnm_qwen` staging root and spool.
     pub qwen_root: PathBuf,
     pub qwen_spool: PathBuf,
+    /// The `usnm_surya` staging root and spool (#968): its crop units'
+    /// texts join `crops.parquet` as the reader `surya`.
+    pub surya_root: Option<PathBuf>,
+    pub surya_spool: Option<PathBuf>,
     /// A local directory instead of the curated store.
     pub out_dir: Option<PathBuf>,
     pub curated_url: Option<String>,
@@ -74,6 +80,8 @@ pub struct Summary {
     pub pages: usize,
     /// Of them, pages whose `usnm_qwen` readings are in too.
     pub with_readings: usize,
+    /// Of them, pages with at least one Surya crop text in.
+    pub with_surya: usize,
     /// Submitted units with no canonical result yet.
     pub pending: usize,
     /// Units BOINC gave up on.
@@ -122,6 +130,8 @@ pub struct CropInputs<'a> {
     pub readers: &'a [String],
     pub crops: &'a [Crop],
     pub readings: Option<&'a Readings>,
+    /// Surya's read of each crop, by crop id, from the crop units.
+    pub surya: Option<&'a BTreeMap<String, crate::surya::collect::CropText>>,
 }
 
 /// One reader's text in a crop box and the region of its text that
@@ -164,14 +174,26 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
                 region.and_then(|g| g.legibility.clone()),
             ));
         }
+        // Surya's read of the crop, from its crop unit, when it read it.
+        // Crop ids are ordinal (`c01`, ...), so the unit's box and stratum
+        // must be this crop's: a Surya campaign cut with another seed or
+        // ALTO is not joined.
+        let surya = inputs
+            .surya
+            .and_then(|m| m.get(crop.id.as_str()))
+            .filter(|c| c.rect == crop.rect && c.stratum == crop.stratum)
+            .filter(|c| !c.text.trim().is_empty());
         // The crop-level hat over the readers with text in the box, plus
-        // the vision-language reading.
+        // the vision-language reading and Surya's.
         let mut hat_members: Vec<(&str, &str)> = texts
             .iter()
             .filter_map(|(n, t, _, _, _)| t.as_deref().map(|t| (n.as_str(), t)))
             .collect();
         if let Some(v) = vlm {
             hat_members.push((VLM, &v.text));
+        }
+        if let Some(c) = surya {
+            hat_members.push((SURYA, &c.text));
         }
         let mut pairs = Vec::new();
         for i in 0..hat_members.len() {
@@ -235,6 +257,17 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
             row.cer_vs_vlm = Some(0.0);
             row.dice_vs_vlm = Some(1.0);
             row.hat_est_cer = est(VLM);
+            rows.push(row);
+        }
+        if let Some(c) = surya {
+            let mut row = base(SURYA.into());
+            row.text = Some(c.text.clone());
+            if let Some(v) = vlm {
+                let p = align::pair(&c.text, &v.text);
+                row.cer_vs_vlm = Some(round6(p.cer_a));
+                row.dice_vs_vlm = Some(round6(p.dice));
+            }
+            row.hat_est_cer = est(SURYA);
             rows.push(row);
         }
     }
@@ -687,7 +720,7 @@ fn opt(x: Option<f64>) -> String {
 
 /// The campaign in one Markdown table per reader, over the rows.
 pub fn summary_md(campaign: &str, s: &Summary, pages: &[PageRow], crops: &[CropRow]) -> String {
-    let mut out = format!("# Quality campaign {campaign}\n\nPages with a result: {}; with readings: {}; pending: {}; failed: {}.\n\n", s.pages, s.with_readings, s.pending, s.failed);
+    let mut out = format!("# Quality campaign {campaign}\n\nPages with a result: {}; with readings: {}; with Surya crops: {}; pending: {}; failed: {}.\n\n", s.pages, s.with_readings, s.with_surya, s.pending, s.failed);
     out.push_str("| Reader | Pages | Mean est. CER | Mean completeness | Mean precision | Mean findable content | Mean findable places |\n|---|---|---|---|---|---|---|\n");
     let mut readers: Vec<&str> = pages.iter().map(|r| r.reader.as_str()).collect();
     readers.sort_unstable();
@@ -814,6 +847,27 @@ fn qwen_pages(root: &Path, spool: &Path) -> anyhow::Result<BTreeMap<String, Qwen
     Ok(out)
 }
 
+/// The crops to join for a page: the `usnm_qwen` unit's when there is one,
+/// else, when Surya crop units exist, the recipe's cut from the page and
+/// ALTO with the quality job's seed and count (the same cut `stage-crops`
+/// made), so Surya's rows are not lost to a campaign without Qwen.
+fn crops_for_page(
+    q: Option<&QwenPage>,
+    surya: Option<&BTreeMap<String, crate::surya::collect::CropText>>,
+    page: &[u8],
+    alto: &[u8],
+    crop_seed: u64,
+    k_crops: u32,
+) -> anyhow::Result<Option<Vec<Crop>>> {
+    Ok(match (q, surya) {
+        (Some(q), _) => Some(q.crops.clone()),
+        (None, Some(s)) if !s.is_empty() => {
+            Some(crate::qwen::stage::cut(page, alto, crop_seed, k_crops)?)
+        }
+        (None, _) => None,
+    })
+}
+
 /// The three tables of a campaign, built from the roots and spools.
 pub struct Collected {
     pub summary: Summary,
@@ -826,6 +880,11 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     let mut pages = Vec::new();
     let mut crop_table = Vec::new();
     let qwen = qwen_pages(&opts.qwen_root, &opts.qwen_spool)?;
+    let surya = match (&opts.surya_root, &opts.surya_spool) {
+        (Some(root), Some(spool)) => crate::surya::collect::results(root, spool)?.crops,
+        (None, None) => BTreeMap::new(),
+        _ => anyhow::bail!("--surya-root and --surya-spool go together"),
+    };
     let dir = units(&opts.root);
     let mut unit_dirs: Vec<PathBuf> = if dir.exists() {
         std::fs::read_dir(&dir)?
@@ -862,6 +921,10 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             if readings.is_some() {
                 summary.with_readings += 1;
             }
+            let surya_crops = surya.get(&job.doc_id);
+            if surya_crops.is_some_and(|c| c.values().any(|t| !t.text.trim().is_empty())) {
+                summary.with_surya += 1;
+            }
             let texts_opt: Option<Texts> = read(&unit.join(TEXTS_FILE), MAX_TEXTS)
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok());
@@ -870,16 +933,20 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 enrich_rows_with_damage(&mut unit_rows, texts, None);
             }
             pages.extend(unit_rows);
-            if let Some(q) = q {
-                let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
+            let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
+            let alto_bytes = read(&unit.join(ALTO_FILE), MAX_ALTO)?;
+            if let Some(crops) = crops_for_page(
+                q,
+                surya_crops,
+                &page,
+                &alto_bytes,
+                job.crop_seed,
+                job.k_crops,
+            )? {
                 let (w, h) = image::load_from_memory(&page)
                     .with_context(|| format!("{wu}: page.jpg"))?
                     .dimensions();
-                let loc = parse_alto(
-                    &read(&unit.join(ALTO_FILE), MAX_ALTO)?,
-                    f64::from(w),
-                    f64::from(h),
-                )?;
+                let loc = parse_alto(&alto_bytes, f64::from(w), f64::from(h))?;
                 let ours = if unit.join(OURS_FILE).exists() {
                     Some(parse_alto(
                         &read(&unit.join(OURS_FILE), MAX_ALTO)?,
@@ -900,8 +967,9 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     ours: ours.as_ref(),
                     texts: &texts,
                     readers: &readers,
-                    crops: &q.crops,
+                    crops: &crops,
                     readings,
+                    surya: surya_crops,
                 }));
             }
         } else {
@@ -927,6 +995,10 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 if readings.is_some() {
                     summary.with_readings += 1;
                 }
+                let surya_crops = surya.get(&bp.doc_id);
+                if surya_crops.is_some_and(|c| c.values().any(|t| !t.text.trim().is_empty())) {
+                    summary.with_surya += 1;
+                }
                 let mut unit_rows = bundle_page_rows(
                     &job,
                     bp,
@@ -940,9 +1012,11 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     }
                 }
                 pages.extend(unit_rows);
-                if let Some(q) = q {
-                    let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
-                    let a_bytes = bp.inputs.alto.extract(&bundle_alto, "alto")?;
+                let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
+                let a_bytes = bp.inputs.alto.extract(&bundle_alto, "alto")?;
+                if let Some(crops) =
+                    crops_for_page(q, surya_crops, p_bytes, a_bytes, bp.crop_seed, bp.k_crops)?
+                {
                     let t_bytes = bp.inputs.texts.extract(&bundle_texts, "texts")?;
                     let (w, h) = image::load_from_memory(p_bytes)
                         .with_context(|| format!("{wu} ({}): page.jpg", bp.doc_id))?
@@ -966,8 +1040,9 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                         ours: ours.as_ref(),
                         texts: &texts,
                         readers: &readers,
-                        crops: &q.crops,
+                        crops: &crops,
                         readings,
+                        surya: surya_crops,
                     }));
                 }
             }
@@ -1116,6 +1191,7 @@ mod tests {
             readers: &readers,
             crops: &crops,
             readings: Some(&readings),
+            surya: None,
         });
         // Three readers plus the vision-language row per crop.
         assert_eq!(rows.len(), crops.len() * 4);
@@ -1140,11 +1216,142 @@ mod tests {
             readers: &readers,
             crops: &crops,
             readings: None,
+            surya: None,
         });
         assert_eq!(rows.len(), crops.len() * 3);
         assert!(rows.iter().all(|r| r.vlm_text.is_none()));
+        // Surya's crop texts join as a reader of their own, in the hat with
+        // LoC and the reading; a crop Surya did not read gets no row.
+        let mut surya = BTreeMap::new();
+        surya.insert(
+            crops[0].id.clone(),
+            crate::surya::collect::CropText {
+                job_id: "j".into(),
+                crop_id: crops[0].id.clone(),
+                rect: crops[0].rect,
+                stratum: crops[0].stratum.clone(),
+                outcome: usnm_ocr_contract::surya::Outcome::Ok,
+                device: "cpu".into(),
+                text: format!("{} extra", crops[0].loc_text),
+                plan_class: None,
+            },
+        );
+        let rows = crop_rows(&CropInputs {
+            doc_id: "p1",
+            loc: &loc,
+            ours: None,
+            texts: &l.texts,
+            readers: &readers,
+            crops: &crops,
+            readings: Some(&readings),
+            surya: Some(&surya),
+        });
+        assert_eq!(rows.len(), crops.len() * 4 + 1);
+        // The same id with another box (a campaign cut with another seed)
+        // is not this crop and gets no row.
+        let mut other = surya.clone();
+        other.get_mut(&crops[0].id).unwrap().rect[0] += 1;
+        let misaligned = crop_rows(&CropInputs {
+            doc_id: "p1",
+            loc: &loc,
+            ours: None,
+            texts: &l.texts,
+            readers: &readers,
+            crops: &crops,
+            readings: Some(&readings),
+            surya: Some(&other),
+        });
+        assert_eq!(misaligned.len(), crops.len() * 4);
+        assert!(misaligned.iter().all(|r| r.reader != SURYA));
+        let s_row = rows.iter().find(|r| r.reader == SURYA).unwrap();
+        assert_eq!(s_row.crop_id, crops[0].id);
+        assert!(s_row.text.as_deref().is_some_and(|t| t.ends_with(" extra")));
+        assert!(s_row.cer_vs_vlm.is_some_and(|c| c > 0.0));
+        // LoC, the reading and Surya: three members, so the hat solves.
+        assert_eq!(s_row.hat_readers, 3);
+        assert!(s_row.hat_est_cer.is_some());
+        let loc_row = rows
+            .iter()
+            .find(|r| r.reader == "loc" && r.crop_id == crops[0].id)
+            .unwrap();
+        assert_eq!(loc_row.hat_readers, 3);
         assert!(overlaps([0, 0, 10, 10], [5, 5, 20, 20]));
         assert!(!overlaps([0, 0, 10, 10], [10, 0, 20, 20]));
+    }
+
+    /// A campaign with Surya crop units and no Qwen unit still gets its
+    /// crop rows: the crops are cut with the quality job's recipe, Surya's
+    /// text is a reader among them, and nothing is compared with a reading.
+    #[tokio::test]
+    async fn surya_crop_rows_join_without_a_qwen_unit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let unit = units(&qroot).join("sn83045462_1890-05-03_ed-1_seq-1");
+        let job = crate::quality::work::tests::unit(&unit);
+        std::fs::write(unit.join("submitted"), b"").unwrap();
+        crate::quality::work::run(&unit).await.unwrap();
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir_all(&spool).unwrap();
+        for name in crate::quality::outputs() {
+            std::fs::copy(
+                unit.join(name),
+                spool.join(format!("{}__file_{name}", job.workunit())),
+            )
+            .unwrap();
+        }
+        let page = std::fs::read(unit.join(PAGE_FILE)).unwrap();
+        let alto = std::fs::read(unit.join(ALTO_FILE)).unwrap();
+        let crops = crate::qwen::stage::cut(&page, &alto, job.crop_seed, job.k_crops).unwrap();
+        assert!(!crops.is_empty());
+        let (sroot, sspool) = (tmp.path().join("surya"), tmp.path().join("surya-spool"));
+        let mut base = crate::surya::work::tests::job();
+        base.doc_id = job.doc_id.clone();
+        let cj = crate::surya::collect::tests::crop_job(
+            &base,
+            &crops[0].id,
+            crops[0].rect,
+            &crops[0].stratum,
+        );
+        crate::surya::collect::tests::unit_with_result(
+            &sroot,
+            &sspool,
+            &cj,
+            &[(
+                usnm_ocr_contract::surya::InputMode::Whole,
+                usnm_ocr_contract::surya::Outcome::Ok,
+                "Surya read this line\n",
+            )],
+        );
+        let c = collect(&Options {
+            campaign: "t".into(),
+            root: qroot,
+            spool,
+            qwen_root: tmp.path().join("no-qwen"),
+            qwen_spool: tmp.path().join("no-qwen"),
+            surya_root: Some(sroot),
+            surya_spool: Some(sspool),
+            out_dir: Some(tmp.path().join("out")),
+            curated_url: None,
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                c.summary.pages,
+                c.summary.with_readings,
+                c.summary.with_surya
+            ),
+            (1, 0, 1)
+        );
+        // Every reader of the job per crop, plus Surya's row on its crop.
+        assert_eq!(c.crops.len(), crops.len() * job.readers.len() + 1);
+        let s_row = c.crops.iter().find(|r| r.reader == SURYA).unwrap();
+        assert_eq!(s_row.crop_id, crops[0].id);
+        assert_eq!((s_row.x0, s_row.y1), (crops[0].rect[0], crops[0].rect[3]));
+        assert_eq!(s_row.text.as_deref(), Some("Surya read this line\n"));
+        assert!(s_row.vlm_text.is_none() && s_row.cer_vs_vlm.is_none());
+        // LoC and Surya have text in the box: two members, no estimate.
+        assert_eq!(s_row.hat_readers, 2);
+        assert!(c.crops.iter().all(|r| r.vlm_text.is_none()));
     }
 
     #[test]

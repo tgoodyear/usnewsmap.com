@@ -792,6 +792,21 @@ enum Surya {
         #[arg(long)]
         pairs: PathBuf,
     },
+    /// Read the campaign's canonical results from the assimilator's spool and export each page's
+    /// text as the ours-surya reader for `quality stage --surya-texts` (#968).
+    Collect {
+        #[arg(long)]
+        root: PathBuf,
+        /// The assimilator's results directory (<workunit>__file_<name>).
+        #[arg(long)]
+        spool: PathBuf,
+        /// Where <doc_id>.surya.json goes; omit to only count results.
+        #[arg(long)]
+        texts_dir: Option<PathBuf>,
+        /// Which mode's text stands for the page, first found wins.
+        #[arg(long, value_delimiter = ',', default_value = "whole,capped,tiled")]
+        modes: Vec<SuryaMode>,
+    },
 }
 #[derive(Subcommand)]
 enum Quality {
@@ -855,6 +870,10 @@ enum Quality {
         /// The hand-off job's texts/ export: one <doc_id>.json per page.
         #[arg(long)]
         texts_dir: PathBuf,
+        /// `surya collect`'s export (<doc_id>.surya.json): the page's Surya text joins the unit as
+        /// the reader ours-surya when --readers names it (#968).
+        #[arg(long)]
+        surya_texts: Option<PathBuf>,
         /// The hand-off container's scans/ (<doc_id>.jpg, <doc_id>.xml), read instead of LoC when present.
         #[arg(long)]
         scans_dir: Option<PathBuf>,
@@ -947,6 +966,12 @@ enum Quality {
         qwen_root: PathBuf,
         #[arg(long)]
         qwen_spool: PathBuf,
+        /// The usnm_surya staging root and spool: its crop units' texts join crops.parquet as the
+        /// reader `surya` (#968).
+        #[arg(long, requires = "surya_spool")]
+        surya_root: Option<PathBuf>,
+        #[arg(long, requires = "surya_root")]
+        surya_spool: Option<PathBuf>,
         /// A local directory instead of the curated store.
         #[arg(
             long,
@@ -1928,6 +1953,20 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
         Surya::Summary { root, seen, pairs } => {
             print!("{}", x::summary::run(&root, &seen, &pairs)?)
         }
+        Surya::Collect {
+            root,
+            spool,
+            texts_dir,
+            modes,
+        } => {
+            let s = x::collect::run(&x::collect::Options {
+                root,
+                spool,
+                texts_dir,
+                modes: modes.into_iter().map(Into::into).collect(),
+            })?;
+            eprintln!("{s:?}");
+        }
     }
     Ok(())
 }
@@ -1986,6 +2025,7 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
             root,
             engine_image,
             texts_dir,
+            surya_texts,
             scans_dir,
             places,
             function_words_dir,
@@ -2007,6 +2047,7 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
                     image: engine_image,
                 },
                 texts_dir,
+                surya_texts,
                 scans_dir,
                 places,
                 function_words_dir,
@@ -2074,6 +2115,8 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
             spool,
             qwen_root,
             qwen_spool,
+            surya_root,
+            surya_spool,
             out_dir,
             curated_url,
         } => {
@@ -2083,6 +2126,8 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
                 spool,
                 qwen_root,
                 qwen_spool,
+                surya_root,
+                surya_spool,
                 out_dir,
                 curated_url,
             })
