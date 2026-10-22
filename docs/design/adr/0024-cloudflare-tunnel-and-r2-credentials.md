@@ -41,8 +41,12 @@ Rules for all three:
 
 ## Consequences
 
-- Rotation is manual: a new token in Cloudflare, then the Key Vault secret. Expired or revoked
-  tokens fail closed (the tunnel stops serving; the relay gets 403).
+- Rotation is manual: a new token in Cloudflare, then the Key Vault secret. For the tunnel
+  token, the BOINC host's copy changes too. Run home-infra's `boinc-ct.sh --tunnel` (in
+  `scripts/lab/`, on the Proxmox host, with the new token in a root-only file): it rewrites the
+  container's environment file and restarts `cloudflared`. Revoke the old token only after
+  that, or the restarted connector can't reconnect. Expired or revoked tokens fail closed (the
+  tunnel stops serving; the relay gets 403).
 - The R2 relay token is temporary: delete it, the bucket's copy of the project and its secrets
   once the project storage accounts are gone (#942).
 - Moving serving on-prem (#955) would add tunnels under the same rules, with no new kind of credential.
