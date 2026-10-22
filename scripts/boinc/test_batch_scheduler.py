@@ -648,6 +648,48 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertEqual([(s, v["GOLD_MAX_HOSTS"]) for _, s, v in self.fake.steps],
                          [("gold-onboard", 3), ("gold-promote", 10), ("gold-promote", 10)])
 
+    def test_the_cap_is_the_status_aware_one_without_capacity_overrides(self):
+        # No watermarks, cohorts or max_global_pending: with per-app status the cap is the
+        # cohort-mode default (1000), not the OCR high target (4 here).
+        del self.config["max_global_pending"]
+        self.fake.other = 990
+        event = self.tick()
+        self.assertEqual(self.fake.steps[0][1], "gold-onboard")
+        self.assertEqual(self.fake.steps[0][2]["GOLD_MAX_HOSTS"], 10)
+        self.assertEqual(event["max_global_pending"], 1000)
+
+    def other_plan(self, number, stage):
+        row = record(f"sn87654321/1900-01-01/ed-1/seq-{number}", 1000 + number, stage)
+        row["plan"] = "another-plan"
+        self.fake.rows.append(row)
+
+    def test_room_leaves_out_recovered_reservations_and_other_plans_uncollected_work(self):
+        self.fake.other = 990
+        for number in range(1, 4):
+            self.other_plan(number, "reserved")  # recovered reservations, not on BOINC
+        for number in range(4, 6):
+            self.other_plan(number, "submitted")  # returned, not yet collected
+        self.tick()
+        self.assertEqual(self.fake.steps[0][2]["GOLD_MAX_HOSTS"], 5)
+        # Five more: no room for gold units; promotion still runs, with its own limit.
+        for number in range(6, 11):
+            self.other_plan(number, "reserved")
+        self.state = {}
+        self.fake.steps.clear()
+        event = self.tick(at=60)
+        self.assertEqual([(s, v["GOLD_MAX_HOSTS"]) for _, s, v in self.fake.steps],
+                         [("gold-promote", 10)])
+        self.assertEqual(event["gold_onboarding"][0]["steps"]["gold-onboard"], batch.GOLD_SKIPPED_AT_CAP)
+
+    def test_without_status_no_gold_units_are_issued(self):
+        def broken():
+            raise RuntimeError("server status fetch failed; inspect the endpoint privately")
+
+        self.fake.now = NOW
+        with self.assertRaisesRegex(RuntimeError, "server status"):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW, server_status=broken)
+        self.assertEqual([(s, v["GOLD_MAX_HOSTS"]) for _, s, v in self.fake.steps], [("gold-promote", 10)])
+
     def test_at_the_cap_only_promotion_runs(self):
         self.fake.other = 1000
         event = self.tick()

@@ -1197,6 +1197,18 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
     return runs, reserved
 
 
+def retained_backlog(config, records, owned, selected, pending_jobs):
+    """Work the global cap counts beyond BOINC's pending workunits: journals of any plan that
+    are neither finished nor pending on BOINC (uncollected results, recovered reservations),
+    and selected pages with no journal yet."""
+    uncollected = sum(
+        record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
+        for record in records
+    )
+    missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned]
+    return uncollected, missing
+
+
 def held_results(state, held_jobs, now):
     """Track since when each result has been held at collection (returned by BOINC, not
     published); returns the count and the oldest one's age in seconds."""
@@ -1260,12 +1272,21 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     # collect, which otherwise stops at the first result it must hold.
     gold_runs = []
     if not drain and config.get("gold_onboarding"):
-        cap = resolve_watermarks(config, snapshot, None, low_watermark=low_watermark,
-                                 high_watermark=high_watermark,
-                                 max_global_pending=max_global_pending)["max_global_pending"]
-        in_flight = max(snapshot["pending_workunits"], len(pending_jobs))
+        # The same cap and the same retained backlog the refill below counts, from the same
+        # status. Without status there is no room for gold units (promotion still runs); the
+        # status read after collection fails the tick as it always has.
+        try:
+            gold_status = _extract_status(snapshot, transport, server_status=server_status)
+            cap = resolve_watermarks(config, snapshot, gold_status, low_watermark=low_watermark,
+                                     high_watermark=high_watermark,
+                                     max_global_pending=max_global_pending)["max_global_pending"]
+            uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs)
+            room = cap - (max(snapshot["pending_workunits"], len(pending_jobs))
+                          + uncollected + len(missing))
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError):
+            room = 0
         gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
-                                              held=bool(held_jobs), room=cap - in_flight)
+                                              held=bool(held_jobs), room=room)
         # The gold units just issued are in flight too, for this tick's refill.
         snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
     to_collect = []
@@ -1305,11 +1326,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     cohort_mode = cohort_info["cohort_mode"]
     target = high_target
 
-    uncollected_not_pending = sum(
-        record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
-        for record in records
-    )
-    missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned]
+    uncollected_not_pending, missing = retained_backlog(config, records, owned, selected, pending_jobs)
     global_in_flight = max(snapshot["pending_workunits"], len(pending_jobs))
     has_ocr_attribution = status is not None and ocr_app in status["apps"]
     if has_ocr_attribution:

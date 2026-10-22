@@ -150,7 +150,10 @@ When a scope is due, the tick runs two bridge steps before it collects:
    knows that isn't trusted for the scope, the calibrated challenge and the
    worker image (`image`) gets one targeted gold unit, at most one outstanding
    per host and at most `max_hosts` new units per pass. Gold units count
-   against the global safety cap: a pass issues at most what the cap leaves
+   against the global safety cap, computed as the refill computes it (from
+   the same per-app status, and counting the same retained backlog:
+   uncollected journals of every plan, recovered reservations and selected
+   pages not yet exported). A pass issues at most what the cap leaves
    (shared across scopes), is skipped when nothing is left (`gold-promote` still runs, with the
    configured `max_hosts`), and the units it
    may have issued count as in flight for the tick's OCR refill. A failed unit
