@@ -3,6 +3,7 @@
 //! See `docs/design/` for the design these modules implement:
 //! - [`american_stories`]: American Stories' second text of a page (05 §5.5.4, #218)
 //! - [`ids`]: page keys and collision-free document ids (04 §4.2)
+//! - [`page_id`]: source-qualified page identifiers, `<source>:<local id>` (ADR-0026)
 //! - [`time`]: day numbers and time buckets (05 §5.5, §5.7)
 //! - [`text`]: text normalization shared by ingest and query parsing (04 §4.5)
 //! - [`common_grams`]: common-word pairs, so phrases skip common words' positions (05 §5.5.3)
@@ -36,6 +37,7 @@ pub mod lang;
 pub mod names;
 pub mod ocr_engine;
 pub mod ocr_variants;
+pub mod page_id;
 pub mod page_language;
 pub mod params;
 pub mod query;
