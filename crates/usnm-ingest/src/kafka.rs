@@ -502,9 +502,23 @@ impl Watch {
                         restarts = self.restarts + 1,
                         "Kafka: the index's checkpoint stood still; restarting the writer"
                     );
-                    r.restart()
-                        .await
-                        .context("restarting the writer for a stalled Kafka source")?;
+                    // Bounded: a replacement that accepts but never answers its
+                    // readiness check would otherwise hold the release forever.
+                    let deadline = self.restart_grace + Duration::from_secs(120);
+                    match tokio::time::timeout(deadline, r.restart()).await {
+                        Ok(done) => {
+                            done.context("restarting the writer for a stalled Kafka source")?
+                        }
+                        Err(_) => bail!(
+                            "restarting the writer for a stalled Kafka source took over {} s",
+                            deadline.as_secs()
+                        ),
+                    }
+                    // The lock may have gone during the restart's wait; failing
+                    // here stops the new writer with the release.
+                    if lost() {
+                        bail!("the writer lock could not be renewed during the writer's restart");
+                    }
                     self.restarts += 1;
                     self.awaiting = stalled.iter().copied().collect();
                     let now = Instant::now();
