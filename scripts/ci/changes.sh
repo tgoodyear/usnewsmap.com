@@ -185,6 +185,8 @@ image="$rust_files|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-imag
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
+# The queue job (usnm-store against PostgreSQL + pgmq) also runs for its schema and fixture (#967).
+rust="$rust|^scripts/onprem/queue/"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 # The OCR worker's EL9 build, RHEL 10 check and release, and the LAN dashboard's

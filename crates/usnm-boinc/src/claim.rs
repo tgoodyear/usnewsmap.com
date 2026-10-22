@@ -280,13 +280,12 @@ pub async fn pull(
     Ok(())
 }
 
-/// Put a message back for other receivers ([`Queue::release`]: on Azure a
-/// copy first and then the original goes; on pgmq the lease ends in place).
+/// Put a message back for other receivers ([`Queue::release`]: a copy goes to
+/// the back of the queue first, then the original goes; Azure and pgmq alike).
 async fn send_back(queue: &dyn Queue, msg: &Received) -> anyhow::Result<()> {
     match queue.release(msg).await {
         Ok(()) => Ok(()),
-        // Someone else holds or deleted it: on Azure the copy stands; on pgmq
-        // the message is already someone else's.
+        // Someone else holds or deleted the original; the copy stands.
         Err(e) if e.downcast_ref::<LeaseLost>().is_some() => Ok(()),
         Err(e) => Err(e),
     }

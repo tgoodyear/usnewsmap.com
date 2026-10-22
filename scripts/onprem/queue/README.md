@@ -19,17 +19,16 @@ pgmq names its tables after its queues, so the Azure names map with `-` turned
 into `_`: `ocr-priority`, `ocr-bulk` and `ocr-deadletter` are `ocr_priority`,
 `ocr_bulk` and `ocr_deadletter`.
 
-| Role              | May                                                                                      |
-| ----------------- | ---------------------------------------------------------------------------------------- |
-| `boinc_claim`     | Read (hide for a lease), release and delete on the work queues; send to `ocr_deadletter` |
-| `ingest_producer` | Send to every queue; read and delete `ocr_deadletter`                                    |
-| `dash_reader`     | Metrics and peek                                                                         |
+| Role              | May                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------- |
+| `boinc_claim`     | Read (hide for a lease), send and delete on the work queues; send to `ocr_deadletter` |
+| `ingest_producer` | Send to every queue; read and delete `ocr_deadletter`                                 |
+| `dash_reader`     | Metrics and peek                                                                      |
 
 Each role logs in only with a certificate whose CN is the role
 (`queue-ct.sh --issue-client --role <name>`), and none has a password. Tested
 on 2026-10-22: each role did what its row says and was refused the rest. A
-producer can't read, the claim role can't send to a work queue, and the
-dashboard can't read.
+producer can't read, and the dashboard can't read.
 
 ## Client side
 
@@ -41,10 +40,12 @@ postgres://usnm-queue.tjg.fyi/usnm_queue?user=boinc_claim&sslcert=<client.crt>&s
 ```
 
 - **Leases:** a received message's pop receipt is its visibility time.
-  `delete` and `release` act only while that lease is the current one, and
-  otherwise fail with `LeaseLost`.
-- **Release:** ends a lease in place, so another receiver can take the message
-  at once. That's why `boinc_claim` needs no send right on the work queues.
+  `delete` acts only while that lease is the current one, and otherwise fails
+  with `LeaseLost`.
+- **Release:** the trait's default: a copy is sent, then the original is
+  deleted. pgmq reads visible messages in `msg_id` order, so a message given
+  back in place would stay at the front and stop a scan there each time. The
+  copy goes to the back, as on Azure.
 - **Message text:** stored as a JSON string, so it comes back byte for byte.
 - **Testing:** set `USNM_TEST_PGMQ` to a location whose role may send, read,
   update and delete on `ocr_deadletter` to run the live round trip in

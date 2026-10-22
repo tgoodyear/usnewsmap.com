@@ -11,8 +11,9 @@
 -- pgmq's functions run with the caller's rights, so what each role may do is set by its
 -- grants on the queue tables. Every role logs in only with a client certificate whose CN is
 -- the role (pg_hba: hostssl ... cert); none has a password.
---   boinc_claim      the BOINC claim and collect steps: read (hide for a lease), set_vt (hand
---                    a page back or extend its lease), delete on the work queues; send to
+--   boinc_claim      the BOINC claim and collect steps: read (hide for a lease), delete and
+--                    send on the work queues (a page given back is sent again and the original
+--                    deleted, so it goes to the back: pgmq reads in msg_id order), and send to
 --                    ocr_deadletter.
 --   ingest_producer  the seeder and the enqueue and requeue steps: send to every queue; read
 --                    and delete ocr_deadletter (ocr-sync drains it).
@@ -43,9 +44,10 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON DATABASE usnm_queue FROM PUBLIC;
 
 -- boinc_claim: lease, hand back and finish pages on the work queues; dead-letter what can't be done.
-GRANT SELECT, UPDATE, DELETE ON pgmq.q_ocr_priority, pgmq.q_ocr_bulk TO boinc_claim;
+GRANT SELECT, INSERT, UPDATE, DELETE ON pgmq.q_ocr_priority, pgmq.q_ocr_bulk TO boinc_claim;
 GRANT SELECT, INSERT ON pgmq.q_ocr_deadletter TO boinc_claim;
-GRANT USAGE ON SEQUENCE pgmq.q_ocr_deadletter_msg_id_seq TO boinc_claim;
+GRANT USAGE ON SEQUENCE pgmq.q_ocr_priority_msg_id_seq, pgmq.q_ocr_bulk_msg_id_seq,
+  pgmq.q_ocr_deadletter_msg_id_seq TO boinc_claim;
 
 -- ingest_producer: add pages to every queue; drain the dead letters.
 GRANT SELECT, INSERT ON pgmq.q_ocr_priority, pgmq.q_ocr_bulk, pgmq.q_ocr_deadletter TO ingest_producer;

@@ -88,6 +88,31 @@ jobs:
       - run: cargo clippy -p usnm-core --all-targets --features damage --locked -- -D warnings
       - run: cargo test -p usnm-core --features damage --locked
 
+  # The OCR work queues in PostgreSQL + pgmq (#967): usnm-store's PgmqQueue against a real
+  # database set up like the queue container (TLS 1.3, client certificates, setup.sql, the
+  # role checks in test_roles.sql). USNM_TEST_PGMQ_REQUIRED fails the test if the fixture is missing.
+  queue:
+    name: queue (PostgreSQL + pgmq, live)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Start the queue fixture
+        run: |
+          location=$(scripts/onprem/queue/ci-fixture.sh --workdir "$RUNNER_TEMP/queue")
+          echo "USNM_TEST_PGMQ=$location" >> "$GITHUB_ENV"
+      - name: usnm-store's live queue test
+        env:
+          USNM_TEST_PGMQ_REQUIRED: '1'
+        run: cargo test -p usnm-store --locked pgmq
+
   # The hosting for the stock BOINC server (ADR-0019): shell scripts, XML
   # templates and Bicep. No Rust: the client and bridge are crates/usnm-boinc, whose changes also run this job.
   contrib-compute:
@@ -866,7 +891,7 @@ jobs:
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
     # Environment holds its own variables, written by scripts/bootstrap.sh.
-    needs: [changes, rust, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
+    needs: [changes, rust, queue, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.
     if: >-

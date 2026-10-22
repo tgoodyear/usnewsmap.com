@@ -20,7 +20,11 @@
 //! reorder its keys, and consumers hash the text). A received message's pop
 //! receipt is its visibility timestamp: [`Queue::delete`] removes it only
 //! while that lease is still the current one, and otherwise fails with
-//! [`LeaseLost`], as a stale Azure pop receipt does.
+//! [`LeaseLost`], as a stale Azure pop receipt does. [`Queue::release`] keeps
+//! the trait's default, a copy sent and then the original deleted: pgmq reads
+//! visible messages in `msg_id` order, so a message given back in place would
+//! stay at the front and stop a scan there each time (the copy goes to the back,
+//! as on Azure).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -259,26 +263,6 @@ impl Queue for PgmqQueue {
         Ok(())
     }
 
-    /// Ends the lease in place: the message is visible again at once and
-    /// keeps its read count. Fails with [`LeaseLost`] unless `msg`'s lease is
-    /// still the current one.
-    async fn release(&self, msg: &Received) -> anyhow::Result<()> {
-        let name = pg_name(&msg.queue)?;
-        let id: i64 = msg.id.parse().context("message id")?;
-        let client = self.client().await?;
-        let sql = format!(
-            "UPDATE pgmq.q_{name} SET vt = clock_timestamp() WHERE msg_id = $1 AND vt = $2::text::timestamptz"
-        );
-        let n = client
-            .execute(&sql, &[&id, &msg.pop_receipt])
-            .await
-            .with_context(|| format!("releasing {} on {name}", msg.id))?;
-        if n == 0 {
-            return Err(LeaseLost(msg.id.clone()).into());
-        }
-        Ok(())
-    }
-
     async fn approximate_count(&self, queue: &str) -> anyhow::Result<u64> {
         let name = pg_name(queue)?;
         let client = self.client().await?;
@@ -367,10 +351,16 @@ mod tests {
     }
 
     /// Against a real queue database: set USNM_TEST_PGMQ to a location whose
-    /// role may send, read and delete on `ocr_deadletter`.
+    /// role may send, read and delete on `ocr_deadletter` (CI's queue job uses
+    /// scripts/onprem/queue/ci-fixture.sh with ingest_producer).
     #[tokio::test]
     async fn round_trip_against_a_live_database() {
         let Ok(location) = std::env::var("USNM_TEST_PGMQ") else {
+            // CI's queue job sets USNM_TEST_PGMQ_REQUIRED, so a missing fixture fails there.
+            assert!(
+                std::env::var("USNM_TEST_PGMQ_REQUIRED").is_err(),
+                "USNM_TEST_PGMQ_REQUIRED is set but USNM_TEST_PGMQ isn't"
+            );
             return;
         };
         let q = PgmqQueue::new(&location).unwrap();
@@ -393,11 +383,11 @@ mod tests {
         }
         let m = got.expect("the sent message comes back");
         assert_eq!(m.dequeue_count, 1);
-        // A release ends the lease in place: the same message comes back at
-        // once, read twice; releasing it again is a lost lease.
+        // A release sends a copy to the back and deletes the original: the copy comes
+        // back with a new id, read once; releasing the original again is a lost lease.
         q.release(&m).await.unwrap();
         assert!(q
-            .release(&m)
+            .delete(&m)
             .await
             .unwrap_err()
             .downcast_ref::<LeaseLost>()
@@ -413,8 +403,10 @@ mod tests {
                 break;
             }
         }
-        let m = again.expect("the released message comes back");
-        assert_eq!(m.dequeue_count, 2);
+        let copy = again.expect("the released copy comes back");
+        assert_ne!(copy.id, m.id);
+        assert_eq!(copy.dequeue_count, 1);
+        let m = copy;
         let stale = Received {
             pop_receipt: "2000-01-01 00:00:00+00".into(),
             ..m.clone()
