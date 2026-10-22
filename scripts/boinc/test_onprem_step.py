@@ -134,6 +134,29 @@ class OnpremStep(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn("not a controller bridge-step input", done.stderr)
 
+    def test_ssh_gold_onboarding_takes_its_settings_and_never_a_threshold(self):
+        settings = ("--var GOLD_CAMPAIGN=v1-tess550 --var GOLD_LANGUAGE=eng --var GOLD_PROFILE=eng "
+                    "--var GOLD_ENGINE_IMAGE=sha256:a --var GOLD_ENGINE_BASE=base@sha256:b "
+                    "--var GOLD_ENGINE_VERSION=5.5.0 --var GOLD_MAX_HOSTS=10")
+        for step in ("gold-onboard", "gold-promote"):
+            with self.subTest(step=step):
+                done = self.run_step(ssh=f"--env prod --step {step} {settings} --what-if")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(f"BRIDGE_STEP={step}", done.stdout)
+        for command in (
+            "--env prod --step gold-promote --var GOLD_MAX_CER=1 --what-if",
+            "--env prod --step gold-promote --var GOLD_MANIFEST_SHA256=" + "a" * 64 + " --what-if",
+            "--env prod --step gold-onboard --var GOLD_TARGET_HOST=7 --what-if",
+            "--env prod --step gold-promote --var GOLD_SPOOL=/x --what-if",
+            "--env prod --step gold-trust --var GOLD_CAMPAIGN=c --what-if",
+            "--env prod --step gold-submit --var GOLD_CAMPAIGN=c --what-if",
+            "--env prod --step gold-onboard --var JOB_ID=" + "a" * 64 + " --what-if",
+        ):
+            with self.subTest(command=command):
+                done = self.run_step(ssh=command)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("not a controller bridge-step input", done.stderr)
+
     def test_ssh_arguments_are_split_without_a_shell(self):
         # A value with shell syntax stays one literal argument; nothing is evaluated.
         done = self.run_step(ssh="--env prod --step submit --var 'JOB_ID=$(touch /tmp/usnm-pwned); x' --what-if")

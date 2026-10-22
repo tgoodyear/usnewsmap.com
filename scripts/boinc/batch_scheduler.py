@@ -60,7 +60,20 @@ SURYA_REQUIRED = {"campaign", "quality_campaign", "engine_image", "engine_llama"
 OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
     "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
+    "gold_onboarding",
 }
+# Gold onboarding (#901): each tick, when due, the controller runs the bridge's gold-onboard
+# step (a gold unit for every untrusted host without one outstanding) and gold-promote (admit
+# the hosts whose complete native evidence passes the scope's existing calibration), so a new
+# host is calibrated before its first priority result is held at collection. Not part of the
+# allocation: its settings stay out of the config digest.
+GOLD_REQUIRED = {"campaign", "language", "profile", "engine_base"}
+GOLD_OPTIONAL = {"engine_version", "max_hosts", "interval_minutes"}
+GOLD_DEFAULT_INTERVAL_MINUTES = 60
+# While results are held at collection, a scope is retried at most this often.
+GOLD_HELD_INTERVAL_SECONDS = 600
+GOLD_STEPS = ("gold-onboard", "gold-promote")
+GOLD_SKIPPED_AT_CAP = "skipped: global safety cap"
 QUEUES = ("ocr-bulk", "ocr-priority")
 PAGE_KEY = re.compile(r"[A-Za-z0-9_-]+/\d{4}-\d{2}-\d{2}/ed-\d+/seq-\d+")
 
@@ -293,6 +306,28 @@ def _load_surya_config(config):
     return config
 
 
+def _validate_gold_onboarding(entries):
+    require(isinstance(entries, list) and 1 <= len(entries) <= 4, "gold_onboarding is a list of 1 to 4 scopes")
+    seen = set()
+    for entry in entries:
+        require(isinstance(entry, dict) and GOLD_REQUIRED <= set(entry) <= (GOLD_REQUIRED | GOLD_OPTIONAL),
+                "invalid gold_onboarding fields")
+        for key, pattern in (("campaign", r"[a-z0-9][a-z0-9-]{0,40}"), ("language", r"[a-z]{3}"),
+                             ("profile", r"[A-Za-z0-9_+-]{1,64}"),
+                             ("engine_base", r"[A-Za-z0-9._/:-]{1,180}@sha256:[0-9a-f]{64}"),
+                             ("engine_version", r"[0-9]{1,3}(\.[0-9]{1,3}){1,3}")):
+            if key in entry:
+                require(isinstance(entry[key], str) and re.fullmatch(pattern, entry[key]),
+                        f"invalid gold_onboarding {key}")
+        for key, low, high in (("max_hosts", 1, 100), ("interval_minutes", 10, 1440)):
+            if key in entry:
+                require(type(entry[key]) is int and low <= entry[key] <= high,
+                        f"gold_onboarding {key} is {low} to {high}")
+        scope = (entry["language"], entry["profile"])
+        require(scope not in seen, "one gold_onboarding entry per language and profile")
+        seen.add(scope)
+
+
 def load_config(path):
     config = json.loads(path.read_text())
     if isinstance(config, dict) and config.get("app") == SURYA_APP_NAME:
@@ -337,6 +372,8 @@ def load_config(path):
     if "server_status_url" in config:
         _validate_status_url(config["server_status_url"])
     _validate_commands(config, ("push_command", "step_command"))
+    if "gold_onboarding" in config:
+        _validate_gold_onboarding(config["gold_onboarding"])
     if queue:
         # BOINC is a second consumer of the work queues, beside the on-prem nodes
         # (docs/boinc-batch-scheduler.md#queue-fed-work). The page list is whatever it claims.
@@ -376,7 +413,9 @@ def load_config(path):
 
 
 def digest(config):
-    return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    # Gold onboarding settings are not allocation: turning it on or tuning it needs no migration.
+    allocation = {key: value for key, value in config.items() if key != "gold_onboarding"}
+    return hashlib.sha256(json.dumps(allocation, sort_keys=True).encode()).hexdigest()
 
 
 def save(path, state):
@@ -1100,6 +1139,87 @@ def with_timings(event, transport):
     return event
 
 
+def gold_scope(entry):
+    return f"{entry['campaign']}/{entry['language']}/{entry['profile']}"
+
+
+def gold_onboarding(config, state, transport, persist, now, *, held, room):
+    """Run each due gold_onboarding scope's gold-onboard and gold-promote bridge steps (#901).
+
+    A scope is due when its interval has passed since its last run, or GOLD_HELD_INTERVAL_SECONDS
+    while results are held at collection. The run is recorded before its steps start, so a
+    crash or a failing step waits for the next due time instead of retrying every tick. A failed
+    step is reported, never hidden, and doesn't stop the tick: collection then holds results
+    from uncalibrated hosts exactly as before.
+
+    Gold units count against the global safety cap: `room` is what the cap leaves, and each
+    gold-onboard pass may issue at most what is left of it. With none left gold-onboard is
+    skipped and gold-promote still runs. Returns the runs and the units they may have issued,
+    which the tick then counts as in flight before it refills OCR."""
+    record = state.setdefault("gold_onboarding", {})
+    runs = []
+    reserved = 0
+    for entry in config.get("gold_onboarding", ()):
+        scope = gold_scope(entry)
+        interval = entry.get("interval_minutes", GOLD_DEFAULT_INTERVAL_MINUTES) * 60
+        if held:
+            interval = min(interval, GOLD_HELD_INTERVAL_SECONDS)
+        last = record.get(scope, {}).get("at")
+        if isinstance(last, (int, float)) and 0 <= now - last < interval:
+            continue
+        variables = {
+            "GOLD_CAMPAIGN": entry["campaign"], "GOLD_LANGUAGE": entry["language"],
+            "GOLD_PROFILE": entry["profile"], "GOLD_ENGINE_IMAGE": config["image"],
+            "GOLD_ENGINE_BASE": entry["engine_base"],
+            "GOLD_ENGINE_VERSION": entry.get("engine_version", "5.5.0"),
+        }
+        issue = min(entry.get("max_hosts", 10), max(0, room - reserved))
+        run = {"at": int(now), "held": held, "max_hosts": issue, "steps": {}}
+        record[scope] = run
+        persist()
+        for step in GOLD_STEPS:
+            if step == "gold-onboard":
+                if issue < 1:
+                    run["steps"][step] = GOLD_SKIPPED_AT_CAP
+                    persist()
+                    continue
+                # Counted even if the step fails: it may have issued some units first.
+                reserved += issue
+            try:
+                # Promotion issues nothing; it always takes the configured positive limit.
+                limit = issue if step == "gold-onboard" else entry.get("max_hosts", 10)
+                transport.step("bridge", step, **variables, GOLD_MAX_HOSTS=limit)
+                run["steps"][step] = "ok"
+            except RuntimeError as error:
+                run["steps"][step] = str(error)
+            persist()
+        runs.append({"scope": scope, **run})
+    return runs, reserved
+
+
+def retained_backlog(config, records, owned, selected, pending_jobs):
+    """Work the global cap counts beyond BOINC's pending workunits: journals of any plan that
+    are neither finished nor pending on BOINC (uncollected results, recovered reservations),
+    and selected pages with no journal yet."""
+    uncollected = sum(
+        record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
+        for record in records
+    )
+    missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned]
+    return uncollected, missing
+
+
+def held_results(state, held_jobs, now):
+    """Track since when each result has been held at collection (returned by BOINC, not
+    published); returns the count and the oldest one's age in seconds."""
+    since = state.setdefault("held_since", {})
+    for job_id in [job_id for job_id in since if job_id not in held_jobs]:
+        del since[job_id]
+    for job_id in held_jobs:
+        since.setdefault(job_id, int(now))
+    return len(since), int(max((now - at for at in since.values()), default=0))
+
+
 def tick(config, state, transport, persist, now=None, *, drain=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None):
     if config.get("app") == SURYA_APP_NAME:
@@ -1144,7 +1264,31 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     selected = state.setdefault("selected", {})
     for page in owned:
         selected.setdefault(page, now)
+    held_jobs = {record["job"]["id"] for record in owned.values() if record["stage"] != "published"
+                 and server.get(record["job"]["id"], {}).get("spool")}
+    held_results(state, held_jobs, now)
     persist()
+    # Before collection: a host admitted now has its held results published by this tick's
+    # collect, which otherwise stops at the first result it must hold.
+    gold_runs = []
+    if not drain and config.get("gold_onboarding"):
+        # The same cap and the same retained backlog the refill below counts, from the same
+        # status. Without status there is no room for gold units (promotion still runs); the
+        # status read after collection fails the tick as it always has.
+        try:
+            gold_status = _extract_status(snapshot, transport, server_status=server_status)
+            cap = resolve_watermarks(config, snapshot, gold_status, low_watermark=low_watermark,
+                                     high_watermark=high_watermark,
+                                     max_global_pending=max_global_pending)["max_global_pending"]
+            uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs)
+            room = cap - (max(snapshot["pending_workunits"], len(pending_jobs))
+                          + uncollected + len(missing))
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError):
+            room = 0
+        gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
+                                              held=bool(held_jobs), room=room)
+        # The gold units just issued are in flight too, for this tick's refill.
+        snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
     to_collect = []
     for page, record in owned.items():
         job_id = record["job"]["id"]
@@ -1182,11 +1326,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     cohort_mode = cohort_info["cohort_mode"]
     target = high_target
 
-    uncollected_not_pending = sum(
-        record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
-        for record in records
-    )
-    missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned]
+    uncollected_not_pending, missing = retained_backlog(config, records, owned, selected, pending_jobs)
     global_in_flight = max(snapshot["pending_workunits"], len(pending_jobs))
     has_ocr_attribution = status is not None and ocr_app in status["apps"]
     if has_ocr_attribution:
@@ -1346,6 +1486,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         "refilled": submitted,
         "blocked_by": backpressure_reason,
     }] if starvation_alert else []
+    for run in gold_runs:
+        for step, outcome in run["steps"].items():
+            if outcome not in ("ok", GOLD_SKIPPED_AT_CAP):
+                alerts.append({"code": "gold_onboarding_failed", "scope": run["scope"], "step": step,
+                               "error": outcome})
+    held_count, oldest_held = held_results(state, {
+        record["job"]["id"] for record in owned.values() if record["stage"] != "published"
+        and server.get(record["job"]["id"], {}).get("spool")}, now)
 
     published = sum(record["stage"] == "published" for record in owned.values())
     previous = state.get("published", 0)
@@ -1358,6 +1506,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         "active_hosts": active_hosts, "target_pending": target,
         "observed_pending": pending, "selected": len(selected), "published": published,
         "collection_backlog": held,
+        "collection_held": held_count,
+        "oldest_held_seconds": oldest_held,
+        "gold_onboarding": gold_runs,
         "newly_published": max(0, published - previous),
         "pages_per_hour": round(published * 3600 / max(1, now - started), 3),
         "oldest_pending_seconds": int(max((now - at for page, at in selected.items()
@@ -1419,6 +1570,7 @@ def main(argv=None):
                         help="collect a tick's results in one hand-off execution (needs a hand-off image whose collect takes JOB_IDS)")
     args = parser.parse_args(argv)
     timings = None
+    state = None
     try:
         config = load_config(args.config)
         if args.low_watermark is not None or args.high_watermark is not None:
@@ -1509,6 +1661,14 @@ def main(argv=None):
         if timings is not None:
             # How far the tick got, and what that cost, before it failed.
             failure["timings"] = timings.summary()
+        if isinstance(state, dict) and isinstance(state.get("held_since"), dict):
+            # A tick that stops at a held result still says how many are held and for how long,
+            # and what the last gold onboarding runs did (#901).
+            now = time.time()
+            held = state["held_since"]
+            failure["collection_held"] = len(held)
+            failure["oldest_held_seconds"] = int(max((now - at for at in held.values()), default=0))
+            failure["gold_onboarding"] = state.get("gold_onboarding", {})
         print(json.dumps(failure), file=sys.stderr)
         return 1
 

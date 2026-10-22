@@ -28,6 +28,9 @@
 #                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_MAX_HOSTS=10]; one host-trust
 #                               onboard pass: a gold unit for each untrusted host without one
 #                               outstanding, and a fresh one after a failed unit
+#   BRIDGE_STEP=gold-promote    the same settings as gold-onboard; collects the onboarding units
+#                               and adds the hosts whose complete native evidence passes the
+#                               scope's calibration in gold/trust.json (#901); adds hosts only
 #   BRIDGE_STEP=gold-mirror-loc stages only the 18 locked v1 LoC JPEGs; no BLN or work creation
 #   BRIDGE_STEP=gold-collect    GOLD_SPOOL=<assimilator results directory>
 #                               GOLD_LANGUAGE=<calibration language> GOLD_PROFILE=<model profile>;
@@ -465,7 +468,7 @@ esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
   [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
-  [ "$step" != gold-onboard ] && [ "$step" != gold-collect ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ]; then
+  [ "$step" != gold-onboard ] && [ "$step" != gold-promote ] && [ "$step" != gold-collect ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -651,9 +654,12 @@ case "$step" in
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/gold"
     rm -f "$stamp"
     exit "$rc" ;;
-  gold-onboard)
-    # One bounded host-trust onboard pass: a targeted gold unit for each untrusted host
-    # without one outstanding, including hosts whose last unit failed (docs/notes/2026-10-16-boinc-host-trust-followups.md).
+  gold-onboard | gold-promote)
+    # gold-onboard: one bounded host-trust onboard pass, a targeted gold unit for each untrusted
+    # host without one outstanding, including hosts whose last unit failed
+    # (docs/notes/2026-10-16-boinc-host-trust-followups.md). gold-promote: collect those units
+    # and admit the hosts whose complete native evidence passes the scope's existing
+    # calibration in gold/trust.json (#901); it adds hosts only and never sets a threshold.
     [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
     write_mycnf
     controller="$SECRETS/host-trust.json"
@@ -671,6 +677,13 @@ case "$step" in
         scope:{language:$language, profile:$profile, psm:3, dpi:300},
         engine:{base:$base, dpi:300, image:$image, psm:3, timeout_secs:300, version:$version},
         max_hosts:$max, max_spots:1, sample_every:1}' > "$controller")
+    if [ "$step" = gold-promote ]; then
+      # The gold units' batch is 0, so their canonical results are in results/0. Not exec:
+      # the trap removes the database credentials afterwards.
+      rc=0
+      usnm-boinc host-trust promote --config "$controller" --spool "$PROJ/results/0" --execute || rc=$?
+      exit "$rc"
+    fi
     stamp="$(mktemp)"
     rc=0
     usnm-boinc host-trust onboard --config "$controller" --execute || rc=$?
@@ -700,5 +713,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-stage-gold, surya-submit, surya-collect, surya-gold-hyp, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-stage-gold, surya-submit, surya-collect, surya-gold-hyp, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-onboard, gold-promote, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
 esac
