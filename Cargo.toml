@@ -79,6 +79,7 @@ opentelemetry-http = { version = "0.33", default-features = false }
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 # JSON Schemas of the OCR engine contract (usnm-ocr-contract, 13 §13.4.8).
 schemars = "1"
+rustc-hash = "2"
 rskafka = { version = "0.6", default-features = false, features = ["compression-zstd"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

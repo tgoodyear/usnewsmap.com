@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::field::Empty;
@@ -1082,7 +1082,8 @@ impl Release {
                 unfinished_parts = source.unfinished_parts,
                 "American Stories' text"
             );
-            Some(source)
+            // Shared with the task that loads the next batch's text ahead.
+            Some(Arc::new(source))
         } else {
             None
         };
@@ -1188,7 +1189,7 @@ impl Release {
             };
             let added_latin = (latin_new.len() + replaced.len()) as u64;
             latin_after.pages.extend(replaced);
-            let stories_record = stories.as_ref().zip(stories_record.as_ref());
+            let stories_record = stories.as_deref().zip(stories_record.as_ref());
             // The pages the version holds with our OCR's text.
             let local_files = self
                 .ocr_local_files(
@@ -1667,7 +1668,7 @@ impl Release {
         scope: &[RunBatch],
         catalog: &Catalog,
         dedup: &Plan,
-        stories: Option<&american_stories::Source>,
+        stories: Option<&Arc<american_stories::Source>>,
         latin: &[(&ocr_ja::JaPage, String)],
         latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
         latin_owned: &HashMap<String, String>,
@@ -1745,7 +1746,27 @@ impl Release {
         // Our OCR from `ocr-local` weighed and given in place of LoC's (Step 9).
         let mut local_tally = ocr_local::replace::Tally::default();
         let mut local_replaced: LocalReplaced = Vec::new();
-        for b in scope {
+        // The next batch's American Stories text and curated parts download
+        // while this one is built (they're the release's network reads); one
+        // batch ahead, so two batches' downloads are held at most.
+        let fetch_ahead = |b: &RunBatch| {
+            Prefetch(tokio::spawn(prefetch_batch(
+                Arc::clone(&self.curated),
+                stories.cloned(),
+                b.clone(),
+            )))
+        };
+        let mut ahead = scope.first().map(fetch_ahead);
+        for (i, b) in scope.iter().enumerate() {
+            let current = ahead.take().context("no prefetch for the batch")?;
+            ahead = scope.get(i + 1).map(fetch_ahead);
+            let t_fetch = std::time::Instant::now();
+            lease.check()?;
+            let Prefetched {
+                stories: loaded_stories,
+                parts,
+            } = current.join().await?;
+            let mut fetch_secs = t_fetch.elapsed().as_secs_f64();
             // This batch's titles' readings of ours, dropped after the batch.
             let mine = match local {
                 Some(l)
@@ -1774,11 +1795,8 @@ impl Release {
                 _ => ocr_local::replace::Loaded::default(),
             };
             // This batch's American Stories texts, dropped after the batch.
-            let texts = match stories {
-                Some(source) => {
-                    lease.check()?;
-                    let counts = dedup::load_counts(self.curated.as_ref(), b).await?;
-                    let loaded = source.load(self.curated.as_ref(), &counts).await?;
+            let texts = match loaded_stories {
+                Some(loaded) => {
                     tracing::info!(
                         batch = %b.batch,
                         pages = loaded.texts.len(),
@@ -1799,7 +1817,6 @@ impl Release {
             // built: the documents and everything recorded about them come
             // out in part order, as when one thread read them, and only one
             // part's documents are held at a time.
-            let curated = self.curated.as_ref();
             let ctx = PartContext {
                 batch: b,
                 dedup,
@@ -1812,28 +1829,39 @@ impl Release {
                 format,
                 page_language: moves.is_some(),
             };
-            let mut fetched = stream::iter(&b.curated.parts)
-                .map(|path| async move {
-                    let bytes = curated
-                        .get(path)
-                        .await?
-                        .with_context(|| format!("curated part `{path}` is missing"))?;
-                    Ok::<_, anyhow::Error>((path, bytes::Bytes::from(bytes)))
-                })
-                .buffered(CURATED_PREFETCH);
-            let (mut fetch_secs, mut build_secs, mut lang_secs, mut add_secs) =
-                (0f64, 0f64, 0f64, 0f64);
+            let (mut build_secs, mut lang_secs, mut add_secs) = (0f64, 0f64, 0f64);
             let wait_before = order.as_ref().map_or(0.0, |o| o.queue_wait_secs());
-            loop {
-                let t_fetch = std::time::Instant::now();
-                let Some(next) = fetched.next().await else {
-                    break;
-                };
-                fetch_secs += t_fetch.elapsed().as_secs_f64();
-                let (path, bytes) = next?;
+            // The parts past the prefetch's limit, downloading a few at once
+            // from the start of this batch, in order (`RestParts`).
+            let deferred: Vec<String> = parts
+                .iter()
+                .filter(|(_, b)| b.is_none())
+                .map(|(p, _)| p.clone())
+                .collect();
+            let mut rest = (!deferred.is_empty())
+                .then(|| RestParts::start(Arc::clone(&self.curated), deferred));
+            for (path, bytes) in parts {
                 lease.check()?;
+                let bytes = match bytes {
+                    Some(bytes) => bytes,
+                    None => {
+                        let t = std::time::Instant::now();
+                        let (got, bytes) = rest
+                            .as_mut()
+                            .context("no download for the batch's remaining parts")?
+                            .next()
+                            .await?;
+                        if got != path {
+                            bail!("curated part `{got}` came in place of `{path}`");
+                        }
+                        fetch_secs += t.elapsed().as_secs_f64();
+                        // The lock may have gone while the part downloaded.
+                        lease.check()?;
+                        bytes
+                    }
+                };
                 let t_build = std::time::Instant::now();
-                let part = build_part_blocking(&ctx, path, &bytes)?;
+                let part = build_part_blocking(&ctx, &path, &bytes)?;
                 drop(bytes);
                 build_secs += t_build.elapsed().as_secs_f64();
                 let PartDocs {
@@ -2725,6 +2753,144 @@ async fn drain(
     }
 }
 
+/// A batch's downloads, made ahead of its turn (`build_index`).
+struct Prefetched {
+    stories: Option<american_stories::Batch>,
+    /// Every part in order, with its bytes if the prefetch got to it.
+    parts: Vec<(String, Option<bytes::Bytes>)>,
+}
+
+/// The task loading a batch's downloads, aborted when dropped (a release
+/// that stops leaves nothing downloading).
+struct Prefetch(tokio::task::JoinHandle<anyhow::Result<Prefetched>>);
+
+impl Prefetch {
+    async fn join(mut self) -> anyhow::Result<Prefetched> {
+        (&mut self.0).await.context("the batch prefetch task")?
+    }
+}
+
+impl Drop for Prefetch {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The curated parts a batch's prefetch holds at most, in bytes: past it,
+/// the rest of the batch's parts download when the batch starts
+/// ([`RestParts`]), so a large batch can't make two batches' parts sit in
+/// memory at once.
+const PREFETCH_PART_BYTES: usize = 512 * 1024 * 1024;
+
+/// `b`'s American Stories text and curated parts, the parts a few at once,
+/// up to [`PREFETCH_PART_BYTES`]; the parts not fetched yet are left as
+/// `None`, in order.
+async fn prefetch_batch(
+    curated: Arc<dyn ObjectStore>,
+    stories: Option<Arc<american_stories::Source>>,
+    b: RunBatch,
+) -> anyhow::Result<Prefetched> {
+    let stories = match stories {
+        Some(source) => {
+            let counts = dedup::load_counts(curated.as_ref(), &b).await?;
+            Some(source.load(curated.as_ref(), &counts).await?)
+        }
+        None => None,
+    };
+    let store = curated.as_ref();
+    let fetched = stream::iter(b.curated.parts.iter().cloned())
+        .map(|path| async move {
+            let bytes = fetch_part(store, &path).await?;
+            Ok::<_, anyhow::Error>((path, bytes))
+        })
+        .buffered(CURATED_PREFETCH);
+    let parts = held_parts(fetched, &b.curated.parts, PREFETCH_PART_BYTES).await?;
+    Ok(Prefetched { stories, parts })
+}
+
+/// `paths` in order, each with its bytes from `fetched` (the same order)
+/// until `limit` bytes are held, the rest `None`. Stopping drops the
+/// downloads under way; those parts are fetched again in their turn.
+async fn held_parts<S>(
+    fetched: S,
+    paths: &[String],
+    limit: usize,
+) -> anyhow::Result<Vec<(String, Option<bytes::Bytes>)>>
+where
+    S: futures::Stream<Item = anyhow::Result<(String, bytes::Bytes)>>,
+{
+    let mut fetched = std::pin::pin!(fetched);
+    let mut parts = Vec::with_capacity(paths.len());
+    let mut held = 0usize;
+    while held < limit {
+        match fetched.try_next().await? {
+            Some((path, bytes)) => {
+                held += bytes.len();
+                parts.push((path, Some(bytes)));
+            }
+            None => break,
+        }
+    }
+    for path in paths.iter().skip(parts.len()) {
+        parts.push((path.clone(), None));
+    }
+    Ok(parts)
+}
+
+/// A batch's parts past the prefetch's limit ([`held_parts`]), downloaded
+/// [`CURATED_PREFETCH`] at a time by a task of their own while the batch's
+/// earlier parts are built, and handed over in order through a channel that
+/// holds as many: at most twice [`CURATED_PREFETCH`] parts are in memory.
+/// Dropping it stops the downloads.
+struct RestParts {
+    rx: tokio::sync::mpsc::Receiver<anyhow::Result<(String, bytes::Bytes)>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl RestParts {
+    fn start(curated: Arc<dyn ObjectStore>, paths: Vec<String>) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(CURATED_PREFETCH);
+        let task = tokio::spawn(async move {
+            let store = curated.as_ref();
+            let mut fetched = stream::iter(paths)
+                .map(|path| async move {
+                    let bytes = fetch_part(store, &path).await?;
+                    Ok::<_, anyhow::Error>((path, bytes))
+                })
+                .buffered(CURATED_PREFETCH);
+            while let Some(r) = fetched.next().await {
+                let failed = r.is_err();
+                if tx.send(r).await.is_err() || failed {
+                    break;
+                }
+            }
+        });
+        Self { rx, task }
+    }
+
+    async fn next(&mut self) -> anyhow::Result<(String, bytes::Bytes)> {
+        self.rx
+            .recv()
+            .await
+            .context("the remaining parts' download stopped")?
+    }
+}
+
+impl Drop for RestParts {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// One curated part.
+async fn fetch_part(store: &dyn ObjectStore, path: &str) -> anyhow::Result<bytes::Bytes> {
+    let bytes = store
+        .get(path)
+        .await?
+        .with_context(|| format!("curated part `{path}` is missing"))?;
+    Ok(bytes::Bytes::from(bytes))
+}
+
 /// What reading one curated part needs, all read-only.
 struct PartContext<'a> {
     batch: &'a RunBatch,
@@ -3077,6 +3243,71 @@ mod tests {
             },
             text: text.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn the_remaining_parts_arrive_in_order_and_a_missing_one_stops_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(usnm_store::local::LocalStore::new(dir.path()));
+        let paths: Vec<String> = (0..20)
+            .map(|i| format!("pages/b/p{i:02}.parquet"))
+            .collect();
+        for (i, p) in paths.iter().enumerate() {
+            store
+                .put(p, vec![i as u8; 3], "application/octet-stream")
+                .await
+                .unwrap();
+        }
+        let mut rest = RestParts::start(Arc::clone(&store), paths.clone());
+        for (i, p) in paths.iter().enumerate() {
+            let (got, bytes) = rest.next().await.unwrap();
+            assert_eq!((&got, bytes.as_ref()), (p, &[i as u8; 3][..]));
+        }
+        assert!(rest.next().await.is_err(), "nothing after the last part");
+        let mut missing = paths[..3].to_vec();
+        missing.insert(1, "pages/b/gone.parquet".into());
+        let mut rest = RestParts::start(store, missing);
+        assert_eq!(rest.next().await.unwrap().0, paths[0]);
+        let err = rest.next().await.unwrap_err().to_string();
+        assert!(err.contains("gone.parquet"), "{err}");
+        assert!(
+            rest.next().await.is_err(),
+            "the downloads stop at the first failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prefetch_holds_parts_up_to_its_limit_and_leaves_the_rest_in_order() {
+        let paths: Vec<String> = (0..5).map(|i| format!("p{i}")).collect();
+        let fetched = |paths: Vec<String>| {
+            stream::iter(
+                paths
+                    .into_iter()
+                    .map(|p| Ok((p, bytes::Bytes::from(vec![0u8; 10])))),
+            )
+        };
+        let parts = held_parts(fetched(paths.clone()), &paths, 25)
+            .await
+            .unwrap();
+        let got: Vec<(&str, bool)> = parts
+            .iter()
+            .map(|(p, b)| (p.as_str(), b.is_some()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("p0", true),
+                ("p1", true),
+                ("p2", true),
+                ("p3", false),
+                ("p4", false)
+            ]
+        );
+        let all = held_parts(fetched(paths.clone()), &paths, usize::MAX)
+            .await
+            .unwrap();
+        assert!(all.iter().all(|(_, b)| b.is_some()));
+        assert_eq!(all.len(), 5);
     }
 
     #[test]

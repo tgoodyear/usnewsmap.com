@@ -17,6 +17,7 @@ caseless.workspace = true
 chrono.workspace = true
 form_urlencoded.workspace = true
 httpdate.workspace = true
+rustc-hash.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2.workspace = true
