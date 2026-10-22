@@ -68,13 +68,27 @@ pub trait Queue: Send + Sync + std::fmt::Debug {
         let _ = (queue, n);
         bail!("this queue can't peek")
     }
+    /// Give a held message back so another receiver can take it now. By
+    /// default a copy goes in first and then the original is deleted, so the
+    /// copy starts again at a dequeue count of zero; if the original is no
+    /// longer held, the delete fails with [`LeaseLost`] and the copy stands.
+    /// A queue that can end a lease in place (pgmq: its visibility time set
+    /// to now) does that instead, keeping the message and its count, and
+    /// fails with [`LeaseLost`] if the lease isn't the current one.
+    async fn release(&self, msg: &Received) -> anyhow::Result<()> {
+        self.send(&msg.queue, &msg.text).await?;
+        self.delete(msg).await
+    }
 }
 
 /// Open a queue service: an `https://{account}.queue.core.windows.net` URL
-/// uses Azure Storage Queues with the ambient Entra credential; anything
-/// else is a local directory.
+/// uses Azure Storage Queues with the ambient Entra credential; a
+/// `postgres://` URL uses PostgreSQL with pgmq and a client certificate
+/// ([`crate::pgmq`], #967); anything else is a local directory.
 pub fn open(location: &str) -> anyhow::Result<Arc<dyn Queue>> {
-    if location.starts_with("https://") || location.starts_with("http://") {
+    if location.starts_with("postgres://") || location.starts_with("postgresql://") {
+        Ok(Arc::new(crate::pgmq::PgmqQueue::new(location)?))
+    } else if location.starts_with("https://") || location.starts_with("http://") {
         Ok(Arc::new(AzureQueue::new(
             location,
             crate::credential::from_env(),
