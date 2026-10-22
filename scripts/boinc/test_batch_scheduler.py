@@ -891,6 +891,139 @@ class BatchedStepsTests(unittest.TestCase):
                          (True, False, True))
 
 
+class Ticker:
+    """A clock and a CPU counter for Timings that move only when told to."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.used = 0.0
+
+    def clock(self):
+        return self.now
+
+    def cpu(self):
+        return self.used
+
+    def timings(self, report=None):
+        return batch.Timings(report=report, clock=self.clock, cpu=self.cpu)
+
+
+class TimingsTests(unittest.TestCase):
+    """#902: a tick's line says where its wall time and CPU went."""
+
+    J1, J2 = "a" * 64, "b" * 64
+    S1, S2 = "/project/usnmocr/results/1", "/project/usnmocr/results/2"
+
+    def test_phases_add_up_and_report_as_they_end(self):
+        ticker, lines = Ticker(), []
+        timings = ticker.timings(report=lines.append)
+        for seconds in (30, 40):
+            with timings.phase("collect"):
+                ticker.now += seconds
+                ticker.used += 2
+                timings.command("handoff/collect", seconds, 2, True)
+        with self.assertRaises(RuntimeError), timings.phase("export"):
+            ticker.now += 5
+            timings.command("handoff/export", 5, 1, False)
+            raise RuntimeError("handoff/export failed")
+        summary = timings.summary()
+        self.assertEqual(summary["tick_seconds"], 75)
+        self.assertEqual(summary["cpu_seconds"], 4)
+        self.assertEqual(summary["phases"]["collect"],
+                         {"count": 2, "failed": 0, "seconds": 70, "cpu_seconds": 4})
+        self.assertEqual(summary["phases"]["export"]["failed"], 1)
+        self.assertEqual(summary["commands"]["handoff/collect"]["count"], 2)
+        self.assertEqual(summary["commands"]["handoff/export"]["failed"], 1)
+        self.assertEqual([(line["event"], line["phase"], line["ok"], line["seconds"], line["commands"])
+                          for line in lines],
+                         [("boinc_batch_phase", "collect", True, 30, 1),
+                          ("boinc_batch_phase", "collect", True, 40, 1),
+                          ("boinc_batch_phase", "export", False, 5, 1)])
+        # The summary is a copy: a later phase doesn't change a line already printed.
+        summary["phases"]["collect"]["count"] = 99
+        self.assertEqual(timings.summary()["phases"]["collect"]["count"], 2)
+
+    def test_transport_counts_each_command_and_the_outer_phase_once(self):
+        ticker = Ticker()
+        t = batch.Transport(queue_config(), Path("."), timings=ticker.timings())
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            ticker.now += 70
+            ticker.used += 3
+            failed = "handoff" in argv and f"JOB_ID={self.J2}" in argv
+            return subprocess.CompletedProcess(argv, 1 if failed else 0, "", "")
+
+        with patch.object(batch.subprocess, "run", side_effect=run), \
+                self.assertRaisesRegex(RuntimeError, "handoff/collect"):
+            t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)])
+        summary = t.timings.summary()
+        # Off: spool-out then collect per job, stopping at J2's failed collect. The nested
+        # per-job collect() calls belong to the one collect phase.
+        self.assertEqual(summary["phases"], {"collect": {"count": 1, "failed": 1, "seconds": 280,
+                                                         "cpu_seconds": 12}})
+        self.assertEqual(summary["commands"], {
+            "bridge/spool-out": {"count": 2, "failed": 0, "seconds": 140, "cpu_seconds": 6},
+            "handoff/collect": {"count": 2, "failed": 1, "seconds": 140, "cpu_seconds": 6},
+        })
+
+    def test_storage_calls_go_by_their_az_verb(self):
+        ticker = Ticker()
+        t = batch.Transport(queue_config(), Path("."), timings=ticker.timings())
+        with patch.object(batch.subprocess, "run",
+                          side_effect=lambda argv, **k: subprocess.CompletedProcess(argv, 0, "true", "")):
+            with t.lock():
+                pass
+        summary = t.timings.summary()
+        self.assertEqual({kind: entry["count"] for kind, entry in summary["commands"].items()},
+                         {"storage exists": 1, "storage lease": 2})
+        self.assertEqual(set(summary["phases"]), {"lock", "unlock"})
+
+    def test_a_command_that_cannot_start_is_counted_as_failed(self):
+        t = batch.Transport(queue_config(), Path("."), timings=Ticker().timings())
+        with patch.object(batch.subprocess, "run", side_effect=OSError("no az")), \
+                self.assertRaisesRegex(RuntimeError, "hand-off storage"):
+            t.az("exists", "--name", "x")
+        self.assertEqual(t.timings.summary()["commands"]["storage exists"]["failed"], 1)
+
+    def test_the_tick_line_carries_the_timings(self):
+        fake = Fake()
+        self.assertNotIn("timings", batch.tick(config(), {}, fake, lambda: None, NOW))
+        fake = Fake()
+        fake.timings = Ticker().timings()
+        fake.timings.command("handoff/export", 50, 1, True)
+        event = batch.tick(config(), {}, fake, lambda: None, NOW)
+        self.assertEqual(event["timings"]["commands"]["handoff/export"]["count"], 1)
+
+    def test_main_prints_phases_and_a_failed_tick_says_how_far_it_got(self):
+        class Failing:
+            def __init__(self, timings):
+                self.timings = timings
+
+            @contextlib.contextmanager
+            def lock(self):
+                with self.timings.phase("collect"):
+                    self.timings.command("handoff/collect", 70, 3, False)
+                    raise RuntimeError("handoff/collect failed; inspect the execution privately before retrying")
+                yield
+
+        with patch.object(batch, "load_config", return_value=queue_config()), \
+                patch.object(batch, "Transport", side_effect=lambda *a, **k: Failing(k["timings"])), \
+                patch.object(batch, "digest", return_value="x"), \
+                tempfile.TemporaryDirectory() as d:
+            (Path(d) / "state.json").write_text(json.dumps({"config_sha256": "x"}))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(batch.main(["--config", "c.json", "--state-dir", d, "--apply"]), 1)
+        phase, failure = [json.loads(line) for line in err.getvalue().splitlines()]
+        self.assertEqual((phase["event"], phase["phase"], phase["ok"], phase["commands"]),
+                         ("boinc_batch_phase", "collect", False, 1))
+        self.assertEqual(failure["event"], "boinc_batch_failure")
+        self.assertIn("handoff/collect failed", failure["error"])
+        self.assertEqual(failure["timings"]["commands"]["handoff/collect"]["failed"], 1)
+
+
 class QueueTransportTests(unittest.TestCase):
     def setUp(self):
         self.config = queue_config()
@@ -1342,7 +1475,8 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
                 ]), 0)
             self.assertEqual(mock_tick.call_args.kwargs["max_global_pending"], 800)
             transport_arg = mock_tick.call_args.args[2]
-            self.assertEqual(transport_arg.server_status()["apps"]["usnm_qwen"]["unsent"], 456)
+            with contextlib.redirect_stderr(io.StringIO()):  # its timings report the status phase
+                self.assertEqual(transport_arg.server_status()["apps"]["usnm_qwen"]["unsent"], 456)
         finally:
             for item in directory.iterdir():
                 item.unlink()
