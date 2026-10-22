@@ -63,11 +63,14 @@ docker run -d --name "$NAME" -p "127.0.0.1:$PORT:5432" -e POSTGRES_HOST_AUTH_MET
     exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/certs/server.crt \
       -c ssl_key_file=/tmp/certs/server.key -c ssl_ca_file=/tmp/certs/ca.pem \
       -c ssl_min_protocol_version=TLSv1.3 -c hba_file=/tmp/certs/pg_hba.conf' > /dev/null
+# Over TCP: the image's entrypoint first runs a temporary server for initialisation with
+# listen_addresses='' (socket only), then stops it and starts the real one. A socket probe can
+# pass against the temporary server and race that restart.
 for _ in $(seq 60); do
-  docker exec "$NAME" pg_isready -U postgres -q 2> /dev/null && break
+  docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres -q 2> /dev/null && break
   sleep 1
 done
-docker exec "$NAME" pg_isready -U postgres -q || { docker logs "$NAME" >&2; die "PostgreSQL didn't start"; }
+docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres -q || { docker logs "$NAME" >&2; die "PostgreSQL didn't start"; }
 psql_admin() { docker exec -i "$NAME" psql -q -v ON_ERROR_STOP=1 -U postgres "$@"; }
 psql_admin -c 'CREATE DATABASE usnm_queue'
 psql_admin -d usnm_queue -c 'CREATE EXTENSION pgmq'
