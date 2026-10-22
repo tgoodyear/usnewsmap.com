@@ -219,7 +219,9 @@ The output must be byte for byte what the runner would make, so the script runs 
 Pillow 11.3.0 from the same pinned wheel as the bridge image
 (`contrib-compute/images/bridge/Containerfile`). It checks each master against its fetcher
 sidecar, never replaces a blob (one there with another size stops the run), and lists done
-pages in `/var/lib/usnm-quality-jpeg-cache/done.txt`. `usnm-quality-jpeg-cache.service`
+pages in `/var/lib/usnm-quality-jpeg-cache/done.txt`. The exchange account's lifecycle policy deletes cached
+pages 30 days after they are written (`expire-boinc-handoff-quality-jpeg`, #915), so a wave
+must bundle a page within 30 days of its conversion or the runner converts the master again. `usnm-quality-jpeg-cache.service`
 runs it under a dynamic user in the `himds` group, for the Arc token. It runs at low CPU
 and I/O priority, so the prefetcher and the scan server go first. CT 211 has 6 cores and
 8 GiB for it (`WORKERS=6`), from 19 October 2026: with 2 cores it converted about 1.1

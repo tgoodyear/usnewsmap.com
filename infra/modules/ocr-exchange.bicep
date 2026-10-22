@@ -192,6 +192,21 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             }
           }
         }
+        // The quality wave's page JPEG cache (scripts/ocr-node/quality-jpeg-cache.py, #850) is
+        // derived from the scan masters: a page is useful only until the wave's runner has bundled
+        // it, and a missing one costs a reconversion from the master. Without a rule it grows with
+        // the archive (#915).
+        {
+          name: 'expire-boinc-handoff-quality-jpeg'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['${handoffContainer}/quality-jpeg/'] }
+            actions: {
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+            }
+          }
+        }
         {
           name: 'expire-ocr-quarantine'
           enabled: true
