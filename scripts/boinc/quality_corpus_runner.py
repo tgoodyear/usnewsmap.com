@@ -93,6 +93,11 @@ LOCAL_LOCKS_DIR = "/tmp/w9_local_locks"
 FW_DIR = f"{WAVE9_ROOT}/function-words"
 PLACES_PATH = f"{WAVE9_ROOT}/places.txt"
 SHARED_MANIFEST = f"{WAVE9_ROOT}/wave9_manifest.parquet"
+# Pages no later wave should try: confirmed permanent exclusions only (no LoC OCR in a batch
+# whose text was read in full, or no archive or LoC bag entry). Transient failures are left
+# out so a later pass or wave retries them. This replaced skipped_docs.txt, which mixed the
+# two and is no longer read, so the pages it held back are tried once more (#906).
+EXCLUDED_DOCS_PATH = f"{WAVE9_ROOT}/excluded_docs.txt"
 
 ENGINE_IMAGE = "sha256:3f599aefa49334ef6d12cf9d4a3b294fe7638877d587526b94bba0048741a402"
 READERS = "loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract"
@@ -791,6 +796,34 @@ def repair_and_reclaim_download_space():
     }
 
 
+def merge_inventory(part_files, meta_files):
+    """A digest of every input the merged pages.parquet is built from: each collected part
+    (name, size) and each staged metadata file (name, size, mtime), since a rebuilt metadata
+    file changes published rows without adding a part."""
+    entries = []
+    for kind, paths in (("part", part_files), ("meta", meta_files)):
+        for p in sorted(paths):
+            st = os.stat(p)
+            entry = [kind, os.path.basename(p), st.st_size]
+            if kind == "meta":
+                entry.append(st.st_mtime_ns)
+            entries.append(entry)
+    return hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def load_merged_stats(stats_cache_file, inventory):
+    """The cached stats of the last published merge, and whether that merge covered exactly
+    `inventory`. A missing or unreadable cache, or one from a merge of other inputs (a merge or
+    upload that failed after units were marked collected), means pages.parquet is rebuilt."""
+    try:
+        merged_stats = json.loads(Path(stats_cache_file).read_text())
+    except Exception:
+        return {}, False
+    if not isinstance(merged_stats, dict):
+        return {}, False
+    return merged_stats, merged_stats.get("inventory_sha256") == inventory
+
+
 def collect_and_purge(force=False):
     """
     Collects all newly assimilated bundles into Parquet chunks using
@@ -950,14 +983,14 @@ def collect_and_purge(force=False):
             })
 
         part_files = sorted(glob.glob(f"{COLLECTED_DIR}/part-*.parquet"))
+        meta_files = sorted(glob.glob(f"{STAGED_META_DIR}/*.parquet"))
         stats_cache_file = Path(f"{LOCKS_DIR}/last_merged_stats.json")
-        merged_stats = {}
-        if stats_cache_file.is_file():
-            try:
-                merged_stats = json.loads(stats_cache_file.read_text())
-            except Exception:
-                merged_stats = {}
-        if part_files and (newly_collected > 0 or not stats_cache_file.is_file()):
+        # Units are marked collected and their spool files purged before this merge, so a
+        # failed merge or upload can't be told apart by newly_collected: compare what the last
+        # published merge covered with what is on disk now.
+        inventory = merge_inventory(part_files, meta_files)
+        merged_stats, merge_current = load_merged_stats(stats_cache_file, inventory)
+        if part_files and not merge_current:
             import duckdb
             con = duckdb.connect()
             con.execute("SET memory_limit='1GB'; SET threads=2;")
@@ -991,7 +1024,6 @@ def collect_and_purge(force=False):
             replace_sql = f"REPLACE ({', '.join(replace_exprs)})" if replace_exprs else ""
             extra_sql = (", " + ", ".join(extra_exprs)) if extra_exprs else ""
 
-            meta_files = sorted(glob.glob(f"{STAGED_META_DIR}/*.parquet"))
             if meta_files:
                 meta_union_sql = f"""
                     SELECT doc_id, ANY_VALUE(batch) AS batch, ANY_VALUE(batch_version) AS batch_version, ANY_VALUE(date) AS date
@@ -1094,6 +1126,9 @@ def collect_and_purge(force=False):
                 "pages_with_v13_metrics": totals[7],
                 "parquet_bytes": len(merged_bytes),
             }
+            # Written only after the upload above succeeded.
+            merged_stats["inventory_sha256"] = inventory
+            merged_stats["merged_parts"] = len(part_files)
             try:
                 stats_cache_file.write_text(json.dumps(merged_stats))
             except Exception:
@@ -1304,7 +1339,7 @@ def stage_stream(project: str, physical: str, src_path: Path):
 
 def load_all_existing_bundled_docs(shard_idx):
     bundled_docs = set()
-    skipped_path = Path(f"{WAVE9_ROOT}/skipped_docs.txt")
+    skipped_path = Path(EXCLUDED_DOCS_PATH)
     if skipped_path.is_file():
         try:
             for line in skipped_path.read_text().splitlines():
@@ -1341,7 +1376,7 @@ def record_skipped_docs(doc_ids):
         lock_f = open(f"{LOCAL_LOCKS_DIR}/skipped_docs.lock", "w")
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         try:
-            with open(f"{WAVE9_ROOT}/skipped_docs.txt", "a", encoding="utf-8") as f:
+            with open(EXCLUDED_DOCS_PATH, "a", encoding="utf-8") as f:
                 for did in doc_ids:
                     f.write(f"{did}\n")
         finally:
@@ -1349,6 +1384,10 @@ def record_skipped_docs(doc_ids):
             lock_f.close()
     except Exception:
         pass
+
+
+class PermanentPageError(Exception):
+    """A page that no retry can stage: the source holds nothing for it."""
 
 
 def parse_mets_pages(xml_bytes):
@@ -1702,6 +1741,46 @@ def discover_all_corpus_batches(con):
     return ordered
 
 
+def batch_meta_paths(batch, bv):
+    stem = f"{batch}_ver{int(bv):02d}"
+    return Path(STAGED_META_DIR) / f"{stem}.parquet", Path(STAGED_META_DIR) / f"{stem}.complete"
+
+
+def batch_meta_complete(batch, bv):
+    """True when the staged metadata holds every page of the batch. Files from before #906
+    hold only the pages of the pass that wrote them, and have no .complete marker."""
+    meta_pq, marker = batch_meta_paths(batch, bv)
+    return meta_pq.is_file() and marker.is_file()
+
+
+def write_batch_meta(con, batch, bv, meta_rows, work_dir):
+    """Stages batch, batch_version and date for every page of a batch outside the manifest,
+    so collection never publishes one of its pages as batch 'unknown'. `meta_rows` is the
+    whole batch's damage file, whichever pages this pass stages. Rewrites a partial file."""
+    if not meta_rows or batch_meta_complete(batch, bv):
+        return False
+    meta_pq, marker = batch_meta_paths(batch, bv)
+    tmp_m = f"{work_dir}/tmp_meta.parquet"
+    try:
+        con.execute(
+            "CREATE OR REPLACE TEMP TABLE _bmeta "
+            "(doc_id VARCHAR, batch VARCHAR, batch_version BIGINT, date VARCHAR);"
+        )
+        con.executemany("INSERT INTO _bmeta VALUES (?, ?, ?, ?);", meta_rows)
+        con.execute(f"COPY _bmeta TO '{tmp_m}' (FORMAT PARQUET, COMPRESSION ZSTD);")
+        # Staged beside the destination, then renamed: collection never reads a partial file.
+        tmp_dst = meta_pq.with_name(f".{meta_pq.name}.tmp.{os.getpid()}")
+        shutil.copyfile(tmp_m, tmp_dst)
+        os.replace(tmp_dst, meta_pq)
+        marker.write_text(f"{len(meta_rows)}\n")
+        return True
+    except Exception:
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_m)
+
+
 def load_batch_records(
     con, batch, bv, tier, work_dir, already_docs, pass_mode="archived", cached_jpeg_batches=None
 ):
@@ -1773,7 +1852,11 @@ def load_batch_records(
     except Exception:
         pass
 
-    if archived_only and not any(did not in already_docs for did in keep_blobs):
+    # A batch whose archived pages are all bundled has nothing to stage, but its metadata is
+    # still read once more if a file from before #906 may hold only some of its pages.
+    if archived_only and not any(did not in already_docs for did in keep_blobs) and (
+        not any(did in already_docs for did in keep_blobs) or batch_meta_complete(batch, bv)
+    ):
         return []
 
     # Full-corpus batch discovery via audit/damage/v2/<batch>_ver<bv:02d>.parquet
@@ -1799,7 +1882,7 @@ def load_batch_records(
             ORDER BY doc_id
         """).fetchall()
 
-        meta_rows = []
+        meta_rows = [(r[0], r[1], int(r[2]), str(r[4])) for r in d_rows]
         for r in d_rows:
             did = r[0]
             if did in already_docs or did in by_doc:
@@ -1823,24 +1906,8 @@ def load_batch_records(
                 "blob_name": bpath,
             }
             by_doc[did] = rec
-            meta_rows.append((did, r[1], int(r[2]), str(r[4])))
 
-        if meta_rows:
-            meta_pq = Path(STAGED_META_DIR) / f"{batch}_ver{int(bv):02d}.parquet"
-            if not meta_pq.exists():
-                try:
-                    tmp_m = f"{work_dir}/tmp_meta.parquet"
-                    con.executemany(
-                        "CREATE TEMP TABLE IF NOT EXISTS _bmeta (doc_id VARCHAR, batch VARCHAR, batch_version BIGINT, date VARCHAR); INSERT INTO _bmeta VALUES (?, ?, ?, ?);",
-                        meta_rows[:1],
-                    )
-                    con.execute("DELETE FROM _bmeta;")
-                    con.executemany("INSERT INTO _bmeta VALUES (?, ?, ?, ?);", meta_rows)
-                    con.execute(f"COPY _bmeta TO '{tmp_m}' (FORMAT PARQUET, COMPRESSION ZSTD);")
-                    shutil.copyfile(tmp_m, meta_pq)
-                    os.remove(tmp_m)
-                except Exception:
-                    pass
+        write_batch_meta(con, batch, bv, meta_rows, work_dir)
     finally:
         if os.path.exists(tmp_dmg):
             os.remove(tmp_dmg)
@@ -1898,6 +1965,7 @@ def process_shard(shard_idx):
         "bundles_submitted": max_seq,
         "jpeg_cache_hits": 0,
         "jpeg_cache_misses": 0,
+        "retryable_failures": 0,
         "bundle_names": [],
         "skipped_errors": [],
         "elapsed_s": 0.0,
@@ -1950,6 +2018,9 @@ def process_shard(shard_idx):
 
             # 1. Load LoC OCR texts from curated/pages/<batch>/v<bv:02d>/
             loc_map = {}
+            # False when a text file could not be downloaded or read: a page missing from
+            # loc_map is then not known to lack LoC OCR, so it is retried, not excluded.
+            loc_complete = True
             page_pfx = f"pages/{batch}/v{int(bv):02d}/"
             for bname in sorted(list_blobs(CURATED_BASE, page_pfx)):
                 if not bname.endswith(".parquet"):
@@ -1963,15 +2034,21 @@ def process_shard(shard_idx):
                             if did in batch_doc_set and txt:
                                 loc_map[did] = (src or "ndnp-original", txt)
                     except Exception as e:
+                        loc_complete = False
                         status["skipped_errors"].append(f"loc pq {bname}: {str(e)[:120]}")
                     finally:
                         if os.path.exists(tmp_pq):
                             os.remove(tmp_pq)
+                else:
+                    loc_complete = False
+                    status["skipped_errors"].append(f"loc pq {bname}: download failed")
 
             no_loc_docs = [r["doc_id"] for r in batch_records if r["doc_id"] not in loc_map]
-            if no_loc_docs:
+            if no_loc_docs and loc_complete:
                 already_docs.update(no_loc_docs)
                 record_skipped_docs(no_loc_docs)
+            elif no_loc_docs:
+                status["retryable_failures"] += len(no_loc_docs)
 
             valid_records = [r for r in batch_records if r["doc_id"] in loc_map]
             if not valid_records:
@@ -2071,7 +2148,7 @@ def process_shard(shard_idx):
                             r["lccn"], r["date"], r["edition"], r["seq"]
                         )
                         if not jp2_url:
-                            raise RuntimeError(f"no archive or LoC bag entry for {did}")
+                            raise PermanentPageError(f"no archive or LoC bag entry for {did}")
                         raw = loc_paced_download(jp2_url)
                         is_jp2 = True
 
@@ -2157,7 +2234,7 @@ def process_shard(shard_idx):
                             })
                     with open(f"{texts_dir}/{did}.json", "w") as f:
                         json.dump({"page": None, "readers": readers}, f)
-                    return did, True, None
+                    return did, True, None, False
                 except Exception as e:
                     for p in (jpg_dst, xml_dst, f"{texts_dir}/{did}.json"):
                         if os.path.exists(p):
@@ -2165,7 +2242,7 @@ def process_shard(shard_idx):
                                 os.remove(p)
                             except OSError:
                                 pass
-                    return did, False, str(e)
+                    return did, False, str(e), isinstance(e, PermanentPageError)
 
             pos = 0
             while pos < len(valid_records):
@@ -2179,24 +2256,29 @@ def process_shard(shard_idx):
                 workers = 1 if has_unarchived else (8 if pass_mode == "jpeg_cached" else 2)
 
                 ok_docs = set()
-                failed_docs = []
+                excluded_docs = []
                 with ThreadPoolExecutor(max_workers=workers) as ex:
                     futs = [
                         ex.submit(dl_and_prepare_page, r, loc_map[r["doc_id"]])
                         for r in slice_records
                     ]
                     for fut in as_completed(futs):
-                        did, ok, err = fut.result()
+                        did, ok, err, permanent = fut.result()
                         if ok:
                             ok_docs.add(did)
+                            continue
+                        if permanent:
+                            excluded_docs.append(did)
                         else:
-                            failed_docs.append(did)
-                            if len(status["skipped_errors"]) < 200:
-                                status["skipped_errors"].append(f"{did}: {err[:120] if err else 'dl failed'}")
+                            # A failed download or decode: left out of already_docs and the
+                            # exclusion list, so the next pass or wave tries the page again.
+                            status["retryable_failures"] += 1
+                        if len(status["skipped_errors"]) < 200:
+                            status["skipped_errors"].append(f"{did}: {err[:120] if err else 'dl failed'}")
 
-                if failed_docs:
-                    already_docs.update(failed_docs)
-                    record_skipped_docs(failed_docs)
+                if excluded_docs:
+                    already_docs.update(excluded_docs)
+                    record_skipped_docs(excluded_docs)
 
                 for r in slice_records:
                     if r["doc_id"] in ok_docs:
