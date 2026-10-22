@@ -47,6 +47,8 @@ Rules for all three:
   container's environment file and restarts `cloudflared`. Revoke the old token only after
   that, or the restarted connector can't reconnect. Expired or revoked tokens fail closed (the
   tunnel stops serving; the relay gets 403).
-- The R2 relay token is temporary: delete it, the bucket's copy of the project and its secrets
-  once the project storage accounts are gone (#942).
+- The R2 relay token was temporary. On 22 October 2026, after the project storage accounts
+  were gone (#942, #960), the bucket `usnm-boinc-project` was emptied and deleted, the relay
+  token was revoked, and its key pair was deleted from both vaults. Exception 2 no longer
+  applies. Exceptions 1 and 3 remain.
 - Moving serving on-prem (#955) would add tunnels under the same rules, with no new kind of credential.
