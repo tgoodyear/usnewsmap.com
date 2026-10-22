@@ -1476,10 +1476,12 @@ class LocBatchResolver:
     def _ensure_manifest(self):
         if self.loaded:
             return
-        self.loaded = True
+        # Marked loaded only once the index is in hand: after a failed manifest download the
+        # empty map would answer "no bag entry", which excludes pages permanently (#906).
         if self.cache_file.exists():
             try:
                 self.issues = json.loads(self.cache_file.read_text())
+                self.loaded = True
                 return
             except Exception:
                 pass
@@ -1503,6 +1505,7 @@ class LocBatchResolver:
             elif fname == f"{idir}_1.xml" and not ent["mets"]:
                 ent["mets"] = fname
         self.issues = issues
+        self.loaded = True
         self._save_cache()
 
     def _save_cache(self):

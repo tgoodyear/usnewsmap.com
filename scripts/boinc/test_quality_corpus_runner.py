@@ -398,6 +398,29 @@ class SkipList(unittest.TestCase):
         self.assertEqual(self.excluded(), [self.docs[0]])
         self.assertEqual(sorted(self.flushed), self.docs[1:])
 
+    def test_a_failed_manifest_download_is_retried_not_read_as_no_entry(self):
+        r = self.r
+        r.BATCH_INDEX_DIR = self.tmp.name
+        resolver = r.LocBatchResolver("b", 1)
+        mets = (b'<mets xmlns="http://www.loc.gov/METS/" xmlns:xlink="http://www.w3.org/1999/xlink">'
+                b'<dmdSec ID="d1"><start>1</start></dmdSec>'
+                b'<fileSec><file ID="f1" USE="service"><FLocat xlink:href="./0001.jp2"/></file></fileSec>'
+                b'<structMap><div TYPE="np:page" DMDID="d1"><fptr FILEID="f1"/></div></structMap></mets>')
+        replies = [urllib.error.URLError("connection reset"),
+                   b"abc *data/sn1/reel1/1900010101/1900010101.xml\n", mets]
+
+        def loc_paced_download(url):
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        with mock.patch.object(r, "loc_paced_download", loc_paced_download):
+            with self.assertRaises(urllib.error.URLError):
+                resolver.resolve("sn1", "1900-01-01", 1, 1)
+            jp2, _ = resolver.resolve("sn1", "1900-01-01", 1, 1)
+        self.assertTrue(jp2.endswith("data/sn1/reel1/1900010101/0001.jp2"), jp2)
+
     def test_the_old_mixed_list_is_not_read(self):
         self.assertNotIn("skipped_docs.txt\"", SOURCE.replace("skipped_docs.txt, which", ""))
         self.assertIn("skipped_path = Path(EXCLUDED_DOCS_PATH)", SOURCE)
