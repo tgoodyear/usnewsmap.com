@@ -9,7 +9,8 @@ and `crops.parquet`), extracts pairwise `cer_vs_loc` / `wer_vs_loc` / `dice_vs_l
 
 1. Consolidated Parquet tables (`boinc_reader_rows.parquet`,
    `page_quality_joined.parquet`, `title_quality_summary.parquet`,
-   `language_quality_summary.parquet`, `summary.md`) under `--out-dir`.
+   `language_quality_summary.parquet`, `reader_language_summary.parquet`,
+   `reader_language_group_summary.parquet`, `summary.md`) under `--out-dir`.
 2. An indexed SQLite database (`--sqlite-out`) containing the full BOINC
    page/reader/crop tables plus title-level and language-level full-corpus
    damage & quality summaries.
@@ -111,11 +112,21 @@ def build_database(
         con.execute(f"ALTER TABLE raw_boinc_pages ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     if crop_parts:
         con.execute(f"CREATE TABLE raw_boinc_crops AS {' UNION ALL BY NAME '.join(crop_parts)}")
+        for col_name, col_type in [
+            ("vlm_text", "VARCHAR"),
+            ("cer_vs_vlm", "DOUBLE"),
+            ("dice_vs_vlm", "DOUBLE"),
+            ("hat_est_cer", "DOUBLE"),
+        ]:
+            con.execute(
+                f"ALTER TABLE raw_boinc_crops ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+            )
     else:
         con.execute(
             "CREATE VIEW raw_boinc_crops AS "
             "SELECT ''::VARCHAR AS campaign, ''::VARCHAR AS doc_id, ''::VARCHAR AS id, "
-            "''::VARCHAR AS stratum, ''::VARCHAR AS reader, NULL::DOUBLE AS cer_vs_vlm, "
+            "''::VARCHAR AS stratum, ''::VARCHAR AS reader, NULL::VARCHAR AS vlm_text, "
+            "NULL::DOUBLE AS cer_vs_vlm, "
             "NULL::DOUBLE AS dice_vs_vlm, NULL::DOUBLE AS hat_est_cer WHERE 1=0"
         )
 
@@ -529,6 +540,80 @@ def build_database(
         """
     )
 
+    # Per-reader-per-language rollup: page measures from the deduplicated reader rows, crop
+    # measures from the raw crop rows (which carry no language, so language and group come
+    # from any page row of the same doc_id). Rolled up by (language, reader) and by
+    # (language, group, reader).
+    con.execute(
+        """
+        CREATE TEMP TABLE doc_language AS
+        SELECT doc_id, MIN(language) AS language, MIN("group") AS "group"
+        FROM boinc_reader_rows
+        GROUP BY doc_id
+        """
+    )
+    for tbl, keys in [
+        ("reader_language_summary", ["language"]),
+        ("reader_language_group_summary", ["language", "group"]),
+    ]:
+        key_cols = ", ".join(f'"{k}"' for k in keys)
+        con.execute(
+            f"""
+            CREATE TABLE {tbl} AS
+            WITH page_stats AS (
+                SELECT
+                    {key_cols},
+                    reader,
+                    COUNT(*) AS pages,
+                    ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN est_cer END), 4) AS mean_est_cer,
+                    ROUND(MEDIAN(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN est_cer END)::DOUBLE, 4) AS median_est_cer,
+                    ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN completeness END), 4) AS mean_completeness,
+                    ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN precision END), 4) AS mean_precision,
+                    ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN findable_content END), 4) AS mean_findable_content,
+                    ROUND(AVG(cer_vs_loc), 4) AS mean_cer_vs_loc,
+                    ROUND(AVG(dice_vs_loc), 4) AS mean_dice_vs_loc,
+                    SUM(CASE WHEN COALESCE(hat_determined, FALSE) THEN 1 ELSE 0 END) AS pages_hat_determined
+                FROM boinc_reader_rows
+                GROUP BY {key_cols}, reader
+            ),
+            crop_stats AS (
+                SELECT
+                    {", ".join(f'd."{k}"' for k in keys)},
+                    c.reader,
+                    COUNT(*) AS crops,
+                    ROUND(AVG(c.hat_est_cer), 4) AS mean_crop_hat_est_cer,
+                    ROUND(AVG(c.cer_vs_vlm), 4) AS mean_cer_vs_vlm,
+                    ROUND(AVG(c.dice_vs_vlm), 4) AS mean_dice_vs_vlm,
+                    SUM(CASE WHEN c.vlm_text IS NOT NULL THEN 1 ELSE 0 END) AS crops_with_vlm
+                FROM raw_boinc_crops c
+                JOIN doc_language d USING (doc_id)
+                GROUP BY {", ".join(f'd."{k}"' for k in keys)}, c.reader
+            )
+            SELECT
+                {", ".join(f'COALESCE(p."{k}", c."{k}") AS "{k}"' for k in keys)},
+                COALESCE(p.reader, c.reader) AS reader,
+                COALESCE(p.pages, 0) AS pages,
+                p.mean_est_cer,
+                p.median_est_cer,
+                p.mean_completeness,
+                p.mean_precision,
+                p.mean_findable_content,
+                p.mean_cer_vs_loc,
+                p.mean_dice_vs_loc,
+                COALESCE(p.pages_hat_determined, 0) AS pages_hat_determined,
+                COALESCE(c.crops, 0) AS crops,
+                c.mean_crop_hat_est_cer,
+                c.mean_cer_vs_vlm,
+                c.mean_dice_vs_vlm,
+                COALESCE(c.crops_with_vlm, 0) AS crops_with_vlm
+            FROM page_stats p
+            FULL OUTER JOIN crop_stats c
+                ON {" AND ".join(f'p."{k}" IS NOT DISTINCT FROM c."{k}"' for k in keys)}
+                AND p.reader = c.reader
+            ORDER BY {key_cols}, reader
+            """
+        )
+
     con.execute(
         """
         CREATE TABLE router_regime_summary AS
@@ -614,6 +699,8 @@ def build_database(
         "language_quality_summary",
         "campaign_summary",
         "reader_engine_summary",
+        "reader_language_summary",
+        "reader_language_group_summary",
         "router_regime_summary",
         "next_wave_candidates",
     ]:
@@ -637,6 +724,8 @@ def build_database(
             "language_quality_summary",
             "campaign_summary",
             "reader_engine_summary",
+            "reader_language_summary",
+            "reader_language_group_summary",
             "router_regime_summary",
         ]:
             desc = con.execute(f"DESCRIBE {tbl}").fetchall()
@@ -748,6 +837,22 @@ def build_database(
             f"{r[7] if r[7] is not None else '-'} | {r[8] if r[8] is not None else '-'} | "
             f"{r[9] if r[9] is not None else '-'} | {r[10] if r[10] is not None else '-'} | "
             f"{r[11] if r[11] is not None else '-'} |"
+        )
+
+    md_lines.extend(
+        [
+            "",
+            "## Reader Quality by Language (`reader_language_summary`)",
+            "",
+            "| Language | Reader | Pages | Mean Est. CER | Median Est. CER | Completeness | Precision | Findable Content | CER vs LoC | Dice vs LoC | Hat Pages | Crops | Crop Hat Est. CER | CER vs VLM | Dice vs VLM | Crops with VLM |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for r in con.execute("SELECT * FROM reader_language_summary").fetchall():
+        md_lines.append(
+            f"| `{r[0]}` | `{r[1]}` | {r[2]:,} | "
+            + " | ".join(str(x) if x is not None else "-" for x in r[3:])
+            + " |"
         )
 
     (out_dir / "summary.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
