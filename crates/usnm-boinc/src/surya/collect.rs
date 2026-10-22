@@ -64,6 +64,8 @@ pub struct Summary {
     pub failed: usize,
     /// `<doc_id>.surya.json` files written.
     pub exported: usize,
+    /// Earlier exports removed because no requested mode read the page.
+    pub removed: usize,
 }
 
 /// A campaign's results: page texts by doc id and mode, crop texts by doc
@@ -204,12 +206,19 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
     if let Some(dir) = &opts.texts_dir {
         std::fs::create_dir_all(dir)?;
         for (doc_id, page) in &r.pages {
-            if let Some(reader) = page_reader(page, &opts.modes) {
-                atomic(
-                    &dir.join(export_name(doc_id)),
-                    &serde_json::to_vec_pretty(&reader)?,
-                )?;
-                r.summary.exported += 1;
+            let path = dir.join(export_name(doc_id));
+            match page_reader(page, &opts.modes) {
+                Some(reader) => {
+                    atomic(&path, &serde_json::to_vec_pretty(&reader)?)?;
+                    r.summary.exported += 1;
+                }
+                // An earlier run with other modes may have exported this
+                // page; under these modes it has no reader, so none stays.
+                None => match std::fs::remove_file(&path) {
+                    Ok(()) => r.summary.removed += 1,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e).context(format!("removing {}", path.display())),
+                },
             }
         }
     }
@@ -287,12 +296,12 @@ pub(crate) mod tests {
         std::fs::write(spool.join(format!("{wu}__file_diag.txt")), diag).unwrap();
     }
 
-    pub(crate) fn crop_job(page: &Job, id: &str, rect: [u32; 4]) -> Job {
+    pub(crate) fn crop_job(page: &Job, id: &str, rect: [u32; 4], stratum: &str) -> Job {
         let mut j = page.clone();
         let crop = CropRef {
             id: id.into(),
             rect,
-            stratum: "wc-low/top".into(),
+            stratum: stratum.into(),
         };
         j.input.url = format!("{}#{}", page.input.url, crop.xywh());
         j.gpu_modes = vec![InputMode::Whole];
@@ -319,8 +328,8 @@ pub(crate) mod tests {
             ],
         );
         // Two crops: one read, one failed.
-        let c1 = crop_job(&page, "c01", [10, 20, 500, 60]);
-        let c2 = crop_job(&page, "c02", [10, 80, 500, 120]);
+        let c1 = crop_job(&page, "c01", [10, 20, 500, 60], "wc-low/top");
+        let c2 = crop_job(&page, "c02", [10, 80, 500, 120], "wc-low/top");
         unit_with_result(
             &root,
             &spool,
@@ -334,11 +343,11 @@ pub(crate) mod tests {
             &[(InputMode::Whole, Outcome::Failed, "")],
         );
         // A crop still out, and one BOINC gave up on.
-        let c3 = crop_job(&page, "c03", [10, 140, 500, 180]);
+        let c3 = crop_job(&page, "c03", [10, 140, 500, 180], "wc-low/top");
         let unit = units(&root).join(super::super::crops::unit_name(&c3.doc_id, "c03"));
         std::fs::create_dir_all(&unit).unwrap();
         std::fs::write(unit.join(JOB_FILE), serde_json::to_vec(&c3).unwrap()).unwrap();
-        let c4 = crop_job(&page, "c04", [10, 200, 500, 240]);
+        let c4 = crop_job(&page, "c04", [10, 200, 500, 240], "wc-low/top");
         let unit = units(&root).join(super::super::crops::unit_name(&c4.doc_id, "c04"));
         std::fs::create_dir_all(&unit).unwrap();
         std::fs::write(unit.join(JOB_FILE), serde_json::to_vec(&c4).unwrap()).unwrap();
@@ -352,7 +361,8 @@ pub(crate) mod tests {
                 crops: 2,
                 pending: 1,
                 failed: 1,
-                exported: 0
+                exported: 0,
+                removed: 0,
             }
         );
         let p = &r.pages[&page.doc_id];
@@ -389,5 +399,16 @@ pub(crate) mod tests {
                 .unwrap();
         assert_eq!(got.name, READER);
         assert!(!got.alto && got.regions.is_empty());
+        // Collected again with only `whole` wanted, which timed out: the
+        // earlier capped export goes, so a later stage cannot pick it up.
+        let s = run(&Options {
+            root,
+            spool,
+            texts_dir: Some(texts.clone()),
+            modes: vec![InputMode::Whole],
+        })
+        .unwrap();
+        assert_eq!((s.exported, s.removed), (0, 1));
+        assert!(!texts.join(export_name(&page.doc_id)).exists());
     }
 }
