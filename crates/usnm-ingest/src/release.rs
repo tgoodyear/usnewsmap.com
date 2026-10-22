@@ -1831,14 +1831,32 @@ impl Release {
             };
             let (mut build_secs, mut lang_secs, mut add_secs) = (0f64, 0f64, 0f64);
             let wait_before = order.as_ref().map_or(0.0, |o| o.queue_wait_secs());
+            // The parts past the prefetch's limit, downloading a few at once
+            // from the start of this batch, in order (`RestParts`).
+            let deferred: Vec<String> = parts
+                .iter()
+                .filter(|(_, b)| b.is_none())
+                .map(|(p, _)| p.clone())
+                .collect();
+            let mut rest = (!deferred.is_empty())
+                .then(|| RestParts::start(Arc::clone(&self.curated), deferred));
             for (path, bytes) in parts {
                 lease.check()?;
                 let bytes = match bytes {
                     Some(bytes) => bytes,
                     None => {
                         let t = std::time::Instant::now();
-                        let bytes = fetch_part(self.curated.as_ref(), &path).await?;
+                        let (got, bytes) = rest
+                            .as_mut()
+                            .context("no download for the batch's remaining parts")?
+                            .next()
+                            .await?;
+                        if got != path {
+                            bail!("curated part `{got}` came in place of `{path}`");
+                        }
                         fetch_secs += t.elapsed().as_secs_f64();
+                        // The lock may have gone while the part downloaded.
+                        lease.check()?;
                         bytes
                     }
                 };
@@ -2759,8 +2777,9 @@ impl Drop for Prefetch {
 }
 
 /// The curated parts a batch's prefetch holds at most, in bytes: past it,
-/// the rest of the batch's parts download in their turn (`fetch_part`), so
-/// a large batch can't make two batches' parts sit in memory at once.
+/// the rest of the batch's parts download when the batch starts
+/// ([`RestParts`]), so a large batch can't make two batches' parts sit in
+/// memory at once.
 const PREFETCH_PART_BYTES: usize = 512 * 1024 * 1024;
 
 /// `b`'s American Stories text and curated parts, the parts a few at once,
@@ -2816,6 +2835,51 @@ where
         parts.push((path.clone(), None));
     }
     Ok(parts)
+}
+
+/// A batch's parts past the prefetch's limit ([`held_parts`]), downloaded
+/// [`CURATED_PREFETCH`] at a time by a task of their own while the batch's
+/// earlier parts are built, and handed over in order through a channel that
+/// holds as many: at most twice [`CURATED_PREFETCH`] parts are in memory.
+/// Dropping it stops the downloads.
+struct RestParts {
+    rx: tokio::sync::mpsc::Receiver<anyhow::Result<(String, bytes::Bytes)>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl RestParts {
+    fn start(curated: Arc<dyn ObjectStore>, paths: Vec<String>) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(CURATED_PREFETCH);
+        let task = tokio::spawn(async move {
+            let store = curated.as_ref();
+            let mut fetched = stream::iter(paths)
+                .map(|path| async move {
+                    let bytes = fetch_part(store, &path).await?;
+                    Ok::<_, anyhow::Error>((path, bytes))
+                })
+                .buffered(CURATED_PREFETCH);
+            while let Some(r) = fetched.next().await {
+                let failed = r.is_err();
+                if tx.send(r).await.is_err() || failed {
+                    break;
+                }
+            }
+        });
+        Self { rx, task }
+    }
+
+    async fn next(&mut self) -> anyhow::Result<(String, bytes::Bytes)> {
+        self.rx
+            .recv()
+            .await
+            .context("the remaining parts' download stopped")?
+    }
+}
+
+impl Drop for RestParts {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 /// One curated part.
@@ -3179,6 +3243,37 @@ mod tests {
             },
             text: text.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn the_remaining_parts_arrive_in_order_and_a_missing_one_stops_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(usnm_store::local::LocalStore::new(dir.path()));
+        let paths: Vec<String> = (0..20)
+            .map(|i| format!("pages/b/p{i:02}.parquet"))
+            .collect();
+        for (i, p) in paths.iter().enumerate() {
+            store
+                .put(p, vec![i as u8; 3], "application/octet-stream")
+                .await
+                .unwrap();
+        }
+        let mut rest = RestParts::start(Arc::clone(&store), paths.clone());
+        for (i, p) in paths.iter().enumerate() {
+            let (got, bytes) = rest.next().await.unwrap();
+            assert_eq!((&got, bytes.as_ref()), (p, &[i as u8; 3][..]));
+        }
+        assert!(rest.next().await.is_err(), "nothing after the last part");
+        let mut missing = paths[..3].to_vec();
+        missing.insert(1, "pages/b/gone.parquet".into());
+        let mut rest = RestParts::start(store, missing);
+        assert_eq!(rest.next().await.unwrap().0, paths[0]);
+        let err = rest.next().await.unwrap_err().to_string();
+        assert!(err.contains("gone.parquet"), "{err}");
+        assert!(
+            rest.next().await.is_err(),
+            "the downloads stop at the first failure"
+        );
     }
 
     #[tokio::test]
