@@ -47,6 +47,9 @@ cat > "$C/pg_hba.conf" <<'HBA'
 local   all          all                 trust
 hostssl usnm_queue   all       all       cert
 HBA
+# The image runs as postgres, a different uid from this user: the mounted copy of this
+# throwaway key must be readable to it (the server's own copy is 600, below).
+chmod 644 "$C/server.key"
 docker rm -f "$NAME" > /dev/null 2>&1 || true
 # The server must own its key (mode 600): the container copies the mounted files to its own
 # directory and sets that before the image's entrypoint starts PostgreSQL. A bind mount's owner
