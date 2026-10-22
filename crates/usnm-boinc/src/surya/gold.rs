@@ -137,6 +137,19 @@ fn read_manifest(path: &Path) -> anyhow::Result<Vec<Entry>> {
         let row: Row =
             serde_json::from_str(line).with_context(|| format!("manifest line {}", i + 1))?;
         let at = |e: anyhow::Error| e.context(format!("manifest line {} ({})", i + 1, row.crop_id));
+        // The crop id names the unit directory and its markers, so it is held to
+        // the contract's grammar here, before any path is built from it.
+        ensure!(
+            !row.crop_id.is_empty()
+                && row.crop_id.len() <= 32
+                && row
+                    .crop_id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            "manifest line {}: invalid crop id {:?}",
+            i + 1,
+            row.crop_id
+        );
         ensure!(
             seen.insert(row.crop_id.clone()),
             "manifest line {}: crop id {} appears twice",
@@ -684,6 +697,16 @@ mod tests {
         for (bad, why) in [
             (format!("{first}\n{first}\n"), "twice"),
             (with(&first, "crop_id", "Cze 01".into()), "invalid crop id"),
+            // A traversal id must fail before a marker path is built from it: with the
+            // checksum also wrong, the mismatch marker would otherwise land outside the root.
+            (
+                with(
+                    &with(&first, "crop_id", "x/../../../escaped".into()),
+                    "page_image_sha256",
+                    "0".repeat(64).into(),
+                ),
+                "invalid crop id",
+            ),
             (with(&first, "date", "1876-03-08".into()), "date differs"),
             (
                 with(&first, "page_image_sha256", "abc".into()),
@@ -698,9 +721,16 @@ mod tests {
             std::fs::write(&f.opts.manifest, bad).unwrap();
             let msg = format!("{:#}", run(&f.opts).await.unwrap_err());
             assert!(msg.contains(why), "{why}: {msg}");
-            // Nothing was staged.
+            // Nothing was staged, and no marker escaped the root.
             let staged = std::fs::read_dir(units(&f.opts.root)).map_or(0, |d| d.count());
             assert_eq!(staged, 0, "{why}");
+            for dir in f.opts.root.ancestors().take(4) {
+                let escaped = std::fs::read_dir(dir).is_ok_and(|d| {
+                    d.filter_map(|e| e.ok())
+                        .any(|e| e.file_name().to_string_lossy().contains("escaped"))
+                });
+                assert!(!escaped, "{why}: a marker was written in {}", dir.display());
+            }
         }
         std::fs::write(&f.opts.manifest, &good).unwrap();
         f.opts.engine.image = "sha256:abc".into();
