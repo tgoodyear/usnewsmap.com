@@ -29,6 +29,26 @@ verifies the server unchanged.
 **Credentials.** The admin and runtime passwords come from the BOINC Key Vault, the same ones the
 Azure server uses. They are kept in `/etc/usnm-boinc/secrets` (0600). The root password is local.
 
+## Security updates
+
+The images start from pinned digests, so their Debian packages don't change after a build, and
+the host's own automatic updates never reach them. Each image that serves Apache and PHP takes
+Debian's security updates when it is built: the server and bridge Containerfiles, the overlays
+and `security-overlay.Containerfile` run `apt-get upgrade` from the image's sources, which
+include `bookworm-security`. The build then fails if `php8.2-common` is older than `PHP_FLOOR`,
+now 8.2.35-1~deb12u1 from DSA-6255-1 (21 October 2026). `test_security_updates.py` in
+`contrib-compute/images/server` checks that every one of them does both.
+
+After a Debian security advisory for a package in the image (PHP, Apache, OpenSSL, curl):
+
+1. For PHP, raise `PHP_FLOOR` in all of those Containerfiles to the fixed version, through a pull request.
+2. On the on-prem BOINC host, build `security-overlay.Containerfile` on the running image: `RUNTIME_IMAGE` is `SERVER_IMAGE` from `/etc/usnm-boinc/server.env`, and `SECURITY_REFRESH` is today's date, so a cached build runs the upgrade again. The file's header has the command. Only packages change; the project's code stays as it was.
+3. Set `SERVER_IMAGE` in `server.env` to the new image and restart `usnm-boinc-server.service`. The step runner reads the same file, so the next step uses it too.
+4. Check the running image: `podman exec usnm-boinc-server php -v`, and `podman exec usnm-boinc-server dpkg-query -W php8.2-common apache2 openssl libcurl3-gnutls` against the advisory's fixed versions.
+
+A full rebuild from `main` (base, then server, then bridge, as `scripts/build-boinc-images.sh`
+orders them) also takes the updates, since the server and bridge stages upgrade.
+
 ## Moving the data
 
 The project share's storage account allows no public access, so data leaves Azure from inside the
