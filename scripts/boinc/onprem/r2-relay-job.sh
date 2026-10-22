@@ -32,14 +32,15 @@ echo "RELAY start $(date -u +%FT%TZ)"
 echo "RELAY top $(cd /project && echo *)"; echo "RELAY proj $(cd /project/usnmocr && echo *)"
 common=(--links --local-no-check-updated --modify-window 2s --transfers 48 --checkers 32 --cutoff-mode hard --timeout 60s --contimeout 15s --low-level-retries 5 --stats 120s --stats-one-line --stats-log-level NOTICE)
 # RELAY_PART splits one full pass across executions run side by side, because listing the whole
-# share takes longer than one execution may run: "download" is usnmocr/download, "quality" the
-# quality wave's tree (tens of thousands of small files), "uploads" the uploads pass, "rest"
-# everything else. Unset, one execution does them all, resuming run by run.
+# share takes longer than one execution may run: "download" is usnmocr/download, "quality" and
+# "project-quality" the quality wave's trees (quality/ and usnmocr/quality/, about 70k and 96k
+# small files), "uploads" the uploads pass, "rest" everything else. Unset, one execution does
+# them all, resuming run by run.
 part=${RELAY_PART:-all}
-case $part in all | download | quality | uploads | rest) ;; *) echo "RELAY_PART is download, quality, uploads, rest or unset" >&2; exit 2 ;; esac
+case $part in all | download | quality | project-quality | uploads | rest) ;; *) echo "RELAY_PART is download, quality, project-quality, uploads, rest or unset" >&2; exit 2 ;; esac
 rc_up=0 rc_tree=0 rc_dl=0
 extra=()
-[ "$part" = rest ] && extra=(--exclude "/usnmocr/download/**" --exclude "/quality/**")
+[ "$part" = rest ] && extra=(--exclude "/usnmocr/download/**" --exclude "/quality/**" --exclude "/usnmocr/quality/**")
 if [ "$part" = all ] || [ "$part" = uploads ]; then
   if [ -n "${RELAY_UPLOADS_FILTER:-}" ]; then
     [[ $RELAY_UPLOADS_FILTER =~ ^db/[A-Za-z0-9._-]+\.uploads-filter$ ]] || { echo "RELAY_UPLOADS_FILTER is db/<name>.uploads-filter" >&2; exit 2; }
@@ -59,6 +60,10 @@ fi
 if [ "$part" = quality ]; then
   rc_tree=0; timeout 1600 ./rclone copy /project/quality r2:usnm-boinc-project/project/quality "${common[@]}" --transfers 128 --checkers 64 --max-duration 1500s || rc_tree=$?
   echo "RELAY quality rc=$rc_tree $(date -u +%FT%TZ)"
+fi
+if [ "$part" = project-quality ]; then
+  rc_tree=0; timeout 1600 ./rclone copy /project/usnmocr/quality r2:usnm-boinc-project/project/usnmocr/quality "${common[@]}" --transfers 128 --checkers 64 --max-duration 1500s || rc_tree=$?
+  echo "RELAY project-quality rc=$rc_tree $(date -u +%FT%TZ)"
 fi
 if [ "$part" = download ]; then
   rc_dl=0; timeout 1600 ./rclone copy /project/usnmocr/download r2:usnm-boinc-project/project/usnmocr/download "${common[@]}" --max-duration 1500s || rc_dl=$?

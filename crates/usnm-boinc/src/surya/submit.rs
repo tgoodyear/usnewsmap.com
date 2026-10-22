@@ -33,6 +33,14 @@ pub const FPOPS_BOUND: &str = "2e16";
 /// can be sent to either version, so this must admit the CPU version's
 /// measured peak even though the GPU container itself is capped at 8 GiB.
 pub const MEMORY_BOUND: &str = "12884901888";
+/// A crop unit (#968) reads one line's box in `whole` mode: the model
+/// still loads, but the read is seconds, so the bounds are a page's
+/// divided by about a hundred, and the result is wanted within a day.
+pub const CROP_FPOPS_EST: &str = "1e12";
+pub const CROP_FPOPS_BOUND: &str = "2e14";
+/// 8 GiB: the weights and llama-server's context, without a page's tiles.
+pub const CROP_MEMORY_BOUND: &str = "8589934592";
+pub const CROP_DELAY_BOUND: &str = "86400";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {
     work_args(job, None, false)
@@ -72,6 +80,17 @@ fn work_args(job: &Job, target_host: Option<u64>, gpu_probe: bool) -> Vec<String
     .iter()
     .map(|s| s.to_string())
     .collect();
+    if job.crop.is_some() {
+        for (flag, value) in [
+            ("--rsc_fpops_est", CROP_FPOPS_EST),
+            ("--rsc_fpops_bound", CROP_FPOPS_BOUND),
+            ("--rsc_memory_bound", CROP_MEMORY_BOUND),
+            ("--delay_bound", CROP_DELAY_BOUND),
+        ] {
+            let index = args.iter().position(|arg| arg == flag).unwrap();
+            args[index + 1] = value.into();
+        }
+    }
     if let Some(host) = target_host {
         for (flag, value) in [
             ("--min_quorum", "1"),
@@ -237,6 +256,32 @@ mod tests {
         let index = args.iter().position(|a| a == "--app_version_num").unwrap();
         assert_eq!(args[index + 1], "103");
         assert!(!create_work_args(&job).contains(&"--target_host".into()));
+    }
+
+    #[test]
+    fn a_crop_unit_asks_for_less_and_sooner() {
+        let mut j = super::super::work::tests::job();
+        j.crop = Some(usnm_ocr_contract::surya::CropRef {
+            id: "c01".into(),
+            rect: [10, 20, 500, 60],
+            stratum: "wc-low/top".into(),
+        });
+        j.input.url = format!("{}#xywh=10,20,490,40", j.input.url);
+        j.gpu_modes = vec![usnm_ocr_contract::surya::InputMode::Whole];
+        j.cpu_modes = j.gpu_modes.clone();
+        j.id = j.identity().unwrap();
+        j.validate().unwrap();
+        let args = create_work_args(&j);
+        for (flag, want) in [
+            ("--rsc_fpops_est", CROP_FPOPS_EST),
+            ("--rsc_fpops_bound", CROP_FPOPS_BOUND),
+            ("--rsc_memory_bound", CROP_MEMORY_BOUND),
+            ("--delay_bound", CROP_DELAY_BOUND),
+            ("--min_quorum", "2"),
+        ] {
+            let index = args.iter().position(|a| a == flag).unwrap();
+            assert_eq!(args[index + 1], want, "{flag}");
+        }
     }
 
     #[test]

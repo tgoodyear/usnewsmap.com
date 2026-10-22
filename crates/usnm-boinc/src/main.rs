@@ -662,8 +662,15 @@ enum Surya {
     Stage {
         /// group:lang:doc_id:batch[+batch...], e.g.
         /// serbian:srp:sn85055101_1917-04-03_ed-1_seq-3:dlc_arlington_ver01; repeat.
-        #[arg(long = "page", required = true)]
+        #[arg(long = "page", required_unless_present = "sample")]
         pages: Vec<usnm_boinc::surya::Page>,
+        /// Or the quality campaign's sample (`quality sample`, JSON Lines): its rows become
+        /// pages of --group, in their batch, and each unit keeps its row as sample.json.
+        #[arg(long, requires = "group")]
+        sample: Option<PathBuf>,
+        /// The group the sample's pages are staged as (the quality campaign's, `campaign-1` say).
+        #[arg(long)]
+        group: Option<String>,
         #[arg(long)]
         root: PathBuf,
         /// The worker image's registry digest (sha256:...).
@@ -694,6 +701,31 @@ enum Surya {
         /// The scan archive's container URL, read first; omit for LoC only.
         #[arg(long)]
         scan_archive: Option<String>,
+    },
+    /// Write one unit per crop of every staged usnm_quality page (#968): the crops the page's
+    /// usnm_qwen unit reads, cut here from its page.jpg, read by Surya in whole mode.
+    StageCrops {
+        /// The usnm_quality staging root (its pages/ or units/ hold page.jpg, loc.xml and
+        /// quality.json).
+        #[arg(long)]
+        quality_root: PathBuf,
+        #[arg(long)]
+        root: PathBuf,
+        /// The worker image's registry digest (sha256:...).
+        #[arg(long)]
+        engine_image: String,
+        #[arg(long)]
+        engine_llama: String,
+        #[arg(long)]
+        engine_weights: String,
+        #[arg(long, default_value = "0.22.1")]
+        engine_surya: String,
+        /// Deadline for the one whole-mode read, on a GPU and on a CPU.
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u32,
+        /// Pages to take new units from, at most.
+        #[arg(long, default_value_t = 50)]
+        max_pages: usize,
     },
     /// Hand staged units to create_work, two results each.
     Submit {
@@ -1773,7 +1805,9 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
         }
 
         Surya::Stage {
-            pages,
+            mut pages,
+            sample,
+            group,
             root,
             engine_image,
             engine_llama,
@@ -1788,6 +1822,14 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             batch_cache,
             scan_archive,
         } => {
+            let mut sample_rows = std::collections::BTreeMap::new();
+            if let Some(sample) = &sample {
+                let group = group.as_deref().unwrap_or_default();
+                for row in usnm_boinc::assess::read_sample(sample)? {
+                    pages.push(x::Page::from_sample(&row, group)?);
+                    sample_rows.insert(row.doc_id.clone(), row);
+                }
+            }
             let s = x::stage::run(&x::stage::Options {
                 pages,
                 root,
@@ -1805,6 +1847,32 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
                 max_pages,
                 batch_cache,
                 scan_archive,
+                sample_rows,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Surya::StageCrops {
+            quality_root,
+            root,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            engine_surya,
+            timeout_secs,
+            max_pages,
+        } => {
+            let s = x::crops::run(&x::crops::Options {
+                quality_root,
+                root,
+                engine: usnm_ocr_contract::surya::Engine {
+                    image: engine_image,
+                    llama: engine_llama,
+                    surya: engine_surya,
+                    weights: engine_weights,
+                },
+                timeout_secs,
+                max_pages,
             })
             .await?;
             eprintln!("{s:?}");
