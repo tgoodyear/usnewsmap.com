@@ -1766,7 +1766,7 @@ impl Release {
                 stories: loaded_stories,
                 parts,
             } = current.join().await?;
-            let fetch_secs = t_fetch.elapsed().as_secs_f64();
+            let mut fetch_secs = t_fetch.elapsed().as_secs_f64();
             // This batch's titles' readings of ours, dropped after the batch.
             let mine = match local {
                 Some(l)
@@ -1833,6 +1833,15 @@ impl Release {
             let wait_before = order.as_ref().map_or(0.0, |o| o.queue_wait_secs());
             for (path, bytes) in parts {
                 lease.check()?;
+                let bytes = match bytes {
+                    Some(bytes) => bytes,
+                    None => {
+                        let t = std::time::Instant::now();
+                        let bytes = fetch_part(self.curated.as_ref(), &path).await?;
+                        fetch_secs += t.elapsed().as_secs_f64();
+                        bytes
+                    }
+                };
                 let t_build = std::time::Instant::now();
                 let part = build_part_blocking(&ctx, &path, &bytes)?;
                 drop(bytes);
@@ -2729,7 +2738,8 @@ async fn drain(
 /// A batch's downloads, made ahead of its turn (`build_index`).
 struct Prefetched {
     stories: Option<american_stories::Batch>,
-    parts: Vec<(String, bytes::Bytes)>,
+    /// Every part in order, with its bytes if the prefetch got to it.
+    parts: Vec<(String, Option<bytes::Bytes>)>,
 }
 
 /// The task loading a batch's downloads, aborted when dropped (a release
@@ -2748,7 +2758,14 @@ impl Drop for Prefetch {
     }
 }
 
-/// `b`'s American Stories text and curated parts, the parts a few at once.
+/// The curated parts a batch's prefetch holds at most, in bytes: past it,
+/// the rest of the batch's parts download in their turn (`fetch_part`), so
+/// a large batch can't make two batches' parts sit in memory at once.
+const PREFETCH_PART_BYTES: usize = 512 * 1024 * 1024;
+
+/// `b`'s American Stories text and curated parts, the parts a few at once,
+/// up to [`PREFETCH_PART_BYTES`]; the parts not fetched yet are left as
+/// `None`, in order.
 async fn prefetch_batch(
     curated: Arc<dyn ObjectStore>,
     stories: Option<Arc<american_stories::Source>>,
@@ -2762,18 +2779,52 @@ async fn prefetch_batch(
         None => None,
     };
     let store = curated.as_ref();
-    let parts = stream::iter(b.curated.parts.iter().cloned())
+    let fetched = stream::iter(b.curated.parts.iter().cloned())
         .map(|path| async move {
-            let bytes = store
-                .get(&path)
-                .await?
-                .with_context(|| format!("curated part `{path}` is missing"))?;
-            Ok::<_, anyhow::Error>((path, bytes::Bytes::from(bytes)))
+            let bytes = fetch_part(store, &path).await?;
+            Ok::<_, anyhow::Error>((path, bytes))
         })
-        .buffered(CURATED_PREFETCH)
-        .try_collect()
-        .await?;
+        .buffered(CURATED_PREFETCH);
+    let parts = held_parts(fetched, &b.curated.parts, PREFETCH_PART_BYTES).await?;
     Ok(Prefetched { stories, parts })
+}
+
+/// `paths` in order, each with its bytes from `fetched` (the same order)
+/// until `limit` bytes are held, the rest `None`. Stopping drops the
+/// downloads under way; those parts are fetched again in their turn.
+async fn held_parts<S>(
+    fetched: S,
+    paths: &[String],
+    limit: usize,
+) -> anyhow::Result<Vec<(String, Option<bytes::Bytes>)>>
+where
+    S: futures::Stream<Item = anyhow::Result<(String, bytes::Bytes)>>,
+{
+    let mut fetched = std::pin::pin!(fetched);
+    let mut parts = Vec::with_capacity(paths.len());
+    let mut held = 0usize;
+    while held < limit {
+        match fetched.try_next().await? {
+            Some((path, bytes)) => {
+                held += bytes.len();
+                parts.push((path, Some(bytes)));
+            }
+            None => break,
+        }
+    }
+    for path in paths.iter().skip(parts.len()) {
+        parts.push((path.clone(), None));
+    }
+    Ok(parts)
+}
+
+/// One curated part.
+async fn fetch_part(store: &dyn ObjectStore, path: &str) -> anyhow::Result<bytes::Bytes> {
+    let bytes = store
+        .get(path)
+        .await?
+        .with_context(|| format!("curated part `{path}` is missing"))?;
+    Ok(bytes::Bytes::from(bytes))
 }
 
 /// What reading one curated part needs, all read-only.
@@ -3128,6 +3179,40 @@ mod tests {
             },
             text: text.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_prefetch_holds_parts_up_to_its_limit_and_leaves_the_rest_in_order() {
+        let paths: Vec<String> = (0..5).map(|i| format!("p{i}")).collect();
+        let fetched = |paths: Vec<String>| {
+            stream::iter(
+                paths
+                    .into_iter()
+                    .map(|p| Ok((p, bytes::Bytes::from(vec![0u8; 10])))),
+            )
+        };
+        let parts = held_parts(fetched(paths.clone()), &paths, 25)
+            .await
+            .unwrap();
+        let got: Vec<(&str, bool)> = parts
+            .iter()
+            .map(|(p, b)| (p.as_str(), b.is_some()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("p0", true),
+                ("p1", true),
+                ("p2", true),
+                ("p3", false),
+                ("p4", false)
+            ]
+        );
+        let all = held_parts(fetched(paths.clone()), &paths, usize::MAX)
+            .await
+            .unwrap();
+        assert!(all.iter().all(|(_, b)| b.is_some()));
+        assert_eq!(all.len(), 5);
     }
 
     #[test]
