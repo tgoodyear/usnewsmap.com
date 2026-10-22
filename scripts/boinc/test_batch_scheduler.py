@@ -1738,21 +1738,30 @@ class SuryaPlanTests(unittest.TestCase):
             "SURYA_CAMPAIGN": "surya-wave1", "QUALITY_CAMPAIGN": "quality-2026",
             "SURYA_ENGINE_IMAGE": "sha256:" + "1" * 64, "SURYA_ENGINE_LLAMA": "sha256:" + "2" * 64,
             "SURYA_ENGINE_WEIGHTS": "sha256:" + "3" * 64, "SURYA_MAX": 50, "SURYA_TIMEOUT_SECS": 600}))
-        # 400 - 40 = 360 of room, so the default 200 units per tick is the cap.
-        self.assertEqual(submit, ("bridge", "surya-submit", {"SURYA_CAMPAIGN": "surya-wave1", "SURYA_MAX": 200}))
+        # 400 - 40 = 360 results of room, two results per unit: 180 units, under the default 200.
+        self.assertEqual(submit, ("bridge", "surya-submit", {"SURYA_CAMPAIGN": "surya-wave1", "SURYA_MAX": 180}))
         self.assertEqual((event["ran"], event["unsent"], event["skipped"]),
                          (["surya-stage-crops", "surya-submit"], 40, None))
         self.assertEqual(self.state["surya"]["last_run"]["at"], NOW)
         self.assertEqual([step["step"] for step in self.state["surya"]["last_run"]["steps"]], event["ran"])
         self.assertEqual(self.state["surya"]["unsent"], 40)
 
-    def test_submit_is_capped_by_room_below_the_high_watermark(self):
-        self.tick(100)  # at the low mark counts as low
-        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 200)
+    def test_submit_is_capped_by_half_the_room_below_the_high_watermark(self):
+        self.tick(100)  # at the low mark counts as low: 300 results of room, 150 units
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 150)
         self.fake.steps.clear()
         self.config["high_watermark"] = 150
         self.tick(100)
-        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 50)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 25)
+        # Odd headroom rounds down: 51 results of room is 25 units, never 26.
+        self.fake.steps.clear()
+        self.config["high_watermark"] = 151
+        self.tick(100)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 25)
+        self.fake.steps.clear()
+        self.config["surya"]["submit_units"] = 10
+        self.tick(100)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 10)
 
     def test_configured_caps_reach_the_steps(self):
         self.config["surya"].update(timeout_secs=1200, stage_pages=7, submit_units=9)
@@ -1770,10 +1779,37 @@ class SuryaPlanTests(unittest.TestCase):
         self.assertNotIn("last_run", self.state["surya"])
         self.assertEqual(self.state["surya"]["unsent"], 900)
 
-    def test_a_queue_with_no_room_runs_nothing(self):
-        self.config.update(low_watermark=100, high_watermark=100)
-        self.assertEqual(self.tick(100)["skipped"], "no_room")
+    def test_a_queue_with_room_for_less_than_one_unit_runs_nothing(self):
+        for high in (100, 101):
+            with self.subTest(high=high):
+                self.config.update(low_watermark=100, high_watermark=high)
+                self.assertEqual(self.tick(100)["skipped"], "no_room")
+                self.assertEqual(self.fake.steps, [])
+        self.config.update(high_watermark=102)
+        self.assertEqual(self.tick(100)["skipped"], None)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 1)
+
+    def test_engine_pins_are_held_to_the_campaign(self):
+        self.tick(300)  # a quiet tick still records the campaign's pins
+        self.assertEqual(self.state["surya"]["engine"]["SURYA_ENGINE_WEIGHTS"], "sha256:" + "3" * 64)
+        self.config["surya"]["engine_weights"] = "sha256:" + "4" * 64
+        with self.assertRaisesRegex(ValueError, "engine pins changed for campaign surya-wave1"):
+            self.tick(0)
         self.assertEqual(self.fake.steps, [])
+        self.assertEqual(self.state["surya"]["engine"]["SURYA_ENGINE_WEIGHTS"], "sha256:" + "3" * 64)
+        # The same change under a new campaign name starts a fresh record.
+        self.config["surya"]["campaign"] = "surya-wave2"
+        self.tick(0)
+        self.assertEqual([step[1] for step in self.fake.steps], ["surya-stage-crops", "surya-submit"])
+        self.assertEqual(self.fake.steps[0][2]["SURYA_ENGINE_WEIGHTS"], "sha256:" + "4" * 64)
+        self.assertEqual(self.state["surya"]["campaign"], "surya-wave2")
+        self.assertEqual(self.state["surya"]["engine"]["SURYA_ENGINE_WEIGHTS"], "sha256:" + "4" * 64)
+        # Watermarks and caps may still change within the campaign.
+        self.fake.steps.clear()
+        self.config.update(high_watermark=300)
+        self.config["surya"]["submit_units"] = 20
+        self.tick(0)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 20)
 
     def test_a_previous_run_stays_on_record_through_a_quiet_tick(self):
         self.tick(0)
@@ -1808,7 +1844,7 @@ class SuryaPlanTests(unittest.TestCase):
 
     def test_watermark_flags_override_the_config(self):
         self.tick(150, low_watermark=200, high_watermark=300)
-        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 150)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 75)
 
     def test_steps_go_through_step_command_with_the_vars_in_order(self):
         transport = batch.Transport(self.config, Path("."))
@@ -1821,7 +1857,7 @@ class SuryaPlanTests(unittest.TestCase):
         submit = run.call_args_list[1].args[0]
         self.assertEqual(submit, self.config["step_command"] + [
             "--env", "dev", "--target", "bridge", "--step", "surya-submit", "--wait-mins", "30",
-            "--var", "SURYA_CAMPAIGN=surya-wave1", "--var", "SURYA_MAX=200"])
+            "--var", "SURYA_CAMPAIGN=surya-wave1", "--var", "SURYA_MAX=195"])
 
     def test_main_what_if_prints_the_steps_and_runs_nothing(self):
         directory = Path(__file__).parent.resolve() / (".surya-main-" + uuid.uuid4().hex)
@@ -1864,9 +1900,10 @@ class SuryaPlanTests(unittest.TestCase):
                     self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory),
                                                  "--apply"]), 0)
                 self.assertEqual(json.loads(out.getvalue())["ran"], ["surya-stage-crops", "surya-submit"])
-                self.assertEqual(fake.steps[1][2]["SURYA_MAX"], min(200, high))
+                self.assertEqual(fake.steps[1][2]["SURYA_MAX"], min(200, high // 2))
             saved = json.loads((directory / "state.json").read_text())
-            self.assertEqual(saved["surya"]["last_run"]["steps"][1]["vars"]["SURYA_MAX"], 200)
+            self.assertEqual(saved["surya"]["last_run"]["steps"][1]["vars"]["SURYA_MAX"], 150)
+            self.assertEqual(saved["surya"]["engine"]["SURYA_ENGINE_LLAMA"], "sha256:" + "2" * 64)
         finally:
             for file in directory.iterdir():
                 file.unlink()

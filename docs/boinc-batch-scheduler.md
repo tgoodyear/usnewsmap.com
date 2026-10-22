@@ -500,16 +500,19 @@ One tick reads `usnm_surya`'s unsent count from the server status
 without the app stops the tick). When it is above `low_watermark` the tick does
 nothing. At or below it, the tick runs `surya-stage-crops` (`QUALITY_CAMPAIGN`, the
 three engine pins, `SURYA_MAX=stage_pages`, `SURYA_TIMEOUT_SECS`) and then
-`surya-submit` with `SURYA_MAX` the smaller of `submit_units` and `high_watermark`
-minus the unsent count, so the queue never goes past the high mark. A failed step
-stops the tick. The state file records the last check and the steps of the last
-run, with the time. `--drain` runs nothing.
+`surya-submit` with `SURYA_MAX` the smaller of `submit_units` and half of
+`high_watermark` minus the unsent count (the count is results, and every unit makes
+two), so the queue never goes past the high mark; with less than two results of
+room it runs nothing. A failed step stops the tick. The state file records the last
+check and the steps of the last run, with the time. `--drain` runs nothing.
 
 Without `--apply` the controller reads and runs nothing and prints the steps a tick
 would run at an empty queue. The host lock and `state.json` are as for the OCR plan,
 but a Surya plan takes no Azure lease and its state is not tied to the
-configuration's hash, so a later tick may change the watermarks, caps or engine pins.
-Collecting results (`surya-collect`, which needs the assimilator's spool) is still an
+configuration's hash, so a later tick may change the watermarks and caps. The engine
+pins are held to the campaign: staged units keep the pins they were cut with, so a
+tick whose pins differ from the campaign's recorded ones refuses to run, and a new
+engine goes under a new `campaign` name. Collecting results (`surya-collect`, which needs the assimilator's spool) is still an
 operator step. Over ssh the controller's key may set only `SURYA_CAMPAIGN`,
 `QUALITY_CAMPAIGN`, the three `SURYA_ENGINE_*` pins, `SURYA_MAX` and
 `SURYA_TIMEOUT_SECS` on `surya-stage-crops`, and only `SURYA_CAMPAIGN` and

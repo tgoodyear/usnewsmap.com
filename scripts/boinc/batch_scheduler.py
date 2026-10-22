@@ -30,6 +30,7 @@ OCR_APP_NAME = "usnm_ocr"
 SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
 SURYA_APP_NAME = "usnm_surya"
 SURYA_DEFAULTS = {"timeout_secs": 600, "stage_pages": 50, "submit_units": 200}
+SURYA_REPLICAS = 2  # results per unit: --target_nresults in crates/usnm-boinc/src/surya/submit.rs
 SUPPORTED_COHORT_PLATFORMS = ("all",)
 SUPPORTED_COHORT_RESOURCES = ("cpu",)
 APP_NAME = re.compile(r"[A-Za-z0-9_-]{1,80}")
@@ -907,18 +908,26 @@ def _extract_status(snapshot, transport, server_status=None, *, drain=False):
         raise
 
 
+def surya_engine(config):
+    """The engine pins a Surya plan stages its units with."""
+    surya = config["surya"]
+    return {"SURYA_ENGINE_IMAGE": surya["engine_image"], "SURYA_ENGINE_LLAMA": surya["engine_llama"],
+            "SURYA_ENGINE_WEIGHTS": surya["engine_weights"]}
+
+
 def surya_steps(config, room):
-    """The bridge steps of one Surya tick that finds room for `room` more units: cut the crops
-    of the quality campaign's staged pages, then submit up to `room` of the units (#968)."""
+    """The bridge steps of one Surya tick that finds room for `room` more results: cut the crops
+    of the quality campaign's staged pages, then submit units for up to `room` results (#968).
+    `unsent` counts results and `surya submit` makes SURYA_REPLICAS of them per unit."""
     surya = {**SURYA_DEFAULTS, **config["surya"]}
-    engine = {"SURYA_ENGINE_IMAGE": surya["engine_image"], "SURYA_ENGINE_LLAMA": surya["engine_llama"],
-              "SURYA_ENGINE_WEIGHTS": surya["engine_weights"]}
     return [
         ("surya-stage-crops", {
             "SURYA_CAMPAIGN": surya["campaign"], "QUALITY_CAMPAIGN": surya["quality_campaign"],
-            **engine, "SURYA_MAX": surya["stage_pages"], "SURYA_TIMEOUT_SECS": surya["timeout_secs"]}),
+            **surya_engine(config), "SURYA_MAX": surya["stage_pages"],
+            "SURYA_TIMEOUT_SECS": surya["timeout_secs"]}),
         ("surya-submit", {
-            "SURYA_CAMPAIGN": surya["campaign"], "SURYA_MAX": min(surya["submit_units"], room)}),
+            "SURYA_CAMPAIGN": surya["campaign"],
+            "SURYA_MAX": min(surya["submit_units"], room // SURYA_REPLICAS)}),
     ]
 
 
@@ -934,7 +943,19 @@ def surya_tick(config, state, transport, persist, now=None, *, drain=False,
     unsent = None
     ran = []
     reason = "draining"
-    record = state.setdefault("surya", {})
+    campaign = config["surya"]["campaign"]
+    engine = surya_engine(config)
+    record = state.get("surya") or {}
+    if record.get("campaign") != campaign:
+        # A new campaign: nothing staged under it carries other pins.
+        record = {}
+    # Staged units keep the pins they were cut with (surya/crops.rs skips an existing job
+    # file), so a pin change would leave a backlog the new engine's workers reject. The pins
+    # are immutable within a campaign; a new engine takes a new campaign name.
+    require(record.get("engine") in (None, engine),
+            f"engine pins changed for campaign {campaign}; stage a new engine under a new campaign")
+    record.update(campaign=campaign, engine=engine)
+    state["surya"] = record
     if not drain:
         status = _extract_status({}, transport, server_status=server_status)
         require(status is not None and SURYA_APP_NAME in status["apps"],
@@ -943,7 +964,7 @@ def surya_tick(config, state, transport, persist, now=None, *, drain=False,
         room = high - unsent
         if unsent > low:
             reason = "above_low_watermark"
-        elif room <= 0:
+        elif room < SURYA_REPLICAS:
             reason = "no_room"
         else:
             reason = None
@@ -1337,7 +1358,8 @@ def main(argv=None):
             path = args.state_dir / "state.json"
             state = json.loads(path.read_text()) if path.exists() else {"config_sha256": digest(config)}
             if surya:
-                # No allocation to protect: the watermarks, caps and engine pins may change.
+                # No allocation to protect: the watermarks and caps may change. The engine
+                # pins are held to the campaign by surya_tick itself.
                 state["config_sha256"] = digest(config)
             require(state["config_sha256"] == digest(config),
                     "immutable allocation changed; drain/reconcile before an operator migration")
