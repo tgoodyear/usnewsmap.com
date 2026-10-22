@@ -107,12 +107,10 @@ impl PageId {
         })
     }
 
-    /// The `loc` id of a LoC page.
-    pub fn loc(key: &PageKey) -> Self {
-        Self {
-            source: Source::Loc,
-            local: key.doc_id(),
-        }
+    /// The `loc` id of a LoC page. `PageKey`'s fields are public, so the key is checked
+    /// like any other local id.
+    pub fn loc(key: &PageKey) -> Result<Self, PageIdError> {
+        PageId::new(Source::Loc, &key.doc_id())
     }
 
     pub fn source(&self) -> Source {
@@ -140,7 +138,7 @@ impl PageId {
     }
 
     /// A relative path for this page's files where sources mix: `<source>/<local id>`.
-    /// Every local id is safe here: no `..`, no leading `/` and no `\`.
+    /// Every local id is made of safe path segments, so this passes `usnm_store::validate_path`.
     pub fn path(&self) -> String {
         format!("{}/{}", self.source, self.local)
     }
@@ -192,8 +190,9 @@ fn paged<'a>(local: &'a str, prefix: &str) -> Result<&'a str, String> {
     let (stem, seq) = stem
         .rsplit_once("_p")
         .ok_or_else(|| "must end with _p<page>".to_owned())?;
-    seq.parse::<u32>()
-        .ok()
+    (!seq.is_empty() && seq.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| seq.parse::<u32>().ok())
+        .flatten()
         .filter(|n| *n > 0)
         .ok_or_else(|| format!("bad page number {seq:?}"))?;
     if plain(stem) {
@@ -203,9 +202,24 @@ fn paged<'a>(local: &'a str, prefix: &str) -> Result<&'a str, String> {
     }
 }
 
+/// One path segment as `usnm_store::is_safe_segment` allows it:
+/// `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Kept in step with that function.
+fn safe_segment(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 128
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+}
+
 fn check_local(source: Source, local: &str) -> Result<(), String> {
     if local.len() > MAX_LOCAL {
         return Err(format!("longer than {MAX_LOCAL} bytes"));
+    }
+    // Every id must work as `<source>/<local>` in the shared stores.
+    if !local.split('/').all(safe_segment) {
+        return Err("each /-separated part must be a safe path segment".to_owned());
     }
     match source {
         Source::Loc => {
@@ -231,11 +245,11 @@ fn check_local(source: Source, local: &str) -> Result<(), String> {
             if !dataset_ok {
                 return Err(format!("bad dataset {dataset:?}"));
             }
-            let sample_ok = plain(&sample.replace('.', "_")) && !sample.starts_with('.');
-            if sample_ok {
-                Ok(())
-            } else {
+            // The segment check above already holds the sample id to the store's rule.
+            if sample.contains('/') {
                 Err(format!("bad sample id {sample:?}"))
+            } else {
+                Ok(())
             }
         }
     }
@@ -315,10 +329,26 @@ mod tests {
             "sample:bln600/../x",
             "sample:bln600/a/b",
             "sample:bln600/.hidden",
+            "sample:bln600/_x",
+            "unt:unt-metadc123456_p+1",
             "loc:",
         ] {
             assert!(bad.parse::<PageId>().is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_sample_id_longer_than_a_segment_is_refused() {
+        let long = format!("sample:bln600/{}", "a".repeat(129));
+        assert!(long.parse::<PageId>().is_err());
+    }
+
+    #[test]
+    fn loc_from_a_tampered_key_is_refused() {
+        let mut key = PageKey::from_doc_id(LOC).unwrap();
+        assert_eq!(PageId::loc(&key).unwrap().stored(), LOC);
+        key.seq = 0;
+        assert!(PageId::loc(&key).is_err());
     }
 
     #[test]
