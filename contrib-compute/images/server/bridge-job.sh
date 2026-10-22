@@ -258,7 +258,7 @@ case "$step" in
     fi
     if [ -n "${SURYA_SAMPLE:-}" ]; then
       [[ "$SURYA_SAMPLE" == "$SHARE_DIR"/* && -f "$SURYA_SAMPLE" ]] || fail "SURYA_SAMPLE must be a file under $SHARE_DIR"
-      [[ "${SURYA_GROUP:-}" =~ ^[a-z][a-z-]{0,31}$ ]] || fail "SURYA_GROUP must be 1-32 of [a-z-]"
+      [[ "${SURYA_GROUP:-}" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || fail "SURYA_GROUP must be 1-32 of [a-z0-9-]"
       page_args+=(--sample "$SURYA_SAMPLE" --group "$SURYA_GROUP")
     fi
     [ "${#page_args[@]}" -gt 0 ] || fail "set SURYA_PAGES or SURYA_SAMPLE"

@@ -78,7 +78,7 @@ impl Page {
     /// places it in.
     pub fn from_sample(row: &crate::assess::SampleRow, group: &str) -> anyhow::Result<Self> {
         crate::assess::check_doc_id(&row.doc_id)?;
-        check_word(group, "group")?;
+        check_group(group)?;
         check_word(&row.lang, "language")?;
         ensure!(
             !row.batch.is_empty(),
@@ -117,7 +117,13 @@ pub fn outputs() -> [&'static str; 5] {
     ]
 }
 
-/// Lower-case ASCII letters and hyphens, as a group or language.
+/// A group as the quality campaign names them: lower-case ASCII letters,
+/// digits and hyphens, 1 to 32 bytes.
+pub fn check_group(s: &str) -> anyhow::Result<()> {
+    usnm_ocr_contract::quality::check_name(s, "group")
+}
+
+/// Lower-case ASCII letters and hyphens, as a language.
 pub fn check_word(s: &str, what: &str) -> anyhow::Result<()> {
     ensure!(
         !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
@@ -142,10 +148,12 @@ mod tests {
         assert_eq!(p.group, "campaign-a");
         assert_eq!(p.lang, "srp");
         assert_eq!(p.batches, vec![("dlc_arlington".to_owned(), 1)]);
-        assert!(
-            Page::from_sample(&row, "campaign-1").is_err(),
-            "digits are not allowed in a group"
+        // The quality campaign's groups carry digits.
+        assert_eq!(
+            Page::from_sample(&row, "campaign-1").unwrap().group,
+            "campaign-1"
         );
+        assert!(Page::from_sample(&row, "Campaign 1").is_err());
     }
 
     #[test]

@@ -245,14 +245,26 @@ impl Job {
         for t in [self.gpu_timeout_secs, self.cpu_timeout_secs] {
             ensure!((60..=14_400).contains(&t), "invalid deadline");
         }
-        for (s, what) in [(&self.group, "group"), (&self.language, "language")] {
-            ensure!(
-                !s.is_empty()
-                    && s.len() <= 32
-                    && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
-                "invalid {what}"
-            );
-        }
+        // The group is the quality campaign's (`campaign-1`, say): lower-case
+        // letters, digits and hyphens. The language is ISO 639-3.
+        ensure!(
+            !self.group.is_empty()
+                && self.group.len() <= 32
+                && self
+                    .group
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            "invalid group"
+        );
+        ensure!(
+            !self.language.is_empty()
+                && self.language.len() <= 32
+                && self
+                    .language
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'-'),
+            "invalid language"
+        );
         Ok(())
     }
 }
@@ -602,6 +614,12 @@ mod tests {
             bad.id = bad.identity().unwrap();
             assert!(bad.validate().is_err(), "{why}");
         }
+        // The quality campaign's groups carry digits; a crop job keeps the
+        // page's group as it is.
+        let mut g = c.clone();
+        g.group = "campaign-1".into();
+        g.id = g.identity().unwrap();
+        g.validate().unwrap();
         // A hand-off page source works as the URL's base too.
         let mut h = c.clone();
         h.input.url =

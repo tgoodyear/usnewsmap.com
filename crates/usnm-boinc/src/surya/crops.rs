@@ -13,7 +13,7 @@ use super::{check_no_hold, units, JOB_FILE, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use image::GenericImageView as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use usnm_ocr_contract::{
     quality::{Job as QualityJob, MAX_ALTO, MAX_JOB_JSON as MAX_QUALITY_JOB, MAX_SCAN},
     surya::{CropRef, Engine, Input, InputMode, Job, VERSION},
@@ -48,9 +48,11 @@ pub struct Summary {
 }
 
 /// Writes the crop units of every staged `usnm_quality` page (those with a
-/// `quality.json`), in doc id order, up to `max_pages` new pages. A page
-/// is done as a whole: its units are written only when every crop cut,
-/// and a page with any unit already there is skipped.
+/// `quality.json`), in doc id order, up to `max_pages` pages with a crop
+/// still to stage. Every crop is cut before any unit of the page is
+/// written; a crop whose unit is already there (its `surya.json` exists)
+/// is left as it is, so a run that stopped part way through a page
+/// finishes it next time without touching units that may be submitted.
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     crate::qwen::check_digest(&opts.engine.image, "--engine-image")?;
     crate::qwen::check_digest(&opts.engine.llama, "--engine-llama")?;
@@ -81,7 +83,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let marker = dir.join(format!("{name}.no_crops"));
-        if marker.exists() || unit_exists(&dir, &name)? {
+        if marker.exists() {
             summary.already += 1;
             continue;
         }
@@ -117,6 +119,9 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             .transpose()?;
         let mut staged = Vec::with_capacity(crops.len());
         for c in &crops {
+            if dir.join(unit_name(&name, &c.id)).join(JOB_FILE).exists() {
+                continue;
+            }
             let crop = CropRef {
                 id: c.id.clone(),
                 rect: c.rect,
@@ -127,6 +132,10 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             let job = crop_job(&quality, &crop, &jpeg, &opts.engine, opts.timeout_secs)
                 .with_context(|| format!("{name}: crop {} job", c.id))?;
             staged.push((crop, jpeg, job));
+        }
+        if staged.is_empty() {
+            summary.already += 1;
+            continue;
         }
         for (crop, jpeg, job) in staged {
             let unit = dir.join(unit_name(&name, &crop.id));
@@ -146,16 +155,6 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
 /// `<doc_id>.<crop_id>`: the page's quality unit name and the crop's id.
 pub fn unit_name(page: &str, crop_id: &str) -> String {
     format!("{page}.{crop_id}")
-}
-
-fn unit_exists(dir: &Path, page: &str) -> anyhow::Result<bool> {
-    let prefix = format!("{page}.");
-    Ok(std::fs::read_dir(dir)?.filter_map(|e| e.ok()).any(|e| {
-        e.file_name()
-            .to_str()
-            .is_some_and(|n| n.starts_with(&prefix) && !n.ends_with(".no_crops"))
-            && e.path().join(JOB_FILE).exists()
-    }))
 }
 
 /// The box's pixels, clamped to the page, as a JPEG.
@@ -294,6 +293,36 @@ mod tests {
         // A second run stages nothing new.
         let s = run(&opts).await.unwrap();
         assert_eq!((s.pages, s.staged, s.already), (0, 0, 1));
+        // A run that stopped after the first crop's unit was written
+        // finishes the page next time and leaves that unit alone.
+        let first = units(&opts.root).join(unit_name(page, &expected[0].id));
+        let kept = std::fs::read(first.join(JOB_FILE)).unwrap();
+        for c in &expected[1..] {
+            std::fs::remove_dir_all(units(&opts.root).join(unit_name(page, &c.id))).unwrap();
+        }
+        let s = run(&opts).await.unwrap();
+        assert_eq!(
+            (s.pages, s.staged, s.already),
+            (1, expected.len() - 1, 0),
+            "{s:?}"
+        );
+        assert_eq!(std::fs::read(first.join(JOB_FILE)).unwrap(), kept);
+        for c in &expected {
+            assert!(units(&opts.root)
+                .join(unit_name(page, &c.id))
+                .join(JOB_FILE)
+                .exists());
+        }
+        // A quality group with a digit, as the campaign names them, is kept.
+        let mut qjob = qjob;
+        qjob.group = "campaign-1".into();
+        let crop = CropRef {
+            id: "c01".into(),
+            rect: [10, 20, 500, 60],
+            stratum: "wc-low/top".into(),
+        };
+        let job = crop_job(&qjob, &crop, b"jpeg", &engine(), 600).unwrap();
+        assert_eq!(job.group, "campaign-1");
     }
 
     #[test]

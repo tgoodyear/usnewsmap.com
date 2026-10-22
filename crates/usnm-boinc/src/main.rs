@@ -668,7 +668,7 @@ enum Surya {
         /// pages of --group, in their batch, and each unit keeps its row as sample.json.
         #[arg(long, requires = "group")]
         sample: Option<PathBuf>,
-        /// The group the sample's pages are staged as (`campaign-a`, say: lower-case letters and hyphens).
+        /// The group the sample's pages are staged as (the quality campaign's, `campaign-1` say).
         #[arg(long)]
         group: Option<String>,
         #[arg(long)]

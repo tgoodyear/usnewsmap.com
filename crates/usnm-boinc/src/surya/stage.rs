@@ -7,7 +7,7 @@
 //! time and at least `gap` (5 s or more) between any two; no retries; a
 //! 403, 429 or 5xx, a network failure, or an HTML page in place of a file
 //! writes a hold and stops the run. A page no source has is marked missing.
-use super::{check_no_hold, check_word, units, Page, JOB_FILE, PAGE_FILE};
+use super::{check_group, check_no_hold, check_word, units, Page, JOB_FILE, PAGE_FILE};
 use crate::{atomic, scans};
 use anyhow::{ensure, Context};
 use std::{
@@ -77,7 +77,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         if summary.staged + summary.missing >= opts.max_pages {
             break;
         }
-        check_word(&p.group, "group")?;
+        check_group(&p.group)?;
         check_word(&p.lang, "language")?;
         let unit = dir.join(&p.doc_id);
         if unit.join(JOB_FILE).exists() || unit.join("missing").exists() {
@@ -278,7 +278,7 @@ pub fn benchmark_with_cpu_modes(
             ids.insert(&input.sample_id),
             "duplicate benchmark sample ID"
         );
-        check_word(&input.group, "group")?;
+        check_group(&input.group)?;
         check_word(&input.language, "language")?;
         ensure!(
             input.source_url.starts_with("https://") && !input.license.trim().is_empty(),
