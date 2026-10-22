@@ -124,6 +124,17 @@ Requests to LoC go one at a time, at least 5 s apart, with no retries, as for th
 
 To clear a hold, read `<campaign>/HOLD`, deal with the cause, and delete it (on the share, for example with `az storage file delete`).
 
+### The same pages and crops as the quality campaign (#968)
+
+To compare Surya with Qwen, Tesseract and American Stories on the same text, stage from the quality campaign rather than a hand-written page list:
+
+- `usnm-boinc surya stage --sample <sample.jsonl> --group <name>` takes the rows `quality sample` drew (one page per row, in its batch) as pages of `<name>`, and keeps each row in its unit as `sample.json`, so a collector can weigh the page as the quality campaign does. `--page` still works, alone or alongside.
+- `usnm-boinc surya stage-crops --quality-root <root> --root <campaign>` writes one unit per crop of every staged `usnm_quality` page: the crops the page's `usnm_qwen` unit reads (`crop_seed` and `k_crops` from its `quality.json`, the recipe in `crates/usnm-ocr-quality/src/crops.rs`), cut here from the staged `page.jpg` as JPEGs at quality 95. The unit is `units/<doc_id>.<crop_id>`; its job carries `crop` (`id`, `box`, `stratum`), reads `whole` only, with one deadline (`--timeout-secs`, 600 s by default), and its `input.url` is the page's source with the box as an `#xywh=` fragment. A page whose ALTO has no line the recipe can cut gets a `<doc_id>.no_crops` marker.
+
+On the bridge, the steps are `surya-stage` with `SURYA_SAMPLE=<share>/quality/<campaign>/sample.jsonl SURYA_GROUP=<group>` (instead of, or beside, `SURYA_PAGES`) and `surya-stage-crops` with `QUALITY_CAMPAIGN=<campaign>` (`SURYA_MAX` pages, `SURYA_TIMEOUT_SECS`); both then go through `surya-submit` as any unit.
+
+A crop unit takes seconds rather than the 40 minutes a tiled page takes on CPU, so every plan class can run it. `submit` gives it a hundredth of a page's fpops estimate and bound, an 8 GiB memory bound and a one-day delay bound, at the same quorum of two. `check` and `compare` treat it as any unit: `text-whole.txt` is the crop's text. A page unit's job is unchanged, and keeps the identity it had before crops existed.
+
 `surya-summary` prints a table of every kept result (page, client, plan class, runtime, GPU, and per mode the outcome, device, time, memory) and every compared pair, and writes it to `<campaign>/summary.md`. A unit left at `submitting` is resolved as for the assessment.
 
 To check a host or the image without LoC or BOINC, make a unit from any image and run it:

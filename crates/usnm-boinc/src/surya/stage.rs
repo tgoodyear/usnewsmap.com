@@ -11,6 +11,7 @@ use super::{check_no_hold, check_word, units, Page, JOB_FILE, PAGE_FILE};
 use crate::{atomic, scans};
 use anyhow::{ensure, Context};
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -38,7 +39,14 @@ pub struct Options {
     pub scan_archive: Option<String>,
     /// Where batch manifests and METS are kept between runs.
     pub batch_cache: Option<PathBuf>,
+    /// The sample rows the pages came from (`--sample`), by doc id: each is
+    /// kept in its unit as `sample.json`, as `quality stage` does, so a
+    /// collector can weigh the page.
+    pub sample_rows: BTreeMap<String, crate::assess::SampleRow>,
 }
+
+/// The sample row kept in a unit staged from `--sample`.
+pub const SAMPLE_FILE: &str = crate::quality::stage::SAMPLE_FILE;
 
 #[derive(Debug, Default)]
 pub struct Summary {
@@ -128,6 +136,9 @@ async fn page(src: &scans::Sources, p: &Page, unit: &Path, opts: &Options) -> an
     );
     ensure!(jpg.bytes.len() <= MAX_SCAN, "JPEG over size limit");
     atomic(&unit.join(PAGE_FILE), &jpg.bytes)?;
+    if let Some(row) = opts.sample_rows.get(&p.doc_id) {
+        atomic(&unit.join(SAMPLE_FILE), &serde_json::to_vec(row)?)?;
+    }
     let mut job = Job {
         v: VERSION,
         id: String::new(),
@@ -144,6 +155,7 @@ async fn page(src: &scans::Sources, p: &Page, unit: &Path, opts: &Options) -> an
         cpu_modes: opts.cpu_modes.clone(),
         gpu_timeout_secs: opts.gpu_timeout_secs,
         cpu_timeout_secs: opts.cpu_timeout_secs,
+        crop: None,
     };
     job.id = job.identity()?;
     job.validate().context("staged job")?;
@@ -180,6 +192,7 @@ pub fn local_unit(
         cpu_modes: modes,
         gpu_timeout_secs: timeout_secs,
         cpu_timeout_secs: timeout_secs,
+        crop: None,
     };
     job.id = job.identity()?;
     job.validate()?;
@@ -305,6 +318,7 @@ pub fn benchmark_with_cpu_modes(
             cpu_modes: cpu_modes.to_vec(),
             gpu_timeout_secs: 1800,
             cpu_timeout_secs: 5400,
+            crop: None,
         };
         job.id = job.identity()?;
         job.validate()?;
