@@ -1117,7 +1117,8 @@ enum Qwen {
         max_tokens_per_1000px2: u32,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
-        /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 64).
+        /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 32),
+        /// each bundle's qwen.json within the 512 KiB the workers read.
         #[arg(long, default_value_t = 1)]
         bundle_size: usize,
     },

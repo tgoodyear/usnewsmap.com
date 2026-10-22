@@ -53,6 +53,7 @@ use usnm_ocr_contract::{
     },
     surya::Host,
 };
+use usnm_ocr_quality::qwen_pages::QwenPages;
 
 /// Checks the unit before anything runs: the job, the page and the engine.
 pub fn prepare(work: &Path) -> anyhow::Result<(Job, Vec<u8>)> {
@@ -634,34 +635,13 @@ impl QwenCheckpoint {
     }
 }
 
-fn crop_png_for_job(
-    job: &Job,
-    single_page: Option<&image::DynamicImage>,
-    bundle_pages: &BTreeMap<String, image::DynamicImage>,
-    crop: &Crop,
-) -> anyhow::Result<Vec<u8>> {
-    if job.pages.is_empty() {
-        let page = single_page.context("missing decoded page")?;
-        crop_png(page, crop)
-    } else {
-        let (doc, _) = crop
-            .id
-            .split_once(':')
-            .context("bundle crop id missing doc_id prefix")?;
-        let page = bundle_pages
-            .get(doc)
-            .with_context(|| format!("bundle page {doc} not found"))?;
-        crop_png(page, crop)
-    }
-}
-
 /// Reads every crop within the deadline; sets the outcome and checkpoints per crop.
 #[allow(clippy::too_many_arguments)]
 fn read_crops(
     work: &Path,
     job: &Job,
-    single_page: Option<&image::DynamicImage>,
-    bundle_pages: &BTreeMap<String, image::DynamicImage>,
+    page: &[u8],
+    pages: &mut QwenPages,
     server: &Server,
     started: Instant,
     deadline: Duration,
@@ -705,7 +685,10 @@ fn read_crops(
             );
             break;
         }
-        let png = match crop_png_for_job(job, single_page, bundle_pages, crop) {
+        let png = match pages
+            .page_for(job, page, crop)
+            .and_then(|p| crop_png(p, crop))
+        {
             Ok(p) => p,
             Err(e) => {
                 diag.section(&format!("crop {}", crop.id), &format!("{e:#}"), 512);
@@ -776,36 +759,14 @@ fn read_unit(
         .into(),
     );
     let started = Instant::now();
-    let mut single_page = None;
-    let mut bundle_pages = BTreeMap::new();
-    if job.pages.is_empty() {
-        match image::load_from_memory(page) {
-            Ok(p) => single_page = Some(p),
-            Err(e) => {
-                diag.section("page", &format!("decoding page.jpg: {e}"), 512);
-                return done;
-            }
+    // A bundle's pages decode one at a time as the crops reach them (#794).
+    let mut pages = match QwenPages::open(job, page) {
+        Ok(p) => p,
+        Err(e) => {
+            diag.section("page", &format!("{e:#}"), 512);
+            return done;
         }
-    } else {
-        for bp in &job.pages {
-            let slice = match bp.input.extract(page, "page") {
-                Ok(s) => s,
-                Err(e) => {
-                    diag.section("page", &format!("{}: {e:#}", bp.doc_id), 512);
-                    return done;
-                }
-            };
-            match image::load_from_memory(slice) {
-                Ok(p) => {
-                    bundle_pages.insert(bp.doc_id.clone(), p);
-                }
-                Err(e) => {
-                    diag.section("page", &format!("decoding {}: {e}", bp.doc_id), 512);
-                    return done;
-                }
-            }
-        }
-    }
+    };
     let server = match serve(model, gpu, threads, deadline) {
         Ok(s) => s,
         Err(e) => {
@@ -818,15 +779,7 @@ fn read_unit(
     done.load_ms = server.load_ms;
     done.diag = server.diag.clone();
     read_crops(
-        work,
-        job,
-        single_page.as_ref(),
-        &bundle_pages,
-        &server,
-        started,
-        deadline,
-        diag,
-        &mut done,
+        work, job, page, &mut pages, &server, started, deadline, diag, &mut done,
     );
     let stats = server.stats();
     let log_text = server.log_text();

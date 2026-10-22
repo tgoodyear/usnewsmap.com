@@ -15,7 +15,6 @@
 //!    automatically report bounded diagnostics through standard BOINC stderr.
 use anyhow::{bail, ensure, Context};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use image::GenericImageView as _;
 use sha2::Digest as _;
 use std::{
     collections::BTreeMap,
@@ -36,9 +35,12 @@ use usnm_ocr_contract::{
     },
     surya::Host,
 };
-use usnm_ocr_quality::slot::{
-    read_bounded, resolve_slot_file, tail, write_atomic, BoincControl, Diag, DIAG_FILE,
-    FINISH_FILE, FRACTION_FILE, PAGE_FILE, RESULT_FILE,
+use usnm_ocr_quality::{
+    qwen_pages::QwenPages,
+    slot::{
+        read_bounded, resolve_slot_file, tail, write_atomic, BoincControl, Diag, DIAG_FILE,
+        FINISH_FILE, FRACTION_FILE, PAGE_FILE, RESULT_FILE,
+    },
 };
 
 pub const JOB_FILE: &str = "qwen.json";
@@ -780,8 +782,10 @@ fn gpu_used_mib(dev: u32) -> Option<u64> {
 
 pub struct Loaded {
     pub job: Job,
-    pub page: image::DynamicImage,
-    pub bundle_pages: BTreeMap<String, image::DynamicImage>,
+    /// `page.jpg` as read: one page, or a bundle's pages end to end.
+    pub page_bytes: Vec<u8>,
+    /// The decoded page, one at a time in a bundle (#794).
+    pub pages: QwenPages,
 }
 
 /// Per-crop checkpoint state persisted atomically in `qwen_checkpoint.json`
@@ -1048,52 +1052,12 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
         job.input.matches(&page_bytes),
         "input page checksum mismatch"
     );
-    if job.pages.is_empty() {
-        let page = image::load_from_memory(&page_bytes).context("decoding page.jpg")?;
-        let (w, h) = page.dimensions();
-        for c in &job.crops {
-            let [_, _, x1, y1] = c.rect;
-            ensure!(
-                x1 <= w && y1 <= h,
-                "crop {} {:?} is outside a {w}x{h} page",
-                c.id,
-                c.rect
-            );
-        }
-        Ok(Loaded {
-            job,
-            page,
-            bundle_pages: BTreeMap::new(),
-        })
-    } else {
-        let mut bundle_pages = BTreeMap::new();
-        let mut first_page: Option<image::DynamicImage> = None;
-        for bp in &job.pages {
-            let slice = bp.input.extract(&page_bytes, "page")?;
-            let img = image::load_from_memory(slice)
-                .with_context(|| format!("decoding page.jpg for {}", bp.doc_id))?;
-            let (w, h) = img.dimensions();
-            for c in &bp.crops {
-                let [_, _, x1, y1] = c.rect;
-                ensure!(
-                    x1 <= w && y1 <= h,
-                    "crop {}:{} {:?} is outside a {w}x{h} page",
-                    bp.doc_id,
-                    c.id,
-                    c.rect
-                );
-            }
-            if first_page.is_none() {
-                first_page = Some(img.clone());
-            }
-            bundle_pages.insert(bp.doc_id.clone(), img);
-        }
-        Ok(Loaded {
-            job,
-            page: first_page.expect("non-empty bundle pages"),
-            bundle_pages,
-        })
-    }
+    let pages = QwenPages::open(&job, &page_bytes)?;
+    Ok(Loaded {
+        job,
+        page_bytes,
+        pages,
+    })
 }
 
 pub fn crop_png(page: &image::DynamicImage, c: &Crop) -> anyhow::Result<Vec<u8>> {
@@ -1104,21 +1068,6 @@ pub fn crop_png(page: &image::DynamicImage, c: &Crop) -> anyhow::Result<Vec<u8>>
     sub.write_to(&mut out, image::ImageFormat::Png)
         .with_context(|| format!("encoding crop {}", c.id))?;
     Ok(out.into_inner())
-}
-
-pub fn crop_png_for_loaded(l: &Loaded, c: &Crop) -> anyhow::Result<Vec<u8>> {
-    if l.job.pages.is_empty() {
-        crop_png(&l.page, c)
-    } else {
-        let (doc, _) =
-            c.id.split_once(':')
-                .context("bundle crop id missing doc_id prefix")?;
-        let page = l
-            .bundle_pages
-            .get(doc)
-            .with_context(|| format!("bundle page {doc} not found"))?;
-        crop_png(page, c)
-    }
 }
 
 pub fn clean_reading(s: &str) -> String {
@@ -1583,7 +1532,7 @@ pub fn run_slot_with(
     }
 
     let (mut result, readings) = match prepare(work) {
-        Ok(l) => {
+        Ok(mut l) => {
             diag.section(
                 "unit",
                 &format!(
@@ -1638,7 +1587,7 @@ pub fn run_slot_with(
                 });
                 run_crops(
                     work,
-                    &l,
+                    &mut l,
                     &host,
                     &gpu,
                     existing_port,
@@ -1735,7 +1684,7 @@ pub fn run_slot_with(
 #[allow(clippy::too_many_arguments)]
 fn run_crops(
     work: &Path,
-    l: &Loaded,
+    l: &mut Loaded,
     host: &Host,
     gpu: &GpuState,
     existing_port: Option<u16>,
@@ -1877,7 +1826,11 @@ fn run_crops(
             break;
         }
         let remaining = deadline.saturating_sub(elapsed);
-        let png = match crop_png_for_loaded(l, crop) {
+        let png = match l
+            .pages
+            .page_for(&l.job, &l.page_bytes, crop)
+            .and_then(|page| crop_png(page, crop))
+        {
             Ok(b) => b,
             Err(e) => {
                 diag.section("crop error", &format!("{}: {e:#}", crop.id), 1024);

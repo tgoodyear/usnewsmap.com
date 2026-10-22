@@ -35,7 +35,8 @@ pub struct Options {
     pub cpu_timeout_secs: u32,
     pub max_tokens_per_1000px2: u32,
     pub max_pages: usize,
-    /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 64).
+    /// Pack staged pages into multi-page bundle workunits of up to this many pages
+    /// (1 to [`MAX_BUNDLE_PAGES`]).
     pub bundle_size: usize,
 }
 
@@ -45,7 +46,15 @@ pub struct Summary {
     pub no_crops: usize,
     pub already: usize,
     pub bundles: usize,
+    /// Pages whose one-page bundle would not fit in `qwen.json`: marked
+    /// `no_bundle` and never published.
+    pub no_bundle: usize,
 }
+
+/// The source name of a bundle's `page.jpg`.
+const BUNDLE_SOURCE: &str = "bundle:page.jpg";
+/// The marker on a staged page too large to publish in any bundle.
+const NO_BUNDLE: &str = "no_bundle";
 
 /// Writes one unit per staged `usnm_quality` page (those with a
 /// `quality.json`), in doc id order, up to `max_pages` new ones. When
@@ -157,19 +166,33 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         job.id = job.identity()?;
         job.validate()
             .with_context(|| format!("{name}: staged job"))?;
-        atomic(&unit.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
+        let json = serde_json::to_vec_pretty(&job)?;
+        ensure!(
+            json.len() <= MAX_JOB_JSON,
+            "{name}: qwen.json is {} bytes, over the {MAX_JOB_JSON}-byte limit",
+            json.len()
+        );
+        atomic(&unit.join(JOB_FILE), &json)?;
         summary.staged += 1;
     }
     if bundle_size > 1 {
-        summary.bundles = pack_bundles(&page_dir, &units_dir, bundle_size)?;
+        (summary.bundles, summary.no_bundle) = pack_bundles(&page_dir, &units_dir, bundle_size)?;
     }
     Ok(summary)
 }
 
 /// Packs any staged single-page units in `page_dir` that are not yet present in
 /// a bundle under `units_dir` into multi-page bundle units of up to
-/// `bundle_size` pages (`MAX_BUNDLE_SCAN` and `MAX_BUNDLE_CROPS` bounded).
-fn pack_bundles(page_dir: &Path, units_dir: &Path, bundle_size: usize) -> anyhow::Result<usize> {
+/// `bundle_size` pages, each within `MAX_BUNDLE_SCAN`, `MAX_BUNDLE_CROPS` and,
+/// measured on the manifest as it will be written, `MAX_JOB_JSON`, the limit
+/// submit and the workers read `qwen.json` with. A page whose one-page bundle
+/// would not fit gets a `no_bundle` marker and is never published. Returns the
+/// bundles written and the pages marked.
+fn pack_bundles(
+    page_dir: &Path,
+    units_dir: &Path,
+    bundle_size: usize,
+) -> anyhow::Result<(usize, usize)> {
     let mut bundled_docs = BTreeSet::new();
     let mut existing_bundles = 0usize;
     if units_dir.exists() {
@@ -194,57 +217,75 @@ fn pack_bundles(page_dir: &Path, units_dir: &Path, bundle_size: usize) -> anyhow
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(page_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.join(JOB_FILE).exists())
+        .filter(|p| p.join(JOB_FILE).exists() && !p.join(NO_BUNDLE).exists())
         .collect();
     candidates.sort();
-    let mut unbundled: Vec<(PathBuf, usize)> = Vec::new();
+    let mut unbundled: Vec<(PathBuf, Job)> = Vec::new();
     for p in candidates {
         let pj: Job = serde_json::from_slice(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?)
             .with_context(|| format!("reading {}/qwen.json", p.display()))?;
         if !bundled_docs.contains(&pj.doc_id) {
-            unbundled.push((p, pj.crops.len()));
+            unbundled.push((p, pj));
         }
     }
     let mut created = 0usize;
-    let mut chunk: Vec<PathBuf> = Vec::new();
+    let mut no_bundle = 0usize;
+    let mut chunk_dirs: Vec<PathBuf> = Vec::new();
+    let mut chunk_jobs: Vec<Job> = Vec::new();
     let mut scan_bytes = 0usize;
     let mut crop_count = 0usize;
-    let flush = |chunk: &mut Vec<PathBuf>, idx: usize| -> anyhow::Result<()> {
-        if chunk.is_empty() {
+    let mut flush = |dirs: &mut Vec<PathBuf>, jobs: &mut Vec<Job>| -> anyhow::Result<()> {
+        if dirs.is_empty() {
             return Ok(());
         }
-        let first_doc = chunk[0]
+        created += 1;
+        let first_doc = dirs[0]
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("bundle");
+        let idx = existing_bundles + created;
         let dir = units_dir.join(format!("bundle-{idx:05}-{first_doc}"));
-        write_bundle(&dir, chunk)?;
-        chunk.clear();
+        write_bundle(&dir, dirs)?;
+        dirs.clear();
+        jobs.clear();
         Ok(())
     };
-    for (u, u_crops) in unbundled {
-        let p_len = std::fs::metadata(u.join(PAGE_FILE))
-            .map(|m| m.len() as usize)
-            .unwrap_or(0);
-        let over_size = !chunk.is_empty()
-            && (chunk.len() >= bundle_size
-                || scan_bytes + p_len > MAX_BUNDLE_SCAN
-                || crop_count + u_crops > MAX_BUNDLE_CROPS);
-        if over_size {
-            created += 1;
-            flush(&mut chunk, existing_bundles + created)?;
+    for (u, pj) in unbundled {
+        let alone = bundle_json_len(std::slice::from_ref(&pj))?;
+        if alone > MAX_JOB_JSON {
+            eprintln!(
+                "{}: a one-page bundle's qwen.json would be {alone} bytes, over the \
+                 {MAX_JOB_JSON}-byte limit; marked {NO_BUNDLE}",
+                pj.doc_id
+            );
+            atomic(
+                &u.join(NO_BUNDLE),
+                format!("a one-page bundle's qwen.json would be {alone} bytes\n").as_bytes(),
+            )?;
+            no_bundle += 1;
+            continue;
+        }
+        let p_len = usize::try_from(pj.input.bytes).unwrap_or(usize::MAX);
+        let mut fits = chunk_jobs.len() < bundle_size
+            && scan_bytes.saturating_add(p_len) <= MAX_BUNDLE_SCAN
+            && crop_count + pj.crops.len() <= MAX_BUNDLE_CROPS;
+        if fits && !chunk_jobs.is_empty() {
+            chunk_jobs.push(pj.clone());
+            fits = bundle_json_len(&chunk_jobs)? <= MAX_JOB_JSON;
+            chunk_jobs.pop();
+        }
+        if !fits {
+            flush(&mut chunk_dirs, &mut chunk_jobs)?;
             scan_bytes = 0;
             crop_count = 0;
         }
-        scan_bytes += p_len;
-        crop_count += u_crops;
-        chunk.push(u);
+        scan_bytes = scan_bytes.saturating_add(p_len);
+        crop_count += pj.crops.len();
+        chunk_dirs.push(u);
+        chunk_jobs.push(pj);
     }
-    if !chunk.is_empty() {
-        created += 1;
-        flush(&mut chunk, existing_bundles + created)?;
-    }
-    Ok(created)
+    flush(&mut chunk_dirs, &mut chunk_jobs)?;
+    Ok((created, no_bundle))
 }
 
 /// The crops of a page: LoC's ALTO in the image's pixels, the recipe's
@@ -306,19 +347,85 @@ pub fn local_unit(
     Ok(job)
 }
 
+/// The bundle job for `pages` (staged single-page jobs, in bundle order),
+/// whose JPEGs lie end to end in that order in the `page.jpg` that `blob`
+/// describes. Each page's slice is its own job's input at its offset.
+fn bundle_job(pages: &[Job], blob: Input) -> anyhow::Result<Job> {
+    let first = pages.first().context("a qwen bundle needs a page")?;
+    let mut offset = 0u64;
+    let mut bundle_pages = Vec::with_capacity(pages.len());
+    let mut crops = Vec::new();
+    for pj in pages {
+        for c in &pj.crops {
+            crops.push(Crop {
+                rect: c.rect,
+                id: format!("{}:{}", pj.doc_id, c.id),
+                loc_text: c.loc_text.clone(),
+                stratum: c.stratum.clone(),
+            });
+        }
+        bundle_pages.push(BundlePage {
+            crops: pj.crops.clone(),
+            doc_id: pj.doc_id.clone(),
+            group: pj.group.clone(),
+            input: BundleSlice {
+                bytes: pj.input.bytes,
+                offset,
+                sha256: pj.input.sha256.clone(),
+                source: pj.input.source.clone(),
+            },
+            language: pj.language.clone(),
+        });
+        offset = offset
+            .checked_add(pj.input.bytes)
+            .context("bundle page.jpg size overflow")?;
+    }
+    let mut job = Job {
+        v: VERSION,
+        id: String::new(),
+        cpu_timeout_secs: first.cpu_timeout_secs,
+        crops,
+        doc_id: first.doc_id.clone(),
+        engine: first.engine.clone(),
+        gpu_timeout_secs: first.gpu_timeout_secs,
+        group: first.group.clone(),
+        input: blob,
+        language: first.language.clone(),
+        max_tokens_per_1000px2: first.max_tokens_per_1000px2,
+        pages: bundle_pages,
+        prompt_version: first.prompt_version,
+    };
+    job.id = job.identity()?;
+    Ok(job)
+}
+
+/// The size of the `qwen.json` a bundle of `pages` would be written as,
+/// without reading a page: the blob's checksum is a placeholder of the same
+/// length as the real one.
+fn bundle_json_len(pages: &[Job]) -> anyhow::Result<usize> {
+    let bytes = pages
+        .iter()
+        .try_fold(0u64, |n, p| n.checked_add(p.input.bytes))
+        .context("bundle page.jpg size overflow")?;
+    let blob = Input {
+        bytes,
+        sha256: "0".repeat(64),
+        source: BUNDLE_SOURCE.to_owned(),
+    };
+    Ok(serde_json::to_vec_pretty(&bundle_job(pages, blob)?)?.len())
+}
+
 /// Packs `page_units` (1 to [`MAX_BUNDLE_PAGES`] staged single-page `usnm_qwen`
 /// unit directories) into a single multi-page bundle unit directory `dir`.
+/// Nothing is written unless the bundle's `page.jpg` and `qwen.json` are
+/// within the limits the workers read them with.
 pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
     ensure!(
         !page_units.is_empty() && page_units.len() <= MAX_BUNDLE_PAGES,
         "a qwen bundle requires 1 to {MAX_BUNDLE_PAGES} page units"
     );
-    std::fs::create_dir_all(dir)?;
     let mut page_blob = Vec::new();
-    let mut bundle_pages = Vec::with_capacity(page_units.len());
-    let mut all_crops = Vec::new();
-    let mut first_job: Option<Job> = None;
-
+    let mut jobs = Vec::with_capacity(page_units.len());
     for u_dir in page_units {
         let pj: Job = serde_json::from_slice(&read(&u_dir.join(JOB_FILE), MAX_JOB_JSON)?)
             .with_context(|| format!("reading {}/qwen.json", u_dir.display()))?;
@@ -334,55 +441,28 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
             "{}: page.jpg checksum mismatch",
             pj.doc_id
         );
-        let page_slice = BundleSlice::of(page_blob.len() as u64, &p_bytes, &pj.input.source);
         page_blob.extend_from_slice(&p_bytes);
-        for c in &pj.crops {
-            all_crops.push(Crop {
-                rect: c.rect,
-                id: format!("{}:{}", pj.doc_id, c.id),
-                loc_text: c.loc_text.clone(),
-                stratum: c.stratum.clone(),
-            });
-        }
-        bundle_pages.push(BundlePage {
-            crops: pj.crops.clone(),
-            doc_id: pj.doc_id.clone(),
-            group: pj.group.clone(),
-            input: page_slice,
-            language: pj.language.clone(),
-        });
-        if first_job.is_none() {
-            first_job = Some(pj);
-        }
+        jobs.push(pj);
     }
     ensure!(
         page_blob.len() <= MAX_BUNDLE_SCAN,
         "bundle page.jpg over size limit"
     );
+    let job = bundle_job(&jobs, Input::of(&page_blob, BUNDLE_SOURCE))?;
     ensure!(
-        all_crops.len() <= MAX_BUNDLE_CROPS,
+        job.crops.len() <= MAX_BUNDLE_CROPS,
         "bundle crops exceed {MAX_BUNDLE_CROPS}"
     );
-    let fj = first_job.expect("non-empty page_units");
-    let mut job = Job {
-        v: VERSION,
-        id: String::new(),
-        cpu_timeout_secs: fj.cpu_timeout_secs,
-        crops: all_crops,
-        doc_id: fj.doc_id,
-        engine: fj.engine,
-        gpu_timeout_secs: fj.gpu_timeout_secs,
-        group: fj.group,
-        input: Input::of(&page_blob, "bundle:page.jpg"),
-        language: fj.language,
-        max_tokens_per_1000px2: fj.max_tokens_per_1000px2,
-        pages: bundle_pages,
-        prompt_version: fj.prompt_version,
-    };
-    job.id = job.identity()?;
     job.validate().context("staged qwen bundle job")?;
+    let json = serde_json::to_vec_pretty(&job)?;
+    ensure!(
+        json.len() <= MAX_JOB_JSON,
+        "bundle qwen.json is {} bytes, over the {MAX_JOB_JSON}-byte limit",
+        json.len()
+    );
+    std::fs::create_dir_all(dir)?;
     atomic(&dir.join(PAGE_FILE), &page_blob)?;
-    atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
+    atomic(&dir.join(JOB_FILE), &json)?;
     Ok(job)
 }
 
@@ -689,6 +769,7 @@ pub(crate) mod tests {
                 no_crops: 0,
                 already: 0,
                 bundles: 2,
+                no_bundle: 0,
             }
         );
         let b1: Job = serde_json::from_slice(
@@ -715,7 +796,100 @@ pub(crate) mod tests {
                 no_crops: 0,
                 already: 3,
                 bundles: 0,
+                no_bundle: 0,
             }
+        );
+    }
+
+    /// A staged single-page unit in `page_dir` with `crops` crops, each with
+    /// the longest LoC text a crop may carry.
+    fn page_unit(page_dir: &Path, doc_id: &str, crops: usize) {
+        let (jpeg, _) = synthetic_page();
+        let u = page_dir.join(doc_id);
+        std::fs::create_dir_all(&u).unwrap();
+        std::fs::write(u.join(PAGE_FILE), &jpeg).unwrap();
+        let mut job = Job {
+            v: VERSION,
+            id: String::new(),
+            cpu_timeout_secs: 7200,
+            crops: (1..=crops)
+                .map(|i| Crop {
+                    rect: [0, 0, 10, 10],
+                    id: format!("c{i:02}"),
+                    loc_text: "a".repeat(usnm_ocr_contract::qwen::MAX_CROP_TEXT),
+                    stratum: "body".into(),
+                })
+                .collect(),
+            doc_id: doc_id.into(),
+            engine: engine(),
+            gpu_timeout_secs: 14_400,
+            group: "test".into(),
+            input: Input::of(&jpeg, "test:page.jpg"),
+            language: "eng".into(),
+            max_tokens_per_1000px2: 4,
+            pages: vec![],
+            prompt_version: PROMPT_VERSION,
+        };
+        job.id = job.identity().unwrap();
+        job.validate().unwrap();
+        let json = serde_json::to_vec_pretty(&job).unwrap();
+        assert!(json.len() <= MAX_JOB_JSON);
+        std::fs::write(u.join(JOB_FILE), json).unwrap();
+    }
+
+    #[test]
+    fn bundles_split_before_qwen_json_exceeds_the_reader_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let page_dir = tmp.path().join("pages");
+        let units_dir = tmp.path().join("units");
+        std::fs::create_dir_all(&units_dir).unwrap();
+        // Eight 8 KiB crop texts per page: about 133 KB of bundle manifest
+        // each, so three pages fit in 512 KiB and four do not.
+        for i in 1..=6 {
+            page_unit(&page_dir, &format!("sn83045462_1890-05-03_ed-1_seq-{i}"), 8);
+        }
+        // Forty: its one-page bundle (crops listed twice) is over the limit.
+        let big = "sn83045462_1890-05-03_ed-1_seq-9";
+        page_unit(&page_dir, big, 40);
+
+        assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (2, 1));
+        assert!(page_dir.join(big).join(NO_BUNDLE).exists());
+        let mut pages = 0;
+        for e in std::fs::read_dir(&units_dir).unwrap() {
+            let bytes = std::fs::read(e.unwrap().path().join(JOB_FILE)).unwrap();
+            assert!(bytes.len() <= MAX_JOB_JSON, "{} bytes", bytes.len());
+            let job: Job = serde_json::from_slice(&bytes).unwrap();
+            job.validate().unwrap();
+            assert_eq!(job.pages.len(), 3);
+            pages += job.pages.len();
+        }
+        assert_eq!(pages, 6);
+
+        // A rerun publishes nothing more.
+        assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn bundle_json_len_is_the_written_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let page_dir = tmp.path().join("pages");
+        let docs = [
+            "sn83045462_1890-05-03_ed-1_seq-1",
+            "sn83045462_1890-05-03_ed-1_seq-2",
+        ];
+        for d in docs {
+            page_unit(&page_dir, d, 2);
+        }
+        let dirs: Vec<PathBuf> = docs.iter().map(|d| page_dir.join(d)).collect();
+        let jobs: Vec<Job> = dirs
+            .iter()
+            .map(|d| serde_json::from_slice(&std::fs::read(d.join(JOB_FILE)).unwrap()).unwrap())
+            .collect();
+        let out = tmp.path().join("bundle");
+        write_bundle(&out, &dirs).unwrap();
+        assert_eq!(
+            bundle_json_len(&jobs).unwrap(),
+            std::fs::read(out.join(JOB_FILE)).unwrap().len()
         );
     }
 

@@ -3507,6 +3507,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "image",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",
