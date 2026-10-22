@@ -30,7 +30,7 @@
 # workspace manifest and lock file only when the packages Cargo resolves for
 # those crates change, and the fixtures, index configs and Quickwit scripts.
 # image and e2e are narrowed the same way: image for the workspace crates
-# usnm-api (Dockerfile) and usnm-ingest (Dockerfile.ingest) build, e2e (the web
+# usnm-api (docker/Dockerfile.api) and usnm-ingest (docker/Dockerfile.ingest) build, e2e (the web
 # end-to-end job) for those usnm-api builds, the API that
 # scripts/ci/start-api-fixtures.sh starts. A crate outside a closure (the BOINC
 # or OCR survey crates, say) runs neither.
@@ -181,7 +181,7 @@ web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtu
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
 # Crates count for these two below, by closure.
 e2e="$rust_files|$web"
-image="$rust_files|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+image="$rust_files|^(web/|ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"

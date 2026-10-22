@@ -239,7 +239,7 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 
 ## The Quickwit image
 
-The searcher sidecar, the ingest image (whose Quickwit is the release's writer) and the ingest job's init container run our build of Quickwit v0.9.1 ([ADR-0013](design/adr/0013-quickwit-from-our-fork.md)). `Dockerfile.quickwit-patched` builds it from our fork, [`tgoodyear/quickwit`](https://github.com/tgoodyear/quickwit), at a pinned commit. `infra/quickwit-image.json` records its digest for each environment, and `infra/main.bicep` and CI's publish read it there; an environment the file doesn't list runs upstream v0.9.1.
+The searcher sidecar, the ingest image (whose Quickwit is the release's writer) and the ingest job's init container run our build of Quickwit v0.9.1 ([ADR-0013](design/adr/0013-quickwit-from-our-fork.md)). `docker/Dockerfile.quickwit-patched` builds it from our fork, [`tgoodyear/quickwit`](https://github.com/tgoodyear/quickwit), at a pinned commit. `infra/quickwit-image.json` records its digest for each environment, and `infra/main.bicep` and CI's publish read it there; an environment the file doesn't list runs upstream v0.9.1.
 
 Build it in an environment's registry, which records the digest in the file:
 
@@ -253,7 +253,7 @@ If your `az` session expires during the build, ACR still finishes it. Once it ha
 **A new patch, or a Quickwit upgrade:**
 
 1. On the fork, commit to the `usnm/v0.9.1-pool` branch (for an upgrade, rebase the commit onto the new upstream tag in a new branch, such as `usnm/v0.9.2-pool`) and tag it with a new `usnm-*` tag, such as `usnm-v0.9.1-pool2`. Names starting `usnm` trigger none of Quickwit's own workflows.
-2. In `Dockerfile.quickwit-patched`, set `QW_COMMIT_HASH` to the tagged commit and `QW_COMMIT_TAGS` to the tag without `usnm-` (`v0.9.1-pool2`), which is also the image's tag. For an upgrade, also take the new version's Dockerfile changes (base images, packages) and its `QW_COMMIT_DATE`, and move the `upstream` pin in `infra/quickwit-image.json` and `Dockerfile.ingest`'s default to the new release (CI checks they match).
+2. In `docker/Dockerfile.quickwit-patched`, set `QW_COMMIT_HASH` to the tagged commit and `QW_COMMIT_TAGS` to the tag without `usnm-` (`v0.9.1-pool2`), which is also the image's tag. For an upgrade, also take the new version's Dockerfile changes (base images, packages) and its `QW_COMMIT_DATE`, and move the `upstream` pin in `infra/quickwit-image.json` and `docker/Dockerfile.ingest`'s default to the new release (CI checks they match).
 3. `scripts/build-quickwit.sh --env prod`, then commit, merge and provision, as above.
 4. Re-run the cold-search test (`scripts/load-cold-searches.py`) and read [the searcher's threads](#searcher-threads).
 
@@ -839,7 +839,7 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
 
 ### The Japanese OCR on-prem
 
-The Japanese OCR (`ja-ocr/jaocr.py run`, #128) runs on an OCR node instead of the Azure job `caj-usnm-jaocr-<env>` (#917: Azure keeps only the search cluster, the API and the web app). It's the same image, built on the node from a pinned commit (`Dockerfile.ja-ocr`), as the node's Arc machine identity.
+The Japanese OCR (`ja-ocr/jaocr.py run`, #128) runs on an OCR node instead of the Azure job `caj-usnm-jaocr-<env>` (#917: Azure keeps only the search cluster, the API and the web app). It's the same image, built on the node from a pinned commit (`docker/Dockerfile.ja-ocr`), as the node's Arc machine identity.
 
 1. **Settings.** `USNM_JA_OCR_ONPREM=true` and `USNM_JA_OCR_JOB=false` in `infra/env/<env>.json` (through a pull request), with `USNM_ONPREM_GROUP` set and the node's Arc identity in that group. Provision. That grants the group read on `curated` and `reference` and create-only writes under `curated/ocr-ja/` and to `reference/status/ocr-ja.json`, with no delete (`infra/modules/jaocr-runner.bicep`). It opens the lake to `USNM_OCR_NODE_IPS` and removes the Azure job.
 2. **Install and start**, on the node as root, from a checkout of the scripts:
@@ -1290,8 +1290,8 @@ scripts/provision.sh --env dev --allow-dirty    # the experiment's settings, bef
 RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD)
 . scripts/lib/acr-build.sh
-acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
-acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f Dockerfile .
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f docker/Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
+acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f docker/Dockerfile.api .
 scripts/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
 scripts/settings.sh --env dev --key USNM_USE_ACR --value true
 scripts/provision.sh --env dev --allow-dirty
@@ -1352,7 +1352,7 @@ Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; 
 
 **What it deploys.** `USNM_SEARCH_COMPARE_TAGS`, ingest image tags separated by commas, gives one standalone searcher per tag, `usnm-qw-cmp-{i}-ca-{env}` (root `http://usnm-qw-cmp-{i}-ca-{env}` inside the environment), of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU each. Each runs as the API sidecar does: searcher and metastore, polling the file-backed metastore in `qw-cluster` every 30 s, with Blob Data Reader on `qw-cluster` only, so it searches the cluster's indexes and can't change them. Each has a cluster id of its own and no seeds, so the two never join and a search never mixes versions. The node wrapper reads `quickwit --version` and, below 0.9, drops the two searcher keys and pins `warmup_single_split_initial_allocation` to 0.9.1's 300 MB (the nightly's default is 1 GB). The bench records the root's Quickwit version, each node's main-runtime busy time and Blob bytes downloaded per pass, and samples the search pool's running and queued split searches every 2 s.
 
-**Images.** The second tag is the ingest image on the nightly's Quickwit (`Dockerfile.ingest`'s `QUICKWIT_IMAGE`; CI always builds the default, v0.9.1):
+**Images.** The second tag is the ingest image on the nightly's Quickwit (`docker/Dockerfile.ingest`'s `QUICKWIT_IMAGE`; CI always builds the default, v0.9.1):
 
 ```sh
 cd ~/code/usnewsmap.com-qwcluster
@@ -1360,9 +1360,9 @@ RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/se
 TAG=qwc-$(git rev-parse --short HEAD); SHA=$(git rev-parse HEAD)
 . scripts/lib/acr-build.sh
 NIGHTLY=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
-acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
-acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG-qw2509" 3600 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
-acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f Dockerfile .
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f docker/Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
+acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG-qw2509" 3600 -f docker/Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
+acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f docker/Dockerfile.api .
 ```
 
 **Smoke test** on an index the cluster already holds (`s1ixb`, the 1% without American Stories, 58 splits): cluster nodes off, so nothing writes while they search; both searchers at the sidecar's 4 vCPU.

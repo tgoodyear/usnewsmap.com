@@ -445,6 +445,7 @@ jobs:
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
+          file: docker/Dockerfile.api
           tags: usnewsmap-api:check
           load: true
           cache-from: type=gha,scope=api
@@ -454,24 +455,24 @@ jobs:
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: Dockerfile.ingest
+          file: docker/Dockerfile.ingest
           tags: usnm-ingest-check
           load: true
           cache-from: type=gha,scope=ingest
           cache-to: type=gha,scope=ingest,mode=max
       - name: The ingest image runs
         run: scripts/ci/check-ingest-image.sh --image usnm-ingest-check
-      # PR builds have no registry, so Dockerfile.ingest's default base is
+      # PR builds have no registry, so docker/Dockerfile.ingest's default base is
       # upstream's image; it must be the one infra/quickwit-image.json pins.
-      - name: Dockerfile.ingest's default Quickwit is the pinned upstream image
+      - name: docker/Dockerfile.ingest's default Quickwit is the pinned upstream image
         run: |
           want=$(jq -r '.upstream | "\(.image):\(.tag)@\(.digest)"' infra/quickwit-image.json)
-          grep -qxF "ARG QUICKWIT_IMAGE=$want" Dockerfile.ingest ||
-            { echo "::error::Dockerfile.ingest's QUICKWIT_IMAGE default isn't $want"; exit 1; }
+          grep -qxF "ARG QUICKWIT_IMAGE=$want" docker/Dockerfile.ingest ||
+            { echo "::error::docker/Dockerfile.ingest's QUICKWIT_IMAGE default isn't $want"; exit 1; }
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: Dockerfile.ja-ocr
+          file: docker/Dockerfile.ja-ocr
           tags: usnm-ja-ocr-check
           load: true
           cache-from: type=gha,scope=ja-ocr
@@ -959,6 +960,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
+          file: docker/Dockerfile.api
           push: true
           cache-from: type=gha,scope=api
           tags: |
@@ -968,7 +970,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: Dockerfile.ingest
+          file: docker/Dockerfile.ingest
           push: true
           cache-from: type=gha,scope=ingest
           build-args: |
@@ -981,7 +983,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: Dockerfile.ja-ocr
+          file: docker/Dockerfile.ja-ocr
           push: true
           cache-from: type=gha,scope=ja-ocr
           tags: |

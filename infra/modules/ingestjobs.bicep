@@ -193,7 +193,7 @@ var ingestCurateMaxRuntimeSecs = 21600
 var ingestTitlesMaxRuntimeSecs = 28800
 
 var scratch = !empty(scratchStorageName)
-// The pipeline runs as uid 10001 (Dockerfile.ingest); a new NFS share's root
+// The pipeline runs as uid 10001 (docker/Dockerfile.ingest); a new NFS share's root
 // belongs to root.
 var scratchDir = '/scratch/usnm'
 // The init container's 0.25 vCPU / 0.5 GiB count toward the replica's

@@ -26,7 +26,7 @@
    "required": ["commit", "engine", "execution", "features", "full", "image", "ingest", "reconstructed", "run_started_at", "templates"],
    "properties": {
     "commit": {"description": "The commit of the last usnewsmap-ingest image pushed before the execution started.", "type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "engine": {"description": "The Quickwit version Dockerfile.ingest pins at the commit.",
+    "engine": {"description": "The Quickwit version docker/Dockerfile.ingest pins at the commit.",
                "oneOf": [{"type": "string", "pattern": "^Quickwit \\d+(\\.\\d+)*$"}, {"type": "null"}]},
     "execution": {"description": "The ingest job execution the run ran in.", "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
     "features": {

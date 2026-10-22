@@ -2,7 +2,7 @@
 
 Issue [#626](https://github.com/tgoodyear/usnewsmap.com/issues/626) adds a CPU-only
 volunteer engine for Japanese scans. It uses the same upstream revision and
-conversion as `Dockerfile.ja-ocr` and `ja-ocr/jaocr.py`, without the Flet desktop UI.
+conversion as `docker/Dockerfile.ja-ocr` and `ja-ocr/jaocr.py`, without the Flet desktop UI.
 Engine-level routing is tracked in [#624](https://github.com/tgoodyear/usnewsmap.com/issues/624).
 
 **Status:** the pinned contract engine and dedicated BOINC lifecycle are

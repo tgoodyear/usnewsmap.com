@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::source::hex;
 
 /// The commit the image was built from (`ARG USNM_GIT_SHA` in
-/// `Dockerfile.ingest`, set by CI). Absent outside CI builds.
+/// `docker/Dockerfile.ingest`, set by CI). Absent outside CI builds.
 const COMMIT_ENV: &str = "USNM_GIT_SHA";
 
 /// What a run builds: which indexes it writes, on which engine.

@@ -155,10 +155,10 @@ build() {
   fi
   acr_build_verified az "$ACR" "$repo:$TAG" 3600 "$@" .
 }
-build usnewsmap-api -f Dockerfile
-build usnewsmap-ingest -f Dockerfile.ingest --build-arg "USNM_GIT_SHA=$SHA" \
+build usnewsmap-api -f docker/Dockerfile.api
+build usnewsmap-ingest -f docker/Dockerfile.ingest --build-arg "USNM_GIT_SHA=$SHA" \
   --build-arg "QUICKWIT_IMAGE=$SERVER/$qw_image@$qw_digest"
-[ "$(aget USNM_JA_OCR_JOB)" != true ] || build usnewsmap-ja-ocr -f Dockerfile.ja-ocr
+[ "$(aget USNM_JA_OCR_JOB)" != true ] || build usnewsmap-ja-ocr -f docker/Dockerfile.ja-ocr
 
 step "Provisioning $ENV_NAME on $TAG"
 aset USNM_IMAGE_TAG "$TAG"

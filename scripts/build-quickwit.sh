@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build our Quickwit image (Dockerfile.quickwit-patched, ADR-0013) in an
+# Build our Quickwit image (docker/Dockerfile.quickwit-patched, ADR-0013) in an
 # environment's registry with ACR Tasks, and record its digest for that
 # environment in infra/quickwit-image.json, where infra/main.bicep (the
 # searcher sidecar, the ingest job's init container) and CI's publish (the
@@ -43,7 +43,7 @@ cd "$(dirname "$0")/.."
 quickwit_az() { az "$@" --subscription "$SUB"; }
 command -v jq > /dev/null || die "jq is needed to record the digest"
 PINS=infra/quickwit-image.json
-DOCKERFILE=Dockerfile.quickwit-patched
+DOCKERFILE=docker/Dockerfile.quickwit-patched
 REPO=quickwit/quickwit-usnm
 
 # One environment's registry and subscription, from its settings. A
