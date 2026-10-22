@@ -10,7 +10,11 @@ and `crops.parquet`), extracts pairwise `cer_vs_loc` / `wer_vs_loc` / `dice_vs_l
 1. Consolidated Parquet tables (`boinc_reader_rows.parquet`,
    `page_quality_joined.parquet`, `title_quality_summary.parquet`,
    `language_quality_summary.parquet`, `reader_language_summary.parquet`,
-   `reader_language_group_summary.parquet`, `summary.md`) under `--out-dir`.
+   `reader_language_group_summary.parquet`, `reader_language_comparison.parquet`,
+   `summary.md`) under `--out-dir`. `reader_language_comparison` pivots
+   `reader_language_summary` to one row per language with `<reader>_page_cer` and
+   `<reader>_crop_cer` columns (hyphens in reader names become underscores), plus
+   `pages` and `crops`, for an apples-to-apples reader comparison across languages.
 2. An indexed SQLite database (`--sqlite-out`) containing the full BOINC
    page/reader/crop tables plus title-level and language-level full-corpus
    damage & quality summaries.
@@ -616,6 +620,51 @@ def build_database(
             """
         )
 
+    # Pivot the per-language, per-reader rollup into one row per language so readers can be
+    # compared side by side. The reader set comes from the summary itself (sorted); a reader
+    # with only page or only crop measures leaves the other column null.
+    comparison_readers = [
+        r[0]
+        for r in con.execute(
+            "SELECT DISTINCT reader FROM reader_language_summary WHERE reader IS NOT NULL ORDER BY reader"
+        ).fetchall()
+    ]
+    comparison_cols = []
+    comparison_names = []
+    for reader in comparison_readers:
+        lit = reader.replace("'", "''")
+        col = reader.replace("-", "_").replace('"', '""')
+        for measure, suffix in (("mean_est_cer", "page_cer"), ("mean_crop_hat_est_cer", "crop_cer")):
+            comparison_names.append(f'"{col}_{suffix}"')
+            comparison_cols.append(
+                f"MAX(CASE WHEN reader = '{lit}' THEN {measure} END) AS {comparison_names[-1]}"
+            )
+    # The counts are the language's distinct samples, not one reader's: readers can cover
+    # different pages (a campaign stages only the readers it asked for), so the largest
+    # per-reader count would understate a language whose readers share few pages. Crops
+    # keep the per-reader policy of one count per campaign a crop appears in.
+    # The collector names the crop column crop_id; the empty fallback view above names it id.
+    crop_id_col = "crop_id" if any(
+        r[0] == "crop_id" for r in con.execute("DESCRIBE raw_boinc_crops").fetchall()
+    ) else "id"
+    con.execute(
+        "CREATE TABLE reader_language_comparison AS "
+        "WITH readers AS (SELECT language, "
+        + ", ".join(comparison_cols)
+        + " FROM reader_language_summary GROUP BY language), "
+        "page_counts AS (SELECT language, COUNT(DISTINCT doc_id) AS pages "
+        "FROM boinc_reader_rows GROUP BY language), "
+        "crop_counts AS (SELECT d.language, "
+        f"COUNT(DISTINCT c.campaign || '|' || c.doc_id || '|' || c.{crop_id_col}) AS crops "
+        "FROM raw_boinc_crops c JOIN doc_language d USING (doc_id) GROUP BY d.language) "
+        "SELECT p.language, COALESCE(pc.pages, 0) AS pages, COALESCE(cc.crops, 0) AS crops, "
+        + ", ".join(f"p.{name}" for name in comparison_names)
+        + " FROM readers p "
+        "LEFT JOIN page_counts pc ON pc.language IS NOT DISTINCT FROM p.language "
+        "LEFT JOIN crop_counts cc ON cc.language IS NOT DISTINCT FROM p.language "
+        "ORDER BY p.language"
+    )
+
     con.execute(
         """
         CREATE TABLE router_regime_summary AS
@@ -703,6 +752,7 @@ def build_database(
         "reader_engine_summary",
         "reader_language_summary",
         "reader_language_group_summary",
+        "reader_language_comparison",
         "router_regime_summary",
         "next_wave_candidates",
     ]:
@@ -728,6 +778,7 @@ def build_database(
             "reader_engine_summary",
             "reader_language_summary",
             "reader_language_group_summary",
+            "reader_language_comparison",
             "router_regime_summary",
         ]:
             desc = con.execute(f"DESCRIBE {tbl}").fetchall()
@@ -856,6 +907,29 @@ def build_database(
             + " | ".join(str(x) if x is not None else "-" for x in r[3:])
             + " |"
         )
+
+    # Row layout: language, pages, crops, then (page_cer, crop_cer) per reader.
+    comparison_rows = con.execute("SELECT * FROM reader_language_comparison").fetchall()
+    md_lines.extend(["", "## Reader Comparison by Language (`reader_language_comparison`)"])
+    for title, count_label, count_idx, offset in [
+        ("Page-level estimated CER", "Pages", 1, 3),
+        ("Crop-level hat estimated CER", "Crops", 2, 4),
+    ]:
+        md_lines.extend(
+            [
+                "",
+                f"### {title}",
+                "",
+                "| Language | " + count_label + " | " + " | ".join(comparison_readers) + " |",
+                "|---|---:|" + "---:|" * len(comparison_readers),
+            ]
+        )
+        for r in comparison_rows:
+            cells = [
+                str(r[offset + 2 * i]) if r[offset + 2 * i] is not None else "-"
+                for i in range(len(comparison_readers))
+            ]
+            md_lines.append(f"| `{r[0]}` | {r[count_idx]:,} | " + " | ".join(cells) + " |")
 
     (out_dir / "summary.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     return stats

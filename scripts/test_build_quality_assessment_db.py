@@ -372,7 +372,8 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             )
 
             out_dir = root / "out"
-            mod.build_database(quality_root, manifest_pq, out_dir, None)
+            sqlite_path = root / "assessment.sqlite"
+            mod.build_database(quality_root, manifest_pq, out_dir, sqlite_path)
 
             rows = con.execute(
                 f"""
@@ -431,6 +432,69 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             self.assertEqual(group_rows[0], 4)
             summary = (out_dir / "summary.md").read_text(encoding="utf-8")
             self.assertIn("reader_language_summary", summary)
+
+            # Pivoted comparison: one row per language, two columns per reader (sorted).
+            cmp_pq = out_dir / "reader_language_comparison.parquet"
+            cmp_cols = [
+                d[0]
+                for d in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{cmp_pq}')").fetchall()
+            ]
+            self.assertEqual(
+                cmp_cols,
+                [
+                    "language", "pages", "crops",
+                    "loc_page_cer", "loc_crop_cer",
+                    "ours_surya_page_cer", "ours_surya_crop_cer",
+                    "ours_tesseract_page_cer", "ours_tesseract_crop_cer",
+                    "surya_page_cer", "surya_crop_cer",
+                    "vlm_page_cer", "vlm_crop_cer",
+                ],
+            )
+            cmp_rows = con.execute(
+                f"SELECT * FROM read_parquet('{cmp_pq}') ORDER BY language"
+            ).fetchall()
+            cmp_by_lang = {r[0]: dict(zip(cmp_cols, r)) for r in cmp_rows}
+            self.assertEqual(list(cmp_by_lang), ["deu", "eng"])
+            eng = cmp_by_lang["eng"]
+            self.assertEqual((eng["pages"], eng["crops"]), (2, 2))
+            self.assertAlmostEqual(eng["ours_surya_page_cer"], 0.06)
+            # ours-surya has pages only; surya has crops only; loc has both.
+            self.assertIsNone(eng["ours_surya_crop_cer"])
+            self.assertIsNone(eng["surya_page_cer"])
+            self.assertAlmostEqual(eng["surya_crop_cer"], 0.06)
+            self.assertAlmostEqual(eng["loc_page_cer"], 0.15)
+            self.assertAlmostEqual(eng["loc_crop_cer"], 0.25)
+            self.assertIsNone(eng["ours_tesseract_page_cer"])
+            self.assertIsNone(eng["vlm_page_cer"])
+            self.assertIsNone(eng["vlm_crop_cer"])
+            deu = cmp_by_lang["deu"]
+            self.assertEqual((deu["pages"], deu["crops"]), (1, 1))
+            self.assertAlmostEqual(deu["ours_tesseract_page_cer"], 0.12)
+            self.assertAlmostEqual(deu["surya_crop_cer"], 0.10)
+
+            self.assertIn("## Reader Comparison by Language (`reader_language_comparison`)", summary)
+            self.assertIn("### Page-level estimated CER", summary)
+            self.assertIn("### Crop-level hat estimated CER", summary)
+            self.assertIn("| Language | Pages | loc | ours-surya | ours-tesseract | surya | vlm |", summary)
+            self.assertIn("| Language | Crops | loc | ours-surya | ours-tesseract | surya | vlm |", summary)
+            self.assertIn("| `eng` | 2 | 0.15 | 0.06 | - | - | - |", summary)
+            self.assertIn("| `eng` | 2 | 0.25 | - | - | 0.06 | - |", summary)
+            self.assertLess(
+                summary.index("Reader Quality by Language"),
+                summary.index("Reader Comparison by Language"),
+            )
+            scon = sqlite3.connect(sqlite_path)
+            try:
+                sqlite_cols = [r[1] for r in scon.execute("PRAGMA table_info(reader_language_comparison)")]
+                self.assertEqual(sqlite_cols, cmp_cols)
+                self.assertAlmostEqual(
+                    scon.execute(
+                        "SELECT ours_surya_page_cer FROM reader_language_comparison WHERE language = 'eng'"
+                    ).fetchone()[0],
+                    0.06,
+                )
+            finally:
+                scon.close()
 
     @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
     def test_reader_language_summary_averages_all_null_varchar_crop_scores(self):
@@ -502,6 +566,89 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             ).fetchall()
             self.assertEqual(rows, [("loc", 1, None, None, None, 0), ("ours-surya", 0, None, None, None, 0),
                                     ("surya", 1, None, None, None, 0)])
+
+    @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
+    def test_reader_language_comparison_counts_distinct_samples_across_readers(self):
+        # Campaigns stage only the readers they ask for, so two English pages read by
+        # different readers are two pages of the language, not the larger reader's one.
+        # A crop counts once per campaign it appears in, as the per-reader counts do.
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quality_root = root / "quality"
+            con = duckdb.connect()
+            for campaign, page_rows, crop_rows in (
+                ("v1-wave11",
+                 "('doc-en-1', 'english', 'eng', 'loc', 1000, TRUE, 0.10, 0.90, 0.92, 0.80, NULL, NULL), "
+                 "('doc-en-2', 'english', 'eng', 'ours-tesseract', 900, TRUE, 0.20, 0.80, 0.82, 0.70, 0.3, 0.7)",
+                 "('doc-en-1', 'c0', 'body', 'loc', 'loc text', NULL::VARCHAR, NULL::DOUBLE, NULL::DOUBLE, 0.25), "
+                 "('doc-en-2', 'c1', 'body', 'ours-tesseract', 'tess text', NULL::VARCHAR, NULL::DOUBLE, NULL::DOUBLE, 0.35)"),
+                ("v1-wave12",
+                 "('doc-en-1', 'english', 'eng', 'loc', 1000, TRUE, 0.10, 0.90, 0.92, 0.80, NULL, NULL)",
+                 "('doc-en-1', 'c0', 'body', 'loc', 'loc text', NULL::VARCHAR, NULL::DOUBLE, NULL::DOUBLE, 0.25)"),
+            ):
+                cdir = quality_root / campaign
+                cdir.mkdir(parents=True)
+                con.execute(
+                    f"""
+                    COPY (
+                        SELECT *, 'cpu'::VARCHAR AS plan_class, '{{}}'::VARCHAR AS pairs_json,
+                        0.8::DOUBLE AS findable_places, 0.1::DOUBLE AS damage_rate,
+                        0.2::DOUBLE AS function_share, 0.01::DOUBLE AS garbage_share,
+                        500::BIGINT AS known_words, 900::BIGINT AS consensus_words,
+                        0.8::DOUBLE AS legibility_ceiling, 3000::BIGINT AS width,
+                        4000::BIGINT AS height, 0.1::DOUBLE AS skew_deg,
+                        5000.0::DOUBLE AS blur, 180.0::DOUBLE AS contrast,
+                        2.0::DOUBLE AS noise, 0.05::DOUBLE AS bleed_through,
+                        0.2::DOUBLE AS ink_density, 10::BIGINT AS blocks,
+                        200::BIGINT AS lines, 900::BIGINT AS line_words,
+                        30.0::DOUBLE AS line_height_px, 5::BIGINT AS columns,
+                        0.8::DOUBLE AS mean_word_conf FROM (VALUES {page_rows}
+                        ) AS t(doc_id, "group", language, reader, words, hat_determined, est_cer,
+                               completeness, precision, findable_content, cer_vs_loc, dice_vs_loc)
+                    ) TO '{cdir / "pages.parquet"}' (FORMAT PARQUET)
+                    """
+                )
+                con.execute(
+                    f"""
+                    COPY (
+                        SELECT * FROM (VALUES {crop_rows}
+                        ) AS t(doc_id, crop_id, stratum, reader, text, vlm_text, cer_vs_vlm, dice_vs_vlm, hat_est_cer)
+                    ) TO '{cdir / "crops.parquet"}' (FORMAT PARQUET)
+                    """
+                )
+            manifest_pq = root / "manifest.parquet"
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (VALUES
+                        ('doc-en-1', 'sn1', '1895-01-01', 1, 1, 'b1', 'v1', 'eng', 'reocr', 0.2, 'u1'),
+                        ('doc-en-2', 'sn1', '1895-01-02', 1, 1, 'b1', 'v1', 'eng', 'reocr', 0.2, 'u2')
+                    ) AS t(doc_id, lccn, date, edition, seq, batch, batch_version, lang, decision, damage_rate, item_url)
+                ) TO '{manifest_pq}' (FORMAT PARQUET)
+                """
+            )
+            out_dir = root / "out"
+            mod.build_database(quality_root, manifest_pq, out_dir, None)
+            per_reader = dict(con.execute(
+                f"""
+                SELECT reader, pages FROM read_parquet('{out_dir / "reader_language_summary.parquet"}')
+                WHERE language = 'eng'
+                """
+            ).fetchall())
+            self.assertEqual(per_reader, {"loc": 1, "ours-tesseract": 1})
+            row = con.execute(
+                f"""
+                SELECT pages, crops, loc_page_cer, ours_tesseract_page_cer, loc_crop_cer, ours_tesseract_crop_cer
+                FROM read_parquet('{out_dir / "reader_language_comparison.parquet"}')
+                WHERE language = 'eng'
+                """
+            ).fetchone()
+            # Two distinct pages; three crop samples (doc-en-1's crop in both campaigns, doc-en-2's in one).
+            self.assertEqual(row, (2, 3, 0.1, 0.2, 0.25, 0.35))
+            summary = (out_dir / "summary.md").read_text(encoding="utf-8")
+            self.assertIn("| `eng` | 2 | 0.1 | 0.2 |", summary)
+            self.assertIn("| `eng` | 3 | 0.25 | 0.35 |", summary)
 
 
 if __name__ == "__main__":
