@@ -112,6 +112,28 @@ class OnpremStep(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("isn't allowed over ssh", done.stderr)
 
+    def test_ssh_surya_steps_take_exactly_their_own_inputs(self):
+        crops = ("--env prod --step surya-stage-crops --var SURYA_CAMPAIGN=c --var QUALITY_CAMPAIGN=q "
+                 "--var SURYA_ENGINE_IMAGE=sha256:a --var SURYA_ENGINE_LLAMA=sha256:b "
+                 "--var SURYA_ENGINE_WEIGHTS=sha256:c --var SURYA_MAX=50 --var SURYA_TIMEOUT_SECS=600 --what-if")
+        done = self.run_step(ssh=crops)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("BRIDGE_STEP=surya-stage-crops", done.stdout)
+        done = self.run_step(ssh="--env prod --step surya-submit --var SURYA_CAMPAIGN=c --var SURYA_MAX=200 --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for command in (
+            "--env prod --step surya-submit --var SURYA_CAMPAIGN=c --var SURYA_TARGET_HOST=7 --what-if",
+            "--env prod --step surya-submit --var SURYA_CAMPAIGN=c --var QUALITY_CAMPAIGN=q --what-if",
+            "--env prod --step surya-stage-crops --var SURYA_CAMPAIGN=c --var SURYA_SAMPLE=/x --what-if",
+            "--env prod --step surya-stage-crops --var JOB_ID=" + "a" * 64 + " --what-if",
+            "--env prod --step submit --var SURYA_CAMPAIGN=c --what-if",
+            "--env prod --step surya-collect --var SURYA_SPOOL=/x --what-if",
+        ):
+            with self.subTest(command=command):
+                done = self.run_step(ssh=command)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("not a controller bridge-step input", done.stderr)
+
     def test_ssh_arguments_are_split_without_a_shell(self):
         # A value with shell syntax stays one literal argument; nothing is evaluated.
         done = self.run_step(ssh="--env prod --step submit --var 'JOB_ID=$(touch /tmp/usnm-pwned); x' --what-if")

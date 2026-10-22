@@ -586,7 +586,9 @@ case "$step" in
     fi
     usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" "${target_args[@]}" || rc=$?
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
-    rm -f "$stamp"
+    # The status page caches its counts for a minute; the controller's next tick reads the
+    # queue these units joined (as quality-submit and qwen-submit do).
+    rm -f "$stamp" "$PROJ/html/cache/f2/server_status.php_job_status" 2>/dev/null || true
     exit "$rc" ;;
   quality-submit)
     stamp="$(mktemp)"

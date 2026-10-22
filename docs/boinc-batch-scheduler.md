@@ -457,6 +457,67 @@ operator approval are as above. Merging this is not a deployment: provision the
 hand-off job and its roles, reconcile, and approve a first tick with `--apply`
 before scheduling it.
 
+## Surya waves
+
+A plan with `"app": "usnm_surya"` keeps a Surya campaign's queue topped up
+([#968](https://github.com/tgoodyear/usnewsmap.com/issues/968),
+[boinc-surya.md](boinc-surya.md)) so a wave needs no hand-staging. It is a
+separate kind of plan: it has no `manifest`, `batch`, `pages`, `source`, `account`
+or scan push, takes nothing off the OCR queues, and uses no hand-off job, inventory
+or journal. Stage the quality campaign's pages first (`quality-stage`); the plan
+cuts the crops from them.
+
+```json
+{
+  "schema_version": 1,
+  "env": "prod",
+  "plan": "surya-wave1",
+  "app": "usnm_surya",
+  "low_watermark": 100,
+  "high_watermark": 400,
+  "server_status_url": "https://boinc.usnewsmap.com/server_status.php?xml=1",
+  "step_command": ["ssh", "-o", "BatchMode=yes", "usnm-boinc-step@boinc.example"],
+  "surya": {
+    "campaign": "surya-wave1",
+    "quality_campaign": "quality-2026",
+    "engine_image": "sha256:<64 hex>",
+    "engine_llama": "sha256:<64 hex>",
+    "engine_weights": "sha256:<64 hex>",
+    "timeout_secs": 600,
+    "stage_pages": 50,
+    "submit_units": 200
+  }
+}
+```
+
+`campaign` and `quality_campaign` are `[a-z0-9-]` names (the `SURYA_CAMPAIGN` and
+`QUALITY_CAMPAIGN` of the bridge steps). `timeout_secs` (60 to 14400, default 600),
+`stage_pages` (1 to 500, default 50) and `submit_units` (1 to 2000, default 200) are
+optional. Both watermarks are required.
+
+One tick reads `usnm_surya`'s unsent count from the server status
+(`server_status_url`, `--server-status-url` or `--server-status-file`; a status
+without the app stops the tick). When it is above `low_watermark` the tick does
+nothing. At or below it, the tick runs `surya-stage-crops` (`QUALITY_CAMPAIGN`, the
+three engine pins, `SURYA_MAX=stage_pages`, `SURYA_TIMEOUT_SECS`) and then
+`surya-submit` with `SURYA_MAX` the smaller of `submit_units` and half of
+`high_watermark` minus the unsent count (the count is results, and every unit makes
+two), so the queue never goes past the high mark; with less than two results of
+room it runs nothing. A failed step stops the tick. The state file records the last
+check and the steps of the last run, with the time. `--drain` runs nothing.
+
+Without `--apply` the controller reads and runs nothing and prints the steps a tick
+would run at an empty queue. The host lock and `state.json` are as for the OCR plan,
+but a Surya plan takes no Azure lease and its state is not tied to the
+configuration's hash, so a later tick may change the watermarks and caps. The engine
+pins are held to the campaign: staged units keep the pins they were cut with, so a
+tick whose pins differ from the campaign's recorded ones refuses to run, and a new
+engine goes under a new `campaign` name. Collecting results (`surya-collect`, which needs the assimilator's spool) is still an
+operator step. Over ssh the controller's key may set only `SURYA_CAMPAIGN`,
+`QUALITY_CAMPAIGN`, the three `SURYA_ENGINE_*` pins, `SURYA_MAX` and
+`SURYA_TIMEOUT_SECS` on `surya-stage-crops`, and only `SURYA_CAMPAIGN` and
+`SURYA_MAX` on `surya-submit`.
+
 ## Validation, scheduling and recovery
 
 ### Drain without changing the allocation

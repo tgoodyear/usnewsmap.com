@@ -1624,5 +1624,297 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
             directory.rmdir()
 
 
+def surya_config():
+    return {
+        "schema_version": 1, "env": "dev", "plan": "surya-wave", "app": "usnm_surya",
+        "low_watermark": 100, "high_watermark": 400,
+        "step_command": ["ssh", "-o", "BatchMode=yes", "usnm-boinc-step@boinc.example"],
+        "surya": {"campaign": "surya-wave1", "quality_campaign": "quality-2026",
+                  "engine_image": "sha256:" + "1" * 64, "engine_llama": "sha256:" + "2" * 64,
+                  "engine_weights": "sha256:" + "3" * 64},
+    }
+
+
+def surya_status(unsent):
+    return status_xml().replace("<app><name>usnm_surya</name><unsent>0</unsent>",
+                                f"<app><name>usnm_surya</name><unsent>{unsent}</unsent>")
+
+
+class SuryaFake:
+    """Records the bridge steps a Surya tick runs; no inventory, journal or hand-off exists."""
+
+    def __init__(self):
+        self.steps = []
+        self.fail = None
+
+    def step(self, target, step, **variables):
+        self.steps.append((target, step, variables))
+        if step == self.fail:
+            raise RuntimeError(f"{target}/{step} failed; inspect the execution privately before retrying")
+
+
+class SuryaPlanTests(unittest.TestCase):
+    def setUp(self):
+        self.config = surya_config()
+        self.state = {}
+        self.fake = SuryaFake()
+        self.saved = []
+
+    def tick(self, unsent, **kwargs):
+        return batch.tick(self.config, self.state, self.fake,
+                          lambda: self.saved.append(copy.deepcopy(self.state)), NOW,
+                          server_status=surya_status(unsent), **kwargs)
+
+    def load(self, value):
+        directory = Path(__file__).parent.resolve() / (".surya-config-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            path = directory / "config.json"
+            path.write_text(json.dumps(value))
+            return batch.load_config(path)
+        finally:
+            for file in directory.iterdir():
+                file.unlink()
+            directory.rmdir()
+
+    def test_config_validation(self):
+        loaded = self.load(self.config)
+        self.assertEqual(loaded["surya"]["campaign"], "surya-wave1")
+        full = copy.deepcopy(self.config)
+        full["surya"].update(timeout_secs=14400, stage_pages=500, submit_units=2000)
+        full["server_status_url"] = "https://boinc.example/server_status.php?xml=1"
+        self.load(full)
+        for label, change in (
+            ("no surya", lambda c: c.pop("surya")),
+            ("no low", lambda c: c.pop("low_watermark")),
+            ("no high", lambda c: c.pop("high_watermark")),
+            ("low over high", lambda c: c.update(low_watermark=401)),
+            ("zero high", lambda c: c.update(low_watermark=0, high_watermark=0)),
+            ("pages config field", lambda c: c.update(pages=[])),
+            ("manifest field", lambda c: c.update(manifest="v1/manifest.parquet")),
+            ("account field", lambda c: c.update(account="exchange123")),
+            ("schema", lambda c: c.update(schema_version=2)),
+            ("bad env", lambda c: c.update(env="Dev")),
+            ("bad step_command", lambda c: c.update(step_command=["ssh", "a b"])),
+            ("http status url", lambda c: c.update(server_status_url="http://boinc.example/s")),
+            ("surya not object", lambda c: c.update(surya=[])),
+            ("unknown surya key", lambda c: c["surya"].update(extra=1)),
+            ("no campaign", lambda c: c["surya"].pop("campaign")),
+            ("no quality campaign", lambda c: c["surya"].pop("quality_campaign")),
+            ("upper campaign", lambda c: c["surya"].update(campaign="Surya")),
+            ("slash campaign", lambda c: c["surya"].update(quality_campaign="a/b")),
+            ("long campaign", lambda c: c["surya"].update(campaign="a" * 42)),
+            ("tag image", lambda c: c["surya"].update(engine_image="latest")),
+            ("short llama", lambda c: c["surya"].update(engine_llama="sha256:" + "2" * 63)),
+            ("upper weights", lambda c: c["surya"].update(engine_weights="sha256:" + "A" * 64)),
+            ("timeout low", lambda c: c["surya"].update(timeout_secs=59)),
+            ("timeout high", lambda c: c["surya"].update(timeout_secs=14401)),
+            ("timeout bool", lambda c: c["surya"].update(timeout_secs=True)),
+            ("stage zero", lambda c: c["surya"].update(stage_pages=0)),
+            ("stage high", lambda c: c["surya"].update(stage_pages=501)),
+            ("submit zero", lambda c: c["surya"].update(submit_units=0)),
+            ("submit high", lambda c: c["surya"].update(submit_units=2001)),
+            ("submit string", lambda c: c["surya"].update(submit_units="200")),
+        ):
+            with self.subTest(label):
+                bad = copy.deepcopy(self.config)
+                change(bad)
+                with self.assertRaises(ValueError):
+                    self.load(bad)
+
+    def test_existing_ocr_configs_stay_valid_and_surya_cannot_ride_an_ocr_plan(self):
+        self.assertEqual(self.load(config())["batch"], "test_batch")
+        queued = queue_config()
+        del queued["pages"]
+        self.assertEqual(self.load(queued)["source"], "queue")
+        # An OCR plan still names no other app than usnm_ocr.
+        with self.assertRaises(ValueError):
+            self.load({**config(), "app": "usnm_surya"})
+
+    def test_below_the_low_watermark_stages_crops_then_submits_up_to_the_high_one(self):
+        event = self.tick(40)
+        crops, submit = self.fake.steps
+        self.assertEqual(crops, ("bridge", "surya-stage-crops", {
+            "SURYA_CAMPAIGN": "surya-wave1", "QUALITY_CAMPAIGN": "quality-2026",
+            "SURYA_ENGINE_IMAGE": "sha256:" + "1" * 64, "SURYA_ENGINE_LLAMA": "sha256:" + "2" * 64,
+            "SURYA_ENGINE_WEIGHTS": "sha256:" + "3" * 64, "SURYA_MAX": 50, "SURYA_TIMEOUT_SECS": 600}))
+        # 400 - 40 = 360 results of room, two results per unit: 180 units, under the default 200.
+        self.assertEqual(submit, ("bridge", "surya-submit", {"SURYA_CAMPAIGN": "surya-wave1", "SURYA_MAX": 180}))
+        self.assertEqual((event["ran"], event["unsent"], event["skipped"]),
+                         (["surya-stage-crops", "surya-submit"], 40, None))
+        self.assertEqual(self.state["surya"]["last_run"]["at"], NOW)
+        self.assertEqual([step["step"] for step in self.state["surya"]["last_run"]["steps"]], event["ran"])
+        self.assertEqual(self.state["surya"]["unsent"], 40)
+
+    def test_submit_is_capped_by_half_the_room_below_the_high_watermark(self):
+        self.tick(100)  # at the low mark counts as low: 300 results of room, 150 units
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 150)
+        self.fake.steps.clear()
+        self.config["high_watermark"] = 150
+        self.tick(100)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 25)
+        # Odd headroom rounds down: 51 results of room is 25 units, never 26.
+        self.fake.steps.clear()
+        self.config["high_watermark"] = 151
+        self.tick(100)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 25)
+        self.fake.steps.clear()
+        self.config["surya"]["submit_units"] = 10
+        self.tick(100)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 10)
+
+    def test_configured_caps_reach_the_steps(self):
+        self.config["surya"].update(timeout_secs=1200, stage_pages=7, submit_units=9)
+        self.tick(0)
+        self.assertEqual(self.fake.steps[0][2]["SURYA_MAX"], 7)
+        self.assertEqual(self.fake.steps[0][2]["SURYA_TIMEOUT_SECS"], 1200)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 9)
+
+    def test_above_the_low_watermark_runs_nothing(self):
+        for unsent in (101, 250, 400, 900):
+            with self.subTest(unsent=unsent):
+                event = self.tick(unsent)
+                self.assertEqual((self.fake.steps, event["ran"], event["skipped"]),
+                                 ([], [], "above_low_watermark"))
+        self.assertNotIn("last_run", self.state["surya"])
+        self.assertEqual(self.state["surya"]["unsent"], 900)
+
+    def test_a_queue_with_room_for_less_than_one_unit_runs_nothing(self):
+        for high in (100, 101):
+            with self.subTest(high=high):
+                self.config.update(low_watermark=100, high_watermark=high)
+                self.assertEqual(self.tick(100)["skipped"], "no_room")
+                self.assertEqual(self.fake.steps, [])
+        self.config.update(high_watermark=102)
+        self.assertEqual(self.tick(100)["skipped"], None)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 1)
+
+    def test_engine_pins_are_held_to_the_campaign(self):
+        self.tick(300)  # a quiet tick still records the campaign's pins
+        self.assertEqual(self.state["surya"]["engine"]["SURYA_ENGINE_WEIGHTS"], "sha256:" + "3" * 64)
+        self.config["surya"]["engine_weights"] = "sha256:" + "4" * 64
+        with self.assertRaisesRegex(ValueError, "engine pins changed for campaign surya-wave1"):
+            self.tick(0)
+        self.assertEqual(self.fake.steps, [])
+        self.assertEqual(self.state["surya"]["engine"]["SURYA_ENGINE_WEIGHTS"], "sha256:" + "3" * 64)
+        # The same change under a new campaign name starts a fresh record.
+        self.config["surya"]["campaign"] = "surya-wave2"
+        self.tick(0)
+        self.assertEqual([step[1] for step in self.fake.steps], ["surya-stage-crops", "surya-submit"])
+        self.assertEqual(self.fake.steps[0][2]["SURYA_ENGINE_WEIGHTS"], "sha256:" + "4" * 64)
+        self.assertEqual(self.state["surya"]["campaign"], "surya-wave2")
+        self.assertEqual(self.state["surya"]["engine"]["SURYA_ENGINE_WEIGHTS"], "sha256:" + "4" * 64)
+        # Watermarks and caps may still change within the campaign.
+        self.fake.steps.clear()
+        self.config.update(high_watermark=300)
+        self.config["surya"]["submit_units"] = 20
+        self.tick(0)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 20)
+
+    def test_a_previous_run_stays_on_record_through_a_quiet_tick(self):
+        self.tick(0)
+        self.tick(300)
+        self.assertEqual(self.state["surya"]["last_run"]["unsent"], 0)
+        self.assertEqual(self.state["surya"]["unsent"], 300)
+
+    def test_a_failed_stage_stops_before_submit_and_a_failed_submit_keeps_the_stage_on_record(self):
+        self.fake.fail = "surya-stage-crops"
+        with self.assertRaises(RuntimeError):
+            self.tick(0)
+        self.assertEqual([step[1] for step in self.fake.steps], ["surya-stage-crops"])
+        self.assertNotIn("last_run", self.state["surya"])
+        self.fake.steps.clear()
+        self.fake.fail = "surya-submit"
+        with self.assertRaises(RuntimeError):
+            self.tick(0)
+        self.assertEqual([step["step"] for step in self.state["surya"]["last_run"]["steps"]],
+                         ["surya-stage-crops"])
+
+    def test_missing_status_or_app_counts_run_nothing(self):
+        with self.assertRaises(ValueError):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW,
+                       server_status=surya_status(0).replace("usnm_surya", "usnm_other"))
+        with self.assertRaises(ValueError):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW)
+        self.assertEqual(self.fake.steps, [])
+
+    def test_drain_runs_nothing_and_needs_no_status(self):
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, drain=True)
+        self.assertEqual((self.fake.steps, event["skipped"]), ([], "draining"))
+
+    def test_watermark_flags_override_the_config(self):
+        self.tick(150, low_watermark=200, high_watermark=300)
+        self.assertEqual(self.fake.steps[1][2]["SURYA_MAX"], 75)
+
+    def test_steps_go_through_step_command_with_the_vars_in_order(self):
+        transport = batch.Transport(self.config, Path("."))
+        with patch.object(transport, "run", return_value="") as run:
+            batch.tick(self.config, self.state, transport, lambda: None, NOW,
+                       server_status=surya_status(10))
+        crops = run.call_args_list[0].args[0]
+        self.assertIn("surya-stage-crops", crops)
+        self.assertEqual(sum(arg == "--var" for arg in crops), 7)
+        submit = run.call_args_list[1].args[0]
+        self.assertEqual(submit, self.config["step_command"] + [
+            "--env", "dev", "--target", "bridge", "--step", "surya-submit", "--wait-mins", "30",
+            "--var", "SURYA_CAMPAIGN=surya-wave1", "--var", "SURYA_MAX=195"])
+
+    def test_main_what_if_prints_the_steps_and_runs_nothing(self):
+        directory = Path(__file__).parent.resolve() / (".surya-main-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            path = directory / "config.json"
+            path.write_text(json.dumps(self.config))
+            out = io.StringIO()
+            with patch.object(batch.subprocess, "run", side_effect=AssertionError("offline")), \
+                    patch.object(batch.urllib.request, "urlopen", side_effect=AssertionError("offline")), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory / "state")]), 0)
+            event = json.loads(out.getvalue())
+            self.assertFalse(event["apply"])
+            steps = event["steps_if_at_or_below_low_watermark"]
+            self.assertEqual([step["step"] for step in steps], ["surya-stage-crops", "surya-submit"])
+            self.assertEqual(steps[1]["vars"]["SURYA_MAX"], 200)
+            self.assertFalse((directory / "state").exists())
+        finally:
+            for file in directory.iterdir():
+                file.unlink()
+            directory.rmdir()
+
+    def test_main_apply_ticks_under_the_host_lock_and_may_change_the_config_later(self):
+        directory = Path(__file__).parent.resolve() / (".surya-apply-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            path = directory / "config.json"
+            status = directory / "status.xml"
+            status.write_text(surya_status(0))
+            fake = SuryaFake()
+            fake.lock = lambda: contextlib.nullcontext()
+            fake.server_status = lambda: batch.parse_server_status(status.read_bytes())
+            for high in (400, 300):
+                path.write_text(json.dumps({**self.config, "high_watermark": high}))
+                fake.steps.clear()
+                out = io.StringIO()
+                with patch.object(batch, "Transport", return_value=fake), \
+                        contextlib.redirect_stdout(out):
+                    self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory),
+                                                 "--apply"]), 0)
+                self.assertEqual(json.loads(out.getvalue())["ran"], ["surya-stage-crops", "surya-submit"])
+                self.assertEqual(fake.steps[1][2]["SURYA_MAX"], min(200, high // 2))
+            saved = json.loads((directory / "state.json").read_text())
+            self.assertEqual(saved["surya"]["last_run"]["steps"][1]["vars"]["SURYA_MAX"], 150)
+            self.assertEqual(saved["surya"]["engine"]["SURYA_ENGINE_LLAMA"], "sha256:" + "2" * 64)
+        finally:
+            for file in directory.iterdir():
+                file.unlink()
+            directory.rmdir()
+
+    def test_an_ocr_config_still_ticks_as_before(self):
+        fake = Fake()
+        event = batch.tick(config(), {}, fake, lambda: None, NOW)
+        self.assertEqual(event["event"], "boinc_batch_tick")
+        self.assertEqual([action[0] for action in fake.actions], ["export", "submit", "submit"])
+
+
 if __name__ == "__main__":
     unittest.main()

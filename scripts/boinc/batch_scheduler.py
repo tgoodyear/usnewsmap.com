@@ -28,6 +28,9 @@ DEFAULT_MAX_GLOBAL_PENDING = 1000
 MAX_STATUS_BYTES = 1024 * 1024
 OCR_APP_NAME = "usnm_ocr"
 SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
+SURYA_APP_NAME = "usnm_surya"
+SURYA_DEFAULTS = {"timeout_secs": 600, "stage_pages": 50, "submit_units": 200}
+SURYA_REPLICAS = 2  # results per unit: --target_nresults in crates/usnm-boinc/src/surya/submit.rs
 SUPPORTED_COHORT_PLATFORMS = ("all",)
 SUPPORTED_COHORT_RESOURCES = ("cpu",)
 APP_NAME = re.compile(r"[A-Za-z0-9_-]{1,80}")
@@ -47,6 +50,11 @@ COMMON = {"schema_version", "env", "account", "plan", "manifest", "image", "push
           "scans_root", "manifests_root", "batch_size", "max_pending", "pages_per_host"}
 PAGES_FIELDS = COMMON | {"batch", "pages"}
 QUEUE_FIELDS = COMMON | {"source", "claim_queues", "lease_hours"}
+# A Surya plan (#968) keeps usnm_surya topped up from a quality campaign's staged pages: it has
+# no page list, manifest or scan push, and takes nothing off the OCR work queues.
+SURYA_FIELDS = {"schema_version", "env", "plan", "app", "surya", "low_watermark", "high_watermark"}
+SURYA_OPTIONAL = {"step_command", "server_status_url"}
+SURYA_REQUIRED = {"campaign", "quality_campaign", "engine_image", "engine_llama", "engine_weights"}
 OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
     "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
@@ -248,8 +256,45 @@ def parse_server_status(raw):
 parse_server_status_xml = parse_server_status
 
 
+def _validate_commands(config, keys):
+    for key in keys:
+        if key not in config:
+            continue
+        command = config[key]
+        require(isinstance(command, list) and command and
+                all(isinstance(arg, str) and re.fullmatch(r"[A-Za-z0-9_/@=.:+-]+", arg)
+                    for arg in command), f"{key} must be a trusted, literal argv prefix")
+
+
+def _load_surya_config(config):
+    require(SURYA_FIELDS <= set(config) <= (SURYA_FIELDS | SURYA_OPTIONAL)
+            and config["schema_version"] == 1, "invalid surya config fields/version")
+    for key, pattern in (("env", r"[a-z][a-z0-9-]{0,30}"), ("plan", r"[A-Za-z0-9-]{1,64}")):
+        require(isinstance(config[key], str) and re.fullmatch(pattern, config[key]), f"invalid {key}")
+    # Both marks are required: the tick tops the queue up to the high one.
+    _validate_cohort_spec({k: config[k] for k in ("low_watermark", "high_watermark")})
+    surya = config["surya"]
+    require(isinstance(surya, dict) and SURYA_REQUIRED <= set(surya) <= (SURYA_REQUIRED | set(SURYA_DEFAULTS)),
+            "invalid surya fields")
+    for key in ("campaign", "quality_campaign"):
+        require(isinstance(surya[key], str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", surya[key]),
+                f"invalid surya {key}")
+    for key in ("engine_image", "engine_llama", "engine_weights"):
+        require(isinstance(surya[key], str) and re.fullmatch(r"sha256:[0-9a-f]{64}", surya[key]),
+                f"invalid surya {key}")
+    for key, low, high in (("timeout_secs", 60, 14400), ("stage_pages", 1, 500), ("submit_units", 1, 2000)):
+        if key in surya:
+            require(type(surya[key]) is int and low <= surya[key] <= high, f"invalid surya {key}")
+    if "server_status_url" in config:
+        _validate_status_url(config["server_status_url"])
+    _validate_commands(config, ("step_command",))
+    return config
+
+
 def load_config(path):
     config = json.loads(path.read_text())
+    if isinstance(config, dict) and config.get("app") == SURYA_APP_NAME:
+        return _load_surya_config(config)
     queue = config.get("source") == "queue"
     required = QUEUE_FIELDS if queue else PAGES_FIELDS
     optional = OPTIONAL_FIELDS | ({"claim_languages"} if queue else set())
@@ -289,13 +334,7 @@ def load_config(path):
                 1 <= config["max_global_pending"] <= MAX_GLOBAL_PENDING, "invalid max_global_pending")
     if "server_status_url" in config:
         _validate_status_url(config["server_status_url"])
-    for key in ("push_command", "step_command"):
-        if key not in config:
-            continue
-        command = config[key]
-        require(isinstance(command, list) and command and
-                all(isinstance(arg, str) and re.fullmatch(r"[A-Za-z0-9_/@=.:+-]+", arg)
-                    for arg in command), f"{key} must be a trusted, literal argv prefix")
+    _validate_commands(config, ("push_command", "step_command"))
     if queue:
         # BOINC is a second consumer of the work queues, beside the on-prem nodes
         # (docs/boinc-batch-scheduler.md#queue-fed-work). The page list is whatever it claims.
@@ -398,6 +437,11 @@ class Transport:
 
     @contextlib.contextmanager
     def lock(self):
+        if self.config.get("app") == SURYA_APP_NAME:
+            # A Surya plan touches no hand-off container: the host lock in main() and the
+            # one-step-at-a-time lock of the bridge host are its guards.
+            yield
+            return
         name = "scheduler/controller.lock"
         if self.az("exists", "--name", name, "--query", "exists", "-o", "tsv").strip() != "true":
             marker = self.directory / "lease-marker.json"
@@ -864,8 +908,88 @@ def _extract_status(snapshot, transport, server_status=None, *, drain=False):
         raise
 
 
+def surya_engine(config):
+    """The engine pins a Surya plan stages its units with."""
+    surya = config["surya"]
+    return {"SURYA_ENGINE_IMAGE": surya["engine_image"], "SURYA_ENGINE_LLAMA": surya["engine_llama"],
+            "SURYA_ENGINE_WEIGHTS": surya["engine_weights"]}
+
+
+def surya_steps(config, room):
+    """The bridge steps of one Surya tick that finds room for `room` more results: cut the crops
+    of the quality campaign's staged pages, then submit units for up to `room` results (#968).
+    `unsent` counts results and `surya submit` makes SURYA_REPLICAS of them per unit."""
+    surya = {**SURYA_DEFAULTS, **config["surya"]}
+    return [
+        ("surya-stage-crops", {
+            "SURYA_CAMPAIGN": surya["campaign"], "QUALITY_CAMPAIGN": surya["quality_campaign"],
+            **surya_engine(config), "SURYA_MAX": surya["stage_pages"],
+            "SURYA_TIMEOUT_SECS": surya["timeout_secs"]}),
+        ("surya-submit", {
+            "SURYA_CAMPAIGN": surya["campaign"],
+            "SURYA_MAX": min(surya["submit_units"], room // SURYA_REPLICAS)}),
+    ]
+
+
+def surya_tick(config, state, transport, persist, now=None, *, drain=False,
+               low_watermark=None, high_watermark=None, server_status=None):
+    """Top up the usnm_surya queue: at or below the low watermark, stage crops and submit up to
+    the high one; above it, do nothing. No inventory, journal or hand-off: the units are the
+    bridge's own, and a second tick finds the queue the first one filled."""
+    now = time.time() if now is None else now
+    low = config["low_watermark"] if low_watermark is None else low_watermark
+    high = config["high_watermark"] if high_watermark is None else high_watermark
+    _validate_cohort_spec({"low_watermark": low, "high_watermark": high})
+    unsent = None
+    ran = []
+    reason = "draining"
+    campaign = config["surya"]["campaign"]
+    engine = surya_engine(config)
+    record = state.get("surya") or {}
+    if record.get("campaign") != campaign:
+        # A new campaign: nothing staged under it carries other pins.
+        record = {}
+    # Staged units keep the pins they were cut with (surya/crops.rs skips an existing job
+    # file), so a pin change would leave a backlog the new engine's workers reject. The pins
+    # are immutable within a campaign; a new engine takes a new campaign name.
+    require(record.get("engine") in (None, engine),
+            f"engine pins changed for campaign {campaign}; stage a new engine under a new campaign")
+    record.update(campaign=campaign, engine=engine)
+    state["surya"] = record
+    if not drain:
+        status = _extract_status({}, transport, server_status=server_status)
+        require(status is not None and SURYA_APP_NAME in status["apps"],
+                f"server status has no {SURYA_APP_NAME} counts; refusing to guess the queue")
+        unsent = status["apps"][SURYA_APP_NAME]["unsent"]
+        room = high - unsent
+        if unsent > low:
+            reason = "above_low_watermark"
+        elif room < SURYA_REPLICAS:
+            reason = "no_room"
+        else:
+            reason = None
+            for step, variables in surya_steps(config, room):
+                transport.step("bridge", step, **variables)
+                ran.append({"step": step, "vars": variables})
+                # What ran is on record even if the next step fails.
+                record["last_run"] = {"at": int(now), "unsent": unsent, "steps": ran}
+                persist()
+        record.update(checked_at=int(now), unsent=unsent)
+    persist()
+    return {
+        "event": "boinc_surya_tick", "schema_version": 1, "at": int(now), "plan": config["plan"],
+        "app": SURYA_APP_NAME, "campaign": config["surya"]["campaign"], "draining": drain,
+        "unsent": unsent, "low_watermark": low, "high_watermark": high,
+        "ran": [item["step"] for item in ran], "steps": ran, "skipped": reason,
+    }
+
+
 def tick(config, state, transport, persist, now=None, *, drain=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None):
+    if config.get("app") == SURYA_APP_NAME:
+        return surya_tick(config, state, transport, persist, now, drain=drain,
+                          low_watermark=low_watermark, high_watermark=high_watermark,
+                          server_status=server_status)
     feed = QueueFeed(config, state, transport, persist) if config.get("source") == "queue" else None
     if feed:
         feed.restore()
@@ -1191,6 +1315,21 @@ def main(argv=None):
             require(1 <= args.max_global_pending <= MAX_GLOBAL_PENDING, "invalid max_global_pending")
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
+        surya = config.get("app") == SURYA_APP_NAME
+        if not args.apply and surya:
+            # What-if: the steps a tick would run when the queue is empty, with the largest
+            # SURYA_MAX the submit step can get. Nothing is read or run.
+            high = args.high_watermark or config["high_watermark"]
+            print(json.dumps({
+                "event": "boinc_surya_plan", "apply": False, "plan": config["plan"],
+                "app": SURYA_APP_NAME, "draining": args.drain, "config_sha256": digest(config),
+                "low_watermark": (config["low_watermark"] if args.low_watermark is None
+                                  else args.low_watermark),
+                "high_watermark": high,
+                "steps_if_at_or_below_low_watermark": [
+                    {"step": step, "vars": variables} for step, variables in surya_steps(config, high)],
+            }))
+            return 0
         if not args.apply:
             plan_event = {
                 "event": "boinc_batch_plan", "apply": False, "plan": config["plan"],
@@ -1218,6 +1357,10 @@ def main(argv=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             path = args.state_dir / "state.json"
             state = json.loads(path.read_text()) if path.exists() else {"config_sha256": digest(config)}
+            if surya:
+                # No allocation to protect: the watermarks and caps may change. The engine
+                # pins are held to the campaign by surya_tick itself.
+                state["config_sha256"] = digest(config)
             require(state["config_sha256"] == digest(config),
                     "immutable allocation changed; drain/reconcile before an operator migration")
             transport = Transport(
