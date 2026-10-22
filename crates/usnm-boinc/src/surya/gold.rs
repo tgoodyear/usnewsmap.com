@@ -6,7 +6,8 @@
 //! The pages are the gold set's own: each row names the page's tile.loc.gov
 //! IIIF JPEG and its sha256, and a page whose bytes differ from that
 //! checksum is not cut, because the gold set pins pixels by it. A unit is
-//! `units/<doc_id>.<crop_id>` holding `page.jpg` (the box), `surya.json` and
+//! `units/loc/<doc_id>.<crop_id>` (`units/<doc_id>.<crop_id>` in a campaign
+//! staged before ADR-0026) holding `page.jpg` (the box), `surya.json` and
 //! `gold.json` (the manifest row, verbatim). [`hyp`] reads the results back
 //! as the hypothesis file `gold.py score` takes.
 //!
@@ -14,11 +15,7 @@
 //! `gap` (5 s or more) apart, no retries; a 403, 429, 5xx, a network
 //! failure or an HTML page in place of the JPEG writes the campaign's HOLD
 //! file and stops the run.
-use super::{
-    check_no_hold,
-    crops::{cut_jpeg, unit_name},
-    units, JOB_FILE, PAGE_FILE,
-};
+use super::{check_no_hold, crops::cut_jpeg, unit_dirs, Units, JOB_FILE, PAGE_FILE};
 use crate::{atomic, read, scans};
 use anyhow::{bail, ensure, Context};
 use serde::Deserialize;
@@ -27,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use usnm_core::ids::PageKey;
+use usnm_core::{ids::PageKey, page_id::PageId};
 use usnm_ocr_contract::{
     boinc::{is_sha256, sha256},
     surya::{CropRef, Engine, Input, InputMode, Job, VERSION},
@@ -96,6 +93,7 @@ struct Entry {
     /// The manifest line, as it was.
     raw: String,
     doc_id: String,
+    page: PageId,
 }
 
 /// The project's doc id (`<lccn>_<date>_ed-<n>_seq-<n>`, as `PageKey::doc_id`
@@ -181,10 +179,12 @@ fn read_manifest(path: &Path) -> anyhow::Result<Vec<Entry>> {
             row.edition.map(|n| n.to_string()),
         )?;
         same("seq", key.seq.to_string(), row.seq.map(|n| n.to_string()))?;
+        let page = PageId::loc(&key)?;
         out.push(Entry {
             row,
             raw: line.to_owned(),
             doc_id,
+            page,
         });
     }
     ensure!(!out.is_empty(), "the manifest has no rows");
@@ -248,22 +248,21 @@ async fn run_with(
     crate::qwen::check_digest(&opts.engine.weights, "--engine-weights")?;
     check_no_hold(&opts.root)?;
     let entries = read_manifest(&opts.manifest)?;
-    let dir = units(&opts.root);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Units::open(&opts.root)?;
     let marker =
-        |e: &Entry, ext: &str| dir.join(format!("{}.{ext}", unit_name(&e.doc_id, &e.row.crop_id)));
+        |e: &Entry, ext: &str| dir.path(&e.page, Some(&format!("{}.{ext}", e.row.crop_id)));
     let mut summary = Summary::default();
     let mut missing_pages = BTreeSet::new();
     // The crops still to stage, grouped by page in order of first appearance.
     let mut pages: Vec<(&str, Vec<&Entry>)> = Vec::new();
     let mut pending = 0;
     for e in &entries {
-        let unit = dir.join(unit_name(&e.doc_id, &e.row.crop_id));
+        let unit = dir.path(&e.page, Some(&e.row.crop_id))?;
         if unit.join(JOB_FILE).exists() {
             summary.already += 1;
-        } else if marker(e, "mismatch").exists() {
+        } else if marker(e, "mismatch")?.exists() {
             summary.mismatch += 1;
-        } else if marker(e, "missing").exists() {
+        } else if marker(e, "missing")?.exists() {
             missing_pages.insert(e.row.page_id.as_str());
         } else if pending < opts.max_crops {
             pending += 1;
@@ -293,7 +292,7 @@ async fn run_with(
             Ok(None) => {
                 for e in &rows {
                     atomic(
-                        &marker(e, "missing"),
+                        &marker(e, "missing")?,
                         b"tile.loc.gov does not have the page\n",
                     )?;
                 }
@@ -315,7 +314,7 @@ async fn run_with(
         for e in rows {
             if digest != e.row.page_image_sha256 {
                 atomic(
-                    &marker(e, "mismatch"),
+                    &marker(e, "mismatch")?,
                     format!(
                         "the page's sha256 is {digest}, the manifest has {}\n",
                         e.row.page_image_sha256
@@ -338,7 +337,7 @@ async fn run_with(
             staged.push((e, jpeg, job));
         }
         for (e, jpeg, job) in staged {
-            let unit = dir.join(unit_name(&e.doc_id, &e.row.crop_id));
+            let unit = dir.path(&e.page, Some(&e.row.crop_id))?;
             std::fs::create_dir_all(&unit)?;
             atomic(&unit.join(PAGE_FILE), &jpeg)?;
             atomic(&unit.join(GOLD_FILE), format!("{}\n", e.raw).as_bytes())?;
@@ -392,24 +391,25 @@ pub struct HypSummary {
 /// `usnm-ocr-survey score` take.
 pub fn hyp(opts: &HypOptions) -> anyhow::Result<HypSummary> {
     let results = super::collect::results(&opts.root, &opts.spool)?;
-    let dir = units(&opts.root);
-    let mut gold = 0usize;
-    if dir.exists() {
-        for e in std::fs::read_dir(&dir)? {
-            let p = e?.path();
-            if p.join(GOLD_FILE).exists() && p.join(JOB_FILE).exists() {
-                gold += 1;
-            }
+    // The gold units by page and crop, in either layout.
+    let mut gold = BTreeSet::new();
+    for unit in unit_dirs(&opts.root)? {
+        if !unit.join(GOLD_FILE).exists() {
+            continue;
+        }
+        let job: Job = serde_json::from_slice(&read(
+            &unit.join(JOB_FILE),
+            usnm_ocr_contract::surya::MAX_JSON,
+        )?)
+        .with_context(|| format!("{}", unit.display()))?;
+        if let Some(crop) = job.crop {
+            gold.insert((job.doc_id, crop.id));
         }
     }
     let mut rows: BTreeMap<String, String> = BTreeMap::new();
     for (doc_id, crops) in &results.crops {
         for (crop_id, c) in crops {
-            if !dir
-                .join(unit_name(doc_id, crop_id))
-                .join(GOLD_FILE)
-                .exists()
-            {
+            if !gold.contains(&(doc_id.clone(), crop_id.clone())) {
                 continue;
             }
             if c.outcome == usnm_ocr_contract::surya::Outcome::Ok {
@@ -430,12 +430,13 @@ pub fn hyp(opts: &HypOptions) -> anyhow::Result<HypSummary> {
     atomic(&opts.out, out.as_bytes())?;
     Ok(HypSummary {
         read: rows.len(),
-        unread: gold.saturating_sub(rows.len()),
+        unread: gold.len().saturating_sub(rows.len()),
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{crops::unit_name, units};
     use super::*;
     use crate::surya::collect::tests::{crop_job, unit_with_result};
     use image::GenericImageView as _;
@@ -527,7 +528,9 @@ mod tests {
     }
 
     fn unit_of(f: &Fixture, crop: &str, page_doc: &str) -> PathBuf {
-        units(&f.opts.root).join(unit_name(page_doc, crop))
+        units(&f.opts.root)
+            .join("loc")
+            .join(unit_name(page_doc, crop))
     }
 
     #[test]
@@ -665,7 +668,9 @@ mod tests {
         let doc_b = "sn83045348_1879-06-25_ed-1_seq-4";
         let unit = unit_of(&f, "cze-03", doc_b);
         assert!(!unit.join(JOB_FILE).exists() && !unit.join(PAGE_FILE).exists());
-        let marker = units(&f.opts.root).join(format!("{doc_b}.cze-03.mismatch"));
+        let marker = units(&f.opts.root)
+            .join("loc")
+            .join(format!("{doc_b}.cze-03.mismatch"));
         let why = std::fs::read_to_string(marker).unwrap();
         assert_eq!(why.lines().count(), 1);
         assert!(why.contains("sha256"), "{why}");
@@ -792,7 +797,7 @@ mod tests {
         assert_eq!(s.hits("p1/full/full/0/default.jpg"), 1);
         assert_eq!(s.hits("p2/full/full/0/default.jpg"), 1);
         assert_eq!(s.hits("p3/full/full/0/default.jpg"), 1);
-        let dir = units(&opts.root);
+        let dir = units(&opts.root).join("loc");
         for c in ["cze-01", "cze-02"] {
             assert!(dir
                 .join(format!("sn83045348_1876-03-07_ed-1_seq-1.{c}"))

@@ -61,7 +61,7 @@ def prepare(release, out):
                 member = row[kind]
                 files[member["path"]] = checked(release, member["path"], member["sha256"])
             rows.append({
-                "sample_id": identity, "group": "english" if english else "german", "language": "eng" if english else "deu",
+                "sample_id": identity, "dataset": row["source"], "group": "english" if english else "german", "language": "eng" if english else "deu",
                 "image": row["image"]["path"], "image_sha256": row["image"]["sha256"],
                 "reference": row["reference"]["path"], "reference_sha256": row["reference"]["sha256"],
                 "source_url": f"https://github.com/tgoodyear/usnewsmap.com/releases/tag/{lock['tag']}",
@@ -87,6 +87,14 @@ def prepare(release, out):
     return receipt
 
 
+def unit_of(root, row):
+    """The unit and job doc id of an input: `units/sample/<dataset>/<id>` with the page id
+    `sample:<dataset>/<id>` (ADR-0026), or `units/<id>` for a bundle prepared before it."""
+    if "dataset" in row:
+        return root / "units" / "sample" / row["dataset"] / row["sample_id"], f"sample:{row['dataset']}/{row['sample_id']}"
+    return root / "units" / row["sample_id"], row["sample_id"]
+
+
 def collect(root, seen, out, binary, intended_device):
     manifest = (root / "benchmark-inputs.json").read_bytes()
     expected = (root / "benchmark-inputs.sha256").read_text()
@@ -95,9 +103,9 @@ def collect(root, seen, out, binary, intended_device):
     inputs = json.loads(manifest)
     jobs = {}
     for row in inputs:
-        unit = root / "units" / row["sample_id"]
+        unit, doc_id = unit_of(root, row)
         job = json.loads((unit / "surya.json").read_text())
-        if job["doc_id"] != row["sample_id"] or job["input"]["sha256"] != row["image_sha256"]:
+        if job["doc_id"] != doc_id or job["input"]["sha256"] != row["image_sha256"]:
             raise ValueError("job differs from immutable benchmark lock")
         checked(unit, "page.jpg", row["image_sha256"])
         checked(unit, "reference.txt", row["reference_sha256"])

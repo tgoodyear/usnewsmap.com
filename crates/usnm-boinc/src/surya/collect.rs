@@ -9,7 +9,7 @@
 //! whose text is the first mode of `--modes` the page has an `ok` run for,
 //! and whose `source` records the mode and the job. `quality collect`
 //! joins the crop texts into `crops.parquet` through [`results`].
-use super::{units, validate, JOB_FILE};
+use super::{unit_dirs, validate, JOB_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use std::{
@@ -92,17 +92,7 @@ fn gave_up(spool: &Path, workunit: &str) -> bool {
 /// Every staged unit under `root` with its canonical result in `spool`.
 pub fn results(root: &Path, spool: &Path) -> anyhow::Result<Results> {
     let mut out = Results::default();
-    let dir = units(root);
-    if !dir.exists() {
-        return Ok(out);
-    }
-    let mut unit_dirs: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.join(JOB_FILE).exists())
-        .collect();
-    unit_dirs.sort();
-    for unit in unit_dirs {
+    for unit in unit_dirs(root)? {
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JSON)?)
             .with_context(|| format!("{}", unit.display()))?;
         let wu = job.workunit();
@@ -206,6 +196,11 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
     if let Some(dir) = &opts.texts_dir {
         std::fs::create_dir_all(dir)?;
         for (doc_id, page) in &r.pages {
+            // `quality stage` reads LoC pages, whose ids stay bare
+            // (ADR-0026); a qualified id, a benchmark sample, has no export.
+            if doc_id.contains(':') {
+                continue;
+            }
             let path = dir.join(export_name(doc_id));
             match page_reader(page, &opts.modes) {
                 Some(reader) => {
@@ -227,6 +222,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::super::units;
     use super::*;
     use crate::boinc::sha256;
     use usnm_ocr_contract::surya::{CropRef, Host, ResultManifest, Run, VERSION};
@@ -239,9 +235,16 @@ pub(crate) mod tests {
         job: &Job,
         texts: &[(InputMode, Outcome, &str)],
     ) {
+        // A bare LoC id as before ADR-0026; a qualified one at its path.
+        let page = if job.doc_id.contains(':') {
+            let id: usnm_core::page_id::PageId = job.doc_id.parse().unwrap();
+            id.path()
+        } else {
+            job.doc_id.clone()
+        };
         let unit = units(root).join(match &job.crop {
-            Some(c) => super::super::crops::unit_name(&job.doc_id, &c.id),
-            None => job.doc_id.clone(),
+            Some(c) => super::super::crops::unit_name(&page, &c.id),
+            None => page,
         });
         std::fs::create_dir_all(&unit).unwrap();
         std::fs::write(unit.join(JOB_FILE), serde_json::to_vec(job).unwrap()).unwrap();
@@ -352,18 +355,36 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&unit).unwrap();
         std::fs::write(unit.join(JOB_FILE), serde_json::to_vec(&c4).unwrap()).unwrap();
         std::fs::write(spool.join(format!("{}_error", c4.workunit())), b"").unwrap();
+        // A benchmark sample's unit, at `units/sample/<dataset>/<id>`.
+        let mut sample = page.clone();
+        sample.doc_id = "sample:overproof-ca/overproof-1".into();
+        sample.id = sample.identity().unwrap();
+        unit_with_result(
+            &root,
+            &spool,
+            &sample,
+            &[(InputMode::Whole, Outcome::Ok, "sample text\n")],
+        );
+        assert!(units(&root)
+            .join("sample/overproof-ca/overproof-1")
+            .join(JOB_FILE)
+            .exists());
 
         let r = results(&root, &spool).unwrap();
         assert_eq!(
             r.summary,
             Summary {
-                pages: 1,
+                pages: 2,
                 crops: 2,
                 pending: 1,
                 failed: 1,
                 exported: 0,
                 removed: 0,
             }
+        );
+        assert_eq!(
+            r.pages[&sample.doc_id][&InputMode::Whole].text,
+            "sample text\n"
         );
         let p = &r.pages[&page.doc_id];
         assert_eq!(p[&InputMode::Whole].outcome, Outcome::Timeout);
@@ -393,7 +414,9 @@ pub(crate) mod tests {
             modes: DEFAULT_MODES.to_vec(),
         })
         .unwrap();
+        // The LoC page only: the sample has no `quality stage` export.
         assert_eq!(s.exported, 1);
+        assert_eq!(std::fs::read_dir(&texts).unwrap().count(), 1);
         let got: TextReader =
             serde_json::from_slice(&std::fs::read(texts.join(export_name(&page.doc_id))).unwrap())
                 .unwrap();

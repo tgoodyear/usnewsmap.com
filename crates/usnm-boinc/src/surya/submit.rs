@@ -1,6 +1,6 @@
 //! Hand staged units to stock `create_work`, two results per unit, with the
 //! assessment's write-ahead markers (`submitting`, then `submitted`).
-use super::{units, APP, JOB_FILE, PAGE_FILE};
+use super::{unit_dirs, units, APP, JOB_FILE, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use std::path::PathBuf;
@@ -147,13 +147,9 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     }
     super::stage::verify_benchmark(&opts.root)?;
     let dir = units(&opts.root);
-    let mut names: Vec<_> = std::fs::read_dir(&dir)
-        .with_context(|| format!("reading {dir:?}"))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().join(JOB_FILE).exists())
-        .map(|e| e.path())
-        .collect();
-    names.sort();
+    ensure!(dir.is_dir(), "reading {dir:?}: no units");
+    // Both layouts: campaigns staged before ADR-0026 keep `units/<id>`.
+    let names = unit_dirs(&opts.root)?;
     // This lock serializes the whole campaign, not just this invocation's result count.
     let lock = opts.root.join(".submit-lock");
     std::fs::create_dir(&lock).context("campaign is locked; inspect before recovery")?;

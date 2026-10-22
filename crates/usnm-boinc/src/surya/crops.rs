@@ -7,13 +7,15 @@
 //! The pages come from the `usnm_quality` staging root, as `qwen stage`
 //! takes them: each holds `page.jpg`, `loc.xml` and `quality.json`, so LoC
 //! is not asked again. A page's unit directories are
-//! `units/<doc_id>.<crop_id>`; the quality unit's `sample.json`, when
-//! there, is copied into each for a collector.
-use super::{check_no_hold, units, JOB_FILE, PAGE_FILE};
+//! `units/loc/<doc_id>.<crop_id>` (`units/<doc_id>.<crop_id>` in a campaign
+//! staged before ADR-0026); the quality unit's `sample.json`, when there, is
+//! copied into each for a collector.
+use super::{check_no_hold, Units, JOB_FILE, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use image::GenericImageView as _;
 use std::path::PathBuf;
+use usnm_core::page_id::{PageId, Source};
 use usnm_ocr_contract::{
     quality::{Job as QualityJob, MAX_ALTO, MAX_JOB_JSON as MAX_QUALITY_JOB, MAX_SCAN},
     surya::{CropRef, Engine, Input, InputMode, Job, VERSION},
@@ -58,8 +60,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     crate::qwen::check_digest(&opts.engine.llama, "--engine-llama")?;
     crate::qwen::check_digest(&opts.engine.weights, "--engine-weights")?;
     check_no_hold(&opts.root)?;
-    let dir = units(&opts.root);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Units::open(&opts.root)?;
     let pages_dir = opts.quality_root.join("pages");
     let src = if pages_dir.exists() {
         pages_dir
@@ -82,7 +83,8 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let marker = dir.join(format!("{name}.no_crops"));
+        let page_id = PageId::new(Source::Loc, &name)?;
+        let marker = dir.path(&page_id, Some("no_crops"))?;
         if marker.exists() {
             summary.already += 1;
             continue;
@@ -119,7 +121,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             .transpose()?;
         let mut staged = Vec::with_capacity(crops.len());
         for c in &crops {
-            if dir.join(unit_name(&name, &c.id)).join(JOB_FILE).exists() {
+            if dir.path(&page_id, Some(&c.id))?.join(JOB_FILE).exists() {
                 continue;
             }
             let crop = CropRef {
@@ -138,7 +140,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             continue;
         }
         for (crop, jpeg, job) in staged {
-            let unit = dir.join(unit_name(&name, &crop.id));
+            let unit = dir.path(&page_id, Some(&crop.id))?;
             std::fs::create_dir_all(&unit)?;
             atomic(&unit.join(PAGE_FILE), &jpeg)?;
             if let Some(sample) = &sample {
@@ -210,6 +212,7 @@ pub fn crop_job(
 
 #[cfg(test)]
 mod tests {
+    use super::super::units;
     use super::*;
 
     fn engine() -> Engine {
@@ -256,7 +259,7 @@ mod tests {
         );
         let full = image::load_from_memory(&std::fs::read(unit.join("page.jpg")).unwrap()).unwrap();
         for c in &expected {
-            let dir = units(&opts.root).join(unit_name(page, &c.id));
+            let dir = units(&opts.root).join("loc").join(unit_name(page, &c.id));
             let job: Job =
                 serde_json::from_slice(&std::fs::read(dir.join(JOB_FILE)).unwrap()).unwrap();
             job.validate().unwrap();
@@ -283,7 +286,7 @@ mod tests {
         let ids: std::collections::BTreeSet<String> = expected
             .iter()
             .map(|c| {
-                let dir = units(&opts.root).join(unit_name(page, &c.id));
+                let dir = units(&opts.root).join("loc").join(unit_name(page, &c.id));
                 serde_json::from_slice::<Job>(&std::fs::read(dir.join(JOB_FILE)).unwrap())
                     .unwrap()
                     .id
@@ -295,10 +298,13 @@ mod tests {
         assert_eq!((s.pages, s.staged, s.already), (0, 0, 1));
         // A run that stopped after the first crop's unit was written
         // finishes the page next time and leaves that unit alone.
-        let first = units(&opts.root).join(unit_name(page, &expected[0].id));
+        let first = units(&opts.root)
+            .join("loc")
+            .join(unit_name(page, &expected[0].id));
         let kept = std::fs::read(first.join(JOB_FILE)).unwrap();
         for c in &expected[1..] {
-            std::fs::remove_dir_all(units(&opts.root).join(unit_name(page, &c.id))).unwrap();
+            std::fs::remove_dir_all(units(&opts.root).join("loc").join(unit_name(page, &c.id)))
+                .unwrap();
         }
         let s = run(&opts).await.unwrap();
         assert_eq!(
@@ -309,6 +315,7 @@ mod tests {
         assert_eq!(std::fs::read(first.join(JOB_FILE)).unwrap(), kept);
         for c in &expected {
             assert!(units(&opts.root)
+                .join("loc")
                 .join(unit_name(page, &c.id))
                 .join(JOB_FILE)
                 .exists());

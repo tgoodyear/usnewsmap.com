@@ -7,7 +7,9 @@
 //! time and at least `gap` (5 s or more) between any two; no retries; a
 //! 403, 429 or 5xx, a network failure, or an HTML page in place of a file
 //! writes a hold and stops the run. A page no source has is marked missing.
-use super::{check_group, check_no_hold, check_word, units, Page, JOB_FILE, PAGE_FILE};
+use super::{
+    check_group, check_no_hold, check_word, unit_dirs, units, Page, Units, JOB_FILE, PAGE_FILE,
+};
 use crate::{atomic, scans};
 use anyhow::{ensure, Context};
 use std::{
@@ -15,7 +17,10 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use usnm_core::ids::PageKey;
+use usnm_core::{
+    ids::PageKey,
+    page_id::{PageId, Source},
+};
 use usnm_ocr_contract::{
     boinc::{is_sha256, sha256},
     surya::{Engine, Input, InputMode, Job, MAX_SCAN, VERSION},
@@ -65,8 +70,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         "--engine-image must be the worker image's full sha256 digest"
     );
     check_no_hold(&opts.root)?;
-    let dir = units(&opts.root);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Units::open(&opts.root)?;
     let src = scans::Sources::new(
         scans::loc_client(opts.gap, opts.batch_cache.clone())?,
         scans::archive(opts.scan_archive.as_deref())?,
@@ -79,7 +83,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         }
         check_group(&p.group)?;
         check_word(&p.lang, "language")?;
-        let unit = dir.join(&p.doc_id);
+        let unit = dir.path(&PageId::new(Source::Loc, &p.doc_id)?, None)?;
         if unit.join(JOB_FILE).exists() || unit.join("missing").exists() {
             summary.already += 1;
             continue;
@@ -205,6 +209,12 @@ pub fn local_unit(
 #[serde(deny_unknown_fields)]
 pub struct BenchmarkInput {
     pub sample_id: String,
+    /// The upstream dataset the sample comes from (the bench release's
+    /// `source`, such as `overproof-ca`). Its unit is the page id
+    /// `sample:<dataset>/<sample id>` (ADR-0026). Bundles prepared before it
+    /// have none and were staged at `units/<sample id>`.
+    #[serde(default)]
+    pub dataset: Option<String>,
     pub group: String,
     pub language: String,
     pub image: PathBuf,
@@ -213,6 +223,21 @@ pub struct BenchmarkInput {
     pub reference_sha256: String,
     pub source_url: String,
     pub license: String,
+}
+
+impl BenchmarkInput {
+    /// The job's doc id and the unit's directory under `units/`: the sample's
+    /// page id and its path, or for a bundle with no dataset the bare sample
+    /// id it was staged under.
+    pub fn unit(&self) -> anyhow::Result<(String, PathBuf)> {
+        Ok(match &self.dataset {
+            Some(dataset) => {
+                let page = PageId::new(Source::Sample, &format!("{dataset}/{}", self.sample_id))?;
+                (page.to_string(), PathBuf::from(page.path()))
+            }
+            None => (self.sample_id.clone(), PathBuf::from(&self.sample_id)),
+        })
+    }
 }
 
 /// Stage a bounded local bundle without changing pixels or fetching external URLs.
@@ -278,6 +303,12 @@ pub fn benchmark_with_cpu_modes(
             ids.insert(&input.sample_id),
             "duplicate benchmark sample ID"
         );
+        ensure!(
+            input.dataset.is_some(),
+            "{}: benchmark input has no dataset; prepare the bundle again (ADR-0026)",
+            input.sample_id
+        );
+        let (doc_id, _) = input.unit()?;
         check_group(&input.group)?;
         check_word(&input.language, "language")?;
         ensure!(
@@ -305,7 +336,7 @@ pub fn benchmark_with_cpu_modes(
         let mut job = Job {
             v: VERSION,
             id: String::new(),
-            doc_id: input.sample_id.clone(),
+            doc_id,
             group: input.group.clone(),
             language: input.language.clone(),
             input: Input {
@@ -322,7 +353,7 @@ pub fn benchmark_with_cpu_modes(
         };
         job.id = job.identity()?;
         job.validate()?;
-        staged.push((job, image, reference));
+        staged.push((input, job, image, reference));
     }
     // All checks finish before any campaign files are written. A partial write is never reused.
     if let Some(parent) = root
@@ -332,13 +363,18 @@ pub fn benchmark_with_cpu_modes(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::create_dir(root).context("campaign created concurrently; refusing overwrite")?;
+    let dir = Units::open(root)?;
+    ensure!(
+        dir.qualified(),
+        "a new benchmark campaign has the qualified layout"
+    );
     atomic(&root.join("benchmark-inputs.json"), &raw)?;
     atomic(
         &root.join("benchmark-inputs.sha256"),
         manifest_sha256.as_bytes(),
     )?;
-    for (job, image, reference) in &staged {
-        let unit = units(root).join(&job.doc_id);
+    for (input, job, image, reference) in &staged {
+        let unit = units(root).join(input.unit()?.1);
         std::fs::create_dir_all(&unit)?;
         atomic(&unit.join(PAGE_FILE), image)?;
         atomic(&unit.join("reference.txt"), reference)?;
@@ -368,18 +404,19 @@ pub fn verify_benchmark(root: &Path) -> anyhow::Result<()> {
     );
     let inputs: Vec<BenchmarkInput> = serde_json::from_slice(&raw)?;
     ensure!(
-        std::fs::read_dir(units(root))?.count() == inputs.len(),
+        unit_dirs(root)?.len() == inputs.len(),
         "benchmark unit count changed"
     );
     for input in inputs {
-        let unit = units(root).join(&input.sample_id);
+        let (doc_id, path) = input.unit()?;
+        let unit = units(root).join(path);
         let job: Job = serde_json::from_slice(&crate::read(
             &unit.join(JOB_FILE),
             usnm_ocr_contract::surya::MAX_JSON,
         )?)?;
         job.validate()?;
         ensure!(
-            job.doc_id == input.sample_id
+            job.doc_id == doc_id
                 && job.group == input.group
                 && job.language == input.language
                 && job.input.sha256 == input.image_sha256,
@@ -407,7 +444,7 @@ mod benchmark_tests {
         let root = dir.path().join("campaign");
         std::fs::write(dir.path().join("input.png"), b"image").unwrap();
         std::fs::write(dir.path().join("reference.txt"), b"reference").unwrap();
-        let row = serde_json::json!({"sample_id":"overproof-1", "group":"english", "language":"eng",
+        let row = serde_json::json!({"sample_id":"overproof-1", "dataset":"overproof-ca", "group":"english", "language":"eng",
             "image":"input.png", "image_sha256":sha256(b"image"), "reference":"reference.txt",
             "reference_sha256":sha256(b"reference"), "source_url":"https://example.org/published", "license":"Public domain"});
         let raw = serde_json::to_vec(&vec![row.clone()]).unwrap();
@@ -421,10 +458,20 @@ mod benchmark_tests {
         );
         verify_benchmark(&root).unwrap();
         let original: Job = serde_json::from_slice(
-            &std::fs::read(root.join("units/overproof-1/surya.json")).unwrap(),
+            &std::fs::read(root.join("units/sample/overproof-ca/overproof-1/surya.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(original.cpu_modes, vec![InputMode::Tiled]);
+        // The sample's page id (ADR-0026); the workunit name stays a hash.
+        assert_eq!(original.doc_id, "sample:overproof-ca/overproof-1");
+        assert!(original
+            .workunit()
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        assert_eq!(
+            std::fs::read(root.join(super::super::LAYOUT_FILE)).unwrap(),
+            b"source/local\n"
+        );
         let paired = dir.path().join("paired");
         benchmark_with_cpu_modes(
             &manifest,
@@ -436,7 +483,8 @@ mod benchmark_tests {
         .unwrap();
         verify_benchmark(&paired).unwrap();
         let paired_job: Job = serde_json::from_slice(
-            &std::fs::read(paired.join("units/overproof-1/surya.json")).unwrap(),
+            &std::fs::read(paired.join("units/sample/overproof-ca/overproof-1/surya.json"))
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(paired_job.cpu_modes, paired_job.gpu_modes);
@@ -456,10 +504,28 @@ mod benchmark_tests {
             assert!(!invalid.exists());
         }
         assert!(benchmark(&manifest, &sha256(&raw), &root, engine.clone()).is_err());
-        std::fs::write(root.join("units/overproof-1/reference.txt"), b"changed").unwrap();
+        std::fs::write(
+            root.join("units/sample/overproof-ca/overproof-1/reference.txt"),
+            b"changed",
+        )
+        .unwrap();
         assert!(verify_benchmark(&root).is_err());
         std::fs::remove_file(root.join("benchmark-inputs.json")).unwrap();
         assert!(verify_benchmark(&root).is_err());
+
+        // A bundle prepared before the dataset field is refused for new staging.
+        let mut bad = row.clone();
+        bad.as_object_mut().unwrap().remove("dataset");
+        let raw = serde_json::to_vec(&vec![bad]).unwrap();
+        std::fs::write(&manifest, &raw).unwrap();
+        let err = benchmark(
+            &manifest,
+            &sha256(&raw),
+            &dir.path().join("bare"),
+            engine.clone(),
+        );
+        assert!(format!("{:#}", err.unwrap_err()).contains("no dataset"));
+        assert!(!dir.path().join("bare").exists());
 
         let mut bad = row;
         bad["image"] = serde_json::json!("../escape");
@@ -467,5 +533,46 @@ mod benchmark_tests {
         std::fs::write(&manifest, &raw).unwrap();
         assert!(benchmark(&manifest, &sha256(&raw), &dir.path().join("bad"), engine).is_err());
         assert!(!dir.path().join("bad").exists());
+    }
+
+    /// A campaign staged before ADR-0026 (`gold-bench-20261022`, say) has
+    /// its units at `units/<sample id>` with bare doc ids and no layout
+    /// marker. Verification, submission's listing and collection still find
+    /// them where they are.
+    #[test]
+    fn a_campaign_staged_before_page_ids_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("campaign");
+        let row = serde_json::json!({"sample_id":"overproof-1", "group":"english", "language":"eng",
+            "image":"input.png", "image_sha256":sha256(b"image"), "reference":"reference.txt",
+            "reference_sha256":sha256(b"reference"), "source_url":"https://example.org/published", "license":"Public domain"});
+        let raw = serde_json::to_vec(&vec![row]).unwrap();
+        let mut job = super::super::work::tests::job();
+        job.doc_id = "overproof-1".into();
+        job.group = "english".into();
+        job.language = "eng".into();
+        job.input.bytes = 5;
+        job.input.sha256 = sha256(b"image");
+        job.id = job.identity().unwrap();
+        let unit = root.join("units/overproof-1");
+        std::fs::create_dir_all(&unit).unwrap();
+        std::fs::write(unit.join(PAGE_FILE), b"image").unwrap();
+        std::fs::write(unit.join("reference.txt"), b"reference").unwrap();
+        std::fs::write(unit.join(JOB_FILE), serde_json::to_vec(&job).unwrap()).unwrap();
+        std::fs::write(root.join("benchmark-inputs.json"), &raw).unwrap();
+        for name in ["benchmark-inputs.sha256", "benchmark-ready"] {
+            std::fs::write(root.join(name), sha256(&raw)).unwrap();
+        }
+        verify_benchmark(&root).unwrap();
+        assert_eq!(unit_dirs(&root).unwrap(), vec![unit.clone()]);
+        let r = super::super::collect::results(&root, &dir.path().join("spool")).unwrap();
+        assert_eq!(r.summary.pending, 1);
+        // A writer that resumes it keeps the bare layout and adds no marker.
+        let units = super::super::Units::open(&root).unwrap();
+        assert!(!units.qualified());
+        assert!(!root.join(super::super::LAYOUT_FILE).exists());
+        // A moved unit no longer matches its lock.
+        std::fs::rename(&unit, root.join("units/overproof-2")).unwrap();
+        assert!(verify_benchmark(&root).is_err());
     }
 }
