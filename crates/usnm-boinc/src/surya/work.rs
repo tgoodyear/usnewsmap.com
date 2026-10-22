@@ -1120,6 +1120,7 @@ pub(crate) mod tests {
             cpu_modes: vec![InputMode::Tiled],
             gpu_timeout_secs: 1800,
             cpu_timeout_secs: 5400,
+            crop: None,
         };
         j.id = j.identity().unwrap();
         j
