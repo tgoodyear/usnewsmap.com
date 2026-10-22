@@ -602,6 +602,11 @@ fn newest_evidence(reports: &[PathBuf], host: u64) -> anyhow::Result<Evidence> {
 
 /// One host's promotion, kept in `<root>/promotions.jsonl`. A recorded workunit is never used
 /// again: if trust is later rebuilt without the host, the same evidence does not bring it back.
+///
+/// The record is written ahead of the trust change, uncommitted, with the list's digest before
+/// it. The next pass settles an uncommitted record: if the list is still exactly that digest,
+/// the change never happened and is made now; if the list changed, the record is committed as
+/// it stands (the host added only if the list has it), so a later revocation is never undone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PromotionRecord {
@@ -615,8 +620,135 @@ struct PromotionRecord {
     workunit: String,
     native_result_id: u64,
     added: bool,
+    committed: bool,
     trust_before_sha256: String,
-    trust_after_sha256: String,
+    trust_after_sha256: Option<String>,
+}
+
+impl PromotionRecord {
+    fn same_evidence(&self, other: &Self) -> bool {
+        (
+            &self.language,
+            &self.profile,
+            &self.engine_image,
+            self.host,
+            &self.workunit,
+        ) == (
+            &other.language,
+            &other.profile,
+            &other.engine_image,
+            other.host,
+            &other.workunit,
+        )
+    }
+}
+
+fn write_records(root: &Path, records: &[PromotionRecord]) -> anyhow::Result<()> {
+    let mut ledger = Vec::new();
+    for record in records {
+        ledger.extend(serde_json::to_vec(record)?);
+        ledger.push(b'\n');
+    }
+    ensure!(
+        ledger.len() <= 16 << 20,
+        "promotion ledger exceeds its size limit"
+    );
+    atomic(&root.join(PROMOTIONS), &ledger)
+}
+
+/// Whether the list at `path` trusts `host` for `scope` and `image`, and the list's digest.
+fn trusts(
+    path: &Path,
+    scope: &crate::trust::Scope,
+    image: &str,
+    host: u64,
+) -> anyhow::Result<(bool, String)> {
+    let bytes = read(path, 64 << 20)?;
+    let trust = Trust::load(path)?;
+    let has = trust
+        .policy_for(&scope.language, &scope.profile)
+        .and_then(|p| p.hosts.get(image).map(|h| h.contains(&host)))
+        .unwrap_or(false);
+    Ok((has, boinc::sha256(&bytes)))
+}
+
+/// Under the controller lock: settle earlier uncommitted records of this scope and image, drop
+/// candidates whose evidence the ledger (read again now) already holds, then write the new
+/// records ahead, change trust, and commit them.
+fn commit_promotions(
+    c: &Config,
+    scope: &crate::trust::Scope,
+    policy: &crate::trust::ScopedPolicy,
+    candidates: Vec<PromotionRecord>,
+    summary: &mut Promotion,
+) -> anyhow::Result<()> {
+    let _lock = Lock::take(&c.root)?;
+    let image = &c.engine.image;
+    let admit = |hosts: BTreeSet<u64>| {
+        Trust::admit_hosts(
+            &c.trust,
+            scope,
+            &policy.manifest_sha256,
+            policy.max_cer,
+            image,
+            &hosts,
+        )
+    };
+    let mut records = promotion_records(&c.root)?;
+    let ours = |r: &PromotionRecord| {
+        !r.committed
+            && r.language == scope.language
+            && r.profile == scope.profile
+            && &r.engine_image == image
+    };
+    if records.iter().any(ours) {
+        let current = boinc::sha256(&read(&c.trust, 64 << 20)?);
+        let replay: BTreeSet<u64> = records
+            .iter()
+            .filter(|r| ours(r) && r.trust_before_sha256 == current)
+            .map(|r| r.host)
+            .collect();
+        if !replay.is_empty() {
+            let admission = admit(replay)?;
+            summary.promoted.extend(admission.added.iter().copied());
+        }
+        for record in records.iter_mut().filter(|r| ours(r)) {
+            let (has, digest) = trusts(&c.trust, scope, image, record.host)?;
+            record.added = has;
+            record.committed = true;
+            record.trust_after_sha256 = Some(digest);
+        }
+        write_records(&c.root, &records)?;
+    }
+    let mut fresh = Vec::new();
+    for candidate in candidates {
+        if records.iter().any(|r| r.same_evidence(&candidate)) {
+            summary.evidence_used.push(candidate.host);
+        } else {
+            fresh.push(candidate);
+        }
+    }
+    if fresh.is_empty() {
+        return Ok(());
+    }
+    let before = boinc::sha256(&read(&c.trust, 64 << 20)?);
+    let start = records.len();
+    for mut record in fresh {
+        record.trust_before_sha256 = before.clone();
+        records.push(record);
+    }
+    write_records(&c.root, &records)?;
+    let admission = admit(records[start..].iter().map(|r| r.host).collect())?;
+    for record in &mut records[start..] {
+        record.added = admission.added.contains(&record.host);
+        record.committed = true;
+        record.trust_after_sha256 = Some(admission.after_sha256.clone());
+    }
+    write_records(&c.root, &records)?;
+    summary.promoted.extend(admission.added.iter().copied());
+    summary.trust_before_sha256 = Some(admission.before_sha256);
+    summary.trust_after_sha256 = Some(admission.after_sha256);
+    Ok(())
 }
 
 const PROMOTIONS: &str = "promotions.jsonl";
@@ -788,46 +920,29 @@ async fn promote_with(
         summary.would_promote = admit.iter().map(|(host, _)| *host).collect();
         return Ok(summary);
     }
-    if admit.is_empty() {
-        return Ok(summary);
-    }
-    let _lock = Lock::take(&c.root)?;
-    let admission = Trust::admit_hosts(
-        &c.trust,
-        scope,
-        &policy.manifest_sha256,
-        policy.max_cer,
-        image,
-        &admit.iter().map(|(host, _)| *host).collect(),
-    )?;
-    let mut ledger = if c.root.join(PROMOTIONS).exists() {
-        read(&c.root.join(PROMOTIONS), 16 << 20)?
-    } else {
-        Vec::new()
-    };
     let at = chrono::Utc::now().to_rfc3339();
-    for (host, evidence) in &admit {
-        let record = PromotionRecord {
+    let candidates = admit
+        .into_iter()
+        .map(|(host, evidence)| PromotionRecord {
             at: at.clone(),
             language: scope.language.clone(),
             profile: scope.profile.clone(),
             engine_image: image.clone(),
             manifest_sha256: policy.manifest_sha256.clone(),
             max_cer: policy.max_cer,
-            host: *host,
-            workunit: evidence.workunit.clone().unwrap_or_default(),
+            host,
+            workunit: evidence.workunit.unwrap_or_default(),
             native_result_id: evidence.native_result_id.unwrap_or_default(),
-            added: admission.added.contains(host),
-            trust_before_sha256: admission.before_sha256.clone(),
-            trust_after_sha256: admission.after_sha256.clone(),
-        };
-        ledger.extend(serde_json::to_vec(&record)?);
-        ledger.push(b'\n');
-    }
-    atomic(&c.root.join(PROMOTIONS), &ledger)?;
-    summary.promoted = admission.added.iter().copied().collect();
-    summary.trust_before_sha256 = Some(admission.before_sha256);
-    summary.trust_after_sha256 = Some(admission.after_sha256);
+            added: false,
+            committed: false,
+            trust_before_sha256: String::new(),
+            trust_after_sha256: None,
+        })
+        .collect();
+    // Even with no candidates: an earlier pass may have left a record to settle.
+    commit_promotions(c, scope, &policy, candidates, &mut summary)?;
+    summary.promoted.sort_unstable();
+    summary.promoted.dedup();
     Ok(summary)
 }
 
@@ -1473,7 +1588,9 @@ mod tests {
         let records = promotion_records(&c.root).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!((records[1].host, records[1].native_result_id), (5, 16));
-        assert!(records.iter().all(|r| r.added && r.max_cer == 0.1));
+        assert!(records
+            .iter()
+            .all(|r| r.added && r.committed && r.max_cer == 0.1));
         assert_eq!(
             done.trust_after_sha256.as_deref(),
             Some(boinc::sha256(&std::fs::read(&c.trust).unwrap()).as_str())
@@ -1489,6 +1606,112 @@ mod tests {
         assert_eq!(again.evidence_used, [2]);
         assert_eq!(trusted(&c), BTreeSet::from([1, 5]));
         assert_eq!(promotion_records(&c.root).unwrap().len(), 2);
+    }
+
+    /// The ledger as an interrupted pass leaves it: host `host`'s record written ahead, with
+    /// the list's digest at that moment, and trust not yet changed.
+    fn interrupted(c: &Config, host: u64, workunit: &str) {
+        let before = boinc::sha256(&std::fs::read(&c.trust).unwrap());
+        write_records(
+            &c.root,
+            &[PromotionRecord {
+                at: "2026-10-22T00:00:00Z".into(),
+                language: "eng".into(),
+                profile: "eng".into(),
+                engine_image: c.engine.image.clone(),
+                manifest_sha256: gold::submit::tests::prepared().manifest_sha256,
+                max_cer: 0.1,
+                host,
+                workunit: workunit.into(),
+                native_result_id: 12,
+                added: false,
+                committed: false,
+                trust_before_sha256: before,
+                trust_after_sha256: None,
+            }],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_promotion_is_finished_only_while_trust_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (c, _) = promotion_fixture(dir.path());
+        let spool = dir.path().join("spool");
+        std::fs::create_dir_all(&c.root).unwrap();
+        // Crashed between the record and the trust write: the next pass makes the change.
+        interrupted(&c, 2, "usnm_gold_x");
+        let done = promote_with(&c, &spool, false, true).await.unwrap();
+        assert_eq!(done.promoted, [2]);
+        assert_eq!(trusted(&c), BTreeSet::from([1, 2]));
+        let records = promotion_records(&c.root).unwrap();
+        assert!(records[0].committed && records[0].added);
+        assert_eq!(
+            records[0].trust_after_sha256.as_deref(),
+            Some(boinc::sha256(&std::fs::read(&c.trust).unwrap()).as_str())
+        );
+        // Crashed, then trust was rebuilt before the next pass: the record is settled as it
+        // stands and the host is not added.
+        interrupted(&c, 3, "usnm_gold_y");
+        let mut t = Trust::load(&c.trust).unwrap();
+        t.hosts.insert(c.engine.image.clone(), BTreeSet::from([1]));
+        atomic(&c.trust, &serde_json::to_vec(&t).unwrap()).unwrap();
+        let done = promote_with(&c, &spool, false, true).await.unwrap();
+        assert!(done.promoted.is_empty());
+        assert_eq!(trusted(&c), BTreeSet::from([1]));
+        let records = promotion_records(&c.root).unwrap();
+        assert!(records[0].committed && !records[0].added);
+    }
+
+    #[tokio::test]
+    async fn evidence_recorded_after_the_judgment_is_not_applied_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (c, campaign) = promotion_fixture(dir.path());
+        attempt(&campaign.join("2"), 2, Some(0.07), 12);
+        // Another pass used the same workunit after this one judged it, and a rebuild has
+        // since dropped the host: the ledger read under the lock wins.
+        let candidate = PromotionRecord {
+            at: "2026-10-22T00:00:00Z".into(),
+            language: "eng".into(),
+            profile: "eng".into(),
+            engine_image: c.engine.image.clone(),
+            manifest_sha256: gold::submit::tests::prepared().manifest_sha256,
+            max_cer: 0.1,
+            host: 2,
+            workunit: "usnm_gold_x".into(),
+            native_result_id: 12,
+            added: false,
+            committed: false,
+            trust_before_sha256: String::new(),
+            trust_after_sha256: None,
+        };
+        write_records(
+            &c.root,
+            &[PromotionRecord {
+                committed: true,
+                added: true,
+                trust_after_sha256: Some("0".repeat(64)),
+                ..candidate.clone()
+            }],
+        )
+        .unwrap();
+        let policy = Trust::load(&c.trust)
+            .unwrap()
+            .policy_for("eng", "eng")
+            .unwrap();
+        let mut summary = Promotion::default();
+        commit_promotions(
+            &c,
+            c.scope.as_ref().unwrap(),
+            &policy,
+            vec![candidate],
+            &mut summary,
+        )
+        .unwrap();
+        assert_eq!(summary.evidence_used, [2]);
+        assert!(summary.promoted.is_empty());
+        assert_eq!(trusted(&c), BTreeSet::from([1]));
+        assert_eq!(promotion_records(&c.root).unwrap().len(), 1);
     }
 
     #[tokio::test]

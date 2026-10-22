@@ -73,6 +73,7 @@ GOLD_DEFAULT_INTERVAL_MINUTES = 60
 # While results are held at collection, a scope is retried at most this often.
 GOLD_HELD_INTERVAL_SECONDS = 600
 GOLD_STEPS = ("gold-onboard", "gold-promote")
+GOLD_SKIPPED_AT_CAP = "skipped: global safety cap"
 QUEUES = ("ocr-bulk", "ocr-priority")
 PAGE_KEY = re.compile(r"[A-Za-z0-9_-]+/\d{4}-\d{2}-\d{2}/ed-\d+/seq-\d+")
 
@@ -1142,16 +1143,22 @@ def gold_scope(entry):
     return f"{entry['campaign']}/{entry['language']}/{entry['profile']}"
 
 
-def gold_onboarding(config, state, transport, persist, now, *, held):
+def gold_onboarding(config, state, transport, persist, now, *, held, room):
     """Run each due gold_onboarding scope's gold-onboard and gold-promote bridge steps (#901).
 
     A scope is due when its interval has passed since its last run, or GOLD_HELD_INTERVAL_SECONDS
     while results are held at collection. The run is recorded before its steps start, so a
     crash or a failing step waits for the next due time instead of retrying every tick. A failed
     step is reported, never hidden, and doesn't stop the tick: collection then holds results
-    from uncalibrated hosts exactly as before."""
+    from uncalibrated hosts exactly as before.
+
+    Gold units count against the global safety cap: `room` is what the cap leaves, and each
+    gold-onboard pass may issue at most what is left of it. With none left gold-onboard is
+    skipped and gold-promote still runs. Returns the runs and the units they may have issued,
+    which the tick then counts as in flight before it refills OCR."""
     record = state.setdefault("gold_onboarding", {})
     runs = []
+    reserved = 0
     for entry in config.get("gold_onboarding", ()):
         scope = gold_scope(entry)
         interval = entry.get("interval_minutes", GOLD_DEFAULT_INTERVAL_MINUTES) * 60
@@ -1165,20 +1172,27 @@ def gold_onboarding(config, state, transport, persist, now, *, held):
             "GOLD_PROFILE": entry["profile"], "GOLD_ENGINE_IMAGE": config["image"],
             "GOLD_ENGINE_BASE": entry["engine_base"],
             "GOLD_ENGINE_VERSION": entry.get("engine_version", "5.5.0"),
-            "GOLD_MAX_HOSTS": entry.get("max_hosts", 10),
         }
-        run = {"at": int(now), "held": held, "steps": {}}
+        issue = min(entry.get("max_hosts", 10), max(0, room - reserved))
+        run = {"at": int(now), "held": held, "max_hosts": issue, "steps": {}}
         record[scope] = run
         persist()
         for step in GOLD_STEPS:
+            if step == "gold-onboard":
+                if issue < 1:
+                    run["steps"][step] = GOLD_SKIPPED_AT_CAP
+                    persist()
+                    continue
+                # Counted even if the step fails: it may have issued some units first.
+                reserved += issue
             try:
-                transport.step("bridge", step, **variables)
+                transport.step("bridge", step, **variables, GOLD_MAX_HOSTS=issue)
                 run["steps"][step] = "ok"
             except RuntimeError as error:
                 run["steps"][step] = str(error)
             persist()
         runs.append({"scope": scope, **run})
-    return runs
+    return runs, reserved
 
 
 def held_results(state, held_jobs, now):
@@ -1242,8 +1256,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     persist()
     # Before collection: a host admitted now has its held results published by this tick's
     # collect, which otherwise stops at the first result it must hold.
-    gold_runs = [] if drain else gold_onboarding(config, state, transport, persist, now,
-                                                 held=bool(held_jobs))
+    gold_runs = []
+    if not drain and config.get("gold_onboarding"):
+        cap = resolve_watermarks(config, snapshot, None, low_watermark=low_watermark,
+                                 high_watermark=high_watermark,
+                                 max_global_pending=max_global_pending)["max_global_pending"]
+        in_flight = max(snapshot["pending_workunits"], len(pending_jobs))
+        gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
+                                              held=bool(held_jobs), room=cap - in_flight)
+        # The gold units just issued are in flight too, for this tick's refill.
+        snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
     to_collect = []
     for page, record in owned.items():
         job_id = record["job"]["id"]
@@ -1447,7 +1469,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     }] if starvation_alert else []
     for run in gold_runs:
         for step, outcome in run["steps"].items():
-            if outcome != "ok":
+            if outcome not in ("ok", GOLD_SKIPPED_AT_CAP):
                 alerts.append({"code": "gold_onboarding_failed", "scope": run["scope"], "step": step,
                                "error": outcome})
     held_count, oldest_held = held_results(state, {

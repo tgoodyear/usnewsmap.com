@@ -546,13 +546,16 @@ class GoldOnboardingTests(unittest.TestCase):
     """#901: calibrate new hosts before their results stall collection."""
 
     def setUp(self):
-        self.config = {**config(), "gold_onboarding": [dict(GOLD)]}
+        self.config = {**config(), "gold_onboarding": [dict(GOLD)], "max_global_pending": 1000}
         self.state = {}
         self.fake = GoldFake()
 
     def tick(self, at=0, drain=False):
         self.fake.now = NOW + at
-        return batch.tick(self.config, self.state, self.fake, lambda: None, NOW + at, drain=drain)
+        # Per-app counts, as live: gold units then weigh on the global cap, not the OCR cohort.
+        return batch.tick(self.config, self.state, self.fake, lambda: None, NOW + at, drain=drain,
+                          server_status=status_xml(qwen_unsent=0, quality_unsent=0,
+                                                   quality_in_progress=0, train_unsent=0))
 
     def ran(self):
         return [variables for _, _, variables in self.fake.steps]
@@ -622,7 +625,34 @@ class GoldOnboardingTests(unittest.TestCase):
         batch.tick(self.config, self.state, self.fake,
                    lambda: saved.append(copy.deepcopy(self.state.get("gold_onboarding"))), NOW)
         first = next(s for s in saved if s)
-        self.assertEqual(first["v1-tess550/eng/eng"], {"at": NOW, "held": False, "steps": {}})
+        self.assertEqual(first["v1-tess550/eng/eng"],
+                         {"at": NOW, "held": False, "max_hosts": 10, "steps": {}})
+
+    def test_gold_units_count_against_the_global_cap(self):
+        # 997 of 1000 in flight: three gold units at most, and the refill sees them.
+        self.fake.other = 997
+        event = self.tick()
+        onboard = self.fake.steps[0][2]
+        self.assertEqual(onboard["GOLD_MAX_HOSTS"], 3)
+        self.assertEqual(event["gold_onboarding"][0]["max_hosts"], 3)
+        self.assertEqual(event["global_pending"], 1000)
+        self.assertEqual(len(self.fake.jobs), 0)
+        # Two scopes share what is left.
+        self.config["gold_onboarding"] = [dict(GOLD), {**GOLD, "language": "deu", "profile": "frak2021"}]
+        self.state = {}
+        self.fake.steps.clear()
+        self.tick(at=60)
+        self.assertEqual([v["GOLD_MAX_HOSTS"] for _, s, v in self.fake.steps if s == "gold-onboard"], [3])
+        self.assertEqual([s for _, s, _ in self.fake.steps],
+                         ["gold-onboard", "gold-promote", "gold-promote"])
+
+    def test_at_the_cap_only_promotion_runs(self):
+        self.fake.other = 1000
+        event = self.tick()
+        self.assertEqual([s for _, s, _ in self.fake.steps], ["gold-promote"])
+        self.assertEqual(event["gold_onboarding"][0]["steps"],
+                         {"gold-onboard": batch.GOLD_SKIPPED_AT_CAP, "gold-promote": "ok"})
+        self.assertFalse([a for a in event["alerts"] if a["code"] == "gold_onboarding_failed"])
 
     def test_drain_and_plans_without_it_run_no_gold_steps(self):
         self.tick(drain=True)

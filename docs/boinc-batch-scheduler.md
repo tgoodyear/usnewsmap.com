@@ -149,8 +149,11 @@ When a scope is due, the tick runs two bridge steps before it collects:
 1. `gold-onboard`: the existing host-trust onboarding pass. Every host BOINC
    knows that isn't trusted for the scope, the calibrated challenge and the
    worker image (`image`) gets one targeted gold unit, at most one outstanding
-   per host and at most `max_hosts` new units per pass. A failed unit gets a
-   fresh attempt. A unit that ran and scored over the threshold is a verdict and
+   per host and at most `max_hosts` new units per pass. Gold units count
+   against the global safety cap: a pass issues at most what the cap leaves
+   (shared across scopes), is skipped when nothing is left, and the units it
+   may have issued count as in flight for the tick's OCR refill. A failed unit
+   gets a fresh attempt. A unit that ran and scored over the threshold is a verdict and
    isn't reissued.
 2. `gold-promote` (`usnm-boinc host-trust promote`): collects those units with
    the native result query, judges each untrusted host's complete evidence
@@ -161,7 +164,11 @@ When a scope is due, the tick runs two bridge steps before it collects:
    never removes a host. Each promotion is recorded in
    `host-trust/promotions.jsonl` with the evidence's workunit and result ID.
    A recorded workunit is never used again, so a later trust rebuild that drops
-   the host stands.
+   the host stands. The record is written ahead of the trust change and
+   committed after it; the next pass finishes an uncommitted record only while
+   `trust.json` is still exactly as it was, and otherwise settles it without
+   adding the host. The ledger is read again under the controller lock before
+   any change.
 
 A host admitted this way has its held results published by the same tick's
 collection. A host that fails or hasn't returned its unit stays untrusted, and

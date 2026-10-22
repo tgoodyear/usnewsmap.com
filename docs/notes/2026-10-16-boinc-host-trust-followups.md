@@ -169,7 +169,11 @@ with a full `gold trust` rebuild.
 Each admitted host is recorded in `<root>/promotions.jsonl` (scope, image,
 challenge, threshold, workunit, native result ID, trust digests before and
 after). A recorded workunit is not used again, so a rebuild that drops the host
-isn't undone by the same evidence. Without `--execute` nothing is queried or
+isn't undone by the same evidence. Records are written ahead of the trust change,
+uncommitted, with the list's digest; the next pass finishes one only if the list
+still has that digest, and otherwise commits it as the list stands. The ledger is
+read again under the controller lock, so a pass never acts on evidence another
+pass used after it judged. Without `--execute` nothing is queried or
 written; hosts are judged from evidence already collected. The JSON summary
 lists hosts promoted, already used, not eligible, pending and failed. A host
 whose evidence can't be collected or judged is left as it was, and the command
