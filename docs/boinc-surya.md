@@ -1,6 +1,6 @@
 # Surya 2 on BOINC
 
-Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](boinc-assessment.md).
+Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md).
 
 Status: a probe of a few pages, to find out whether volunteers' container runtimes can give the job a GPU, how long a page takes, and how far two hosts' texts agree. The larger sample comes after it.
 
@@ -62,7 +62,7 @@ The wrapper passes every GPU, not only the one BOINC assigned (`gpu_device_num`)
 - `nvidia-smi`'s GPU name, driver, memory, compute capability and full output, or its error;
 - Python's probe: torch's version and CUDA check, surya-ocr's version and its inference settings.
 
-Each mode then runs in its own process group with its deadline. The worker samples the group's memory and CPU time every 0.5 s and, on a GPU, the GPU's memory every 2 s. A mode in which Surya reports a block it could not read counts as `failed`, whatever text the rest gave. It records the outcome (`ok`, `timeout`, `failed`, `no_gpu`), exit code or signal, time, CPU seconds, peak memory, peak GPU memory above what was in use before, and the device llama-server actually used: `cuda` when its log says it offloaded layers to the GPU, else `cpu`. `diag.txt` also gets llama-server's device lines and last lines, and the end of Surya's stderr.
+Each mode then runs in its own process group with its deadline. The worker samples the group's memory and CPU time every 0.5 s and, on a GPU, the GPU's memory every 2 s. A mode in which Surya reports a block it could not read counts as `failed`, whatever text the rest gave. It records the outcome (`ok`, `timeout`, `failed`, `no_gpu`), exit code or signal, time, CPU seconds, peak memory, peak GPU memory above what was in use before, and the device llama-server actually used: `cuda` or `vulkan` when its log says it offloaded layers to the GPU, `cpu` when it offloaded none or said it found no usable GPU, and `none` when the log gives no such evidence. `diag.txt` also gets llama-server's device lines and last lines, and the end of Surya's stderr.
 
 A unit that can't run at all (an input whose checksum doesn't match, an engine that differs from the job's) returns `unit_error` with the reason and no runs.
 
@@ -71,7 +71,7 @@ A unit that can't run at all (an input whose checksum doesn't match, an engine t
 `create_work` makes each unit with `min_quorum` 2 and `target_nresults` 2, and at most 4 results. `script_validator` runs:
 
 - `usnm_surya_check` (`usnm-boinc surya check`) on each result: shape, sizes, UTF-8 and checksums. It also copies the result to `<project>/surya/seen/<result>/`, so every host's timings and diagnostics are kept, not only the canonical result's.
-- `usnm_surya_compare` (`usnm-boinc surya compare`) on each pair. Two results agree when they have the same job and engine; when, in each mode both ran, both read the page or neither did; and when, where both read it, their word-bag Dice (the measure in [boinc-assessment.md](boinc-assessment.md)) is at least the threshold. A mode only one of them ran is not compared, and two results with no mode in common don't agree. Two results that both could not run the unit (`unit_error`) do agree. Every pair is appended to `<project>/surya/pairs.jsonl` with its Dice per mode and both hosts' devices.
+- `usnm_surya_compare` (`usnm-boinc surya compare`) on each pair. Two results agree when they have the same job and engine; when, in each mode both ran, both read the page or neither did; and when, where both read it, their word-bag Dice (the measure in [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md)) is at least the threshold. A mode only one of them ran is not compared, and two results with no mode in common don't agree. Two results that both could not run the unit (`unit_error`) do agree. Every pair is appended to `<project>/surya/pairs.jsonl` with its Dice per mode and both hosts' devices.
 
 Vision-language output can differ between GPUs, and between CPU and GPU, so the threshold is measured, not assumed. Until the probe has measured it, `compare` accepts any Dice of 0.5 or more (`PROBE_MIN_DICE`), which only rejects unrelated text, and the logged pairs give the distribution to set it from.
 
@@ -120,9 +120,22 @@ For each page, staging (`crates/usnm-boinc/src/scans.rs`, shared with the assess
 3. each batch in turn on tile.loc.gov's storage service: the bag manifest and the issue's METS (kept in `<campaign>/batch-cache`) give the IIIF base, then the JPEG;
 4. none: the page is marked `missing`.
 
-Requests to LoC go one at a time, at least 5 s apart, with no retries, as for the assessment (docs/boinc-assessment.md, "Where the inputs come from"). The job's `input.url` is always the page's tile.loc.gov JPEG URL, wherever the bytes came from.
+Requests to LoC go one at a time, at least 5 s apart, with no retries, as for the assessment (docs/notes/2026-10-16-boinc-assessment.md, "Where the inputs come from"). The job's `input.url` is always the page's tile.loc.gov JPEG URL, wherever the bytes came from.
 
 To clear a hold, read `<campaign>/HOLD`, deal with the cause, and delete it (on the share, for example with `az storage file delete`).
+
+### The same pages and crops as the quality campaign (#968)
+
+To compare Surya with Qwen, Tesseract and American Stories on the same text, stage from the quality campaign rather than a hand-written page list:
+
+- `usnm-boinc surya stage --sample <sample.jsonl> --group <name>` takes the rows `quality sample` drew (one page per row, in its batch) as pages of `<name>`, and keeps each row in its unit as `sample.json`, so a collector can weigh the page as the quality campaign does. `--page` still works, alone or alongside.
+- `usnm-boinc surya stage-crops --quality-root <root> --root <campaign>` writes one unit per crop of every staged `usnm_quality` page: the crops the page's `usnm_qwen` unit reads (`crop_seed` and `k_crops` from its `quality.json`, the recipe in `crates/usnm-ocr-quality/src/crops.rs`), cut here from the staged `page.jpg` as JPEGs at quality 95. The unit is `units/<doc_id>.<crop_id>`; its job carries `crop` (`id`, `box`, `stratum`), reads `whole` only, with one deadline (`--timeout-secs`, 600 s by default), and its `input.url` is the page's source with the box as an `#xywh=` fragment. A page whose ALTO has no line the recipe can cut gets a `<doc_id>.no_crops` marker.
+
+On the bridge, the steps are `surya-stage` with `SURYA_SAMPLE=<share>/quality/<campaign>/sample.jsonl SURYA_GROUP=<group>` (instead of, or beside, `SURYA_PAGES`) and `surya-stage-crops` with `QUALITY_CAMPAIGN=<campaign>` (`SURYA_MAX` pages, `SURYA_TIMEOUT_SECS`); both then go through `surya-submit` as any unit.
+
+`usnm-boinc surya collect --root <campaign> --spool <assimilator results> --texts-dir <campaign>/texts` reads the canonical results back, page units and crop units alike, and writes `<doc_id>.surya.json` for every page with a read: the page's text as the reader `ours-surya`, from the first of `--modes` (`whole,capped,tiled` by default) that read the page, with `surya:<mode>:<job id>` as its source. `quality stage --surya-texts <that directory>` then joins it into each unit's `texts.json` when `--readers` names `ours-surya`, so the hat on the host estimates Surya's page error alongside the other readers'. `quality collect --surya-root <campaign> --surya-spool <results>` joins the crop units' texts into `crops.parquet` as the reader `surya`, in the crop-level hat with LoC, the vision-language reading and every reader with boxes. On the bridge: `surya-collect` with `SURYA_SPOOL`, and `SURYA_CAMPAIGN` on `quality-stage` and `quality-collect` (with `SURYA_SPOOL`).
+
+A crop unit takes seconds rather than the 40 minutes a tiled page takes on CPU, so every plan class can run it. `submit` gives it a hundredth of a page's fpops estimate and bound, an 8 GiB memory bound and a one-day delay bound, at the same quorum of two. `check` and `compare` treat it as any unit: `text-whole.txt` is the crop's text. A page unit's job is unchanged, and keeps the identity it had before crops existed.
 
 `surya-summary` prints a table of every kept result (page, client, plan class, runtime, GPU, and per mode the outcome, device, time, memory) and every compared pair, and writes it to `<campaign>/summary.md`. A unit left at `submitting` is resolved as for the assessment.
 

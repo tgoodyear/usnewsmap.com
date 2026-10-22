@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build the word lists that make a query English for its relative rate's
-baseline (#237, 06 §6.3.3): crates/usnm-core/data/english-words.txt and
-english-shared-words.txt.
+baseline (#237, 06 §6.3.3): crates/usnm-core/data/english-words.txt.zst and
+english-shared-words.txt.zst (zstd -19, so the zstd command line tool is needed;
+build.rs decompresses them).
 
     scripts/build-english-words.py [--top 100000] [--shared-ratio 10] [--out-dir path] [--check]
 
@@ -34,12 +35,14 @@ lists changes which baselines searches get, so it goes with a bump of
 
 import argparse
 import re
+import shutil
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "crates" / "usnm-core" / "data"
-ENGLISH, SHARED = "english-words.txt", "english-shared-words.txt"
+ENGLISH, SHARED = "english-words.txt.zst", "english-shared-words.txt.zst"
 
 # wordfreq codes of the corpus's Latin-script languages other than English
 # (docs/reports/2026-10-language-analysis): German, Spanish, French, Polish,
@@ -54,6 +57,26 @@ OTHERS = ["de", "es", "fr", "pl", "it", "da", "cs", "nb", "sh", "fi", "sv", "lt"
 SPECIAL = {"ſ": "s", "æ": "ae", "œ": "oe", "ø": "o", "ł": "l", "ß": "ss", "đ": "d", "ð": "d", "þ": "th",
            "ı": "i", "ŋ": "ng", "ħ": "h"}
 LETTERS = re.compile(r"[a-z]+")
+
+
+def zstd_cli() -> str:
+    """The `zstd` command line tool, which compresses the lists (`zstd -19`)."""
+    path = shutil.which("zstd")
+    if path is None:
+        raise SystemExit("the zstd command line tool is needed and is not on PATH (apt install zstd)")
+    return path
+
+
+def write_zst(path: Path, text: str) -> None:
+    """Write `text` to `path` compressed with `zstd -19`."""
+    path.write_bytes(subprocess.run([zstd_cli(), "-19", "-q", "-c"], input=text.encode("utf-8"),
+                                    stdout=subprocess.PIPE, check=True).stdout)
+
+
+def read_zst(path: Path) -> str:
+    """The text of a `zstd`-compressed file."""
+    return subprocess.run([zstd_cli(), "-d", "-q", "-c", str(path)], stdout=subprocess.PIPE,
+                          check=True).stdout.decode("utf-8")
 
 
 def fold(word: str) -> str:
@@ -106,12 +129,12 @@ def main() -> int:
         path = a.out_dir / name
         text = "".join(w + "\n" for w in ws)
         if a.check:
-            same = path.exists() and path.read_text() == text
+            same = path.exists() and read_zst(path) == text
             differs |= not same
             print(f"{path}: {'up to date' if same else 'differs'}")
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            write_zst(path, text)
             print(f"{path}: {len(ws)} words")
     return 1 if differs else 0
 

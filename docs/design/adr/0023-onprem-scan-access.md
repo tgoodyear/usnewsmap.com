@@ -1,6 +1,6 @@
 # ADR-0023: On-prem scans reach the BOINC bridge by outbound-only staging into Azure
 
-- **Status:** Accepted as direction (2026-10-19, maintainer); design only, nothing implemented. The gateway, Entra app registration and tunnel are unselected alternatives. See [design 16](../16-tank-replacement-and-scan-access.md#166-scan-access-for-the-boinc-bridge-outbound-only-staging-chosen-direction)
+- **Status:** Accepted as direction (2026-10-19, maintainer); design only, nothing implemented. The gateway, Entra app registration and tunnel are unselected alternatives. See [design 16](../../notes/2026-10-19-tank-replacement-and-scan-access.md#166-scan-access-for-the-boinc-bridge-outbound-only-staging-chosen-direction)
 - **Date:** 2026-10
 - **Relates to:** ADR-0008, ADR-0009, ADR-0015, ADR-0018, ADR-0019, ADR-0022
 
@@ -20,7 +20,7 @@
 
 Unselected; kept for the record, none approved:
 
-- **Authenticated read-only gateway on `pve-big`** (reusing `usnm-scan-reader`; Entra token with issuer, tenant, own audience, `oid` and `Scans.Read` checks; restricted filesystem namespace; sidecar headers from a manifest of verified local sidecars). Needs a new Entra app registration and new internet-facing code. Specified in design 16 §16.6 as an alternative only.
+- **Authenticated read-only gateway on `pve-big`** (reusing the router and integrity checks of the since-removed `usnm-scan-reader`; Entra token with issuer, tenant, own audience, `oid` and `Scans.Read` checks; restricted filesystem namespace; sidecar headers from a manifest of verified local sidecars). Needs a new Entra app registration and new internet-facing code. Specified in design 16 §16.6 as an alternative only.
 - **Outbound tunnel or port forward** for such a gateway. A tunnel connector carries a non-Entra credential, so it would need an explicit ADR-0009 exception.
 - **VPN gateway:** about $139 a month, more than the saving; contradicts ADR-0015.
 - **Reuse `serve-scans`:** unauthenticated, plain HTTP, has write verbs.

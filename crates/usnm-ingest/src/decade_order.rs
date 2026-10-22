@@ -113,6 +113,8 @@ pub struct DecadeOrder {
     open: BTreeMap<u16, Spill>,
     /// Files made so far, for unique names.
     made: u64,
+    /// Seconds the release waited for room in the background queue.
+    waited: f64,
     shared: Arc<Mutex<Shared>>,
     background: Option<Background>,
 }
@@ -153,9 +155,15 @@ impl DecadeOrder {
             chunk: chunk.max(1),
             open: BTreeMap::new(),
             made: 0,
+            waited: 0.0,
             shared,
             background,
         })
+    }
+
+    /// Seconds the release has waited for the background sender so far.
+    pub fn queue_wait_secs(&self) -> f64 {
+        self.waited
     }
 
     pub fn stats(&self) -> OrderStats {
@@ -165,6 +173,18 @@ impl DecadeOrder {
     /// Hold `doc` (with its `decade`) back, and send its decade's pages
     /// once there are `chunk` of them.
     pub async fn add(&mut self, sink: &mut dyn IndexSink, doc: &Value) -> anyhow::Result<()> {
+        let line = serde_json::to_vec(doc)?;
+        self.add_line(sink, doc, line).await
+    }
+
+    /// [`DecadeOrder::add`] with `doc` already written as its JSON `line`
+    /// (the release builds both on its threads).
+    pub async fn add_line(
+        &mut self,
+        sink: &mut dyn IndexSink,
+        doc: &Value,
+        line: Vec<u8>,
+    ) -> anyhow::Result<()> {
         let decade = doc["decade"]
             .as_u64()
             .and_then(|d| u16::try_from(d).ok())
@@ -174,7 +194,6 @@ impl DecadeOrder {
                     doc["doc_id"].as_str().unwrap_or("?")
                 )
             })?;
-        let line = serde_json::to_vec(doc)?;
         let spill = match self.open.entry(decade) {
             std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::btree_map::Entry::Vacant(e) => {
@@ -245,7 +264,10 @@ impl DecadeOrder {
         };
         match &self.background {
             Some(bg) => {
-                if bg.queue.send(full).await.is_err() {
+                let t = std::time::Instant::now();
+                let sent = bg.queue.send(full).await;
+                self.waited += t.elapsed().as_secs_f64();
+                if sent.is_err() {
                     // The sender stopped: its error says why.
                     let Background { mut task, .. } = self.background.take().expect("background");
                     task.join().await?;
@@ -272,8 +294,9 @@ async fn send_files(
     };
     while let Some(full) = rx.recv().await {
         send_file(&full, &shared, &mut sender).await?;
+        sender.sender.end_file().await?;
     }
-    Ok(sender.sender.into_unsent())
+    sender.sender.into_unsent().await
 }
 
 /// The background sender, stopping once the writer lock is lost.

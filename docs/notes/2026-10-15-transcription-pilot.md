@@ -8,7 +8,7 @@
 
 ## Experiment
 
-The [pilot](../boinc-transcription.md) uses separate BOINC apps for bounded
+The [pilot](2026-10-16-boinc-transcription.md) uses separate BOINC apps for bounded
 volunteer GPU adaptation (`usnm_qwen_train`) and inference (`usnm_qwen`), with one
 fixed base model per campaign. Held-out gold text remains on the server;
 training workunits contain only permissively licensed train-split pixels,

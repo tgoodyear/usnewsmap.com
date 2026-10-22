@@ -38,13 +38,13 @@ work finishes. Local computing preferences affect other BOINC projects too.
 This pilot may have no work or supported app for your device. You can install
 BOINC and register or attach later. Start with the
 [Linux quick start](boinc-linux.md), [Windows quick start](boinc-windows.md),
-[macOS setup](#12-macos-arm64-apple-darwin-apple-silicon-and-x86_64-apple-darwin-intel)
+[macOS quick start](boinc-macos.md)
 or the [Linux reference](#11-linux-x86_64-pc-linux-gnu-and-aarch64-unknown-linux-gnu),
 then review [resources, network and privacy](#4-resources-network-and-privacy).
 
 ## Single-Script Onboarding (One Script per Platform)
 
-Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/usnewsmap/`):
+Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/`):
 
 | Platform                          | Onboarding Script                                          | Preview (Read-Only)                                                                                   | Apply & Attach                                                                              |
 | --------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -71,7 +71,8 @@ Choose the section below for your operating system (`Linux`, `macOS`, or `Window
 
 ### 1.1 Linux (`x86_64-pc-linux-gnu` and `aarch64-unknown-linux-gnu`)
 
-Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit) and `aarch64-unknown-linux-gnu` (64-bit ARM, `UNVERIFIED` on live volunteer hosts).
+The short version is the [Linux quick start](boinc-linux.md); this section is
+the full reference. Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit) and `aarch64-unknown-linux-gnu` (64-bit ARM, `UNVERIFIED` on live volunteer hosts).
 
 #### Native CPU app (`usnm_quality`)
 
@@ -199,7 +200,8 @@ option; this helper and its rootless guarantees apply to Podman only.
 
 ### 1.2 macOS (`arm64-apple-darwin` Apple Silicon and `x86_64-apple-darwin` Intel)
 
-Install the official **recommended stable** universal macOS BOINC client
+The short version is the [macOS quick start](boinc-macos.md); this section is
+the full reference. Install the official **recommended stable** universal macOS BOINC client
 (currently **8.2.11**) from [BOINC's Mac downloads](https://boinc.berkeley.edu/download_all.php?platform=mac).
 Do not install a development client just to volunteer. Upstream 8.2.12 and
 8.2.13 are Linux hotfix releases, not Mac container prerequisites; stable
@@ -216,7 +218,7 @@ After installing BOINC Manager and launching it once so `/Library/Application Su
 python3 scripts/boinc/setup_mac_volunteer.py
 
 # 2. Apply preferences and attach (or update if already attached):
-python3 scripts/boinc/setup_mac_volunteer.py --apply --account-key <YOUR_ACCOUNT_KEY>
+python3 scripts/boinc/setup_mac_volunteer.py --apply --authenticator <YOUR_ACCOUNT_KEY>
 ```
 
 #### Native CPU app (`usnm_quality`)
@@ -514,14 +516,14 @@ To view your task history, log in to the project website with the same account a
 
 Work goes out in explicit cohorts of 1 to 100 pages that the project selects by hand ([boinc.md](boinc.md#boundaries)), so it's normal to see no tasks for a while. Container apps pull a pinned OCI worker image named in the app version; native apps (`usnm_quality` and `usnm_qwen`) run directly on the host without a container runtime.
 
-| App            | Runtime                                                                                                                  | What a task does                                                                                                                             | Downloads                                                                                              | Returns                                                                                                         |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `usnm_ocr`     | Container (`docker`)                                                                                                     | OCR of one newspaper page with Tesseract 5.5.0 and the project's model lock                                                                  | the page image and a job file, from the project server                                                 | the page's text (`text.txt`), its layout as ALTO XML (`layout.xml`) and `result.json` (checksums, engine, time) |
-| `usnm_assess`  | Container (`docker`)                                                                                                     | reads one page twice, as JP2 and as JPEG, to compare the two formats ([boinc-assessment.md](boinc-assessment.md)); two hosts get each page   | the JP2, the JPEG (OCR units) and a job file, from the project server                                  | both texts and `result.json` (outcome, exit code, time, memory per format)                                      |
-| `usnm_gold`    | Container (`docker`)                                                                                                     | scores your engine on public hand-transcribed text ([gold check](boinc.md#gold-check))                                                       | see below                                                                                              | `gold-result.json`: counts only                                                                                 |
-| `usnm_surya`   | Container (`docker_mt`, `docker_nvidia_cuda`)                                                                            | OCR of one newspaper page with Surya 2 ([boinc-surya.md](boinc-surya.md))                                                                    | the page image and `surya.json`, from the project server                                               | `text.txt`, `lines.json`, `result.json` and `diag.txt`                                                          |
-| `usnm_quality` | Native CPU (all 5 platforms) or Container (`docker`)                                                                     | estimates per-page OCR accuracy, completeness, findability and scan features across existing readings ([boinc-quality.md](boinc-quality.md)) | `page.jpg`, `loc.xml`, `texts.json`, sticky `places.txt` and `quality.json`                            | `result.json`, `confusions.json` and `diag.txt`                                                                 |
-| `usnm_qwen`    | Native (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `mt`) or Container (`docker_mt_2b`, `docker_nvidia_cuda_8b`) | transcribes deterministic word crops with Qwen3-VL via `llama-server` ([boinc-quality.md](boinc-quality.md))                                 | `page.jpg`, `qwen.json`, and (native only) sticky `<sticky/><no_delete/>` GGUF model + projector files | `readings.json`, `result.json` and `diag.txt`                                                                   |
+| App            | Runtime                                                                                                                  | What a task does                                                                                                                                            | Downloads                                                                                              | Returns                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `usnm_ocr`     | Container (`docker`)                                                                                                     | OCR of one newspaper page with Tesseract 5.5.0 and the project's model lock                                                                                 | the page image and a job file, from the project server                                                 | the page's text (`text.txt`), its layout as ALTO XML (`layout.xml`) and `result.json` (checksums, engine, time) |
+| `usnm_assess`  | Container (`docker`)                                                                                                     | reads one page twice, as JP2 and as JPEG, to compare the two formats ([boinc-assessment.md](notes/2026-10-16-boinc-assessment.md)); two hosts get each page | the JP2, the JPEG (OCR units) and a job file, from the project server                                  | both texts and `result.json` (outcome, exit code, time, memory per format)                                      |
+| `usnm_gold`    | Container (`docker`)                                                                                                     | scores your engine on public hand-transcribed text ([gold check](boinc.md#gold-check))                                                                      | see below                                                                                              | `gold-result.json`: counts only                                                                                 |
+| `usnm_surya`   | Container (`docker_mt`, `docker_nvidia_cuda`)                                                                            | OCR of one newspaper page with Surya 2 ([boinc-surya.md](boinc-surya.md))                                                                                   | the page image and `surya.json`, from the project server                                               | `text.txt`, `lines.json`, `result.json` and `diag.txt`                                                          |
+| `usnm_quality` | Native CPU (all 5 platforms) or Container (`docker`)                                                                     | estimates per-page OCR accuracy, completeness, findability and scan features across existing readings ([boinc-quality.md](boinc-quality.md))                | `page.jpg`, `loc.xml`, `texts.json`, sticky `places.txt` and `quality.json`                            | `result.json`, `confusions.json` and `diag.txt`                                                                 |
+| `usnm_qwen`    | Native (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `mt`) or Container (`docker_mt_2b`, `docker_nvidia_cuda_8b`) | transcribes deterministic word crops with Qwen3-VL via `llama-server` ([boinc-quality.md](boinc-quality.md))                                                | `page.jpg`, `qwen.json`, and (native only) sticky `<sticky/><no_delete/>` GGUF model + projector files | `readings.json`, `result.json` and `diag.txt`                                                                   |
 
 The OCR text from `usnm_ocr` is what the project uses. It is published as ALTO and Parquet and goes through the same import and release as the project's own OCR nodes.
 

@@ -8,6 +8,12 @@
 
 BOINC_DIR=contrib-compute/infra/boinc
 BOINC_SETTINGS="$BOINC_DIR/env/$ENV_NAME.json"
+# The tests (scripts/test_boinc_provision.py) run against fixture settings with stubbed
+# Azure calls: USNM_BOINC_SETTINGS_FILE, honoured only with USNM_BOINC_TEST=1.
+if [ -n "${USNM_BOINC_SETTINGS_FILE:-}" ]; then
+  [ "${USNM_BOINC_TEST:-}" = 1 ] || { echo "error: USNM_BOINC_SETTINGS_FILE is for the tests" >&2; exit 1; }
+  BOINC_SETTINGS=$USNM_BOINC_SETTINGS_FILE
+fi
 BOINC_RG="usnm-boinc-rg-$ENV_NAME"
 BOINC_STACK="usnm-boinc-$ENV_NAME"
 # Never touched by these scripts (other production resources).
@@ -31,6 +37,8 @@ case "$ENV_NAME" in prod | dev) ;; *) die "--env must be prod or dev (the BOINC 
 # infra/env/<env>.json, unless --allow-dirty (dev only).
 boinc_clean_check() {
   local out
+  # Fixture settings in the tests live outside the repository.
+  [ -z "${USNM_BOINC_SETTINGS_FILE:-}" ] || return 0
   out=$(git status --porcelain -- "$BOINC_SETTINGS" "$BOINC_DIR/env/schema.json" 2>&1) ||
     die "can't check $BOINC_SETTINGS with git: $out"
   [ -z "$out" ] && return 0
@@ -48,7 +56,7 @@ boinc_load_settings() {
   err=$(jq -r '
     def guid: test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
     def acr: test("^$|^[a-z0-9.-]+\\.azurecr\\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$");
-    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "location", "operator", "projectShare", "projectUrl", "qualityWave", "requireSecureTransport", "subscriptionId"]
+    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "keyVaultAllowedIps", "location", "onPremGroupId", "operator", "projectShare", "projectUrl", "qualityWave", "requireSecureTransport", "server", "subscriptionId"]
         | if length > 0 then "unknown keys: \(join(", "))" else empty end),
       (if keys_unsorted != keys then "keys are not sorted" else empty end),
       (if (.assessment | type) != "boolean" then "assessment must be true or false" else empty end),
@@ -59,7 +67,10 @@ boinc_load_settings() {
           or (.qualityWave.sha256 | test("^[0-9a-f]{64}$") | not))
         then "qualityWave must be {script: an https blob URL of a .py file, sha256: 64 hex}" else empty end),
       (if has("requireSecureTransport") and (.requireSecureTransport | type) != "boolean" then "requireSecureTransport must be true or false" else empty end),
+      (if has("server") and (.server != "azure" and .server != "onprem") then "server must be azure or onprem" else empty end),
       (if has("projectShare") and ([.projectShare] | inside(["standard", "copy", "provisioned", "provisioned-final"]) | not) then "projectShare must be standard, copy, provisioned or provisioned-final" else empty end),
+      (if has("keyVaultAllowedIps") and ((.keyVaultAllowedIps | type) != "array" or (.keyVaultAllowedIps | length) > 4 or any(.keyVaultAllowedIps[]; type != "string" or (test("^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$") | not))) then "keyVaultAllowedIps must be up to 4 public IPv4 addresses" else empty end),
+      (if has("onPremGroupId") and ((.onPremGroupId | type) != "string" or (.onPremGroupId | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$") | not)) then "onPremGroupId must be an object id" else empty end),
       (if (.images | type) != "object" or ((.images | keys) - ["web"]) != ["appver", "bridge", "server", "worker"] then "images must have appver, bridge, server and worker, with optional web" else empty end),
       (if has("images") and (.images | has("web")) and (.images.web | type) != "string" then "images.web must be a string" else empty end),
       (if (.images.web // "" | acr) then empty else "images.web must be empty or an immutable ACR image" end),
@@ -199,4 +210,27 @@ boinc_execution_log() {
   echo "--- $execution (last 50 lines) ---" >&2
   echo "$rows" >&2
   echo "---" >&2
+}
+
+# boinc_check_public_health FILE: the master URL's project config (saved to FILE) must name
+# it and be running (with BOINC_MAINTENANCE=1 the scheduler may be closed on purpose).
+# provision-boinc.sh (both server modes) and the on-prem app release use it. Needs
+# PROJECT_URL (boinc_load_settings).
+boinc_check_public_health() {
+  local out=$1
+  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+    --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$out" ||
+    die "the public BOINC project endpoint is not healthy"
+  # BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
+  # (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
+  python3 - "$out" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+config = ET.parse(sys.argv[1]).getroot()
+sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
+if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
+        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
+    raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
+PY
 }

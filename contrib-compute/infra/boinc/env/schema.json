@@ -65,10 +65,24 @@
         }
       }
     },
+    "keyVaultAllowedIps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$"
+      },
+      "maxItems": 4,
+      "description": "Public IPv4 addresses (the home network) the BOINC Key Vault admits on its public endpoint, behind its firewall and a policy exemption for that vault alone (#917, 20 October 2026). Empty or absent: private-only. main.bicep's keyVaultAllowedIps parameter."
+    },
     "location": {
       "type": "string",
       "pattern": "^[a-z0-9]+$",
       "description": "Azure region; the resource group's own."
+    },
+    "onPremGroupId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Object id of usnm-onprem-grp-<env> (the on-prem hosts' Arc identities): Key Vault Secrets User on the project vault, so the on-prem BOINC server reads the project secrets (#942). main.bicep's onPremGroupId."
     },
     "operator": {
       "type": "object",
@@ -91,7 +105,12 @@
     },
     "projectShare": {
       "type": "string",
-      "enum": ["standard", "copy", "provisioned", "provisioned-final"],
+      "enum": [
+        "standard",
+        "copy",
+        "provisioned",
+        "provisioned-final"
+      ],
       "description": "The project share's billing (#917): standard (pay-as-you-go StorageV2), copy (the provisioned v2 SSD share also mounted at /project-v2 to fill it), provisioned (/project is the provisioned share; the old account kept for rollback), provisioned-final (the old account removed). main.bicep's projectShare parameter; docs/boinc.md, \"Moving the project share\"."
     },
     "projectUrl": {
@@ -127,6 +146,15 @@
       "type": "boolean",
       "default": false,
       "description": "Require verified MySQL TLS. Defaults OFF when absent. Set true only after #464 actual Azure-chain, complete copied-project migration/rollback and all-client acceptance, under #529 coordination. Forwarded by normal provisioning; no portal-only toggle."
+    },
+    "server": {
+      "type": "string",
+      "enum": [
+        "azure",
+        "onprem"
+      ],
+      "default": "azure",
+      "description": "Where the BOINC server runs. onprem (#942, docs/boinc-onprem.md): main.bicep's serverOnPrem keeps only the identities, the vault the on-prem host reads, the VNet and the static site, and provision-boinc.sh checks the on-prem server at the master URL instead of starting lifecycle jobs. Default azure."
     },
     "subscriptionId": {
       "type": "string",

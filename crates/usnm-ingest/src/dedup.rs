@@ -92,6 +92,21 @@ impl Plan {
     }
 }
 
+#[cfg(test)]
+impl Plan {
+    /// A plan that keeps the named batch's copy of each page given (with
+    /// LoC's text), and the one copy of every other page.
+    pub fn keeping<'a>(pages: impl IntoIterator<Item = (PageKey, &'a str)>) -> Self {
+        Self {
+            keep: pages
+                .into_iter()
+                .map(|(k, b)| (k, (b.to_owned(), true)))
+                .collect(),
+            ..Self::default()
+        }
+    }
+}
+
 /// A batch's `counts.json`.
 pub async fn load_counts(curated: &dyn ObjectStore, b: &RunBatch) -> anyhow::Result<Counts> {
     let path = &b.curated.counts;

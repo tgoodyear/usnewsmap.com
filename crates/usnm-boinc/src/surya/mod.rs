@@ -14,6 +14,8 @@
 use anyhow::{bail, ensure, Context};
 use std::path::{Path, PathBuf};
 
+pub mod collect;
+pub mod crops;
 pub mod stage;
 pub mod submit;
 pub mod summary;
@@ -71,6 +73,28 @@ impl std::str::FromStr for Page {
     }
 }
 
+impl Page {
+    /// A page of `group` from a row of the quality campaign's sample
+    /// (`quality sample`, #968): its batch is the one the prefetch manifest
+    /// places it in.
+    pub fn from_sample(row: &crate::assess::SampleRow, group: &str) -> anyhow::Result<Self> {
+        crate::assess::check_doc_id(&row.doc_id)?;
+        check_group(group)?;
+        check_word(&row.lang, "language")?;
+        ensure!(
+            !row.batch.is_empty(),
+            "{}: sample row has no batch",
+            row.doc_id
+        );
+        Ok(Self {
+            doc_id: row.doc_id.clone(),
+            group: group.to_owned(),
+            lang: row.lang.clone(),
+            batches: vec![(row.batch.clone(), row.batch_version)],
+        })
+    }
+}
+
 /// Where the units live under the staging root.
 pub fn units(root: &Path) -> PathBuf {
     root.join("units")
@@ -94,7 +118,13 @@ pub fn outputs() -> [&'static str; 5] {
     ]
 }
 
-/// Lower-case ASCII letters and hyphens, as a group or language.
+/// A group as the quality campaign names them: lower-case ASCII letters,
+/// digits and hyphens, 1 to 32 bytes.
+pub fn check_group(s: &str) -> anyhow::Result<()> {
+    usnm_ocr_contract::quality::check_name(s, "group")
+}
+
+/// Lower-case ASCII letters and hyphens, as a language.
 pub fn check_word(s: &str, what: &str) -> anyhow::Result<()> {
     ensure!(
         !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
@@ -106,6 +136,27 @@ pub fn check_word(s: &str, what: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_sample_row_becomes_a_page_of_the_group() {
+        let row: crate::assess::SampleRow = serde_json::from_value(serde_json::json!({
+            "batch": "dlc_arlington", "batch_version": 1, "crash_weight": 1.0,
+            "damage": "mid", "damage_rate": 0.3, "decade": 1910,
+            "doc_id": "sn85055101_1917-04-03_ed-1_seq-3", "lang": "srp", "mode": "ocr",
+            "prefix": "dlc", "stratum_pages": 10, "weight": 1.0, "year": 1917
+        }))
+        .unwrap();
+        let p = Page::from_sample(&row, "campaign-a").unwrap();
+        assert_eq!(p.group, "campaign-a");
+        assert_eq!(p.lang, "srp");
+        assert_eq!(p.batches, vec![("dlc_arlington".to_owned(), 1)]);
+        // The quality campaign's groups carry digits.
+        assert_eq!(
+            Page::from_sample(&row, "campaign-1").unwrap().group,
+            "campaign-1"
+        );
+        assert!(Page::from_sample(&row, "Campaign 1").is_err());
+    }
+
     #[test]
     fn pages_parse() {
         let p: Page = "serbian:srp:sn85055101_1917-04-03_ed-1_seq-3:dlc_arlington_ver01"

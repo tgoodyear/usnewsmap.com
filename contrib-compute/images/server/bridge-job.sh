@@ -5,7 +5,7 @@
 #   JOB_ID=<id>              the exported job (required for submit and reconcile)
 #   BRIDGE_STEP=submit       or: reconcile (then BRIDGE_FOUND=present|absent is required)
 #
-# The JP2 against IIIF JPEG assessment (#456, docs/boinc-assessment.md), under
+# The JP2 against IIIF JPEG assessment (#456, docs/notes/2026-10-16-boinc-assessment.md), under
 # $PROJECT_DIR/assess/<ASSESS_CAMPAIGN> on the share (one campaign per engine build;
 # ASSESS_CAMPAIGN is required, lower-case letters, digits and hyphens):
 #   BRIDGE_STEP=assess-stage    ASSESS_MODE=ocr|crash ASSESS_ENGINE_IMAGE=sha256:... (worker image)
@@ -42,12 +42,21 @@
 # The Surya 2 test (#516, docs/boinc-surya.md), under $SHARE_DIR/surya/<SURYA_CAMPAIGN> (same
 # name rule as ASSESS_CAMPAIGN):
 #   BRIDGE_STEP=surya-stage     SURYA_PAGES=group:lang:doc_id:batch[+batch...],... (at most
-#                               SURYA_MAX, default 20; batches as <name>_ver<NN>)
+#                               SURYA_MAX, default 20; batches as <name>_ver<NN>), or
+#                               SURYA_SAMPLE=<a quality sample.jsonl on the share> with
+#                               SURYA_GROUP=<group> (#968: the rows become pages of the group)
 #                               SURYA_ENGINE_IMAGE=sha256:... (the usnm_surya worker image)
 #                               SURYA_ENGINE_LLAMA=sha256:... SURYA_ENGINE_WEIGHTS=sha256:...
 #                               (its USNM_SURYA_LLAMA_IMAGE and USNM_SURYA_WEIGHTS)
 #                               gets each page's IIIF JPEG from the scan archive, else from
 #                               tile.loc.gov through its batch, one request at a time, 5 s apart
+#   BRIDGE_STEP=surya-collect   SURYA_SPOOL=<assimilator results directory> [SURYA_MODES=whole,capped,tiled]
+#                               reads the canonical results and writes <campaign>/texts/<doc_id>.surya.json,
+#                               the page's text as the ours-surya reader for quality-stage (#968)
+#   BRIDGE_STEP=surya-stage-crops QUALITY_CAMPAIGN=<quality campaign> SURYA_ENGINE_IMAGE=...
+#                               SURYA_ENGINE_LLAMA=... SURYA_ENGINE_WEIGHTS=... [SURYA_MAX=50 pages]
+#                               [SURYA_TIMEOUT_SECS=600]: one unit per crop of every staged
+#                               quality page, cut from its page.jpg (#968)
 #
 # assess-stage, surya-stage and quality-stage read the scan archive first when SCAN_ARCHIVE_URL
 # is set (https://<scansAccount>.blob.core.windows.net/scans, with the job's identity); none of
@@ -63,11 +72,15 @@
 #                               [QUALITY_PAGES=group:lang:doc_id:batch[+batch...],...]
 #                               [QUALITY_SAMPLE=<path, default <campaign>/sample.jsonl>]
 #                               [QUALITY_GROUP=sample] [QUALITY_READERS=loc,as,ours-tesseract]
+#                               [SURYA_CAMPAIGN=<surya campaign>] (its texts/ from surya-collect join
+#                               each unit as ours-surya when QUALITY_READERS names it, #968)
 #                               [QUALITY_PLACES=<campaign>/places.txt]
 #                               QUALITY_ENGINE_IMAGE=sha256:... [QUALITY_MAX=100]
 #   BRIDGE_STEP=quality-submit  [QUALITY_MAX=500]
 #   BRIDGE_STEP=quality-collect QUALITY_SPOOL=<assimilator results directory>
 #                               [QWEN_CAMPAIGN=... QWEN_SPOOL=...]
+#                               [SURYA_CAMPAIGN=... SURYA_SPOOL=...] (crop units' texts join
+#                               crops.parquet as the reader surya, #968)
 #                               [QUALITY_CURATED_URL=...] (else writes <campaign>/out)
 #   BRIDGE_STEP=quality-summary writes <campaign>/summary.md from <project>/quality
 #   BRIDGE_STEP=qwen-stage      QUALITY_CAMPAIGN=<quality campaign>
@@ -137,6 +150,25 @@ step="${BRIDGE_STEP:-submit}"
 # spool-out. Each job runs this script's single-job path again, so every check is the same.
 # submit-remote stops at the first failure (the next tick reconciles that job before any other
 # submission); spool-out goes on and fails at the end, so one bad result holds back no other.
+# The secrets are read from Key Vault once for the whole batch (#958): the per-job runs reuse the
+# files in tmpfs (BRIDGE_SECRETS_READY), and fetch them again only if one is missing. Submission
+# needs every runtime secret and the rendered config; spool-out only the database password.
+# runtime_password: the runtime database password into $SECRETS/db-runtime, reusing the batch's.
+runtime_password() {
+  if [ "${BRIDGE_SECRETS_READY:-}" = 1 ] && [ -s "$SECRETS/db-runtime" ]; then
+    return 0
+  fi
+  mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
+  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+}
+if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
+  fetch_secrets
+  render_config
+  export BRIDGE_SECRETS_READY=1
+elif [ "$step" = spool-out ] && [ -n "${HANDOFF_SPOOLS:-}" ]; then
+  runtime_password
+  export BRIDGE_SECRETS_READY=1
+fi
 if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
   [ -z "${JOB_ID:-}" ] || fail "set JOB_ID or JOB_IDS, not both"
   [[ $JOB_IDS =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
@@ -244,16 +276,38 @@ case "$step" in
       --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" ;;
   surya-stage)
     # No database or secrets: this step only reads the scan archive and LoC and writes the share.
-    [[ "${SURYA_PAGES:-}" =~ ^[a-z0-9:_,+-]+$ ]] || fail "SURYA_PAGES must be group:lang:doc_id:batch[+batch...],..."
     page_args=()
-    IFS=, read -r -a pages <<< "$SURYA_PAGES"
-    for p in "${pages[@]}"; do page_args+=(--page "$p"); done
+    if [ -n "${SURYA_PAGES:-}" ]; then
+      [[ "$SURYA_PAGES" =~ ^[a-z0-9:_,+-]+$ ]] || fail "SURYA_PAGES must be group:lang:doc_id:batch[+batch...],..."
+      IFS=, read -r -a pages <<< "$SURYA_PAGES"
+      for p in "${pages[@]}"; do page_args+=(--page "$p"); done
+    fi
+    if [ -n "${SURYA_SAMPLE:-}" ]; then
+      [[ "$SURYA_SAMPLE" == "$SHARE_DIR"/* && -f "$SURYA_SAMPLE" ]] || fail "SURYA_SAMPLE must be a file under $SHARE_DIR"
+      [[ "${SURYA_GROUP:-}" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || fail "SURYA_GROUP must be 1-32 of [a-z0-9-]"
+      page_args+=(--sample "$SURYA_SAMPLE" --group "$SURYA_GROUP")
+    fi
+    [ "${#page_args[@]}" -gt 0 ] || fail "set SURYA_PAGES or SURYA_SAMPLE"
     exec usnm-boinc surya stage "${page_args[@]}" --root "$SURYA" \
       --engine-image "${SURYA_ENGINE_IMAGE:?set SURYA_ENGINE_IMAGE}" \
       --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
       --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" \
       --max-pages "${SURYA_MAX:-20}" --batch-cache "$SURYA/batch-cache" \
       ${SCAN_ARCHIVE_URL:+--scan-archive "$SCAN_ARCHIVE_URL"} ;;
+  surya-stage-crops)
+    # No database, secrets or network: cuts the staged quality pages' crops on the share.
+    [[ "${QUALITY_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "QUALITY_CAMPAIGN must be 1-41 of [a-z0-9-]"
+    [[ "${SURYA_TIMEOUT_SECS:-600}" =~ ^[0-9]{2,5}$ ]] || fail "SURYA_TIMEOUT_SECS must be seconds"
+    exec usnm-boinc surya stage-crops --quality-root "$SHARE_DIR/quality/$QUALITY_CAMPAIGN" --root "$SURYA" \
+      --engine-image "${SURYA_ENGINE_IMAGE:?set SURYA_ENGINE_IMAGE}" \
+      --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
+      --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" \
+      --timeout-secs "${SURYA_TIMEOUT_SECS:-600}" --max-pages "${SURYA_MAX:-50}" ;;
+  surya-collect)
+    # No database or secrets: reads the assimilated results and writes the share.
+    [[ "${SURYA_MODES:-whole,capped,tiled}" =~ ^[a-z,]+$ ]] || fail "SURYA_MODES must be comma-separated modes"
+    exec usnm-boinc surya collect --root "$SURYA" --spool "${SURYA_SPOOL:?set SURYA_SPOOL}" \
+      --texts-dir "$SURYA/texts" --modes "${SURYA_MODES:-whole,capped,tiled}" ;;
   surya-summary)
     # No database or secrets: reads what the validator kept and writes the campaign's summary.
     usnm-boinc surya summary --root "$SURYA" --seen "$PROJ/surya/seen" --pairs "$PROJ/surya/pairs.jsonl" \
@@ -301,8 +355,13 @@ case "$step" in
     [[ "${QUALITY_READERS:-loc,as,ours-tesseract}" =~ ^[a-z0-9_,-]+$ ]] ||
       fail "QUALITY_READERS must be comma-separated reader names"
     [[ "${QUALITY_BUNDLE_SIZE:-300}" =~ ^[1-9][0-9]*$ ]] || fail "QUALITY_BUNDLE_SIZE must be a positive integer"
+    surya_args=()
+    if [ -n "${SURYA_CAMPAIGN:-}" ]; then
+      [[ "$SURYA_CAMPAIGN" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "SURYA_CAMPAIGN must be 1-41 of [a-z0-9-]"
+      surya_args=(--surya-texts "$SHARE_DIR/surya/$SURYA_CAMPAIGN/texts")
+    fi
     exec usnm-boinc quality stage "${page_args[@]}" --root "$QUALITY" \
-      --texts-dir "$QUALITY/texts" --scans-dir "${QUALITY_SCANS_DIR:-$QUALITY/texts}" \
+      --texts-dir "$QUALITY/texts" --scans-dir "${QUALITY_SCANS_DIR:-$QUALITY/texts}" "${surya_args[@]}" \
       --places "${QUALITY_PLACES:-$QUALITY/places.txt}" \
       --function-words-dir "$QUALITY/function-words" \
       --readers "${QUALITY_READERS:-loc,as,ours-tesseract}" \
@@ -318,11 +377,16 @@ case "$step" in
       qwen_root="$SHARE_DIR/qwen/$QWEN_CAMPAIGN"
       qwen_spool="${QWEN_SPOOL:?set QWEN_SPOOL}"
     fi
+    surya_args=()
+    if [ -n "${SURYA_CAMPAIGN:-}" ]; then
+      [[ "$SURYA_CAMPAIGN" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "SURYA_CAMPAIGN must be 1-41 of [a-z0-9-]"
+      surya_args=(--surya-root "$SHARE_DIR/surya/$SURYA_CAMPAIGN" --surya-spool "${SURYA_SPOOL:?set SURYA_SPOOL}")
+    fi
     out_args=(--out-dir "$QUALITY/out")
     [ -n "${QUALITY_CURATED_URL:-}" ] && out_args=(--curated-url "$QUALITY_CURATED_URL")
     exec usnm-boinc quality collect --campaign "$QUALITY_CAMPAIGN" --root "$QUALITY" \
       --spool "${QUALITY_SPOOL:?set QUALITY_SPOOL}" --qwen-root "$qwen_root" --qwen-spool "$qwen_spool" \
-      "${out_args[@]}" ;;
+      "${surya_args[@]}" "${out_args[@]}" ;;
   quality-summary)
     usnm-boinc quality summary --root "$QUALITY" --seen "$PROJ/quality/seen" --pairs "$PROJ/quality/pairs.jsonl" \
       | tee "$QUALITY/summary.md"
@@ -395,7 +459,7 @@ if [ "$step" = spool-out ]; then
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   mycnf="$SECRETS/mysql-runtime.cnf"
   trap 'rm -f "$mycnf"' EXIT
-  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+  runtime_password
   (umask 077; { echo '[client]'; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; echo "password=$(cat "$SECRETS/db-runtime")"; } > "$mycnf")
   # The canonical result's host (BOINC's result.hostid); JOB_ID is [A-Za-z0-9_-] (above).
   # UNVERIFIED against a live database.
@@ -428,8 +492,9 @@ share_readable() {
 write_mycnf() {
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   mycnf="$SECRETS/mysql-runtime.cnf"
-  trap 'rm -f "$mycnf" "$SECRETS/db-runtime"' EXIT
-  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+  # In a batch the password file is the batch's, kept for the jobs after this one.
+  if [ "${BRIDGE_SECRETS_READY:-}" = 1 ]; then trap 'rm -f "$mycnf"' EXIT; else trap 'rm -f "$mycnf" "$SECRETS/db-runtime"' EXIT; fi
+  runtime_password
   (umask 077; python3 - "$mycnf" "$SECRETS/db-runtime" <<'PY'
 import os
 import sys
@@ -462,7 +527,11 @@ if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then
   fi
   exit 0
 fi
-fetch_secrets
+if [ "${BRIDGE_SECRETS_READY:-}" = 1 ] && secrets_present; then
+  log "reusing this batch's secrets"
+else
+  fetch_secrets
+fi
 render_config
 umask 0002
 case "$step" in
@@ -559,7 +628,7 @@ case "$step" in
     exit "$rc" ;;
   gold-onboard)
     # One bounded host-trust onboard pass: a targeted gold unit for each untrusted host
-    # without one outstanding, including hosts whose last unit failed (docs/boinc-host-trust-followups.md).
+    # without one outstanding, including hosts whose last unit failed (docs/notes/2026-10-16-boinc-host-trust-followups.md).
     [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
     write_mycnf
     controller="$SECRETS/host-trust.json"
@@ -606,5 +675,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-submit, surya-collect, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
 esac

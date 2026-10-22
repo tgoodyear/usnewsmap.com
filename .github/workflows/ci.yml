@@ -88,6 +88,31 @@ jobs:
       - run: cargo clippy -p usnm-core --all-targets --features damage --locked -- -D warnings
       - run: cargo test -p usnm-core --features damage --locked
 
+  # The OCR work queues in PostgreSQL + pgmq (#967): usnm-store's PgmqQueue against a real
+  # database set up like the queue container (TLS 1.3, client certificates, setup.sql, the
+  # role checks in test_roles.sql). USNM_TEST_PGMQ_REQUIRED fails the test if the fixture is missing.
+  queue:
+    name: queue (PostgreSQL + pgmq, live)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Start the queue fixture
+        run: |
+          location=$(scripts/onprem/queue/ci-fixture.sh --workdir "$RUNNER_TEMP/queue")
+          echo "USNM_TEST_PGMQ=$location" >> "$GITHUB_ENV"
+      - name: usnm-store's live queue test
+        env:
+          USNM_TEST_PGMQ_REQUIRED: '1'
+        run: cargo test -p usnm-store --locked pgmq
+
   # The hosting for the stock BOINC server (ADR-0019): shell scripts, XML
   # templates and Bicep. No Rust: the client and bridge are crates/usnm-boinc, whose changes also run this job.
   contrib-compute:
@@ -136,28 +161,30 @@ jobs:
         run: python3 -m unittest -v boinc/test_config.py
       - name: The daemon runner keeps bin/start's pid directory off the share
         run: python3 -m unittest -v images/server/test_boinc_daemons.py
+      - name: The Arc token path sends its key only to a loopback endpoint
+        run: python3 -m unittest -v images/server/test_lib_kv_token.py
+      - name: Key Vault reads retry transient failures (#958)
+        run: python3 -m unittest -v images/server/test_lib_kv_retry.py
+      - name: The server images take Debian's security updates (#969)
+        run: python3 -m unittest -v images/server/test_security_updates.py
       - name: The work-volume export and workbook queries pass
         run: python3 -m unittest -v images/server/test_work_volume.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
-      - name: The bounded volunteer batch scheduler tests pass
+      - name: The bounded volunteer batch inventory tests pass
         working-directory: .
-        run: python3 -m unittest -v scripts/boinc/test_batch_scheduler.py contrib-compute/images/server/test_batch_inventory.py
+        run: python3 -m unittest -v contrib-compute/images/server/test_batch_inventory.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: Install scheduler gate test headers
         run: sudo apt-get update -q && sudo apt-get install -y -q nlohmann-json3-dev
+      # The other scripts/boinc tests run in the infra job (scripts/ci/run-unit-tests.py), which
+      # every contrib change also triggers. The gold-routing test is left out of that run: it
+      # compiles C++ against the header installed above.
       - name: The app version checks' tests pass
         working-directory: .
         run: |
-          python3 -m unittest -v scripts/boinc/test_install.py
-          python3 -m unittest -v scripts/boinc/test_iris_campaign.py scripts/boinc/test_iris_worker.py scripts/boinc/test_iris_cache.py scripts/boinc/test_iris_stage_pages.py
-          python3 -m unittest -v scripts/boinc/test_volunteer.py scripts/boinc/test_qwen_disk.py scripts/boinc/test_qwen_canary.py scripts/boinc/test_hold_legacy_qwen.py
-          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
-          python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
-          python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
-          python3 -m unittest -v scripts/boinc/test_patch_server_intel_proc_type.py
           python3 -m unittest -v scripts/boinc/test_patch_server_gold_routing.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
           python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
@@ -657,21 +684,14 @@ jobs:
       - name: No shared-key authentication (ADR-0009)
         run: scripts/ci/no-shared-keys.sh
       - name: Scripts and CLIs take named arguments, not positional ones (#277)
-        run: |
-          scripts/ci/no-positional-args.py
-          python3 -m unittest -v scripts/ci/test_no_positional_args.py
-      - name: changes.sh runs the Quickwit job only for what its tests build
+        run: scripts/ci/no-positional-args.py
+      # Every scripts/**/test_*.py (changes.sh, the corpus catalog, model downloads, the
+      # environment and BOINC scripts against stub tools, the checkers, ...). A new test file
+      # runs without being listed here. The files it leaves out (Pillow, the ops venv, their own
+      # workflow) and why are in scripts/ci/run-unit-tests.py; each runs in a step of its own.
+      - name: The script unit tests pass (every scripts/**/test_*.py)
         if: needs.changes.outputs.infra == 'true'
-        run: python3 -m unittest -v scripts/ci/test_changes.py
-      - name: The bounded local corpus catalog's tests pass
-        if: needs.changes.outputs.infra == 'true'
-        run: python3 -m unittest -v scripts/test_data_catalog.py scripts/test_scan_cache_inventory.py scripts/test_worker_evidence_sync.py
-      - name: Read-only corpus flow observations preserve scope and freshness
-        if: needs.changes.outputs.infra == 'true'
-        run: python3 -m unittest -v scripts/test_data_flow_observer.py
-      - name: Pinned model downloads retry TLS failures without bypassing verification
-        if: needs.changes.outputs.infra == 'true'
-        run: python3 -m unittest -v scripts/ci/test_model_download.py
+        run: scripts/ci/run-unit-tests.py
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |
@@ -684,10 +704,6 @@ jobs:
       - name: The OCR nodes' nightly update picks the right release (#471)
         if: needs.changes.outputs.infra == 'true'
         run: |
-          python3 -m unittest -v scripts/ocr-node/test_update_worker.py
-          python3 -m unittest -v scripts/ocr-node/test_check_scan_archive.py
-          python3 -m unittest -v scripts/ocr-node/test_grant_archive_uploader.py
-          python3 -m unittest -v scripts/ocr-node/test_install_archive_host.py
           python3 -m pip install --quiet --break-system-packages pillow==11.3.0
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_cache.py
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
@@ -695,21 +711,9 @@ jobs:
             scripts/ocr-node/install-worker.sh scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
             scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
             scripts/ocr-node/install-archive-host.sh
-      - name: The search cluster report's tests pass
-        if: needs.changes.outputs.infra == 'true'
-        run: python3 -m unittest -v scripts/test_qwcluster_report.py
-      # Against a stub az: the dev experiment marker, the guard-rail budget's
-      # parameters, the settings location and scripts/dev-status.sh (#275).
-      - name: The environment scripts' tests pass
-        if: needs.changes.outputs.infra == 'true'
-        run: python3 -m unittest -v scripts/test_env_scripts.py scripts/test_rename_guard.py scripts/test_resource_names.py
-      # Against a stub az: the BOINC bridge starter keeps the job's own settings
-      # and share, and starts it without an override.
-      - name: The BOINC scripts' tests pass
+      - name: The BOINC scripts pass shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
-          python3 -m unittest -v scripts/test_boinc_scripts.py scripts/test_boinc_provision.py scripts/test_boinc_quality_campaign.py scripts/boinc/test_quality_corpus_runner.py
-          python3 -m unittest -v scripts/boinc/test_acceptance.py
           shellcheck -x -S warning scripts/start-boinc-bridge.sh scripts/provision-boinc.sh scripts/boinc-app-release.sh
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
@@ -735,14 +739,12 @@ jobs:
             sleep $((try * 5))
           done
           scripts/ci/check-names.py --require-base --base "refs/remotes/origin/$BASE_REF"
-          python3 -m unittest -v scripts/ci/test_check_names.py
       # The workbooks are loaded as text, so Bicep doesn't parse them.
       - name: The workbook definitions parse and name the workspace placeholder
         if: needs.changes.outputs.infra == 'true'
         run: |
           scripts/ci/check-workbooks.py
           scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
-          python3 -m unittest -v scripts/ci/test_check_workbooks.py
       - name: Build every Bicep template
         if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/build-bicep.sh
@@ -893,7 +895,7 @@ jobs:
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
     # Environment holds its own variables, written by scripts/bootstrap.sh.
-    needs: [changes, rust, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
+    needs: [changes, rust, queue, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.
     if: >-

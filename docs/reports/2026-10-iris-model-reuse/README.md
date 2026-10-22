@@ -3,7 +3,7 @@
 Raw per-crop results (`*.json`, with text, tokens, per-crop timings, cgroup counters), trial wall
 times (`*.time.txt`), whole-trial `intel_gpu_top` and `vmstat` samples (`telemetry.tar.gz`), and the
 generated table (`summary.md`). Regenerate the table with
-`python3 scripts/boinc/iris-bench-report.py --dir DIR` over the unpacked artifacts.
+`python3 scripts/archive/2026-10/iris-bench-report.py --dir DIR` over the unpacked artifacts.
 
 ## Setup
 
@@ -112,6 +112,6 @@ and the most drift. BOINC runtimes up to an hour would allow it, but there's no 
 ## Addendum: the cache in production (app version 1.2)
 
 The compile cache shipped as a named volume with a manifest of files from clean runs, so a killed run's
-partial files are never trusted. See [the pilot doc](../../boinc-iris-pilot.md#persistent-compile-cache-app-version-12)
+partial files are never trusted. See [the pilot doc](../../notes/2026-10-16-boinc-iris-pilot.md#persistent-compile-cache-app-version-12)
 for the design and the verification on Computer 9: a warm load took 1.7-2.9 s against 14-17 s cold, and the
 text was identical with and without the cache.

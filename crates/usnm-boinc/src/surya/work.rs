@@ -683,8 +683,14 @@ fn surya_llama_device(log: &str) -> (String, Option<String>, String) {
     let mut offloaded_layers = None;
     let mut saw_vulkan = false;
     let mut saw_cuda = false;
+    // llama-server says so itself when it has no GPU to offload to, and then
+    // logs no offload count at all; that line is the CPU evidence.
+    let mut saw_no_gpu = false;
     for l in log.lines() {
         let low = l.to_ascii_lowercase();
+        if low.contains("no usable gpu found") {
+            saw_no_gpu = true;
+        }
         if low.contains("ggml_vulkan")
             || low.contains("using device vulkan")
             || low.contains("device vulkan")
@@ -739,7 +745,7 @@ fn surya_llama_device(log: &str) -> (String, Option<String>, String) {
         } else {
             "cuda"
         }
-    } else if offloaded_layers == Some(0) {
+    } else if offloaded_layers == Some(0) || saw_no_gpu {
         "cpu"
     } else {
         // Missing/quiet startup logs do not prove that inference fell back to CPU.
@@ -1114,6 +1120,7 @@ pub(crate) mod tests {
             cpu_modes: vec![InputMode::Tiled],
             gpu_timeout_secs: 1800,
             cpu_timeout_secs: 5400,
+            crop: None,
         };
         j.id = j.identity().unwrap();
         j
@@ -1166,6 +1173,19 @@ pub(crate) mod tests {
             "cpu"
         );
         assert_eq!(surya_llama_device("main: server is listening\n").0, "none");
+        // A CPU-only host: llama-server declines the GPU layers and logs no offload count.
+        let cpu_log = "warning: no usable GPU found, --gpu-layers option will be ignored\nwarning: one possible reason is that llama.cpp was compiled without GPU support\n0.00.040.203 I cmn  common_param: device_info:\n0.00.190.060 I common_fit_params: successfully fit params to free device memory\n";
+        let (cd, co, clines) = surya_llama_device(cpu_log);
+        assert_eq!(cd, "cpu");
+        assert_eq!(co, None);
+        assert!(clines.contains("no usable GPU found"));
+        assert_eq!(
+            surya_llama_device(
+                "warning: no usable GPU found\nload_tensors: offloaded 29/29 layers to GPU\n"
+            )
+            .0,
+            "cuda"
+        );
         assert_eq!(
             surya_llama_device("1.01.512.448 I srv llama_server: model loaded\n").0,
             "none"

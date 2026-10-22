@@ -1,0 +1,24 @@
+[Unit]
+Description=usnm BOINC server: Apache and daemons (#942)
+Requires=usnm-boinc-mysql.service
+After=usnm-boinc-mysql.service network-online.target
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=150
+EnvironmentFile=/etc/usnm-boinc/server.env
+ExecStartPre=-/usr/bin/podman rm -f usnm-boinc-server
+ExecStart=/usr/bin/podman run --rm --name usnm-boinc-server --network host \
+  --add-host usnm-boinc-mysql:127.0.0.1 \
+  -v /srv/usnm-boinc/project:/project \
+  -v /srv/usnm-boinc/mysql-tls/ca.pem:/usr/local/share/usnm/mysql-ca.pem:ro \
+  -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro \
+  -e IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token -e IMDS_ENDPOINT=http://localhost:40342 \
+  -e KEY_VAULT_NAME=usnmboinckvprodv7n7u6 -e DB_HOST=usnm-boinc-mysql -e DB_NAME=usnmocr \
+  -e MASTER_HOST=boinc.usnewsmap.com -e PROJECT_DIR=/project \
+  --stop-timeout 140 --entrypoint /usr/local/lib/usnm-boinc/entrypoint.sh ${SERVER_IMAGE} --serve
+ExecStop=/usr/bin/podman stop -t 140 usnm-boinc-server
+
+[Install]
+WantedBy=multi-user.target

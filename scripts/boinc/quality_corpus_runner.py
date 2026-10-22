@@ -4,6 +4,7 @@ Distributed full-corpus (3,011 batches / 23.77M pages) staging + submission + ro
 runner for usnm_quality 1.3 across all 5 native BOINC platforms.
 Runs inside usnm-boinc-quality-caj-prod (Python 3.11 + Pillow 11.3.0 + /usr/local/bin/usnm-boinc).
 """
+import contextlib
 import fcntl
 import gc
 import glob
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -200,16 +202,37 @@ def put_status(name, obj):
         print(f"put_status({name}) warning: {e}", file=sys.stderr, flush=True)
 
 
+MYSQL_DEFAULTS = "/dev/shm/boinc/mysql-runtime.cnf"
+
+
+def mysql_defaults_file():
+    """A private MySQL options file for the runtime user, so the password is never on a
+    command line: a failed call's traceback prints the command, and job logs keep it."""
+    path = Path(MYSQL_DEFAULTS)
+    if not path.exists():
+        pw = open("/dev/shm/boinc/db-runtime").read().strip()
+        user = os.environ.get("DB_RUNTIME_USER", "usnmboincrun")
+        quote = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        # The quality job runs several runners at once: each writes its own temporary file
+        # (mkstemp: unique, 0600) and renames it into place. The contents are the same, so
+        # whichever rename lands last is fine, and no reader sees a partial file.
+        fd, tmp = tempfile.mkstemp(prefix=".mysql-runtime.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(f"[client]\nhost={quote(os.environ['DB_HOST'])}\nuser={quote(user)}\npassword={quote(pw)}\n")
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
+    return str(path)
+
+
 def run_mysql(sql):
-    pw = open("/dev/shm/boinc/db-runtime").read().strip()
-    host = os.environ["DB_HOST"]
-    user = os.environ.get("DB_RUNTIME_USER", "usnmboincrun")
     db = os.environ.get("DB_NAME", "usnmocr")
     cmd = [
         "mysql",
-        f"-h{host}",
-        f"-u{user}",
-        f"-p{pw}",
+        f"--defaults-extra-file={mysql_defaults_file()}",
         "--ssl",
         "--ssl-verify-server-cert",
         "--ssl-ca=/usr/local/share/usnm/mysql-ca.pem",

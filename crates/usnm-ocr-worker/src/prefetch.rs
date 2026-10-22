@@ -380,10 +380,7 @@ pub struct Status {
     pub error: Option<String>,
 }
 
-/// A sha256 as lowercase hex.
-pub fn sha256(bytes: &[u8]) -> String {
-    batch::hex(&Sha256::digest(bytes))
-}
+pub use usnm_core::digest::sha256_hex as sha256;
 
 fn now_rfc3339() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)

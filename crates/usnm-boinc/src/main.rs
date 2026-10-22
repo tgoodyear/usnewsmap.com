@@ -662,8 +662,15 @@ enum Surya {
     Stage {
         /// group:lang:doc_id:batch[+batch...], e.g.
         /// serbian:srp:sn85055101_1917-04-03_ed-1_seq-3:dlc_arlington_ver01; repeat.
-        #[arg(long = "page", required = true)]
+        #[arg(long = "page", required_unless_present = "sample")]
         pages: Vec<usnm_boinc::surya::Page>,
+        /// Or the quality campaign's sample (`quality sample`, JSON Lines): its rows become
+        /// pages of --group, in their batch, and each unit keeps its row as sample.json.
+        #[arg(long, requires = "group")]
+        sample: Option<PathBuf>,
+        /// The group the sample's pages are staged as (the quality campaign's, `campaign-1` say).
+        #[arg(long)]
+        group: Option<String>,
         #[arg(long)]
         root: PathBuf,
         /// The worker image's registry digest (sha256:...).
@@ -694,6 +701,31 @@ enum Surya {
         /// The scan archive's container URL, read first; omit for LoC only.
         #[arg(long)]
         scan_archive: Option<String>,
+    },
+    /// Write one unit per crop of every staged usnm_quality page (#968): the crops the page's
+    /// usnm_qwen unit reads, cut here from its page.jpg, read by Surya in whole mode.
+    StageCrops {
+        /// The usnm_quality staging root (its pages/ or units/ hold page.jpg, loc.xml and
+        /// quality.json).
+        #[arg(long)]
+        quality_root: PathBuf,
+        #[arg(long)]
+        root: PathBuf,
+        /// The worker image's registry digest (sha256:...).
+        #[arg(long)]
+        engine_image: String,
+        #[arg(long)]
+        engine_llama: String,
+        #[arg(long)]
+        engine_weights: String,
+        #[arg(long, default_value = "0.22.1")]
+        engine_surya: String,
+        /// Deadline for the one whole-mode read, on a GPU and on a CPU.
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u32,
+        /// Pages to take new units from, at most.
+        #[arg(long, default_value_t = 50)]
+        max_pages: usize,
     },
     /// Hand staged units to create_work, two results each.
     Submit {
@@ -760,6 +792,21 @@ enum Surya {
         #[arg(long)]
         pairs: PathBuf,
     },
+    /// Read the campaign's canonical results from the assimilator's spool and export each page's
+    /// text as the ours-surya reader for `quality stage --surya-texts` (#968).
+    Collect {
+        #[arg(long)]
+        root: PathBuf,
+        /// The assimilator's results directory (<workunit>__file_<name>).
+        #[arg(long)]
+        spool: PathBuf,
+        /// Where <doc_id>.surya.json goes; omit to only count results.
+        #[arg(long)]
+        texts_dir: Option<PathBuf>,
+        /// Which mode's text stands for the page, first found wins.
+        #[arg(long, value_delimiter = ',', default_value = "whole,capped,tiled")]
+        modes: Vec<SuryaMode>,
+    },
 }
 #[derive(Subcommand)]
 enum Quality {
@@ -823,6 +870,10 @@ enum Quality {
         /// The hand-off job's texts/ export: one <doc_id>.json per page.
         #[arg(long)]
         texts_dir: PathBuf,
+        /// `surya collect`'s export (<doc_id>.surya.json): the page's Surya text joins the unit as
+        /// the reader ours-surya when --readers names it (#968).
+        #[arg(long)]
+        surya_texts: Option<PathBuf>,
         /// The hand-off container's scans/ (<doc_id>.jpg, <doc_id>.xml), read instead of LoC when present.
         #[arg(long)]
         scans_dir: Option<PathBuf>,
@@ -915,6 +966,12 @@ enum Quality {
         qwen_root: PathBuf,
         #[arg(long)]
         qwen_spool: PathBuf,
+        /// The usnm_surya staging root and spool: its crop units' texts join crops.parquet as the
+        /// reader `surya` (#968).
+        #[arg(long, requires = "surya_spool")]
+        surya_root: Option<PathBuf>,
+        #[arg(long, requires = "surya_root")]
+        surya_spool: Option<PathBuf>,
         /// A local directory instead of the curated store.
         #[arg(
             long,
@@ -1773,7 +1830,9 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
         }
 
         Surya::Stage {
-            pages,
+            mut pages,
+            sample,
+            group,
             root,
             engine_image,
             engine_llama,
@@ -1788,6 +1847,14 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             batch_cache,
             scan_archive,
         } => {
+            let mut sample_rows = std::collections::BTreeMap::new();
+            if let Some(sample) = &sample {
+                let group = group.as_deref().unwrap_or_default();
+                for row in usnm_boinc::assess::read_sample(sample)? {
+                    pages.push(x::Page::from_sample(&row, group)?);
+                    sample_rows.insert(row.doc_id.clone(), row);
+                }
+            }
             let s = x::stage::run(&x::stage::Options {
                 pages,
                 root,
@@ -1805,6 +1872,32 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
                 max_pages,
                 batch_cache,
                 scan_archive,
+                sample_rows,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Surya::StageCrops {
+            quality_root,
+            root,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            engine_surya,
+            timeout_secs,
+            max_pages,
+        } => {
+            let s = x::crops::run(&x::crops::Options {
+                quality_root,
+                root,
+                engine: usnm_ocr_contract::surya::Engine {
+                    image: engine_image,
+                    llama: engine_llama,
+                    surya: engine_surya,
+                    weights: engine_weights,
+                },
+                timeout_secs,
+                max_pages,
             })
             .await?;
             eprintln!("{s:?}");
@@ -1859,6 +1952,20 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
         } => x::validate::compare(&files, &files2, min_dice, log.as_deref())?,
         Surya::Summary { root, seen, pairs } => {
             print!("{}", x::summary::run(&root, &seen, &pairs)?)
+        }
+        Surya::Collect {
+            root,
+            spool,
+            texts_dir,
+            modes,
+        } => {
+            let s = x::collect::run(&x::collect::Options {
+                root,
+                spool,
+                texts_dir,
+                modes: modes.into_iter().map(Into::into).collect(),
+            })?;
+            eprintln!("{s:?}");
         }
     }
     Ok(())
@@ -1918,6 +2025,7 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
             root,
             engine_image,
             texts_dir,
+            surya_texts,
             scans_dir,
             places,
             function_words_dir,
@@ -1939,6 +2047,7 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
                     image: engine_image,
                 },
                 texts_dir,
+                surya_texts,
                 scans_dir,
                 places,
                 function_words_dir,
@@ -2006,6 +2115,8 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
             spool,
             qwen_root,
             qwen_spool,
+            surya_root,
+            surya_spool,
             out_dir,
             curated_url,
         } => {
@@ -2015,6 +2126,8 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
                 spool,
                 qwen_root,
                 qwen_spool,
+                surya_root,
+                surya_spool,
                 out_dir,
                 curated_url,
             })

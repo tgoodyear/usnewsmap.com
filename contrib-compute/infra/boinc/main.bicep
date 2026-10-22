@@ -87,13 +87,20 @@ param codeSignPublicKey string = ''
 @description('The project share\'s billing (#917): standard, the pay-as-you-go StorageV2 share; copy, the provisioned v2 SSD share is created and the server also mounts it at /project-v2 to fill it; provisioned, /project is the provisioned share everywhere and the old account is kept for rollback; provisioned-final, the old account is removed. docs/boinc.md, "Moving the project share".')
 @allowed([ 'standard', 'copy', 'provisioned', 'provisioned-final' ])
 param projectShare string = 'standard'
+@description('Public IPv4 addresses the BOINC Key Vault admits on its public endpoint (the home network); empty keeps it private-only. modules/keyvault.bicep.')
+param keyVaultAllowedIps array = []
+@description('The on-prem hosts\' Entra group (usnm-onprem-grp-<env>): Key Vault Secrets User on the project vault, for the on-prem BOINC server (#942). Empty: none.')
+param onPremGroupId string = ''
 
 @description('Create the workbook "usnm BOINC (<env>)" over the workspace (modules/workbook.bicep). On by default in prod.')
 param workbook bool = env == 'prod'
 
+@description('The BOINC server runs on-prem (#942, docs/boinc-onprem.md): no app, jobs, MySQL, project storage, workspace or private endpoints here. The identities (the main environment\'s Bicep reads usnm-boinc-id-<env>), the vault the on-prem host reads, the VNet (its aca subnet is in the main environment\'s storage rules) and the static site stay.')
+param serverOnPrem bool = false
+
 var envName = checkedEnvName(env)
 var sfx = take(uniqueString(subscription().id, envName, 'boinc', location), 6)
-var withApp = !empty(image)
+var withApp = !empty(image) && !serverOnPrem
 
 var names = {
   app: usnmName('boinc', 'ca', envName)
@@ -154,14 +161,14 @@ module registry 'modules/registry.bicep' = {
   }
 }
 
-module monitor 'modules/monitor.bicep' = {
+module monitor 'modules/monitor.bicep' = if (!serverOnPrem) {
   name: 'monitor'
   params: { workspaceName: names.workspace, location: location, operatorPrincipalIds: operatorPrincipalIds }
 }
 
-module workbookModule 'modules/workbook.bicep' = if (workbook) {
+module workbookModule 'modules/workbook.bicep' = if (workbook && !serverOnPrem) {
   name: 'workbook'
-  params: { location: location, workspaceId: monitor.outputs.id, title: names.workbookTitle }
+  params: { location: location, workspaceId: monitor!.outputs.id, title: names.workbookTitle }
 }
 
 module network 'modules/network.bicep' = {
@@ -177,16 +184,19 @@ module vault 'modules/keyvault.bicep' = {
     location: location
     readerPrincipalId: runtimePrincipal
     writerPrincipalId: secretsPrincipal
+    privateEndpoint: !serverOnPrem
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.vaultDnsZoneId
     operatorPrincipalIds: operatorPrincipalIds
-    logAnalyticsWorkspaceId: monitor.outputs.id
+    logAnalyticsWorkspaceId: serverOnPrem ? '' : monitor!.outputs.id
     mysqlAdminPassword: mysqlAdminPassword
     codeSignPublicKey: codeSignPublicKey
+    allowedIps: keyVaultAllowedIps
+    onPremReaderGroupId: onPremGroupId
   }
 }
 
-module storage 'modules/storage.bicep' = {
+module storage 'modules/storage.bicep' = if (!serverOnPrem) {
   name: 'storage'
   params: {
     filesAccountName: names.files
@@ -205,7 +215,7 @@ module storage 'modules/storage.bicep' = {
   }
 }
 
-module mysql 'modules/mysql.bicep' = {
+module mysql 'modules/mysql.bicep' = if (!serverOnPrem) {
   name: 'mysql'
   params: {
     serverName: names.mysql
@@ -243,7 +253,7 @@ module app 'modules/app.bicep' = if (withApp) {
     appName: names.app
     location: location
     acaSubnetId: network.outputs.acaSubnetId
-    logAnalyticsCustomerId: monitor.outputs.customerId
+    logAnalyticsCustomerId: monitor!.outputs.customerId
     logAnalyticsSharedKey: workspace.listKeys().primarySharedKey
     identityId: identity.id
     identityClientId: identity.properties.clientId
@@ -255,9 +265,9 @@ module app 'modules/app.bicep' = if (withApp) {
     filesAccountName: projectOnV2 ? names.filesV2 : names.files
     // A new storage name on each switch (and back, on rollback) forces a new revision.
     projectStorageName: projectOnV2 ? 'project-v2' : 'project'
-    shareName: storage.outputs.shareName
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    shareName: storage!.outputs.shareName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     customDomainStage: empty(dnsZoneName) ? 0 : customDomainStage
   }
@@ -286,8 +296,8 @@ module bridgeJob 'modules/bridge-job.bicep' = if (withApp) {
     image: bridgeImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
@@ -314,8 +324,8 @@ module initJob 'modules/bridge-job.bicep' = if (withApp) {
     image: image
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
@@ -339,8 +349,8 @@ module publishJob 'modules/bridge-job.bicep' = if (withApp && !empty(publishImag
     image: publishImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
@@ -367,8 +377,8 @@ module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
     image: bridgeImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
@@ -401,8 +411,8 @@ module qualityWaveJob 'modules/bridge-job.bicep' = if (withApp && !empty(quality
     image: bridgeImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
@@ -440,8 +450,8 @@ module shareCopyJob 'modules/bridge-job.bicep' = if (withApp && projectShare == 
     image: bridgeImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
@@ -488,9 +498,9 @@ output goldBundleJobName string = withApp && goldBundle ? goldBundleJob!.outputs
 output qualityWaveJobName string = withApp && !empty(qualityWaveScript) ? qualityWaveJob!.outputs.name : ''
 output initJobName string = withApp ? initJob!.outputs.name : ''
 output keyVaultName string = vault.outputs.name
-output mysqlHost string = mysql.outputs.host
-output logAnalyticsQueryHost string = monitor.outputs.logAnalyticsQueryHost
-output logAnalyticsQueryHosts array = monitor.outputs.logAnalyticsQueryHosts
+output mysqlHost string = serverOnPrem ? '' : mysql!.outputs.host
+output logAnalyticsQueryHost string = serverOnPrem ? '' : monitor!.outputs.logAnalyticsQueryHost
+output logAnalyticsQueryHosts array = serverOnPrem ? [] : monitor!.outputs.logAnalyticsQueryHosts
 output publishJobName string = withApp && !empty(publishImage) ? publishJob!.outputs.name : ''
 output registryName string = registryName
 output registryServer string = registryServer

@@ -81,7 +81,13 @@ REGISTRY_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
 # in stages, because each needs the last: 0, the DNS records (CNAME and asuid TXT, written by
 # this stack into the zone's group); 1, the name on the app unbound and its managed
 # certificate; 2, the name bound with the certificate. domain_stage reads where it is.
+# server: onprem (#942, docs/boinc-onprem.md): the server, its jobs, MySQL, the project storage,
+# the workspace and the private endpoints leave this stack (the stack deletes them); only the
+# identities, the vault, the VNet and the static site stay. The master URL is the on-prem host's
+# tunnel, outside Azure DNS, so there is no custom domain to stage.
+SERVER_MODE=$(jq -r '.server // "azure"' "$BOINC_SETTINGS")
 DNS_ZONE=$(jq -r '.USNM_DNS_ZONE // empty' "$(dirname "$0")/../infra/env/$ENV_NAME.json")
+[ "$SERVER_MODE" != onprem ] || DNS_ZONE=""
 [ -z "$DNS_ZONE" ] || [[ $MASTER_HOST == *".$DNS_ZONE" ]] || die "$MASTER_HOST is not in the zone $DNS_ZONE"
 CERT_NAME="cert-${MASTER_HOST//./-}"
 identities=$(baz identity list --resource-group "$BOINC_RG" --query '[].{name:name,principalId:principalId}' -o json) ||
@@ -133,11 +139,27 @@ jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --ar
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
     projectShare: {value: ($s | fromjson | .projectShare // "standard")},
+    keyVaultAllowedIps: {value: ($s | fromjson | .keyVaultAllowedIps // [])},
+    onPremGroupId: {value: ($s | fromjson | .onPremGroupId // "")},
+    serverOnPrem: {value: (($s | fromjson | .server // "azure") == "onprem")},
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
   }}' > "$work/params.json"
 }
 STAGE=$(domain_stage) || exit 1
 write_params "$STAGE"
+# The on-prem server mode deletes every BOINC job: refuse while any of them is running, as
+# a deleteResources deployment would stop it mid-step.
+if [ "$SERVER_MODE" = onprem ]; then
+  # A failed listing must stop here: in a for word list its failure would pass unnoticed.
+  jobs=$(baz containerapp job list --resource-group "$BOINC_RG" --query '[].name' -o tsv) ||
+    die "could not list the jobs in $BOINC_RG"
+  for job in $jobs; do
+    running=$(baz containerapp job execution list --name "$job" --resource-group "$BOINC_RG" \
+      --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv) ||
+      die "could not list the executions of $job"
+    [ -z "$running" ] || die "$job is still running (${running//$'\n'/ }); the on-prem server mode deletes it: wait for it to finish"
+  done
+fi
 
 # Leaving the copy stage deletes the share copy job (deleteResources) and points /project at
 # the provisioned share: only after a final pass, run with the server stopped, has succeeded.
@@ -329,6 +351,12 @@ done
 [ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || [ "$STAGE" -eq 2 ] ||
   die "custom domain $MASTER_HOST did not reach its bound-certificate state"
 
+if [ "$SERVER_MODE" = onprem ]; then
+  # Nothing in Azure to start: the on-prem server must answer at the master URL.
+  boinc_check_public_health "$work/project.xml"
+  echo "BOINC Azure resources reduced to the on-prem set; the server answers at ${PROJECT_URL}"
+  exit 0
+fi
 if [ -z "$SERVER_IMAGE" ]; then
   echo "base resources deployed. Next: scripts/build-boinc-images.sh --env $ENV_NAME, commit $BOINC_SETTINGS, then run this again."
   exit 0
@@ -394,21 +422,7 @@ if [ -n "$PUBLISH_IMAGE" ]; then
   run_job "$(boinc_output publishJobName)"
 fi
 
-curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
-  --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$work/project.xml" ||
-  die "the public BOINC project endpoint is not healthy"
-# BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
-# (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
-python3 - "$work/project.xml" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
-import sys
-import xml.etree.ElementTree as ET
-
-config = ET.parse(sys.argv[1]).getroot()
-sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
-if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
-        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
-    raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
-PY
+boinc_check_public_health "$work/project.xml"
 if [ "${BOINC_MAINTENANCE:-0}" = 1 ]; then
   echo "BOINC deployment up in maintenance: ${PROJECT_URL} (scheduler may be closed); after resuming, check again without BOINC_MAINTENANCE"
 else

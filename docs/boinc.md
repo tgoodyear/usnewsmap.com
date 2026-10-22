@@ -11,7 +11,7 @@ The pilot uses stock BOINC, one cached page per task, pinned Tesseract 5.5.0,
 the model lock and language routing. It publishes native ALTO and Parquet to
 `ocr-out`; `ocr-sync` and release decisions are unchanged. Other apps:
 
-- `usnm_assess`: [JP2 versus IIIF JPEG comparison](boinc-assessment.md) (#456).
+- `usnm_assess`: [JP2 versus IIIF JPEG comparison](notes/2026-10-16-boinc-assessment.md) (#456).
 - `usnm_gold`: [score a host's engine on public ground truth](#gold-check).
 - `usnm_surya`: [Surya 2 on CPUs, NVIDIA GPUs, and Intel GPUs](boinc-surya.md) (#516, #842).
 - `usnm_ndlocr`: [Japanese NDLOCR-Lite/default-route CPU work](boinc-ndlocr-lite.md),
@@ -22,7 +22,7 @@ the model lock and language routing. It publishes native ALTO and Parquet to
 Start with the [volunteer guide](boinc-volunteer.md).
 The opt-in [batch controller](boinc-batch-scheduler.md) schedules allocated
 cached pages with bounded queue backpressure; operators activate it separately.
-The [post-training pilot](boinc-transcription.md) evaluates public-gold
+The [post-training pilot](notes/2026-10-16-boinc-transcription.md) evaluates public-gold
 baselines and adapted models with `usnm_qwen`.
 
 ## Public dataset-page counts
@@ -1439,7 +1439,7 @@ in dev and calibrate the first campaign. Live acceptance of discovery and
 issuance for new hosts, canonical host-query acceptance, and periodic spot-check
 activation remain rollout blockers; no automatic publication or scheduler
 configuration has been deployed. The OFF-by-default [host-trust follow-up
-controller](boinc-host-trust-followups.md) now provides bounded automatic host
+controller](notes/2026-10-16-boinc-host-trust-followups.md) now provides bounded automatic host
 discovery and first-gold issuance commands, and sampled independent-host OCR
 rerun and comparison commands. Dispatch requires an explicit `--execute`; no
 timer, trust promotion or assignment enablement is installed.

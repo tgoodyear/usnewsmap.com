@@ -10,7 +10,7 @@ classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win
 ([app releases](../contrib-compute/docs/app-release.md)).
 
 `usnm_iris` ([#703](https://github.com/tgoodyear/usnewsmap.com/issues/703),
-[docs/boinc-iris-pilot.md](boinc-iris-pilot.md)) is a separate experiment with a different model
+[docs/notes/2026-10-16-boinc-iris-pilot.md](notes/2026-10-16-boinc-iris-pilot.md)) is a separate experiment with a different model
 (4B INT4 on OpenVINO). Its readings are not comparable with the 8B quorum.
 
 ## How a host is chosen and checked

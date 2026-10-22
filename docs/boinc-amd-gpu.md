@@ -108,7 +108,9 @@ mode while restoring reviewed resource gates. Removing bounds without that marke
 does **not** opt in: refresh restores closed bounds. An explicit AMD `--stop`
 removes the marker and restores `2/1`, which remains stopped across restarts.
 Neither general promotion nor stop changes any Intel/NVIDIA window. The deployed
-helper is also available at `/usr/local/lib/usnm-boinc/amd-885/native-qwen-cohort.php`.
+helper is also available at `/usr/local/lib/usnm-boinc/amd-885/native-qwen-cohort.php`
+(the `amd-885` and `live-overlay` server images under `contrib-compute/images/server/`
+install it).
 
 ### Optional bounded diagnostic: stage, audit, admit, then resume the same workunit
 

@@ -1,5 +1,6 @@
 """Exercise deployment ordering and failure gates without Azure or project mutation."""
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -30,6 +31,7 @@ case "$*" in
   "stack-whatif group create"*"--help"*) ;;
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
   "stack group create"*) [ -z "${STUB_STACK_FAILURE:-}" ] || exit 9 ;;
+  "containerapp job list"*) [ -z "${STUB_JOB_LIST_FAIL:-}" ] || exit 1; printf '%s\n' ${STUB_JOB_LIST:-} ;;
   "containerapp job execution list"*)
     if [[ "$*" == *"--name quality "* ]] || [[ "$*" == *"--name usnm-boinc-quality-caj-prod "* ]]; then
       [ "${STUB_QUALITY_ACTIVE:-0}" != 1 ] || echo quality-existing-execution
@@ -98,13 +100,18 @@ class Provision(unittest.TestCase):
             path = directory / name
             path.write_text(content)
             path.chmod(0o755)
+        # Prod's settings with the server in Azure: these tests cover the Azure lifecycle
+        # (the committed prod.json has "server": "onprem", #942; OnPremServer covers that).
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        settings.pop("server", None)
+        self.settings = directory / "prod.json"
+        self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
         self.env = {
             **os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
             "STUB_LOG": str(self.log), "STUB_SUB": SUB,
-            # The storage name /project's jobs mount follows prod.json's projectShare stage.
-            "STUB_PROJECT_STORAGE": "project-v2" if json.loads(
-                (ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text()
-            ).get("projectShare", "standard").startswith("provisioned") else "project",
+            "USNM_BOINC_SETTINGS_FILE": str(self.settings), "USNM_BOINC_TEST": "1",
+            # The storage name /project's jobs mount follows the settings' projectShare stage.
+            "STUB_PROJECT_STORAGE": "project-v2" if settings.get("projectShare", "standard").startswith("provisioned") else "project",
             "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
             "BOINC_START_RECONCILE_SECS": "0", "BOINC_START_RECONCILE_POLL": "0",
             "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
@@ -343,6 +350,80 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
             self.assertNotIn("deployment ready", result.stdout)
 
 
+class OnPremServer(unittest.TestCase):
+    """"server": "onprem" (#942): the stack keeps only what the on-prem server uses.
+    Borrows Provision's fixture without inheriting its Azure lifecycle tests."""
+
+    run_script = Provision.run_script
+    calls = Provision.calls
+
+    def setUp(self):
+        Provision.setUp(self)
+        settings = json.loads(self.settings.read_text())
+        settings["server"] = "onprem"
+        self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+
+    def deploys(self):
+        # No log at all: the run stopped before any Azure call.
+        if not self.log.exists():
+            return []
+        return [c for c in self.calls() if c.startswith("stack group create")]
+
+    def test_deploys_without_lifecycle_jobs_and_checks_the_master_url(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.deploys()), 1)
+        self.assertFalse(any(c.startswith("containerapp job start") for c in self.calls()))
+        self.assertIn("reduced to the on-prem set", result.stdout)
+
+    def test_passes_server_on_prem_to_the_template(self):
+        # The parameters file is deleted on exit; the stack call names it, and its content
+        # comes from write_params, which reads the settings' server.
+        script = (ROOT / "scripts/provision-boinc.sh").read_text()
+        self.assertIn('serverOnPrem: {value: (($s | fromjson | .server // "azure") == "onprem")}', script)
+
+    def test_a_stopped_or_foreign_project_fails_the_check(self):
+        for health in (
+            '<project_config><master_url>https://elsewhere.example/</master_url>'
+            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
+            '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
+            '<web_stopped>0</web_stopped><sched_stopped>1</sched_stopped></project_config>',
+            'not xml',
+        ):
+            with self.subTest(health=health[:40]):
+                result = self.run_script(STUB_HEALTH=health)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_maintenance_accepts_a_closed_scheduler(self):
+        health = ('<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
+                  '<web_stopped>0</web_stopped><sched_stopped>1</sched_stopped></project_config>')
+        result = self.run_script(STUB_HEALTH=health, BOINC_MAINTENANCE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refuses_while_a_job_it_would_delete_is_running(self):
+        result = self.run_script(STUB_JOB_LIST="bridge gold", STUB_GOLD_ACTIVE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gold is still running", result.stderr)
+        self.assertEqual(self.deploys(), [])
+
+    def test_refuses_when_the_jobs_cant_be_listed(self):
+        result = self.run_script(STUB_JOB_LIST_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not list the jobs", result.stderr)
+        self.assertEqual(self.deploys(), [])
+
+    def test_only_azure_or_onprem_is_a_server(self):
+        settings = json.loads(self.settings.read_text())
+        for value in ("onpre", "", "azur", ["onprem"]):
+            with self.subTest(value=value):
+                settings["server"] = value
+                self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+                result = self.run_script()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("server must be azure or onprem", result.stderr)
+                self.assertEqual(self.deploys(), [])
+
+
 class ProjectInitialization(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -532,13 +613,23 @@ class ProductionReconciliation(unittest.TestCase):
         self.assertIn('.volumes[0].storageName == $storage', provision)
         self.assertIn("PROJECT_STORAGE=project-v2", provision)
         # The cutover provision runs with the scheduler closed on purpose.
-        self.assertIn('sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)', provision)
+        # The public health check is shared with the on-prem app release, in scripts/lib/boinc.sh.
+        self.assertIn('sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)',
+                      (ROOT / "scripts/lib/boinc.sh").read_text())
         # Uploads and scheduler requests stop during the final copy; Apache stays up.
         runbook = (ROOT / "docs/boinc.md").read_text().split("## Moving the project share")[1].split("\n## ")[0]
         self.assertIn("touch stop_sched stop_upload", runbook)
         settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/schema.json").read_text())
         self.assertEqual(settings["properties"]["projectShare"]["enum"],
                          ["standard", "copy", "provisioned", "provisioned-final"])
+
+    def test_key_vault_opens_only_to_listed_ips_behind_a_vault_scoped_exemption(self):
+        vault = (ROOT / "contrib-compute/infra/boinc/modules/keyvault.bicep").read_text()
+        self.assertIn("publicNetworkAccess: open ? 'Enabled' : 'Disabled'", vault)
+        self.assertIn("defaultAction: 'Deny', bypass: 'None', ipRules: [for ip in allowedIps: { value: ip }]", vault)
+        self.assertIn("usnm-boinc-kv-home-ip", vault)  # the exemption is on this vault alone
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        self.assertTrue(all(re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) for ip in settings.get("keyVaultAllowedIps", [])))
 
     def test_live_iris_settings_quota_and_additive_endpoint_are_preserved(self):
         source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()

@@ -6,6 +6,7 @@
   "USNM_BOINC_CONTROLLER_ONPREM": true,
   "USNM_BOINC_GROUP": true,
   "USNM_BOINC_HANDOFF_IMAGE": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:9fa05b185a8ae729b8f029c0dcfddeb46795588acb2b2fc82d2b90fa166aac42",
+  "USNM_BOINC_SERVER_ONPREM": true,
   "USNM_BROWSE_PAGES": true,
   "USNM_BUDGET_START": "2026-10-01",
   "USNM_COSMOS_FREE_TIER": true,
