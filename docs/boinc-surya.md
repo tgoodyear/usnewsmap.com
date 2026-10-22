@@ -135,6 +135,80 @@ On the bridge, the steps are `surya-stage` with `SURYA_SAMPLE=<share>/quality/<c
 
 `usnm-boinc surya collect --root <campaign> --spool <assimilator results> --texts-dir <campaign>/texts` reads the canonical results back, page units and crop units alike, and writes `<doc_id>.surya.json` for every page with a read: the page's text as the reader `ours-surya`, from the first of `--modes` (`whole,capped,tiled` by default) that read the page, with `surya:<mode>:<job id>` as its source. `quality stage --surya-texts <that directory>` then joins it into each unit's `texts.json` when `--readers` names `ours-surya`, so the hat on the host estimates Surya's page error alongside the other readers'. `quality collect --surya-root <campaign> --surya-spool <results>` joins the crop units' texts into `crops.parquet` as the reader `surya`, in the crop-level hat with LoC, the vision-language reading and every reader with boxes. On the bridge: `surya-collect` with `SURYA_SPOOL`, and `SURYA_CAMPAIGN` on `quality-stage` and `quality-collect` (with `SURYA_SPOOL`).
 
+### Wave 1 runbook (22 October 2026)
+
+The first wave on the on-prem server, in order. Everything runs through `scripts/boinc/onprem-step.sh --env prod --target bridge` on the BOINC host (`--wait-mins 30` unless noted); the controller's ssh key may run only the two steps the [Surya plan](boinc-batch-scheduler.md#surya-waves) takes.
+
+Before the first step, three things must hold:
+
+1. The bridge image (`SERVER_IMAGE` in `/etc/usnm-boinc/server.env`) is built from `main` at `6fdf525` or later: `surya stage --sample`, `surya stage-crops` and `surya collect` came in [#970](https://github.com/tgoodyear/usnewsmap.com/pull/970) and [#973](https://github.com/tgoodyear/usnewsmap.com/pull/973), and `surya-submit` dropping the status page's cache in [#978](https://github.com/tgoodyear/usnewsmap.com/pull/978).
+2. `usnm_surya` 1.4 (`docker_mt`, app version 58) and 1.5 (`docker_nvidia_cuda`, app version 59) are the active versions, both from worker image `sha256:bccf7cba49878481d394f94f9ca313787d8f28886e369009ae4cfe94859fb494` (`main` at `614756c`, with the device fix of [#965](https://github.com/tgoodyear/usnewsmap.com/pull/965)). 1.2 and 1.3 are deprecated.
+3. A quality campaign `<Q>` is staged on the share with `quality/<Q>/sample.jsonl` and its units (the quality-wave staging of [#962](https://github.com/tgoodyear/usnewsmap.com/issues/962)); the Surya pages and crops are cut from those units, so nothing is staged for Surya before it.
+
+The engine pins are the same for every CUDA Surya worker image published since 14 October, so units staged with them run on 1.4 and 1.5 alike (the worker checks the llama image, the Surya version and the weights against its own environment, not the image digest):
+
+```sh
+SURYA_ENGINE_IMAGE=sha256:bccf7cba49878481d394f94f9ca313787d8f28886e369009ae4cfe94859fb494
+SURYA_ENGINE_LLAMA=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea
+SURYA_ENGINE_WEIGHTS=sha256:557aca6f56e5844007dbb04fe69a638f40e8d55823e89de07a1d4906c291b701
+```
+
+Do not take the pins from a `surya-vulkan-*` image: its llama image differs, and no Vulkan app version is published.
+
+The steps, with `wave1` as the Surya campaign:
+
+```sh
+# 1. Page units for the quality campaign's pages (the page-level hat gets the ours-surya reader).
+onprem-step.sh --env prod --target bridge --step surya-stage --var SURYA_CAMPAIGN=wave1 \
+  --var SURYA_SAMPLE=/share/quality/<Q>/sample.jsonl --var SURYA_GROUP=sample \
+  --var SURYA_ENGINE_IMAGE=$SURYA_ENGINE_IMAGE --var SURYA_ENGINE_LLAMA=$SURYA_ENGINE_LLAMA \
+  --var SURYA_ENGINE_WEIGHTS=$SURYA_ENGINE_WEIGHTS --var SURYA_MAX=50 --wait-mins 30
+# 2. Crop units at the Qwen boxes (the crop-level hat compares surya, vlm, loc and the rest on the same text).
+onprem-step.sh --env prod --target bridge --step surya-stage-crops --var SURYA_CAMPAIGN=wave1 \
+  --var QUALITY_CAMPAIGN=<Q> --var SURYA_ENGINE_IMAGE=$SURYA_ENGINE_IMAGE \
+  --var SURYA_ENGINE_LLAMA=$SURYA_ENGINE_LLAMA --var SURYA_ENGINE_WEIGHTS=$SURYA_ENGINE_WEIGHTS \
+  --var SURYA_MAX=50 --var SURYA_TIMEOUT_SECS=600 --wait-mins 30
+# 3. Submit. Either once by hand, or leave it to the controller (below).
+onprem-step.sh --env prod --target bridge --step surya-submit --var SURYA_CAMPAIGN=wave1 --var SURYA_MAX=200 --wait-mins 30
+# 4. As results come back: read them, then join them into the quality campaign.
+onprem-step.sh --env prod --target bridge --step surya-collect --var SURYA_CAMPAIGN=wave1 \
+  --var SURYA_SPOOL=/project/usnmocr/results/0 --wait-mins 30
+onprem-step.sh --env prod --target bridge --step quality-collect --var QUALITY_CAMPAIGN=<Q> \
+  --var QUALITY_SPOOL=/project/usnmocr/results/0 --var SURYA_CAMPAIGN=wave1 \
+  --var SURYA_SPOOL=/project/usnmocr/results/0 --wait-mins 30
+```
+
+`/share` stands for the bridge's `SHARE_DIR`; `SURYA_SAMPLE` must be a path under it. Page units take 40 minutes each on CPU, so `SURYA_MAX=50` on step 1 is a day of CPU work for the queue; crop units take seconds. Step 1 is optional for the crop comparison: without it the `ours-surya` page reader is simply absent and the crop-level hat still runs.
+
+To keep the crop queue topped up instead of running step 3 by hand, give the controller this plan (`step_command` ends with `--`, as [boinc-onprem.md](boinc-onprem.md) explains):
+
+```json
+{
+  "schema_version": 1,
+  "env": "prod",
+  "plan": "surya-wave1",
+  "app": "usnm_surya",
+  "low_watermark": 100,
+  "high_watermark": 400,
+  "server_status_url": "https://boinc.usnewsmap.com/server_status.php?xml=1",
+  "step_command": ["ssh", "-i", "<key>", "-o", "BatchMode=yes", "usnm-boinc-step@<host>", "--"],
+  "surya": {
+    "campaign": "wave1",
+    "quality_campaign": "<Q>",
+    "engine_image": "sha256:bccf7cba49878481d394f94f9ca313787d8f28886e369009ae4cfe94859fb494",
+    "engine_llama": "sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea",
+    "engine_weights": "sha256:557aca6f56e5844007dbb04fe69a638f40e8d55823e89de07a1d4906c291b701",
+    "timeout_secs": 600,
+    "stage_pages": 50,
+    "submit_units": 200
+  }
+}
+```
+
+The watermarks count results (two per unit): at or below 100 unsent the controller stages crops for 50 more pages and submits up to 150 units, never past 400 unsent. Run `batch_scheduler.py --config surya-wave1.json --state-dir <dir>` once without `--apply` to see the steps, then with `--apply` on the controller's schedule. The pins are held to the campaign: a new engine needs a new `campaign` name.
+
+After step 4, `scripts/build-quality-assessment-db.py` over the campaign's `pages.parquet` and `crops.parquet` writes `reader_language_summary`, one row per language and reader, which is the apples-to-apples table [#968](https://github.com/tgoodyear/usnewsmap.com/issues/968) asks for.
+
 A crop unit takes seconds rather than the 40 minutes a tiled page takes on CPU, so every plan class can run it. `submit` gives it a hundredth of a page's fpops estimate and bound, an 8 GiB memory bound and a one-day delay bound, at the same quorum of two. `check` and `compare` treat it as any unit: `text-whole.txt` is the crop's text. A page unit's job is unchanged, and keeps the identity it had before crops existed.
 
 `surya-summary` prints a table of every kept result (page, client, plan class, runtime, GPU, and per mode the outcome, device, time, memory) and every compared pair, and writes it to `<campaign>/summary.md`. A unit left at `submitting` is resolved as for the assessment.
