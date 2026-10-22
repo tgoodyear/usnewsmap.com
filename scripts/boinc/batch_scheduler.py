@@ -3,7 +3,9 @@
 
 import argparse
 import contextlib
+import copy
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -392,6 +394,84 @@ def save(path, state):
         os.close(fd)
 
 
+class Timings:
+    """Where a tick's time goes (#902): wall and CPU seconds for each phase (inventory,
+    journals, collect, claim, push, export, submit, ...) and for each kind of command the
+    transport runs (one bridge or hand-off step, one storage call, one scan push), with how
+    many ran and how many failed. CPU counts this process and the commands it waited for,
+    such as the az CLI under each step. Each phase is reported as it ends, so a long tick
+    shows its progress in the journal before its summary line."""
+
+    def __init__(self, report=None, clock=time.monotonic, cpu=None):
+        self.report = report
+        self.clock = clock
+        self.cpu = cpu or (lambda: sum(os.times()[:4]))
+        self.started = clock()
+        self.cpu_started = self.cpu()
+        self.phases = {}
+        self.commands = {}
+        self.current = None
+
+    @staticmethod
+    def _add(table, key, seconds, cpu, ok):
+        entry = table.setdefault(key, {"count": 0, "failed": 0, "seconds": 0.0, "cpu_seconds": 0.0})
+        entry["count"] += 1
+        entry["failed"] += not ok
+        entry["seconds"] = round(entry["seconds"] + seconds, 3)
+        entry["cpu_seconds"] = round(entry["cpu_seconds"] + cpu, 3)
+
+    @contextlib.contextmanager
+    def phase(self, name):
+        if self.current is not None:
+            # Inside another phase (collect_batch calling collect): that one holds the time.
+            yield
+            return
+        self.current = name
+        start, cpu = self.clock(), self.cpu()
+        ran = sum(entry["count"] for entry in self.commands.values())
+        ok = False
+        try:
+            yield
+            ok = True
+        finally:
+            self.current = None
+            seconds, cpu = self.clock() - start, self.cpu() - cpu
+            self._add(self.phases, name, seconds, cpu, ok)
+            if self.report:
+                try:
+                    self.report({
+                        "event": "boinc_batch_phase", "schema_version": 1, "at": int(time.time()),
+                        "phase": name, "ok": ok, "seconds": round(seconds, 3),
+                        "cpu_seconds": round(cpu, 3),
+                        "commands": sum(entry["count"] for entry in self.commands.values()) - ran,
+                    })
+                except (OSError, ValueError):
+                    # A closed or broken log stream never stops a tick or strands its lease.
+                    pass
+
+    def command(self, key, seconds, cpu, ok):
+        self._add(self.commands, key, seconds, cpu, ok)
+
+    def summary(self):
+        return {
+            "tick_seconds": round(self.clock() - self.started, 3),
+            "cpu_seconds": round(self.cpu() - self.cpu_started, 3),
+            "phases": copy.deepcopy(self.phases),
+            "commands": copy.deepcopy(self.commands),
+        }
+
+
+def timed(phase):
+    """Run a Transport method as one phase of its Timings."""
+    def wrap(method):
+        @functools.wraps(method)
+        def run(self, *args, **kwargs):
+            with self.timings.phase(phase):
+                return method(self, *args, **kwargs)
+        return run
+    return wrap
+
+
 class ClaimFailed(RuntimeError):
     """The claim step failed after taking messages: `claims` are the ones it did take."""
 
@@ -402,7 +482,7 @@ class ClaimFailed(RuntimeError):
 
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
-                 batch_submit=False, batch_spool_out=False, batch_collect=False):
+                 batch_submit=False, batch_spool_out=False, batch_collect=False, timings=None):
         self.config = config
         self.directory = directory
         self.status_url = status_url
@@ -413,14 +493,22 @@ class Transport:
         self.batch_submit = batch_submit
         self.batch_spool_out = batch_spool_out
         self.batch_collect = batch_collect
+        self.timings = timings or Timings()
 
     def run(self, argv, label, timeout=2100, ok=(0,)):
+        # In the tick's timings a storage call goes by its az verb (list, download, lease, ...).
+        kind = f"storage {argv[3]}" if argv[:3] == ["az", "storage", "blob"] and len(argv) > 3 else label
+        start, cpu, passed = self.timings.clock(), self.timings.cpu(), False
         try:
             done = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, timeout=timeout, cwd=REPO)
+            passed = done.returncode in ok
         except (OSError, subprocess.SubprocessError) as error:
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying") from error
-        if done.returncode not in ok:
+        finally:
+            self.timings.command(kind, self.timings.clock() - start,
+                                 self.timings.cpu() - cpu, passed)
+        if not passed:
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying")
         return done.stdout
 
@@ -443,6 +531,18 @@ class Transport:
             yield
             return
         name = "scheduler/controller.lock"
+        lease = None
+        try:
+            with self.timings.phase("lock"):
+                lease = self._acquire(name)
+            yield
+        finally:
+            # Released whenever it was taken, even if something after the acquire failed.
+            if lease is not None:
+                with self.timings.phase("unlock"):
+                    self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
+
+    def _acquire(self, name):
         if self.az("exists", "--name", name, "--query", "exists", "-o", "tsv").strip() != "true":
             marker = self.directory / "lease-marker.json"
             marker.write_text('{"schema_version":1}\n')
@@ -451,10 +551,7 @@ class Transport:
         lease = str(uuid.UUID(lease))
         self.az("lease", "acquire", "--blob-name", name, "--lease-duration", "-1",
                 "--proposed-lease-id", lease, "-o", "none")
-        try:
-            yield
-        finally:
-            self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
+        return lease
 
     def step(self, target, step, **variables):
         # step_command runs the bridge steps somewhere other than the Azure bridge job, such as
@@ -469,6 +566,7 @@ class Transport:
             argv += ["--var", f"{key}={value}"]
         self.run(argv, f"{target}/{step}")
 
+    @timed("inventory")
     def inventory(self):
         nonce = uuid.uuid4().hex
         self.step("bridge", "batch-inventory", BATCH_NONCE=nonce,
@@ -477,6 +575,7 @@ class Transport:
         require(result.get("nonce") == nonce, "stale/concurrent inventory; another controller may be active")
         return result
 
+    @timed("journals")
     def records(self):
         listing = json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*",
                                      "--query", "[].name", "-o", "json"))
@@ -514,6 +613,7 @@ class Transport:
             "--manifest", self.config["manifests_root"].rstrip("/") + "/" + self.config["manifest"],
         ]
 
+    @timed("export")
     def export(self, pages, job_ids=()):
         queue = self.config.get("source") == "queue"
         if not queue:
@@ -537,6 +637,7 @@ class Transport:
                 variables["HANDOFF_CLAIMS"] = "1"
             self.step("handoff", "export", **variables)
 
+    @timed("claim")
     def claim(self, count):
         """Take up to `count` usable pages off the work queues (the hand-off job's claim step)."""
         nonce = uuid.uuid4().hex
@@ -563,6 +664,7 @@ class Transport:
             raise ClaimFailed(str(failure), summary["claims"]) from failure
         return summary["claims"]
 
+    @timed("push")
     def push_pages(self, bases):
         """Push the cached scans of claimed pages, finding each one's format on the scan server.
         Returns ({base: path under scans/}, [bases with no cached scan])."""
@@ -588,18 +690,22 @@ class Transport:
                 "scan push did not account for every claimed page")
         return found, missing
 
+    @timed("release")
     def release(self, doc_ids):
         self.step("handoff", "release", HANDOFF_DOCS=",".join(doc_ids))
 
+    @timed("submit")
     def submit(self, job_id):
         self.step("bridge", "submit-remote", JOB_ID=job_id,
                   HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
 
+    @timed("collect")
     def collect(self, job_id, spool):
         self.step("bridge", "spool-out", JOB_ID=job_id, HANDOFF_SPOOL=spool,
                   HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
         self.step("handoff", "collect", JOB_ID=job_id)
 
+    @timed("submit")
     def submit_batch(self, job_ids):
         """Submit these jobs: one bridge execution for all of them when batch_submit is on.
         The bridge stops at the first failure, as one execution per job would have."""
@@ -612,6 +718,7 @@ class Transport:
         self.step("bridge", "submit-remote", JOB_IDS=",".join(job_ids),
                   HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
 
+    @timed("collect")
     def collect_batch(self, pairs):
         """Collect these (job, spool) pairs. With both flags off, exactly the per-job flow
         (spool-out then collect, job by job, stopping at the first failure). Batched, a failed
@@ -652,6 +759,7 @@ class Transport:
         if errors:
             raise errors[0]
 
+    @timed("status")
     def server_status(self, url=None, path=None):
         path = self.status_file if path is None else path
         if path is not None:
@@ -976,12 +1084,20 @@ def surya_tick(config, state, transport, persist, now=None, *, drain=False,
                 persist()
         record.update(checked_at=int(now), unsent=unsent)
     persist()
-    return {
+    return with_timings({
         "event": "boinc_surya_tick", "schema_version": 1, "at": int(now), "plan": config["plan"],
         "app": SURYA_APP_NAME, "campaign": config["surya"]["campaign"], "draining": drain,
         "unsent": unsent, "low_watermark": low, "high_watermark": high,
         "ran": [item["step"] for item in ran], "steps": ran, "skipped": reason,
-    }
+    }, transport)
+
+
+def with_timings(event, transport):
+    """The tick's line, with where its time went when the transport keeps Timings (#902)."""
+    timings = getattr(transport, "timings", None)
+    if isinstance(timings, Timings):
+        event["timings"] = timings.summary()
+    return event
 
 
 def tick(config, state, transport, persist, now=None, *, drain=False,
@@ -1236,7 +1352,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     started = state.setdefault("started_at", now)
     state["published"] = published
     persist()
-    return {
+    return with_timings({
         "event": "boinc_batch_tick", "schema_version": 1, "at": int(now), "plan": config["plan"],
         "draining": drain,
         "active_hosts": active_hosts, "target_pending": target,
@@ -1274,7 +1390,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         "zero_work_requests": zero_work_requests,
         "starvation_alert": starvation_alert,
         "alerts": alerts,
-    }
+    }, transport)
 
 
 def main(argv=None):
@@ -1302,6 +1418,7 @@ def main(argv=None):
     parser.add_argument("--batch-collect", action="store_true",
                         help="collect a tick's results in one hand-off execution (needs a hand-off image whose collect takes JOB_IDS)")
     args = parser.parse_args(argv)
+    timings = None
     try:
         config = load_config(args.config)
         if args.low_watermark is not None or args.high_watermark is not None:
@@ -1363,11 +1480,13 @@ def main(argv=None):
                 state["config_sha256"] = digest(config)
             require(state["config_sha256"] == digest(config),
                     "immutable allocation changed; drain/reconcile before an operator migration")
+            timings = Timings(report=lambda line: print(json.dumps(line, sort_keys=True),
+                                                        file=sys.stderr, flush=True))
             transport = Transport(
                 config, args.state_dir,
                 status_url=args.server_status_url, status_file=args.server_status_file,
                 batch_submit=args.batch_submit, batch_spool_out=args.batch_spool_out,
-                batch_collect=args.batch_collect,
+                batch_collect=args.batch_collect, timings=timings,
             )
             tick_kwargs = {"drain": args.drain}
             if args.low_watermark is not None:
@@ -1378,13 +1497,19 @@ def main(argv=None):
                 tick_kwargs["max_global_pending"] = args.max_global_pending
             with transport.lock():
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
+            # Again after the lease is released, so the line counts the release too.
+            event["timings"] = timings.summary()
             print(json.dumps(event, sort_keys=True))
         return 0
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
         # No command output, credentials, page contents or exception chains in telemetry.
         message = str(error) if isinstance(error, (ValueError, RuntimeError)) else type(error).__name__
-        print(json.dumps({"event": "boinc_batch_failure", "schema_version": 1,
-                          "at": int(time.time()), "error": message}), file=sys.stderr)
+        failure = {"event": "boinc_batch_failure", "schema_version": 1,
+                   "at": int(time.time()), "error": message}
+        if timings is not None:
+            # How far the tick got, and what that cost, before it failed.
+            failure["timings"] = timings.summary()
+        print(json.dumps(failure), file=sys.stderr)
         return 1
 
 
