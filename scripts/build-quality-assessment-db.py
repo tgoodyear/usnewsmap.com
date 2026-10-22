@@ -10,7 +10,11 @@ and `crops.parquet`), extracts pairwise `cer_vs_loc` / `wer_vs_loc` / `dice_vs_l
 1. Consolidated Parquet tables (`boinc_reader_rows.parquet`,
    `page_quality_joined.parquet`, `title_quality_summary.parquet`,
    `language_quality_summary.parquet`, `reader_language_summary.parquet`,
-   `reader_language_group_summary.parquet`, `summary.md`) under `--out-dir`.
+   `reader_language_group_summary.parquet`, `reader_language_comparison.parquet`,
+   `summary.md`) under `--out-dir`. `reader_language_comparison` pivots
+   `reader_language_summary` to one row per language with `<reader>_page_cer` and
+   `<reader>_crop_cer` columns (hyphens in reader names become underscores), plus
+   `pages` and `crops`, for an apples-to-apples reader comparison across languages.
 2. An indexed SQLite database (`--sqlite-out`) containing the full BOINC
    page/reader/crop tables plus title-level and language-level full-corpus
    damage & quality summaries.
@@ -616,6 +620,31 @@ def build_database(
             """
         )
 
+    # Pivot the per-language, per-reader rollup into one row per language so readers can be
+    # compared side by side. The reader set comes from the summary itself (sorted); a reader
+    # with only page or only crop measures leaves the other column null.
+    comparison_readers = [
+        r[0]
+        for r in con.execute(
+            "SELECT DISTINCT reader FROM reader_language_summary WHERE reader IS NOT NULL ORDER BY reader"
+        ).fetchall()
+    ]
+    comparison_cols = []
+    for reader in comparison_readers:
+        lit = reader.replace("'", "''")
+        col = reader.replace("-", "_").replace('"', '""')
+        comparison_cols.append(
+            f"MAX(CASE WHEN reader = '{lit}' THEN mean_est_cer END) AS \"{col}_page_cer\""
+        )
+        comparison_cols.append(
+            f"MAX(CASE WHEN reader = '{lit}' THEN mean_crop_hat_est_cer END) AS \"{col}_crop_cer\""
+        )
+    con.execute(
+        "CREATE TABLE reader_language_comparison AS SELECT language, "
+        + ", ".join(["MAX(pages) AS pages", "MAX(crops) AS crops"] + comparison_cols)
+        + " FROM reader_language_summary GROUP BY language ORDER BY language"
+    )
+
     con.execute(
         """
         CREATE TABLE router_regime_summary AS
@@ -703,6 +732,7 @@ def build_database(
         "reader_engine_summary",
         "reader_language_summary",
         "reader_language_group_summary",
+        "reader_language_comparison",
         "router_regime_summary",
         "next_wave_candidates",
     ]:
@@ -728,6 +758,7 @@ def build_database(
             "reader_engine_summary",
             "reader_language_summary",
             "reader_language_group_summary",
+            "reader_language_comparison",
             "router_regime_summary",
         ]:
             desc = con.execute(f"DESCRIBE {tbl}").fetchall()
@@ -856,6 +887,29 @@ def build_database(
             + " | ".join(str(x) if x is not None else "-" for x in r[3:])
             + " |"
         )
+
+    # Row layout: language, pages, crops, then (page_cer, crop_cer) per reader.
+    comparison_rows = con.execute("SELECT * FROM reader_language_comparison").fetchall()
+    md_lines.extend(["", "## Reader Comparison by Language (`reader_language_comparison`)"])
+    for title, count_label, count_idx, offset in [
+        ("Page-level estimated CER", "Pages", 1, 3),
+        ("Crop-level hat estimated CER", "Crops", 2, 4),
+    ]:
+        md_lines.extend(
+            [
+                "",
+                f"### {title}",
+                "",
+                "| Language | " + count_label + " | " + " | ".join(comparison_readers) + " |",
+                "|---|---:|" + "---:|" * len(comparison_readers),
+            ]
+        )
+        for r in comparison_rows:
+            cells = [
+                str(r[offset + 2 * i]) if r[offset + 2 * i] is not None else "-"
+                for i in range(len(comparison_readers))
+            ]
+            md_lines.append(f"| `{r[0]}` | {r[count_idx]:,} | " + " | ".join(cells) + " |")
 
     (out_dir / "summary.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     return stats

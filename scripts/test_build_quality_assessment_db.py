@@ -372,7 +372,8 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             )
 
             out_dir = root / "out"
-            mod.build_database(quality_root, manifest_pq, out_dir, None)
+            sqlite_path = root / "assessment.sqlite"
+            mod.build_database(quality_root, manifest_pq, out_dir, sqlite_path)
 
             rows = con.execute(
                 f"""
@@ -431,6 +432,69 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             self.assertEqual(group_rows[0], 4)
             summary = (out_dir / "summary.md").read_text(encoding="utf-8")
             self.assertIn("reader_language_summary", summary)
+
+            # Pivoted comparison: one row per language, two columns per reader (sorted).
+            cmp_pq = out_dir / "reader_language_comparison.parquet"
+            cmp_cols = [
+                d[0]
+                for d in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{cmp_pq}')").fetchall()
+            ]
+            self.assertEqual(
+                cmp_cols,
+                [
+                    "language", "pages", "crops",
+                    "loc_page_cer", "loc_crop_cer",
+                    "ours_surya_page_cer", "ours_surya_crop_cer",
+                    "ours_tesseract_page_cer", "ours_tesseract_crop_cer",
+                    "surya_page_cer", "surya_crop_cer",
+                    "vlm_page_cer", "vlm_crop_cer",
+                ],
+            )
+            cmp_rows = con.execute(
+                f"SELECT * FROM read_parquet('{cmp_pq}') ORDER BY language"
+            ).fetchall()
+            cmp_by_lang = {r[0]: dict(zip(cmp_cols, r)) for r in cmp_rows}
+            self.assertEqual(list(cmp_by_lang), ["deu", "eng"])
+            eng = cmp_by_lang["eng"]
+            self.assertEqual((eng["pages"], eng["crops"]), (2, 2))
+            self.assertAlmostEqual(eng["ours_surya_page_cer"], 0.06)
+            # ours-surya has pages only; surya has crops only; loc has both.
+            self.assertIsNone(eng["ours_surya_crop_cer"])
+            self.assertIsNone(eng["surya_page_cer"])
+            self.assertAlmostEqual(eng["surya_crop_cer"], 0.06)
+            self.assertAlmostEqual(eng["loc_page_cer"], 0.15)
+            self.assertAlmostEqual(eng["loc_crop_cer"], 0.25)
+            self.assertIsNone(eng["ours_tesseract_page_cer"])
+            self.assertIsNone(eng["vlm_page_cer"])
+            self.assertIsNone(eng["vlm_crop_cer"])
+            deu = cmp_by_lang["deu"]
+            self.assertEqual((deu["pages"], deu["crops"]), (1, 1))
+            self.assertAlmostEqual(deu["ours_tesseract_page_cer"], 0.12)
+            self.assertAlmostEqual(deu["surya_crop_cer"], 0.10)
+
+            self.assertIn("## Reader Comparison by Language (`reader_language_comparison`)", summary)
+            self.assertIn("### Page-level estimated CER", summary)
+            self.assertIn("### Crop-level hat estimated CER", summary)
+            self.assertIn("| Language | Pages | loc | ours-surya | ours-tesseract | surya | vlm |", summary)
+            self.assertIn("| Language | Crops | loc | ours-surya | ours-tesseract | surya | vlm |", summary)
+            self.assertIn("| `eng` | 2 | 0.15 | 0.06 | - | - | - |", summary)
+            self.assertIn("| `eng` | 2 | 0.25 | - | - | 0.06 | - |", summary)
+            self.assertLess(
+                summary.index("Reader Quality by Language"),
+                summary.index("Reader Comparison by Language"),
+            )
+            scon = sqlite3.connect(sqlite_path)
+            try:
+                sqlite_cols = [r[1] for r in scon.execute("PRAGMA table_info(reader_language_comparison)")]
+                self.assertEqual(sqlite_cols, cmp_cols)
+                self.assertAlmostEqual(
+                    scon.execute(
+                        "SELECT ours_surya_page_cer FROM reader_language_comparison WHERE language = 'eng'"
+                    ).fetchone()[0],
+                    0.06,
+                )
+            finally:
+                scon.close()
 
     @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
     def test_reader_language_summary_averages_all_null_varchar_crop_scores(self):
