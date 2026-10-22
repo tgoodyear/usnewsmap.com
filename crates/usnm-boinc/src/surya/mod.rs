@@ -15,6 +15,7 @@
 //! - [`summary`] reads those copies back into one table.
 use anyhow::{bail, ensure, Context};
 use std::path::{Path, PathBuf};
+use usnm_core::page_id::{PageId, Source};
 
 pub mod collect;
 pub mod crops;
@@ -103,6 +104,97 @@ pub fn units(root: &Path) -> PathBuf {
     root.join("units")
 }
 
+/// Marks a campaign whose units live at `units/<source>/<local id>`
+/// (ADR-0026), so a LoC page unit and a benchmark sample's unit cannot share
+/// a directory. A campaign with units and no marker was staged before, at
+/// `units/<id>`, and keeps that layout: a resumed run adds no second copy of
+/// a unit it already staged.
+pub const LAYOUT_FILE: &str = "units-layout";
+const LAYOUT: &[u8] = b"source/local\n";
+
+/// Where a campaign's writers put its units, in the layout it was started
+/// with.
+#[derive(Debug, Clone)]
+pub struct Units {
+    dir: PathBuf,
+    qualified: bool,
+}
+
+impl Units {
+    /// Creates `units/` if need be. A campaign with no units yet gets the
+    /// qualified layout and its marker.
+    pub fn open(root: &Path) -> anyhow::Result<Self> {
+        let dir = units(root);
+        let marker = root.join(LAYOUT_FILE);
+        let qualified = if marker.exists() {
+            ensure!(
+                crate::read(&marker, 64)? == LAYOUT,
+                "unknown unit layout in {}",
+                marker.display()
+            );
+            true
+        } else if std::fs::read_dir(&dir).is_ok_and(|mut d| d.next().is_some()) {
+            false
+        } else {
+            crate::atomic(&marker, LAYOUT)?;
+            true
+        };
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self { dir, qualified })
+    }
+
+    /// Whether units go under `units/<source>/<local id>`.
+    pub fn qualified(&self) -> bool {
+        self.qualified
+    }
+
+    /// The unit of `page`, or with `suffix` the name beside it: a crop unit
+    /// (`<page>.<crop id>`) or a marker (`<page>.<crop id>.missing`).
+    pub fn path(&self, page: &PageId, suffix: Option<&str>) -> anyhow::Result<PathBuf> {
+        let base = if self.qualified {
+            page.path()
+        } else {
+            ensure!(
+                page.source() == Source::Loc,
+                "{page}: a campaign staged before ADR-0026 holds LoC pages only"
+            );
+            page.local().to_owned()
+        };
+        Ok(self.dir.join(match suffix {
+            Some(s) => format!("{base}.{s}"),
+            None => base,
+        }))
+    }
+}
+
+/// Every unit (a directory holding `surya.json`) of the campaign at `root`,
+/// sorted, in either layout: `units/<id>` from before ADR-0026, or
+/// `units/<source>/<local id>`, which is two or three levels deep.
+pub fn unit_dirs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+        for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+            let e = e?;
+            if !e.file_type()?.is_dir() {
+                continue;
+            }
+            let p = e.path();
+            if p.join(JOB_FILE).exists() {
+                out.push(p);
+            } else if depth > 1 {
+                walk(&p, depth - 1, out)?;
+            }
+        }
+        Ok(())
+    }
+    let dir = units(root);
+    let mut out = Vec::new();
+    if dir.exists() {
+        walk(&dir, 3, &mut out)?;
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// A hold written when LoC refused or failed a request, as for the
 /// assessment: staging will not start again until a person removes it.
 pub fn check_no_hold(root: &Path) -> anyhow::Result<()> {
@@ -185,5 +277,58 @@ mod tests {
                 .parse::<Page>()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn new_campaigns_qualify_units_and_old_ones_keep_their_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loc: PageId = "sn85055101_1917-04-03_ed-1_seq-3".parse().unwrap();
+        let sample: PageId = "sample:overproof-ca/overproof-1".parse().unwrap();
+
+        let new = tmp.path().join("new");
+        let units = Units::open(&new).unwrap();
+        assert!(units.qualified());
+        let page = units.path(&loc, None).unwrap();
+        assert_eq!(page, new.join("units/loc/sn85055101_1917-04-03_ed-1_seq-3"));
+        assert_eq!(
+            units.path(&loc, Some("c01")).unwrap(),
+            new.join("units/loc/sn85055101_1917-04-03_ed-1_seq-3.c01")
+        );
+        let bench = units.path(&sample, None).unwrap();
+        assert_eq!(bench, new.join("units/sample/overproof-ca/overproof-1"));
+        for unit in [&page, &bench] {
+            std::fs::create_dir_all(unit).unwrap();
+            std::fs::write(unit.join(JOB_FILE), b"{}").unwrap();
+        }
+        // A directory without a job (a missing page) is not a unit.
+        std::fs::create_dir_all(new.join("units/loc/sn85055101_1917-04-03_ed-1_seq-4")).unwrap();
+        assert_eq!(unit_dirs(&new).unwrap(), vec![page, bench]);
+        // Reopened, it stays qualified.
+        assert!(Units::open(&new).unwrap().qualified());
+
+        // Units from before the marker: the bare layout, LoC pages only.
+        let old = tmp.path().join("old");
+        let unit = units_dir_with_job(&old, "sn85055101_1917-04-03_ed-1_seq-3");
+        let units = Units::open(&old).unwrap();
+        assert!(!units.qualified());
+        assert!(!old.join(LAYOUT_FILE).exists());
+        assert_eq!(units.path(&loc, None).unwrap(), unit);
+        assert_eq!(
+            units.path(&loc, Some("c01")).unwrap(),
+            old.join("units/sn85055101_1917-04-03_ed-1_seq-3.c01")
+        );
+        assert!(units.path(&sample, None).is_err());
+        assert_eq!(unit_dirs(&old).unwrap(), vec![unit]);
+
+        // An unknown marker is refused.
+        std::fs::write(new.join(LAYOUT_FILE), b"other\n").unwrap();
+        assert!(Units::open(&new).is_err());
+    }
+
+    fn units_dir_with_job(root: &Path, name: &str) -> PathBuf {
+        let unit = units(root).join(name);
+        std::fs::create_dir_all(&unit).unwrap();
+        std::fs::write(unit.join(JOB_FILE), b"{}").unwrap();
+        unit
     }
 }

@@ -124,12 +124,16 @@ Requests to LoC go one at a time, at least 5 s apart, with no retries, as for th
 
 To clear a hold, read `<campaign>/HOLD`, deal with the cause, and delete it (on the share, for example with `az storage file delete`).
 
+### Where units live
+
+A campaign started after ADR-0026 (docs/design/adr/0026-source-qualified-page-ids.md) keeps each unit under its page id's path: `units/loc/<doc_id>` for a page, `units/loc/<doc_id>.<crop_id>` for a crop, and `units/sample/<dataset>/<sample_id>` for a benchmark sample, so a page and a sample can't share a directory. Staging marks such a campaign with `<campaign>/units-layout`. A campaign staged before that has no marker and keeps `units/<doc_id>`, `units/<doc_id>.<crop_id>` and `units/<sample_id>`: resumed staging writes there, and submit, collect, summary and `gold-hyp` read either layout. Workunit names stay `usnm_surya_<job id>`, a sha256, whatever the unit's path.
+
 ### The same pages and crops as the quality campaign (#968)
 
 To compare Surya with Qwen, Tesseract and American Stories on the same text, stage from the quality campaign rather than a hand-written page list:
 
 - `usnm-boinc surya stage --sample <sample.jsonl> --group <name>` takes the rows `quality sample` drew (one page per row, in its batch) as pages of `<name>`, and keeps each row in its unit as `sample.json`, so a collector can weigh the page as the quality campaign does. `--page` still works, alone or alongside.
-- `usnm-boinc surya stage-crops --quality-root <root> --root <campaign>` writes one unit per crop of every staged `usnm_quality` page: the crops the page's `usnm_qwen` unit reads (`crop_seed` and `k_crops` from its `quality.json`, the recipe in `crates/usnm-ocr-quality/src/crops.rs`), cut here from the staged `page.jpg` as JPEGs at quality 95. The unit is `units/<doc_id>.<crop_id>`; its job carries `crop` (`id`, `box`, `stratum`), reads `whole` only, with one deadline (`--timeout-secs`, 600 s by default), and its `input.url` is the page's source with the box as an `#xywh=` fragment. A page whose ALTO has no line the recipe can cut gets a `<doc_id>.no_crops` marker.
+- `usnm-boinc surya stage-crops --quality-root <root> --root <campaign>` writes one unit per crop of every staged `usnm_quality` page: the crops the page's `usnm_qwen` unit reads (`crop_seed` and `k_crops` from its `quality.json`, the recipe in `crates/usnm-ocr-quality/src/crops.rs`), cut here from the staged `page.jpg` as JPEGs at quality 95. The unit is `units/loc/<doc_id>.<crop_id>`; its job carries `crop` (`id`, `box`, `stratum`), reads `whole` only, with one deadline (`--timeout-secs`, 600 s by default), and its `input.url` is the page's source with the box as an `#xywh=` fragment. A page whose ALTO has no line the recipe can cut gets a `loc/<doc_id>.no_crops` marker.
 
 On the bridge, the steps are `surya-stage` with `SURYA_SAMPLE=<share>/quality/<campaign>/sample.jsonl SURYA_GROUP=<group>` (instead of, or beside, `SURYA_PAGES`) and `surya-stage-crops` with `QUALITY_CAMPAIGN=<campaign>` (`SURYA_MAX` pages, `SURYA_TIMEOUT_SECS`); both then go through `surya-submit` as any unit. The batch controller can run `surya-stage-crops` and `surya-submit` for you whenever the `usnm_surya` queue runs low: see [Surya waves](boinc-batch-scheduler.md#surya-waves).
 
@@ -139,7 +143,7 @@ On the bridge, the steps are `surya-stage` with `SURYA_SAMPLE=<share>/quality/<c
 
 The OCR gold set ([ocr-gold-set.md](ocr-gold-set.md)) is 60 pages with one seeded box each. The 40 Czech, Serbian, Polish and Russian crops are out for transcription, and Surya reads the same boxes so that, when the transcriptions come back, it gets a character error rate against them.
 
-`usnm-boinc surya stage-gold --manifest fixtures/ocr-gold/cze-srp-pol-rus/manifest.jsonl --root <campaign>` writes one crop unit per manifest row, in file order, up to `--max-crops` (50 by default). The unit is `units/<doc_id>.<crop_id>`, with `doc_id` in the project's form (`sn83045348_1876-03-07_ed-1_seq-1` for the manifest's `sn83045348_1876-03-07_ed1_seq1`). It holds `page.jpg` (the box, cut as `stage-crops` cuts, JPEG at quality 95), `surya.json` and `gold.json` (the manifest row, as it was). The job has group `gold`, the row's language, `crop` with the row's `crop_id`, its box and the stratum `gold/<lang>` (`gold/cze`), `whole` mode only and one deadline (`--timeout-secs`, 600 s by default), and its `input.url` is the row's `page_image_url` with the box as an `#xywh=` fragment.
+`usnm-boinc surya stage-gold --manifest fixtures/ocr-gold/cze-srp-pol-rus/manifest.jsonl --root <campaign>` writes one crop unit per manifest row, in file order, up to `--max-crops` (50 by default). The unit is `units/loc/<doc_id>.<crop_id>`, with `doc_id` in the project's form (`sn83045348_1876-03-07_ed-1_seq-1` for the manifest's `sn83045348_1876-03-07_ed1_seq1`). It holds `page.jpg` (the box, cut as `stage-crops` cuts, JPEG at quality 95), `surya.json` and `gold.json` (the manifest row, as it was). The job has group `gold`, the row's language, `crop` with the row's `crop_id`, its box and the stratum `gold/<lang>` (`gold/cze`), `whole` mode only and one deadline (`--timeout-secs`, 600 s by default), and its `input.url` is the row's `page_image_url` with the box as an `#xywh=` fragment.
 
 The pages are fetched from `page_image_url` on tile.loc.gov, once per page however many rows share it, one request at a time and at least `--gap-secs` (5 or more) apart, with no retries; a 403, 429, 5xx or an HTML answer writes `<campaign>/HOLD` and stops, as `surya stage` does. `--pages-dir <dir>` reads `<dir>/<page_id>.jpg` instead, for anyone who already has the pages. Each page's sha256 is checked against the row's `page_image_sha256`, because the gold set pins its pixels by that checksum. A page that differs gets a `<doc_id>.<crop_id>.mismatch` marker with one line saying so, and its crops are not cut; a page LoC answers 404 for gets a `.missing` marker. Neither marker is tried again until a person deletes it. A unit with a `surya.json` is left as it is, so a second run stages only what is still to do. The command prints how many crops it `staged`, found `already` staged, found `mismatch` and how many pages were `missing`.
 
@@ -287,8 +291,11 @@ selected image/reference hash. It keeps upstream provenance and `LICENSES`,
 including the English reference NC attribution. Copy the bundle, retaining its
 layout, to `<share>/surya-inputs/<campaign>/` through the existing authorized
 operator transport. Keep references private. `inputs.json` is an array of
-`sample_id`, `group`, `language`, relative `image`/`reference` paths and their
-`image_sha256`/`reference_sha256`, `source_url`, and `license`. The SHA256 of its
+`sample_id`, `dataset` (the release's `source`, such as `overproof-ca`), `group`,
+`language`, relative `image`/`reference` paths and their
+`image_sha256`/`reference_sha256`, `source_url`, and `license`. Each unit's doc id
+is `sample:<dataset>/<sample_id>`; staging refuses a bundle with no `dataset`, so
+prepare older bundles again. The SHA256 of its
 exact bytes, printed by prepare, is required by staging:
 
 ```sh

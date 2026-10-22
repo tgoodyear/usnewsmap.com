@@ -1,6 +1,6 @@
 //! Reads back what the validator kept: one row per result and mode, with
 //! the page, host, device, time and memory, plus every compared pair's Dice.
-use super::{units, JOB_FILE, RESULT_FILE};
+use super::{unit_dirs, JOB_FILE, RESULT_FILE};
 use crate::read;
 use std::{collections::BTreeMap, fmt::Write as _, path::Path};
 use usnm_ocr_contract::surya::{Job, ResultManifest, MAX_JSON};
@@ -8,12 +8,10 @@ use usnm_ocr_contract::surya::{Job, ResultManifest, MAX_JSON};
 /// A Markdown report of the kept results and the logged pairs.
 pub fn run(root: &Path, seen: &Path, pairs: &Path) -> anyhow::Result<String> {
     let mut pages: BTreeMap<String, (String, String)> = BTreeMap::new();
-    if let Ok(dir) = std::fs::read_dir(units(root)) {
-        for e in dir.filter_map(|e| e.ok()) {
-            if let Ok(b) = read(&e.path().join(JOB_FILE), MAX_JSON) {
-                if let Ok(j) = serde_json::from_slice::<Job>(&b) {
-                    pages.insert(j.id.clone(), (j.doc_id, j.group));
-                }
+    for unit in unit_dirs(root).unwrap_or_default() {
+        if let Ok(b) = read(&unit.join(JOB_FILE), MAX_JSON) {
+            if let Ok(j) = serde_json::from_slice::<Job>(&b) {
+                pages.insert(j.id.clone(), (j.doc_id, j.group));
             }
         }
     }
