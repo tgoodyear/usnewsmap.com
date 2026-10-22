@@ -288,6 +288,8 @@ async fn send_files(
     shared: Arc<Mutex<Shared>>,
     lease_lost: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> anyhow::Result<Vec<u8>> {
+    let mut sender = sender;
+    sender.set_lease_lost(lease_lost.clone());
     let mut sender = Leased {
         sender,
         lost: lease_lost,

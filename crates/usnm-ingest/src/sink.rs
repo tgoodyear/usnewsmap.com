@@ -828,7 +828,7 @@ impl Poster {
 /// [`QuickwitSink::line_sender`].
 pub enum LineSender {
     Http { poster: Poster, buf: Vec<u8> },
-    Kafka(crate::kafka::Producer),
+    Kafka(Box<crate::kafka::Producer>),
 }
 
 impl LineSender {
@@ -852,6 +852,13 @@ impl LineSender {
         Ok(())
     }
 
+    /// The writer lock's flag, for Kafka's watch to stop on.
+    pub fn set_lease_lost(&mut self, lost: Option<Arc<std::sync::atomic::AtomicBool>>) {
+        if let Self::Kafka(p) = self {
+            p.set_lease_lost(lost);
+        }
+    }
+
     /// A decade file's last line went in: Kafka moves to the next partition.
     pub async fn end_file(&mut self) -> anyhow::Result<()> {
         match self {
@@ -864,11 +871,12 @@ impl LineSender {
     /// request goes only when the next line wouldn't fit): the release gives
     /// them back to the sink, whose `finish` sends them with the forced
     /// commit, as when the pages went out in line. Kafka sends its last
-    /// records and returns none: its source commits on its own.
+    /// records, waits until the index holds them all (`Producer::drain`, so
+    /// a stall at the end gets the watch's restart too), and returns none.
     pub async fn into_unsent(self) -> anyhow::Result<Vec<u8>> {
         match self {
             Self::Kafka(mut p) => {
-                p.end_file().await?;
+                p.drain().await?;
                 Ok(Vec::new())
             }
             Self::Http { buf, .. } => Ok(buf),
@@ -978,9 +986,9 @@ impl QuickwitSink {
                     }) as Arc<dyn merges::Restart>
                 });
                 let watch = crate::kafka::Watch::new(self.http.clone(), &self.base, id, restart)?;
-                return Ok(LineSender::Kafka(
+                return Ok(LineSender::Kafka(Box::new(
                     k.producer(id, Arc::clone(&self.stats), Some(watch)).await?,
-                ));
+                )));
             }
         }
         Ok(LineSender::Http {
