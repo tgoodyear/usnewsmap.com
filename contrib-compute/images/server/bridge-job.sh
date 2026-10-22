@@ -419,11 +419,12 @@ case "$step" in
     exit 0 ;;
   qwen-stage)
     [[ "${QUALITY_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "QUALITY_CAMPAIGN must be 1-41 of [a-z0-9-]"
+    [[ "${QWEN_BUNDLE_SIZE:-16}" =~ ^[1-9][0-9]*$ ]] || fail "QWEN_BUNDLE_SIZE must be a positive integer"
     exec usnm-boinc qwen stage --quality-root "$SHARE_DIR/quality/$QUALITY_CAMPAIGN" --root "$QWEN" \
       --engine-image "${QWEN_ENGINE_IMAGE:?set QWEN_ENGINE_IMAGE}" \
       --engine-llama "${QWEN_ENGINE_LLAMA:?set QWEN_ENGINE_LLAMA}" \
       --engine-weights "${QWEN_ENGINE_WEIGHTS:?set QWEN_ENGINE_WEIGHTS}" \
-      --max-pages "${QWEN_MAX:-20}" ;;
+      --max-pages "${QWEN_MAX:-20}" --bundle-size "${QWEN_BUNDLE_SIZE:-16}" ;;
   qwen-benchmark-prepare)
     selection="${QWEN_SELECTION:-transcription-audited-20261015}"
     [[ "$selection" =~ ^[a-z0-9][a-z0-9-]{0,60}$ ]] || fail "invalid reviewed selection name"

@@ -18,6 +18,8 @@
 //! - [`crops`]: the seeded, stratified crop selection the vision-language
 //!   app reads.
 //! - [`report`]: the per-page record, its JSON schema and rounding.
+//! - [`qwen_pages`]: the page images a vision-language unit's crops are cut
+//!   from, decoded one page at a time.
 
 pub mod align;
 pub mod confusion;
@@ -27,6 +29,7 @@ pub mod distance;
 pub mod features;
 pub mod findability;
 pub mod hat;
+pub mod qwen_pages;
 pub mod report;
 pub mod router;
 pub mod slot;

@@ -298,7 +298,7 @@ The daemons are in `ocr/boinc/daemons.xml` and `contrib-compute/images/server/li
 
 ### usnm-boinc qwen
 
-- `stage`: reads staged `usnm_quality` units from `--quality-root` (`--root`, `--engine-image`, `--engine-llama`, `--engine-weights`, `--gpu-timeout-secs` default 14400, `--cpu-timeout-secs` default 7200, `--max-tokens-per-1000px2` default 4, `--max-pages` default 20), cuts the same deterministic crops from each unit's `page.jpg` and `loc.xml` (`crop_seed` and `k_crops` from `quality.json`) without contacting LoC again, and writes `<root>/units/<doc_id>/{page.jpg, qwen.json}`.
+- `stage`: reads staged `usnm_quality` units from `--quality-root` (`--root`, `--engine-image`, `--engine-llama`, `--engine-weights`, `--gpu-timeout-secs` default 14400, `--cpu-timeout-secs` default 7200, `--max-tokens-per-1000px2` default 4, `--max-pages` default 20, `--bundle-size` default 1 on CLI and `16` in `bridge-job.sh`, at most 32 pages and 256 crops per bundle), cuts the same deterministic crops from each unit's `page.jpg` and `loc.xml` (`crop_seed` and `k_crops` from `quality.json`) without contacting LoC again, and writes `<root>/units/<doc_id>/{page.jpg, qwen.json}` (or `<root>/pages/<doc_id>/` packed into `<root>/units/bundle-<idx>-<first_doc_id>/` when `--bundle-size > 1`). `stage` closes a bundle before its `qwen.json` would pass 512 KiB, the limit submit and the workers read it with, or before its longest possible `readings.json` would pass 2 MiB, the output upload limit (every crop read at 8 KiB of text that all escapes to two bytes, about 16 KiB a crop). That holds a bundle to about 125 crops: 10 pages at 12 crops a page. A page whose `qwen.json`, alone or as a one-page bundle, would pass 512 KiB gets a `too_large` marker and is not published. Pages staged with different engine, deadline or token settings go in separate bundles. A root staged with `--bundle-size` above 1 refuses `--bundle-size 1`, which would stage its pages again as single-page units. The container worker and `usnm-qwen-app` check every bundle page before the model loads, then decode one page at a time, so a bundle needs the memory of its largest page, not of all its pages.
 
 The GPU budget is four hours of application runtime for the entire page,
 not a BOINC task-duration limit. It accommodates slower volunteer GPUs without
@@ -308,6 +308,16 @@ shorter budgets remain available for bounded experiments; the job contract accep
 Timeouts are part of the immutable job identity: never edit staged inputs already
 submitted to volunteers. To retry an affected page with a longer budget, stage a
 new job identity and preserve the original attempt and validation evidence.
+
+The GPU workers (the `usnm_qwen` and `usnm_surya` container workers in
+`usnm-boinc`, and `usnm-qwen-app`) set `CUDA_CACHE_PATH` and
+`MESA_SHADER_CACHE_DIR` to `/var/tmp/usnm-gpu-cache-<uid>`, which they create
+with mode 0700. If a directory already at that path is not a private directory
+owned by the user the worker runs as, the workers try the same name in the temp
+directory, then a directory under the task's scratch or slot directory. On
+native hosts the compiled kernels are kept from one workunit to the next. The
+containers have a read-only root and a `/tmp` tmpfs of their own, so there the
+cache lasts one workunit.
 
 - `submit`: hands staged `usnm_qwen` units in `<root>/units/` to `create_work` (`--root`, `--project`, `--max-units` default 20) with write-ahead `submitting` and `submitted` markers.
 - `local-unit`: writes a unit directory from `--image` and `--alto` (or `--synthetic`, which generates a built-in two-line block-capitals page and ALTO) into `--dir` (`--engine-image`, `--engine-llama` defaulting to `USNM_QWEN_LLAMA_IMAGE`, `--engine-weights` defaulting to `USNM_QWEN_WEIGHTS`, `--crop-seed` default 522, `--k-crops` default 12, `--timeout-secs` default 1800, `--max-tokens-per-1000px2` default 4).

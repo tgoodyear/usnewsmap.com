@@ -1494,7 +1494,12 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
             text=True,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(any("qwen stage --quality-root" in c for c in self.calls()))
+        self.assertTrue(
+            any(
+                "qwen stage --quality-root" in c and "--bundle-size 16" in c
+                for c in self.calls()
+            )
+        )
 
         for step, expected in [
             ("qwen-benchmark-stage", "qwen benchmark-stage"),

@@ -1131,6 +1131,10 @@ enum Qwen {
         max_tokens_per_1000px2: u32,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
+        /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 32),
+        /// each bundle's qwen.json within the 512 KiB the workers read.
+        #[arg(long, default_value_t = 1)]
+        bundle_size: usize,
     },
     /// Hand staged units to create_work, two results each.
     Submit {
@@ -2314,6 +2318,7 @@ async fn qwen(c: Qwen) -> anyhow::Result<()> {
             cpu_timeout_secs,
             max_tokens_per_1000px2,
             max_pages,
+            bundle_size,
         } => {
             let s = x::stage::run(&x::stage::Options {
                 quality_root,
@@ -2328,6 +2333,7 @@ async fn qwen(c: Qwen) -> anyhow::Result<()> {
                 cpu_timeout_secs,
                 max_tokens_per_1000px2,
                 max_pages,
+                bundle_size,
             })
             .await?;
             eprintln!("{s:?}");

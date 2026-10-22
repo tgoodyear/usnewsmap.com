@@ -794,6 +794,7 @@ fn run_mode(
         cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
             .env("CUDA_VISIBLE_DEVICES", i.to_string());
     }
+    usnm_ocr_quality::slot::apply_gpu_cache_env(&mut cmd, home);
     let extra_args = surya_llama_args(threads, gpu);
     let mut child = cmd
         .arg(RUNNER)
@@ -983,7 +984,11 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
     let (job_id, engine, unit_error) = match prepare(work) {
         Ok(job) => {
             let (modes, deadline, threads) = if visible {
-                (&job.gpu_modes, job.gpu_timeout_secs, 2)
+                (
+                    &job.gpu_modes,
+                    job.gpu_timeout_secs,
+                    usnm_ocr_quality::slot::gpu_threads(host.ncpus, host.cpu_threads),
+                )
             } else {
                 let n = host
                     .ncpus

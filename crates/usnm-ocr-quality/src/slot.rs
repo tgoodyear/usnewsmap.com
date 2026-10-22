@@ -994,6 +994,163 @@ pub fn runtime_info(host: &mut Host, diag: &mut Diag) {
     diag.section("runtime", &body, 2048);
 }
 
+/// Default 2 GiB cap for NVIDIA's PTX JIT cache (`CUDA_CACHE_MAXSIZE`), lifted
+/// above the 256 MiB driver default so multi-model `ggml-cuda` PTX cubins (~85 MiB)
+/// are not evicted between workunits.
+pub const DEFAULT_CUDA_CACHE_MAXSIZE: &str = "2147483648";
+/// Default 2 GiB cap for Mesa's Vulkan pipeline/shader cache (`MESA_SHADER_CACHE_MAX_SIZE`).
+pub const DEFAULT_MESA_SHADER_CACHE_MAX_SIZE: &str = "2G";
+
+/// The cache directory's per-user suffix: the effective uid on Unix, where
+/// the directory sits in a shared `/var/tmp` or `/tmp`.
+#[cfg(unix)]
+fn cache_user_tag() -> String {
+    rustix::process::geteuid().as_raw().to_string()
+}
+
+/// The cache directory's per-user suffix on Windows, whose temp directory is
+/// already the user's own.
+#[cfg(not(unix))]
+fn cache_user_tag() -> String {
+    for var in ["USERNAME", "USER", "LOGNAME"] {
+        if let Ok(val) = std::env::var(var) {
+            let clean: String = val
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .take(32)
+                .collect();
+            if !clean.is_empty() {
+                return clean;
+            }
+        }
+    }
+    String::from("shared")
+}
+
+/// Makes `dir` (whose parent exists) a directory only this user can reach.
+/// A missing one is created with mode 0700. One already there is used only
+/// when it is a real directory, not a symlink, owned by this user, with no
+/// group or other access; a directory someone else made at the predictable
+/// path in a shared `/var/tmp` or `/tmp` is passed over.
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return false,
+    }
+    std::fs::symlink_metadata(dir).is_ok_and(|m| {
+        m.file_type().is_dir()
+            && m.uid() == rustix::process::geteuid().as_raw()
+            && m.mode() & 0o077 == 0
+    })
+}
+
+/// On Windows the candidates sit in the user's own temp directory.
+#[cfg(not(unix))]
+fn private_dir(dir: &Path) -> bool {
+    std::fs::create_dir_all(dir).is_ok()
+        && std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir())
+}
+
+/// `dir` is private to this user and holds writable `cuda` and `mesa`
+/// subdirectories. The write probe is created exclusively, so an existing
+/// file or symlink at its name is never opened.
+fn ensure_writable_cache_pair(dir: &Path) -> bool {
+    if !private_dir(dir) {
+        return false;
+    }
+    let cuda = dir.join("cuda");
+    let mesa = dir.join("mesa");
+    if std::fs::create_dir_all(&cuda).is_err() || std::fs::create_dir_all(&mesa).is_err() {
+        return false;
+    }
+    let probe = cuda.join(format!(".writable.{}", std::process::id()));
+    let create = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+    };
+    let created = match create() {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // A probe left by an earlier process with this pid. Only this user
+            // can write here, so it is ours to remove (a symlink is removed,
+            // never followed).
+            std::fs::remove_file(&probe).is_ok() && create().is_ok()
+        }
+        r => r.is_ok(),
+    };
+    if created {
+        let _ = std::fs::remove_file(&probe);
+    }
+    created
+}
+
+/// Resolves a writable directory outside per-invocation scratch `TempDir`s so
+/// CUDA (`CUDA_CACHE_PATH`) and Mesa Vulkan (`MESA_SHADER_CACHE_DIR`) keep
+/// compiled PTX SASS cubins and SPIR-V shader pipelines (#794). The first
+/// candidate that is private to this user and writable wins:
+/// `/var/tmp/usnm-gpu-cache-<uid>`, then the same name in the temp directory,
+/// then `gpu-cache` under `fallback_root`.
+///
+/// The cache outlives a workunit on native hosts only. The project's
+/// containers run with a read-only root and a per-container `/tmp` tmpfs, so
+/// there the cache lands in `/tmp` and lasts one workunit: it is shared by
+/// that workunit's processes (Surya's input modes, for one) but gone for the
+/// next.
+pub fn persistent_gpu_cache_dir(fallback_root: &Path) -> PathBuf {
+    let suffix = format!("usnm-gpu-cache-{}", cache_user_tag());
+    let candidates = [
+        #[cfg(unix)]
+        PathBuf::from("/var/tmp").join(&suffix),
+        std::env::temp_dir().join(&suffix),
+        fallback_root.join("gpu-cache"),
+    ];
+
+    for dir in candidates {
+        if ensure_writable_cache_pair(&dir) {
+            return dir;
+        }
+    }
+    fallback_root.to_path_buf()
+}
+
+/// Configures `CUDA_CACHE_PATH`, `CUDA_CACHE_MAXSIZE`, `MESA_SHADER_CACHE_DIR`,
+/// and `MESA_SHADER_CACHE_MAX_SIZE` on `cmd` (preserving any explicit caller
+/// environment overrides) so overriding `HOME` to an ephemeral `TempDir` does
+/// not discard ~85 MiB of compiled GPU kernels after every workunit on a
+/// native host (#794); see [`persistent_gpu_cache_dir`] for containers.
+pub fn apply_gpu_cache_env(cmd: &mut std::process::Command, fallback_root: &Path) {
+    let root = persistent_gpu_cache_dir(fallback_root);
+    if std::env::var_os("CUDA_CACHE_PATH").is_none() {
+        cmd.env("CUDA_CACHE_PATH", root.join("cuda"));
+    }
+    if std::env::var_os("CUDA_CACHE_MAXSIZE").is_none() {
+        cmd.env("CUDA_CACHE_MAXSIZE", DEFAULT_CUDA_CACHE_MAXSIZE);
+    }
+    if std::env::var_os("MESA_SHADER_CACHE_DIR").is_none() {
+        cmd.env("MESA_SHADER_CACHE_DIR", root.join("mesa"));
+    }
+    if std::env::var_os("MESA_SHADER_CACHE_MAX_SIZE").is_none() {
+        cmd.env(
+            "MESA_SHADER_CACHE_MAX_SIZE",
+            DEFAULT_MESA_SHADER_CACHE_MAX_SIZE,
+        );
+    }
+}
+
+/// Selects the CPU worker thread count (`--threads`) when offloading inference
+/// to a GPU: honors BOINC's `<ncpus>` allocation when higher, otherwise uses up
+/// to 4 available host CPU threads for image decoding and multimodal patch
+/// preparation (clamped to `2..=8`) (#794).
+pub fn gpu_threads(ncpus: Option<f64>, cpu_threads: Option<u32>) -> u32 {
+    let boinc_cpus = ncpus.map(|n| n.round().max(1.0) as u32).unwrap_or(0);
+    let hw_cap = cpu_threads.unwrap_or(2).min(4);
+    boinc_cpus.max(hw_cap).clamp(2, 8)
+}
+
 /// What one unit holds, in memory.
 #[derive(Debug, Clone)]
 pub struct Inputs<'a> {
@@ -2123,6 +2280,85 @@ mod tests {
         usnm_ocr_contract::quality::agree(&res_full, &res_resume).unwrap();
         let diag_str = std::fs::read_to_string(slot_resume.join(DIAG_FILE)).unwrap();
         assert!(diag_str.contains("resumed from checkpoint: 1 of 2 pages already complete"));
+    }
+
+    #[test]
+    fn gpu_cache_dir_and_gpu_threads_scale_outside_ephemeral_home() {
+        let tmp = TestDir::new("gpu-cache");
+        let dir = persistent_gpu_cache_dir(tmp.path());
+        assert!(dir.join("cuda").is_dir());
+        assert!(dir.join("mesa").is_dir());
+
+        let mut cmd = std::process::Command::new("sh");
+        apply_gpu_cache_env(&mut cmd, tmp.path());
+        let envs: BTreeMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_owned(), v?.to_str()?.to_owned())))
+            .collect();
+        if std::env::var_os("CUDA_CACHE_PATH").is_none() {
+            assert_eq!(
+                envs.get("CUDA_CACHE_PATH").map(String::as_str),
+                Some(dir.join("cuda").to_string_lossy().as_ref())
+            );
+        }
+        if std::env::var_os("CUDA_CACHE_MAXSIZE").is_none() {
+            assert_eq!(
+                envs.get("CUDA_CACHE_MAXSIZE").map(String::as_str),
+                Some(DEFAULT_CUDA_CACHE_MAXSIZE)
+            );
+        }
+        if std::env::var_os("MESA_SHADER_CACHE_DIR").is_none() {
+            assert_eq!(
+                envs.get("MESA_SHADER_CACHE_DIR").map(String::as_str),
+                Some(dir.join("mesa").to_string_lossy().as_ref())
+            );
+        }
+
+        // Default 1-CPU GPU plan class on a 4-core host scales up to 4 threads.
+        assert_eq!(gpu_threads(Some(1.0), Some(4)), 4);
+        // 2-core host stays at 2 threads.
+        assert_eq!(gpu_threads(Some(1.0), Some(2)), 2);
+        // 16-core host with default 1-CPU GPU slot caps opportunistic threads at 4,
+        // while an explicit <ncpus>6.0</ncpus> allocation scales to 6 (clamped at 8).
+        assert_eq!(gpu_threads(Some(1.0), Some(16)), 4);
+        assert_eq!(gpu_threads(Some(6.0), Some(16)), 6);
+        assert_eq!(gpu_threads(Some(12.0), Some(16)), 8);
+        assert_eq!(gpu_threads(None, None), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gpu_cache_dir_passes_over_shared_and_linked_directories() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = TestDir::new("gpu-cache-private");
+
+        // Created private.
+        let own = tmp.path().join("own");
+        assert!(ensure_writable_cache_pair(&own));
+        let mode = std::fs::metadata(&own).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "mode {mode:o}");
+
+        // Open to group or others: passed over.
+        let open = tmp.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!ensure_writable_cache_pair(&open));
+
+        // A symlink, even to this user's own private directory: passed over.
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&own, &link).unwrap();
+        assert!(!ensure_writable_cache_pair(&link));
+
+        // A probe-named symlink is removed, never written through.
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let probe = own
+            .join("cuda")
+            .join(format!(".writable.{}", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &probe).unwrap();
+        assert!(ensure_writable_cache_pair(&own));
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert!(std::fs::symlink_metadata(&probe).is_err());
     }
 
     #[cfg(windows)]
