@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Duration, DurationRound, Utc};
 use serde::{Deserialize, Serialize};
+use usnm_core::ids::PageKey;
 use usnm_core::names;
 use usnm_state::state::{BatchStatus, RunStatus, MAX_DELTAS};
 use usnm_state::summary::{BatchSummary, RunSummary, Summary};
@@ -350,11 +351,13 @@ pub fn sources(rd: &RefData) -> Sources {
     let ja_latin = (!rd.ja_latin.is_empty()).then(|| {
         let mut engines: BTreeMap<(&str, &str), u64> = BTreeMap::new();
         let mut reasons: BTreeMap<&str, u64> = BTreeMap::new();
-        let mut titles: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut titles: BTreeMap<String, u64> = BTreeMap::new();
         for (doc_id, p) in &rd.ja_latin {
             *engines.entry((&p.ocr_source, &p.ocr_engine)).or_default() += 1;
             *reasons.entry(p.loc_text.as_str()).or_default() += 1;
-            let lccn = doc_id.split('_').next().unwrap_or(doc_id);
+            // The overlay holds LoC pages only (ADR-0026): parse the id rather than split it,
+            // so anything else is counted under its own id, not a misread LCCN.
+            let lccn = PageKey::from_doc_id(doc_id).map_or_else(|_| doc_id.clone(), |k| k.lccn);
             *titles.entry(lccn).or_default() += 1;
         }
         let mut by_reason: Vec<ReasonPages> = reasons
@@ -368,11 +371,11 @@ pub fn sources(rd: &RefData) -> Sources {
         let mut by_title: Vec<TitleOcrPages> = titles
             .into_iter()
             .map(|(lccn, pages)| TitleOcrPages {
-                lccn: lccn.to_owned(),
                 name: rd
                     .titles
-                    .get(lccn)
-                    .map_or_else(|| lccn.to_owned(), |t| t.name.clone()),
+                    .get(lccn.as_str())
+                    .map_or_else(|| lccn.clone(), |t| t.name.clone()),
+                lccn,
                 pages,
             })
             .collect();
