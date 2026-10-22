@@ -438,11 +438,16 @@ class Timings:
             seconds, cpu = self.clock() - start, self.cpu() - cpu
             self._add(self.phases, name, seconds, cpu, ok)
             if self.report:
-                self.report({
-                    "event": "boinc_batch_phase", "schema_version": 1, "at": int(time.time()),
-                    "phase": name, "ok": ok, "seconds": round(seconds, 3), "cpu_seconds": round(cpu, 3),
-                    "commands": sum(entry["count"] for entry in self.commands.values()) - ran,
-                })
+                try:
+                    self.report({
+                        "event": "boinc_batch_phase", "schema_version": 1, "at": int(time.time()),
+                        "phase": name, "ok": ok, "seconds": round(seconds, 3),
+                        "cpu_seconds": round(cpu, 3),
+                        "commands": sum(entry["count"] for entry in self.commands.values()) - ran,
+                    })
+                except (OSError, ValueError):
+                    # A closed or broken log stream never stops a tick or strands its lease.
+                    pass
 
     def command(self, key, seconds, cpu, ok):
         self._add(self.commands, key, seconds, cpu, ok)
@@ -526,13 +531,16 @@ class Transport:
             yield
             return
         name = "scheduler/controller.lock"
-        with self.timings.phase("lock"):
-            lease = self._acquire(name)
+        lease = None
         try:
+            with self.timings.phase("lock"):
+                lease = self._acquire(name)
             yield
         finally:
-            with self.timings.phase("unlock"):
-                self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
+            # Released whenever it was taken, even if something after the acquire failed.
+            if lease is not None:
+                with self.timings.phase("unlock"):
+                    self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
 
     def _acquire(self, name):
         if self.az("exists", "--name", name, "--query", "exists", "-o", "tsv").strip() != "true":
@@ -1489,6 +1497,8 @@ def main(argv=None):
                 tick_kwargs["max_global_pending"] = args.max_global_pending
             with transport.lock():
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
+            # Again after the lease is released, so the line counts the release too.
+            event["timings"] = timings.summary()
             print(json.dumps(event, sort_keys=True))
         return 0
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:

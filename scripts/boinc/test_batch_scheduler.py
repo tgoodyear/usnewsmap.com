@@ -996,6 +996,37 @@ class TimingsTests(unittest.TestCase):
         event = batch.tick(config(), {}, fake, lambda: None, NOW)
         self.assertEqual(event["timings"]["commands"]["handoff/export"]["count"], 1)
 
+    def test_a_broken_log_stream_never_strands_the_lease(self):
+        def broken(line):
+            raise BrokenPipeError()
+
+        t = batch.Transport(queue_config(), Path("."), timings=Ticker().timings(report=broken))
+        with patch.object(t, "az", return_value="true") as az:
+            with t.lock():
+                pass
+        self.assertEqual(az.call_args.args[:2], ("lease", "release"))
+        # A failing tick still releases.
+        with patch.object(t, "_acquire", return_value="lease-id"), \
+                patch.object(t, "az", return_value="") as az, self.assertRaises(RuntimeError):
+            with t.lock():
+                raise RuntimeError("tick failed")
+        self.assertEqual(az.call_args.args[:2], ("lease", "release"))
+
+    def test_a_successful_line_counts_the_lease_release(self):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(batch, "load_config", return_value=queue_config()), \
+                patch.object(batch, "digest", return_value="x"), \
+                patch.object(batch.Transport, "az", return_value="true"), \
+                patch.object(batch, "tick", return_value={"event": "boinc_batch_tick"}), \
+                tempfile.TemporaryDirectory() as d:
+            (Path(d) / "state.json").write_text(json.dumps({"config_sha256": "x"}))
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(batch.main(["--config", "c.json", "--state-dir", d, "--apply"]), 0)
+        timings = json.loads(out.getvalue())["timings"]
+        self.assertEqual(set(timings["phases"]), {"lock", "unlock"})
+        phases = [json.loads(line)["phase"] for line in err.getvalue().splitlines()]
+        self.assertEqual(phases, ["lock", "unlock"])
+
     def test_main_prints_phases_and_a_failed_tick_says_how_far_it_got(self):
         class Failing:
             def __init__(self, timings):
