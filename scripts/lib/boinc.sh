@@ -8,6 +8,12 @@
 
 BOINC_DIR=contrib-compute/infra/boinc
 BOINC_SETTINGS="$BOINC_DIR/env/$ENV_NAME.json"
+# The tests (scripts/test_boinc_provision.py) run against fixture settings with stubbed
+# Azure calls: USNM_BOINC_SETTINGS_FILE, honoured only with USNM_BOINC_TEST=1.
+if [ -n "${USNM_BOINC_SETTINGS_FILE:-}" ]; then
+  [ "${USNM_BOINC_TEST:-}" = 1 ] || { echo "error: USNM_BOINC_SETTINGS_FILE is for the tests" >&2; exit 1; }
+  BOINC_SETTINGS=$USNM_BOINC_SETTINGS_FILE
+fi
 BOINC_RG="usnm-boinc-rg-$ENV_NAME"
 BOINC_STACK="usnm-boinc-$ENV_NAME"
 # Never touched by these scripts (other production resources).
@@ -31,6 +37,8 @@ case "$ENV_NAME" in prod | dev) ;; *) die "--env must be prod or dev (the BOINC 
 # infra/env/<env>.json, unless --allow-dirty (dev only).
 boinc_clean_check() {
   local out
+  # Fixture settings in the tests live outside the repository.
+  [ -z "${USNM_BOINC_SETTINGS_FILE:-}" ] || return 0
   out=$(git status --porcelain -- "$BOINC_SETTINGS" "$BOINC_DIR/env/schema.json" 2>&1) ||
     die "can't check $BOINC_SETTINGS with git: $out"
   [ -z "$out" ] && return 0

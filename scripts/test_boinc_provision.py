@@ -31,6 +31,7 @@ case "$*" in
   "stack-whatif group create"*"--help"*) ;;
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
   "stack group create"*) [ -z "${STUB_STACK_FAILURE:-}" ] || exit 9 ;;
+  "containerapp job list"*) printf '%s\n' ${STUB_JOB_LIST:-} ;;
   "containerapp job execution list"*)
     if [[ "$*" == *"--name quality "* ]] || [[ "$*" == *"--name usnm-boinc-quality-caj-prod "* ]]; then
       [ "${STUB_QUALITY_ACTIVE:-0}" != 1 ] || echo quality-existing-execution
@@ -99,13 +100,18 @@ class Provision(unittest.TestCase):
             path = directory / name
             path.write_text(content)
             path.chmod(0o755)
+        # Prod's settings with the server in Azure: these tests cover the Azure lifecycle
+        # (the committed prod.json has "server": "onprem", #942; OnPremServer covers that).
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        settings.pop("server", None)
+        self.settings = directory / "prod.json"
+        self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
         self.env = {
             **os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
             "STUB_LOG": str(self.log), "STUB_SUB": SUB,
-            # The storage name /project's jobs mount follows prod.json's projectShare stage.
-            "STUB_PROJECT_STORAGE": "project-v2" if json.loads(
-                (ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text()
-            ).get("projectShare", "standard").startswith("provisioned") else "project",
+            "USNM_BOINC_SETTINGS_FILE": str(self.settings), "USNM_BOINC_TEST": "1",
+            # The storage name /project's jobs mount follows the settings' projectShare stage.
+            "STUB_PROJECT_STORAGE": "project-v2" if settings.get("projectShare", "standard").startswith("provisioned") else "project",
             "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
             "BOINC_START_RECONCILE_SECS": "0", "BOINC_START_RECONCILE_POLL": "0",
             "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
@@ -342,6 +348,60 @@ python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; ech
             result = self.run_script(STUB_HEALTH=health)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("deployment ready", result.stdout)
+
+
+class OnPremServer(unittest.TestCase):
+    """"server": "onprem" (#942): the stack keeps only what the on-prem server uses.
+    Borrows Provision's fixture without inheriting its Azure lifecycle tests."""
+
+    run_script = Provision.run_script
+    calls = Provision.calls
+
+    def setUp(self):
+        Provision.setUp(self)
+        settings = json.loads(self.settings.read_text())
+        settings["server"] = "onprem"
+        self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+
+    def deploys(self):
+        return [c for c in self.calls() if c.startswith("stack group create")]
+
+    def test_deploys_without_lifecycle_jobs_and_checks_the_master_url(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.deploys()), 1)
+        self.assertFalse(any(c.startswith("containerapp job start") for c in self.calls()))
+        self.assertIn("reduced to the on-prem set", result.stdout)
+
+    def test_passes_server_on_prem_to_the_template(self):
+        # The parameters file is deleted on exit; the stack call names it, and its content
+        # comes from write_params, which reads the settings' server.
+        script = (ROOT / "scripts/provision-boinc.sh").read_text()
+        self.assertIn('serverOnPrem: {value: (($s | fromjson | .server // "azure") == "onprem")}', script)
+
+    def test_a_stopped_or_foreign_project_fails_the_check(self):
+        for health in (
+            '<project_config><master_url>https://elsewhere.example/</master_url>'
+            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
+            '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
+            '<web_stopped>0</web_stopped><sched_stopped>1</sched_stopped></project_config>',
+            'not xml',
+        ):
+            with self.subTest(health=health[:40]):
+                result = self.run_script(STUB_HEALTH=health)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_maintenance_accepts_a_closed_scheduler(self):
+        health = ('<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
+                  '<web_stopped>0</web_stopped><sched_stopped>1</sched_stopped></project_config>')
+        result = self.run_script(STUB_HEALTH=health, BOINC_MAINTENANCE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refuses_while_a_job_it_would_delete_is_running(self):
+        result = self.run_script(STUB_JOB_LIST="bridge gold", STUB_GOLD_ACTIVE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gold is still running", result.stderr)
+        self.assertEqual(self.deploys(), [])
 
 
 class ProjectInitialization(unittest.TestCase):

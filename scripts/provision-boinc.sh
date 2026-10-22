@@ -147,6 +147,16 @@ jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --ar
 }
 STAGE=$(domain_stage) || exit 1
 write_params "$STAGE"
+# The on-prem server mode deletes every BOINC job: refuse while any of them is running, as
+# a deleteResources deployment would stop it mid-step.
+if [ "$SERVER_MODE" = onprem ]; then
+  for job in $(baz containerapp job list --resource-group "$BOINC_RG" --query '[].name' -o tsv) ; do
+    running=$(baz containerapp job execution list --name "$job" --resource-group "$BOINC_RG" \
+      --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv) ||
+      die "could not list the executions of $job"
+    [ -z "$running" ] || die "$job is still running (${running//$'\n'/ }); the on-prem server mode deletes it: wait for it to finish"
+  done
+fi
 
 # Leaving the copy stage deletes the share copy job (deleteResources) and points /project at
 # the provisioned share: only after a final pass, run with the server stopped, has succeeded.
@@ -338,12 +348,29 @@ done
 [ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || [ "$STAGE" -eq 2 ] ||
   die "custom domain $MASTER_HOST did not reach its bound-certificate state"
 
-if [ "$SERVER_MODE" = onprem ]; then
-  # Nothing in Azure to start: check that the on-prem server answers at the master URL.
-  curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors \
+# check_public_health: the master URL's project config must name it and be running (with
+# BOINC_MAINTENANCE=1 the scheduler may be closed on purpose). Both server modes use it.
+check_public_health() {
+  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
     --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$work/project.xml" ||
-    die "the on-prem BOINC server does not answer at ${PROJECT_URL}"
-  grep -q '<master_url>' "$work/project.xml" || die "${PROJECT_URL} answered without a project config"
+    die "the public BOINC project endpoint is not healthy"
+  # BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
+  # (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
+  python3 - "$work/project.xml" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+config = ET.parse(sys.argv[1]).getroot()
+sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
+if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
+        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
+    raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
+PY
+}
+
+if [ "$SERVER_MODE" = onprem ]; then
+  # Nothing in Azure to start: the on-prem server must answer at the master URL.
+  check_public_health
   echo "BOINC Azure resources reduced to the on-prem set; the server answers at ${PROJECT_URL}"
   exit 0
 fi
@@ -412,21 +439,7 @@ if [ -n "$PUBLISH_IMAGE" ]; then
   run_job "$(boinc_output publishJobName)"
 fi
 
-curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
-  --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$work/project.xml" ||
-  die "the public BOINC project endpoint is not healthy"
-# BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
-# (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
-python3 - "$work/project.xml" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
-import sys
-import xml.etree.ElementTree as ET
-
-config = ET.parse(sys.argv[1]).getroot()
-sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
-if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
-        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
-    raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
-PY
+check_public_health
 if [ "${BOINC_MAINTENANCE:-0}" = 1 ]; then
   echo "BOINC deployment up in maintenance: ${PROJECT_URL} (scheduler may be closed); after resuming, check again without BOINC_MAINTENANCE"
 else
