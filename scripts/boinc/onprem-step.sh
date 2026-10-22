@@ -30,6 +30,9 @@ die() { echo "error: $*" >&2; exit 1; }
 # (scripts/boinc/batch_scheduler.py). Run as root on the host, any step input is allowed, but
 # never a variable that steers the shell, the loader or an interpreter in the container.
 SSH_VARS=" BATCH_NONCE HANDOFF_SPOOL HANDOFF_SPOOLS HANDOFF_URL JOB_ID JOB_IDS "
+# The Surya steps of the controller's Surya plan (#968) take their own, and only these.
+SSH_SURYA_CROPS_VARS=" SURYA_CAMPAIGN QUALITY_CAMPAIGN SURYA_ENGINE_IMAGE SURYA_ENGINE_LLAMA SURYA_ENGINE_WEIGHTS SURYA_MAX SURYA_TIMEOUT_SECS "
+SSH_SURYA_SUBMIT_VARS=" SURYA_CAMPAIGN SURYA_MAX "
 CONTROL_VARS='^(BASH.*|ENV|SHELLOPTS|BASHOPTS|PS[0-9]|PROMPT_COMMAND|IFS|PATH|CDPATH|GLOBIGNORE|HOME|TMPDIR|LD_.*|PYTHON.*|PERL.*|RUBY.*|NODE_.*|LANG|LC_.*|TZ|HOSTALIASES|SSL_.*|CURL_.*|HTTPS?_PROXY|NO_PROXY|ALL_PROXY|IDENTITY_.*|IMDS_.*|AZURE_.*|MYSQL.*|RCLONE_.*)$'
 
 CONF=${USNM_BOINC_CONF:-/etc/usnm-boinc}
@@ -89,14 +92,19 @@ while IFS= read -r line; do
 done < "$CONF/bridge.env"
 seen=" ${BASE[*]} BRIDGE_STEP "
 REUSE=1
+case $STEP in
+  surya-stage-crops) SSH_ALLOWED=$SSH_SURYA_CROPS_VARS ;;
+  surya-submit) SSH_ALLOWED=$SSH_SURYA_SUBMIT_VARS ;;
+  *) SSH_ALLOWED=$SSH_VARS ;;
+esac
 for v in ${VARS[@]+"${VARS[@]}"}; do
   name=${v%%=*}
   [[ $v == *=* ]] && [[ $name =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || die "--var is NAME=VALUE with an upper-case NAME: $v"
   [[ ${v#*=} != *$'\n'* ]] || die "--var $name has a newline"
   [[ $seen != *" $name "* ]] || die "--var $name is set by the host or given twice"
   [[ ! $name =~ $CONTROL_VARS ]] || die "--var $name would steer the shell or an interpreter; not allowed"
-  [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || [[ $SSH_VARS == *" $name "* ]] ||
-    die "--var $name is not a controller bridge-step input; over ssh only$SSH_VARS"
+  [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || [[ $SSH_ALLOWED == *" $name "* ]] ||
+    die "--var $name is not a controller bridge-step input; over ssh $STEP takes only$SSH_ALLOWED"
   if [ "$TARGET" = publish ]; then
     [[ $v =~ ^APPVER_REUSE_PROJECT=[01]$ ]] || die "--target publish takes only --var APPVER_REUSE_PROJECT=0 or 1"
     REUSE=${v#*=}
