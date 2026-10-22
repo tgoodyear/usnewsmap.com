@@ -286,6 +286,11 @@ pub struct Watch {
     restart: Option<Arc<dyn Restart>>,
     max_lag: i64,
     stall: Duration,
+    /// After a restart, how long the new writer gets to show progress: it
+    /// starts, its consumers join the group (a member that left uncleanly
+    /// holds it for up to the session timeout), and a pipeline publishes a
+    /// split.
+    restart_grace: Duration,
     poll: Duration,
     last_check: Option<Instant>,
     /// The index's position summed over the partitions, when it last moved.
@@ -327,10 +332,13 @@ impl Watch {
             restart,
             max_lag,
             Duration::from_secs(stall),
+            Duration::from_millis(u64::from(CONSUMER_SESSION_MS)) + Duration::from_secs(120),
             Duration::from_secs(10),
         ))
     }
 
+    // The settings `new` reads from the environment, given; for the tests.
+    #[allow(clippy::too_many_arguments)]
     fn with(
         http: reqwest::Client,
         base: &str,
@@ -338,6 +346,7 @@ impl Watch {
         restart: Option<Arc<dyn Restart>>,
         max_lag: i64,
         stall: Duration,
+        restart_grace: Duration,
         poll: Duration,
     ) -> Self {
         Self {
@@ -346,6 +355,7 @@ impl Watch {
             restart,
             max_lag,
             stall,
+            restart_grace,
             poll,
             last_check: None,
             indexed: -1,
@@ -402,7 +412,12 @@ impl Watch {
                 self.moved = Instant::now();
                 self.restarted = false;
             }
-            if lag > 0 && self.moved.elapsed() >= self.stall {
+            let allowed = if self.restarted {
+                self.stall.max(self.restart_grace)
+            } else {
+                self.stall
+            };
+            if lag > 0 && self.moved.elapsed() >= allowed {
                 let secs = self.moved.elapsed().as_secs();
                 match &self.restart {
                     Some(r) if !self.restarted && self.restarts < MAX_RESTARTS => {
@@ -721,6 +736,7 @@ mod tests {
             Some(restart as Arc<dyn Restart>),
             max_lag,
             Duration::from_millis(150),
+            Duration::from_millis(300),
             Duration::from_millis(10),
         )
     }
