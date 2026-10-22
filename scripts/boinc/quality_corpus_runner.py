@@ -1853,7 +1853,11 @@ def load_batch_records(
                     if did not in keep_blobs or bpath.endswith(".jpg"):
                         keep_blobs[did] = bpath
     except Exception:
-        pass
+        # The archived passes stage nothing without the listing. The LoC pass would take
+        # every page as unarchived, and one with no bag entry would be excluded for good
+        # though its archive was never checked: leave the batch for the next wave (#906).
+        if not archived_only:
+            return []
 
     # A batch whose archived pages are all bundled has nothing to stage, but its metadata is
     # still read once more if a file from before #906 may hold only some of its pages.

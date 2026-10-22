@@ -289,6 +289,32 @@ class BatchMetadata(unittest.TestCase):
             self.assertEqual(self.load(already=set(self.docs)), [])
             write.assert_not_called()
 
+    def test_a_failed_archive_listing_leaves_the_loc_pass_batch_for_later(self):
+        listings = {"n": 0}
+
+        def list_blobs(*args, delimiter=None):
+            if args[-1] == "keep/b/":
+                listings["n"] += 1
+                if listings["n"] == 1:
+                    raise OSError("listing timed out")
+                return list(self.keep)
+            return []
+
+        def download_blob(url, dst, retries=4):
+            Path(dst).write_bytes(b"pq")
+            return True
+
+        def load():
+            with mock.patch.object(self.r, "list_blobs", list_blobs), \
+                    mock.patch.object(self.r, "download_blob", download_blob):
+                return self.r.load_batch_records(
+                    self.con, "b", 1, 1, str(self.work), set(), pass_mode="loc_fallback")
+
+        self.assertEqual(load(), [])  # not every page as unarchived, so none reaches the LoC lookup
+        recs = load()
+        self.assertEqual([x["doc_id"] for x in recs], self.docs)
+        self.assertTrue(all(x["blob_name"] for x in recs))
+
     def test_complete_metadata_is_not_rewritten(self):
         self.load(already=set())
         self.con.copied_to.clear()
