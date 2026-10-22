@@ -495,6 +495,15 @@ elif [ -f "$work/wrapper" ]; then
   appver_wrapper=/opt/usnm-appver-build/wrapper-candidate/docker_wrapper
   appver_wrapper_pin=/opt/usnm-appver-build/wrapper-candidate/wrapper.pin
 fi
+if [ "$SERVER_MODE" = onprem ] && [ "$KIND" = container ] && [ ! -f "$work/wrapper" ]; then
+  # The on-prem build runs on the host's SERVER_IMAGE, which needn't carry the same built-in
+  # wrapper as images.server, the image the wrapper was staged and signed from. Carry that
+  # exact wrapper in the context instead.
+  ssh_host "podman run --rm --network=none --entrypoint cat $SERVER_IMAGE /usr/local/lib/usnm-boinc/docker_wrapper" \
+    > "$ctx/wrapper-candidate/docker_wrapper" && [ -s "$ctx/wrapper-candidate/docker_wrapper" ] ||
+    die "can't read the signed wrapper from $SERVER_IMAGE on the signing host"
+  appver_wrapper=/opt/usnm-appver-build/wrapper-candidate/docker_wrapper
+fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 if [ "$SERVER_MODE" = onprem ]; then
   # The same context and build arguments as the ACR build, on the image the server runs, so the
