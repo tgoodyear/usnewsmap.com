@@ -150,7 +150,10 @@ write_params "$STAGE"
 # The on-prem server mode deletes every BOINC job: refuse while any of them is running, as
 # a deleteResources deployment would stop it mid-step.
 if [ "$SERVER_MODE" = onprem ]; then
-  for job in $(baz containerapp job list --resource-group "$BOINC_RG" --query '[].name' -o tsv) ; do
+  # A failed listing must stop here: in a for word list its failure would pass unnoticed.
+  jobs=$(baz containerapp job list --resource-group "$BOINC_RG" --query '[].name' -o tsv) ||
+    die "could not list the jobs in $BOINC_RG"
+  for job in $jobs; do
     running=$(baz containerapp job execution list --name "$job" --resource-group "$BOINC_RG" \
       --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv) ||
       die "could not list the executions of $job"

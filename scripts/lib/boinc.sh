@@ -67,7 +67,7 @@ boinc_load_settings() {
           or (.qualityWave.sha256 | test("^[0-9a-f]{64}$") | not))
         then "qualityWave must be {script: an https blob URL of a .py file, sha256: 64 hex}" else empty end),
       (if has("requireSecureTransport") and (.requireSecureTransport | type) != "boolean" then "requireSecureTransport must be true or false" else empty end),
-      (if has("server") and ([.server] | inside(["azure", "onprem"]) | not) then "server must be azure or onprem" else empty end),
+      (if has("server") and (.server != "azure" and .server != "onprem") then "server must be azure or onprem" else empty end),
       (if has("projectShare") and ([.projectShare] | inside(["standard", "copy", "provisioned", "provisioned-final"]) | not) then "projectShare must be standard, copy, provisioned or provisioned-final" else empty end),
       (if has("keyVaultAllowedIps") and ((.keyVaultAllowedIps | type) != "array" or (.keyVaultAllowedIps | length) > 4 or any(.keyVaultAllowedIps[]; type != "string" or (test("^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$") | not))) then "keyVaultAllowedIps must be up to 4 public IPv4 addresses" else empty end),
       (if has("onPremGroupId") and ((.onPremGroupId | type) != "string" or (.onPremGroupId | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$") | not)) then "onPremGroupId must be an object id" else empty end),

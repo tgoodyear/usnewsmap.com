@@ -31,7 +31,7 @@ case "$*" in
   "stack-whatif group create"*"--help"*) ;;
   "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
   "stack group create"*) [ -z "${STUB_STACK_FAILURE:-}" ] || exit 9 ;;
-  "containerapp job list"*) printf '%s\n' ${STUB_JOB_LIST:-} ;;
+  "containerapp job list"*) [ -z "${STUB_JOB_LIST_FAIL:-}" ] || exit 1; printf '%s\n' ${STUB_JOB_LIST:-} ;;
   "containerapp job execution list"*)
     if [[ "$*" == *"--name quality "* ]] || [[ "$*" == *"--name usnm-boinc-quality-caj-prod "* ]]; then
       [ "${STUB_QUALITY_ACTIVE:-0}" != 1 ] || echo quality-existing-execution
@@ -364,6 +364,9 @@ class OnPremServer(unittest.TestCase):
         self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
 
     def deploys(self):
+        # No log at all: the run stopped before any Azure call.
+        if not self.log.exists():
+            return []
         return [c for c in self.calls() if c.startswith("stack group create")]
 
     def test_deploys_without_lifecycle_jobs_and_checks_the_master_url(self):
@@ -402,6 +405,23 @@ class OnPremServer(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("gold is still running", result.stderr)
         self.assertEqual(self.deploys(), [])
+
+    def test_refuses_when_the_jobs_cant_be_listed(self):
+        result = self.run_script(STUB_JOB_LIST_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not list the jobs", result.stderr)
+        self.assertEqual(self.deploys(), [])
+
+    def test_only_azure_or_onprem_is_a_server(self):
+        settings = json.loads(self.settings.read_text())
+        for value in ("onpre", "", "azur", ["onprem"]):
+            with self.subTest(value=value):
+                settings["server"] = value
+                self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+                result = self.run_script()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("server must be azure or onprem", result.stderr)
+                self.assertEqual(self.deploys(), [])
 
 
 class ProjectInitialization(unittest.TestCase):
