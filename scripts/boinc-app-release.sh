@@ -28,6 +28,11 @@
 #    provision-boinc.sh --publish-image deploys the publish job with it, and the job copies the
 #    version onto the share and verifies registration. The digest is then written to
 #    images.appver in the settings, to commit: the stack keeps the job on it from then on.
+#    With "server": "onprem" in the settings (docs/boinc-onprem.md, #961), the on-prem BOINC
+#    container builds the same image with podman, on the server image it runs, and its step
+#    runner (scripts/boinc/onprem-step.sh --target publish) publishes it. Nothing is pushed to
+#    ACR and images.appver isn't written. --onprem-host names the Proxmox host and --onprem-ct
+#    the container, reached as `ssh root@HOST pct exec CT`.
 #
 # The signing host is reached only over SSH (as root, for zfs and podman), and is named only by
 # --signing-host. The server image gets to it with a short-lived ACR pull token. Nothing is
@@ -40,12 +45,12 @@
 # without deploying or starting the publish job.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--onprem-host HOST --onprem-ct ID] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--what-if]" >&2
   exit 2
 }
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false PREPARE_ONLY=false
 PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA=""
-ACCEPTANCE_CONFIG="" ACCEPTANCE_EVIDENCE="" COORDINATION_CLAIM=""
+ACCEPTANCE_CONFIG="" ACCEPTANCE_EVIDENCE="" COORDINATION_CLAIM="" ONPREM_HOST="" ONPREM_CT=""
 EXTRA_FILES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -68,6 +73,8 @@ while [ $# -gt 0 ]; do
     --acceptance-config) [ $# -ge 2 ] || usage; ACCEPTANCE_CONFIG=$2; shift 2 ;;
     --acceptance-evidence) [ $# -ge 2 ] || usage; ACCEPTANCE_EVIDENCE=$2; shift 2 ;;
     --coordination-claim) [ $# -ge 2 ] || usage; COORDINATION_CLAIM=$2; shift 2 ;;
+    --onprem-host) [ $# -ge 2 ] || usage; ONPREM_HOST=$2; shift 2 ;;
+    --onprem-ct) [ $# -ge 2 ] || usage; ONPREM_CT=$2; shift 2 ;;
     --prepare-only) PREPARE_ONLY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
@@ -121,6 +128,8 @@ esac
   die "--worker-image must be ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>"
 [[ $VERSION =~ ^[1-9][0-9]*\.[0-9]+$ ]] || die "--version must look like 1.0"
 [[ $SIGNING_HOST =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || die "--signing-host must be a host name"
+[ -z "$ONPREM_HOST" ] || [[ $ONPREM_HOST =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || die "--onprem-host must be a host name"
+[ -z "$ONPREM_CT" ] || [[ $ONPREM_CT =~ ^[1-9][0-9]{2,8}$ ]] || die "--onprem-ct must be a container id"
 [[ $KEY_DIR =~ ^/[A-Za-z0-9/._-]+$ ]] || die "--signing-key-dir must be an absolute path"
 [[ $KEY_DATASET =~ ^[A-Za-z0-9/._-]+$ ]] || die "--signing-dataset must be a ZFS dataset name"
 cd "$(dirname "$0")/.."
@@ -206,6 +215,12 @@ boinc_az_check
 [ -n "$SERVER_IMAGE" ] || die "no server image in $BOINC_SETTINGS: scripts/build-boinc-images.sh --env $ENV_NAME first"
 PUBLIC_KEY=$(jq -r .codeSignPublicKey "$BOINC_SETTINGS")
 [ -n "$PUBLIC_KEY" ] || die "no codeSignPublicKey in $BOINC_SETTINGS"
+SERVER_MODE=$(jq -r '.server // "azure"' "$BOINC_SETTINGS")
+case "$SERVER_MODE" in
+  azure) [ -z "$ONPREM_HOST$ONPREM_CT" ] || die "--onprem-host and --onprem-ct are for \"server\": \"onprem\" in $BOINC_SETTINGS" ;;
+  onprem) [ -n "$ONPREM_HOST" ] && [ -n "$ONPREM_CT" ] || die "$BOINC_SETTINGS has \"server\": \"onprem\": give --onprem-host and --onprem-ct (docs/boinc-onprem.md)" ;;
+  *) die "server must be azure or onprem in $BOINC_SETTINGS" ;;
+esac
 [ -z "$(git status --porcelain -- "$BOINC_SETTINGS")" ] || die "$BOINC_SETTINGS has uncommitted changes: commit them first (this run deploys the stack and writes images.appver)"
 # A real run deploys this checkout's provision-boinc.sh and Bicep, not only HEAD: refuse a tree
 # that differs from HEAD. --what-if only reads, so it warns.
@@ -228,6 +243,14 @@ else
   VERSION_SUBDIR="apps/$APP/$VERSION/${PLATFORM}"
 fi
 ssh_host() { ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SIGNING_HOST" "$@"; }
+# onprem_ct CMD: CMD (one string, run by bash) in the on-prem BOINC container, as root, with
+# stdin passed through. XDG_RUNTIME_DIR is dropped: pct exec carries the caller's, and podman
+# and systemctl then look for a session that isn't there. PATH is set: pct exec's leaves out
+# /usr/local/sbin, where usnm-boinc-step is installed.
+onprem_ct() {
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$ONPREM_HOST" \
+    "pct exec $ONPREM_CT -- env -u XDG_RUNTIME_DIR PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin bash -c $(printf '%q' "$1")"
+}
 
 # --- 1. Worker image -------------------------------------------------------------------------
 
@@ -316,6 +339,12 @@ fi
 ssh_host "test -r $KEY_DIR/code_sign_private" || die "no readable $KEY_DIR/code_sign_private on the signing host"
 ssh_host "command -v podman > /dev/null" || die "podman is not installed on the signing host; stage and sign run in the server image there"
 echo "signing host: $KEY_DATASET unlocked, key present, podman available"
+if [ "$SERVER_MODE" = onprem ]; then
+  # shellcheck disable=SC2016 # expanded in the container
+  onprem_ct '. /etc/usnm-boinc/server.env && [ -n "$SERVER_IMAGE" ] && podman image exists "$SERVER_IMAGE" && command -v usnm-boinc-step > /dev/null' ||
+    die "can't reach container $ONPREM_CT on $ONPREM_HOST, or it has no SERVER_IMAGE or usnm-boinc-step"
+  echo "on-prem server: container $ONPREM_CT on $ONPREM_HOST has its server image and step runner"
+fi
 
 if $WHAT_IF; then
   cat << PLAN
@@ -323,8 +352,17 @@ would, from commit $sha:
 2. stage $APP $VERSION ($KIND, $PLATFORM, ${PLAN_CLASS:-default}) on the signing host: pull $SERVER_IMAGE (short-lived ACR token), run
    scripts/boinc/install.py in it with --network=none
 3. sign each file with sign_executable (--network=none, key $KEY_DIR read-only); bring back the .sig files
-4. build $registry.azurecr.io/$APPVER_REPO:$APPVER_TAG in ACR Tasks (every signature verified)
 PLAN
+  if [ "$SERVER_MODE" = onprem ]; then
+    echo "4. build localhost/$APPVER_REPO:$APPVER_TAG with podman in container $ONPREM_CT on $ONPREM_HOST, on its SERVER_IMAGE (every signature verified)"
+    if $PREPARE_ONLY; then
+      echo "   leave it there for usnm-boinc-step --target publish; do not publish"
+    else
+      echo "   usnm-boinc-step --env $ENV_NAME --target publish --step publish --image <it>; images.appver isn't written"
+    fi
+    exit 0
+  fi
+  echo "4. build $registry.azurecr.io/$APPVER_REPO:$APPVER_TAG in ACR Tasks (every signature verified)"
   if $PREPARE_ONLY; then
     echo "   write images.appver for a release PR; do not deploy or start the publish job"
   else
@@ -429,7 +467,11 @@ echo "   signatures: $(cd "$work/sigs" && echo *)"
 
 # --- 4. Publish ------------------------------------------------------------------------------
 
-echo "4. building $APPVER_REPO:$APPVER_TAG in $registry"
+if [ "$SERVER_MODE" = onprem ]; then
+  echo "4. building localhost/$APPVER_REPO:$APPVER_TAG in container $ONPREM_CT on $ONPREM_HOST"
+else
+  echo "4. building $APPVER_REPO:$APPVER_TAG in $registry"
+fi
 ctx="$work/ctx"
 mkdir -p "$ctx/src" "$ctx/extra"
 git archive --format=tar HEAD scripts/boinc/install.py scripts/boinc/check-mac-wrapper.py scripts/boinc/check-linux-wrapper.py scripts/boinc/check-windows-wrapper.py contrib-compute/images/base/Containerfile ocr/boinc contrib-compute/boinc/project.xml | tar -x -C "$ctx/src"
@@ -454,7 +496,59 @@ elif [ -f "$work/wrapper" ]; then
   appver_wrapper=/opt/usnm-appver-build/wrapper-candidate/docker_wrapper
   appver_wrapper_pin=/opt/usnm-appver-build/wrapper-candidate/wrapper.pin
 fi
+if [ "$SERVER_MODE" = onprem ] && [ "$KIND" = container ] && [ ! -f "$work/wrapper" ]; then
+  # The on-prem build runs on the host's SERVER_IMAGE, which needn't carry the same built-in
+  # wrapper as images.server, the image the wrapper was staged and signed from. Carry that
+  # exact wrapper in the context instead.
+  ssh_host "podman run --rm --network=none --entrypoint cat $SERVER_IMAGE /usr/local/lib/usnm-boinc/docker_wrapper" \
+    > "$ctx/wrapper-candidate/docker_wrapper" && [ -s "$ctx/wrapper-candidate/docker_wrapper" ] ||
+    die "can't read the signed wrapper from $SERVER_IMAGE on the signing host"
+  appver_wrapper=/opt/usnm-appver-build/wrapper-candidate/docker_wrapper
+fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
+if [ "$SERVER_MODE" = onprem ]; then
+  # The same context and build arguments as the ACR build, on the image the server runs, so the
+  # publish step has the host's own tools and patches. The build needs no network (it stages
+  # from the context, as on the signing host), and in the container podman has none to give it. The context goes in a fresh directory
+  # that's removed afterwards; the image stays for the publish step.
+  appver_tag="localhost/$APPVER_REPO:$APPVER_TAG"
+  build_args=(--build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION"
+    --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM"
+    --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin"
+    --build-arg "BINARY_PATH=$appver_binary")
+  # shellcheck disable=SC2016 # expanded in the container
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$ctx" -c . | onprem_ct 'set -euo pipefail
+    . /etc/usnm-boinc/server.env
+    d=/root/.usnm-appver-$(tr -d - < /proc/sys/kernel/random/uuid); mkdir -m 700 "$d"; trap '\''rm -rf "$d"'\'' EXIT
+    tar -x -C "$d"
+    podman build --pull=never --network=none --platform linux/amd64 --build-arg "SERVER_IMAGE=$SERVER_IMAGE" '"$(printf '%q ' "${build_args[@]}")"' \
+      --tag '"$(printf '%q' "$appver_tag")"' --iidfile "$d/iid" --file "$d/Containerfile" "$d" > /dev/null
+    cat "$d/iid"' > "$work/appver.iid" ||
+    die "the app version image build failed on the on-prem server (a signature that doesn't verify fails it)"
+  # Publish this build's image ID, not the tag: another build of the same version (a second
+  # candidate, or a release from another machine) can move the tag before the publish runs.
+  appver_image=$(tr -d '\n' < "$work/appver.iid")
+  [[ $appver_image =~ ^sha256:[0-9a-f]{64}$ ]] || die "the on-prem build gave no image ID"
+  echo "   $appver_image ($appver_tag)"
+  if $PREPARE_ONLY; then
+    echo "prepared signed $APP $VERSION ($PLATFORM, $PLAN_CLASS) as $appver_image in container $ONPREM_CT; not published or registered"
+    echo "publish it there with: usnm-boinc-step --env $ENV_NAME --target publish --step publish --image $appver_image --wait-mins 30"
+    exit 0
+  fi
+  echo "   publishing and verifying the signed app version"
+  onprem_ct "usnm-boinc-step --env $ENV_NAME --target publish --step publish --image $(printf '%q' "$appver_image") --wait-mins 30" ||
+    die "the on-prem publish step failed (its log: journalctl in container $ONPREM_CT, usnm-boinc-step-*-publish)"
+  echo "published and verified $APP $VERSION ($PLATFORM, $PLAN_CLASS)"
+  # The Azure path gets this from provision-boinc.sh: the public endpoint must still answer.
+  boinc_check_public_health "$work/project.xml"
+  echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"
+  if [ -n "${ACCEPTANCE_CONFIG:-}" ]; then
+    python3 scripts/boinc/acceptance.py "${acceptance_args[@]}" --coordination-claim "$COORDINATION_CLAIM" ||
+      die "published, but client acceptance failed: NOT release-ready (see private evidence)"
+    echo "release-ready: expected client execution and validated canonical output verified"
+  fi
+  exit 0
+fi
 acr_build_verified baz_build "$registry" "$APPVER_REPO:$APPVER_TAG" 1800 --platform linux/amd64 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
   --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \

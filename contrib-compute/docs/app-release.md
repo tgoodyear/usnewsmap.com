@@ -389,6 +389,16 @@ flowchart LR
    and checks the public project configuration. It refuses to overwrite partial project data or
    an existing database, and never prints a manual bootstrap checklist.
 
+   **On-prem server** (`"server": "onprem"` in the settings, `docs/boinc-onprem.md`, #961).
+   Give `--onprem-host` (the Proxmox host) and `--onprem-ct` (the BOINC container). Stages 1
+   to 3 are the same. Step 4 sends the same build context to the container and builds
+   `localhost/usnm-boinc-appver:<tag>` there with podman, `--network=none`, on the
+   `SERVER_IMAGE` the server runs (`/etc/usnm-boinc/server.env`), with the same
+   `check_appver.py` checks. `usnm-boinc-step --target publish` then runs the image's
+   `publish-appver.sh` with the server's settings and mounts, as the Azure job did. Nothing goes
+   to ACR, and `images.appver` isn't written: the on-prem host has no publish job to keep on
+   it. `--prepare-only` builds the image and stops, printing the publish command to run there.
+
 Deployment previews use GA `az stack-whatif group create`, with the same unmanage and deny
 settings as deployment, three-hour retention and Azure's baseline-based noise reduction.
 Existing managed-identity principal IDs are resolved before template evaluation so role

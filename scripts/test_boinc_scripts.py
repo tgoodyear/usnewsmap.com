@@ -973,6 +973,64 @@ class AppReleaseArgs(unittest.TestCase):
                                  "--binary", str(binary), "--plan-class", "amd_vulkan_8b")
             self.assertIn("--app and --plan-class for --kind native", r.stderr)
 
+    def test_onprem_host_and_ct_are_validated(self):
+        # #961: checked with the other arguments, before the settings are read.
+        r = subprocess.run(
+            [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0", "--signing-host", "fixture.invalid",
+             "--app", "usnm_ocr", "--onprem-host", "bad host!", "--onprem-ct", "230"],
+            cwd=ROOT, capture_output=True, text=True)
+        self.assertIn("--onprem-host must be a host name", r.stderr)
+        for ct in ("23", "abc", "230; id"):
+            r = subprocess.run(
+                [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0", "--signing-host", "fixture.invalid",
+                 "--app", "usnm_ocr", "--onprem-host", "pve.example", "--onprem-ct", ct],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertIn("--onprem-ct must be a container id", r.stderr, ct)
+
+    def run_with_settings(self, server, *extra):
+        """The release script on a copy of prod's settings with "server" set, through the loader
+        (scripts/lib/boinc.sh) and a stub az that sees the subscription and the group."""
+        settings = json.loads(Path(ROOT, "contrib-compute/infra/boinc/env/prod.json").read_text())
+        settings["server"] = server
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "prod.json")
+            path.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+            bin_dir = Path(tmp, "bin"); bin_dir.mkdir()
+            az = bin_dir / "az"
+            az.write_text('#!/usr/bin/env bash\ncase "$*" in "account show"*) echo "$STUB_SUB" ;; "group show"*) ;; '
+                          '*) echo "stub az: unexpected $*" >&2; exit 9 ;; esac\n')
+            az.chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", USNM_BOINC_TEST="1",
+                       USNM_BOINC_SETTINGS_FILE=str(path), STUB_SUB=settings["subscriptionId"])
+            return subprocess.run(
+                [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0", "--signing-host", "fixture.invalid",
+                 "--app", "usnm_ocr", *extra], cwd=ROOT, env=env, capture_output=True, text=True)
+
+    def test_onprem_settings_load_and_need_the_onprem_host(self):
+        # #974 review: "server": "onprem" goes through the shared loader, then asks for the host.
+        r = self.run_with_settings("onprem", "--what-if")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("unknown keys", r.stderr)
+        self.assertIn('has "server": "onprem": give --onprem-host and --onprem-ct', r.stderr)
+        r = self.run_with_settings("azure", "--onprem-host", "pve.example", "--onprem-ct", "230", "--what-if")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('--onprem-host and --onprem-ct are for "server": "onprem"', r.stderr)
+
+    def test_onprem_publish_builds_on_the_host_and_skips_acr(self):
+        text = Path(APP_RELEASE_SCRIPT).read_text()
+        onprem = text.split('if [ "$SERVER_MODE" = onprem ]; then\n  # The same context')[1].split("\nacr_build_verified")[0]
+        self.assertIn('--build-arg "SERVER_IMAGE=$SERVER_IMAGE"', onprem)
+        self.assertIn("--pull=never --network=none", onprem)
+        self.assertIn('--iidfile "$d/iid"', onprem)
+        self.assertIn("--image $(printf '%q' \"$appver_image\")", onprem)
+        self.assertIn("appver_image=$(tr -d", onprem)
+        self.assertIn("usnm-boinc-step --env $ENV_NAME --target publish --step publish", onprem)
+        self.assertNotIn("images.appver =", onprem)
+        self.assertNotIn("scripts/provision-boinc.sh --env", onprem)
+        self.assertIn('boinc_check_public_health "$work/project.xml"', onprem)
+        # It ends before the ACR build, the Azure publish and the images.appver write.
+        self.assertIn("  exit 0\nfi", onprem + "\nfi")
+
     def test_rejects_qwen_without_worker_image_or_wrong_plan_class(self):
         r = self.run_release("--app", "usnm_qwen", "--plan-class", "docker_nvidia_cuda_8b")
         self.assertEqual(r.returncode, 1)
@@ -1009,7 +1067,8 @@ class AppReleasePublication(unittest.TestCase):
 
     def test_prepare_and_publish_paths_update_only_the_appver_pin(self):
         text = Path(APP_RELEASE_SCRIPT).read_text()
-        _, marker, tail = text.partition('echo "   $appver_image"\n')
+        # The Azure path's: the on-prem branch (#961) has its own, earlier.
+        _, marker, tail = text.rpartition('echo "   $appver_image"\n')
         self.assertTrue(marker)
         old = {"images": {"appver": "old", "worker": "unchanged"}, "assessment": True}
         image = "registry.example.azurecr.io/usnm-boinc-appver@sha256:" + "a" * 64

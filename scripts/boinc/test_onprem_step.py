@@ -70,6 +70,48 @@ class OnpremStep(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn(message, done.stderr)
 
+    def test_publish_takes_a_local_image_id(self):
+        # boinc-app-release.sh passes the build's image ID, so a moved tag can't change what is published.
+        image_id = "sha256:" + "b" * 64
+        done = self.run_step("--env", "prod", "--target", "publish", "--step", "publish", "--image", image_id,
+                             "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(image_id, done.stdout)
+
+    def test_publish_runs_an_appver_image_with_reuse_on(self):
+        img = "localhost/usnm-boinc-appver:usnm_ocr-1.6"
+        done = self.run_step("--env", "prod", "--target", "publish", "--step", "publish",
+                             "--image", img, "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"would run {img}'s publish-appver.sh", done.stdout)
+        self.assertIn("APPVER_REUSE_PROJECT=1", done.stdout)
+        done = self.run_step("--env", "prod", "--target", "publish", "--step", "publish", "--image", img,
+                             "--var", "APPVER_REUSE_PROJECT=0", "--what-if")
+        self.assertIn("APPVER_REUSE_PROJECT=0", done.stdout)
+
+    def test_publish_refusals(self):
+        img = "localhost/usnm-boinc-appver:usnm_ocr-1.6"
+        cases = [
+            (("--env", "prod", "--target", "publish", "--step", "publish", "--what-if"), "needs --image"),
+            (("--env", "prod", "--target", "publish", "--step", "submit", "--image", img, "--what-if"),
+             "takes --step publish"),
+            (("--env", "prod", "--target", "publish", "--step", "publish", "--image", img,
+              "--var", "JOB_ID=x", "--what-if"), "takes only --var APPVER_REUSE_PROJECT"),
+            (("--env", "prod", "--target", "publish", "--step", "publish", "--image", "bad image;x",
+              "--what-if"), "needs --image"),
+            (("--env", "prod", "--target", "publish", "--step", "publish", "--image", "sha256:" + "a" * 63,
+              "--what-if"), "needs --image"),
+            (("--env", "prod", "--step", "submit", "--image", img, "--what-if"), "--image is for --target publish"),
+        ]
+        for args, message in cases:
+            with self.subTest(args=args):
+                done = self.run_step(*args)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(message, done.stderr)
+        done = self.run_step(ssh=f"--env prod --target publish --step publish --image {img} --what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("isn't allowed over ssh", done.stderr)
+
     def test_ssh_arguments_are_split_without_a_shell(self):
         # A value with shell syntax stays one literal argument; nothing is evaluated.
         done = self.run_step(ssh="--env prod --step submit --var 'JOB_ID=$(touch /tmp/usnm-pwned); x' --what-if")
