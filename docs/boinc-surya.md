@@ -144,6 +144,7 @@ Before the first step, three things must hold:
 1. The bridge image (`SERVER_IMAGE` in `/etc/usnm-boinc/server.env`) is built from `main` at `6fdf525` or later: `surya stage --sample`, `surya stage-crops` and `surya collect` came in [#970](https://github.com/tgoodyear/usnewsmap.com/pull/970) and [#973](https://github.com/tgoodyear/usnewsmap.com/pull/973), and `surya-submit` dropping the status page's cache in [#978](https://github.com/tgoodyear/usnewsmap.com/pull/978).
 2. `usnm_surya` 1.4 (`docker_mt`, app version 58) and 1.5 (`docker_nvidia_cuda`, app version 59) are the active versions, both from worker image `sha256:bccf7cba49878481d394f94f9ca313787d8f28886e369009ae4cfe94859fb494` (`main` at `614756c`, with the device fix of [#965](https://github.com/tgoodyear/usnewsmap.com/pull/965)). 1.2 and 1.3 are deprecated.
 3. A quality campaign `<Q>` is staged on the share with `quality/<Q>/sample.jsonl` and its units (the quality-wave staging of [#962](https://github.com/tgoodyear/usnewsmap.com/issues/962)); the Surya pages and crops are cut from those units, so nothing is staged for Surya before it.
+4. For the crop comparison against the vision-language reading, a Qwen campaign `<QW>` staged from the same `<Q>` units (`qwen-stage` with `QUALITY_CAMPAIGN=<Q>`), with results back. Without it `quality-collect` reads an empty Qwen root and the crop table has no `vlm` reader.
 
 The engine pins are the same for every CUDA Surya worker image published since 14 October, so units staged with them run on 1.4 and 1.5 alike (the worker checks the llama image, the Surya version and the weights against its own environment, not the image digest):
 
@@ -170,15 +171,27 @@ onprem-step.sh --env prod --target bridge --step surya-stage-crops --var SURYA_C
   --var SURYA_MAX=50 --var SURYA_TIMEOUT_SECS=600 --wait-mins 30
 # 3. Submit. Either once by hand, or leave it to the controller (below).
 onprem-step.sh --env prod --target bridge --step surya-submit --var SURYA_CAMPAIGN=wave1 --var SURYA_MAX=200 --wait-mins 30
-# 4. As results come back: read them, then join them into the quality campaign.
+# 4. As results come back: read them, then join the crop units into the quality campaign's
+#    crops.parquet beside the Qwen reading (QWEN_CAMPAIGN and QWEN_SPOOL, or there is no vlm reader).
 onprem-step.sh --env prod --target bridge --step surya-collect --var SURYA_CAMPAIGN=wave1 \
   --var SURYA_SPOOL=/project/usnmocr/results/0 --wait-mins 30
 onprem-step.sh --env prod --target bridge --step quality-collect --var QUALITY_CAMPAIGN=<Q> \
-  --var QUALITY_SPOOL=/project/usnmocr/results/0 --var SURYA_CAMPAIGN=wave1 \
+  --var QUALITY_SPOOL=/project/usnmocr/results/0 --var QWEN_CAMPAIGN=<QW> \
+  --var QWEN_SPOOL=/project/usnmocr/results/0 --var SURYA_CAMPAIGN=wave1 \
   --var SURYA_SPOOL=/project/usnmocr/results/0 --wait-mins 30
+# 5. The page-level hat with ours-surya. quality-collect joins crops only, and quality-stage skips a
+#    unit that exists, so the page reader needs a fresh quality campaign over the same sample, staged
+#    after surya-collect has written wave1/texts: <Q>-surya reads <Q>'s sample.jsonl with the Surya
+#    texts joined into each unit's texts.json.
+onprem-step.sh --env prod --target bridge --step quality-stage --var QUALITY_CAMPAIGN=<Q>-surya \
+  --var QUALITY_SAMPLE=/share/quality/<Q>/sample.jsonl --var QUALITY_READERS=loc,as,ours-tesseract,ours-surya \
+  --var SURYA_CAMPAIGN=wave1 --var QUALITY_ENGINE_IMAGE=sha256:<quality worker digest> --var QUALITY_MAX=50 --wait-mins 30
+onprem-step.sh --env prod --target bridge --step quality-submit --var QUALITY_CAMPAIGN=<Q>-surya --wait-mins 30
+onprem-step.sh --env prod --target bridge --step quality-collect --var QUALITY_CAMPAIGN=<Q>-surya \
+  --var QUALITY_SPOOL=/project/usnmocr/results/0 --wait-mins 30
 ```
 
-`/share` stands for the bridge's `SHARE_DIR`; `SURYA_SAMPLE` must be a path under it. Page units take 40 minutes each on CPU, so `SURYA_MAX=50` on step 1 is a day of CPU work for the queue; crop units take seconds. Step 1 is optional for the crop comparison: without it the `ours-surya` page reader is simply absent and the crop-level hat still runs.
+`/share` stands for the bridge's `SHARE_DIR`; `SURYA_SAMPLE` and `QUALITY_SAMPLE` must be paths under it. Page units take 40 minutes each on CPU, so `SURYA_MAX=50` on step 1 is a day of CPU work for the queue; crop units take seconds. Steps 1 and 5 are optional for the crop comparison: without them the `ours-surya` page reader is simply absent and the crop-level hat (step 4) still runs. `<Q>-surya` holds the same pages as `<Q>` with one more reader, so the assessment database carries both campaigns and the rollup counts a page once per campaign.
 
 To keep the crop queue topped up instead of running step 3 by hand, give the controller this plan (`step_command` ends with `--`, as [boinc-onprem.md](boinc-onprem.md) explains):
 
@@ -207,7 +220,7 @@ To keep the crop queue topped up instead of running step 3 by hand, give the con
 
 The watermarks count results (two per unit): at or below 100 unsent the controller stages crops for 50 more pages and submits up to 150 units, never past 400 unsent. Run `batch_scheduler.py --config surya-wave1.json --state-dir <dir>` once without `--apply` to see the steps, then with `--apply` on the controller's schedule. The pins are held to the campaign: a new engine needs a new `campaign` name.
 
-After step 4, `scripts/build-quality-assessment-db.py` over the campaign's `pages.parquet` and `crops.parquet` writes `reader_language_summary`, one row per language and reader, which is the apples-to-apples table [#968](https://github.com/tgoodyear/usnewsmap.com/issues/968) asks for.
+After steps 4 and 5, `scripts/build-quality-assessment-db.py` over the campaign's `pages.parquet` and `crops.parquet` writes `reader_language_summary`, one row per language and reader, which is the apples-to-apples table [#968](https://github.com/tgoodyear/usnewsmap.com/issues/968) asks for.
 
 A crop unit takes seconds rather than the 40 minutes a tiled page takes on CPU, so every plan class can run it. `submit` gives it a hundredth of a page's fpops estimate and bound, an 8 GiB memory bound and a one-day delay bound, at the same quorum of two. `check` and `compare` treat it as any unit: `text-whole.txt` is the crop's text. A page unit's job is unchanged, and keeps the identity it had before crops existed.
 
