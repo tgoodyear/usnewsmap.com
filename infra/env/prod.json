@@ -5,7 +5,7 @@
   "USNM_API_IMAGE_TAG": "126c198fff9d97fb48cc8eafc0db0ab24446ad8c",
   "USNM_BOINC_CONTROLLER_ONPREM": true,
   "USNM_BOINC_GROUP": true,
-  "USNM_BOINC_HANDOFF_IMAGE": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:b4f2f00b2128b7eb32206f210e0673be7f9edc7017133e1684e493ed2922b877",
+  "USNM_BOINC_HANDOFF_IMAGE": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:9fa05b185a8ae729b8f029c0dcfddeb46795588acb2b2fc82d2b90fa166aac42",
   "USNM_BOINC_SERVER_ONPREM": true,
   "USNM_BROWSE_PAGES": true,
   "USNM_BUDGET_START": "2026-10-01",
