@@ -251,14 +251,17 @@ fn pack_bundles(
         .filter(|p| p.join(JOB_FILE).exists() && !p.join(TOO_LARGE).exists())
         .collect();
     candidates.sort();
-    let mut unbundled: Vec<(PathBuf, Job)> = Vec::new();
+    let mut unbundled: Vec<(String, PathBuf, Job)> = Vec::new();
     for p in candidates {
         let pj: Job = serde_json::from_slice(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?)
             .with_context(|| format!("reading {}/qwen.json", p.display()))?;
         if !bundled_docs.contains(&pj.doc_id) {
-            unbundled.push((p, pj));
+            unbundled.push((settings_key(&pj)?, p, pj));
         }
     }
+    // Pages left from a run with other settings (engine, deadlines, token
+    // allowance) are grouped apart: a bundle runs with one set of settings.
+    unbundled.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     let mut created = 0usize;
     let mut too_large = 0usize;
     let mut chunk_dirs: Vec<PathBuf> = Vec::new();
@@ -281,7 +284,7 @@ fn pack_bundles(
         jobs.clear();
         Ok(())
     };
-    for (u, pj) in unbundled {
+    for (_, u, pj) in unbundled {
         let alone = bundle_json_len(std::slice::from_ref(&pj))?;
         if alone > MAX_JOB_JSON {
             mark_too_large(&u, &pj.doc_id, "a one-page bundle's qwen.json", alone)?;
@@ -291,7 +294,8 @@ fn pack_bundles(
         let p_len = usize::try_from(pj.input.bytes).unwrap_or(usize::MAX);
         let mut fits = chunk_jobs.len() < bundle_size
             && scan_bytes.saturating_add(p_len) <= MAX_BUNDLE_SCAN
-            && crop_count + pj.crops.len() <= MAX_BUNDLE_CROPS;
+            && crop_count + pj.crops.len() <= MAX_BUNDLE_CROPS
+            && chunk_jobs.first().is_none_or(|f| same_settings(f, &pj));
         if fits && !chunk_jobs.is_empty() {
             chunk_jobs.push(pj.clone());
             fits = bundle_json_len(&chunk_jobs)? <= MAX_JOB_JSON
@@ -369,6 +373,29 @@ pub fn local_unit(
     job.validate()?;
     atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(job)
+}
+
+/// Whether `a` and `b` share the settings a bundle runs every page with
+/// (taken from its first page): the engine, deadlines and token allowance.
+fn same_settings(a: &Job, b: &Job) -> bool {
+    a.v == b.v
+        && a.engine == b.engine
+        && a.gpu_timeout_secs == b.gpu_timeout_secs
+        && a.cpu_timeout_secs == b.cpu_timeout_secs
+        && a.max_tokens_per_1000px2 == b.max_tokens_per_1000px2
+        && a.prompt_version == b.prompt_version
+}
+
+/// [`same_settings`] as a sort key.
+fn settings_key(j: &Job) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(&(
+        j.v,
+        &j.engine,
+        j.gpu_timeout_secs,
+        j.cpu_timeout_secs,
+        j.max_tokens_per_1000px2,
+        j.prompt_version,
+    ))?)
 }
 
 /// The bundle job for `pages` (staged single-page jobs, in bundle order),
@@ -501,6 +528,14 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
             "{}: page.jpg checksum mismatch",
             pj.doc_id
         );
+        if let Some(first) = jobs.first() {
+            ensure!(
+                same_settings(first, &pj),
+                "{}: staged with other engine, deadline or token settings than {}",
+                pj.doc_id,
+                first.doc_id
+            );
+        }
         page_blob.extend_from_slice(&p_bytes);
         jobs.push(pj);
     }
@@ -1011,6 +1046,52 @@ pub(crate) mod tests {
             longest_readings_len(std::slice::from_ref(&job)).unwrap(),
             written + READINGS_DIAG_RESERVE
         );
+    }
+
+    #[test]
+    fn pages_staged_with_other_settings_are_bundled_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let page_dir = tmp.path().join("pages");
+        let units_dir = tmp.path().join("units");
+        std::fs::create_dir_all(&units_dir).unwrap();
+        // Pages 1 and 3 left by an earlier run with a two-hour GPU deadline,
+        // pages 2 and 4 staged now with four hours.
+        for i in 1..=4 {
+            let doc = format!("sn83045462_1890-05-03_ed-1_seq-{i}");
+            page_unit(&page_dir, &doc, 2);
+            if i % 2 == 1 {
+                let path = page_dir.join(&doc).join(JOB_FILE);
+                let mut job: Job = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                job.gpu_timeout_secs = 7200;
+                job.id = job.identity().unwrap();
+                std::fs::write(&path, serde_json::to_vec_pretty(&job).unwrap()).unwrap();
+            }
+        }
+        assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (2, 0));
+        let mut seen = Vec::new();
+        for e in std::fs::read_dir(&units_dir).unwrap() {
+            let job: Job =
+                serde_json::from_slice(&std::fs::read(e.unwrap().path().join(JOB_FILE)).unwrap())
+                    .unwrap();
+            for bp in &job.pages {
+                let page: Job = serde_json::from_slice(
+                    &std::fs::read(page_dir.join(&bp.doc_id).join(JOB_FILE)).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(page.gpu_timeout_secs, job.gpu_timeout_secs, "{}", bp.doc_id);
+            }
+            seen.push((job.gpu_timeout_secs, job.pages.len()));
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, [(7200, 2), (14_400, 2)]);
+
+        // write_bundle refuses a mixed set outright.
+        let mixed = [
+            page_dir.join("sn83045462_1890-05-03_ed-1_seq-1"),
+            page_dir.join("sn83045462_1890-05-03_ed-1_seq-2"),
+        ];
+        assert!(write_bundle(&tmp.path().join("mixed"), &mixed).is_err());
+        assert!(!tmp.path().join("mixed").exists());
     }
 
     #[test]
