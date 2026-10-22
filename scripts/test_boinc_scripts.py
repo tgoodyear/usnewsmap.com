@@ -987,6 +987,35 @@ class AppReleaseArgs(unittest.TestCase):
                 cwd=ROOT, capture_output=True, text=True)
             self.assertIn("--onprem-ct must be a container id", r.stderr, ct)
 
+    def run_with_settings(self, server, *extra):
+        """The release script on a copy of prod's settings with "server" set, through the loader
+        (scripts/lib/boinc.sh) and a stub az that sees the subscription and the group."""
+        settings = json.loads(Path(ROOT, "contrib-compute/infra/boinc/env/prod.json").read_text())
+        settings["server"] = server
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "prod.json")
+            path.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+            bin_dir = Path(tmp, "bin"); bin_dir.mkdir()
+            az = bin_dir / "az"
+            az.write_text('#!/usr/bin/env bash\ncase "$*" in "account show"*) echo "$STUB_SUB" ;; "group show"*) ;; '
+                          '*) echo "stub az: unexpected $*" >&2; exit 9 ;; esac\n')
+            az.chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", USNM_BOINC_TEST="1",
+                       USNM_BOINC_SETTINGS_FILE=str(path), STUB_SUB=settings["subscriptionId"])
+            return subprocess.run(
+                [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0", "--signing-host", "fixture.invalid",
+                 "--app", "usnm_ocr", *extra], cwd=ROOT, env=env, capture_output=True, text=True)
+
+    def test_onprem_settings_load_and_need_the_onprem_host(self):
+        # #974 review: "server": "onprem" goes through the shared loader, then asks for the host.
+        r = self.run_with_settings("onprem", "--what-if")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("unknown keys", r.stderr)
+        self.assertIn('has "server": "onprem": give --onprem-host and --onprem-ct', r.stderr)
+        r = self.run_with_settings("azure", "--onprem-host", "pve.example", "--onprem-ct", "230", "--what-if")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('--onprem-host and --onprem-ct are for "server": "onprem"', r.stderr)
+
     def test_onprem_publish_builds_on_the_host_and_skips_acr(self):
         text = Path(APP_RELEASE_SCRIPT).read_text()
         onprem = text.split('if [ "$SERVER_MODE" = onprem ]; then\n  # The same context')[1].split("\nacr_build_verified")[0]
@@ -994,7 +1023,8 @@ class AppReleaseArgs(unittest.TestCase):
         self.assertIn("--pull=never --network=none", onprem)
         self.assertIn("usnm-boinc-step --env $ENV_NAME --target publish --step publish", onprem)
         self.assertNotIn("images.appver =", onprem)
-        self.assertNotIn("provision-boinc.sh", onprem)
+        self.assertNotIn("scripts/provision-boinc.sh --env", onprem)
+        self.assertIn('boinc_check_public_health "$work/project.xml"', onprem)
         # It ends before the ACR build, the Azure publish and the images.appver write.
         self.assertIn("  exit 0\nfi", onprem + "\nfi")
 

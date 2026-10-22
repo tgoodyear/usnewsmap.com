@@ -211,3 +211,26 @@ boinc_execution_log() {
   echo "$rows" >&2
   echo "---" >&2
 }
+
+# boinc_check_public_health FILE: the master URL's project config (saved to FILE) must name
+# it and be running (with BOINC_MAINTENANCE=1 the scheduler may be closed on purpose).
+# provision-boinc.sh (both server modes) and the on-prem app release use it. Needs
+# PROJECT_URL (boinc_load_settings).
+boinc_check_public_health() {
+  local out=$1
+  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+    --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$out" ||
+    die "the public BOINC project endpoint is not healthy"
+  # BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
+  # (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
+  python3 - "$out" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+config = ET.parse(sys.argv[1]).getroot()
+sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
+if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
+        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
+    raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
+PY
+}

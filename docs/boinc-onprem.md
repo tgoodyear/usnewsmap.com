@@ -92,12 +92,12 @@ With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem se
 
 Work that ran as Azure jobs, and where it runs now:
 
-| Work                                                         | On-prem                                                                                                                 |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| Bridge steps (the controller's submit, spool-out, inventory) | `usnm-boinc-step`                                                                                                       |
-| Gold bundle                                                  | `usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=<campaign> --wait-mins 360`, run as root on the host |
-| App version publish                                          | not yet: `scripts/boinc-app-release.sh` still builds the `appver` image in Azure and starts the Azure publish job       |
-| Quality wave                                                 | not yet: it reads the scan archive in the main environment's storage, where the on-prem group has no role               |
+| Work                                                         | On-prem                                                                                                                                                                     |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bridge steps (the controller's submit, spool-out, inventory) | `usnm-boinc-step`                                                                                                                                                           |
+| Gold bundle                                                  | `usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=<campaign> --wait-mins 360`, run as root on the host                                                     |
+| App version publish                                          | `scripts/boinc-app-release.sh --onprem-host <Proxmox host> --onprem-ct <id>`: builds the `appver` image in the container and runs `usnm-boinc-step --target publish` (#961) |
+| Quality wave                                                 | not yet: it reads the scan archive in the main environment's storage, where the on-prem group has no role                                                                   |
 
 ## Cloudflare
 

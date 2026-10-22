@@ -351,29 +351,9 @@ done
 [ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || [ "$STAGE" -eq 2 ] ||
   die "custom domain $MASTER_HOST did not reach its bound-certificate state"
 
-# check_public_health: the master URL's project config must name it and be running (with
-# BOINC_MAINTENANCE=1 the scheduler may be closed on purpose). Both server modes use it.
-check_public_health() {
-  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
-    --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$work/project.xml" ||
-    die "the public BOINC project endpoint is not healthy"
-  # BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
-  # (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
-  python3 - "$work/project.xml" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
-import sys
-import xml.etree.ElementTree as ET
-
-config = ET.parse(sys.argv[1]).getroot()
-sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
-if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
-        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
-    raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
-PY
-}
-
 if [ "$SERVER_MODE" = onprem ]; then
   # Nothing in Azure to start: the on-prem server must answer at the master URL.
-  check_public_health
+  boinc_check_public_health "$work/project.xml"
   echo "BOINC Azure resources reduced to the on-prem set; the server answers at ${PROJECT_URL}"
   exit 0
 fi
@@ -442,7 +422,7 @@ if [ -n "$PUBLISH_IMAGE" ]; then
   run_job "$(boinc_output publishJobName)"
 fi
 
-check_public_health
+boinc_check_public_health "$work/project.xml"
 if [ "${BOINC_MAINTENANCE:-0}" = 1 ]; then
   echo "BOINC deployment up in maintenance: ${PROJECT_URL} (scheduler may be closed); after resuming, check again without BOINC_MAINTENANCE"
 else

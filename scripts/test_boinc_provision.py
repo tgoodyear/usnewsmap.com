@@ -613,7 +613,9 @@ class ProductionReconciliation(unittest.TestCase):
         self.assertIn('.volumes[0].storageName == $storage', provision)
         self.assertIn("PROJECT_STORAGE=project-v2", provision)
         # The cutover provision runs with the scheduler closed on purpose.
-        self.assertIn('sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)', provision)
+        # The public health check is shared with the on-prem app release, in scripts/lib/boinc.sh.
+        self.assertIn('sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)',
+                      (ROOT / "scripts/lib/boinc.sh").read_text())
         # Uploads and scheduler requests stop during the final copy; Apache stays up.
         runbook = (ROOT / "docs/boinc.md").read_text().split("## Moving the project share")[1].split("\n## ")[0]
         self.assertIn("touch stop_sched stop_upload", runbook)

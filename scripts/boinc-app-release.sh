@@ -533,6 +533,8 @@ if [ "$SERVER_MODE" = onprem ]; then
   onprem_ct "usnm-boinc-step --env $ENV_NAME --target publish --step publish --image $(printf '%q' "$appver_image") --wait-mins 30" ||
     die "the on-prem publish step failed (its log: journalctl in container $ONPREM_CT, usnm-boinc-step-*-publish)"
   echo "published and verified $APP $VERSION ($PLATFORM, $PLAN_CLASS)"
+  # The Azure path gets this from provision-boinc.sh: the public endpoint must still answer.
+  boinc_check_public_health "$work/project.xml"
   echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"
   if [ -n "${ACCEPTANCE_CONFIG:-}" ]; then
     python3 scripts/boinc/acceptance.py "${acceptance_args[@]}" --coordination-claim "$COORDINATION_CLAIM" ||
