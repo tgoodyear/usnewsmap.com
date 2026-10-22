@@ -138,6 +138,10 @@ jobs:
         run: python3 -m unittest -v images/server/test_boinc_daemons.py
       - name: The Arc token path sends its key only to a loopback endpoint
         run: python3 -m unittest -v images/server/test_lib_kv_token.py
+      - name: Key Vault reads retry transient failures (#958)
+        run: python3 -m unittest -v images/server/test_lib_kv_retry.py
+      - name: The server images take Debian's security updates (#969)
+        run: python3 -m unittest -v images/server/test_security_updates.py
       - name: The work-volume export and workbook queries pass
         run: python3 -m unittest -v images/server/test_work_volume.py
         env:

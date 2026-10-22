@@ -143,6 +143,25 @@ step="${BRIDGE_STEP:-submit}"
 # spool-out. Each job runs this script's single-job path again, so every check is the same.
 # submit-remote stops at the first failure (the next tick reconciles that job before any other
 # submission); spool-out goes on and fails at the end, so one bad result holds back no other.
+# The secrets are read from Key Vault once for the whole batch (#958): the per-job runs reuse the
+# files in tmpfs (BRIDGE_SECRETS_READY), and fetch them again only if one is missing. Submission
+# needs every runtime secret and the rendered config; spool-out only the database password.
+# runtime_password: the runtime database password into $SECRETS/db-runtime, reusing the batch's.
+runtime_password() {
+  if [ "${BRIDGE_SECRETS_READY:-}" = 1 ] && [ -s "$SECRETS/db-runtime" ]; then
+    return 0
+  fi
+  mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
+  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+}
+if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
+  fetch_secrets
+  render_config
+  export BRIDGE_SECRETS_READY=1
+elif [ "$step" = spool-out ] && [ -n "${HANDOFF_SPOOLS:-}" ]; then
+  runtime_password
+  export BRIDGE_SECRETS_READY=1
+fi
 if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
   [ -z "${JOB_ID:-}" ] || fail "set JOB_ID or JOB_IDS, not both"
   [[ $JOB_IDS =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
@@ -418,7 +437,7 @@ if [ "$step" = spool-out ]; then
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   mycnf="$SECRETS/mysql-runtime.cnf"
   trap 'rm -f "$mycnf"' EXIT
-  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+  runtime_password
   (umask 077; { echo '[client]'; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; echo "password=$(cat "$SECRETS/db-runtime")"; } > "$mycnf")
   # The canonical result's host (BOINC's result.hostid); JOB_ID is [A-Za-z0-9_-] (above).
   # UNVERIFIED against a live database.
@@ -451,8 +470,9 @@ share_readable() {
 write_mycnf() {
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   mycnf="$SECRETS/mysql-runtime.cnf"
-  trap 'rm -f "$mycnf" "$SECRETS/db-runtime"' EXIT
-  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+  # In a batch the password file is the batch's, kept for the jobs after this one.
+  if [ "${BRIDGE_SECRETS_READY:-}" = 1 ]; then trap 'rm -f "$mycnf"' EXIT; else trap 'rm -f "$mycnf" "$SECRETS/db-runtime"' EXIT; fi
+  runtime_password
   (umask 077; python3 - "$mycnf" "$SECRETS/db-runtime" <<'PY'
 import os
 import sys
@@ -485,7 +505,11 @@ if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then
   fi
   exit 0
 fi
-fetch_secrets
+if [ "${BRIDGE_SECRETS_READY:-}" = 1 ] && secrets_present; then
+  log "reusing this batch's secrets"
+else
+  fetch_secrets
+fi
 render_config
 umask 0002
 case "$step" in
