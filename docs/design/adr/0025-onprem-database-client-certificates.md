@@ -41,9 +41,13 @@ on-prem database for serving (#955) uses the same model with its own CA and role
 
 ## Consequences
 
-- There's no revocation list. To cut off a client, `ALTER ROLE … NOLOGIN` (or drop the role),
-  then issue a new certificate under a new role name if the client comes back. If the CA key is
-  exposed, make a new CA and reissue every certificate.
+- There's no revocation list. To cut off a client, `ALTER ROLE … NOLOGIN` (or drop the role).
+  That stops new logins only, and clients keep their connection open (`usnm-store` reuses
+  one), so then end the role's sessions:
+  `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '<role>'`. Issue a new
+  certificate under a new role name if the client comes back. If the CA key is exposed, make a
+  new CA, reissue every certificate, and restart PostgreSQL to load the new CA (a
+  restart ends every session).
 - Renewal is manual, before the 825 days run out: `queue-ct.sh --issue-client --role <name>`, then
   copy the new certificate and key to the client and restart it.
 - The CA key is in the container's nightly Proxmox Backup Server backups (home-infra #55). Anyone
