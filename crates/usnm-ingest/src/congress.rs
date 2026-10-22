@@ -25,6 +25,7 @@ pub mod serialset;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use usnm_core::page_id::{PageId, Source};
 use usnm_core::text::Analyzer;
 use usnm_core::time::{day_number, ym_number};
 
@@ -95,6 +96,32 @@ pub struct CongressPage {
     /// Bioguide ids of the members who speak on the page (debates).
     #[serde(default)]
     pub speakers: Vec<String>,
+}
+
+impl CongressPage {
+    /// The page's source-qualified id (ADR-0026). The Congress index holds GovInfo, UNT and
+    /// Congress.gov pages together under bare ids, so the source comes from the id's prefix,
+    /// checked against the page's series: Serial Set pages are GovInfo's, and the debates
+    /// (annals, register, globe) come from UNT or Congress.gov.
+    pub fn page_id(&self) -> anyhow::Result<PageId> {
+        let source = if self.doc_id.starts_with("SERIALSET-") {
+            Source::Serialset
+        } else if self.doc_id.starts_with("unt-") {
+            Source::Unt
+        } else if self.doc_id.starts_with("lcg-") {
+            Source::Lcg
+        } else {
+            anyhow::bail!("Congress page {:?} has no known source prefix", self.doc_id);
+        };
+        anyhow::ensure!(
+            (self.series == "serialset") == (source == Source::Serialset),
+            "Congress page {:?} is in series {:?}, which {} doesn't publish",
+            self.doc_id,
+            self.series,
+            source
+        );
+        Ok(PageId::new(source, &self.doc_id)?)
+    }
 }
 
 /// The Congress index id for an index version: `pages-v20261010-1` →
@@ -178,6 +205,30 @@ pub fn congress_doc(page: &CongressPage, analyzer: Analyzer) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_ids_are_qualified_by_their_source() {
+        let mut p = page();
+        assert_eq!(p.page_id().unwrap().to_string(), "unt:unt-metadc29274_p300");
+        p.doc_id = "lcg-crecb-1925_p3".into();
+        assert_eq!(p.page_id().unwrap().to_string(), "lcg:lcg-crecb-1925_p3");
+        p.doc_id = "SERIALSET-00033_00_00-009-0042-0000_p1".into();
+        p.series = "serialset".into();
+        assert_eq!(
+            p.page_id().unwrap().to_string(),
+            "serialset:SERIALSET-00033_00_00-009-0042-0000_p1"
+        );
+    }
+
+    #[test]
+    fn a_page_whose_source_and_series_disagree_is_refused() {
+        let mut p = page();
+        p.series = "serialset".into(); // a UNT id in the Serial Set
+        assert!(p.page_id().is_err());
+        p.doc_id = "sn85055101_1917-04-03_ed-1_seq-3".into(); // a LoC id
+        p.series = "globe".into();
+        assert!(p.page_id().is_err());
+    }
 
     fn page() -> CongressPage {
         CongressPage {
