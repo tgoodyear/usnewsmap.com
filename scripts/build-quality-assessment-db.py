@@ -581,9 +581,11 @@ def build_database(
                     {", ".join(f'd."{k}"' for k in keys)},
                     c.reader,
                     COUNT(*) AS crops,
-                    ROUND(AVG(c.hat_est_cer), 4) AS mean_crop_hat_est_cer,
-                    ROUND(AVG(c.cer_vs_vlm), 4) AS mean_cer_vs_vlm,
-                    ROUND(AVG(c.dice_vs_vlm), 4) AS mean_dice_vs_vlm,
+                    -- The collector writes an all-null score column as VARCHAR, so a campaign
+                    -- with no VLM reading would otherwise abort AVG: cast first.
+                    ROUND(AVG(TRY_CAST(c.hat_est_cer AS DOUBLE)), 4) AS mean_crop_hat_est_cer,
+                    ROUND(AVG(TRY_CAST(c.cer_vs_vlm AS DOUBLE)), 4) AS mean_cer_vs_vlm,
+                    ROUND(AVG(TRY_CAST(c.dice_vs_vlm AS DOUBLE)), 4) AS mean_dice_vs_vlm,
                     SUM(CASE WHEN c.vlm_text IS NOT NULL THEN 1 ELSE 0 END) AS crops_with_vlm
                 FROM raw_boinc_crops c
                 JOIN doc_language d USING (doc_id)

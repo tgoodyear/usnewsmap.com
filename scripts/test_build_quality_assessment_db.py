@@ -432,6 +432,77 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             summary = (out_dir / "summary.md").read_text(encoding="utf-8")
             self.assertIn("reader_language_summary", summary)
 
+    @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
+    def test_reader_language_summary_averages_all_null_varchar_crop_scores(self):
+        # The collector's to_parquet types an all-null column as UTF-8, so a campaign whose
+        # crops were never scored against a VLM arrives with VARCHAR score columns.
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quality_root = root / "quality"
+            cdir = quality_root / "v1-wave10"
+            cdir.mkdir(parents=True)
+            con = duckdb.connect()
+            con.execute(
+                f"""
+                COPY (
+                    SELECT *, 'cpu'::VARCHAR AS plan_class, '{{}}'::VARCHAR AS pairs_json,
+                        0.8::DOUBLE AS findable_places, 0.1::DOUBLE AS damage_rate,
+                        0.2::DOUBLE AS function_share, 0.01::DOUBLE AS garbage_share,
+                        500::BIGINT AS known_words, 900::BIGINT AS consensus_words,
+                        0.8::DOUBLE AS legibility_ceiling, 3000::BIGINT AS width,
+                        4000::BIGINT AS height, 0.1::DOUBLE AS skew_deg,
+                        5000.0::DOUBLE AS blur, 180.0::DOUBLE AS contrast,
+                        2.0::DOUBLE AS noise, 0.05::DOUBLE AS bleed_through,
+                        0.2::DOUBLE AS ink_density, 10::BIGINT AS blocks,
+                        200::BIGINT AS lines, 900::BIGINT AS line_words,
+                        30.0::DOUBLE AS line_height_px, 5::BIGINT AS columns,
+                        0.8::DOUBLE AS mean_word_conf FROM (VALUES
+                        ('doc-en-1', 'english', 'eng', 'loc', 1000, TRUE, 0.10, 0.90, 0.92, 0.80, NULL, NULL),
+                        ('doc-en-1', 'english', 'eng', 'ours-surya', 1100, TRUE, 0.04, 0.96, 0.97, 0.90, 0.06, 0.94)
+                    ) AS t(doc_id, "group", language, reader, words, hat_determined, est_cer,
+                           completeness, precision, findable_content, cer_vs_loc, dice_vs_loc)
+                ) TO '{cdir / "pages.parquet"}' (FORMAT PARQUET)
+                """
+            )
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (VALUES
+                        ('doc-en-1', 'c0', 'body', 'surya', 'surya text', NULL::VARCHAR,
+                         NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR),
+                        ('doc-en-1', 'c0', 'body', 'loc', 'loc text', NULL::VARCHAR,
+                         NULL::VARCHAR, NULL::VARCHAR, NULL::VARCHAR)
+                    ) AS t(doc_id, crop_id, stratum, reader, text, vlm_text, cer_vs_vlm, dice_vs_vlm, hat_est_cer)
+                ) TO '{cdir / "crops.parquet"}' (FORMAT PARQUET)
+                """
+            )
+            self.assertEqual(
+                con.execute(f"SELECT typeof(cer_vs_vlm) FROM read_parquet('{cdir / 'crops.parquet'}') LIMIT 1").fetchone()[0],
+                "VARCHAR",
+            )
+            manifest_pq = root / "manifest.parquet"
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (VALUES
+                        ('doc-en-1', 'sn1', '1895-01-01', 1, 1, 'b1', 'v1', 'eng', 'reocr', 0.2, 'u1')
+                    ) AS t(doc_id, lccn, date, edition, seq, batch, batch_version, lang, decision, damage_rate, item_url)
+                ) TO '{manifest_pq}' (FORMAT PARQUET)
+                """
+            )
+            out_dir = root / "out"
+            mod.build_database(quality_root, manifest_pq, out_dir, None)
+            rows = con.execute(
+                f"""
+                SELECT reader, crops, mean_crop_hat_est_cer, mean_cer_vs_vlm, mean_dice_vs_vlm, crops_with_vlm
+                FROM read_parquet('{out_dir / "reader_language_summary.parquet"}')
+                WHERE language = 'eng' ORDER BY reader
+                """
+            ).fetchall()
+            self.assertEqual(rows, [("loc", 1, None, None, None, 0), ("ours-surya", 0, None, None, None, 0),
+                                    ("surya", 1, None, None, None, 0)])
+
 
 if __name__ == "__main__":
     unittest.main()
