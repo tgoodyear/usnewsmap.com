@@ -135,6 +135,23 @@ On the bridge, the steps are `surya-stage` with `SURYA_SAMPLE=<share>/quality/<c
 
 `usnm-boinc surya collect --root <campaign> --spool <assimilator results> --texts-dir <campaign>/texts` reads the canonical results back, page units and crop units alike, and writes `<doc_id>.surya.json` for every page with a read: the page's text as the reader `ours-surya`, from the first of `--modes` (`whole,capped,tiled` by default) that read the page, with `surya:<mode>:<job id>` as its source. `quality stage --surya-texts <that directory>` then joins it into each unit's `texts.json` when `--readers` names `ours-surya`, so the hat on the host estimates Surya's page error alongside the other readers'. `quality collect --surya-root <campaign> --surya-spool <results>` joins the crop units' texts into `crops.parquet` as the reader `surya`, in the crop-level hat with LoC, the vision-language reading and every reader with boxes. On the bridge: `surya-collect` with `SURYA_SPOOL`, and `SURYA_CAMPAIGN` on `quality-stage` and `quality-collect` (with `SURYA_SPOOL`).
 
+### Surya on the gold crops (#968)
+
+The OCR gold set ([ocr-gold-set.md](ocr-gold-set.md)) is 60 pages with one seeded box each. The 40 Czech, Serbian, Polish and Russian crops are out for transcription, and Surya reads the same boxes so that, when the transcriptions come back, it gets a character error rate against them.
+
+`usnm-boinc surya stage-gold --manifest fixtures/ocr-gold/cze-srp-pol-rus/manifest.jsonl --root <campaign>` writes one crop unit per manifest row, in file order, up to `--max-crops` (50 by default). The unit is `units/<doc_id>.<crop_id>`, with `doc_id` in the project's form (`sn83045348_1876-03-07_ed-1_seq-1` for the manifest's `sn83045348_1876-03-07_ed1_seq1`). It holds `page.jpg` (the box, cut as `stage-crops` cuts, JPEG at quality 95), `surya.json` and `gold.json` (the manifest row, as it was). The job has group `gold`, the row's language, `crop` with the row's `crop_id`, its box and the stratum `gold/<lang>` (`gold/cze`), `whole` mode only and one deadline (`--timeout-secs`, 600 s by default), and its `input.url` is the row's `page_image_url` with the box as an `#xywh=` fragment.
+
+The pages are fetched from `page_image_url` on tile.loc.gov, once per page however many rows share it, one request at a time and at least `--gap-secs` (5 or more) apart, with no retries; a 403, 429, 5xx or an HTML answer writes `<campaign>/HOLD` and stops, as `surya stage` does. `--pages-dir <dir>` reads `<dir>/<page_id>.jpg` instead, for anyone who already has the pages. Each page's sha256 is checked against the row's `page_image_sha256`, because the gold set pins its pixels by that checksum. A page that differs gets a `<doc_id>.<crop_id>.mismatch` marker with one line saying so, and its crops are not cut; a page LoC answers 404 for gets a `.missing` marker. Neither marker is tried again until a person deletes it. A unit with a `surya.json` is left as it is, so a second run stages only what is still to do. The command prints how many crops it `staged`, found `already` staged, found `mismatch` and how many pages were `missing`.
+
+On the bridge, `surya-stage-gold` takes `SURYA_GOLD_MANIFEST=<a manifest.jsonl on the share>`, the three `SURYA_ENGINE_*` pins, `SURYA_MAX` (crops, 50 by default) and `SURYA_TIMEOUT_SECS` (600 by default), and then goes through `surya-submit` as any unit.
+
+`usnm-boinc surya gold-hyp --root <campaign> --spool <assimilator results> --out <file.jsonl>` writes one `{"crop_id", "text"}` line per gold crop unit with a successful `whole` read, sorted by `crop_id`, and prints how many crops had a read and how many did not (still out, given up on, or failed). On the bridge, `surya-gold-hyp` with `SURYA_SPOOL` writes `<campaign>/gold/surya.jsonl`. Once the transcriptions are filled in, score it with:
+
+```sh
+scripts/ocr-survey/gold.py score --crops fixtures/ocr-gold/cze-srp-pol-rus/crops.jsonl \
+  --hyp surya=<campaign>/gold/surya.jsonl
+```
+
 ### Wave 1 runbook (22 October 2026)
 
 The first wave on the on-prem server, in order. Everything runs through `scripts/boinc/onprem-step.sh --env prod --target bridge` on the BOINC host (`--wait-mins 30` unless noted); the controller's ssh key may run only the two steps the [Surya plan](boinc-batch-scheduler.md#surya-waves) takes.

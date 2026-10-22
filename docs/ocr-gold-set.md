@@ -258,6 +258,8 @@ scripts/ocr-survey/gold.py cut --selection fixtures/ocr-gold/selection.jsonl --s
 
 `select` with `--manifest SAMPLE/manifest-final.jsonl` gives the same choice and carries the image and ALTO URLs and checksums.
 
+The 40 Czech, Serbian, Polish and Russian crops (ten each) were cut on 22 October 2026 with `gold.py cut`'s box rule at seed 296. Polish and Russian have five pages each, so each of those pages gives a second, non-overlapping box. Their manifest and the empty transcription template are in `fixtures/ocr-gold/cze-srp-pol-rus/` (`manifest.jsonl`, `crops.jsonl`; the crop images are not committed), and the crops are out for transcription. Surya reads the same boxes as BOINC crop units, so its character error rate can be scored once the transcriptions come back: see [Surya on the gold crops](boinc-surya.md#surya-on-the-gold-crops-968).
+
 ## Japanese crops
 
 The 24 Japanese crops of the [#128](https://github.com/tgoodyear/usnewsmap.com/issues/128) comparison are not in the 60. Reference texts exist for them outside the repository: 23 files, and one more set aside. What their files and logs show about provenance:
@@ -350,7 +352,7 @@ cargo run --release -p usnm-ocr-survey -- score --crops OUT/crops.jsonl --hints 
 
 ## Public ground truth
 
-The 60-page selection stays untranscribed: the maintainer will not hand-transcribe pages. For those crops `gold.py agree` compares the engines' texts for the same box with each other. That number is agreement, not accuracy: two engines can agree and both be wrong. It says which engine is the odd one out on our pages, and nothing about how close any of them is to the printed text.
+The 60-page selection stays untranscribed: the maintainer will not hand-transcribe pages, though a named person may (see [Selection](#selection) for the 40 now out for transcription). For those crops `gold.py agree` compares the engines' texts for the same box with each other. That number is agreement, not accuracy: two engines can agree and both be wrong. It says which engine is the odd one out on our pages, and nothing about how close any of them is to the printed text.
 
 Accuracy needs a human transcription, so this section looks for public datasets that have one. Checked on 13 October 2026 from public documentation, dataset cards and repository metadata only; nobody was contacted. Anything I could not confirm is marked UNVERIFIED. Licences are quoted from the source named in the table.
 

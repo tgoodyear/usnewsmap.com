@@ -727,6 +727,48 @@ enum Surya {
         #[arg(long, default_value_t = 50)]
         max_pages: usize,
     },
+    /// Write one unit per crop of the OCR gold set's manifest (#968): the boxes a person
+    /// transcribes, cut from each row's page (fetched from tile.loc.gov one request at a time, or
+    /// read from --pages-dir) and read by Surya in whole mode.
+    StageGold {
+        /// The gold manifest (fixtures/ocr-gold/<set>/manifest.jsonl).
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        root: PathBuf,
+        /// The worker image's registry digest (sha256:...).
+        #[arg(long)]
+        engine_image: String,
+        #[arg(long)]
+        engine_llama: String,
+        #[arg(long)]
+        engine_weights: String,
+        #[arg(long, default_value = "0.22.1")]
+        engine_surya: String,
+        /// Deadline for the one whole-mode read, on a GPU and on a CPU.
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u32,
+        /// Crops to stage, at most.
+        #[arg(long, default_value_t = 50)]
+        max_crops: usize,
+        /// Seconds between two requests to tile.loc.gov (5 or more).
+        #[arg(long, default_value_t = 5)]
+        gap_secs: u64,
+        /// Read <dir>/<page_id>.jpg instead of fetching the page.
+        #[arg(long)]
+        pages_dir: Option<PathBuf>,
+    },
+    /// Write Surya's reading of the gold crops as JSON Lines {crop_id, text}, the file
+    /// `gold.py score --hyp surya=FILE` reads (#968).
+    GoldHyp {
+        #[arg(long)]
+        root: PathBuf,
+        /// The assimilator's results directory (<workunit>__file_<name>).
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Hand staged units to create_work, two results each.
     Submit {
         #[arg(long)]
@@ -1901,6 +1943,39 @@ async fn surya(c: Surya) -> anyhow::Result<()> {
             })
             .await?;
             eprintln!("{s:?}");
+        }
+        Surya::StageGold {
+            manifest,
+            root,
+            engine_image,
+            engine_llama,
+            engine_weights,
+            engine_surya,
+            timeout_secs,
+            max_crops,
+            gap_secs,
+            pages_dir,
+        } => {
+            let s = x::gold::run(&x::gold::Options {
+                manifest,
+                root,
+                engine: usnm_ocr_contract::surya::Engine {
+                    image: engine_image,
+                    llama: engine_llama,
+                    surya: engine_surya,
+                    weights: engine_weights,
+                },
+                timeout_secs,
+                max_crops,
+                gap: std::time::Duration::from_secs(gap_secs),
+                pages_dir,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Surya::GoldHyp { root, spool, out } => {
+            let s = x::gold::hyp(&x::gold::HypOptions { root, spool, out })?;
+            eprintln!("{} gold crops with a read, {} without", s.read, s.unread);
         }
         Surya::Submit {
             root,

@@ -57,6 +57,15 @@
 #                               SURYA_ENGINE_LLAMA=... SURYA_ENGINE_WEIGHTS=... [SURYA_MAX=50 pages]
 #                               [SURYA_TIMEOUT_SECS=600]: one unit per crop of every staged
 #                               quality page, cut from its page.jpg (#968)
+#   BRIDGE_STEP=surya-stage-gold SURYA_GOLD_MANIFEST=<a gold manifest.jsonl on the share>
+#                               SURYA_ENGINE_IMAGE=... SURYA_ENGINE_LLAMA=... SURYA_ENGINE_WEIGHTS=...
+#                               [SURYA_MAX=50 crops] [SURYA_TIMEOUT_SECS=600]: one unit per
+#                               manifest row (docs/ocr-gold-set.md), the box cut from the row's
+#                               tile.loc.gov page, one request at a time, 5 s apart, and kept
+#                               only if the page matches the row's sha256 (#968)
+#   BRIDGE_STEP=surya-gold-hyp  SURYA_SPOOL=<assimilator results directory>: writes
+#                               <campaign>/gold/surya.jsonl, one {crop_id, text} per gold crop
+#                               with a successful read, for gold.py score --hyp (#968)
 #
 # assess-stage, surya-stage and quality-stage read the scan archive first when SCAN_ARCHIVE_URL
 # is set (https://<scansAccount>.blob.core.windows.net/scans, with the job's identity); none of
@@ -303,6 +312,20 @@ case "$step" in
       --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
       --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" \
       --timeout-secs "${SURYA_TIMEOUT_SECS:-600}" --max-pages "${SURYA_MAX:-50}" ;;
+  surya-stage-gold)
+    # No database or secrets: this step only reads LoC and writes the share.
+    [[ "${SURYA_GOLD_MANIFEST:-}" == "$SHARE_DIR"/* && -f "$SURYA_GOLD_MANIFEST" ]] || fail "SURYA_GOLD_MANIFEST must be a file under $SHARE_DIR"
+    [[ "${SURYA_TIMEOUT_SECS:-600}" =~ ^[0-9]{2,5}$ ]] || fail "SURYA_TIMEOUT_SECS must be seconds"
+    [[ "${SURYA_MAX:-50}" =~ ^[0-9]{1,4}$ ]] || fail "SURYA_MAX must be a number"
+    exec usnm-boinc surya stage-gold --manifest "$SURYA_GOLD_MANIFEST" --root "$SURYA" \
+      --engine-image "${SURYA_ENGINE_IMAGE:?set SURYA_ENGINE_IMAGE}" \
+      --engine-llama "${SURYA_ENGINE_LLAMA:?set SURYA_ENGINE_LLAMA}" \
+      --engine-weights "${SURYA_ENGINE_WEIGHTS:?set SURYA_ENGINE_WEIGHTS}" \
+      --timeout-secs "${SURYA_TIMEOUT_SECS:-600}" --max-crops "${SURYA_MAX:-50}" ;;
+  surya-gold-hyp)
+    # No database or secrets: reads the assimilated results and writes the share.
+    exec usnm-boinc surya gold-hyp --root "$SURYA" --spool "${SURYA_SPOOL:?set SURYA_SPOOL}" \
+      --out "$SURYA/gold/surya.jsonl" ;;
   surya-collect)
     # No database or secrets: reads the assimilated results and writes the share.
     [[ "${SURYA_MODES:-whole,capped,tiled}" =~ ^[a-z,]+$ ]] || fail "SURYA_MODES must be comma-separated modes"
@@ -677,5 +700,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-submit, surya-collect, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-stage-gold, surya-submit, surya-collect, surya-gold-hyp, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust, gold-bundle, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
 esac

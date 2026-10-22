@@ -3,6 +3,8 @@
 //! - [`stage`] gets each page's full-size IIIF JPEG (the scan archive first,
 //!   then tile.loc.gov one request at a time; see [`crate::scans`]) and
 //!   writes one unit directory per page.
+//! - [`gold`] stages the OCR gold set's crops as crop units and writes
+//!   Surya's reading of them as the hypothesis file `gold.py score` takes.
 //! - [`submit`] hands staged units to stock `create_work`, two results each.
 //! - [`work`] runs one unit on a volunteer host, CPU or GPU, and always
 //!   writes a result and its diagnostics.
@@ -16,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 pub mod collect;
 pub mod crops;
+pub mod gold;
 pub mod stage;
 pub mod submit;
 pub mod summary;
