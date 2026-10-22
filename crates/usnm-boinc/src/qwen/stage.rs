@@ -19,8 +19,8 @@ use usnm_ocr_contract::{
         MAX_JOB_JSON as MAX_QUALITY_JOB, MAX_SCAN,
     },
     qwen::{
-        BundlePage, Crop, Engine, Job, MAX_BUNDLE_CROPS, MAX_BUNDLE_PAGES, MAX_JOB_JSON,
-        PROMPT_VERSION, VERSION,
+        BundlePage, Crop, Engine, Job, Outcome, Reading, Readings, MAX_BUNDLE_CROPS,
+        MAX_BUNDLE_PAGES, MAX_CROP_TEXT, MAX_JOB_JSON, MAX_READINGS, PROMPT_VERSION, VERSION,
     },
 };
 use usnm_ocr_quality::crops;
@@ -46,21 +46,28 @@ pub struct Summary {
     pub no_crops: usize,
     pub already: usize,
     pub bundles: usize,
-    /// Pages whose one-page bundle would not fit in `qwen.json`: marked
-    /// `no_bundle` and never published.
-    pub no_bundle: usize,
+    /// Pages whose `qwen.json` (single-page, or a one-page bundle) would pass
+    /// `MAX_JOB_JSON`: marked `too_large` and never published.
+    pub too_large: usize,
 }
 
 /// The source name of a bundle's `page.jpg`.
 const BUNDLE_SOURCE: &str = "bundle:page.jpg";
-/// The marker on a staged page too large to publish in any bundle.
-const NO_BUNDLE: &str = "no_bundle";
+/// The marker on a staged page too large to publish, alone or in a bundle.
+const TOO_LARGE: &str = "too_large";
+/// Room in a bundle's `readings.json` for its `diag` facts (the context
+/// size, the GPU layers, the model file, the threads, a 256-character
+/// server version line).
+const READINGS_DIAG_RESERVE: usize = 16 * 1024;
 
 /// Writes one unit per staged `usnm_quality` page (those with a
 /// `quality.json`), in doc id order, up to `max_pages` new ones. When
 /// `bundle_size > 1`, single-page units are staged under `<root>/pages/` and
-/// packed into multi-page bundle workunits under `<root>/units/`. A page
-/// whose ALTO has no line the recipe can cut gets a `no_crops` marker and
+/// packed into multi-page bundle workunits under `<root>/units/`. A root
+/// staged with bundles keeps them: `--bundle-size 1` on it is refused, since
+/// its pages would be staged again as single-page units. A page whose ALTO
+/// has no line the recipe can cut gets a `no_crops` marker and no unit; one
+/// whose `qwen.json` would pass `MAX_JOB_JSON` gets a `too_large` marker and
 /// no unit. The quality unit's `sample.json`, when there, is copied along
 /// for `collect`.
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
@@ -78,11 +85,16 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     super::check_digest(&opts.engine.weights, "--engine-weights")?;
     check_no_hold(&opts.root)?;
     let units_dir = units(&opts.root);
+    let bundled_root = opts.root.join("pages");
+    ensure!(
+        bundle_size > 1 || !bundled_root.exists(),
+        "{} was staged with --bundle-size above 1: keep bundling, or stage into a separate --root",
+        opts.root.display()
+    );
     std::fs::create_dir_all(&units_dir)?;
     let page_dir = if bundle_size > 1 {
-        let p = opts.root.join("pages");
-        std::fs::create_dir_all(&p)?;
-        p
+        std::fs::create_dir_all(&bundled_root)?;
+        bundled_root
     } else {
         units_dir.clone()
     };
@@ -101,7 +113,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     pages.sort();
     let mut summary = Summary::default();
     for page in pages {
-        if summary.staged + summary.no_crops >= opts.max_pages {
+        if summary.staged + summary.no_crops + summary.too_large >= opts.max_pages {
             break;
         }
         let name = page
@@ -109,7 +121,15 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let unit = page_dir.join(&name);
-        if unit.join(JOB_FILE).exists() || unit.join("no_crops").exists() {
+        // A root first staged one page per unit keeps those units when it
+        // moves to bundles: packing skips their doc ids, so they are not
+        // staged again either.
+        let staged = |dir: &Path| {
+            [JOB_FILE, "no_crops", TOO_LARGE]
+                .iter()
+                .any(|f| dir.join(f).exists())
+        };
+        if staged(&unit) || (bundle_size > 1 && staged(&units_dir.join(&name))) {
             summary.already += 1;
             continue;
         }
@@ -167,27 +187,38 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         job.validate()
             .with_context(|| format!("{name}: staged job"))?;
         let json = serde_json::to_vec_pretty(&job)?;
-        ensure!(
-            json.len() <= MAX_JOB_JSON,
-            "{name}: qwen.json is {} bytes, over the {MAX_JOB_JSON}-byte limit",
-            json.len()
-        );
+        if json.len() > MAX_JOB_JSON {
+            mark_too_large(&unit, &job.doc_id, "qwen.json", json.len())?;
+            summary.too_large += 1;
+            continue;
+        }
         atomic(&unit.join(JOB_FILE), &json)?;
         summary.staged += 1;
     }
     if bundle_size > 1 {
-        (summary.bundles, summary.no_bundle) = pack_bundles(&page_dir, &units_dir, bundle_size)?;
+        let (bundles, too_large) = pack_bundles(&page_dir, &units_dir, bundle_size)?;
+        summary.bundles = bundles;
+        summary.too_large += too_large;
     }
     Ok(summary)
 }
 
+/// Marks a staged page `too_large`: its `qwen.json` (`what`) would be `len`
+/// bytes, over the `MAX_JOB_JSON` submit and the workers read it with.
+fn mark_too_large(unit: &Path, doc_id: &str, what: &str, len: usize) -> anyhow::Result<()> {
+    let why = format!("{what} would be {len} bytes, over the {MAX_JOB_JSON}-byte limit");
+    eprintln!("{doc_id}: {why}; marked {TOO_LARGE}");
+    atomic(&unit.join(TOO_LARGE), format!("{why}\n").as_bytes())
+}
+
 /// Packs any staged single-page units in `page_dir` that are not yet present in
 /// a bundle under `units_dir` into multi-page bundle units of up to
-/// `bundle_size` pages, each within `MAX_BUNDLE_SCAN`, `MAX_BUNDLE_CROPS` and,
-/// measured on the manifest as it will be written, `MAX_JOB_JSON`, the limit
-/// submit and the workers read `qwen.json` with. A page whose one-page bundle
-/// would not fit gets a `no_bundle` marker and is never published. Returns the
-/// bundles written and the pages marked.
+/// `bundle_size` pages, each within `MAX_BUNDLE_SCAN` and `MAX_BUNDLE_CROPS`,
+/// with its `qwen.json` as written within `MAX_JOB_JSON` (the limit submit and
+/// the workers read it with) and its longest possible `readings.json` within
+/// `MAX_READINGS` (the limit the output upload and the validator allow). A
+/// page whose one-page bundle would not fit gets a `too_large` marker and is
+/// never published. Returns the bundles written and the pages marked.
 fn pack_bundles(
     page_dir: &Path,
     units_dir: &Path,
@@ -217,7 +248,7 @@ fn pack_bundles(
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(page_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.join(JOB_FILE).exists() && !p.join(NO_BUNDLE).exists())
+        .filter(|p| p.join(JOB_FILE).exists() && !p.join(TOO_LARGE).exists())
         .collect();
     candidates.sort();
     let mut unbundled: Vec<(PathBuf, Job)> = Vec::new();
@@ -229,7 +260,7 @@ fn pack_bundles(
         }
     }
     let mut created = 0usize;
-    let mut no_bundle = 0usize;
+    let mut too_large = 0usize;
     let mut chunk_dirs: Vec<PathBuf> = Vec::new();
     let mut chunk_jobs: Vec<Job> = Vec::new();
     let mut scan_bytes = 0usize;
@@ -253,16 +284,8 @@ fn pack_bundles(
     for (u, pj) in unbundled {
         let alone = bundle_json_len(std::slice::from_ref(&pj))?;
         if alone > MAX_JOB_JSON {
-            eprintln!(
-                "{}: a one-page bundle's qwen.json would be {alone} bytes, over the \
-                 {MAX_JOB_JSON}-byte limit; marked {NO_BUNDLE}",
-                pj.doc_id
-            );
-            atomic(
-                &u.join(NO_BUNDLE),
-                format!("a one-page bundle's qwen.json would be {alone} bytes\n").as_bytes(),
-            )?;
-            no_bundle += 1;
+            mark_too_large(&u, &pj.doc_id, "a one-page bundle's qwen.json", alone)?;
+            too_large += 1;
             continue;
         }
         let p_len = usize::try_from(pj.input.bytes).unwrap_or(usize::MAX);
@@ -271,7 +294,8 @@ fn pack_bundles(
             && crop_count + pj.crops.len() <= MAX_BUNDLE_CROPS;
         if fits && !chunk_jobs.is_empty() {
             chunk_jobs.push(pj.clone());
-            fits = bundle_json_len(&chunk_jobs)? <= MAX_JOB_JSON;
+            fits = bundle_json_len(&chunk_jobs)? <= MAX_JOB_JSON
+                && longest_readings_len(&chunk_jobs)? <= MAX_READINGS;
             chunk_jobs.pop();
         }
         if !fits {
@@ -285,7 +309,7 @@ fn pack_bundles(
         chunk_jobs.push(pj);
     }
     flush(&mut chunk_dirs, &mut chunk_jobs)?;
-    Ok((created, no_bundle))
+    Ok((created, too_large))
 }
 
 /// The crops of a page: LoC's ALTO in the image's pixels, the recipe's
@@ -415,6 +439,42 @@ fn bundle_json_len(pages: &[Job]) -> anyhow::Result<usize> {
     Ok(serde_json::to_vec_pretty(&bundle_job(pages, blob)?)?.len())
 }
 
+/// The longest `readings.json` a bundle of `pages` can produce, as the workers
+/// write it: every crop read, each reading's text at [`MAX_CROP_TEXT`] bytes
+/// that all escape to two (a cleaned reading keeps no control character but
+/// newline and tab, and serde_json writes other non-ASCII text unescaped), the
+/// largest time and token count, the longest device, model and outcome
+/// names, and [`READINGS_DIAG_RESERVE`] for the run's `diag` facts.
+fn longest_readings_len(pages: &[Job]) -> anyhow::Result<usize> {
+    let first = pages.first().context("a qwen bundle needs a page")?;
+    let readings = Readings {
+        v: VERSION,
+        job_id: "0".repeat(64),
+        device: "vulkan".into(),
+        diag: Default::default(),
+        model: first
+            .engine
+            .models
+            .iter()
+            .map(|m| m.name.clone())
+            .max_by_key(String::len),
+        outcome: Outcome::UnitError,
+        prompt_version: PROMPT_VERSION,
+        readings: pages
+            .iter()
+            .flat_map(|p| {
+                p.crops.iter().map(|c| Reading {
+                    id: format!("{}:{}", p.doc_id, c.id),
+                    ms: u64::MAX,
+                    text: "\"".repeat(MAX_CROP_TEXT),
+                    tokens: u32::MAX,
+                })
+            })
+            .collect(),
+    };
+    Ok(serde_json::to_vec_pretty(&readings)?.len() + READINGS_DIAG_RESERVE)
+}
+
 /// Packs `page_units` (1 to [`MAX_BUNDLE_PAGES`] staged single-page `usnm_qwen`
 /// unit directories) into a single multi-page bundle unit directory `dir`.
 /// Nothing is written unless the bundle's `page.jpg` and `qwen.json` are
@@ -452,6 +512,10 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
     ensure!(
         job.crops.len() <= MAX_BUNDLE_CROPS,
         "bundle crops exceed {MAX_BUNDLE_CROPS}"
+    );
+    ensure!(
+        longest_readings_len(&jobs)? <= MAX_READINGS,
+        "the bundle's readings.json could pass the {MAX_READINGS}-byte limit"
     );
     job.validate().context("staged qwen bundle job")?;
     let json = serde_json::to_vec_pretty(&job)?;
@@ -769,7 +833,7 @@ pub(crate) mod tests {
                 no_crops: 0,
                 already: 0,
                 bundles: 2,
-                no_bundle: 0,
+                too_large: 0,
             }
         );
         let b1: Job = serde_json::from_slice(
@@ -796,9 +860,19 @@ pub(crate) mod tests {
                 no_crops: 0,
                 already: 3,
                 bundles: 0,
-                no_bundle: 0,
+                too_large: 0,
             }
         );
+
+        // The bundled root refuses one-page staging, which would stage its
+        // pages again as single-page units.
+        let single = Options {
+            bundle_size: 1,
+            ..opts.clone()
+        };
+        let err = run(&single).await.unwrap_err();
+        assert!(format!("{err:#}").contains("keep bundling"), "{err:#}");
+        assert_eq!(std::fs::read_dir(units(&opts.root)).unwrap().count(), 2);
     }
 
     /// A staged single-page unit in `page_dir` with `crops` crops, each with
@@ -853,7 +927,7 @@ pub(crate) mod tests {
         page_unit(&page_dir, big, 40);
 
         assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (2, 1));
-        assert!(page_dir.join(big).join(NO_BUNDLE).exists());
+        assert!(page_dir.join(big).join(TOO_LARGE).exists());
         let mut pages = 0;
         for e in std::fs::read_dir(&units_dir).unwrap() {
             let bytes = std::fs::read(e.unwrap().path().join(JOB_FILE)).unwrap();
@@ -867,6 +941,76 @@ pub(crate) mod tests {
 
         // A rerun publishes nothing more.
         assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn bundles_split_before_readings_could_pass_the_upload_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let page_dir = tmp.path().join("pages");
+        let units_dir = tmp.path().join("units");
+        std::fs::create_dir_all(&units_dir).unwrap();
+        // 32 crops a page with short LoC text: the manifest stays small, but
+        // each crop may come back as 8 KiB of text escaped to 16 KiB, so three
+        // pages (96 crops) fit in 2 MiB of readings and four (128) do not.
+        for i in 1..=8 {
+            let doc = format!("sn83045462_1890-05-03_ed-1_seq-{i}");
+            page_unit(&page_dir, &doc, 32);
+            let path = page_dir.join(&doc).join(JOB_FILE);
+            let mut job: Job = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            for c in &mut job.crops {
+                c.loc_text = "a".into();
+            }
+            job.id = job.identity().unwrap();
+            std::fs::write(&path, serde_json::to_vec_pretty(&job).unwrap()).unwrap();
+        }
+        assert_eq!(pack_bundles(&page_dir, &units_dir, 32).unwrap(), (3, 0));
+        let mut sizes = Vec::new();
+        for e in std::fs::read_dir(&units_dir).unwrap() {
+            let job: Job =
+                serde_json::from_slice(&std::fs::read(e.unwrap().path().join(JOB_FILE)).unwrap())
+                    .unwrap();
+            sizes.push(job.pages.len());
+        }
+        sizes.sort_unstable();
+        assert_eq!(sizes, [2, 3, 3]);
+    }
+
+    #[test]
+    fn longest_readings_len_is_the_written_worst_case() {
+        // The count is the size of the worst readings.json written out, plus
+        // the diag reserve.
+        let tmp = tempfile::tempdir().unwrap();
+        let page_dir = tmp.path().join("pages");
+        let doc = "sn83045462_1890-05-03_ed-1_seq-1";
+        page_unit(&page_dir, doc, 2);
+        let job: Job =
+            serde_json::from_slice(&std::fs::read(page_dir.join(doc).join(JOB_FILE)).unwrap())
+                .unwrap();
+        let readings = Readings {
+            v: VERSION,
+            job_id: "0".repeat(64),
+            device: "vulkan".into(),
+            diag: Default::default(),
+            model: Some("qwen3-vl-8b-q4km".into()),
+            outcome: Outcome::UnitError,
+            prompt_version: PROMPT_VERSION,
+            readings: job
+                .crops
+                .iter()
+                .map(|c| Reading {
+                    id: format!("{doc}:{}", c.id),
+                    ms: u64::MAX,
+                    text: "\"".repeat(MAX_CROP_TEXT),
+                    tokens: u32::MAX,
+                })
+                .collect(),
+        };
+        let written = serde_json::to_vec_pretty(&readings).unwrap().len();
+        assert!(written > 2 * 2 * MAX_CROP_TEXT);
+        assert_eq!(
+            longest_readings_len(std::slice::from_ref(&job)).unwrap(),
+            written + READINGS_DIAG_RESERVE
+        );
     }
 
     #[test]
