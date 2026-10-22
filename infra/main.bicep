@@ -131,6 +131,9 @@ param boincHandoffRunner string = ''
 
 @description('Let boincHandoffRunner run the BOINC batch controller on-prem (#866, docs/boinc-batch-scheduler.md): Reader on the subscription and a custom role that updates and starts the hand-off and bridge jobs (modules/boinc-controller.bicep). Needs the hand-off job and boincHandoffRunner. Off removes the grants.')
 param boincControllerOnPrem bool = false
+
+@description('The BOINC server runs on-prem (#942): its Azure stack keeps no Log Analytics workspace, so the scan fetcher gets no reader grant there (modules/boinc-handoff-logs.bicep). Set with "server": "onprem" in contrib-compute/infra/boinc/env/<env>.json.')
+param boincServerOnPrem bool = false
 @description('The BOINC hand-off job\'s image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json, <registry>.azurecr.io/usnm-boinc-bridge@sha256:<digest>. Empty: no hand-off job. Needs the exchange account (ocrNodes), the registry (useAcr) and the BOINC group (deployBoincGroup).')
 param boincHandoffImage string = ''
 
@@ -560,7 +563,7 @@ module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincH
 // The workspace comes from the BOINC stack (scripts/provision-boinc.sh), a
 // later deployment than boincRg: set boincHandoffRunner only once that stack
 // is deployed, or this assignment fails on a missing workspace.
-module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGroup && !empty(trim(boincHandoffRunner))) {
+module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGroup && !boincServerOnPrem && !empty(trim(boincHandoffRunner))) {
   scope: resourceGroup(n.boincRg)
   name: 'boinc-handoff-logs'
   dependsOn: [boincRg]
