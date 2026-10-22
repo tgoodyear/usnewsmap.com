@@ -280,13 +280,12 @@ pub async fn pull(
     Ok(())
 }
 
-/// Put a message back for the nodes: a copy first, then the original goes.
-/// The copy starts again at a dequeue count of zero.
+/// Put a message back for other receivers ([`Queue::release`]: a copy goes to
+/// the back of the queue first, then the original goes; Azure and pgmq alike).
 async fn send_back(queue: &dyn Queue, msg: &Received) -> anyhow::Result<()> {
-    queue.send(&msg.queue, &msg.text).await?;
-    match queue.delete(msg).await {
+    match queue.release(msg).await {
         Ok(()) => Ok(()),
-        // Someone else holds or deleted it; the copy stands.
+        // Someone else holds or deleted the original; the copy stands.
         Err(e) if e.downcast_ref::<LeaseLost>().is_some() => Ok(()),
         Err(e) => Err(e),
     }
