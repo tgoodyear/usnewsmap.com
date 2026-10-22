@@ -119,6 +119,15 @@ pub struct Trust {
     pub v: u32,
 }
 
+/// What [`Trust::admit_hosts`] changed: the list's digest before and after, and the hosts it
+/// added (empty when every host was already eligible, and the file was not rewritten).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Admission {
+    pub before_sha256: String,
+    pub after_sha256: String,
+    pub added: BTreeSet<u64>,
+}
+
 #[derive(Deserialize)]
 struct Row {
     completed_at: chrono::DateTime<chrono::Utc>,
@@ -634,6 +643,99 @@ impl Trust {
         );
         atomic(&out, &encoded)?;
         Ok(merged)
+    }
+
+    /// Adds `hosts` to one calibrated scope's eligibility for `engine_image` in the list at
+    /// `out`, holding the directory lock across the read and the write (#901). The scope must
+    /// still be calibrated with exactly `manifest_sha256` and `max_cer`, the values the evidence
+    /// was judged against: this never sets or changes a calibration. Other scopes, images and
+    /// hosts are kept, and nothing is removed; revocation stays with a full `gold trust`
+    /// rebuild. With nothing new to add the file is left as it was.
+    pub fn admit_hosts(
+        out: &Path,
+        scope: &Scope,
+        manifest_sha256: &str,
+        max_cer: f64,
+        engine_image: &str,
+        hosts: &BTreeSet<u64>,
+    ) -> anyhow::Result<Admission> {
+        anyhow::ensure!(
+            immutable_image(engine_image),
+            "gold engine image must be an immutable sha256 digest"
+        );
+        anyhow::ensure!(
+            !hosts.is_empty() && !hosts.contains(&0),
+            "hosts to admit must be positive ids"
+        );
+        let parent = out
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let _lock = crate::Lock::take(parent)?;
+        let bytes = crate::read(out, MAX_REPORTS as usize)
+            .with_context(|| format!("reading {}", out.display()))?;
+        anyhow::ensure!(
+            !Self::is_legacy_uncalibrated(&bytes, out)?,
+            "{} is an uncalibrated legacy list; rebuild trust before admitting hosts",
+            out.display()
+        );
+        let mut trust = Self::from_bytes(&bytes, out)?;
+        let before_sha256 = usnm_ocr_contract::boinc::sha256(&bytes);
+        let view = trust
+            .policy_view(&scope.language, &scope.profile)
+            .context("no calibrated policy for this scope")?;
+        anyhow::ensure!(
+            view.scope == scope
+                && view.manifest_sha256 == manifest_sha256
+                && view.max_cer == max_cer,
+            "the scope's calibration changed since the evidence was judged; not admitting"
+        );
+        let primary = trust
+            .scope
+            .as_ref()
+            .is_some_and(|s| s.language == scope.language && s.profile == scope.profile);
+        let mut added = BTreeSet::new();
+        for host in hosts {
+            let insert = |map: &mut BTreeMap<String, BTreeSet<u64>>| {
+                map.entry(engine_image.to_owned())
+                    .or_default()
+                    .insert(*host)
+            };
+            let mut new = false;
+            if let Some(policy) = trust
+                .policies
+                .iter_mut()
+                .find(|p| p.scope.language == scope.language && p.scope.profile == scope.profile)
+            {
+                new |= insert(&mut policy.hosts);
+            }
+            // The top-level fields mirror the primary scope's policy entry.
+            if primary {
+                new |= insert(&mut trust.hosts);
+            }
+            if new {
+                added.insert(*host);
+            }
+        }
+        if added.is_empty() {
+            return Ok(Admission {
+                after_sha256: before_sha256.clone(),
+                before_sha256,
+                added,
+            });
+        }
+        trust.validate()?;
+        let encoded = serde_json::to_vec_pretty(&trust)?;
+        anyhow::ensure!(
+            encoded.len() <= MAX_REPORTS as usize,
+            "trust policy exceeds its reader limit"
+        );
+        atomic(out, &encoded)?;
+        Ok(Admission {
+            before_sha256,
+            after_sha256: usnm_ocr_contract::boinc::sha256(&encoded),
+            added,
+        })
     }
 
     fn from_bytes(bytes: &[u8], path: &Path) -> anyhow::Result<Self> {
@@ -1780,5 +1882,189 @@ mod tests {
             .is_err());
         assert_eq!(std::fs::read(&out_path).unwrap(), before_oversized);
         assert_eq!(Trust::load(&out_path).unwrap(), eng_trust);
+    }
+
+    const ADMIT_IMAGE: &str =
+        "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa";
+    const ADMIT_MANIFEST: &str = "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f";
+    const ADMIT_CER: f64 = 0.08734328574534386;
+
+    fn two_scope_list() -> serde_json::Value {
+        let eng = serde_json::json!({
+            "hosts": {ADMIT_IMAGE: [1, 8]}, "manifest_sha256": ADMIT_MANIFEST,
+            "scope": {"language": "eng", "profile": "eng", "psm": 3, "dpi": 300},
+            "max_cer": ADMIT_CER,
+        });
+        let deu = serde_json::json!({
+            "hosts": {ADMIT_IMAGE: [1, 2, 3]}, "manifest_sha256": "7".repeat(64),
+            "scope": {"language": "deu", "profile": "frak2021", "psm": 3, "dpi": 300},
+            "max_cer": 0.2,
+        });
+        serde_json::json!({
+            "hosts": {ADMIT_IMAGE: [1, 8]}, "manifest_sha256": ADMIT_MANIFEST,
+            "scope": {"language": "eng", "profile": "eng", "psm": 3, "dpi": 300},
+            "max_cer": ADMIT_CER, "policies": [deu, eng], "v": TRUST_VERSION,
+        })
+    }
+
+    #[test]
+    fn admitting_hosts_adds_to_one_scope_and_keeps_every_other_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("trust.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&two_scope_list()).unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let admitted = Trust::admit_hosts(
+            &path,
+            &scope(),
+            ADMIT_MANIFEST,
+            ADMIT_CER,
+            ADMIT_IMAGE,
+            &BTreeSet::from([2, 8]),
+        )
+        .unwrap();
+        assert_eq!(admitted.added, BTreeSet::from([2]));
+        assert_eq!(
+            admitted.before_sha256,
+            usnm_ocr_contract::boinc::sha256(&before)
+        );
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(
+            admitted.after_sha256,
+            usnm_ocr_contract::boinc::sha256(&after)
+        );
+        let t = Trust::load(&path).unwrap();
+        let eng = t.policy_for("eng", "eng").unwrap();
+        assert_eq!(eng.hosts[ADMIT_IMAGE], BTreeSet::from([1, 2, 8]));
+        assert_eq!(
+            (eng.max_cer, eng.manifest_sha256.as_str()),
+            (ADMIT_CER, ADMIT_MANIFEST)
+        );
+        assert_eq!(t.hosts[ADMIT_IMAGE], BTreeSet::from([1, 2, 8]));
+        let deu = t.policy_for("deu", "frak2021").unwrap();
+        assert_eq!(deu.hosts[ADMIT_IMAGE], BTreeSet::from([1, 2, 3]));
+        assert_eq!(deu.max_cer, 0.2);
+        // Again: nothing new, so the file is not rewritten.
+        let again = Trust::admit_hosts(
+            &path,
+            &scope(),
+            ADMIT_MANIFEST,
+            ADMIT_CER,
+            ADMIT_IMAGE,
+            &BTreeSet::from([2]),
+        )
+        .unwrap();
+        assert!(again.added.is_empty());
+        assert_eq!(again.before_sha256, again.after_sha256);
+        assert_eq!(std::fs::read(&path).unwrap(), after);
+    }
+
+    #[test]
+    fn admitting_into_a_single_scope_list_or_a_new_image_keeps_the_calibration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("trust.json");
+        let list = serde_json::json!({
+            "hosts": {ADMIT_IMAGE: [1]}, "manifest_sha256": ADMIT_MANIFEST,
+            "scope": {"language": "eng", "profile": "eng", "psm": 3, "dpi": 300},
+            "max_cer": ADMIT_CER, "v": 4,
+        });
+        std::fs::write(&path, serde_json::to_vec(&list).unwrap()).unwrap();
+        let other = format!("sha256:{}", "e".repeat(64));
+        Trust::admit_hosts(
+            &path,
+            &scope(),
+            ADMIT_MANIFEST,
+            ADMIT_CER,
+            &other,
+            &BTreeSet::from([5]),
+        )
+        .unwrap();
+        let t = Trust::load(&path).unwrap();
+        assert_eq!(t.v, 4);
+        assert!(t.policies.is_empty());
+        assert_eq!(t.hosts[ADMIT_IMAGE], BTreeSet::from([1]));
+        assert_eq!(t.hosts[&other], BTreeSet::from([5]));
+        assert_eq!(t.max_cer, ADMIT_CER);
+    }
+
+    #[test]
+    fn admitting_refuses_a_changed_calibration_an_unknown_scope_or_a_legacy_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("trust.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&two_scope_list()).unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let hosts = BTreeSet::from([2]);
+        let fra = Scope {
+            language: "fra".into(),
+            profile: "fra".into(),
+            psm: 3,
+            dpi: 300,
+        };
+        for (scope, manifest, cer, image, hosts) in [
+            (
+                scope(),
+                "c".repeat(64),
+                ADMIT_CER,
+                ADMIT_IMAGE.to_owned(),
+                hosts.clone(),
+            ),
+            (
+                scope(),
+                ADMIT_MANIFEST.to_owned(),
+                0.09,
+                ADMIT_IMAGE.to_owned(),
+                hosts.clone(),
+            ),
+            (
+                fra,
+                ADMIT_MANIFEST.to_owned(),
+                ADMIT_CER,
+                ADMIT_IMAGE.to_owned(),
+                hosts.clone(),
+            ),
+            (
+                scope(),
+                ADMIT_MANIFEST.to_owned(),
+                ADMIT_CER,
+                "worker:latest".to_owned(),
+                hosts.clone(),
+            ),
+            (
+                scope(),
+                ADMIT_MANIFEST.to_owned(),
+                ADMIT_CER,
+                ADMIT_IMAGE.to_owned(),
+                BTreeSet::from([0]),
+            ),
+            (
+                scope(),
+                ADMIT_MANIFEST.to_owned(),
+                ADMIT_CER,
+                ADMIT_IMAGE.to_owned(),
+                BTreeSet::new(),
+            ),
+        ] {
+            assert!(Trust::admit_hosts(&path, &scope, &manifest, cer, &image, &hosts).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        let legacy = serde_json::json!({"hosts": {ADMIT_IMAGE: [1]}, "max_cer": 0.1, "v": 3});
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(Trust::admit_hosts(
+            &path,
+            &scope(),
+            ADMIT_MANIFEST,
+            ADMIT_CER,
+            ADMIT_IMAGE,
+            &BTreeSet::from([2])
+        )
+        .is_err());
+        assert!(Trust::admit_hosts(
+            &tmp.path().join("missing.json"),
+            &scope(),
+            ADMIT_MANIFEST,
+            ADMIT_CER,
+            ADMIT_IMAGE,
+            &BTreeSet::from([2])
+        )
+        .is_err());
     }
 }

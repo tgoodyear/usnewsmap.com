@@ -516,6 +516,197 @@ elif args[0] == "export":
             shutil.rmtree(directory)
 
 
+GOLD = {"campaign": "v1-tess550", "language": "eng", "profile": "eng",
+        "engine_base": "docker.io/tesseract@sha256:" + "c" * 64}
+
+
+class GoldFake(Fake):
+    """A feed whose trust gate holds results until gold-promote admits their host."""
+
+    def __init__(self):
+        super().__init__()
+        self.now = NOW
+        self.steps = []
+        self.fail_steps = set()
+        self.admits = True
+
+    def inventory(self):
+        return {**super().inventory(), "created_at": self.now}
+
+    def step(self, target, step, **variables):
+        self.steps.append((target, step, variables))
+        self.actions.append(("step", step))
+        if step in self.fail_steps:
+            raise RuntimeError(f"{target}/{step} failed; inspect the execution privately before retrying")
+        if step == "gold-promote" and self.admits:
+            self.hold = False
+
+
+class GoldOnboardingTests(unittest.TestCase):
+    """#901: calibrate new hosts before their results stall collection."""
+
+    def setUp(self):
+        self.config = {**config(), "gold_onboarding": [dict(GOLD)]}
+        self.state = {}
+        self.fake = GoldFake()
+
+    def tick(self, at=0, drain=False):
+        self.fake.now = NOW + at
+        return batch.tick(self.config, self.state, self.fake, lambda: None, NOW + at, drain=drain)
+
+    def ran(self):
+        return [variables for _, _, variables in self.fake.steps]
+
+    def test_steps_and_their_settings(self):
+        event = self.tick()
+        self.assertEqual([(t, s) for t, s, _ in self.fake.steps],
+                         [("bridge", "gold-onboard"), ("bridge", "gold-promote")])
+        self.assertEqual(self.fake.steps[0][2], {
+            "GOLD_CAMPAIGN": "v1-tess550", "GOLD_LANGUAGE": "eng", "GOLD_PROFILE": "eng",
+            "GOLD_ENGINE_IMAGE": self.config["image"], "GOLD_ENGINE_BASE": GOLD["engine_base"],
+            "GOLD_ENGINE_VERSION": "5.5.0", "GOLD_MAX_HOSTS": 10})
+        self.assertEqual(event["gold_onboarding"][0]["scope"], "v1-tess550/eng/eng")
+        self.assertEqual(event["gold_onboarding"][0]["steps"],
+                         {"gold-onboard": "ok", "gold-promote": "ok"})
+        # Gold runs before any feed work in the tick.
+        self.assertEqual(self.fake.actions[:2], [("step", "gold-onboard"), ("step", "gold-promote")])
+
+    def test_runs_on_its_interval_and_sooner_while_results_are_held(self):
+        self.tick()
+        self.tick(at=30 * 60)
+        self.assertEqual(len(self.fake.steps), 2)
+        self.tick(at=60 * 60)
+        self.assertEqual(len(self.fake.steps), 4)
+        # A held result shortens the wait to ten minutes.
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.hold = True
+        self.fake.admits = False
+        with self.assertRaisesRegex(RuntimeError, "trust"):
+            self.tick(at=65 * 60)
+        self.assertEqual(len(self.fake.steps), 4)
+        with self.assertRaisesRegex(RuntimeError, "trust"):
+            self.tick(at=70 * 60)
+        self.assertEqual(len(self.fake.steps), 6)
+        self.assertTrue(self.state["gold_onboarding"]["v1-tess550/eng/eng"]["held"])
+
+    def test_an_admitted_host_publishes_its_held_result_in_the_same_tick(self):
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.hold = True
+        event = self.tick(at=60 * 60)
+        self.assertEqual(event["newly_published"], 2)
+        steps = [a for a in self.fake.actions if a[0] in ("step", "collect")]
+        self.assertEqual(steps[-4:], [("step", "gold-onboard"), ("step", "gold-promote"),
+                                      ("collect", self.fake.rows[0]["job"]["id"]),
+                                      ("collect", self.fake.rows[1]["job"]["id"])])
+        self.assertEqual(event["collection_held"], 0)
+
+    def test_a_failed_step_is_reported_and_not_retried_every_tick(self):
+        self.fake.fail_steps = {"gold-onboard"}
+        event = self.tick()
+        self.assertEqual(event["gold_onboarding"][0]["steps"]["gold-promote"], "ok")
+        self.assertIn("bridge/gold-onboard failed", event["gold_onboarding"][0]["steps"]["gold-onboard"])
+        self.assertIn({"code": "gold_onboarding_failed", "scope": "v1-tess550/eng/eng",
+                       "step": "gold-onboard",
+                       "error": event["gold_onboarding"][0]["steps"]["gold-onboard"]}, event["alerts"])
+        # The feed went on as before.
+        self.assertEqual(len(self.fake.jobs), 2)
+        self.tick(at=5 * 60)
+        self.assertEqual(len(self.fake.steps), 2)
+
+    def test_the_run_is_on_record_before_its_steps(self):
+        saved = []
+        self.fake.fail_steps = {"gold-onboard", "gold-promote"}
+        batch.tick(self.config, self.state, self.fake,
+                   lambda: saved.append(copy.deepcopy(self.state.get("gold_onboarding"))), NOW)
+        first = next(s for s in saved if s)
+        self.assertEqual(first["v1-tess550/eng/eng"], {"at": NOW, "held": False, "steps": {}})
+
+    def test_drain_and_plans_without_it_run_no_gold_steps(self):
+        self.tick(drain=True)
+        self.assertEqual(self.fake.steps, [])
+        self.config = config()
+        event = self.tick()
+        self.assertEqual((self.fake.steps, event["gold_onboarding"]), ([], []))
+
+    def test_held_results_report_their_age(self):
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.hold = True
+        self.fake.admits = False
+        for at in (60 * 60, 75 * 60):
+            with self.assertRaisesRegex(RuntimeError, "trust"):
+                self.tick(at=at)
+        self.assertEqual(batch.held_results(self.state, set(self.state["held_since"]), NOW + 80 * 60),
+                         (2, 20 * 60))
+        self.fake.hold = False
+        event = self.tick(at=80 * 60)
+        self.assertEqual((event["collection_held"], event["oldest_held_seconds"]), (0, 0))
+        self.assertEqual(self.state["held_since"], {})
+
+    def test_failure_line_carries_held_age_and_gold_runs(self):
+        directory = Path(tempfile.mkdtemp())
+        try:
+            (directory / "state.json").write_text(json.dumps({
+                "config_sha256": "x", "held_since": {"a" * 64: NOW - 600},
+                "gold_onboarding": {"v1-tess550/eng/eng": {"at": NOW, "held": True, "steps": {}}}}))
+            fake = GoldFake()
+            fake.lock = lambda: contextlib.nullcontext()
+
+            def fail(*a, **k):
+                raise RuntimeError("handoff/collect failed; inspect the execution privately before retrying")
+
+            fake.inventory = fail
+            err = io.StringIO()
+            with patch.object(batch, "load_config", return_value=self.config), \
+                    patch.object(batch, "digest", return_value="x"), \
+                    patch.object(batch, "Transport", return_value=fake), \
+                    patch.object(batch.time, "time", return_value=NOW), \
+                    contextlib.redirect_stderr(err):
+                self.assertEqual(batch.main(["--config", "c.json", "--state-dir", str(directory),
+                                             "--apply"]), 1)
+            failure = json.loads(err.getvalue())
+            self.assertEqual((failure["collection_held"], failure["oldest_held_seconds"]), (1, 600))
+            self.assertTrue(failure["gold_onboarding"]["v1-tess550/eng/eng"]["held"])
+        finally:
+            import shutil
+            shutil.rmtree(directory)
+
+    def test_config_validation_and_digest(self):
+        directory = Path(tempfile.mkdtemp())
+        try:
+            path = directory / "config.json"
+            plain = config()
+            path.write_text(json.dumps(plain))
+            before = batch.digest(batch.load_config(path))
+            full = {**GOLD, "engine_version": "5.5.0", "max_hosts": 5, "interval_minutes": 30}
+            path.write_text(json.dumps({**plain, "gold_onboarding": [full]}))
+            loaded = batch.load_config(path)
+            # Turning gold onboarding on is not an allocation change.
+            self.assertEqual(batch.digest(loaded), before)
+            for bad in (
+                [], {}, [dict(GOLD)] * 2, [dict(GOLD)] * 5,
+                [{**GOLD, "campaign": "../x"}], [{**GOLD, "language": "en"}],
+                [{**GOLD, "engine_base": "docker.io/tesseract:latest"}],
+                [{**GOLD, "engine_version": "5.5.0;x"}],
+                [{**GOLD, "interval_minutes": 5}], [{**GOLD, "max_hosts": 0}],
+                [{**GOLD, "max_hosts": True}],
+                [{**GOLD, "max_cer": 0.1}], [{**GOLD, "manifest_sha256": "a" * 64}],
+                [{**GOLD, "target_host": 7}],
+                [{key: value for key, value in GOLD.items() if key != "engine_base"}],
+            ):
+                with self.subTest(bad=bad):
+                    path.write_text(json.dumps({**plain, "gold_onboarding": bad}))
+                    with self.assertRaises(ValueError):
+                        batch.load_config(path)
+        finally:
+            import shutil
+            shutil.rmtree(directory)
+
+
 def queue_config():
     value = config()
     del value["batch"]

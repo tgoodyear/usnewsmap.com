@@ -194,6 +194,20 @@ enum HostTrust {
         #[arg(long)]
         execute: bool,
     },
+    /// Collect untrusted hosts' onboarding gold units and admit the hosts whose complete native
+    /// evidence passes the scope's existing calibration (#901). Adds hosts only; never sets a
+    /// threshold or revokes.
+    Promote {
+        #[arg(long)]
+        config: PathBuf,
+        /// The gold units' assimilator results directory (batch 0).
+        #[arg(long)]
+        spool: PathBuf,
+        /// Query BOINC, collect and write trust; without this switch only already collected
+        /// evidence is judged and nothing is written.
+        #[arg(long)]
+        execute: bool,
+    },
     /// Deterministically sample OCR jobs and rerun on a second same-image trusted host.
     SpotSubmit {
         #[arg(long)]
@@ -1292,6 +1306,20 @@ async fn main() -> anyhow::Result<()> {
                 HostTrust::Onboard { config, execute } => {
                     let hosts = x::onboard(&x::Config::load(&config)?, execute).await?;
                     println!("{}", serde_json::to_string(&hosts)?);
+                }
+                HostTrust::Promote {
+                    config,
+                    spool,
+                    execute,
+                } => {
+                    let p = x::promote(&x::Config::load(&config)?, &spool, execute).await?;
+                    println!("{}", serde_json::to_string(&p)?);
+                    // Hosts that could be judged were; the others are named in the summary.
+                    anyhow::ensure!(
+                        p.failed.is_empty(),
+                        "gold evidence of {} host(s) could not be collected or judged; see the summary",
+                        p.failed.len()
+                    );
                 }
                 HostTrust::SpotSubmit {
                     config,

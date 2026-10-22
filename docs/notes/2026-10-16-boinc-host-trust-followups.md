@@ -3,8 +3,11 @@
 `usnm-boinc host-trust` implements #527's controller commands, **OFF by default**.
 Without `--execute`, commands only query the database and print a bounded plan;
 they create no controller root or work. They install no timer, enable no
-assignment, calibrate no threshold, change no trust, publish no OCR and modify
-no production setting.
+assignment, calibrate no threshold, publish no OCR and modify no production
+setting. Only `promote --execute` changes trust, and only by adding hosts whose
+evidence passes an existing calibration (see below). The priority controller can
+run `onboard` and `promote` on a schedule (docs/boinc-batch-scheduler.md, "Gold
+onboarding").
 
 Coordinate scope and current runtime and worker releases in #529 before
 execution. Resource, signing, client and activation holds still apply. Assignment
@@ -143,6 +146,34 @@ scripts/start-boinc-bridge.sh --env prod --step gold-onboard --var GOLD_CAMPAIGN
 A failed unit is a failed job, not a verdict on the host: it gets another unit
 on the next pass. A successful unit whose CER is over the threshold is a
 verdict and is not reissued; a new campaign decides that.
+
+## Admit hosts that pass (#901)
+
+```sh
+usnm-boinc host-trust promote --config controller.json --spool <project>/results/0
+# Only in an approved execution window, or from the controller's gold-promote step:
+usnm-boinc host-trust promote --config controller.json --spool <project>/results/0 --execute
+```
+
+For each host with onboarding attempts (the scoped campaign root and the
+earlier unscoped one) that isn't trusted for the scope and worker image,
+`--execute` runs native gold collection into each attempt's `out/`, then builds
+eligibility from that host's reports and native outcomes with the threshold and
+challenge of the scope's existing calibrated policy. The prepared campaign must
+be that challenge, and the list must be a calibrated v4 or v5 list; a missing or
+legacy list is refused, not read as "trust no host". Hosts that pass are added
+to the scope with `Trust::admit_hosts`, under the trust directory's lock,
+keeping every other scope, image and host. Nothing is removed: revoking stays
+with a full `gold trust` rebuild.
+
+Each admitted host is recorded in `<root>/promotions.jsonl` (scope, image,
+challenge, threshold, workunit, native result ID, trust digests before and
+after). A recorded workunit is not used again, so a rebuild that drops the host
+isn't undone by the same evidence. Without `--execute` nothing is queried or
+written; hosts are judged from evidence already collected. The JSON summary
+lists hosts promoted, already used, not eligible, pending and failed. A host
+whose evidence can't be collected or judged is left as it was, and the command
+exits non-zero after promoting the others.
 
 ## Sample and rerun OCR independently
 

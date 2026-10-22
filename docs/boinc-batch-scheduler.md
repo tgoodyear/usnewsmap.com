@@ -127,6 +127,64 @@ also mean five minutes between inactive services is not five-minute polling.
 Language admission alone does not guarantee the returning host is calibrated;
 retain normal gold onboarding and fail-closed quarantine.
 
+### Gold onboarding (#901)
+
+Language admission doesn't decide which host returns a page. A result from a
+host with no gold evidence for the scope is held at collection, and since the
+hand-off `collect` step fails on a held result, the tick stops there and no new
+work goes out until the host is calibrated. On 21 October 2026 that took a
+manual targeted gold campaign. With `gold_onboarding` in the controller's
+config, the controller does this itself:
+
+```json
+"gold_onboarding": [
+  {"campaign": "v1-tess550", "language": "eng", "profile": "eng",
+   "engine_base": "<the worker's TESSERACT_IMAGE, pinned by digest>",
+   "interval_minutes": 60, "max_hosts": 10}
+]
+```
+
+When a scope is due, the tick runs two bridge steps before it collects:
+
+1. `gold-onboard`: the existing host-trust onboarding pass. Every host BOINC
+   knows that isn't trusted for the scope, the calibrated challenge and the
+   worker image (`image`) gets one targeted gold unit, at most one outstanding
+   per host and at most `max_hosts` new units per pass. A failed unit gets a
+   fresh attempt. A unit that ran and scored over the threshold is a verdict and
+   isn't reissued.
+2. `gold-promote` (`usnm-boinc host-trust promote`): collects those units with
+   the native result query, judges each untrusted host's complete evidence
+   against the scope's calibration in `gold/trust.json` (its `max_cer` and
+   `manifest_sha256`), and adds the hosts that pass to that scope. It never
+   sets or changes a threshold or challenge, refuses when the prepared campaign
+   isn't the calibrated challenge, keeps every other scope, image and host, and
+   never removes a host. Each promotion is recorded in
+   `host-trust/promotions.jsonl` with the evidence's workunit and result ID.
+   A recorded workunit is never used again, so a later trust rebuild that drops
+   the host stands.
+
+A host admitted this way has its held results published by the same tick's
+collection. A host that fails or hasn't returned its unit stays untrusted, and
+its results stay held, as before.
+
+A scope is due `interval_minutes` (10 to 1440, default 60) after its last run.
+While results are held it's due after 10 minutes at most. The run goes into the
+controller state before its steps start, so a crash or a failing step waits for
+the next due time instead of running every tick. A failed step adds a
+`gold_onboarding_failed` alert to the tick line and doesn't stop the tick. The
+tick line reports `gold_onboarding` (the runs this tick), `collection_held` and
+`oldest_held_seconds`. A tick that stops at a held result reports the same
+counts and the last runs on its `boinc_batch_failure` line. Drain ticks run no
+gold steps.
+
+`gold_onboarding` isn't part of the allocation digest, so turning it on needs
+no migration. Up to four scopes, one per language and profile. Over ssh,
+`onprem-step.sh` lets the controller set only the `GOLD_CAMPAIGN`,
+`GOLD_LANGUAGE`, `GOLD_PROFILE`, `GOLD_ENGINE_IMAGE`, `GOLD_ENGINE_BASE`,
+`GOLD_ENGINE_VERSION` and `GOLD_MAX_HOSTS` inputs of these two steps; never a
+threshold, a challenge hash, a target host or a spool. `gold-promote` needs a
+bridge image built from this change.
+
 ### Separate hand-off runtime
 
 The hand-off job is in the **main** resource group, not the BOINC runtime
