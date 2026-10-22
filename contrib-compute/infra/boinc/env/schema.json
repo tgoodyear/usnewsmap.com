@@ -147,6 +147,15 @@
       "default": false,
       "description": "Require verified MySQL TLS. Defaults OFF when absent. Set true only after #464 actual Azure-chain, complete copied-project migration/rollback and all-client acceptance, under #529 coordination. Forwarded by normal provisioning; no portal-only toggle."
     },
+    "server": {
+      "type": "string",
+      "enum": [
+        "azure",
+        "onprem"
+      ],
+      "default": "azure",
+      "description": "Where the BOINC server runs. onprem (#942, docs/boinc-onprem.md): main.bicep's serverOnPrem keeps only the identities, the vault the on-prem host reads, the VNet and the static site, and provision-boinc.sh checks the on-prem server at the master URL instead of starting lifecycle jobs. Default azure."
+    },
     "subscriptionId": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"

@@ -77,11 +77,26 @@ than the images. After each pull, before the server starts:
 3. On the host: `r2-pull.sh`, `db-import.sh --replace`, then the project tree steps above.
 4. On the host, remove `stop_maintenance`, `stop_sched` and `stop_upload` (they came over in the copy) and start the server. Point `boinc.usnewsmap.com` at the tunnel (proxied CNAME).
 5. Start the controller under a new plan whose `step_command` reaches `usnm-boinc-step` (plans are immutable, so the change needs a drain). End `step_command` with `--` after the host (`["ssh", "-i", "<key>", "-o", "BatchMode=yes", "root@<host>", "--"]`). Without it, ssh reads the step's `--env` as one of its own options.
-6. After it is verified: delete the project storage accounts and their private endpoints, and remove them from Bicep.
+6. After it is verified, set `"server": "onprem"` in `contrib-compute/infra/boinc/env/<env>.json` and run `scripts/provision-boinc.sh`. It deletes the project storage accounts, their private endpoints and the rest of the Azure server (see below).
 
 The bridge steps read and write the hand-off container in the main environment's storage, so
 the on-prem group needs a role there before step 5. The hand-off job itself has no project tree
 and stays in Azure.
+
+## Azure after the cutover
+
+With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem server still uses: the two identities (the main environment's Bicep reads `usnm-boinc-id-<env>`), the Key Vault the host reads, the VNet (its `aca` subnet is in the main environment's storage network rules) and the static site. The stack deletes the rest: the server app, its jobs and environment, MySQL, both project storage accounts, Log Analytics, the workbook and the private endpoints. The provision then checks that the on-prem server answers at the master URL. Prod moved on 2026-10-21.
+
+`mysql-admin-password` in the vault still gets a new value on every provision. It no longer matters: the on-prem host keeps its own copy in `/etc/usnm-boinc/secrets/db-admin`.
+
+Work that ran as Azure jobs, and where it runs now:
+
+| Work                                                         | On-prem                                                                                                                 |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Bridge steps (the controller's submit, spool-out, inventory) | `usnm-boinc-step`                                                                                                       |
+| Gold bundle                                                  | `usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=<campaign> --wait-mins 360`, run as root on the host |
+| App version publish                                          | not yet: `scripts/boinc-app-release.sh` still builds the `appver` image in Azure and starts the Azure publish job       |
+| Quality wave                                                 | not yet: it reads the scan archive in the main environment's storage, where the on-prem group has no role               |
 
 ## Cloudflare
 

@@ -8,6 +8,12 @@
 
 BOINC_DIR=contrib-compute/infra/boinc
 BOINC_SETTINGS="$BOINC_DIR/env/$ENV_NAME.json"
+# The tests (scripts/test_boinc_provision.py) run against fixture settings with stubbed
+# Azure calls: USNM_BOINC_SETTINGS_FILE, honoured only with USNM_BOINC_TEST=1.
+if [ -n "${USNM_BOINC_SETTINGS_FILE:-}" ]; then
+  [ "${USNM_BOINC_TEST:-}" = 1 ] || { echo "error: USNM_BOINC_SETTINGS_FILE is for the tests" >&2; exit 1; }
+  BOINC_SETTINGS=$USNM_BOINC_SETTINGS_FILE
+fi
 BOINC_RG="usnm-boinc-rg-$ENV_NAME"
 BOINC_STACK="usnm-boinc-$ENV_NAME"
 # Never touched by these scripts (other production resources).
@@ -31,6 +37,8 @@ case "$ENV_NAME" in prod | dev) ;; *) die "--env must be prod or dev (the BOINC 
 # infra/env/<env>.json, unless --allow-dirty (dev only).
 boinc_clean_check() {
   local out
+  # Fixture settings in the tests live outside the repository.
+  [ -z "${USNM_BOINC_SETTINGS_FILE:-}" ] || return 0
   out=$(git status --porcelain -- "$BOINC_SETTINGS" "$BOINC_DIR/env/schema.json" 2>&1) ||
     die "can't check $BOINC_SETTINGS with git: $out"
   [ -z "$out" ] && return 0
@@ -48,7 +56,7 @@ boinc_load_settings() {
   err=$(jq -r '
     def guid: test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
     def acr: test("^$|^[a-z0-9.-]+\\.azurecr\\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$");
-    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "keyVaultAllowedIps", "location", "onPremGroupId", "operator", "projectShare", "projectUrl", "qualityWave", "requireSecureTransport", "subscriptionId"]
+    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "keyVaultAllowedIps", "location", "onPremGroupId", "operator", "projectShare", "projectUrl", "qualityWave", "requireSecureTransport", "server", "subscriptionId"]
         | if length > 0 then "unknown keys: \(join(", "))" else empty end),
       (if keys_unsorted != keys then "keys are not sorted" else empty end),
       (if (.assessment | type) != "boolean" then "assessment must be true or false" else empty end),
@@ -59,6 +67,7 @@ boinc_load_settings() {
           or (.qualityWave.sha256 | test("^[0-9a-f]{64}$") | not))
         then "qualityWave must be {script: an https blob URL of a .py file, sha256: 64 hex}" else empty end),
       (if has("requireSecureTransport") and (.requireSecureTransport | type) != "boolean" then "requireSecureTransport must be true or false" else empty end),
+      (if has("server") and (.server != "azure" and .server != "onprem") then "server must be azure or onprem" else empty end),
       (if has("projectShare") and ([.projectShare] | inside(["standard", "copy", "provisioned", "provisioned-final"]) | not) then "projectShare must be standard, copy, provisioned or provisioned-final" else empty end),
       (if has("keyVaultAllowedIps") and ((.keyVaultAllowedIps | type) != "array" or (.keyVaultAllowedIps | length) > 4 or any(.keyVaultAllowedIps[]; type != "string" or (test("^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$") | not))) then "keyVaultAllowedIps must be up to 4 public IPv4 addresses" else empty end),
       (if has("onPremGroupId") and ((.onPremGroupId | type) != "string" or (.onPremGroupId | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$") | not)) then "onPremGroupId must be an object id" else empty end),

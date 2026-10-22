@@ -9,7 +9,8 @@
 // sees the vault as a potential deletion); the guardrails' publicAccountIds is its Bicep home.
 //
 // Who writes what:
-// - this template: mysql-admin-password (a new random value each deployment, from main.bicep)
+// - this template: mysql-admin-password (a new random value each deployment, from main.bicep;
+//   with the server on-prem it is no longer authoritative: the host keeps its own copy, #942)
 //   and code-sign-public-key (the PUBLIC half of the offline key, from the settings, if set).
 //   Both go through Azure Resource Manager, which needs no network path into the VNet.
 // - the secrets job (secrets-job.bicep), inside the VNet with its own identity:
@@ -21,7 +22,10 @@ param location string
 param readerPrincipalId string
 @description('The secrets job\'s identity: Key Vault Secrets Officer, to create the secrets that must not rotate.')
 param writerPrincipalId string
+@description('Audit logs go here; empty sends none (the on-prem server mode has no workspace, #942).')
 param logAnalyticsWorkspaceId string
+@description('A private endpoint in the project VNet. Off once nothing in Azure reads the vault (the on-prem server mode, #942).')
+param privateEndpoint bool = true
 param peSubnetId string
 param dnsZoneId string
 @description('Entra object ids (people or groups) given Key Vault Secrets Officer, to inspect or repair secrets by hand.')
@@ -50,7 +54,7 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
+resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (privateEndpoint) {
   name: endpointName
   location: location
   properties: {
@@ -61,7 +65,7 @@ resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   }
 }
 
-resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
+resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (privateEndpoint) {
   parent: endpoint
   name: 'default'
   properties: { privateDnsZoneConfigs: [ { name: 'vault', properties: { privateDnsZoneId: dnsZoneId } } ] }
@@ -127,7 +131,7 @@ resource codeSignPublic 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!em
   properties: { value: codeSignPublicKey, contentType: 'text/plain' }
 }
 
-resource diag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource diag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceId)) {
   scope: vault
   name: 'to-log'
   properties: {
