@@ -1328,7 +1328,7 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                 f'[ "${{JOB_ID:-}}" != {fail_job} ] || exit 4\nexit 0\n')
         # Key Vault and the config: stubs that log, so a test can count what a batch fetches (#958).
         lib_line = f". {os.path.join(ROOT, 'contrib-compute/images/server/lib.sh')}\n"
-        secrets = ('SECRETS="$STUB_SECRETS"\n'
+        stubs = ('SECRETS="$STUB_SECRETS"\n'
                    'fetch_secrets() { echo "stub fetch_secrets" >> "$STUB_LOG"; mkdir -p "$SECRETS/keys"; '
                    'echo x > "$SECRETS/db-runtime"; echo x > "$SECRETS/keys/upload_private"; '
                    'echo x > "$SECRETS/keys/upload_public"; }\n'
@@ -1337,7 +1337,7 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         head = text.split(marker)[0]
         self.assertIn(lib_line, head)
         with open(bridge, "w") as f:
-            f.write(head.replace(lib_line, lib_line + secrets, 1) + marker + stub)
+            f.write(head.replace(lib_line, lib_line + stubs, 1) + marker + stub)
         env = {**env, "STUB_SECRETS": os.path.join(self.tmp, "secrets")}
         return bridge, env
 
