@@ -83,6 +83,17 @@ class NoPasswordOnCommandLines(unittest.TestCase):
         self.assertNotRegex(SOURCE, r'f"-p\{')
 
 
+class NoSas(unittest.TestCase):
+    # ADR-0009: no SAS of any kind. Every blob call signs in with the job's managed identity (#916).
+    def test_no_sas_variable_or_parameter(self):
+        self.assertNotRegex(SOURCE, r"\b[A-Z]+_SAS\b")
+        self.assertNotRegex(SOURCE, r"def list_blobs\([^)]*\bsas\b")
+
+    def test_no_sas_query_passthrough(self):
+        self.assertNotIn("sv=", SOURCE)
+        self.assertNotIn("sig=", SOURCE)
+
+
 class LocFallback(unittest.TestCase):
     def test_off_unless_asked_for(self):
         # One 5-second pacer for every shard can't fetch a corpus (#914): the LoC pass runs

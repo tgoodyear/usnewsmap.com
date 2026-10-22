@@ -32,10 +32,7 @@ sys.path.insert(0, "/usr/local/lib/usnm-boinc/gold/py")
 
 DUCKDB_WHL_URL = "https://files.pythonhosted.org/packages/50/52/6e6f5b5b07841cec334ca6b98f2e02b7bb54ab3b99c49aa3a161cc0b4b37/duckdb-1.2.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 
-SCANS_SAS = os.environ.get("SCANS_SAS", "")
-# No SAS: without one, curated reads use the job's managed identity (Storage Blob Data Reader).
-CURATED_SAS = os.environ.get("CURATED_SAS", "")
-HANDOFF_SAS = os.environ.get("HANDOFF_SAS", "")
+# Every blob read and write signs in with the job's managed identity (ADR-0009: no SAS of any kind).
 STORAGE_BEARER_TOKEN = os.environ.get("STORAGE_BEARER_TOKEN", "")
 _MI_TOKEN_CACHE = {"token": "", "expires_at": 0.0}
 
@@ -70,8 +67,6 @@ def azure_blob_url_and_headers(url: str, extra_headers: dict | None = None) -> t
     if host == "blob.core.windows.net" or host.endswith(".blob.core.windows.net"):
         base, sep, qs = url.partition("?")
         qs = qs.strip("&?")
-        if "sv=" in qs:
-            return f"{base}?{qs}", headers
         clean_url = f"{base}?{qs}" if qs else base
         tok = get_storage_bearer_token(for_curated=(host == "stusnmdffapzy.blob.core.windows.net"))
         if tok:
@@ -170,7 +165,7 @@ def bootstrap_runtime():
 
 
 def put_blob(blob_path, data_bytes, content_type="application/octet-stream"):
-    raw_url = f"{HANDOFF_BASE}/{blob_path}?{HANDOFF_SAS}"
+    raw_url = f"{HANDOFF_BASE}/{blob_path}"
     url, headers = azure_blob_url_and_headers(
         raw_url,
         {
@@ -270,7 +265,7 @@ def cached_page(blob_name):
     """The on-prem page JPEG cache (#850): this recipe's output for the master, or None."""
     if not JPEG_CACHE_PREFIX or not blob_name:
         return None
-    raw_url = f"{HANDOFF_BASE}/{JPEG_CACHE_PREFIX}{urllib.parse.quote(blob_name)}.jpg?{HANDOFF_SAS}"
+    raw_url = f"{HANDOFF_BASE}/{JPEG_CACHE_PREFIX}{urllib.parse.quote(blob_name)}.jpg"
     for attempt in range(2):
         try:
             clean_url, headers = azure_blob_url_and_headers(raw_url)
@@ -334,7 +329,7 @@ def loc_paced_download(url):
         pacer_lock.close()
 
 
-def list_blobs(base_url, sas, prefix, delimiter=None):
+def list_blobs(base_url, prefix, delimiter=None):
     out = []
     marker = ""
     while True:
@@ -343,7 +338,7 @@ def list_blobs(base_url, sas, prefix, delimiter=None):
             q += f"&delimiter={urllib.parse.quote(delimiter)}"
         if marker:
             q += f"&marker={urllib.parse.quote(marker)}"
-        url = f"{base_url}?{q}&{sas}"
+        url = f"{base_url}?{q}"
         xml_bytes = download_bytes(url)
         root = ET.fromstring(xml_bytes)
         if delimiter:
@@ -1195,7 +1190,7 @@ def init_wave9():
             if candidates:
                 shutil.copyfile(candidates[0], PLACES_PATH)
             else:
-                download_blob(f"{HANDOFF_BASE}/quality/v1-2k/places.txt?{HANDOFF_SAS}", PLACES_PATH)
+                download_blob(f"{HANDOFF_BASE}/quality/v1-2k/places.txt", PLACES_PATH)
 
         for lang in ALL_LANGS:
             fw_dst = f"{FW_DIR}/{lang}.txt"
@@ -1213,7 +1208,7 @@ def init_wave9():
 
         if not os.path.exists(SHARED_MANIFEST):
             download_blob(
-                f"{HANDOFF_BASE}/quality/v1-wave9/wave9_manifest.parquet?{HANDOFF_SAS}",
+                f"{HANDOFF_BASE}/quality/v1-wave9/wave9_manifest.parquet",
                 SHARED_MANIFEST,
             )
 
@@ -1675,13 +1670,13 @@ def discover_all_corpus_batches(con):
     try:
         keep_prefixes = {
             p.rstrip("/").split("/")[-1]
-            for p in list_blobs(SCANS_BASE, SCANS_SAS, "keep/", delimiter="/")
+            for p in list_blobs(SCANS_BASE, "keep/", delimiter="/")
         }
     except Exception:
         keep_prefixes = set()
 
     try:
-        dmg_blobs = sorted(list_blobs(CURATED_BASE, CURATED_SAS, "audit/damage/v2/"))
+        dmg_blobs = sorted(list_blobs(CURATED_BASE, "audit/damage/v2/"))
     except Exception:
         dmg_blobs = []
 
@@ -1721,7 +1716,7 @@ def load_batch_records(
     jc_pfx = JPEG_CACHE_PREFIX.rstrip("/")
     if archived_only and (cached_jpeg_batches is None or batch in cached_jpeg_batches):
         try:
-            for b in list_blobs(HANDOFF_BASE, HANDOFF_SAS, f"{jc_pfx}/keep/{batch}/"):
+            for b in list_blobs(HANDOFF_BASE, f"{jc_pfx}/keep/{batch}/"):
                 if b.endswith(".jpg"):
                     cached_jp2s.add(b.removeprefix(f"{jc_pfx}/")[:-4])
         except Exception:
@@ -1765,7 +1760,7 @@ def load_batch_records(
 
     keep_blobs = {}
     try:
-        for bpath in list_blobs(SCANS_BASE, SCANS_SAS, f"keep/{batch}/"):
+        for bpath in list_blobs(SCANS_BASE, f"keep/{batch}/"):
             if bpath.endswith((".jp2", ".jpg")):
                 # keep/<batch>/<lccn>/<date>/<edition>/<seq>.(jp2|jpg)
                 segs = bpath.split("/")
@@ -1784,7 +1779,7 @@ def load_batch_records(
     # Full-corpus batch discovery via audit/damage/v2/<batch>_ver<bv:02d>.parquet
     dmg_blob = f"audit/damage/v2/{batch}_ver{int(bv):02d}.parquet"
     tmp_dmg = f"{work_dir}/tmp_dmg.parquet"
-    if not download_blob(f"{CURATED_BASE}/{dmg_blob}?{CURATED_SAS}", tmp_dmg):
+    if not download_blob(f"{CURATED_BASE}/{dmg_blob}", tmp_dmg):
         return list(by_doc.values())
 
     try:
@@ -1911,7 +1906,7 @@ def process_shard(shard_idx):
 
     ocr_local_lccns = {
         p.rstrip("/").split("/")[-1]
-        for p in list_blobs(CURATED_BASE, CURATED_SAS, "ocr-local/pages/", delimiter="/")
+        for p in list_blobs(CURATED_BASE, "ocr-local/pages/", delimiter="/")
     }
     as_lccn_blobs = {}
     staged_rows = []
@@ -1924,7 +1919,7 @@ def process_shard(shard_idx):
         try:
             cached_jpeg_batches = {
                 p.rstrip("/").split("/")[-1]
-                for p in list_blobs(HANDOFF_BASE, HANDOFF_SAS, f"{jc_pfx}/keep/", delimiter="/")
+                for p in list_blobs(HANDOFF_BASE, f"{jc_pfx}/keep/", delimiter="/")
             }
         except Exception:
             cached_jpeg_batches = None
@@ -1956,11 +1951,11 @@ def process_shard(shard_idx):
             # 1. Load LoC OCR texts from curated/pages/<batch>/v<bv:02d>/
             loc_map = {}
             page_pfx = f"pages/{batch}/v{int(bv):02d}/"
-            for bname in sorted(list_blobs(CURATED_BASE, CURATED_SAS, page_pfx)):
+            for bname in sorted(list_blobs(CURATED_BASE, page_pfx)):
                 if not bname.endswith(".parquet"):
                     continue
                 tmp_pq = f"{work_dir}/tmp_loc.parquet"
-                if download_blob(f"{CURATED_BASE}/{bname}?{CURATED_SAS}", tmp_pq):
+                if download_blob(f"{CURATED_BASE}/{bname}", tmp_pq):
                     try:
                         for did, src, txt in con.execute(
                             f"SELECT doc_id, ocr_source, text FROM read_parquet('{tmp_pq}')"
@@ -1996,11 +1991,11 @@ def process_shard(shard_idx):
 
             for lccn, yrs in by_lccn_years.items():
                 if lccn in ocr_local_lccns:
-                    for bname in list_blobs(CURATED_BASE, CURATED_SAS, f"ocr-local/pages/{lccn}/"):
+                    for bname in list_blobs(CURATED_BASE, f"ocr-local/pages/{lccn}/"):
                         if not bname.endswith(".parquet"):
                             continue
                         tmp_pq = f"{work_dir}/tmp_ol.parquet"
-                        if download_blob(f"{CURATED_BASE}/{bname}?{CURATED_SAS}", tmp_pq):
+                        if download_blob(f"{CURATED_BASE}/{bname}", tmp_pq):
                             try:
                                 for did, eng, src, txt in con.execute(
                                     f"SELECT doc_id, ocr_engine, ocr_source, text FROM read_parquet('{tmp_pq}')"
@@ -2012,7 +2007,7 @@ def process_shard(shard_idx):
                             finally:
                                 if os.path.exists(tmp_pq):
                                     os.remove(tmp_pq)
-                    for bname in list_blobs(CURATED_BASE, CURATED_SAS, f"ocr-local/alto/{lccn}"):
+                    for bname in list_blobs(CURATED_BASE, f"ocr-local/alto/{lccn}"):
                         if bname.endswith(".xml"):
                             did = os.path.basename(bname).split(".")[0]
                             if did in valid_doc_set:
@@ -2020,7 +2015,7 @@ def process_shard(shard_idx):
 
                 if lccn not in as_lccn_blobs:
                     as_lccn_blobs[lccn] = list_blobs(
-                        CURATED_BASE, CURATED_SAS, f"american-stories/pages/{lccn}/"
+                        CURATED_BASE, f"american-stories/pages/{lccn}/"
                     )
                 want_as_blobs = []
                 for yr in sorted(yrs):
@@ -2035,7 +2030,7 @@ def process_shard(shard_idx):
                     def _dl_as(idx_bname):
                         idx, bn = idx_bname
                         dst = f"{as_tmp_dir}/{idx:05d}.parquet"
-                        return dst if download_blob(f"{CURATED_BASE}/{bn}?{CURATED_SAS}", dst) else None
+                        return dst if download_blob(f"{CURATED_BASE}/{bn}", dst) else None
                     with ThreadPoolExecutor(max_workers=16) as as_ex:
                         as_files = [p for p in as_ex.map(_dl_as, enumerate(want_as_blobs)) if p]
                     if as_files:
@@ -2065,7 +2060,7 @@ def process_shard(shard_idx):
                         with cache_lock:
                             status["jpeg_cache_hits"] = status.get("jpeg_cache_hits", 0) + 1
                     elif blob_name:
-                        scan_url = f"{SCANS_BASE}/{blob_name}?{SCANS_SAS}"
+                        scan_url = f"{SCANS_BASE}/{blob_name}"
                         raw = download_bytes(scan_url)
                         is_jp2 = blob_name.endswith(".jp2")
                         if is_jp2:
@@ -2109,7 +2104,7 @@ def process_shard(shard_idx):
 
                     xml_blob = alto_blob_map.get(did)
                     got_alto = False
-                    if xml_blob and download_blob(f"{CURATED_BASE}/{xml_blob}?{CURATED_SAS}", xml_dst):
+                    if xml_blob and download_blob(f"{CURATED_BASE}/{xml_blob}", xml_dst):
                         got_alto = True
                     elif loc_alto_url:
                         try:
