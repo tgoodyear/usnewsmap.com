@@ -973,6 +973,31 @@ class AppReleaseArgs(unittest.TestCase):
                                  "--binary", str(binary), "--plan-class", "amd_vulkan_8b")
             self.assertIn("--app and --plan-class for --kind native", r.stderr)
 
+    def test_onprem_host_and_ct_are_validated(self):
+        # #961: checked with the other arguments, before the settings are read.
+        r = subprocess.run(
+            [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0", "--signing-host", "fixture.invalid",
+             "--app", "usnm_ocr", "--onprem-host", "bad host!", "--onprem-ct", "230"],
+            cwd=ROOT, capture_output=True, text=True)
+        self.assertIn("--onprem-host must be a host name", r.stderr)
+        for ct in ("23", "abc", "230; id"):
+            r = subprocess.run(
+                [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0", "--signing-host", "fixture.invalid",
+                 "--app", "usnm_ocr", "--onprem-host", "pve.example", "--onprem-ct", ct],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertIn("--onprem-ct must be a container id", r.stderr, ct)
+
+    def test_onprem_publish_builds_on_the_host_and_skips_acr(self):
+        text = Path(APP_RELEASE_SCRIPT).read_text()
+        onprem = text.split('if [ "$SERVER_MODE" = onprem ]; then\n  # The same context')[1].split("\nacr_build_verified")[0]
+        self.assertIn('--build-arg "SERVER_IMAGE=$SERVER_IMAGE"', onprem)
+        self.assertIn("--pull=never --network=none", onprem)
+        self.assertIn("usnm-boinc-step --env $ENV_NAME --target publish --step publish", onprem)
+        self.assertNotIn("images.appver =", onprem)
+        self.assertNotIn("provision-boinc.sh", onprem)
+        # It ends before the ACR build, the Azure publish and the images.appver write.
+        self.assertIn("  exit 0\nfi", onprem + "\nfi")
+
     def test_rejects_qwen_without_worker_image_or_wrong_plan_class(self):
         r = self.run_release("--app", "usnm_qwen", "--plan-class", "docker_nvidia_cuda_8b")
         self.assertEqual(r.returncode, 1)
@@ -1009,7 +1034,8 @@ class AppReleasePublication(unittest.TestCase):
 
     def test_prepare_and_publish_paths_update_only_the_appver_pin(self):
         text = Path(APP_RELEASE_SCRIPT).read_text()
-        _, marker, tail = text.partition('echo "   $appver_image"\n')
+        # The Azure path's: the on-prem branch (#961) has its own, earlier.
+        _, marker, tail = text.rpartition('echo "   $appver_image"\n')
         self.assertTrue(marker)
         old = {"images": {"appver": "old", "worker": "unchanged"}, "assessment": True}
         image = "registry.example.azurecr.io/usnm-boinc-appver@sha256:" + "a" * 64

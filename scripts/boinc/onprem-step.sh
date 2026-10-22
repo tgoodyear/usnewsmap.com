@@ -13,7 +13,12 @@
 #
 # One step at a time, as the Azure job's start guard allows: a second caller fails while a step
 # holds the lock. --wait-mins N (required) stops the step after N minutes and fails, so the
-# lock is held for exactly the step's run. --what-if prints the settings and runs nothing. --target is bridge only: the hand-off job has no project tree and stays in Azure.
+# lock is held for exactly the step's run. --what-if prints the settings and runs nothing.
+# --target is bridge or publish; the hand-off job has no project tree and stays in Azure.
+#
+# --target publish --step publish --image <appver image> publishes an app version (#961), as the
+# Azure publish job did: the image's own publish-appver.sh runs with the host's settings and
+# mounts and APPVER_REUSE_PROJECT=1 (the only --var it takes, 0 or 1). It is refused over ssh.
 #
 # Called over ssh with a forced command (the controller's key may run nothing else), use
 # --from-ssh: the arguments come from SSH_ORIGINAL_COMMAND, split without a shell.
@@ -28,7 +33,7 @@ SSH_VARS=" BATCH_NONCE HANDOFF_SPOOL HANDOFF_SPOOLS HANDOFF_URL JOB_ID JOB_IDS "
 CONTROL_VARS='^(BASH.*|ENV|SHELLOPTS|BASHOPTS|PS[0-9]|PROMPT_COMMAND|IFS|PATH|CDPATH|GLOBIGNORE|HOME|TMPDIR|LD_.*|PYTHON.*|PERL.*|RUBY.*|NODE_.*|LANG|LC_.*|TZ|HOSTALIASES|SSL_.*|CURL_.*|HTTPS?_PROXY|NO_PROXY|ALL_PROXY|IDENTITY_.*|IMDS_.*|AZURE_.*|MYSQL.*|RCLONE_.*)$'
 
 CONF=${USNM_BOINC_CONF:-/etc/usnm-boinc}
-ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge FROM_SSH=false NARGS=$#
+ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge FROM_SSH=false NARGS=$# APPVER_IMAGE=""
 VARS=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -36,6 +41,7 @@ while [ $# -gt 0 ]; do
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --step) [ $# -ge 2 ] || usage; STEP=$2; shift 2 ;;
     --target) [ $# -ge 2 ] || usage; TARGET=$2; shift 2 ;;
+    --image) [ $# -ge 2 ] || usage; APPVER_IMAGE=$2; shift 2 ;;
     --var) [ $# -ge 2 ] || usage; VARS+=("$2"); shift 2 ;;
     --wait-mins)
       [ $# -ge 2 ] || usage
@@ -59,7 +65,15 @@ if $FROM_SSH; then
 fi
 [ -n "$ENV_NAME" ] && [ -n "$STEP" ] || usage
 [[ $ENV_NAME =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "--env is an environment name"
-[ "$TARGET" = bridge ] || die "--target $TARGET does not run on-prem; only bridge steps do"
+case $TARGET in
+  bridge) [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish" ;;
+  publish)
+    [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || die "--target publish isn't allowed over ssh"
+    [ "$STEP" = publish ] || die "--target publish takes --step publish"
+    [[ $APPVER_IMAGE =~ ^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9/_.-]+(:[A-Za-z0-9_.-]+)?(@sha256:[0-9a-f]{64})?$ ]] ||
+      die "--target publish needs --image <appver image>" ;;
+  *) die "--target $TARGET does not run on-prem; only bridge and publish steps do" ;;
+esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
 
 # The host's own settings, which no --var may replace.
@@ -73,6 +87,7 @@ while IFS= read -r line; do
   BASE+=("${BASH_REMATCH[1]}")
 done < "$CONF/bridge.env"
 seen=" ${BASE[*]} BRIDGE_STEP "
+REUSE=1
 for v in ${VARS[@]+"${VARS[@]}"}; do
   name=${v%%=*}
   [[ $v == *=* ]] && [[ $name =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || die "--var is NAME=VALUE with an upper-case NAME: $v"
@@ -81,14 +96,23 @@ for v in ${VARS[@]+"${VARS[@]}"}; do
   [[ ! $name =~ $CONTROL_VARS ]] || die "--var $name would steer the shell or an interpreter; not allowed"
   [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || [[ $SSH_VARS == *" $name "* ]] ||
     die "--var $name is not a controller bridge-step input; over ssh only$SSH_VARS"
+  if [ "$TARGET" = publish ]; then
+    [[ $v =~ ^APPVER_REUSE_PROJECT=[01]$ ]] || die "--target publish takes only --var APPVER_REUSE_PROJECT=0 or 1"
+    REUSE=${v#*=}
+  fi
   seen+="$name "
 done
 
 name="usnm-boinc-step-$(date -u +%Y%m%dT%H%M%SZ)-$STEP"
 if $WHAT_IF; then
-  echo "would run $IMAGE as $name with $CONF/bridge.env and:"
-  echo "  BRIDGE_STEP=$STEP"
-  for v in ${VARS[@]+"${VARS[@]}"}; do echo "  $v"; done
+  if [ "$TARGET" = publish ]; then
+    echo "would run $APPVER_IMAGE's publish-appver.sh as $name with $CONF/bridge.env and:"
+    echo "  APPVER_REUSE_PROJECT=$REUSE"
+  else
+    echo "would run $IMAGE as $name with $CONF/bridge.env and:"
+    echo "  BRIDGE_STEP=$STEP"
+    for v in ${VARS[@]+"${VARS[@]}"}; do echo "  $v"; done
+  fi
   exit 0
 fi
 
@@ -97,7 +121,11 @@ exec 9> /run/usnm-boinc-step.lock
 flock -n 9 || die "another bridge step is running on this host - wait for it to end first"
 envfile=$(mktemp /run/usnm-boinc-step.XXXXXX)
 trap 'rm -f "$envfile"' EXIT
-{ cat "$CONF/bridge.env"; echo "BRIDGE_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
+if [ "$TARGET" = publish ]; then
+  { cat "$CONF/bridge.env"; echo "APPVER_REUSE_PROJECT=$REUSE"; } > "$envfile"
+else
+  { cat "$CONF/bridge.env"; echo "BRIDGE_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
+fi
 
 run=(podman run --rm --name "$name" --network host --add-host usnm-boinc-mysql:127.0.0.1
   --log-driver journald --log-opt tag=usnm-boinc-step --env-file "$envfile"
@@ -106,7 +134,11 @@ run=(podman run --rm --name "$name" --network host --add-host usnm-boinc-mysql:1
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro)
 echo "running $STEP as $name for up to $WAIT_MINS minutes" >&2
 rc=0
-"${run[@]}" --timeout $((WAIT_MINS * 60)) "$IMAGE" || rc=$?
+if [ "$TARGET" = publish ]; then
+  "${run[@]}" --timeout $((WAIT_MINS * 60)) --entrypoint /usr/local/lib/usnm-boinc/publish-appver.sh "$APPVER_IMAGE" || rc=$?
+else
+  "${run[@]}" --timeout $((WAIT_MINS * 60)) "$IMAGE" || rc=$?
+fi
 [ $rc -eq 0 ] || die "$name ended with status $rc; its log is in journalctl -t usnm-boinc-step"
 echo "$name succeeded" >&2
 echo "$name"
