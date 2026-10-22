@@ -14,6 +14,7 @@
 use anyhow::{bail, ensure, Context};
 use std::path::{Path, PathBuf};
 
+pub mod collect;
 pub mod crops;
 pub mod stage;
 pub mod submit;
