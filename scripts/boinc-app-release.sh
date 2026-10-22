@@ -245,10 +245,11 @@ fi
 ssh_host() { ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SIGNING_HOST" "$@"; }
 # onprem_ct CMD: CMD (one string, run by bash) in the on-prem BOINC container, as root, with
 # stdin passed through. XDG_RUNTIME_DIR is dropped: pct exec carries the caller's, and podman
-# and systemctl then look for a session that isn't there.
+# and systemctl then look for a session that isn't there. PATH is set: pct exec's leaves out
+# /usr/local/sbin, where usnm-boinc-step is installed.
 onprem_ct() {
   ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$ONPREM_HOST" \
-    "pct exec $ONPREM_CT -- env -u XDG_RUNTIME_DIR bash -c $(printf '%q' "$1")"
+    "pct exec $ONPREM_CT -- env -u XDG_RUNTIME_DIR PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin bash -c $(printf '%q' "$1")"
 }
 
 # --- 1. Worker image -------------------------------------------------------------------------
@@ -510,7 +511,7 @@ if [ "$SERVER_MODE" = onprem ]; then
   # publish step has the host's own tools and patches. The build needs no network (it stages
   # from the context, as on the signing host), and in the container podman has none to give it. The context goes in a fresh directory
   # that's removed afterwards; the image stays for the publish step.
-  appver_image="localhost/$APPVER_REPO:$APPVER_TAG"
+  appver_tag="localhost/$APPVER_REPO:$APPVER_TAG"
   build_args=(--build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION"
     --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM"
     --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin"
@@ -521,9 +522,14 @@ if [ "$SERVER_MODE" = onprem ]; then
     d=/root/.usnm-appver-$(tr -d - < /proc/sys/kernel/random/uuid); mkdir -m 700 "$d"; trap '\''rm -rf "$d"'\'' EXIT
     tar -x -C "$d"
     podman build --pull=never --network=none --platform linux/amd64 --build-arg "SERVER_IMAGE=$SERVER_IMAGE" '"$(printf '%q ' "${build_args[@]}")"' \
-      --tag '"$(printf '%q' "$appver_image")"' --file "$d/Containerfile" "$d" > /dev/null' ||
+      --tag '"$(printf '%q' "$appver_tag")"' --iidfile "$d/iid" --file "$d/Containerfile" "$d" > /dev/null
+    cat "$d/iid"' > "$work/appver.iid" ||
     die "the app version image build failed on the on-prem server (a signature that doesn't verify fails it)"
-  echo "   $appver_image"
+  # Publish this build's image ID, not the tag: another build of the same version (a second
+  # candidate, or a release from another machine) can move the tag before the publish runs.
+  appver_image=$(tr -d '\n' < "$work/appver.iid")
+  [[ $appver_image =~ ^sha256:[0-9a-f]{64}$ ]] || die "the on-prem build gave no image ID"
+  echo "   $appver_image ($appver_tag)"
   if $PREPARE_ONLY; then
     echo "prepared signed $APP $VERSION ($PLATFORM, $PLAN_CLASS) as $appver_image in container $ONPREM_CT; not published or registered"
     echo "publish it there with: usnm-boinc-step --env $ENV_NAME --target publish --step publish --image $appver_image --wait-mins 30"

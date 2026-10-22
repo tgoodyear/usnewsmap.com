@@ -16,7 +16,7 @@
 # lock is held for exactly the step's run. --what-if prints the settings and runs nothing.
 # --target is bridge or publish; the hand-off job has no project tree and stays in Azure.
 #
-# --target publish --step publish --image <appver image> publishes an app version (#961), as the
+# --target publish --step publish --image <appver image or sha256:<id>> publishes an app version (#961), as the
 # Azure publish job did: the image's own publish-appver.sh runs with the host's settings and
 # mounts and APPVER_REUSE_PROJECT=1 (the only --var it takes, 0 or 1). It is refused over ssh.
 #
@@ -70,7 +70,8 @@ case $TARGET in
   publish)
     [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || die "--target publish isn't allowed over ssh"
     [ "$STEP" = publish ] || die "--target publish takes --step publish"
-    [[ $APPVER_IMAGE =~ ^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9/_.-]+(:[A-Za-z0-9_.-]+)?(@sha256:[0-9a-f]{64})?$ ]] ||
+    # A local image ID (sha256:<64 hex>, what boinc-app-release.sh builds and passes), or a reference.
+    [[ $APPVER_IMAGE =~ ^sha256:[0-9a-f]{64}$ || $APPVER_IMAGE =~ ^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9/_.-]+(:[A-Za-z0-9_.-]+)?(@sha256:[0-9a-f]{64})?$ ]] ||
       die "--target publish needs --image <appver image>" ;;
   *) die "--target $TARGET does not run on-prem; only bridge and publish steps do" ;;
 esac

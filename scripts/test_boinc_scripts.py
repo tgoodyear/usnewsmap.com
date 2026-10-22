@@ -1021,6 +1021,9 @@ class AppReleaseArgs(unittest.TestCase):
         onprem = text.split('if [ "$SERVER_MODE" = onprem ]; then\n  # The same context')[1].split("\nacr_build_verified")[0]
         self.assertIn('--build-arg "SERVER_IMAGE=$SERVER_IMAGE"', onprem)
         self.assertIn("--pull=never --network=none", onprem)
+        self.assertIn('--iidfile "$d/iid"', onprem)
+        self.assertIn("--image $(printf '%q' \"$appver_image\")", onprem)
+        self.assertIn("appver_image=$(tr -d", onprem)
         self.assertIn("usnm-boinc-step --env $ENV_NAME --target publish --step publish", onprem)
         self.assertNotIn("images.appver =", onprem)
         self.assertNotIn("scripts/provision-boinc.sh --env", onprem)
