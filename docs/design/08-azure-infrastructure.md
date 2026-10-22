@@ -153,6 +153,7 @@ and the [cutover/rollback/prune sequence](../operations.md#index-storage-cutover
 - **Public entry points:**
   - `usnewsmap.com`, `www.usnewsmap.com` and `api.usnewsmap.com` → Container Apps ingress, which forwards to the `api` container. It serves `/v1` and the built site ([ADR-0010](adr/0010-site-served-by-the-api.md)).
   - Quickwit binds to `127.0.0.1` inside the replica and has no ingress.
+- **DNS:** the `usnewsmap.com` zone is hosted at Cloudflare (delegated 20 October 2026, #944). `usnewsmap.com`, `www` and `api` are DNS-only records that point at Container Apps, which issues their certificates. `boinc.usnewsmap.com` is a proxied CNAME to the on-prem BOINC server's Cloudflare Tunnel ([ADR-0024](adr/0024-cloudflare-tunnel-and-r2-credentials.md)). The Azure DNS zone that held the records before is retired once the old delegation has expired (#944). DNS changes are made in Cloudflare, not Bicep.
 - **CORS:** the site calls the API on its own origin, so it needs none. The API still allows the domain, `www`, the app's own hostname and any `allowedOrigins`, GET only, no credentials. Researchers call the API directly; CORS doesn't restrict them.
 - **Abuse protection without a WAF:** the per-client token bucket in the API (salted-hash keys, in memory), request timeouts, a query-complexity budget, and `maxReplicas: 2`. The replica cap turns abuse into slower responses instead of a larger bill.
 - **Every path from an app or job to the data uses both a managed identity and a private endpoint** ([ADR-0008](adr/0008-private-networking.md)):
