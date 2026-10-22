@@ -300,12 +300,14 @@ pub struct Watch {
     last_check: Option<Instant>,
     /// The positions last read, kept when a read fails.
     last_next: Vec<i64>,
-    /// The index's position summed over the partitions, when it last moved.
-    indexed: i64,
-    moved: Instant,
+    /// Each partition's position, and when it last moved (or had nothing
+    /// waiting): a stall is per partition, so one stuck consumer isn't
+    /// hidden by the others moving.
+    indexed: Vec<i64>,
+    moved: Vec<Instant>,
     restarts: u32,
-    /// A restart that hasn't been followed by progress yet.
-    restarted: bool,
+    /// The partitions a restart was for that haven't moved since.
+    awaiting: std::collections::BTreeSet<usize>,
     /// The producer is held until the index catches up.
     waiting: bool,
 }
@@ -375,10 +377,10 @@ impl Watch {
             read_timeout,
             last_check: None,
             last_next: Vec::new(),
-            indexed: -1,
-            moved: Instant::now(),
+            indexed: Vec::new(),
+            moved: Vec::new(),
             restarts: 0,
-            restarted: false,
+            awaiting: std::collections::BTreeSet::new(),
             waiting: false,
         }
     }
@@ -426,51 +428,77 @@ impl Watch {
         }
         // A failed read (a writer that hangs or is restarting) counts as
         // the index standing still: the stall rules below decide.
-        let next = match self.positions(ends.len()).await {
+        let n = ends.len();
+        let read = match self.positions(n).await {
             Ok(next) => {
                 self.last_next.clone_from(&next);
-                next
+                Some(next)
             }
             Err(e) => {
                 tracing::warn!(error = %format!("{e:#}"), "Kafka: the index's checkpoint couldn't be read");
-                if self.last_next.len() != ends.len() {
-                    self.last_next = vec![0; ends.len()];
-                }
-                self.last_next.clone()
+                None
             }
         };
         self.last_check = Some(Instant::now());
-        for (p, (&at, &first)) in next.iter().zip(earliest).enumerate() {
-            if first > at {
-                bail!(
-                    "Kafka partition {p}: records {at} to {} expired before the index read \
-                     them (its oldest held record is {first})",
-                    first - 1
-                );
+        if self.last_next.len() != n {
+            self.last_next = vec![0; n];
+        }
+        if self.indexed.len() != n {
+            self.indexed = vec![-1; n];
+            self.moved = vec![Instant::now(); n];
+        }
+        // Only a fresh read says what expired: cached positions may be behind
+        // records the index has since taken.
+        if let Some(next) = &read {
+            for (p, (&at, &first)) in next.iter().zip(earliest).enumerate() {
+                if first > at {
+                    bail!(
+                        "Kafka partition {p}: records {at} to {} expired before the index read \
+                         them (its oldest held record is {first})",
+                        first - 1
+                    );
+                }
             }
         }
-        let sum: i64 = next.iter().sum();
-        let lag: i64 = ends.iter().zip(&next).map(|(e, i)| (e - i).max(0)).sum();
-        if sum > self.indexed || lag == 0 {
-            self.indexed = self.indexed.max(sum);
-            self.moved = Instant::now();
-            self.restarted = false;
+        let next = self.last_next.clone();
+        let behind: Vec<i64> = ends
+            .iter()
+            .zip(&next)
+            .map(|(e, i)| (e - i).max(0))
+            .collect();
+        let lag: i64 = behind.iter().sum();
+        for p in 0..n {
+            if (read.is_some() && next[p] > self.indexed[p]) || behind[p] == 0 {
+                self.indexed[p] = self.indexed[p].max(next[p]);
+                self.moved[p] = Instant::now();
+                self.awaiting.remove(&p);
+            }
         }
-        let allowed = if self.restarted {
-            self.stall.max(self.restart_grace)
-        } else {
+        // While a restart awaits progress, every partition gets the restarted
+        // writer's grace: the restart interrupted them all.
+        let allowed = if self.awaiting.is_empty() {
             self.stall
+        } else {
+            self.stall.max(self.restart_grace)
         };
-        if lag > 0 && self.moved.elapsed() >= allowed {
-            let secs = self.moved.elapsed().as_secs();
+        let stalled: Vec<usize> = (0..n)
+            .filter(|&p| behind[p] > 0 && self.moved[p].elapsed() >= allowed)
+            .collect();
+        if !stalled.is_empty() {
+            let secs = stalled
+                .iter()
+                .map(|&p| self.moved[p].elapsed().as_secs())
+                .max()
+                .unwrap_or_default();
             match &self.restart {
-                Some(r) if !self.restarted && self.restarts < MAX_RESTARTS => {
+                Some(r) if self.awaiting.is_empty() && self.restarts < MAX_RESTARTS => {
                     if lost() {
                         bail!("the writer lock could not be renewed; the writer isn't restarted");
                     }
                     tracing::warn!(
                         lag,
                         secs,
+                        partitions = ?stalled,
                         restarts = self.restarts + 1,
                         "Kafka: the index's checkpoint stood still; restarting the writer"
                     );
@@ -478,11 +506,12 @@ impl Watch {
                         .await
                         .context("restarting the writer for a stalled Kafka source")?;
                     self.restarts += 1;
-                    self.restarted = true;
-                    self.moved = Instant::now();
+                    self.awaiting = stalled.iter().copied().collect();
+                    let now = Instant::now();
+                    self.moved.iter_mut().for_each(|m| *m = now);
                 }
                 _ => bail!(
-                    "indexing from Kafka stalled: the index's checkpoint hasn't moved for \
+                    "indexing from Kafka stalled: partitions {stalled:?} haven't moved for \
                      {secs} s with {lag} records waiting (writer restarts: {})",
                     self.restarts
                 ),
@@ -579,6 +608,14 @@ impl Producer {
         if self.watch.as_ref().is_some_and(Watch::due) {
             let target = self.watch.as_ref().map_or(0, |w| w.max_lag);
             self.keep_up(target).await?;
+        }
+        // The lock may have gone while the watch waited for the writer.
+        if self
+            .lease_lost
+            .as_ref()
+            .is_some_and(|l| l.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            bail!("the writer lock could not be renewed; the Kafka producer stopped");
         }
         let records = std::mem::take(&mut self.batch);
         let (n, bytes) = (records.len() as u64, self.batch_bytes as u64);
@@ -952,6 +989,70 @@ mod tests {
             .to_string();
         assert!(err.contains("stalled"), "{err}");
         assert_eq!(restarts.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn one_stuck_partition_is_a_stall_while_the_others_move() {
+        let cp = Arc::new(std::sync::Mutex::new(vec![99, 99]));
+        let base = checkpoint_node(Arc::clone(&cp)).await;
+        let restarts = Arc::new(Counted::default());
+        // A lag limit no backlog reaches: only the stall rules act.
+        let mut w = watch(&base, Arc::clone(&restarts), 10_000_000);
+        let mover = {
+            let cp = Arc::clone(&cp);
+            tokio::spawn(async move {
+                for _ in 0..200 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    cp.lock().unwrap()[1] += 1;
+                }
+            })
+        };
+        let mut err = None;
+        for _ in 0..200 {
+            match w.check(&[1_000_000, 1_000_000], &[0, 0], 0, None).await {
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+                Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+        mover.abort();
+        let err = err.expect("partition 0 never moved, so the watch must give up");
+        assert!(err.contains("[0]"), "{err}");
+        assert_eq!(restarts.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn expiry_is_judged_only_on_a_fresh_checkpoint() {
+        use axum::{routing::get, Router};
+        let reads = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let r = Arc::clone(&reads);
+        let app = Router::new().route(
+            "/api/v1/indexes/idx",
+            get(move || {
+                let first = r.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                async move {
+                    if !first {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                    }
+                    axum::Json(serde_json::json!({"checkpoint": {"kafka": {
+                        "00000000000000000000": "00000000000000000099"}}}))
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let mut w = watch(
+            &format!("http://{addr}"),
+            Arc::new(Counted::default()),
+            10_000,
+        );
+        assert!(w.check(&[200], &[0], 10_000, None).await.unwrap());
+        // The next read fails; the cached position (100) is behind the
+        // partition's start (150), but that isn't proof of loss.
+        assert!(w.check(&[200], &[150], 10_000, None).await.unwrap());
     }
 
     #[tokio::test]
