@@ -534,6 +534,8 @@ class GoldFake(Fake):
         return {**super().inventory(), "created_at": self.now}
 
     def step(self, target, step, **variables):
+        # As bridge-job.sh: GOLD_MAX_HOSTS is 1 to 100.
+        assert 1 <= int(variables["GOLD_MAX_HOSTS"]) <= 100, variables
         self.steps.append((target, step, variables))
         self.actions.append(("step", step))
         if step in self.fail_steps:
@@ -643,13 +645,15 @@ class GoldOnboardingTests(unittest.TestCase):
         self.fake.steps.clear()
         self.tick(at=60)
         self.assertEqual([v["GOLD_MAX_HOSTS"] for _, s, v in self.fake.steps if s == "gold-onboard"], [3])
-        self.assertEqual([s for _, s, _ in self.fake.steps],
-                         ["gold-onboard", "gold-promote", "gold-promote"])
+        self.assertEqual([(s, v["GOLD_MAX_HOSTS"]) for _, s, v in self.fake.steps],
+                         [("gold-onboard", 3), ("gold-promote", 10), ("gold-promote", 10)])
 
     def test_at_the_cap_only_promotion_runs(self):
         self.fake.other = 1000
         event = self.tick()
         self.assertEqual([s for _, s, _ in self.fake.steps], ["gold-promote"])
+        # Promotion keeps the configured limit: the bridge refuses GOLD_MAX_HOSTS=0.
+        self.assertEqual(self.fake.steps[0][2]["GOLD_MAX_HOSTS"], 10)
         self.assertEqual(event["gold_onboarding"][0]["steps"],
                          {"gold-onboard": batch.GOLD_SKIPPED_AT_CAP, "gold-promote": "ok"})
         self.assertFalse([a for a in event["alerts"] if a["code"] == "gold_onboarding_failed"])

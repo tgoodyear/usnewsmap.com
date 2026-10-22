@@ -684,9 +684,11 @@ fn commit_promotions(
 ) -> anyhow::Result<()> {
     let _lock = Lock::take(&c.root)?;
     let image = &c.engine.image;
-    let admit = |hosts: BTreeSet<u64>| {
+    // Admits only into the exact list version `expected`, compared under the trust lock.
+    let admit = |expected: &str, hosts: BTreeSet<u64>| {
         Trust::admit_hosts(
             &c.trust,
+            Some(expected),
             scope,
             &policy.manifest_sha256,
             policy.max_cer,
@@ -703,14 +705,23 @@ fn commit_promotions(
     };
     if records.iter().any(ours) {
         let current = boinc::sha256(&read(&c.trust, 64 << 20)?);
+        // Replayed only while the list is the version the record was written against and the
+        // scope still has the calibration the evidence was judged by.
         let replay: BTreeSet<u64> = records
             .iter()
-            .filter(|r| ours(r) && r.trust_before_sha256 == current)
+            .filter(|r| {
+                ours(r)
+                    && r.trust_before_sha256 == current
+                    && r.manifest_sha256 == policy.manifest_sha256
+                    && r.max_cer == policy.max_cer
+            })
             .map(|r| r.host)
             .collect();
         if !replay.is_empty() {
-            let admission = admit(replay)?;
-            summary.promoted.extend(admission.added.iter().copied());
+            // None: the list changed after it was read here; settle without admitting.
+            if let Some(admission) = admit(&current, replay)? {
+                summary.promoted.extend(admission.added.iter().copied());
+            }
         }
         for record in records.iter_mut().filter(|r| ours(r)) {
             let (has, digest) = trusts(&c.trust, scope, image, record.host)?;
@@ -738,7 +749,20 @@ fn commit_promotions(
         records.push(record);
     }
     write_records(&c.root, &records)?;
-    let admission = admit(records[start..].iter().map(|r| r.host).collect())?;
+    let hosts: BTreeSet<u64> = records[start..].iter().map(|r| r.host).collect();
+    let Some(admission) = admit(&before, hosts.clone())? else {
+        // The list changed since `before` and nothing was written: drop the records so the
+        // next pass judges these hosts again against the list as it is then.
+        records.truncate(start);
+        write_records(&c.root, &records)?;
+        for host in hosts {
+            summary.failed.push(HostFailure {
+                host,
+                error: "trust.json changed during promotion; nothing admitted".into(),
+            });
+        }
+        return Ok(());
+    };
     for record in &mut records[start..] {
         record.added = admission.added.contains(&record.host);
         record.committed = true;
@@ -1657,6 +1681,26 @@ mod tests {
         t.hosts.insert(c.engine.image.clone(), BTreeSet::from([1]));
         atomic(&c.trust, &serde_json::to_vec(&t).unwrap()).unwrap();
         let done = promote_with(&c, &spool, false, true).await.unwrap();
+        assert!(done.promoted.is_empty());
+        assert_eq!(trusted(&c), BTreeSet::from([1]));
+        let records = promotion_records(&c.root).unwrap();
+        assert!(records[0].committed && !records[0].added);
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_promotion_judged_by_another_calibration_is_not_replayed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (c, _) = promotion_fixture(dir.path());
+        std::fs::create_dir_all(&c.root).unwrap();
+        // Judged under max_cer 0.2, then the threshold became 0.1 before the trust write; the
+        // record points at the current list version, so only the calibration tells them apart.
+        interrupted(&c, 2, "usnm_gold_x");
+        let mut records = promotion_records(&c.root).unwrap();
+        records[0].max_cer = 0.2;
+        write_records(&c.root, &records).unwrap();
+        let done = promote_with(&c, &dir.path().join("spool"), false, true)
+            .await
+            .unwrap();
         assert!(done.promoted.is_empty());
         assert_eq!(trusted(&c), BTreeSet::from([1]));
         let records = promotion_records(&c.root).unwrap();

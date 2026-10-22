@@ -151,7 +151,8 @@ When a scope is due, the tick runs two bridge steps before it collects:
    worker image (`image`) gets one targeted gold unit, at most one outstanding
    per host and at most `max_hosts` new units per pass. Gold units count
    against the global safety cap: a pass issues at most what the cap leaves
-   (shared across scopes), is skipped when nothing is left, and the units it
+   (shared across scopes), is skipped when nothing is left (`gold-promote` still runs, with the
+   configured `max_hosts`), and the units it
    may have issued count as in flight for the tick's OCR refill. A failed unit
    gets a fresh attempt. A unit that ran and scored over the threshold is a verdict and
    isn't reissued.
@@ -168,7 +169,10 @@ When a scope is due, the tick runs two bridge steps before it collects:
    committed after it; the next pass finishes an uncommitted record only while
    `trust.json` is still exactly as it was, and otherwise settles it without
    adding the host. The ledger is read again under the controller lock before
-   any change.
+   any change. An uncommitted record is replayed only if it was judged by
+   the scope's current threshold and challenge, and the list version is
+   compared again under the trust lock as hosts are added, so a rebuild in
+   between is never undone.
 
 A host admitted this way has its held results published by the same tick's
 collection. A host that fails or hasn't returned its unit stays untrusted, and

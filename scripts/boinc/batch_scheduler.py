@@ -1186,7 +1186,9 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
                 # Counted even if the step fails: it may have issued some units first.
                 reserved += issue
             try:
-                transport.step("bridge", step, **variables, GOLD_MAX_HOSTS=issue)
+                # Promotion issues nothing; it always takes the configured positive limit.
+                limit = issue if step == "gold-onboard" else entry.get("max_hosts", 10)
+                transport.step("bridge", step, **variables, GOLD_MAX_HOSTS=limit)
                 run["steps"][step] = "ok"
             except RuntimeError as error:
                 run["steps"][step] = str(error)
