@@ -295,7 +295,8 @@ async fn put_block_or_list(
     }
 }
 
-/// Get Block List of the uncommitted blocks: 404 when there are none.
+/// Get Block List (`all`): the uncommitted blocks, none committed; 404
+/// when there are none.
 async fn get_block_list(
     State(b): State<SharedBlocks>,
     Path(p): Path<String>,
@@ -306,10 +307,7 @@ async fn get_block_list(
         return StatusCode::FORBIDDEN.into_response();
     }
     assert_eq!(q.get("comp").map(String::as_str), Some("blocklist"));
-    assert_eq!(
-        q.get("blocklisttype").map(String::as_str),
-        Some("uncommitted")
-    );
+    assert_eq!(q.get("blocklisttype").map(String::as_str), Some("all"));
     let b = b.lock().unwrap();
     let blocks: String = b
         .staged
