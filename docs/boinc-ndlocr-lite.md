@@ -453,7 +453,8 @@ After merge:
 3. Publish a signed **x86_64 Linux container** app version with
    `scripts/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
 --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_MANIFEST
---signing-host HOST`. Its dedicated `job.toml` is selected automatically.
+--signing-host HOST --onprem-host HOST --onprem-ct ID` (the last two because prod's
+   server is on-prem). Its dedicated `job.toml` is selected automatically.
    Do not reuse the Tesseract image or publish unsupported native or GPU
    versions.
 4. Pilot a small classified set not yet read by `jaocr.py`, comparing independent

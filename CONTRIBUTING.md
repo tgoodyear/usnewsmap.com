@@ -29,13 +29,10 @@ The infrastructure checks, and the scan for shared keys, run on every pull reque
 scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh
 scripts/ci/no-positional-args.py
-python3 -m unittest scripts/ci/test_no_positional_args.py
+scripts/ci/run-unit-tests.py
 scripts/ci/check-workbooks.py
-python3 -m unittest scripts/ci/test_check_workbooks.py
-python3 -m unittest scripts/test_env_scripts.py
 scripts/lib/env_settings.py --check
 scripts/ci/check-names.py --base origin/main
-python3 -m unittest scripts/ci/test_check_names.py
 scripts/ci/lint-bicep.sh
 scripts/ci/build-bicep.sh
 AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infra/main.bicepparam --stdout > /dev/null

@@ -35,7 +35,7 @@ Bulk bytes stay in Blob, Azure Files, ZFS or the existing package registry.
 MySQL and Cosmos are not file inventories. A successful process exit is not
 evidence of validation, import or inclusion in a released search index.
 
-BOINC project downloads are Azure-hosted, but container images come from GHCR.
+BOINC project downloads are served from the on-prem BOINC host (they were Azure-hosted until 21 October 2026), and container images come from GHCR.
 Legacy gold inputs may still reference upstream sources. Mirror readiness must
 be established for each artifact and campaign, not inferred from a deployment.
 

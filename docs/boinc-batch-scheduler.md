@@ -21,7 +21,11 @@ override, client attachment, or retry of terminal failures.
 
 The controller uses a single approved execution host with Python 3.9+, Azure
 CLI, `jq`, Bash, an existing Azure login, the checkout's existing environment
-outputs, and the existing hand-off and bridge jobs. The server and bridge images
+outputs, and the existing hand-off job. Its bridge steps run through
+`scripts/start-boinc-bridge.sh` (the Azure bridge job) or, with `step_command` in
+the configuration, on the on-prem BOINC host through `usnm-boinc-step`, which is how
+the on-prem server's bridge steps are reached ([boinc-onprem.md](boinc-onprem.md), cutover
+step 5). The server and bridge images
 must contain the new additive `batch-inventory` step; retain the existing
 immutable worker pin. Do not deploy server or bridge images or run the
 controller while another release owner is changing them.
@@ -73,7 +77,7 @@ the real-page receipt for #866 is recorded below.
 
 A tick submits, spools out and collects one page per job execution unless told otherwise.
 Each execution costs one to two minutes of Container Apps start and stop, so a 10-page tick
-spends about 40 minutes on them (measured 20 October 2026), whatever the volunteers' capacity.
+spends about 40 minutes on them (measured 20 October 2026, when the bridge steps were still Azure jobs; on-prem bridge steps start no Container Apps execution), whatever the volunteers' capacity.
 Three runtime flags put a tick's pages into one execution per step instead. They aren't part
 of the configuration, so turning them on or off changes no hash:
 

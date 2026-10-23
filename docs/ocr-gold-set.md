@@ -238,7 +238,7 @@ was used.
 
 Part of [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296). The [engine survey](reports/2026-10-ocr-engine-survey/report.md) has no ground truth, so it can't report a character error rate (CER) or word error rate (WER); it relies on the damage metric. The gold set is a fixed set of crops with a person's transcription, so any engine, profile or route change can be scored by CER and WER on the same text. The plan in [13 §13.9](design/13-ocr-engines.md#139-how-the-survey-and-production-share-engine-images) already names `score --truth <crops dir>`; the gold set is what goes in that directory.
 
-The transcriptions of the 60 crops are not written yet. Every `transcription` field is empty, and none may be filled from an engine's output. Until they are, the 60 are scored as engine agreement only (`gold.py agree`), and the accuracy numbers come from public datasets that already have human transcriptions, described in [Public ground truth](#public-ground-truth).
+The transcriptions of the 60 crops are not written yet, though the 40 Czech, Serbian, Polish and Russian crops are out for transcription (see [Selection](#selection)). Every `transcription` field is empty, and none may be filled from an engine's output. Until they are, the 60 are scored as engine agreement only (`gold.py agree`), and the accuracy numbers come from public datasets that already have human transcriptions, described in [Public ground truth](#public-ground-truth).
 
 ## Selection
 
@@ -505,7 +505,7 @@ cargo run --release -p usnm-ocr-survey -- bundle-build --version 1 --per-source 
 cargo run --release -p usnm-ocr-survey -- bundle-verify --bundle OUT/bundle/usnm-ocr-gold-v1.tar
 ```
 
-The deployed BOINC server can run the same build inside its VNet and check it against the lock: [Build the gold bundle](boinc.md#build-the-gold-bundle). `--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
+The BOINC server can run the same build and check it against the lock, on the on-prem host with `usnm-boinc-step --step gold-bundle` ([boinc-onprem.md](boinc-onprem.md)); the Azure server ran it inside its VNet: [Build the gold bundle](boinc.md#build-the-gold-bundle). `--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
 
 **Version 1** (built 2026-10-13, seed 457, 30 per source): 142 crops, 30 BLN600, 30 Overproof CA (from 18 LoC pages), 24 NewsEye BnF, 18 NewsEye NLF Finnish, 10 NewsEye NLF Swedish and 30 NZZ lines. The tar is 9.6 MB (9.1 MB of shipped crops, a 140 KB manifest, 128 KB of licence files). A client also downloads 19 remotes: the 68 MB BLN600 zip and 18 page images. All 18 LoC page images matched the checksums recorded at conversion when fetched again on the same day.
 
@@ -751,7 +751,7 @@ Checked in public documentation only, nobody contacted.
 
 ## Open
 
-- A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only.
+- A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only. The 40 Czech, Serbian, Polish and Russian crops are out for transcription (see [Selection](#selection)); none is filled in yet.
 - Run `public-fetch` and `public-convert` for Reichsanzeiger and Austrian, and check the readers against the real files.
 - Decide whether to commit the images once `cut` has run and the total is known.
 - `usnm-ocr-survey score` takes over the span-finding for whole-page runs and reads this format as `--truth`.

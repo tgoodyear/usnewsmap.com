@@ -7,6 +7,11 @@ not replace the proposed subscription/dev bootstrap in PR #634: the isolated
 BOINC resource group, registry, policy/waiver prerequisites and credentials must
 already exist. It never invokes the full application provisioner.
 
+It has no on-prem mode: it never gives `boinc-app-release.sh` the `--onprem-host` and
+`--onprem-ct` that a `"server": "onprem"` environment needs, so it cannot release to
+prod, whose server has run on-prem since 21 October 2026
+([boinc-onprem.md](../../docs/boinc-onprem.md)). It works on a server hosted in Azure.
+
 ## Interface
 
 Run from a clean, current-main checkout containing this pipeline and **the merged

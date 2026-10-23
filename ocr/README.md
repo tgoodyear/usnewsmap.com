@@ -79,6 +79,8 @@ The OCR benchmark ([docs/ocr-bench.md](../docs/ocr-bench.md)): versioned archive
 | `results/`               | Recorded outputs and scores of those trials, and of the Qwen CUDA against Vulkan comparison                                                   |
 | `serialset-pilot/`       | The GovInfo Serial Set pilot: four page images, references, source ALTO, Tesseract and source OCR outputs, reports and checksums              |
 
+The page images and the raw native result archives are not tracked. They are the `bench-assets` set of `scripts/data-assets.sh`: `scripts/data-assets.sh --fetch --set bench-assets` puts them back ([docs/ocr-bench.md](../docs/ocr-bench.md)).
+
 Read by:
 
 - `usnm-ocr-survey` (`bench-build`, `bench-verify`, `bench-select`, `bench-score`) builds and verifies releases from `spec.json`, `inputs.sha256` and `releases.json`, and scores outputs against a release.

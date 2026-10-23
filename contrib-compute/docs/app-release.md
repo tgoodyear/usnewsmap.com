@@ -56,14 +56,20 @@ scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-h
 scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST
 ```
 
+With `"server": "onprem"` in the settings (prod since 21 October 2026) the script stops
+unless it also gets `--onprem-host` and `--onprem-ct` (step 4 below). Every `--env prod`
+release command on this page then takes them.
+
 `--signing-key-dir` (default `/usbbak/signing/boinc`) and `--signing-dataset` (default
 `usbbak/signing`) name where the private key is on the signing host. `--what-if` runs the
 read-only checks and prints the plan.
 
 For a **PR-first release**, use `--prepare-only` to stage, sign and build the
-immutable app-version image without publishing. It changes only `images.appver`;
-the key stays on the signing host. After pin review, green CI and merge, run
-`scripts/provision-boinc.sh --env prod` to publish and verify registration.
+immutable app-version image without publishing. On the Azure server it changes only
+`images.appver`; the key stays on the signing host. After pin review, green CI and merge,
+run `scripts/provision-boinc.sh --env prod` to publish and verify registration. On the
+on-prem server it writes no pin: it builds the image there and prints the
+`usnm-boinc-step --target publish` command to publish it with.
 Preparation proves neither publication nor volunteer execution. Omit
 `--prepare-only` only when immediate publication is authorized.
 

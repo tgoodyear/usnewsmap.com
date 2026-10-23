@@ -1,7 +1,10 @@
 # BOINC server hosting: design
 
-The production stack was deployed and checked as recorded in #470. This design
-describes the committed Bicep and scripts; it does not claim a fresh live check.
+The production stack was deployed in Azure and checked as recorded in #470. This design
+describes the committed Bicep and scripts for hosting the server in Azure; it does not claim a
+fresh live check. Prod's server moved to an on-prem host on 21 October 2026
+([boinc-onprem.md](../../docs/boinc-onprem.md)), which makes this design the fallback
+(`"server": "azure"`) and the record of why it was built this way.
 Facts about BOINC and Azure are in [verified-facts.md](verified-facts.md), and
 UNVERIFIED marks behavior that remains unconfirmed.
 

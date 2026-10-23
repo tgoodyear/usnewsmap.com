@@ -4,7 +4,7 @@ Shell and Python for the work around the code: standing an Azure environment up 
 
 Scripts take named flags (`--env prod --key K`), never positional arguments. `scripts/ci/no-positional-args.py` fails CI on a script that reads them. The examples assume the repository root. The Azure scripts use your own `az` sign-in.
 
-The 59 files directly in this directory are grouped below by purpose. The subdirectories follow.
+The 61 files directly in this directory are grouped below by purpose. The subdirectories follow.
 
 ## Azure environments
 
@@ -42,6 +42,8 @@ The volunteer pilot's server and apps ([docs/boinc.md](../docs/boinc.md); status
 | `boinc-test-client.sh`                                                               | Creates or deletes the ephemeral BOINC test client VM (#484).                                                        |
 | `validate-boinc-workbook.py`                                                         | Runs the source panels of the BOINC workbook and writes aggregate-only acceptance receipts.                          |
 | `test_boinc_provision.py`, `test_boinc_quality_campaign.py`, `test_boinc_scripts.py` | Tests of the scripts above, offline.                                                                                 |
+
+Prod's BOINC server has run on an on-prem host since 21 October 2026 ([docs/boinc-onprem.md](../docs/boinc-onprem.md)), which changes five of these. With `"server": "onprem"` in the settings, `provision-boinc.sh` keeps only the identities, Key Vault, VNet and static site, and deletes the rest of the Azure server, including the bridge job and the workbook. `start-boinc-bridge.sh` then starts only the hand-off job (`--target handoff`); `boinc/onprem-step.sh` runs the bridge steps on the host with the same arguments. `boinc-app-release.sh` also takes `--onprem-host` and `--onprem-ct`. `boinc-quality-campaign.py` and `validate-boinc-workbook.py` act on the Azure bridge job, quality wave job and workbook, so they apply to a server with `"server": "azure"`.
 
 ## Generated data
 
