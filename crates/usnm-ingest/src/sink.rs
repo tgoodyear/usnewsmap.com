@@ -828,7 +828,7 @@ impl Poster {
 /// [`QuickwitSink::line_sender`].
 pub enum LineSender {
     Http { poster: Poster, buf: Vec<u8> },
-    Kafka(crate::kafka::Producer),
+    Kafka(Box<crate::kafka::Producer>),
 }
 
 impl LineSender {
@@ -852,6 +852,13 @@ impl LineSender {
         Ok(())
     }
 
+    /// The writer lock's flag, for Kafka's watch to stop on.
+    pub fn set_lease_lost(&mut self, lost: Option<Arc<std::sync::atomic::AtomicBool>>) {
+        if let Self::Kafka(p) = self {
+            p.set_lease_lost(lost);
+        }
+    }
+
     /// A decade file's last line went in: Kafka moves to the next partition.
     pub async fn end_file(&mut self) -> anyhow::Result<()> {
         match self {
@@ -864,11 +871,12 @@ impl LineSender {
     /// request goes only when the next line wouldn't fit): the release gives
     /// them back to the sink, whose `finish` sends them with the forced
     /// commit, as when the pages went out in line. Kafka sends its last
-    /// records and returns none: its source commits on its own.
+    /// records, waits until the index holds them all (`Producer::drain`, so
+    /// a stall at the end gets the watch's restart too), and returns none.
     pub async fn into_unsent(self) -> anyhow::Result<Vec<u8>> {
         match self {
             Self::Kafka(mut p) => {
-                p.end_file().await?;
+                p.drain().await?;
                 Ok(Vec::new())
             }
             Self::Http { buf, .. } => Ok(buf),
@@ -969,9 +977,18 @@ impl QuickwitSink {
     pub async fn line_sender(&self) -> anyhow::Result<LineSender> {
         if let (Some(k), Some(id)) = (&self.kafka, &self.kafka_index) {
             if self.index.as_ref() == Some(id) {
-                return Ok(LineSender::Kafka(
-                    k.producer(id, Arc::clone(&self.stats)).await?,
-                ));
+                // The writer node this release runs can be restarted for a
+                // stalled source; one it doesn't run can't.
+                let restart = self.process.as_ref().map(|p| {
+                    Arc::new(ProcessRestart {
+                        process: Arc::clone(p),
+                        stats: Arc::clone(&self.stats),
+                    }) as Arc<dyn merges::Restart>
+                });
+                let watch = crate::kafka::Watch::new(self.http.clone(), &self.base, id, restart)?;
+                return Ok(LineSender::Kafka(Box::new(
+                    k.producer(id, Arc::clone(&self.stats), Some(watch)).await?,
+                )));
             }
         }
         Ok(LineSender::Http {
@@ -1286,6 +1303,22 @@ struct Restarting<'a> {
 
 #[async_trait]
 impl merges::Restart for Restarting<'_> {
+    async fn restart(&self) -> anyhow::Result<()> {
+        let restarted = self.process.restart().await;
+        self.stats.set_node_pid(self.process.pid());
+        restarted
+    }
+}
+
+/// The sink's writer, owned, for a Kafka source that stalled
+/// (`crate::kafka::Watch`): the progress line follows the new process.
+struct ProcessRestart {
+    process: Arc<WriterProcess>,
+    stats: Arc<SinkStats>,
+}
+
+#[async_trait]
+impl merges::Restart for ProcessRestart {
     async fn restart(&self) -> anyhow::Result<()> {
         let restarted = self.process.restart().await;
         self.stats.set_node_pid(self.process.pid());

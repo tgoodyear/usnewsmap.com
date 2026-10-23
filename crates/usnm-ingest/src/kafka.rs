@@ -15,12 +15,21 @@
 //! was lost) isn't retried: the release fails, and the exact count would
 //! catch a duplicate either way.
 //!
+//! The producer keeps within reach of what the index has taken ([`Watch`]):
+//! the topic's retention deletes records whether or not they were read, and
+//! in run e (#283) the consumers stopped after a broker stall while the
+//! release sent on for hours, so most of the pages expired unread.
+//!
 //! `USNM_WRITER_KAFKA` names the broker (`host:port`), with
 //! `USNM_WRITER_INGEST=v1`; `USNM_WRITER_KAFKA_PARTITIONS` the partitions and
-//! pipelines (default 8).
+//! pipelines (default 8); `USNM_WRITER_KAFKA_MAX_LAG` the records the index
+//! may be behind before the producer waits (default 1,000,000), and
+//! `USNM_WRITER_KAFKA_STALL_SECS` how long its checkpoint may stand still
+//! with records waiting (default 900).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
@@ -28,6 +37,7 @@ use rskafka::client::{Client, ClientBuilder};
 use rskafka::record::Record;
 use rskafka::BackoffConfig;
 
+use crate::merges::Restart;
 use crate::sink::SinkStats;
 
 pub const VAR: &str = "USNM_WRITER_KAFKA";
@@ -37,6 +47,22 @@ const DEFAULT_PARTITIONS: i32 = 8;
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
 /// The topic's record size limit, set when the release creates it.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// The source's consumer group session timeout (librdkafka's default is 45 s).
+const CONSUMER_SESSION_MS: u32 = 300_000;
+const CONSUMER_HEARTBEAT_MS: u32 = 10_000;
+const CONSUMER_MAX_POLL_MS: u32 = 900_000;
+pub const MAX_LAG_VAR: &str = "USNM_WRITER_KAFKA_MAX_LAG";
+pub const STALL_VAR: &str = "USNM_WRITER_KAFKA_STALL_SECS";
+/// Records the index may be behind before the producer waits: about half an
+/// hour of sending, far inside the topic's retention.
+const DEFAULT_MAX_LAG: i64 = 1_000_000;
+/// How long the index's checkpoint may stand still while records wait. The
+/// pipelines commit every `commit_timeout_secs` (30 s), so a quarter of an
+/// hour without one is a stall.
+const DEFAULT_STALL_SECS: u64 = 900;
+/// Writer restarts for stalls in one release: each needs progress after the
+/// one before.
+const MAX_RESTARTS: u32 = 3;
 
 /// Where the pages go: the broker and the partition count.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,24 +175,32 @@ impl Kafka {
     }
 
     /// The index's Kafka source, as Quickwit takes it: one pipeline per
-    /// partition, from the start of the topic.
+    /// partition, from the start of the topic, with consumer timeouts long
+    /// enough to outlast a broker stalled on a busy disk (45 s in run e,
+    /// #283), after which librdkafka's consumers left the group and never
+    /// came back.
     pub fn source_yaml(&self, index_id: &str) -> String {
         format!(
             "version: 0.8\nsource_id: kafka\nsource_type: kafka\nnum_pipelines: {}\nparams:\n  \
              topic: {}\n  client_params:\n    bootstrap.servers: {}\n    \
              auto.offset.reset: earliest\n    fetch.message.max.bytes: {MAX_MESSAGE_BYTES}\n    \
-             max.partition.fetch.bytes: {MAX_MESSAGE_BYTES}\n",
+             max.partition.fetch.bytes: {MAX_MESSAGE_BYTES}\n    \
+             session.timeout.ms: {CONSUMER_SESSION_MS}\n    \
+             heartbeat.interval.ms: {CONSUMER_HEARTBEAT_MS}\n    \
+             max.poll.interval.ms: {CONSUMER_MAX_POLL_MS}\n",
             self.partitions,
             Self::topic(index_id),
             self.bootstrap
         )
     }
 
-    /// A producer to `index_id`'s topic.
+    /// A producer to `index_id`'s topic, kept within reach of the index by
+    /// `watch` when given.
     pub async fn producer(
         &self,
         index_id: &str,
         stats: Arc<SinkStats>,
+        watch: Option<Watch>,
     ) -> anyhow::Result<Producer> {
         let topic = Self::topic(index_id);
         let client = self.producer_client().await?;
@@ -193,6 +227,8 @@ impl Kafka {
             batch: Vec::new(),
             batch_bytes: 0,
             stats,
+            watch,
+            lease_lost: None,
         })
     }
 }
@@ -223,6 +259,14 @@ enum Lost {
     Unexplained,
 }
 
+/// Nothing more goes to Kafka once the writer lock is gone.
+fn holding(lease_gone: bool) -> anyhow::Result<()> {
+    if lease_gone {
+        bail!("the writer lock could not be renewed; the Kafka producer stopped");
+    }
+    Ok(())
+}
+
 fn lost(expected: i64, n: i64, end: i64) -> Lost {
     if end == expected + n {
         Lost::Written
@@ -231,6 +275,308 @@ fn lost(expected: i64, n: i64, end: i64) -> Lost {
     } else {
         Lost::Unexplained
     }
+}
+
+/// Keeps a producer within reach of what the index has taken. Before a
+/// produce (at most every `poll`), and at the end until the index has every
+/// record ([`Producer::drain`]), it reads the index's Kafka checkpoint from
+/// the writer node (the position each partition's published splits reach)
+/// and:
+/// - fails at once if a partition's oldest held record is past the index's
+///   position: records expired unread;
+/// - waits while the index is more than `max_lag` records behind;
+/// - when the checkpoint stands still for `stall` with records waiting,
+///   restarts the writer (its source resumes from the checkpoint), at most
+///   [`MAX_RESTARTS`] times and only after progress since the last one, and
+///   otherwise fails.
+pub struct Watch {
+    http: reqwest::Client,
+    /// The index's metadata on the writer node.
+    url: String,
+    restart: Option<Arc<dyn Restart>>,
+    max_lag: i64,
+    stall: Duration,
+    /// After a restart, how long the new writer gets to show progress: it
+    /// starts, its consumers join the group (a member that left uncleanly
+    /// holds it for up to the session timeout), and a pipeline publishes a
+    /// split.
+    restart_grace: Duration,
+    poll: Duration,
+    /// How long one read of the checkpoint may take: a writer that doesn't
+    /// answer is one that stands still.
+    read_timeout: Duration,
+    last_check: Option<Instant>,
+    /// The positions last read, kept when a read fails.
+    last_next: Vec<i64>,
+    /// Each partition's position, and when it last moved (or had nothing
+    /// waiting): a stall is per partition, so one stuck consumer isn't
+    /// hidden by the others moving.
+    indexed: Vec<i64>,
+    moved: Vec<Instant>,
+    restarts: u32,
+    /// The partitions a restart was for that haven't moved since.
+    awaiting: std::collections::BTreeSet<usize>,
+    /// The producer is held until the index catches up.
+    waiting: bool,
+}
+
+impl Watch {
+    /// For `index` on the writer node at `base`, with the settings from the
+    /// environment.
+    pub fn new(
+        http: reqwest::Client,
+        base: &str,
+        index: &str,
+        restart: Option<Arc<dyn Restart>>,
+    ) -> anyhow::Result<Self> {
+        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let max_lag = match get(MAX_LAG_VAR) {
+            None => DEFAULT_MAX_LAG,
+            Some(v) => match v.trim().parse::<i64>() {
+                Ok(n) if n > 0 => n,
+                _ => bail!("{MAX_LAG_VAR} must be a positive number of records, not `{v}`"),
+            },
+        };
+        let stall = match get(STALL_VAR) {
+            None => DEFAULT_STALL_SECS,
+            Some(v) => match v.trim().parse::<u64>() {
+                Ok(n) if n >= 60 => n,
+                _ => bail!("{STALL_VAR} must be at least 60 seconds, not `{v}`"),
+            },
+        };
+        // A pipeline publishes once per commit timeout, so the checkpoint
+        // can stand still that long while healthy (as `finish` allows).
+        let commit = u64::from(crate::sink::WriterTuning::from_env()?.commit_timeout_secs);
+        let stall = stall.max(commit + 600);
+        Ok(Self::with(
+            http,
+            base,
+            index,
+            restart,
+            max_lag,
+            Duration::from_secs(stall),
+            Duration::from_millis(u64::from(CONSUMER_SESSION_MS)) + Duration::from_secs(120),
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+        ))
+    }
+
+    // The settings `new` reads from the environment, given; for the tests.
+    #[allow(clippy::too_many_arguments)]
+    fn with(
+        http: reqwest::Client,
+        base: &str,
+        index: &str,
+        restart: Option<Arc<dyn Restart>>,
+        max_lag: i64,
+        stall: Duration,
+        restart_grace: Duration,
+        poll: Duration,
+        read_timeout: Duration,
+    ) -> Self {
+        Self {
+            http,
+            url: format!("{}/api/v1/indexes/{index}", base.trim_end_matches('/')),
+            restart,
+            max_lag,
+            stall,
+            restart_grace,
+            poll,
+            read_timeout,
+            last_check: None,
+            last_next: Vec::new(),
+            indexed: Vec::new(),
+            moved: Vec::new(),
+            restarts: 0,
+            awaiting: std::collections::BTreeSet::new(),
+            waiting: false,
+        }
+    }
+
+    fn due(&self) -> bool {
+        self.last_check.is_none_or(|t| t.elapsed() >= self.poll)
+    }
+
+    /// The next offset the index reads in each of `n` partitions.
+    async fn positions(&self, n: usize) -> anyhow::Result<Vec<i64>> {
+        let resp = self
+            .http
+            .get(&self.url)
+            .timeout(self.read_timeout)
+            .send()
+            .await
+            .context("reading the index's Kafka checkpoint")?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!(
+                "reading the index's Kafka checkpoint returned {status}: {}",
+                text.chars().take(200).collect::<String>()
+            );
+        }
+        let v: serde_json::Value = serde_json::from_str(&text).context("the index's metadata")?;
+        next_offsets(&v["checkpoint"]["kafka"], n)
+    }
+
+    /// One look at the index against `ends`, the producer's partition ends,
+    /// and `earliest`, each partition's oldest held record: `Ok(true)` once
+    /// the index is within `target` records of the ends, `Ok(false)` to look
+    /// again after `poll`. Fails if records expired unread, the writer lock
+    /// was lost, or the checkpoint stood still past its restarts.
+    async fn check(
+        &mut self,
+        ends: &[i64],
+        earliest: &[i64],
+        target: i64,
+        lease_lost: Option<&std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<bool> {
+        let lost = || lease_lost.is_some_and(|l| l.load(std::sync::atomic::Ordering::SeqCst));
+        if lost() {
+            bail!("the writer lock could not be renewed; the Kafka producer stopped");
+        }
+        // A failed read (a writer that hangs or is restarting) counts as
+        // the index standing still: the stall rules below decide.
+        let n = ends.len();
+        let read = match self.positions(n).await {
+            Ok(next) => {
+                self.last_next.clone_from(&next);
+                Some(next)
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "Kafka: the index's checkpoint couldn't be read");
+                None
+            }
+        };
+        self.last_check = Some(Instant::now());
+        if self.last_next.len() != n {
+            self.last_next = vec![0; n];
+        }
+        if self.indexed.len() != n {
+            self.indexed = vec![-1; n];
+            self.moved = vec![Instant::now(); n];
+        }
+        // Only a fresh read says what expired: cached positions may be behind
+        // records the index has since taken.
+        if let Some(next) = &read {
+            for (p, (&at, &first)) in next.iter().zip(earliest).enumerate() {
+                if first > at {
+                    bail!(
+                        "Kafka partition {p}: records {at} to {} expired before the index read \
+                         them (its oldest held record is {first})",
+                        first - 1
+                    );
+                }
+            }
+        }
+        let next = self.last_next.clone();
+        let behind: Vec<i64> = ends
+            .iter()
+            .zip(&next)
+            .map(|(e, i)| (e - i).max(0))
+            .collect();
+        let lag: i64 = behind.iter().sum();
+        for p in 0..n {
+            if (read.is_some() && next[p] > self.indexed[p]) || behind[p] == 0 {
+                self.indexed[p] = self.indexed[p].max(next[p]);
+                self.moved[p] = Instant::now();
+                self.awaiting.remove(&p);
+            }
+        }
+        // While a restart awaits progress, every partition gets the restarted
+        // writer's grace: the restart interrupted them all.
+        let allowed = if self.awaiting.is_empty() {
+            self.stall
+        } else {
+            self.stall.max(self.restart_grace)
+        };
+        let stalled: Vec<usize> = (0..n)
+            .filter(|&p| behind[p] > 0 && self.moved[p].elapsed() >= allowed)
+            .collect();
+        if !stalled.is_empty() {
+            let secs = stalled
+                .iter()
+                .map(|&p| self.moved[p].elapsed().as_secs())
+                .max()
+                .unwrap_or_default();
+            match &self.restart {
+                Some(r) if self.awaiting.is_empty() && self.restarts < MAX_RESTARTS => {
+                    if lost() {
+                        bail!("the writer lock could not be renewed; the writer isn't restarted");
+                    }
+                    tracing::warn!(
+                        lag,
+                        secs,
+                        partitions = ?stalled,
+                        restarts = self.restarts + 1,
+                        "Kafka: the index's checkpoint stood still; restarting the writer"
+                    );
+                    // Bounded: a replacement that accepts but never answers its
+                    // readiness check would otherwise hold the release forever.
+                    let deadline = self.restart_grace + Duration::from_secs(120);
+                    match tokio::time::timeout(deadline, r.restart()).await {
+                        Ok(done) => {
+                            done.context("restarting the writer for a stalled Kafka source")?
+                        }
+                        Err(_) => bail!(
+                            "restarting the writer for a stalled Kafka source took over {} s",
+                            deadline.as_secs()
+                        ),
+                    }
+                    // The lock may have gone during the restart's wait; failing
+                    // here stops the new writer with the release.
+                    if lost() {
+                        bail!("the writer lock could not be renewed during the writer's restart");
+                    }
+                    self.restarts += 1;
+                    self.awaiting = stalled.iter().copied().collect();
+                    let now = Instant::now();
+                    self.moved.iter_mut().for_each(|m| *m = now);
+                }
+                _ => bail!(
+                    "indexing from Kafka stalled: partitions {stalled:?} haven't moved for \
+                     {secs} s with {lag} records waiting (writer restarts: {})",
+                    self.restarts
+                ),
+            }
+        }
+        if lag <= target {
+            if self.waiting {
+                tracing::info!(lag, "Kafka: the index caught up; sending again");
+                self.waiting = false;
+            }
+            return Ok(true);
+        }
+        if !self.waiting {
+            tracing::info!(lag, target, "Kafka: waiting for the index to catch up");
+            self.waiting = true;
+        }
+        Ok(false)
+    }
+}
+
+/// The next offset to read in each of `n` partitions, from a Kafka source's
+/// checkpoint (`{"00000000000000000003": "00000000000002123600", …}`: each
+/// partition's last offset taken). A partition not in it starts at 0.
+fn next_offsets(checkpoint: &serde_json::Value, n: usize) -> anyhow::Result<Vec<i64>> {
+    let mut next = vec![0i64; n];
+    let Some(map) = checkpoint.as_object() else {
+        return Ok(next);
+    };
+    for (k, v) in map {
+        let p: usize = k
+            .trim()
+            .parse()
+            .with_context(|| format!("checkpoint partition `{k}`"))?;
+        let at = v.as_str().unwrap_or_default().trim();
+        if p >= n || at.is_empty() {
+            continue;
+        }
+        let last: i64 = at
+            .parse()
+            .with_context(|| format!("checkpoint position `{at}` for partition {p}"))?;
+        next[p] = last + 1;
+    }
+    Ok(next)
 }
 
 /// Records to one partition at a time; [`Producer::end_file`] moves on.
@@ -244,6 +590,9 @@ pub struct Producer {
     batch: Vec<Record>,
     batch_bytes: usize,
     stats: Arc<SinkStats>,
+    watch: Option<Watch>,
+    /// Set when the writer lock couldn't be renewed (`crate::decade_order`).
+    lease_lost: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Producer {
@@ -278,6 +627,12 @@ impl Producer {
         if self.batch.is_empty() {
             return Ok(());
         }
+        if self.watch.as_ref().is_some_and(Watch::due) {
+            let target = self.watch.as_ref().map_or(0, |w| w.max_lag);
+            self.keep_up(target).await?;
+        }
+        // The lock may have gone while the watch waited for the writer.
+        holding(self.lease_gone())?;
         let records = std::mem::take(&mut self.batch);
         let (n, bytes) = (records.len() as u64, self.batch_bytes as u64);
         self.batch_bytes = 0;
@@ -332,6 +687,9 @@ impl Producer {
                     tracing::warn!(partition = p, records = n, "the lost produce was written");
                 }
                 Lost::NotWritten => {
+                    // The lock may have gone during the wait or the
+                    // reconnect: only its holder may send again.
+                    holding(self.lease_gone())?;
                     if let Err(e) = self.partitions[p]
                         .produce(records.clone(), Compression::Zstd)
                         .await
@@ -351,6 +709,76 @@ impl Producer {
             self.stats.sent(n, bytes);
             return Ok(());
         }
+    }
+
+    fn lease_gone(&self) -> bool {
+        self.lease_lost
+            .as_ref()
+            .is_some_and(|l| l.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// The writer lock's flag, for the watch to stop on.
+    pub fn set_lease_lost(&mut self, lost: Option<Arc<std::sync::atomic::AtomicBool>>) {
+        self.lease_lost = lost;
+    }
+
+    /// Wait, under the watch, until the index is within `target` records of
+    /// what this producer has sent.
+    async fn keep_up(&mut self, target: i64) -> anyhow::Result<()> {
+        loop {
+            let earliest = self.earliest().await?;
+            let Some(w) = self.watch.as_mut() else {
+                return Ok(());
+            };
+            if w.check(&self.offsets, &earliest, target, self.lease_lost.as_deref())
+                .await?
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(w.poll).await;
+        }
+    }
+
+    /// The last records, then a wait until the index holds every one, under
+    /// the watch: a stall in the last stretch gets the same restart as one
+    /// earlier, not a failed count after the merges' wait.
+    pub async fn drain(&mut self) -> anyhow::Result<()> {
+        self.produce().await?;
+        if self.watch.is_some() {
+            self.keep_up(0).await?;
+            tracing::info!("Kafka: the index has every record sent");
+        }
+        Ok(())
+    }
+
+    /// Each partition's oldest record still held, to tell an expired one.
+    /// Only reads, so a closed connection is opened again and the read
+    /// retried: the producer's own connections never retry (`no_retries`),
+    /// and the broker closes one that is idle for 10 minutes.
+    async fn earliest(&mut self) -> anyhow::Result<Vec<i64>> {
+        let mut out = Vec::with_capacity(self.partitions.len());
+        for p in 0..self.partitions.len() {
+            let started = Instant::now();
+            let mut wait = Duration::from_secs(1);
+            let at = loop {
+                let err = match self.partitions[p].get_offset(OffsetAt::Earliest).await {
+                    Ok(at) => break at,
+                    Err(e) => anyhow::Error::new(e),
+                };
+                if started.elapsed().as_secs() > LOST_PRODUCE_SECS {
+                    return Err(err).with_context(|| {
+                        format!("Kafka partition {p} of {}: its start", self.topic)
+                    });
+                }
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(30));
+                if let Ok(pc) = self.reconnect(p).await {
+                    self.partitions[p] = pc;
+                }
+            };
+            out.push(at);
+        }
+        Ok(out)
     }
 
     async fn reconnect(&self, p: usize) -> anyhow::Result<PartitionClient> {
@@ -389,12 +817,290 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_sent_once_the_writer_lock_is_gone() {
+        assert!(holding(false).is_ok());
+        let e = holding(true).unwrap_err();
+        assert!(format!("{e:#}").contains("writer lock"), "{e:#}");
+    }
+
+    #[test]
     fn a_lost_produce_is_told_by_the_partition_end() {
         assert_eq!(lost(100, 10, 110), Lost::Written);
         assert_eq!(lost(100, 10, 100), Lost::NotWritten);
         assert_eq!(lost(100, 10, 105), Lost::Unexplained);
         assert_eq!(lost(100, 10, 120), Lost::Unexplained);
         assert_eq!(lost(100, 10, 99), Lost::Unexplained);
+    }
+
+    #[test]
+    fn a_checkpoint_gives_each_partitions_next_offset() {
+        let cp = serde_json::json!({
+            "00000000000000000000": "00000000000002159999",
+            "00000000000000000002": "00000000000002099999",
+            "00000000000000000003": "",
+        });
+        assert_eq!(next_offsets(&cp, 4).unwrap(), [2_160_000, 0, 2_100_000, 0]);
+        assert_eq!(next_offsets(&serde_json::Value::Null, 2).unwrap(), [0, 0]);
+        assert!(next_offsets(&serde_json::json!({"x": "1"}), 2).is_err());
+    }
+
+    #[test]
+    fn the_source_outlasts_a_stalled_broker() {
+        let k = Kafka::from_lookup(Some("127.0.0.1:9092".into()), Some("4".into()))
+            .unwrap()
+            .unwrap();
+        let y = k.source_yaml("pages-base-20261022-1");
+        assert!(y.contains("session.timeout.ms: 300000"), "{y}");
+        assert!(y.contains("max.poll.interval.ms: 900000"), "{y}");
+        assert!(y.contains("heartbeat.interval.ms: 10000"), "{y}");
+    }
+
+    /// A writer node whose index checkpoint is `cp` (one offset per
+    /// partition, the last taken), and a restart that counts.
+    async fn checkpoint_node(cp: Arc<std::sync::Mutex<Vec<i64>>>) -> String {
+        use axum::{routing::get, Json, Router};
+        let app = Router::new().route(
+            "/api/v1/indexes/idx",
+            get(move || {
+                let cp = cp.lock().unwrap().clone();
+                async move {
+                    let m: serde_json::Map<String, serde_json::Value> = cp
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, &v)| v >= 0)
+                        .map(|(p, v)| (format!("{p:020}"), serde_json::json!(format!("{v:020}"))))
+                        .collect();
+                    Json(serde_json::json!({"checkpoint": {"kafka": m}}))
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[derive(Default)]
+    struct Counted(std::sync::atomic::AtomicU32);
+
+    #[async_trait::async_trait]
+    impl Restart for Counted {
+        async fn restart(&self) -> anyhow::Result<()> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn watch(base: &str, restart: Arc<Counted>, max_lag: i64) -> Watch {
+        Watch::with(
+            reqwest::Client::new(),
+            base,
+            "idx",
+            Some(restart as Arc<dyn Restart>),
+            max_lag,
+            Duration::from_millis(150),
+            Duration::from_millis(300),
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+        )
+    }
+
+    /// The producer's loop, without Kafka: `earliest` stays as given.
+    async fn keep_up(w: &mut Watch, ends: &[i64], earliest: &[i64]) -> anyhow::Result<()> {
+        let target = w.max_lag;
+        while !w.check(ends, earliest, target, None).await? {
+            tokio::time::sleep(w.poll).await;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_lost_writer_lock_stops_the_watch() {
+        let cp = Arc::new(std::sync::Mutex::new(vec![99]));
+        let base = checkpoint_node(Arc::clone(&cp)).await;
+        let restarts = Arc::new(Counted::default());
+        let mut w = watch(&base, Arc::clone(&restarts), 50);
+        let lost = std::sync::atomic::AtomicBool::new(true);
+        let err = w
+            .check(&[1_000], &[0], 50, Some(&lost))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("writer lock"), "{err}");
+        assert_eq!(restarts.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Caught up to the last record: the drain's target.
+        cp.lock().unwrap()[0] = 999;
+        assert!(w.check(&[1_000], &[0], 0, None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_producer_waits_while_the_index_is_far_behind() {
+        let cp = Arc::new(std::sync::Mutex::new(vec![99, 99]));
+        let base = checkpoint_node(Arc::clone(&cp)).await;
+        let restarts = Arc::new(Counted::default());
+        let mut w = watch(&base, Arc::clone(&restarts), 500);
+        // 1,800 records behind: it waits until the index catches up.
+        let catch_up = {
+            let cp = Arc::clone(&cp);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                *cp.lock().unwrap() = vec![799, 799];
+            })
+        };
+        let t = Instant::now();
+        keep_up(&mut w, &[1_000, 1_000], &[0, 0]).await.unwrap();
+        assert!(t.elapsed() >= Duration::from_millis(50));
+        catch_up.await.unwrap();
+        assert_eq!(restarts.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Within the limit: no wait.
+        keep_up(&mut w, &[1_000, 1_000], &[0, 0]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stalled_index_restarts_the_writer_once_then_fails() {
+        let cp = Arc::new(std::sync::Mutex::new(vec![99, -1]));
+        let base = checkpoint_node(Arc::clone(&cp)).await;
+        let restarts = Arc::new(Counted::default());
+        let mut w = watch(&base, Arc::clone(&restarts), 50);
+        let err = keep_up(&mut w, &[1_000, 1_000], &[0, 0])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("stalled"), "{err}");
+        assert_eq!(restarts.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn progress_after_a_restart_allows_another() {
+        let cp = Arc::new(std::sync::Mutex::new(vec![99]));
+        let base = checkpoint_node(Arc::clone(&cp)).await;
+        let restarts = Arc::new(Counted::default());
+        let mut w = watch(&base, Arc::clone(&restarts), 50);
+        let mover = {
+            let cp = Arc::clone(&cp);
+            let restarts = Arc::clone(&restarts);
+            tokio::spawn(async move {
+                // After each restart, the index moves a little, then stalls.
+                for round in 1..=2u32 {
+                    while restarts.0.load(std::sync::atomic::Ordering::SeqCst) < round {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    cp.lock().unwrap()[0] += 10;
+                }
+            })
+        };
+        let err = keep_up(&mut w, &[1_000], &[0])
+            .await
+            .unwrap_err()
+            .to_string();
+        mover.await.unwrap();
+        assert!(err.contains("stalled"), "{err}");
+        assert_eq!(restarts.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_writer_that_does_not_answer_is_restarted() {
+        use axum::{routing::get, Router};
+        let app = Router::new().route(
+            "/api/v1/indexes/idx",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                "{}"
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let restarts = Arc::new(Counted::default());
+        let mut w = watch(&format!("http://{addr}"), Arc::clone(&restarts), 50);
+        // Not an error: it waits, restarts the writer, then fails as stalled.
+        let err = keep_up(&mut w, &[1_000], &[0])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("stalled"), "{err}");
+        assert_eq!(restarts.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn one_stuck_partition_is_a_stall_while_the_others_move() {
+        let cp = Arc::new(std::sync::Mutex::new(vec![99, 99]));
+        let base = checkpoint_node(Arc::clone(&cp)).await;
+        let restarts = Arc::new(Counted::default());
+        // A lag limit no backlog reaches: only the stall rules act.
+        let mut w = watch(&base, Arc::clone(&restarts), 10_000_000);
+        let mover = {
+            let cp = Arc::clone(&cp);
+            tokio::spawn(async move {
+                for _ in 0..200 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    cp.lock().unwrap()[1] += 1;
+                }
+            })
+        };
+        let mut err = None;
+        for _ in 0..200 {
+            match w.check(&[1_000_000, 1_000_000], &[0, 0], 0, None).await {
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+                Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+        mover.abort();
+        let err = err.expect("partition 0 never moved, so the watch must give up");
+        assert!(err.contains("[0]"), "{err}");
+        assert_eq!(restarts.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn expiry_is_judged_only_on_a_fresh_checkpoint() {
+        use axum::{routing::get, Router};
+        let reads = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let r = Arc::clone(&reads);
+        let app = Router::new().route(
+            "/api/v1/indexes/idx",
+            get(move || {
+                let first = r.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                async move {
+                    if !first {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                    }
+                    axum::Json(serde_json::json!({"checkpoint": {"kafka": {
+                        "00000000000000000000": "00000000000000000099"}}}))
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let mut w = watch(
+            &format!("http://{addr}"),
+            Arc::new(Counted::default()),
+            10_000,
+        );
+        assert!(w.check(&[200], &[0], 10_000, None).await.unwrap());
+        // The next read fails; the cached position (100) is behind the
+        // partition's start (150), but that isn't proof of loss.
+        assert!(w.check(&[200], &[150], 10_000, None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn records_expired_unread_fail_at_once() {
+        let cp = Arc::new(std::sync::Mutex::new(vec![2_159_999, 2_099_999]));
+        let base = checkpoint_node(Arc::clone(&cp)).await;
+        let restarts = Arc::new(Counted::default());
+        let mut w = watch(&base, Arc::clone(&restarts), 10_000_000);
+        let err = keep_up(&mut w, &[5_946_669, 5_912_000], &[4_556_906, 0])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("partition 0") && err.contains("expired"),
+            "{err}"
+        );
     }
 
     #[test]
