@@ -62,7 +62,7 @@
 //! run's own log lines for them then say whether the finish sees what the
 //! run saw.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
@@ -73,6 +73,7 @@ use async_trait::async_trait;
 use serde_json::{Map, Value};
 use usnm_store::{ByteStream, ObjectInfo, ObjectStore, StoreError};
 
+use crate::catalog::{self, Catalog};
 use crate::state::{IndexRun, RunStatus, State};
 
 /// How long a finish waits for the index's merges by default: a day, since
@@ -321,6 +322,33 @@ impl Resume {
             !run.new_index.is_empty() && run.batch_count.is_some(),
             "{version} wrote no main index"
         );
+        // Past its snapshot, a run has recorded its final page total and
+        // built its other indexes: what is left is the pointer, which a
+        // finish doesn't repair on its own.
+        ensure!(
+            run.batch_list.is_none() && run.batches.is_none(),
+            "{version} wrote its snapshot already ({}): it stopped at its pointer, after what a \
+             finish replays. Not finishing",
+            run.batch_list.as_deref().unwrap_or("inline batches")
+        );
+        // The documents carry the catalog the run read: titles and places
+        // written since would be published beside documents that don't
+        // match them.
+        let started: SystemTime = run.started_at.into();
+        for path in [catalog::TITLES, catalog::PLACES] {
+            match reference.modified(path).await? {
+                Some(t) if t > started => bail!(
+                    "`{path}` changed after {version} started: the finish would publish another \
+                     catalog than the one its documents were built with. Not finishing"
+                ),
+                Some(_) => {}
+                None => tracing::warn!(
+                    path,
+                    "the reference store doesn't say when this was written; the index's \
+                     documents are checked against it instead"
+                ),
+            }
+        }
         for pointer in ["current.json", crate::onprem::PENDING_POINTER] {
             if let Some(bytes) = reference.get(pointer).await? {
                 let v: Value = serde_json::from_slice(&bytes).context(pointer)?;
@@ -364,22 +392,24 @@ impl Resume {
     }
 
     /// Check the documents `index` holds where searches see them against
-    /// what the run recorded it sent: its release progress, which counts
-    /// every document once the merge wait has run 30 s, and its "sent the
-    /// pages a decade at a time" line (a base laid out by decade). Either
-    /// may be missing; one that is there must agree.
+    /// what the run recorded it sent: its "sent the pages a decade at a
+    /// time" line (a base laid out by decade), exactly, and its last
+    /// release progress, a sample taken every 30 s, as a floor. Either may
+    /// be missing.
     pub fn check_count(&self, index: &str, held: u64) -> anyhow::Result<()> {
-        for (what, sent) in [
-            ("its last release progress", self.progress_sent),
-            ("its log", self.log.decades_sent()),
-        ] {
-            if let Some(sent) = sent {
-                ensure!(
-                    held == sent,
-                    "`{index}` holds {held} documents in its published splits; the run sent \
-                     {sent}, by {what}. Its main index isn't complete: not finishing"
-                );
-            }
+        if let Some(sent) = self.log.decades_sent() {
+            ensure!(
+                held == sent,
+                "`{index}` holds {held} documents in its published splits; the run's log says it \
+                 sent {sent}. Its main index isn't complete: not finishing"
+            );
+        }
+        if let Some(sent) = self.progress_sent {
+            ensure!(
+                held >= sent,
+                "`{index}` holds {held} documents in its published splits; the run had sent \
+                 {sent} by its last release progress. Its main index isn't complete: not finishing"
+            );
         }
         Ok(())
     }
@@ -562,6 +592,65 @@ impl ObjectStore for AsOf {
 /// splits hold them.
 pub type DecadeDocs = BTreeMap<u16, u64>;
 
+/// What a main index's documents of one title carry from the catalog:
+/// what the release wrote into them from its title and place.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TitleFields {
+    pub places: BTreeSet<String>,
+    /// `place_shard`: the place's ordinal modulo 8.
+    pub shards: BTreeSet<u64>,
+    pub states: BTreeSet<String>,
+    /// The title's languages, without empty codes.
+    pub languages: BTreeSet<String>,
+    /// The lowest and highest title ordinal of its documents' `sort_key`s
+    /// (`sort_key >> 32`).
+    pub ordinals: (u64, u64),
+}
+
+/// Check the documents of every title `index` holds (`held`, by LCCN)
+/// against `catalog`, the one the finish plans with: the same place, place
+/// shard, state, languages and ordinal as the release wrote. A catalog that
+/// changed since the run (titles-sync, geocode) would put titles and
+/// baselines in the snapshot that its documents don't match.
+pub fn check_titles(
+    catalog: &Catalog,
+    index: &str,
+    held: &BTreeMap<String, TitleFields>,
+) -> anyhow::Result<()> {
+    for (lccn, got) in held {
+        let title = catalog.title(lccn).with_context(|| {
+            format!("`{index}` has documents of {lccn}, which the catalog lacks")
+        })?;
+        let place = catalog
+            .place(&title.place_id)
+            .with_context(|| format!("the catalog has no place `{}`", title.place_id))?;
+        let ordinal = u64::from(title.ordinal);
+        let want = TitleFields {
+            places: BTreeSet::from([title.place_id.clone()]),
+            shards: BTreeSet::from([u64::from(place.ordinal % 8)]),
+            states: BTreeSet::from([title.state.clone()]),
+            languages: title
+                .languages
+                .iter()
+                .filter(|l| !l.is_empty())
+                .cloned()
+                .collect(),
+            ordinals: (ordinal, ordinal),
+        };
+        ensure!(
+            *got == want,
+            "`{index}`'s documents of {lccn} have {got:?}; the catalog gives {want:?}. The catalog \
+             changed since the run built the index: not finishing"
+        );
+    }
+    tracing::info!(
+        index,
+        titles = held.len(),
+        "the index's documents match the catalog"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +752,148 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("built \"i1\", not i9"), "{err}");
+    }
+
+    fn catalog(place: &str, ordinal: u32) -> Catalog {
+        let place = crate::catalog::Place {
+            id: place.into(),
+            ordinal,
+            name: place.into(),
+            state: "IL".into(),
+            lat: 41.0,
+            lon: -87.0,
+            precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
+        };
+        Catalog::new(
+            vec![crate::catalog::Title {
+                lccn: "sn1".into(),
+                name: "sn1".into(),
+                ordinal: 7,
+                place_id: place.id.clone(),
+                state: "IL".into(),
+                languages: vec!["eng".into(), String::new()],
+                extra: BTreeMap::new(),
+            }],
+            vec![place],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_index_must_carry_the_catalog_the_finish_plans_with() {
+        let held = BTreeMap::from([(
+            "sn1".to_owned(),
+            TitleFields {
+                places: BTreeSet::from(["P1".to_owned()]),
+                shards: BTreeSet::from([3]),
+                states: BTreeSet::from(["IL".to_owned()]),
+                languages: BTreeSet::from(["eng".to_owned()]),
+                ordinals: (7, 7),
+            },
+        )]);
+        check_titles(&catalog("P1", 11), "i", &held).unwrap();
+        // The title moved to another place since the run.
+        let err = check_titles(&catalog("P2", 11), "i", &held)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("catalog changed"), "{err}");
+        // Its place was numbered again: another place shard.
+        assert!(check_titles(&catalog("P1", 12), "i", &held).is_err());
+        let mut gone = held.clone();
+        gone.insert("sn9".into(), TitleFields::default());
+        let err = check_titles(&catalog("P1", 11), "i", &gone)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("sn9, which the catalog lacks"), "{err}");
+    }
+
+    fn resume(progress: Option<u64>, decades: Option<u64>) -> Resume {
+        let mut log = RunLog::default();
+        if let Some(n) = decades {
+            log.built.insert(
+                (DECADES_SENT_LINE.to_owned(), None),
+                serde_json::json!({"pages": n}).as_object().unwrap().clone(),
+            );
+        }
+        Resume {
+            run: serde_json::from_value(serde_json::json!({
+                "id": "v", "index_version": "v", "full": true, "indexes": [], "new_index": "i",
+                "status": "failed", "docs": 0, "pages": 0, "started_at": "2026-10-22T00:00:00Z",
+            }))
+            .unwrap(),
+            etag: String::new(),
+            progress_sent: progress,
+            log,
+        }
+    }
+
+    #[test]
+    fn the_logged_count_is_exact_and_the_progress_a_floor() {
+        resume(None, None).check_count("i", 100).unwrap();
+        resume(None, Some(100)).check_count("i", 100).unwrap();
+        assert!(resume(None, Some(100)).check_count("i", 99).is_err());
+        assert!(resume(None, Some(100)).check_count("i", 101).is_err());
+        // A sample from before the last pages went: fewer, not more.
+        resume(Some(90), Some(100)).check_count("i", 100).unwrap();
+        let err = resume(Some(101), None)
+            .check_count("i", 100)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("had sent 101 by its last release progress"),
+            "{err}"
+        );
+    }
+
+    /// A run that wrote its snapshot, or a published one, isn't finished;
+    /// nor is one whose catalog changed after it started.
+    #[tokio::test]
+    async fn only_a_run_that_stopped_before_its_snapshot_is_taken_up() {
+        let state = State::new(Arc::new(crate::docs::MemoryDocs::default()));
+        let dir = tempfile::tempdir().unwrap();
+        let reference = usnm_store::LocalStore::new(dir.path());
+        let log = dir.path().join("release.log");
+        std::fs::write(&log, "").unwrap();
+        let mut run = resume(None, None).run;
+        run.batch_count = Some(1);
+        run.started_at = chrono::Utc::now() - chrono::Duration::hours(1);
+        let load = |v: &'static str| {
+            let (state, reference, log) = (&state, &reference, &log);
+            async move {
+                Resume::load(state, reference, v, log)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+            }
+        };
+        for (id, status, batch_list) in [
+            ("v1", RunStatus::Published, None),
+            ("v2", RunStatus::Failed, Some("v2/batches.json")),
+            ("v3", RunStatus::Failed, None),
+        ] {
+            let r = IndexRun {
+                id: id.into(),
+                index_version: id.into(),
+                status,
+                batch_list: batch_list.map(str::to_owned),
+                ..run.clone()
+            };
+            assert!(state.create_run(&r).await.unwrap());
+        }
+        reference
+            .put(catalog::TITLES, b"[]".to_vec(), "application/json")
+            .await
+            .unwrap();
+        for (id, want) in [
+            ("v1", "only a release that stopped"),
+            ("v2", "wrote its snapshot already"),
+            ("v3", "changed after v3 started"),
+        ] {
+            let err = load(id).await;
+            assert!(err.contains(want), "{id}: {err}");
+        }
     }
 
     #[tokio::test]

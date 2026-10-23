@@ -7174,6 +7174,38 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
         .await
         .unwrap();
 
+    // A catalog that moved a title since the run: the index's documents
+    // say where it was, and a catalog written after the run started isn't
+    // taken.
+    {
+        use usnm_ingest::sink::IndexSink;
+        let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+        let held = sink.title_fields(&want.indexes[0]).await.unwrap().unwrap();
+        let catalog = usnm_ingest::catalog::Catalog::load(e.reference.as_ref())
+            .await
+            .unwrap();
+        usnm_ingest::finish::check_titles(&catalog, &want.indexes[0], &held).unwrap();
+        let mut titles = catalog.titles.clone();
+        let other = titles[1].place_id.clone();
+        titles[0].place_id = other;
+        let moved = usnm_ingest::catalog::Catalog::new(titles, catalog.places.clone()).unwrap();
+        let err = usnm_ingest::finish::check_titles(&moved, &want.indexes[0], &held)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("catalog changed"), "{err}");
+        let later = e.root.join("later-reference");
+        for (path, bytes) in files(&e.root.join("reference")) {
+            let dest = later.join(path);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::write(dest, bytes).unwrap();
+        }
+        let err = Resume::load(&e.state, &LocalStore::new(&later), &version, &log)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("changed after"), "{err}");
+    }
+
     // A log without the merge wait: the run never passed its count.
     let short = e.root.join("short.log");
     std::fs::write(

@@ -1,7 +1,7 @@
 //! Where index documents go: JSONL files (the API's memory backend, local
 //! development and tests) or a Quickwit writer node (08 §8.4.1).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -22,6 +22,58 @@ use crate::telemetry;
 
 /// The index config every base and delta shares (05 §5.5.1).
 pub const INDEX_TEMPLATE: &str = include_str!("../../../infra/quickwit/pages-index.yaml");
+
+/// Titles a `title_fields` search can tell apart: more than LoC has.
+const TITLE_BUCKETS: u64 = 50_000;
+
+/// A `title_fields` search's answer, by LCCN.
+fn title_fields_of(v: &Value) -> anyhow::Result<TitleFieldsByLccn> {
+    let buckets = v["aggregations"]["titles"]["buckets"]
+        .as_array()
+        .context("the search answered no title buckets")?;
+    anyhow::ensure!(
+        (buckets.len() as u64) < TITLE_BUCKETS,
+        "the index has {TITLE_BUCKETS} titles or more: too many to check"
+    );
+    let keys = |b: &Value, name: &str| -> BTreeSet<String> {
+        b[name]["buckets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|k| match &k["key"] {
+                Value::String(s) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut out = TitleFieldsByLccn::new();
+    for b in buckets {
+        let lccn = b["key"].as_str().context("a title bucket without a key")?;
+        let shards = b["shards"]["buckets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|k| k["key"].as_f64().map(|n| n as u64))
+            .collect();
+        let ordinal = |name: &str| {
+            b[name]["value"]
+                .as_f64()
+                .map(|n| (n as u64) >> 32)
+                .with_context(|| format!("{lccn} has no {name} sort_key"))
+        };
+        out.insert(
+            lccn.to_owned(),
+            crate::finish::TitleFields {
+                places: keys(b, "places"),
+                shards,
+                states: keys(b, "states"),
+                languages: keys(b, "languages"),
+                ordinals: (ordinal("first")?, ordinal("last")?),
+            },
+        );
+    }
+    Ok(out)
+}
 
 /// What a writer node that doesn't see itself as a searcher yet answers a
 /// search with (Quickwit 0.9.1), just after it starts.
@@ -604,6 +656,48 @@ pub trait IndexSink: Send {
     ) -> anyhow::Result<Option<std::collections::BTreeMap<u16, u64>>> {
         Ok(None)
     }
+    /// What `index_id`'s documents of each title carry from the catalog
+    /// (`crate::finish::TitleFields`, by LCCN), when the sink can tell.
+    async fn title_fields(&mut self, _index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+        Ok(None)
+    }
+}
+
+/// [`IndexSink::title_fields`]' answer.
+pub type TitleFieldsByLccn = std::collections::BTreeMap<String, crate::finish::TitleFields>;
+
+/// Fold one document's catalog fields into `by` ([`IndexSink::title_fields`]).
+fn add_title_fields(by: &mut TitleFieldsByLccn, doc: &Value) -> anyhow::Result<()> {
+    let text = |k: &str| {
+        doc[k]
+            .as_str()
+            .map(str::to_owned)
+            .with_context(|| format!("a document without `{k}`: {}", doc["doc_id"]))
+    };
+    let ordinal = doc["sort_key"]
+        .as_u64()
+        .with_context(|| format!("a document without `sort_key`: {}", doc["doc_id"]))?
+        >> 32;
+    let f = by
+        .entry(text("lccn")?)
+        .or_insert_with(|| crate::finish::TitleFields {
+            ordinals: (ordinal, ordinal),
+            ..Default::default()
+        });
+    f.places.insert(text("place_id")?);
+    f.states.insert(text("state")?);
+    f.shards.insert(
+        doc["place_shard"]
+            .as_u64()
+            .with_context(|| format!("a document without `place_shard`: {}", doc["doc_id"]))?,
+    );
+    for l in doc["language"].as_array().into_iter().flatten() {
+        if let Some(l) = l.as_str().filter(|l| !l.is_empty()) {
+            f.languages.insert(l.to_owned());
+        }
+    }
+    f.ordinals = (f.ordinals.0.min(ordinal), f.ordinals.1.max(ordinal));
+    Ok(())
 }
 
 /// What a sink has sent so far, and where to look for its resources.
@@ -781,6 +875,17 @@ impl IndexSink for JsonlSink {
                 return Ok(None);
             };
             *by.entry(decade).or_default() += 1;
+        }
+        Ok(Some(by))
+    }
+
+    async fn title_fields(&mut self, index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+        use std::io::BufRead;
+        let path = self.dir.join(format!("{index_id}.jsonl"));
+        let file = std::fs::File::open(&path).with_context(|| path.display().to_string())?;
+        let mut by = TitleFieldsByLccn::new();
+        for line in std::io::BufReader::new(file).lines() {
+            add_title_fields(&mut by, &serde_json::from_str(&line?)?)?;
         }
         Ok(Some(by))
     }
@@ -1509,6 +1614,44 @@ impl IndexSink for QuickwitSink {
             *by.entry(s.decades[0]).or_default() += s.docs;
         }
         Ok(Some(by))
+    }
+
+    /// One search of the published splits: each title's terms and its
+    /// documents' lowest and highest `sort_key`.
+    async fn title_fields(&mut self, index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+        let terms = |field: &str| serde_json::json!({"terms": {"field": field, "size": 64}});
+        let body = serde_json::json!({
+            "query": "*",
+            "max_hits": 0,
+            "aggs": {"titles": {
+                "terms": {"field": "lccn", "size": TITLE_BUCKETS},
+                "aggs": {
+                    "places": terms("place_id"),
+                    "shards": terms("place_shard"),
+                    "states": terms("state"),
+                    "languages": terms("language"),
+                    "first": {"min": {"field": "sort_key"}},
+                    "last": {"max": {"field": "sort_key"}},
+                },
+            }},
+        });
+        let resp = self
+            .http
+            .post(format!("{}/api/v1/{index_id}/search", self.base))
+            .json(&body)
+            .send()
+            .await;
+        let resp = merges::explained(self.events.as_deref(), resp.map_err(Into::into)).await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!(
+                "reading the titles of `{index_id}` returned {status}: {}",
+                text.chars().take(500).collect::<String>()
+            );
+        }
+        let v: Value = serde_json::from_str(&text).context("search response")?;
+        title_fields_of(&v).map(Some)
     }
 
     fn backend(&self) -> &'static str {
@@ -3202,6 +3345,45 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn reads_what_each_titles_documents_carry() {
+        // As Quickwit 0.9.1 answers `title_fields`' search.
+        let v = serde_json::json!({"num_hits": 3, "aggregations": {"titles": {"buckets": [{
+            "key": "sn1", "doc_count": 3,
+            "places": {"buckets": [{"key": "P1", "doc_count": 3}]},
+            "shards": {"buckets": [{"key": 3.0, "doc_count": 3}]},
+            "states": {"buckets": [{"key": "IL", "doc_count": 3}]},
+            "languages": {"buckets": [{"key": "eng", "doc_count": 3}, {"key": "", "doc_count": 1}]},
+            "first": {"value": ((7u64 << 32) | (1 << 16) | 1) as f64},
+            "last": {"value": ((7u64 << 32) | (1 << 16) | 12) as f64},
+        }]}}});
+        let got = title_fields_of(&v).unwrap();
+        assert_eq!(
+            got["sn1"],
+            crate::finish::TitleFields {
+                places: BTreeSet::from(["P1".to_owned()]),
+                shards: BTreeSet::from([3]),
+                states: BTreeSet::from(["IL".to_owned()]),
+                languages: BTreeSet::from(["eng".to_owned()]),
+                ordinals: (7, 7),
+            }
+        );
+        // A document's own fields fold the same way.
+        let mut by = TitleFieldsByLccn::new();
+        for seq in [1u64, 12] {
+            add_title_fields(
+                &mut by,
+                &serde_json::json!({
+                    "doc_id": "d", "lccn": "sn1", "place_id": "P1", "place_shard": 3,
+                    "state": "IL", "language": ["eng", ""], "sort_key": (7u64 << 32) | (1 << 16) | seq,
+                }),
+            )
+            .unwrap();
+        }
+        assert_eq!(by, got);
+        assert!(title_fields_of(&serde_json::json!({"num_hits": 0})).is_err());
     }
 
     #[test]

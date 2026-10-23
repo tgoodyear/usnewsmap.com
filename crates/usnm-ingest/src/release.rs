@@ -1179,6 +1179,15 @@ impl Release {
                     r.run.index_version
                 );
             }
+            // The catalog the finish plans with must be the one the index's
+            // documents were written from.
+            match sink.title_fields(&r.run.new_index).await? {
+                Some(held) => finish::check_titles(&catalog, &r.run.new_index, &held)?,
+                None => tracing::warn!(
+                    "this sink can't say what the index's documents carry from the catalog; not \
+                     checked"
+                ),
+            }
         }
         // A finish takes the run's names; `next_names` would skip them.
         let (version, index_id) = match resume {
