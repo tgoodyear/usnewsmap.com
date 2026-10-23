@@ -42,7 +42,7 @@ class Check(unittest.TestCase):
     def problems(self, doc, name="pages-v20261006-2.json"):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / name
-            path.write_text(json.dumps(doc, ensure_ascii=False))
+            path.write_text(check.snapshot_text(doc))
             return check.problems(path, self.validate)
 
     def broken(self, change):
@@ -102,9 +102,32 @@ class Check(unittest.TestCase):
     def test_every_json_file_is_checked_whatever_its_name(self):
         with tempfile.TemporaryDirectory() as d, unittest.mock.patch.object(check, "DIR", Path(d)):
             Path(d, "schema.json").write_text((HERE.parent / "ops/version-snapshots/schema.json").read_text())
-            Path(d, "snapshot.json").write_text(json.dumps(GOOD))
+            Path(d, "snapshot.json").write_text(check.snapshot_text(GOOD))
             with unittest.mock.patch.object(check.sys, "argv", ["check"]):
                 self.assertEqual(check.main(), 1)  # named snapshot.json, captures pages-v20261006-2
+
+    def test_a_pretty_printed_or_one_line_file_is_refused_with_the_fix(self):
+        for text in (json.dumps(GOOD, indent=1, sort_keys=True), json.dumps(GOOD)):
+            with tempfile.TemporaryDirectory() as d:
+                path = Path(d) / "pages-v20261006-2.json"
+                path.write_text(text)
+                found = check.problems(path, self.validate)
+            self.assertEqual(len(found), 1)
+            self.assertIn("one search per line", found[0])
+            self.assertIn("compare-versions.py fmt --path", found[0])
+        # The canonical text is the frame plus one line per search, and round-trips.
+        text = check.snapshot_text(GOOD)
+        self.assertEqual(len(text.splitlines()), 7 + len(GOOD["searches"]))  # "{", three scalars, the searches frame, "}"
+        self.assertEqual(json.loads(text), GOOD)
+
+    def test_valid_json_of_the_wrong_shape_gets_a_schema_message_not_a_crash(self):
+        for text in ("null", '{"searches": null}', "[]"):
+            with tempfile.TemporaryDirectory() as d:
+                path = Path(d) / "pages-v20261006-2.json"
+                path.write_text(text)
+                found = check.problems(path, self.validate)
+            self.assertEqual(len(found), 1, text)
+            self.assertTrue(found[0].startswith("schema:"), found[0])
 
     def test_not_json(self):
         with tempfile.TemporaryDirectory() as d:

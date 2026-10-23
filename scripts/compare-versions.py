@@ -4,9 +4,13 @@ and compare two captures (#161).
 
     scripts/compare-versions.py capture [--base-url URL] > ops/version-snapshots/<version>.json
     scripts/compare-versions.py diff --before A.json --after B.json
+    scripts/compare-versions.py fmt --path FILE [--path FILE ...]
 
 A capture's format is ops/version-snapshots/schema.json; CI checks committed
-captures against it (scripts/check-version-snapshots.py).
+captures against it (scripts/check-version-snapshots.py). The file is
+written one search per line (`snapshot_text`), so a capture of a hundred
+searches is a hundred lines rather than ten thousand and a diff shows the
+searches that changed; `fmt` rewrites a capture into that layout.
 
 The API serves one index version at a time, so versions are compared through
 captures: run `capture` while a version is live (before a release replaces
@@ -148,8 +152,23 @@ def capture(base):
             rec["error"] = {k: doc.get(k) for k in ("type", "title", "detail") if doc.get(k)}
         out["searches"][name] = rec
         print(f"{name}: {status} {rec.get('total', {}).get('hits', '')} ({secs:.1f} s)", file=sys.stderr)
-    json.dump(out, sys.stdout, indent=1, ensure_ascii=False, sort_keys=True)
-    print()
+    sys.stdout.write(snapshot_text(out))
+
+
+def snapshot_text(doc: dict) -> str:
+    """The canonical file layout: the top-level scalars one per line, then
+    `searches` with each search as one line, keys sorted throughout."""
+    lines = ["{"]
+    for k in sorted(k for k in doc if k != "searches"):
+        lines.append(f"  {json.dumps(k)}: {json.dumps(doc[k], ensure_ascii=False, sort_keys=True)},")
+    lines.append('  "searches": {')
+    names = sorted(doc.get("searches", {}))
+    for i, name in enumerate(names):
+        row = json.dumps(doc["searches"][name], ensure_ascii=False, sort_keys=True, separators=(", ", ": "))
+        lines.append(f"    {json.dumps(name, ensure_ascii=False)}: {row}{',' if i + 1 < len(names) else ''}")
+    lines.append("  }")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
 
 
 def diff(a_path, b_path, threshold):
@@ -189,11 +208,17 @@ def main():
     d.add_argument("--before", help="the earlier capture")
     d.add_argument("--after", help="the later capture")
     d.add_argument("--threshold", type=float, default=1.0)
+    f = sub.add_parser("fmt", help="rewrite captures one search per line")
+    f.add_argument("--path", type=Path, action="append", required=True, help="a capture to rewrite (repeatable)")
     # The positional forms (`capture URL`, `diff A B`) work for one release,
     # with a warning (#277).
     c.add_argument("legacy", nargs="?", help=argparse.SUPPRESS)
     d.add_argument("legacy", nargs="*", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.cmd == "fmt":
+        for path in a.path:
+            path.write_text(snapshot_text(json.loads(path.read_text(encoding="utf-8"))), encoding="utf-8")
+        return
     if a.cmd == "capture":
         if a.legacy is not None:
             if a.base_url is not None:

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Check the index version snapshots (every ops/version-snapshots/*.json but the schema)
 against their schema (ops/version-snapshots/schema.json), and what a schema
-can't say: the file is named after its index_version, and each answered
-search's per-bucket hits number the bucket count and add up to its total.
+can't say: the file is named after its index_version, each answered
+search's per-bucket hits number the bucket count and add up to its total,
+and the file is laid out one search per line (compare-versions.py's
+`snapshot_text`; `compare-versions.py fmt --path FILE` rewrites it).
 
     scripts/check-version-snapshots.py [--path FILE ...]    (default: every snapshot, whatever its name)
 
@@ -12,6 +14,7 @@ Exits 1 listing every problem.
 """
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -22,15 +25,30 @@ ROOT = Path(__file__).resolve().parent.parent
 DIR = ROOT / "ops" / "version-snapshots"
 
 
+def _snapshot_text():
+    spec = importlib.util.spec_from_file_location("compare_versions", ROOT / "scripts" / "compare-versions.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.snapshot_text
+
+
+snapshot_text = _snapshot_text()
+
+
 def problems(path: Path, validate) -> list[str]:
+    text = path.read_text(encoding="utf-8")
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = json.loads(text)
     except ValueError as e:
         return [f"not JSON: {e}"]
     try:
         validate(doc)
     except fastjsonschema.JsonSchemaValueException as e:
         return [f"schema: {e.message} (at {'/'.join(map(str, e.path))})"]
+    # After the schema: the layout is computed from the document's shape, which the schema has
+    # now vouched for (a `null` document or `searches` would otherwise stop the checker here).
+    if text != snapshot_text(doc):
+        return [f"not one search per line; run scripts/compare-versions.py fmt --path {path}"]
     out = []
     if path.stem != doc["index_version"]:
         out.append(f"named {path.name} but captures {doc['index_version']}")
