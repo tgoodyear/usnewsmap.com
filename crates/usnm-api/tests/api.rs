@@ -2829,6 +2829,12 @@ async fn the_apps_pages_revalidate_with_an_etag() {
             "no-cache",
             "{uri}"
         );
+        let vary: Vec<_> = h304
+            .get_all(header::VARY)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert!(vary.contains(&"accept-encoding"), "{uri}: {vary:?}");
         assert!(header_str(&h304, header::CONTENT_SECURITY_POLICY).contains("default-src"));
 
         // Another tag: the page itself.

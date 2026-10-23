@@ -217,12 +217,15 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
     if status == StatusCode::OK {
         let etag = page_etag(&body);
         if not_modified(req.headers(), &etag) {
-            // The 304 carries what a cache keeps from it, as the 200 would.
+            // The 304 carries what a cache keeps from it, as the 200 would,
+            // `Vary` included: the compression layer adds `Accept-Encoding`
+            // to the 200 but never sees this empty body. (CORS adds its own.)
             return (
                 StatusCode::NOT_MODIFIED,
                 [
                     (header::ETAG, etag),
                     (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+                    (header::VARY, HeaderValue::from_static("accept-encoding")),
                 ],
             )
                 .into_response();
@@ -252,16 +255,31 @@ fn page_etag(body: &[u8]) -> HeaderValue {
 /// Whether `If-None-Match` names `etag` (or is `*`), compared weakly as
 /// RFC 9110 §13.1.2 asks: `W/"x"` and `"x"` match.
 fn not_modified(headers: &HeaderMap, etag: &HeaderValue) -> bool {
-    let opaque = |t: &str| t.trim().trim_start_matches("W/").to_owned();
-    let Ok(ours) = etag.to_str().map(opaque) else {
+    let Ok(ours) = etag.to_str() else {
         return false;
     };
+    let ours = ours.strip_prefix("W/").unwrap_or(ours);
     headers
         .get_all(header::IF_NONE_MATCH)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(','))
-        .any(|t| t.trim() == "*" || opaque(t) == ours)
+        .any(|v| v.trim() == "*" || entity_tags(v).any(|t| t == ours))
+}
+
+/// The tags in an `If-None-Match` list, each with its quotes and without
+/// `W/`, up to anything malformed. A tag can hold commas (and `*`), so the
+/// list is read tag by tag, not split.
+fn entity_tags(list: &str) -> impl Iterator<Item = &str> {
+    let mut rest = list;
+    std::iter::from_fn(move || {
+        rest = rest.trim_start_matches(|c: char| c == ',' || c.is_ascii_whitespace());
+        let tag = rest.strip_prefix("W/").unwrap_or(rest);
+        // The closing quote, counting the opening one.
+        let end = tag.strip_prefix('"')?.find('"')? + 2;
+        let (opaque, after) = tag.split_at(end);
+        rest = after;
+        Some(opaque)
+    })
 }
 
 async fn cache_control(req: Request, next: Next) -> Response {
@@ -393,10 +411,16 @@ mod tests {
         assert!(matches(&[strong]));
         assert!(matches(&["*"]));
         assert!(matches(&[&format!("\"other\", {tag}")]));
+        assert!(matches(&[&format!("\"a,b\",W/\"c\" , {strong}")]));
         assert!(matches(&["\"other\"", tag]));
         assert!(!matches(&[]));
         assert!(!matches(&["\"other\""]));
         assert!(!matches(&["W/\"0000000000000000\""]));
+        // One tag that holds commas and `*`, not a list with `*` in it.
+        assert!(!matches(&["\"old,*,release\""]));
+        // Nothing after a malformed entry counts.
+        assert!(!matches(&[&format!("garbage, {tag}")]));
+        assert!(!matches(&[&format!("\"unclosed, {tag}")]));
     }
 
     #[test]
