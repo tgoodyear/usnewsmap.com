@@ -18,7 +18,8 @@
 #          reserves the version names the lake has for today and the next
 #          two days. Run it the day the release starts.
 # release  builds a full staged version: the Quickwit writer on DIR/qw
-#          (file://), the WAL in DIR/wal, curated read from the lake, with the
+#          (file://), the WAL in DIR/wal, curated read from the lake (or
+#          USNM_CURATED), with the
 #          #283 settings (one text field, decades, page languages, American
 #          Stories, our OCR, the Latin text, v1 ingest). It writes
 #          DIR/reference/index-storage-pending.json and nothing in Azure.
@@ -47,11 +48,15 @@
 #
 # Settings come from the environment, with prod's defaults: USNM_LAKE
 # (stusnmdffapzy), USNM_INDEX_ACCOUNT (usnmqwstprodffapzy), USNM_INGEST
-# (the usnm-ingest binary), USNM_QUICKWIT_BIN. Azure access is the host's Arc
-# identity: usnm must be in the himds group.
+# (the usnm-ingest binary), USNM_QUICKWIT_BIN. USNM_CURATED reads curated
+# from a local copy instead of the lake (#308). The copy must keep each
+# blob's last-modified time as its file's (`azcopy copy
+# --preserve-last-modified-time`): a finish lists curated as of the run's
+# start by those times. Azure access is the host's Arc identity: usnm must
+# be in the himds group.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,51s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,56s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -88,6 +93,7 @@ INGEST=${USNM_INGEST:-/srv/usnm/target/release/usnm-ingest}
 QUICKWIT=${USNM_QUICKWIT_BIN:-/srv/usnm/bin/quickwit}
 [ "$STEP" = ready ] || [ -x "$INGEST" ] || die "no usnm-ingest at $INGEST"
 LAKE_URL=https://$LAKE.blob.core.windows.net
+CURATED=${USNM_CURATED:-$LAKE_URL/curated}
 export IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 export IMDS_ENDPOINT=http://localhost:40342
 export RUST_LOG=${RUST_LOG:-info}
@@ -109,15 +115,15 @@ SETTINGS=(--full --stage-index-storage
 case "$STEP" in
   mirror)
     [ ! -e "$RUN/reference" ] || die "$RUN/reference exists: mirror into a new run directory"
-    "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+    "$INGEST" --state-file "$RUN/state.json" --curated "$CURATED" --reference "$RUN/reference" \
       mirror-store --from "$LAKE_URL/reference" --to "$RUN/reference" --files current.json
-    "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+    "$INGEST" --state-file "$RUN/state.json" --curated "$CURATED" --reference "$RUN/reference" \
       mirror-store --from "$LAKE_URL/reference" --to "$RUN/reference" --prefixes "catalog,$(serving)"
     ;;
   seed)
     every=()
     [ "$SAMPLE" != 1pct ] || every=(--every 100 --offset 39)
-    "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+    "$INGEST" --state-file "$RUN/state.json" --curated "$CURATED" --reference "$RUN/reference" \
       seed-state --from-version "$(serving)" --reserve-from "$LAKE_URL/reference" "${every[@]}"
     ;;
   release)
@@ -125,7 +131,7 @@ case "$STEP" in
     [ ! -e "$RUN/reference/index-storage-pending.json" ] || die "$RUN has a staged version already"
     mkdir -p "$RUN/work" "$RUN/wal" "$RUN/qw"
     env "${WRITER_ENV[@]}" USNM_MERGE_TIMEOUT_SECS="$MERGE_TIMEOUT" \
-      "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+      "$INGEST" --state-file "$RUN/state.json" --curated "$CURATED" --reference "$RUN/reference" \
       release "${SETTINGS[@]}"
     ;;
   finish)
@@ -134,7 +140,7 @@ case "$STEP" in
     [ -s "$RUN/release.log" ] || die "no $RUN/release.log: the finish checks itself against the run's log"
     [ ! -e "$RUN/reference/index-storage-pending.json" ] || die "$RUN has a staged version already"
     env "${WRITER_ENV[@]}" \
-      "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+      "$INGEST" --state-file "$RUN/state.json" --curated "$CURATED" --reference "$RUN/reference" \
       release-finish --run "$VERSION" --release-log "$RUN/release.log" \
       --merge-timeout-secs "$FINISH_TIMEOUT" "${SETTINGS[@]}"
     ;;
@@ -147,7 +153,7 @@ case "$STEP" in
     fi
     dry=()
     ! $DRY_RUN || dry=(--dry-run)
-    "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+    "$INGEST" --state-file "$RUN/state.json" --curated "$CURATED" --reference "$RUN/reference" \
       publish-staged --local-index-root "$RUN/qw" \
       --to-reference "$LAKE_URL/reference" \
       --to-index "https://$INDEX_ACCOUNT.blob.core.windows.net/qw-index" \
