@@ -97,7 +97,9 @@ try {
       });
       rows.push({ ...m, status: response.status() });
       await context.close();
+      process.stderr.write(".");
     }
+    process.stderr.write("\n");
     const row = {
       path: p,
       status: [...new Set(rows.map((r) => r.status))],
