@@ -30,6 +30,7 @@ scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh
 scripts/ci/no-positional-args.py
 scripts/ci/run-unit-tests.py
+scripts/ci/check-engine-pins.py
 scripts/ci/check-workbooks.py
 scripts/lib/env_settings.py --check
 scripts/ci/check-names.py --base origin/main

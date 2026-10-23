@@ -36,6 +36,48 @@ pub const DIAG_FILE: &str = "diag.txt";
 pub const PAGE_FILE: &str = "page.jpg";
 pub const APP: &str = "usnm_surya";
 
+/// The worker image's pins, `KEY=value` a line (`ocr/boinc/surya/engine.lock`): the one place the
+/// Containerfile's build arguments are written, compiled in so a default can read it.
+const ENGINE_LOCK: &str = include_str!("../../../../ocr/boinc/surya/engine.lock");
+
+/// surya-ocr's version, from the lock: what the image installs and records as `USNM_SURYA_VERSION`,
+/// and so the version a unit is staged for unless `--engine-surya` says otherwise.
+pub const SURYA_VERSION: &str = lock_value(ENGINE_LOCK, "SURYA_VERSION");
+
+/// The value of `key` in a pin lock (the first line that is `key=value`; comments and other keys
+/// do not match). Evaluated at compile time for [`SURYA_VERSION`], so a lock without the key, or
+/// with an empty value, does not build.
+const fn lock_value(lock: &'static str, key: &str) -> &'static str {
+    let (lock, key) = (lock.as_bytes(), key.as_bytes());
+    let mut start = 0;
+    while start < lock.len() {
+        let mut end = start;
+        while end < lock.len() && lock[end] != b'\n' {
+            end += 1;
+        }
+        let mut matches = end - start > key.len() && lock[start + key.len()] == b'=';
+        let mut i = 0;
+        while matches && i < key.len() {
+            matches = lock[start + i] == key[i];
+            i += 1;
+        }
+        if matches {
+            let value_start = start + key.len() + 1;
+            // A checkout with CRLF line endings must not put a carriage return in the pin.
+            let value_end = if lock[end - 1] == b'\r' { end - 1 } else { end };
+            assert!(value_end > value_start, "a pin in the engine lock is empty");
+            let (_, rest) = lock.split_at(value_start);
+            let (value, _) = rest.split_at(value_end - value_start);
+            return match core::str::from_utf8(value) {
+                Ok(value) => value,
+                Err(_) => panic!("a pin in the engine lock is not UTF-8"),
+            };
+        }
+        start = end + 1;
+    }
+    panic!("a pin is missing from the engine lock")
+}
+
 /// One page to stage: its round 1 group, ISO 639-3 language, doc id
 /// (`<lccn>_<date>_ed-<n>_seq-<n>`) and the batches that may hold it
 /// (`<name>_ver<NN>`, joined with `+`, tried in order), given as
@@ -331,5 +373,51 @@ mod tests {
         std::fs::create_dir_all(&unit).unwrap();
         std::fs::write(unit.join(JOB_FILE), b"{}").unwrap();
         unit
+    }
+
+    #[test]
+    fn the_engine_lock_holds_the_version_and_the_digests() {
+        let parts: Vec<_> = SURYA_VERSION.split('.').collect();
+        assert!(
+            parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+            "{SURYA_VERSION:?}"
+        );
+        for key in ["LLAMA_DIGEST", "LLAMA_VULKAN_DIGEST", "SURYA_WEIGHTS"] {
+            let value = lock_value(ENGINE_LOCK, key);
+            assert!(
+                value
+                    .strip_prefix("sha256:")
+                    .is_some_and(|hex| hex.len() == 64
+                        && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))),
+                "{key}: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_value_reads_the_line_that_is_the_key() {
+        let lock = "# SURYA_VERSION=9.9.9\nSURYA_VERSION_X=1\nSURYA=2\r\nSURYA_VERSION=0.1.2\r\nPIN=a=b\nLAST=z";
+        assert_eq!(lock_value(lock, "SURYA_VERSION"), "0.1.2");
+        assert_eq!(lock_value(lock, "SURYA"), "2");
+        assert_eq!(lock_value(lock, "PIN"), "a=b");
+        assert_eq!(lock_value(lock, "LAST"), "z");
+    }
+
+    #[test]
+    #[should_panic(expected = "missing from the engine lock")]
+    fn lock_value_refuses_a_missing_key() {
+        lock_value(
+            "# SURYA_VERSION=1.2.3\nSURYA_VERSION_X=1\n",
+            "SURYA_VERSION",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "is empty")]
+    fn lock_value_refuses_an_empty_value() {
+        lock_value("SURYA_VERSION=\r\n", "SURYA_VERSION");
     }
 }

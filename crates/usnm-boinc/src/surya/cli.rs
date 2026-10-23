@@ -19,7 +19,7 @@ pub enum SuryaCommands {
         engine_llama: String,
         #[arg(long)]
         engine_weights: String,
-        #[arg(long, default_value = "0.22.1")]
+        #[arg(long, default_value = super::SURYA_VERSION)]
         engine_surya: String,
         /// CPU modes for an apples-to-apples bounded probe; defaults remain tiled only.
         #[arg(long, value_delimiter = ',', default_value = "tiled")]
@@ -51,7 +51,7 @@ pub enum SuryaCommands {
         /// Its USNM_SURYA_WEIGHTS.
         #[arg(long)]
         engine_weights: String,
-        #[arg(long, default_value = "0.22.1")]
+        #[arg(long, default_value = super::SURYA_VERSION)]
         engine_surya: String,
         #[arg(long, value_delimiter = ',', default_value = "tiled,whole,capped")]
         gpu_modes: Vec<SuryaMode>,
@@ -87,7 +87,7 @@ pub enum SuryaCommands {
         engine_llama: String,
         #[arg(long)]
         engine_weights: String,
-        #[arg(long, default_value = "0.22.1")]
+        #[arg(long, default_value = super::SURYA_VERSION)]
         engine_surya: String,
         /// Deadline for the one whole-mode read, on a GPU and on a CPU.
         #[arg(long, default_value_t = 600)]
@@ -112,7 +112,7 @@ pub enum SuryaCommands {
         engine_llama: String,
         #[arg(long)]
         engine_weights: String,
-        #[arg(long, default_value = "0.22.1")]
+        #[arg(long, default_value = super::SURYA_VERSION)]
         engine_surya: String,
         /// Deadline for the one whole-mode read, on a GPU and on a CPU.
         #[arg(long, default_value_t = 600)]
@@ -169,7 +169,7 @@ pub enum SuryaCommands {
         engine_llama: String,
         #[arg(long, env = "USNM_SURYA_WEIGHTS")]
         engine_weights: String,
-        #[arg(long, env = "USNM_SURYA_VERSION", default_value = "0.22.1")]
+        #[arg(long, env = "USNM_SURYA_VERSION", default_value = super::SURYA_VERSION)]
         engine_surya: String,
         #[arg(long, value_delimiter = ',', default_value = "whole")]
         modes: Vec<SuryaMode>,
