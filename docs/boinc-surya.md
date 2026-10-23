@@ -92,7 +92,7 @@ scripts/boinc-app-release.sh --env prod --app usnm_surya --version <N.M+1> --pla
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST --onprem-host HOST --onprem-ct ID
 ```
 
-Then run the steps on the on-prem host; their files are under `<share>/surya/<campaign>/`, and `<share>` is `/srv/usnm-boinc/project` there. `scripts/boinc/onprem-step.sh` takes the arguments of `scripts/start-boinc-bridge.sh`, which starts the Azure bridge job that prod no longer has:
+Then run the steps on the on-prem host; their files are under `<share>/surya/<campaign>/`. A step runs in a container that mounts the host's `/srv/usnm-boinc/project` at `/project` and gets its `--var` values unchanged, so a path in a `--var` (such as `SURYA_SAMPLE`) is `/project/...`; `/srv/usnm-boinc/project/...` is the same file when you touch it on the host directly. `scripts/boinc/onprem-step.sh` takes the arguments of `scripts/start-boinc-bridge.sh`, which starts the Azure bridge job that prod no longer has:
 
 ```sh
 # Gets each page's JPEG from the scan archive, else from tile.loc.gov through its batch (see
