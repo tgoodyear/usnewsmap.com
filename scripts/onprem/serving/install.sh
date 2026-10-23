@@ -57,7 +57,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ $REGISTRY =~ ^[a-z0-9]{5,50}$ ]] || { echo "error: --registry: the registry's name, as in NAME.azurecr.io" >&2; usage; }
-[ -n "$CONFIG" ] && [ -d "$CONFIG" ] || { echo "error: --config-dir: gen-env.sh's output directory" >&2; usage; }
+{ [ -n "$CONFIG" ] && [ -d "$CONFIG" ]; } || { echo "error: --config-dir: gen-env.sh's output directory" >&2; usage; }
 [[ $ENV_NAME =~ ^[a-z0-9]{1,8}$ ]] || { echo "error: --env: an environment name, such as prod" >&2; usage; }
 [[ $GH_ENV =~ ^[a-z0-9-]{1,32}$ ]] || { echo "error: --github-environment: a GitHub environment, such as prod" >&2; usage; }
 HERE=$(cd "$(dirname "$0")" && pwd)
