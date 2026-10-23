@@ -2733,11 +2733,27 @@ async fn serves_the_site_alongside_the_api() {
         "no-cache"
     );
 
-    // Missing files are 404s, not the shell.
-    for uri in ["/assets/gone-123.js", "/gone.txt"] {
+    // Missing files are 404s, not the shell, and no cache keeps them: one
+    // can be a gap in a deploy.
+    for uri in ["/assets/gone-123.js", "/gone.txt", "/favicon.svg/"] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
-        assert_eq!(header_str(&h, header::CACHE_CONTROL), "", "{uri}");
+        assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-store", "{uri}");
+        let resp = app(s.clone())
+            .oneshot(
+                Request::builder()
+                    .method("HEAD")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            header_str(resp.headers(), header::CACHE_CONTROL),
+            "no-store",
+            "HEAD {uri}"
+        );
     }
 
     // The API is unchanged, and its unknown paths stay problem details.
@@ -2752,6 +2768,115 @@ async fn serves_the_site_alongside_the_api() {
     );
     let (status, _, _) = get(&s, "/healthz").await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// A GET of the site with `If-None-Match` set to `tag`.
+async fn get_if_none_match(
+    state: &Arc<AppState>,
+    uri: &str,
+    tag: &str,
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let resp = app(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::IF_NONE_MATCH, tag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+#[tokio::test]
+async fn the_apps_pages_revalidate_with_an_etag() {
+    let mut cfg = config();
+    let dir = site_dir("etag");
+    // With the title the privacy and credits pages rename.
+    std::fs::write(
+        dir.join("index.html"),
+        "<!doctype html><title>US News Map</title><div id=root></div>",
+    )
+    .unwrap();
+    cfg.site_dir = Some(dir);
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let mut tags = Vec::new();
+    for uri in ["/datasets", "/privacy", "/credits"] {
+        let (status, h, _) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache", "{uri}");
+        let tag = header_str(&h, header::ETAG).to_owned();
+        assert!(tag.starts_with("W/\""), "{uri}: {tag}");
+
+        // The tag it was sent: a 304 with no body, still revalidated next time.
+        let (status, h304, body304) = get_if_none_match(&s, uri, &tag).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "{uri}");
+        assert!(body304.is_empty(), "{uri}");
+        assert_eq!(header_str(&h304, header::ETAG), tag, "{uri}");
+        assert_eq!(
+            header_str(&h304, header::CACHE_CONTROL),
+            "no-cache",
+            "{uri}"
+        );
+        assert!(header_str(&h304, header::CONTENT_SECURITY_POLICY).contains("default-src"));
+
+        // Another tag: the page itself.
+        let (status, _, again) = get_if_none_match(&s, uri, "W/\"0000000000000000\"").await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(again.contains("id=root"), "{uri}");
+
+        // HEAD sends the same tag.
+        let resp = app(s.clone())
+            .oneshot(
+                Request::builder()
+                    .method("HEAD")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(header_str(resp.headers(), header::ETAG), tag, "HEAD {uri}");
+        tags.push(tag);
+    }
+    // Each page's own shell, so each its own tag.
+    tags.sort();
+    tags.dedup();
+    assert_eq!(tags.len(), 3);
+    // The dataset page's 304 keeps its noindex.
+    let (_, h, _) = get_site(&s, "/datasets", None).await;
+    let (_, h304, _) = get_if_none_match(&s, "/datasets", header_str(&h, header::ETAG)).await;
+    assert_eq!(
+        header_str(&h304, header::HeaderName::from_static("x-robots-tag")),
+        "noindex"
+    );
+
+    // A release changes the shell, and with it the tag.
+    std::fs::write(
+        site_dir_of(&s).join("index.html"),
+        "<!doctype html><div id=root></div><script src=/assets/index-def.js></script>",
+    )
+    .unwrap();
+    let (status, _, body) = get_if_none_match(&s, "/datasets", header_str(&h, header::ETAG)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("index-def.js"));
+
+    // The not-found shell has no tag and ignores the condition.
+    let (status, h, _) = get_if_none_match(&s, "/does-not-exist", "*").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(header_str(&h, header::ETAG), "");
+    assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache");
 }
 
 #[tokio::test]
