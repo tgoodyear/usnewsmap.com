@@ -336,6 +336,213 @@ pub fn merge_gauges(metrics: &str) -> (u64, u64) {
     )
 }
 
+/// The bytes the writer's merges have written, a counter.
+const MERGER_WRITE_SERIES: &str = "quickwit_write_bytes{component=\"merger\"}";
+
+/// One series' value from the node's Prometheus metrics, by its name with
+/// its labels as Quickwit writes them; `None` until Quickwit registers it.
+fn series(metrics: &str, name: &str) -> Option<u64> {
+    metrics.lines().find_map(|line| {
+        let v: f64 = line
+            .strip_prefix(name)?
+            .strip_prefix(' ')?
+            .trim()
+            .parse()
+            .ok()?;
+        (v >= 0.0).then_some(v as u64)
+    })
+}
+
+/// What the node's metrics say about its merges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Gauges {
+    running: u64,
+    queued: u64,
+    /// The input bytes of the merges queued.
+    pending_bytes: Option<u64>,
+    /// The bytes merges have written since the writer started (a counter).
+    merged_bytes: Option<u64>,
+}
+
+/// How long the merge wait looks back to say how fast merging goes.
+const BURN_WINDOW: Duration = Duration::from_secs(30 * 60);
+
+/// How fast the merges get through what is left (#283): the bytes of the
+/// immature splits, and the bytes merges write, sampled at each poll of the
+/// merge wait and compared over the last [`BURN_WINDOW`]. For the wait's
+/// lines, so a long one says how far it has to go.
+#[derive(Debug, Default)]
+pub struct Burndown {
+    /// (when, immature bytes, bytes merged so far) per poll, oldest first.
+    samples: std::collections::VecDeque<(tokio::time::Instant, u64, Option<u64>)>,
+}
+
+/// What [`Burndown::rates`] reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Burn {
+    /// How fast the immature splits' bytes went down, in MB an hour.
+    pub immature_mb_per_hour: Option<f64>,
+    /// How fast merges wrote, in MB a second.
+    pub merge_write_mb_per_sec: Option<f64>,
+    /// Minutes left for the immature bytes at that rate.
+    pub eta_mins: Option<u64>,
+}
+
+impl Burndown {
+    /// Record one poll: at `at`, `immature` bytes in immature splits, and
+    /// the writer's merges' written bytes so far, if it says.
+    pub fn observe(&mut self, at: tokio::time::Instant, immature: u64, merged: Option<u64>) {
+        // A restarted writer counts its written bytes from zero again.
+        if merged.is_some_and(|m| self.samples.back().and_then(|s| s.2).is_some_and(|b| m < b)) {
+            for s in &mut self.samples {
+                s.2 = None;
+            }
+        }
+        self.samples.push_back((at, immature, merged));
+        while self
+            .samples
+            .get(1)
+            .is_some_and(|s| at.duration_since(s.0) >= BURN_WINDOW)
+        {
+            self.samples.pop_front();
+        }
+    }
+
+    /// The rates over the samples kept, once they span a minute.
+    pub fn rates(&self) -> Burn {
+        let (Some(first), Some(last)) = (self.samples.front(), self.samples.back()) else {
+            return Burn::default();
+        };
+        let secs = last.0.duration_since(first.0).as_secs_f64();
+        if secs < 60.0 {
+            return Burn::default();
+        }
+        const MB: f64 = 1024.0 * 1024.0;
+        let fell = first.1 as f64 - last.1 as f64;
+        let per_hour = fell / MB / secs * 3600.0;
+        let written = self
+            .samples
+            .iter()
+            .find_map(|s| s.2.map(|b| (s.0, b)))
+            .zip(last.2)
+            .map(|((t, from), to)| {
+                (
+                    to.saturating_sub(from) as f64,
+                    last.0.duration_since(t).as_secs_f64(),
+                )
+            })
+            .filter(|(_, secs)| *secs >= 60.0)
+            .map(|(bytes, secs)| (bytes / MB / secs * 10.0).round() / 10.0);
+        Burn {
+            immature_mb_per_hour: Some(per_hour.round()),
+            merge_write_mb_per_sec: written,
+            eta_mins: (fell > 0.0).then(|| (last.1 as f64 / (fell / secs) / 60.0).round() as u64),
+        }
+    }
+}
+
+/// How many of `splits` are immature, and their bytes.
+fn immature(splits: &[Split]) -> (u64, u64) {
+    splits
+        .iter()
+        .filter(|s| s.immature)
+        .fold((0, 0), |(n, b), s| (n + 1, b + s.bytes))
+}
+
+/// One "release merges" line: where `index_id`'s merges are, `elapsed`
+/// into the wait's `step`, and how fast they go ([`Burndown`]).
+fn log_wait(
+    index_id: &str,
+    step: &str,
+    elapsed: Duration,
+    g: &Gauges,
+    splits: &[Split],
+    burndown: &Burndown,
+    work_dir: Option<&Path>,
+) {
+    let burn = burndown.rates();
+    let (immature_splits, immature_bytes) = immature(splits);
+    tracing::info!(
+        index = index_id,
+        step,
+        splits = splits.len(),
+        merges_running = g.running,
+        merges_queued = g.queued,
+        elapsed_secs = elapsed.as_secs(),
+        immature_splits,
+        immature_mb = immature_bytes / (1024 * 1024),
+        pending_merge_mb = g.pending_bytes.map(|b| b / (1024 * 1024)),
+        immature_mb_per_hour = burn.immature_mb_per_hour,
+        merge_write_mb_per_sec = burn.merge_write_mb_per_sec,
+        eta_mins = burn.eta_mins,
+        disk_free_mb = work_dir
+            .and_then(progress::disk_free)
+            .map(|b| b / (1024 * 1024)),
+        wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
+        "release merges"
+    );
+}
+
+/// Logs [`log_wait`]'s line for an index every [`LOG_EVERY`] until dropped:
+/// a finish's writer merges while the finish replays its build, before the
+/// merge wait proper starts (`crate::finish`).
+pub struct MergeWatch(tokio::task::JoinHandle<()>);
+
+impl Drop for MergeWatch {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl MergeWatch {
+    /// Watch `index_id` on the writer at `base`, as step `step`. A poll that
+    /// fails is logged and the next one tried.
+    pub fn start(
+        http: reqwest::Client,
+        base: String,
+        index_id: String,
+        step: &'static str,
+        work_dir: Option<std::path::PathBuf>,
+    ) -> Self {
+        use tracing::Instrument;
+        Self(tokio::spawn(
+            async move {
+                let node = Node {
+                    http: &http,
+                    base: &base,
+                };
+                let start = tokio::time::Instant::now();
+                let mut burndown = Burndown::default();
+                loop {
+                    match (node.gauges().await, node.splits(&index_id).await) {
+                        (Ok(g), Ok(splits)) => {
+                            burndown.observe(
+                                tokio::time::Instant::now(),
+                                immature(&splits).1,
+                                g.merged_bytes,
+                            );
+                            log_wait(
+                                &index_id,
+                                step,
+                                start.elapsed(),
+                                &g,
+                                &splits,
+                                &burndown,
+                                work_dir.as_deref(),
+                            );
+                        }
+                        (Err(e), _) | (_, Err(e)) => {
+                            tracing::warn!(index = %index_id, error = %format!("{e:#}"), "could not read the writer's merges")
+                        }
+                    }
+                    tokio::time::sleep(LOG_EVERY).await;
+                }
+            }
+            .instrument(tracing::Span::current()),
+        ))
+    }
+}
+
 /// How long a failed request to the writer waits for its exit to be reaped.
 pub const EXIT_GRACE: Duration = Duration::from_secs(5);
 
@@ -392,6 +599,9 @@ pub struct Split {
     /// The decades its pages are in, from its `decade:` tags; empty for an
     /// index without them.
     pub decades: Vec<u16>,
+    /// Quickwit still merges it (`maturity.type` is `immature`): what is
+    /// left to merge, which the merge wait's lines follow ([`Burndown`]).
+    pub immature: bool,
 }
 
 /// An index's published splits, as the release log and manifest report them.
@@ -484,6 +694,7 @@ fn parse_splits(v: &Value) -> anyhow::Result<Vec<Split>> {
                 footer_bytes: footer_bytes(&s["footer_offsets"]),
                 partition_id: s["partition_id"].as_u64().unwrap_or(0),
                 decades: decade_tags(&s["tags"]),
+                immature: s["maturity"]["type"] == "immature",
             })
         })
         .collect()
@@ -546,7 +757,7 @@ impl Node<'_> {
         Ok(all)
     }
 
-    async fn gauges(&self) -> anyhow::Result<(u64, u64)> {
+    async fn gauges(&self) -> anyhow::Result<Gauges> {
         let text = self
             .http
             .get(format!("{}/metrics", self.base))
@@ -555,7 +766,13 @@ impl Node<'_> {
             .error_for_status()?
             .text()
             .await?;
-        Ok(merge_gauges(&text))
+        let (running, queued) = merge_gauges(&text);
+        Ok(Gauges {
+            running,
+            queued,
+            pending_bytes: series(&text, "quickwit_indexing_pending_merge_bytes"),
+            merged_bytes: series(&text, MERGER_WRITE_SERIES),
+        })
     }
 
     /// Stop ingesting into `index_id`, which runs its final merges.
@@ -622,6 +839,115 @@ impl Node<'_> {
             let text = resp.text().await.unwrap_or_default();
             bail!(
                 "updating the config of `{index_id}` returned {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether the writer's metastore has `index_id`.
+    pub async fn has_index(&self, index_id: &str) -> anyhow::Result<bool> {
+        let resp = self
+            .http
+            .get(format!("{}/api/v1/indexes/{index_id}", self.base))
+            .send()
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        resp.error_for_status()
+            .with_context(|| format!("reading the metadata of `{index_id}`"))?;
+        Ok(true)
+    }
+
+    /// The ids of `index_id`'s sources (`_ingest-api-source`, `kafka`, …).
+    pub async fn sources(&self, index_id: &str) -> anyhow::Result<Vec<String>> {
+        let v: Value = self
+            .http
+            .get(format!("{}/api/v1/indexes/{index_id}", self.base))
+            .send()
+            .await?
+            .error_for_status()
+            .with_context(|| format!("reading the metadata of `{index_id}`"))?
+            .json()
+            .await?;
+        Ok(v["sources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s["source_id"].as_str().map(str::to_owned))
+            .collect())
+    }
+
+    /// `index_id`'s staged splits created before `before` (seconds since
+    /// the epoch), by id: what a writer that stopped in the middle of a
+    /// merge or a commit left behind. A merge stages its output before it
+    /// replaces its inputs, so such a split holds no document the published
+    /// splits don't.
+    pub async fn staged_splits_before(
+        &self,
+        index_id: &str,
+        before: i64,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let v: Value = self
+                .http
+                .get(format!("{}/api/v1/indexes/{index_id}/splits", self.base))
+                .query(&[
+                    ("split_states", "Staged"),
+                    ("offset", &offset.to_string()),
+                    ("limit", &PAGE.to_string()),
+                ])
+                .send()
+                .await?
+                .error_for_status()
+                .with_context(|| format!("listing the staged splits of `{index_id}`"))?
+                .json()
+                .await?;
+            let page = v["splits"]
+                .as_array()
+                .context("the split list has no `splits`")?;
+            for s in page {
+                let id = s["split_id"].as_str().context("a split has no id")?;
+                let created = s["create_timestamp"]
+                    .as_i64()
+                    .with_context(|| format!("split `{id}` has no create_timestamp"))?;
+                if s["split_state"] == "Staged" && created < before {
+                    out.push(id.to_owned());
+                }
+            }
+            offset += page.len();
+            if page.len() < PAGE {
+                break;
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// Mark `split_ids` of `index_id` for deletion: they leave the split
+    /// lists, and the writer's janitor removes their files.
+    pub async fn mark_for_deletion(
+        &self,
+        index_id: &str,
+        split_ids: &[String],
+    ) -> anyhow::Result<()> {
+        let resp = self
+            .http
+            .put(format!(
+                "{}/api/v1/indexes/{index_id}/splits/mark-for-deletion",
+                self.base
+            ))
+            .json(&serde_json::json!({ "split_ids": split_ids }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            bail!(
+                "marking splits of `{index_id}` for deletion returned {status}: {}",
                 text.chars().take(300).collect::<String>()
             );
         }
@@ -768,12 +1094,19 @@ async fn poll_until_sealed(
     let mut closed_at: Option<tokio::time::Instant> = None;
     let mut settle = Settle::new(wait.stable_polls);
     let mut tries = 0;
+    let mut burndown = Burndown::default();
     loop {
         if let Some(e) = events {
             e.check()?;
         }
-        let (running, queued) = explained(events, node.gauges().await).await?;
+        let g = explained(events, node.gauges().await).await?;
+        let (running, queued) = (g.running, g.queued);
         let splits = explained(events, node.splits(index_id).await).await?;
+        burndown.observe(
+            tokio::time::Instant::now(),
+            immature(&splits).1,
+            g.merged_bytes,
+        );
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let settled = settle.observe(running == 0 && queued == 0, &ids);
         wait.report.merges(MergeProgress {
@@ -784,18 +1117,14 @@ async fn poll_until_sealed(
         });
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
             last_log = Some(tokio::time::Instant::now());
-            tracing::info!(
-                index = index_id,
+            log_wait(
+                index_id,
                 step,
-                splits = splits.len(),
-                merges_running = running,
-                merges_queued = queued,
-                elapsed_secs = start.elapsed().as_secs(),
-                disk_free_mb = work_dir
-                    .and_then(progress::disk_free)
-                    .map(|b| b / (1024 * 1024)),
-                wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
-                "release merges"
+                start.elapsed(),
+                &g,
+                &splits,
+                &burndown,
+                work_dir,
             );
         }
         match closed_at {
@@ -1010,6 +1339,27 @@ pub fn with_merge_factor(config: &Value, factor: u64) -> anyhow::Result<Value> {
         .unwrap_or(factor);
     policy.insert("max_merge_factor".into(), max.max(factor).into());
     Ok(out)
+}
+
+/// `config` with the template's merge factor back, when a release that
+/// stopped during its final merges left [`FINAL_MERGE_FACTOR`] in it
+/// ([`seal_restarting`] puts the config back, but that request can fail
+/// too); `None` when it has the template's already. Any other factor is
+/// refused: nothing this code writes sets one.
+pub fn template_merge_factor(config: &Value) -> anyhow::Result<Option<Value>> {
+    let want =
+        template_setting("merge_factor").context("the index template has no merge_factor")?;
+    let have = config["indexing_settings"]["merge_policy"]["merge_factor"].as_u64();
+    if have == Some(want) {
+        return Ok(None);
+    }
+    if have != Some(FINAL_MERGE_FACTOR) {
+        bail!(
+            "the index's merge_factor is {have:?}: neither the template's {want} nor the final \
+             merges' {FINAL_MERGE_FACTOR}"
+        );
+    }
+    with_merge_factor(config, want).map(Some)
 }
 
 /// [`seal`] for an index written through ingest v1, whose source can't be
@@ -1231,12 +1581,19 @@ async fn settled(
 ) -> anyhow::Result<Vec<Split>> {
     let mut settle = Settle::new(wait.stable_polls);
     let mut last_log: Option<tokio::time::Instant> = None;
+    let mut burndown = Burndown::default();
     loop {
         if let Some(e) = events {
             e.check()?;
         }
-        let (running, queued) = explained(events, node.gauges().await).await?;
+        let g = explained(events, node.gauges().await).await?;
+        let (running, queued) = (g.running, g.queued);
         let splits = explained(events, node.splits(index_id).await).await?;
+        burndown.observe(
+            tokio::time::Instant::now(),
+            immature(&splits).1,
+            g.merged_bytes,
+        );
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let done = settle.observe(running == 0 && queued == 0, &ids);
         wait.report.merges(MergeProgress {
@@ -1247,18 +1604,14 @@ async fn settled(
         });
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
             last_log = Some(tokio::time::Instant::now());
-            tracing::info!(
-                index = index_id,
+            log_wait(
+                index_id,
                 step,
-                splits = splits.len(),
-                merges_running = running,
-                merges_queued = queued,
-                elapsed_secs = start.elapsed().as_secs(),
-                disk_free_mb = work_dir
-                    .and_then(progress::disk_free)
-                    .map(|b| b / (1024 * 1024)),
-                wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
-                "release merges"
+                start.elapsed(),
+                &g,
+                &splits,
+                &burndown,
+                work_dir,
             );
         }
         if done {
@@ -1359,6 +1712,49 @@ mod tests {
             (0, 0)
         );
         assert_eq!(merge_gauges(""), (0, 0));
+        assert_eq!(
+            series(metrics, "quickwit_indexing_pending_merge_bytes"),
+            Some(12345)
+        );
+        let written = "quickwit_write_bytes{component=\"split_downloader_merge\"} 7\n\
+                       quickwit_write_bytes{component=\"merger\"} 1048576\n";
+        assert_eq!(series(written, MERGER_WRITE_SERIES), Some(1 << 20));
+        assert_eq!(series("", MERGER_WRITE_SERIES), None);
+    }
+
+    #[test]
+    fn the_burn_down_says_how_fast_the_backlog_goes() {
+        let mb = 1024 * 1024;
+        let t0 = tokio::time::Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let mut b = Burndown::default();
+        b.observe(at(0), 1000 * mb, Some(0));
+        b.observe(at(30), 990 * mb, Some(30 * mb));
+        assert_eq!(b.rates(), Burn::default(), "under a minute: no rate yet");
+        // 100 MB in 10 minutes: 600 MB an hour, 900 MB left, 90 minutes.
+        b.observe(at(600), 900 * mb, Some(600 * mb));
+        assert_eq!(
+            b.rates(),
+            Burn {
+                immature_mb_per_hour: Some(600.0),
+                merge_write_mb_per_sec: Some(1.0),
+                eta_mins: Some(90),
+            }
+        );
+        // The window moves on; a restarted writer's counter starts again.
+        b.observe(at(600 + 1800), 300 * mb, Some(5 * mb));
+        b.observe(at(600 + 1900), 290 * mb, Some(105 * mb));
+        let r = b.rates();
+        assert_eq!(r.merge_write_mb_per_sec, Some(1.0));
+        assert_eq!(r.immature_mb_per_hour, Some(1156.0));
+        assert_eq!(r.eta_mins, Some(15));
+        // Nothing merged: no time left to say.
+        let mut idle = Burndown::default();
+        idle.observe(at(0), 5 * mb, None);
+        idle.observe(at(120), 5 * mb, None);
+        assert_eq!(idle.rates().eta_mins, None);
+        assert_eq!(idle.rates().immature_mb_per_hour, Some(0.0));
+        assert_eq!(idle.rates().merge_write_mb_per_sec, None);
     }
 
     fn ids(v: &[&str]) -> Vec<String> {
@@ -1568,6 +1964,68 @@ mod tests {
     }
 
     #[test]
+    fn a_final_merge_factor_left_behind_goes_back_to_the_templates() {
+        let config = serde_json::json!({
+            "index_id": "i",
+            "indexing_settings": {
+                "merge_policy": {"type": "limit_merge", "merge_factor": 10, "max_merge_factor": 12},
+            },
+        });
+        assert_eq!(template_merge_factor(&config).unwrap(), None);
+        let left = with_merge_factor(&config, FINAL_MERGE_FACTOR).unwrap();
+        assert_eq!(template_merge_factor(&left).unwrap(), Some(config.clone()));
+        let mut odd = config.clone();
+        odd["indexing_settings"]["merge_policy"]["merge_factor"] = 7.into();
+        let err = template_merge_factor(&odd).unwrap_err().to_string();
+        assert!(err.contains("Some(7)"), "{err}");
+    }
+
+    /// The splits a stopped writer left staged are the ones created before
+    /// this writer started; one it staged since is its own merge's.
+    #[tokio::test]
+    async fn only_splits_staged_before_the_writer_started_are_left_over() {
+        let marked: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                axum::routing::get(|q: axum::extract::RawQuery| async move {
+                    let q = q.0.unwrap_or_default();
+                    assert!(q.contains("split_states=Staged"), "{q}");
+                    axum::Json(serde_json::json!({"splits": [
+                        {"split_id": "old", "split_state": "Staged", "create_timestamp": 99},
+                        {"split_id": "new", "split_state": "Staged", "create_timestamp": 100},
+                    ]}))
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits/mark-for-deletion",
+                axum::routing::put({
+                    let marked = marked.clone();
+                    move |axum::Json(v): axum::Json<Value>| async move {
+                        marked.lock().unwrap().push(v);
+                        axum::Json(Value::Null)
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let left = node.staged_splits_before("i", 100).await.unwrap();
+        assert_eq!(left, ["old"]);
+        node.mark_for_deletion("i", &left).await.unwrap();
+        assert_eq!(
+            *marked.lock().unwrap(),
+            [serde_json::json!({"split_ids": ["old"]})]
+        );
+    }
+
+    #[test]
     fn a_failed_merge_stops_the_release() {
         let e = NodeEvents::default();
         e.observe(
@@ -1588,6 +2046,7 @@ mod tests {
                 footer_bytes: Some(3_500_000),
                 partition_id: 0,
                 decades: vec![],
+                immature: false,
             },
             Split {
                 id: "b".into(),
@@ -1596,6 +2055,7 @@ mod tests {
                 footer_bytes: Some(92_377),
                 partition_id: 0,
                 decades: vec![],
+                immature: false,
             },
         ];
         let l = check("idx", 1_040_000, T, &splits).unwrap();
@@ -1646,6 +2106,7 @@ mod tests {
                 footer_bytes: None,
                 partition_id: 0,
                 decades: vec![],
+                immature: false,
             })
             .collect();
         let err = check("idx", 140_000, T, &many).unwrap_err().to_string();
@@ -1747,6 +2208,7 @@ mod tests {
                 footer_bytes: Some(92_377),
                 partition_id: 0,
                 decades: vec![],
+                immature: false,
             }]
         );
         assert!(parse_splits(&serde_json::json!({"message": "index `x` not found"})).is_err());

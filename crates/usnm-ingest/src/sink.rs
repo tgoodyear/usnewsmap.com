@@ -1,7 +1,7 @@
 //! Where index documents go: JSONL files (the API's memory backend, local
 //! development and tests) or a Quickwit writer node (08 §8.4.1).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -22,6 +22,62 @@ use crate::telemetry;
 
 /// The index config every base and delta shares (05 §5.5.1).
 pub const INDEX_TEMPLATE: &str = include_str!("../../../infra/quickwit/pages-index.yaml");
+
+/// Titles a `title_fields` search can tell apart: more than LoC has.
+const TITLE_BUCKETS: u64 = 50_000;
+
+/// A `title_fields` search's answer, by LCCN.
+fn title_fields_of(v: &Value) -> anyhow::Result<TitleFieldsByLccn> {
+    let buckets = v["aggregations"]["titles"]["buckets"]
+        .as_array()
+        .context("the search answered no title buckets")?;
+    anyhow::ensure!(
+        (buckets.len() as u64) < TITLE_BUCKETS,
+        "the index has {TITLE_BUCKETS} titles or more: too many to check"
+    );
+    let keys = |b: &Value, name: &str| -> BTreeSet<String> {
+        b[name]["buckets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|k| match &k["key"] {
+                Value::String(s) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut out = TitleFieldsByLccn::new();
+    for b in buckets {
+        let lccn = b["key"].as_str().context("a title bucket without a key")?;
+        let shards = b["shards"]["buckets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|k| k["key"].as_f64().map(|n| n as u64))
+            .collect();
+        let ordinal = |name: &str| {
+            b[name]["value"]
+                .as_f64()
+                .map(|n| (n as u64) >> 32)
+                .with_context(|| format!("{lccn} has no {name} sort_key"))
+        };
+        out.insert(
+            lccn.to_owned(),
+            crate::finish::TitleFields {
+                places: keys(b, "places"),
+                shards,
+                states: keys(b, "states"),
+                languages: keys(b, "languages"),
+                ordinals: (ordinal("first")?, ordinal("last")?),
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// What a writer node that doesn't see itself as a searcher yet answers a
+/// search with (Quickwit 0.9.1), just after it starts.
+const NO_SEARCHER: &str = "there are no available searcher nodes in the cluster";
 
 /// Documents per ingest request, bounded well under Quickwit's 10 MiB body limit.
 const CHUNK_BYTES: usize = 8 * 1024 * 1024;
@@ -576,6 +632,72 @@ pub trait IndexSink: Send {
     async fn line_sender(&mut self) -> anyhow::Result<Option<LineSender>> {
         Ok(None)
     }
+    /// Take up the main index `index_id` a release that stopped wrote, laid
+    /// out as `layout` says, in place of [`IndexSink::create`]: nothing is
+    /// added to it, and [`IndexSink::finish`] then counts and seals it as it
+    /// would a new one (`crate::finish`).
+    async fn attach(&mut self, index_id: &str, _layout: MainLayout) -> anyhow::Result<()> {
+        bail!("this sink can't take up `{index_id}`, an index a stopped release wrote")
+    }
+    /// Whether `index_id` exists.
+    async fn has_index(&mut self, index_id: &str) -> anyhow::Result<bool> {
+        bail!("this sink can't tell whether `{index_id}` exists")
+    }
+    /// The documents `index_id` holds where searches see them (Quickwit's
+    /// published splits).
+    async fn published_docs(&mut self, index_id: &str) -> anyhow::Result<u64> {
+        bail!("this sink can't count `{index_id}`")
+    }
+    /// The documents of `index_id` by decade, when it is partitioned by
+    /// decade (05 §5.5.5) and the sink can tell; `None` otherwise.
+    async fn decade_docs(
+        &mut self,
+        _index_id: &str,
+    ) -> anyhow::Result<Option<std::collections::BTreeMap<u16, u64>>> {
+        Ok(None)
+    }
+    /// What `index_id`'s documents of each title carry from the catalog
+    /// (`crate::finish::TitleFields`, by LCCN), when the sink can tell.
+    async fn title_fields(&mut self, _index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+        Ok(None)
+    }
+}
+
+/// [`IndexSink::title_fields`]' answer.
+pub type TitleFieldsByLccn = std::collections::BTreeMap<String, crate::finish::TitleFields>;
+
+/// Fold one document's catalog fields into `by` ([`IndexSink::title_fields`]).
+fn add_title_fields(by: &mut TitleFieldsByLccn, doc: &Value) -> anyhow::Result<()> {
+    let text = |k: &str| {
+        doc[k]
+            .as_str()
+            .map(str::to_owned)
+            .with_context(|| format!("a document without `{k}`: {}", doc["doc_id"]))
+    };
+    let ordinal = doc["sort_key"]
+        .as_u64()
+        .with_context(|| format!("a document without `sort_key`: {}", doc["doc_id"]))?
+        >> 32;
+    let f = by
+        .entry(text("lccn")?)
+        .or_insert_with(|| crate::finish::TitleFields {
+            ordinals: (ordinal, ordinal),
+            ..Default::default()
+        });
+    f.places.insert(text("place_id")?);
+    f.states.insert(text("state")?);
+    f.shards.insert(
+        doc["place_shard"]
+            .as_u64()
+            .with_context(|| format!("a document without `place_shard`: {}", doc["doc_id"]))?,
+    );
+    for l in doc["language"].as_array().into_iter().flatten() {
+        if let Some(l) = l.as_str().filter(|l| !l.is_empty()) {
+            f.languages.insert(l.to_owned());
+        }
+    }
+    f.ordinals = (f.ordinals.0.min(ordinal), f.ordinals.1.max(ordinal));
+    Ok(())
 }
 
 /// What a sink has sent so far, and where to look for its resources.
@@ -593,6 +715,16 @@ pub struct SinkStats {
 }
 
 impl SinkStats {
+    /// Counters of their own, reporting the free space of `work_dir`: a
+    /// finish's replay counts the documents it makes again here, so the
+    /// release's progress lines follow it (`crate::finish`).
+    pub fn replaying(work_dir: Option<PathBuf>) -> Self {
+        Self {
+            work_dir,
+            ..Self::default()
+        }
+    }
+
     pub fn docs_sent(&self) -> u64 {
         self.docs_sent.load(Ordering::Relaxed)
     }
@@ -618,6 +750,13 @@ impl SinkStats {
         let m = telemetry::metrics();
         m.docs_sent.add(docs, &[]);
         m.bytes_sent.add(bytes, &[]);
+    }
+
+    /// Count documents a finish's replay made again (`SinkStats::replaying`):
+    /// the progress lines follow them, the sent-documents metric doesn't.
+    pub(crate) fn replayed(&self, docs: u64, bytes: u64) {
+        self.docs_sent.fetch_add(docs, Ordering::Relaxed);
+        self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
     }
 
     fn retried(&self, status: u16) {
@@ -700,6 +839,57 @@ impl IndexSink for JsonlSink {
         Ok(())
     }
 
+    async fn attach(&mut self, index_id: &str, _layout: MainLayout) -> anyhow::Result<()> {
+        let path = self.dir.join(format!("{index_id}.jsonl"));
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("{} (the stopped release's index)", path.display()))?;
+        self.current = Some((path, std::io::BufWriter::new(file)));
+        Ok(())
+    }
+
+    async fn has_index(&mut self, index_id: &str) -> anyhow::Result<bool> {
+        Ok(self.dir.join(format!("{index_id}.jsonl")).exists())
+    }
+
+    async fn published_docs(&mut self, index_id: &str) -> anyhow::Result<u64> {
+        use std::io::BufRead;
+        let path = self.dir.join(format!("{index_id}.jsonl"));
+        let file = std::fs::File::open(&path).with_context(|| path.display().to_string())?;
+        Ok(std::io::BufReader::new(file).lines().count() as u64)
+    }
+
+    /// Read from the documents' own `decade` field.
+    async fn decade_docs(
+        &mut self,
+        index_id: &str,
+    ) -> anyhow::Result<Option<std::collections::BTreeMap<u16, u64>>> {
+        use std::io::BufRead;
+        let path = self.dir.join(format!("{index_id}.jsonl"));
+        let file = std::fs::File::open(&path).with_context(|| path.display().to_string())?;
+        let mut by = std::collections::BTreeMap::new();
+        for line in std::io::BufReader::new(file).lines() {
+            let doc: Value = serde_json::from_str(&line?)?;
+            let Some(decade) = doc["decade"].as_u64().and_then(|d| u16::try_from(d).ok()) else {
+                return Ok(None);
+            };
+            *by.entry(decade).or_default() += 1;
+        }
+        Ok(Some(by))
+    }
+
+    async fn title_fields(&mut self, index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+        use std::io::BufRead;
+        let path = self.dir.join(format!("{index_id}.jsonl"));
+        let file = std::fs::File::open(&path).with_context(|| path.display().to_string())?;
+        let mut by = TitleFieldsByLccn::new();
+        for line in std::io::BufReader::new(file).lines() {
+            add_title_fields(&mut by, &serde_json::from_str(&line?)?)?;
+        }
+        Ok(Some(by))
+    }
+
     fn backend(&self) -> &'static str {
         "memory"
     }
@@ -735,6 +925,15 @@ pub struct QuickwitSink {
     kafka: Option<crate::kafka::Kafka>,
     /// The index with a Kafka topic and source, when it is the current one.
     kafka_index: Option<String>,
+    /// When the writer node this release runs started, in seconds since the
+    /// epoch: splits staged before it are a stopped writer's.
+    node_started: Option<i64>,
+    /// The current index is a stopped release's, taken up by `attach`: its
+    /// Kafka source and topic may be gone already.
+    resumed: bool,
+    /// While a finish replays its build, the lines that say how the
+    /// writer's merges go; `finish` stops it.
+    replay_watch: Option<merges::MergeWatch>,
 }
 
 /// Posts ingest requests to one index on the writer node: the request,
@@ -905,6 +1104,9 @@ impl QuickwitSink {
             ingest: IngestApi::default(),
             kafka: None,
             kafka_index: None,
+            node_started: None,
+            resumed: false,
+            replay_watch: None,
         })
     }
 
@@ -919,6 +1121,7 @@ impl QuickwitSink {
         });
         self.events = Some(node.events.clone());
         self.process = Some(node.process.clone());
+        self.node_started = Some(node.started);
         self
     }
 
@@ -1044,6 +1247,22 @@ impl QuickwitSink {
         Ok(())
     }
 
+    /// [`QuickwitSink::delete_source`], for a source that may be gone.
+    async fn delete_source_if_exists(&self, index_id: &str, source_id: &str) -> anyhow::Result<()> {
+        if self
+            .node()
+            .sources(index_id)
+            .await?
+            .iter()
+            .any(|s| s == source_id)
+        {
+            self.delete_source(index_id, source_id).await
+        } else {
+            tracing::info!(index = index_id, source = source_id, "no source to delete");
+            Ok(())
+        }
+    }
+
     async fn count(&self, id: &str) -> anyhow::Result<u64> {
         let counted = self.count_once(id).await;
         merges::explained(self.events.as_deref(), counted).await
@@ -1132,6 +1351,7 @@ impl IndexSink for QuickwitSink {
         }
         self.index = Some(index_id.to_owned());
         self.split_docs = None;
+        self.resumed = false;
         Ok(())
     }
 
@@ -1162,6 +1382,8 @@ impl IndexSink for QuickwitSink {
     /// Commit, confirm the count, then wait for the index's merges and
     /// close it (`merges::seal`): nothing is published half merged.
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()> {
+        // The merge wait logs its own lines from here.
+        self.replay_watch = None;
         // A forced commit publishes everything still buffered in the node.
         // `add` always leaves its document in the buffer, so an empty one
         // means none was added (a batch with no text): there is nothing to
@@ -1242,10 +1464,19 @@ impl IndexSink for QuickwitSink {
         // get the final merge factor too (Quickwit merges by source); then
         // it and its topic go: every record is in the index.
         if via_kafka {
-            self.delete_source(&id, "kafka").await?;
+            // A stopped release's may be gone already (`attach`).
+            if self.resumed {
+                self.delete_source_if_exists(&id, "kafka").await?;
+            } else {
+                self.delete_source(&id, "kafka").await?;
+            }
             self.kafka_index = None;
             if let Some(k) = &self.kafka {
-                k.delete_topic(&id).await?;
+                if self.resumed {
+                    k.delete_topic_if_exists(&id).await?;
+                } else {
+                    k.delete_topic(&id).await?;
+                }
             }
         }
         tracing::info!(
@@ -1254,6 +1485,173 @@ impl IndexSink for QuickwitSink {
             "merged; the index is closed to further writes"
         );
         Ok(())
+    }
+
+    /// The stopped release's index, as `create` would have left it: its
+    /// split target, and its Kafka source and topic when the release sent
+    /// through Kafka. Before anything is counted or merged, its merge
+    /// policy is the template's again if the release stopped with the final
+    /// merges' in place, and the splits a stopped writer left staged are
+    /// marked for deletion: they hold no document the published splits
+    /// don't, and `publish-staged` refuses an index that has any.
+    async fn attach(&mut self, index_id: &str, layout: MainLayout) -> anyhow::Result<()> {
+        let started = self.node_started.with_context(|| {
+            format!(
+                "taking up `{index_id}` needs a writer node this command runs (--quickwit-bin): \
+                 the splits staged before it started are the stopped writer's"
+            )
+        })?;
+        let node = self.node();
+        let events = self.events.as_deref();
+        let config = merges::explained(events, node.index_config(index_id).await)
+            .await
+            .with_context(|| format!("`{index_id}` isn't in the writer's metastore"))?;
+        if let Some(fixed) = merges::template_merge_factor(&config)? {
+            tracing::warn!(
+                index = index_id,
+                "the stopped release left the final merges' merge factor in the index's config; \
+                 putting the template's back"
+            );
+            merges::explained(events, node.update_index(index_id, &fixed).await).await?;
+        }
+        let staged =
+            merges::explained(events, node.staged_splits_before(index_id, started).await).await?;
+        if !staged.is_empty() {
+            tracing::warn!(
+                index = index_id,
+                splits = staged.len(),
+                first = ?staged.iter().take(10).collect::<Vec<_>>(),
+                "marking the splits a stopped writer left staged for deletion"
+            );
+            merges::explained(events, node.mark_for_deletion(index_id, &staged).await).await?;
+        }
+        let sources = merges::explained(events, node.sources(index_id).await).await?;
+        // Only a partitioned base sends through Kafka (`create`).
+        let kafka = self.kafka.is_some() && layout.decades == Decades::Partitioned;
+        if sources.iter().any(|s| s == "kafka") && !kafka {
+            bail!(
+                "`{index_id}` has a Kafka source: set USNM_WRITER_KAFKA (and its partitions) as the \
+                 release had them, so the writer runs the source's pipelines and merges its splits"
+            );
+        }
+        if kafka {
+            self.ingest.check_kafka(true)?;
+            self.kafka_index = Some(index_id.to_owned());
+        }
+        self.index = Some(index_id.to_owned());
+        self.split_docs = layout.split_docs;
+        self.resumed = true;
+        self.replay_watch = Some(merges::MergeWatch::start(
+            self.http.clone(),
+            self.base.clone(),
+            index_id.to_owned(),
+            "replay",
+            self.stats.work_dir.clone(),
+        ));
+        tracing::info!(
+            index = index_id,
+            sources = ?sources,
+            split_docs = layout.split_docs,
+            "took up the stopped release's index"
+        );
+        Ok(())
+    }
+
+    async fn has_index(&mut self, index_id: &str) -> anyhow::Result<bool> {
+        let node = self.node();
+        merges::explained(self.events.as_deref(), node.has_index(index_id).await).await
+    }
+
+    /// A writer just started takes a moment to see itself as a searcher;
+    /// until then it answers searches with an error that says so.
+    async fn published_docs(&mut self, index_id: &str) -> anyhow::Result<u64> {
+        let until = tokio::time::Instant::now() + Duration::from_secs(60);
+        let text = loop {
+            let resp = self
+                .http
+                .get(format!(
+                    "{}/api/v1/{index_id}/search?query=*&max_hits=0",
+                    self.base
+                ))
+                .send()
+                .await;
+            let resp = merges::explained(self.events.as_deref(), resp.map_err(Into::into)).await?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                break text;
+            }
+            if !text.contains(NO_SEARCHER) || tokio::time::Instant::now() >= until {
+                bail!(
+                    "counting `{index_id}` returned {status}: {}",
+                    text.chars().take(500).collect::<String>()
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
+        let v: Value = serde_json::from_str(&text).context("search response")?;
+        v["num_hits"]
+            .as_u64()
+            .context("search response has no num_hits")
+    }
+
+    /// From the published splits, when each holds one decade (a partitioned
+    /// index's do).
+    async fn decade_docs(
+        &mut self,
+        index_id: &str,
+    ) -> anyhow::Result<Option<std::collections::BTreeMap<u16, u64>>> {
+        let node = self.node();
+        let splits = merges::explained(self.events.as_deref(), node.splits(index_id).await).await?;
+        if splits
+            .iter()
+            .any(|s| s.partition_id == 0 || s.decades.len() != 1)
+        {
+            return Ok(None);
+        }
+        let mut by = std::collections::BTreeMap::new();
+        for s in &splits {
+            *by.entry(s.decades[0]).or_default() += s.docs;
+        }
+        Ok(Some(by))
+    }
+
+    /// One search of the published splits: each title's terms and its
+    /// documents' lowest and highest `sort_key`.
+    async fn title_fields(&mut self, index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+        let terms = |field: &str| serde_json::json!({"terms": {"field": field, "size": 64}});
+        let body = serde_json::json!({
+            "query": "*",
+            "max_hits": 0,
+            "aggs": {"titles": {
+                "terms": {"field": "lccn", "size": TITLE_BUCKETS},
+                "aggs": {
+                    "places": terms("place_id"),
+                    "shards": terms("place_shard"),
+                    "states": terms("state"),
+                    "languages": terms("language"),
+                    "first": {"min": {"field": "sort_key"}},
+                    "last": {"max": {"field": "sort_key"}},
+                },
+            }},
+        });
+        let resp = self
+            .http
+            .post(format!("{}/api/v1/{index_id}/search", self.base))
+            .json(&body)
+            .send()
+            .await;
+        let resp = merges::explained(self.events.as_deref(), resp.map_err(Into::into)).await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!(
+                "reading the titles of `{index_id}` returned {status}: {}",
+                text.chars().take(500).collect::<String>()
+            );
+        }
+        let v: Value = serde_json::from_str(&text).context("search response")?;
+        title_fields_of(&v).map(Some)
     }
 
     fn backend(&self) -> &'static str {
@@ -1485,6 +1883,9 @@ fn writer_log_filter(inherited: Option<&str>) -> String {
 /// the last lines into error messages.
 pub struct QuickwitNode {
     pub url: String,
+    /// When it was started, in seconds since the epoch (taken before the
+    /// process starts).
+    started: i64,
     work_dir: PathBuf,
     events: Arc<NodeEvents>,
     /// Shared with the sink, which restarts it for ingest v1's final merges.
@@ -1895,6 +2296,7 @@ impl QuickwitNode {
         metastore: &str,
         index_root: &str,
     ) -> anyhow::Result<Self> {
+        let started = chrono::Utc::now().timestamp();
         let data = work_dir.join("qwdata");
         // Only this release writes here (it holds the writer lock), and a
         // previous run's data must not come back: on a persistent scratch
@@ -1950,6 +2352,7 @@ impl QuickwitNode {
         process.spawn()?;
         let node = Self {
             url,
+            started,
             work_dir: work_dir.to_owned(),
             events,
             process,
@@ -2942,6 +3345,45 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn reads_what_each_titles_documents_carry() {
+        // As Quickwit 0.9.1 answers `title_fields`' search.
+        let v = serde_json::json!({"num_hits": 3, "aggregations": {"titles": {"buckets": [{
+            "key": "sn1", "doc_count": 3,
+            "places": {"buckets": [{"key": "P1", "doc_count": 3}]},
+            "shards": {"buckets": [{"key": 3.0, "doc_count": 3}]},
+            "states": {"buckets": [{"key": "IL", "doc_count": 3}]},
+            "languages": {"buckets": [{"key": "eng", "doc_count": 3}, {"key": "", "doc_count": 1}]},
+            "first": {"value": ((7u64 << 32) | (1 << 16) | 1) as f64},
+            "last": {"value": ((7u64 << 32) | (1 << 16) | 12) as f64},
+        }]}}});
+        let got = title_fields_of(&v).unwrap();
+        assert_eq!(
+            got["sn1"],
+            crate::finish::TitleFields {
+                places: BTreeSet::from(["P1".to_owned()]),
+                shards: BTreeSet::from([3]),
+                states: BTreeSet::from(["IL".to_owned()]),
+                languages: BTreeSet::from(["eng".to_owned()]),
+                ordinals: (7, 7),
+            }
+        );
+        // A document's own fields fold the same way.
+        let mut by = TitleFieldsByLccn::new();
+        for seq in [1u64, 12] {
+            add_title_fields(
+                &mut by,
+                &serde_json::json!({
+                    "doc_id": "d", "lccn": "sn1", "place_id": "P1", "place_shard": 3,
+                    "state": "IL", "language": ["eng", ""], "sort_key": (7u64 << 32) | (1 << 16) | seq,
+                }),
+            )
+            .unwrap();
+        }
+        assert_eq!(by, got);
+        assert!(title_fields_of(&serde_json::json!({"num_hits": 0})).is_err());
     }
 
     #[test]
