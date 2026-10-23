@@ -1,0 +1,55 @@
+# Publish one data set (scripts/data-assets.sh) as the assets of a GitHub release, from the commit
+# the run is started on. The release is immutable: a changed set is a new run and a new tag.
+# A set is cumulative: the pack starts from the release ops/data-assets.json records and lays the
+# commit's tracked files over it. After the run, replace ops/data-assets.json with the file the
+# job summary prints and remove the set's files from the tree (docs/reports/README.md, "Data").
+name: publish data assets
+on:
+  workflow_dispatch:
+    inputs:
+      set:
+        description: The set to publish
+        required: true
+        type: choice
+        options: [report-data, bench-assets]
+permissions:
+  contents: read
+jobs:
+  publish:
+    name: publish ${{ inputs.set }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SET: ${{ inputs.set }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pack the set
+        run: scripts/data-assets.sh --pack --set "$SET" --out out
+      - name: Create the release
+        run: |
+          tag="data-$SET-$(git log -1 --format=%cd --date=format:%Y%m%d)-$(git rev-parse --short HEAD)"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --latest=false --target "$GITHUB_SHA" \
+            --title "Data assets: $SET at $(git rev-parse --short HEAD)" \
+            --notes "The $SET set of scripts/data-assets.sh, packed from $GITHUB_SHA. Fetch with: scripts/data-assets.sh --fetch --set $SET --tag $tag" \
+            "out/$SET.tar.gz" "out/$SET.members.txt" out/SHA256SUMS
+          sha=$(cut -d' ' -f1 < <(grep " $SET.tar.gz\$" out/SHA256SUMS))
+          # The whole index with this set's tag and digest set, to replace ops/data-assets.json.
+          python3 - "$SET" "$tag" "$sha" > out/data-assets.json <<'PY'
+          import json, sys
+          name, tag, sha = sys.argv[1:]
+          index = json.load(open("ops/data-assets.json"))
+          index[name].update(tag=tag, sha256=sha)
+          print(json.dumps(index, indent=2, sort_keys=True))
+          PY
+          {
+            echo "Published \`$tag\`. Replace \`ops/data-assets.json\` with:"
+            echo
+            echo '```json'
+            cat out/data-assets.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "tag=$tag sha256=$sha"
