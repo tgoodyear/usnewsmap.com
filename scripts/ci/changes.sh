@@ -159,6 +159,16 @@ workflow_input boinc_surya boinc-surya boinc-surya-build
 workflow_input boinc_ndlocr boinc-ndlocr-lite
 workflow_input boinc_native boinc-quality-native
 workflow_input ocr_dashboard ocr-dashboard
+# The composite actions ci.yml's jobs call are steps of those jobs, as if written in ci.yml:
+# editing one runs the jobs that call it, by the flags their `if:` lines read
+# (test_changes.py checks this list against ci.yml).
+action_input() {
+  local action=$1; shift
+  if matches "^\.github/actions/$action/"; then forced="$forced $*"; fi
+}
+action_input setup-rust rust quickwit page_language ocr_worker ocr_dash e2e
+action_input setup-node-web web e2e
+action_input build-check-image image contrib
 # Workflow files are settled above; they are not code for the file rules below.
 files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # The Rust build and tests: the crates, the files compiled into binaries

@@ -57,4 +57,4 @@ seed regeneration, memory budgets and bounded smoke runs.
 
 ## Pull requests
 
-Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds.
+Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds. [What CI runs](docs/development.md#what-ci-runs) lists each job, when it runs, which ones the repository requires, and the local commands that match.
