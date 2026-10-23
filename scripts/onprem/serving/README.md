@@ -64,20 +64,20 @@ Every script takes named flags and has a `--dry-run`.
 
 ## Deploys
 
-CI's publish job pushes each prod image as `usnewsmap-api:main` and `usnewsmap-api:<commit>`. After the Azure app rolls onto it, the job attests the image as its last step, so an attested image is one prod runs.
+CI's publish job pushes each prod image as `usnewsmap-api:main` and `usnewsmap-api:<commit>`. Its last step, after the Azure app rolls onto the image, attests it (a Phase 0 code PR adds this step), so an attested image is one prod runs.
 
-Two minutes after its last run ends, `update-api.sh` reads the `main` manifest from the registry with the Arc identity's AcrPull. When that's the manifest serving, the run ends there, without asking GitHub anything. For a new manifest, the script:
+Two minutes after its last run ends, `update-api.sh` reads the `main` manifest from the registry with the Arc identity's AcrPull. If that manifest is already serving, the run ends there, without asking GitHub anything. For a new manifest, the script:
 
-1. reads its build provenance attestation from GitHub's public API, with no token, and checks that `ci.yml` on main signed it. The attestation names the commit, and the commit's own tag must point at the same manifest;
+1. reads its build provenance attestation from GitHub's public API, with no token, checks that `ci.yml` on main signed it, and checks that the commit it names has its own tag on the same manifest;
 2. pulls the image by digest and starts it on the idle color;
 3. once the new color's `/readyz` passes, points Caddy at it, reloads Caddy, and checks that Caddy's admin API names the new port and that `/readyz` answers through Caddy;
 4. waits 130 s for requests in flight and stops the old color.
 
-Until the attestation appears, the script asks for it on every run for 30 minutes, then every 10 minutes, and gives up after 3 hours. GitHub allows 60 requests an hour from an address without a token, and only a new image costs any.
+Until the attestation appears, the script asks for it on every run for 30 minutes after it first sees the manifest, then every 10 minutes, and rejects the manifest after 3 hours. GitHub allows 60 requests an hour from an address without a token, and only a new image costs any.
 
-If the new color doesn't get ready, or Caddy doesn't switch, the old color keeps serving and the manifest is listed in `/var/lib/usnm-serving/rejected`. If the serving color isn't ready either, the host is the likely cause (a missing index, no lake access), so nothing is rejected. A manifest whose attestation doesn't verify is rejected before anything is pulled.
+If the new color doesn't get ready, or Caddy doesn't switch, the old color keeps serving and the manifest's digest is listed in `/var/lib/usnm-serving/rejected`. If the serving color isn't ready either, the host is the likely cause (a missing index, no lake access), so nothing is rejected. A manifest whose attestation doesn't verify is rejected before anything is pulled.
 
-A new image serves within about 10 minutes of CI attesting it: up to 2 minutes until the next run, then the pull and the new color's start and warm-up (its readiness cap is 360 s).
+A new image serves within about 10 minutes of CI attesting it, as long as CI attests it within 30 minutes of moving `main`: up to 2 minutes until the next run, then the pull and the new color's start and warm-up (its readiness cap is 360 s).
 
 To roll back by hand, deploy an earlier commit:
 
@@ -92,7 +92,7 @@ The image must be attested for that commit. This creates `/etc/usnm-serving/hold
 Nothing here logs a client address or a query string (09 §9.4.2):
 
 - cloudflared runs at `--loglevel info`, since debug logs every URI, and `run-cloudflared.sh` cuts the query string from the URL in its error lines;
-- Caddy has no access log, and its error log drops the request (the URI and the headers, `CF-Connecting-IP` among them);
+- Caddy has no access log, and its error log drops each line's request field (the URI and the headers, `CF-Connecting-IP` among them);
 - Quickwit keeps the `RUST_LOG` filter from `containerapp.bicep`;
 - the API logs no query strings.
 
@@ -102,9 +102,9 @@ The journal keeps 30 days.
 
 - **How a new index version reaches the running container.** The searcher reads one `file://` metastore, and each release writes its own under its run directory. So a new version needs a new `--index-dir`, a new `searcher.yaml` and a searcher restart, which with one searcher is a short outage with cold caches. The choice is between a mount per version, added ahead of the switch, and one mount whose contents the host swaps.
 - **Searcher upgrades.** An upgrade restarts the only searcher, so it is an outage too. `install.sh` restarts it only when its config, binary or unit changed.
-- **Settings from the Phase 0 API PRs.** `api.env` sets `USNM_TRUST_CF_CONNECTING_IP=true`, so the API takes the visitor's address from `CF-Connecting-IP` when the peer is loopback, and `USNM_READY_REQUIRES_PUBLISHED_INDEXES=true`, so `/readyz` fails while the searcher lacks an index `current.json` names. An image from before those PRs ignores both. It then keys rate limits on the loopback peer (`USNM_TRUSTED_PROXY_HOPS=0`), so all visitors share one bucket.
-- **The API image's attestation** (a Phase 0 code PR). Until CI attests the image, `update-api.sh` deploys nothing: each new image waits 3 hours for its attestation and is then set aside.
-- **One response cache for both colors.** The API's local store names its temporary files by process and thread id, and both colors run the API as process 1, so each color has its own cache directory. Temporary names unique across processes in `usnm-store` would let them share one again.
+- **Settings from the Phase 0 API PRs.** `api.env` sets `USNM_TRUST_CF_CONNECTING_IP=true`, so the API takes the visitor's address from `CF-Connecting-IP` when the peer is loopback. It also sets `USNM_READY_REQUIRES_PUBLISHED_INDEXES=true`, so `/readyz` fails while the searcher lacks an index `current.json` names. An image from before those PRs ignores both. It then keys rate limits on the loopback peer (`USNM_TRUSTED_PROXY_HOPS=0`), so all visitors share one bucket.
+- **The API image's attestation** (a Phase 0 code PR). Until CI attests the image, `update-api.sh` deploys nothing. Each new image waits 3 hours for its attestation and is then rejected.
+- **One response cache for both colors.** The API's local store names its temporary files from the process id (with a thread id or a per-process counter), and both colors run the API as process 1, so each color has its own cache directory. Temporary names unique across processes in `usnm-store` would let them share one again.
 - **Limits and hardening to confirm on the host:**
   - the 2 GiB memory limit for each API color;
   - the API container's read-only root;

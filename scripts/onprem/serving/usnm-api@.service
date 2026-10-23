@@ -10,9 +10,10 @@
 # host.env (install.sh) holds HIMDS_GID.
 #
 # Each color has its own response cache directory. The API's local store
-# names its temporary files by process and thread id, and both colors run
-# the API as process 1, so two colors writing one directory at once could
-# take each other's temporary files.
+# names its temporary files from the process id (with a thread id or a
+# per-process counter), and both colors run the API as process 1, so two
+# colors writing one directory at once could take each other's temporary
+# files.
 #
 # Host network, as on the BOINC host (docs/boinc-onprem.md), so the API
 # reaches the searcher and the Arc agent's identity endpoint on loopback.

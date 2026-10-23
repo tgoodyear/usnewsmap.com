@@ -2,7 +2,8 @@
 # (#955). A run that finds the image it serves asks the registry only, not
 # GitHub. With the attestation check and the new color's warm-up (its
 # readiness cap is 360 s), the API serves a new prod image within about 10
-# minutes of CI attesting it. install.sh enables it.
+# minutes of CI attesting it, as long as that's within 30 minutes of the
+# image reaching the registry. install.sh enables it.
 [Unit]
 Description=usnewsmap API: check for a new prod image every 2 minutes (#955)
 
