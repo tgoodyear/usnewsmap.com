@@ -30,7 +30,11 @@ use tower_http::services::ServeDir;
 
 /// Headers on every response (the site's and the API's). `connect-src`
 /// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
-pub const SECURITY_HEADERS: [(&str, &str); 4] = [
+///
+/// HSTS starts at five minutes, for the host that sends it alone (no
+/// `includeSubDomains`) and without `preload`: a browser keeps it for
+/// `max-age` even after a release removes it, so it grows in steps (#955).
+pub const SECURITY_HEADERS: [(&str, &str); 5] = [
     (
         "content-security-policy",
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
@@ -45,6 +49,7 @@ pub const SECURITY_HEADERS: [(&str, &str); 4] = [
         "permissions-policy",
         "geolocation=(), camera=(), microphone=()",
     ),
+    ("strict-transport-security", "max-age=300"),
 ];
 
 /// The longest file name the filesystem takes (Linux `NAME_MAX`).
@@ -327,6 +332,18 @@ mod tests {
             "connect-src 'self' https://tiles.openfreemap.org https://boinc.usnewsmap.com"
         );
         assert!(!csp.contains("blob.core.windows.net"));
+    }
+
+    #[test]
+    fn hsts_is_short_and_for_this_host_alone() {
+        let hsts = SECURITY_HEADERS
+            .iter()
+            .find(|(name, _)| *name == "strict-transport-security")
+            .unwrap()
+            .1;
+        assert_eq!(hsts, "max-age=300");
+        let lower = hsts.to_ascii_lowercase();
+        assert!(!lower.contains("includesubdomains") && !lower.contains("preload"));
     }
 
     #[test]
