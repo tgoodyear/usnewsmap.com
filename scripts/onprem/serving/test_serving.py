@@ -306,6 +306,25 @@ class UpdateApi(Stubbed):
         self.assertIn("isn't rejected", r.stdout + r.stderr)
         self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
 
+    def test_a_first_deploy_that_never_gets_ready_is_tried_again(self):
+        self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no color serves to compare", r.stdout + r.stderr)
+        self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
+        self.assertIn("systemctl stop usnm-api@blue.service", self.calls())
+
+    def test_a_switch_whose_rollback_cant_be_confirmed_holds_with_both_up(self):
+        self.serving("blue", SHA["old"], "old")
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_CADDY_STUCK="8099")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't be confirmed", r.stdout + r.stderr)
+        self.assertTrue(self.exists("etc/usnm-serving/hold"))
+        self.assertIn(d, self.read("var/lib/usnm-serving/rejected"))
+        self.assertEqual(self.read("var/lib/usnm-serving/active"), "blue\n")
+        self.assertFalse([c for c in self.calls() if c.startswith("systemctl stop usnm-api@")])
+
     def test_a_switch_that_doesnt_take_goes_back(self):
         self.serving("blue", SHA["old"], "old")
         d = self.release(SHA["new"], "new")
@@ -314,6 +333,8 @@ class UpdateApi(Stubbed):
         self.assertEqual(self.read("etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:8081\n")
         self.assertEqual(self.read("var/lib/usnm-serving/active"), "blue\n")
         self.assertIn(d, self.read("var/lib/usnm-serving/rejected"))
+        self.assertIn("systemctl stop usnm-api@green.service", self.calls())
+        self.assertFalse(self.exists("etc/usnm-serving/hold"))
 
     def test_bad_attestation_or_mismatched_tag_rejects_before_pulling(self):
         d = self.release(SHA["new"], "new")

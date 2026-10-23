@@ -75,7 +75,7 @@ Two minutes after its last run ends, `update-api.sh` reads the `main` manifest f
 
 Until the attestation appears, the script asks for it on every run for 30 minutes after it first sees the manifest, then every 10 minutes, and rejects the manifest after 3 hours. GitHub allows 60 requests an hour from an address without a token, and only a new image costs any.
 
-If the new color doesn't get ready, or Caddy doesn't switch, the old color keeps serving and the manifest's digest is listed in `/var/lib/usnm-serving/rejected`. If the serving color isn't ready either, the host is the likely cause (a missing index, no lake access), so nothing is rejected. A manifest whose attestation doesn't verify is rejected before anything is pulled.
+If the new color doesn't get ready, or Caddy doesn't switch, the old color keeps serving and the manifest's digest is listed in `/var/lib/usnm-serving/rejected`. If the serving color isn't ready either, the host is the likely cause (a missing index, no lake access), so nothing is rejected; nor on the first deploy, with no serving color to compare. If Caddy can't be shown to route back to the old color after a failed switch, both colors stay up and `/etc/usnm-serving/hold` stops the timer until someone checks the route by hand. A manifest whose attestation doesn't verify is rejected before anything is pulled.
 
 Once CI attests a new image, the next run picks it up within about 2 minutes, as long as the attestation came within 30 minutes of `main` moving. Then come the pull and the new color's start, which takes at most 800 s: the API's own budget of 420 s to load the published version and a 360 s readiness cap.
 

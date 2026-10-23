@@ -44,8 +44,11 @@
 # into /var/lib/usnm-serving/rejected, never to be tried again. A new color
 # that doesn't get ready while the serving one isn't ready either points at
 # the host (an index the searcher lacks, the lake out of reach), so then
-# nothing is rejected. A manifest whose attestation doesn't verify is
-# rejected too.
+# nothing is rejected; nor on the first deploy, with no color to compare. If
+# Caddy can't be shown to route back to the old color after a failed
+# switch, both colors stay up and /etc/usnm-serving/hold stops the timer
+# until someone sets things right. A manifest whose attestation doesn't
+# verify is rejected too.
 #
 # --commit deploys the image of that commit (its usnewsmap-api:<commit> tag,
 # attested for that commit) whatever main says, for a manual rollback, and
@@ -298,8 +301,14 @@ done
 if ! $ready; then
   systemctl stop "usnm-api@$idle.service" || true
   # Only the new image's fault if the serving color is ready: a missing
-  # index or an unreachable lake keeps every color from getting ready.
-  if [ -n "$active" ] && ! curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:$(port_of "$active")/readyz"; then
+  # index or an unreachable lake keeps every color from getting ready. With
+  # no serving color (the first deploy) nothing shows the host is well, so
+  # nothing is rejected either.
+  if [ -z "$active" ]; then
+    warn "warning: $idle didn't get ready on :$port within $READY_SECS s, and no color serves to compare; $target isn't rejected (journalctl -u usnm-api@$idle)"
+    exit 1
+  fi
+  if ! curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:$(port_of "$active")/readyz"; then
     warn "warning: $idle didn't get ready on :$port within $READY_SECS s, and neither is $active; $target isn't rejected (journalctl -u usnm-api@$idle)"
     exit 1
   fi
@@ -319,18 +328,25 @@ caddy_on() {
     jq -r '[.. | objects | .dial? // empty] | unique | join(" ")') || return 1
   [ "$dials" = "127.0.0.1:$1" ] && curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:8080/readyz
 }
-switched=false
-if point_caddy "$port"; then
+# Points Caddy at port $1 and waits up to 10 s for caddy_on.
+switch_to() {
+  point_caddy "$1" || return 1
   for _ in 1 2 3 4 5; do
-    if caddy_on "$port"; then
-      switched=true
-      break
-    fi
+    caddy_on "$1" && return 0
     sleep 2
   done
-fi
-if ! $switched; then
-  [ -z "$active" ] || point_caddy "$(port_of "$active")" || warn "warning: can't point Caddy back at $active"
+  return 1
+}
+if ! switch_to "$port"; then
+  # Stop the new color only once Caddy is shown to route to the old one
+  # again; it may still carry the traffic otherwise.
+  if [ -n "$active" ] && ! switch_to "$(port_of "$active")"; then
+    mkdir -p "$STATE"
+    echo "$digest" >> "$REJECTED"
+    touch "$ETC/hold"
+    warn "warning: Caddy didn't switch to $idle on :$port, and its return to $active can't be confirmed. Both colors stay up, and $ETC/hold stops the timer. See which port Caddy routes to (curl -s 127.0.0.1:2019/config/), write that color to $STATE/active, stop the other one, then delete the hold. $IMAGE_REPO@$digest is rejected"
+    exit 1
+  fi
   systemctl stop "usnm-api@$idle.service" || true
   reject "Caddy didn't switch to $idle on :$port"
 fi
