@@ -215,6 +215,15 @@ impl RunLog {
         self.merging
     }
 
+    /// The documents the run sent a decade at a time, from its "sent the
+    /// pages a decade at a time" line (a base laid out by decade only).
+    pub fn decades_sent(&self) -> Option<u64> {
+        self.built
+            .get(&(DECADES_SENT_LINE.to_owned(), None))
+            .and_then(|f| f.get("pages"))
+            .and_then(Value::as_u64)
+    }
+
     /// Check a planning line the finish logs (or `None`: it logs none)
     /// against the run's.
     pub fn check_planned(&self, message: &str, ours: Option<Value>) -> anyhow::Result<()> {
@@ -279,8 +288,10 @@ impl RunLog {
 pub struct Resume {
     pub run: IndexRun,
     pub etag: String,
-    /// The documents the run sent (its last `ops/release-progress`).
-    pub docs: u64,
+    /// The documents the run had sent by its last `ops/release-progress`
+    /// (every 30 s while it built and waited for merges), if it recorded
+    /// any.
+    pub progress_sent: Option<u64>,
     pub log: RunLog,
 }
 
@@ -327,41 +338,50 @@ impl Resume {
             log.from,
             run.new_index
         );
-        let progress = state
+        // A release records its progress every 30 s: a run that stopped
+        // soon after its last page may not have recorded every one.
+        let progress_sent = state
             .release_progress()
             .await?
-            .context("the state has no release progress (ops/release-progress)")?;
-        ensure!(
-            progress.index_version == version,
-            "the last release progress is {}'s, not {version}'s",
-            progress.index_version
-        );
-        ensure!(
-            progress.docs_sent > 0,
-            "{version}'s release progress says it sent no documents"
-        );
-        if progress.docs_sent != progress.docs_expected {
-            tracing::warn!(
-                docs_sent = progress.docs_sent,
-                docs_expected = progress.docs_expected,
-                "the run's last progress expected another count than it sent; the index must hold \
-                 what it sent"
-            );
-        }
-        tracing::info!(
-            %version,
-            index = %run.new_index,
-            status = ?run.status,
-            docs_sent = progress.docs_sent,
-            last_error = run.last_error.as_deref().unwrap_or(""),
-            "finishing a release that stopped after its count"
-        );
-        Ok(Self {
+            .filter(|p| p.index_version == version && p.docs_sent > 0)
+            .map(|p| p.docs_sent);
+        let resume = Self {
             run,
             etag,
-            docs: progress.docs_sent,
+            progress_sent,
             log,
-        })
+        };
+        tracing::info!(
+            %version,
+            index = %resume.run.new_index,
+            status = ?resume.run.status,
+            progress_sent = resume.progress_sent,
+            decades_sent = resume.log.decades_sent(),
+            last_error = resume.run.last_error.as_deref().unwrap_or(""),
+            "finishing a release that stopped after its count"
+        );
+        Ok(resume)
+    }
+
+    /// Check the documents `index` holds where searches see them against
+    /// what the run recorded it sent: its release progress, which counts
+    /// every document once the merge wait has run 30 s, and its "sent the
+    /// pages a decade at a time" line (a base laid out by decade). Either
+    /// may be missing; one that is there must agree.
+    pub fn check_count(&self, index: &str, held: u64) -> anyhow::Result<()> {
+        for (what, sent) in [
+            ("its last release progress", self.progress_sent),
+            ("its log", self.log.decades_sent()),
+        ] {
+            if let Some(sent) = sent {
+                ensure!(
+                    held == sent,
+                    "`{index}` holds {held} documents in its published splits; the run sent \
+                     {sent}, by {what}. Its main index isn't complete: not finishing"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// The run's version and main index, which a release names

@@ -336,6 +336,119 @@ pub fn merge_gauges(metrics: &str) -> (u64, u64) {
     )
 }
 
+/// The bytes the writer's merges have written, a counter.
+const MERGER_WRITE_SERIES: &str = "quickwit_write_bytes{component=\"merger\"}";
+
+/// One series' value from the node's Prometheus metrics, by its name with
+/// its labels as Quickwit writes them; `None` until Quickwit registers it.
+fn series(metrics: &str, name: &str) -> Option<u64> {
+    metrics.lines().find_map(|line| {
+        let v: f64 = line
+            .strip_prefix(name)?
+            .strip_prefix(' ')?
+            .trim()
+            .parse()
+            .ok()?;
+        (v >= 0.0).then_some(v as u64)
+    })
+}
+
+/// What the node's metrics say about its merges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Gauges {
+    running: u64,
+    queued: u64,
+    /// The input bytes of the merges queued.
+    pending_bytes: Option<u64>,
+    /// The bytes merges have written since the writer started (a counter).
+    merged_bytes: Option<u64>,
+}
+
+/// How long the merge wait looks back to say how fast merging goes.
+const BURN_WINDOW: Duration = Duration::from_secs(30 * 60);
+
+/// How fast the merges get through what is left (#283): the bytes of the
+/// immature splits, and the bytes merges write, sampled at each poll of the
+/// merge wait and compared over the last [`BURN_WINDOW`]. For the wait's
+/// lines, so a long one says how far it has to go.
+#[derive(Debug, Default)]
+pub struct Burndown {
+    /// (when, immature bytes, bytes merged so far) per poll, oldest first.
+    samples: std::collections::VecDeque<(tokio::time::Instant, u64, Option<u64>)>,
+}
+
+/// What [`Burndown::rates`] reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Burn {
+    /// How fast the immature splits' bytes went down, in MB an hour.
+    pub immature_mb_per_hour: Option<f64>,
+    /// How fast merges wrote, in MB a second.
+    pub merge_write_mb_per_sec: Option<f64>,
+    /// Minutes left for the immature bytes at that rate.
+    pub eta_mins: Option<u64>,
+}
+
+impl Burndown {
+    /// Record one poll: at `at`, `immature` bytes in immature splits, and
+    /// the writer's merges' written bytes so far, if it says.
+    pub fn observe(&mut self, at: tokio::time::Instant, immature: u64, merged: Option<u64>) {
+        // A restarted writer counts its written bytes from zero again.
+        if merged.is_some_and(|m| self.samples.back().and_then(|s| s.2).is_some_and(|b| m < b)) {
+            for s in &mut self.samples {
+                s.2 = None;
+            }
+        }
+        self.samples.push_back((at, immature, merged));
+        while self
+            .samples
+            .get(1)
+            .is_some_and(|s| at.duration_since(s.0) >= BURN_WINDOW)
+        {
+            self.samples.pop_front();
+        }
+    }
+
+    /// The rates over the samples kept, once they span a minute.
+    pub fn rates(&self) -> Burn {
+        let (Some(first), Some(last)) = (self.samples.front(), self.samples.back()) else {
+            return Burn::default();
+        };
+        let secs = last.0.duration_since(first.0).as_secs_f64();
+        if secs < 60.0 {
+            return Burn::default();
+        }
+        const MB: f64 = 1024.0 * 1024.0;
+        let fell = first.1 as f64 - last.1 as f64;
+        let per_hour = fell / MB / secs * 3600.0;
+        let written = self
+            .samples
+            .iter()
+            .find_map(|s| s.2.map(|b| (s.0, b)))
+            .zip(last.2)
+            .map(|((t, from), to)| {
+                (
+                    to.saturating_sub(from) as f64,
+                    last.0.duration_since(t).as_secs_f64(),
+                )
+            })
+            .filter(|(_, secs)| *secs >= 60.0)
+            .map(|(bytes, secs)| (bytes / MB / secs * 10.0).round() / 10.0);
+        Burn {
+            immature_mb_per_hour: Some(per_hour.round()),
+            merge_write_mb_per_sec: written,
+            eta_mins: (fell > 0.0).then(|| (last.1 as f64 / (fell / secs) / 60.0).round() as u64),
+        }
+    }
+}
+
+/// The bytes of `splits`' immature ones, and how many there are.
+fn immature(splits: &[Split]) -> (u64, u64) {
+    splits
+        .iter()
+        .filter(|s| s.immature)
+        .fold((0, 0), |(n, b), s| (n + 1, b + s.bytes))
+}
+
 /// How long a failed request to the writer waits for its exit to be reaped.
 pub const EXIT_GRACE: Duration = Duration::from_secs(5);
 
@@ -392,6 +505,9 @@ pub struct Split {
     /// The decades its pages are in, from its `decade:` tags; empty for an
     /// index without them.
     pub decades: Vec<u16>,
+    /// Quickwit still merges it (`maturity.type` is `immature`): what is
+    /// left to merge, which the merge wait's lines follow ([`Burndown`]).
+    pub immature: bool,
 }
 
 /// An index's published splits, as the release log and manifest report them.
@@ -484,6 +600,7 @@ fn parse_splits(v: &Value) -> anyhow::Result<Vec<Split>> {
                 footer_bytes: footer_bytes(&s["footer_offsets"]),
                 partition_id: s["partition_id"].as_u64().unwrap_or(0),
                 decades: decade_tags(&s["tags"]),
+                immature: s["maturity"]["type"] == "immature",
             })
         })
         .collect()
@@ -546,7 +663,7 @@ impl Node<'_> {
         Ok(all)
     }
 
-    async fn gauges(&self) -> anyhow::Result<(u64, u64)> {
+    async fn gauges(&self) -> anyhow::Result<Gauges> {
         let text = self
             .http
             .get(format!("{}/metrics", self.base))
@@ -555,7 +672,13 @@ impl Node<'_> {
             .error_for_status()?
             .text()
             .await?;
-        Ok(merge_gauges(&text))
+        let (running, queued) = merge_gauges(&text);
+        Ok(Gauges {
+            running,
+            queued,
+            pending_bytes: series(&text, "quickwit_indexing_pending_merge_bytes"),
+            merged_bytes: series(&text, MERGER_WRITE_SERIES),
+        })
     }
 
     /// Stop ingesting into `index_id`, which runs its final merges.
@@ -877,12 +1000,16 @@ async fn poll_until_sealed(
     let mut closed_at: Option<tokio::time::Instant> = None;
     let mut settle = Settle::new(wait.stable_polls);
     let mut tries = 0;
+    let mut burndown = Burndown::default();
     loop {
         if let Some(e) = events {
             e.check()?;
         }
-        let (running, queued) = explained(events, node.gauges().await).await?;
+        let g = explained(events, node.gauges().await).await?;
+        let (running, queued) = (g.running, g.queued);
         let splits = explained(events, node.splits(index_id).await).await?;
+        let (immature_splits, immature_bytes) = immature(&splits);
+        burndown.observe(tokio::time::Instant::now(), immature_bytes, g.merged_bytes);
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let settled = settle.observe(running == 0 && queued == 0, &ids);
         wait.report.merges(MergeProgress {
@@ -893,6 +1020,7 @@ async fn poll_until_sealed(
         });
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
             last_log = Some(tokio::time::Instant::now());
+            let burn = burndown.rates();
             tracing::info!(
                 index = index_id,
                 step,
@@ -900,6 +1028,12 @@ async fn poll_until_sealed(
                 merges_running = running,
                 merges_queued = queued,
                 elapsed_secs = start.elapsed().as_secs(),
+                immature_splits,
+                immature_mb = immature_bytes / (1024 * 1024),
+                pending_merge_mb = g.pending_bytes.map(|b| b / (1024 * 1024)),
+                immature_mb_per_hour = burn.immature_mb_per_hour,
+                merge_write_mb_per_sec = burn.merge_write_mb_per_sec,
+                eta_mins = burn.eta_mins,
                 disk_free_mb = work_dir
                     .and_then(progress::disk_free)
                     .map(|b| b / (1024 * 1024)),
@@ -1361,12 +1495,16 @@ async fn settled(
 ) -> anyhow::Result<Vec<Split>> {
     let mut settle = Settle::new(wait.stable_polls);
     let mut last_log: Option<tokio::time::Instant> = None;
+    let mut burndown = Burndown::default();
     loop {
         if let Some(e) = events {
             e.check()?;
         }
-        let (running, queued) = explained(events, node.gauges().await).await?;
+        let g = explained(events, node.gauges().await).await?;
+        let (running, queued) = (g.running, g.queued);
         let splits = explained(events, node.splits(index_id).await).await?;
+        let (immature_splits, immature_bytes) = immature(&splits);
+        burndown.observe(tokio::time::Instant::now(), immature_bytes, g.merged_bytes);
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let done = settle.observe(running == 0 && queued == 0, &ids);
         wait.report.merges(MergeProgress {
@@ -1377,6 +1515,7 @@ async fn settled(
         });
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
             last_log = Some(tokio::time::Instant::now());
+            let burn = burndown.rates();
             tracing::info!(
                 index = index_id,
                 step,
@@ -1384,6 +1523,12 @@ async fn settled(
                 merges_running = running,
                 merges_queued = queued,
                 elapsed_secs = start.elapsed().as_secs(),
+                immature_splits,
+                immature_mb = immature_bytes / (1024 * 1024),
+                pending_merge_mb = g.pending_bytes.map(|b| b / (1024 * 1024)),
+                immature_mb_per_hour = burn.immature_mb_per_hour,
+                merge_write_mb_per_sec = burn.merge_write_mb_per_sec,
+                eta_mins = burn.eta_mins,
                 disk_free_mb = work_dir
                     .and_then(progress::disk_free)
                     .map(|b| b / (1024 * 1024)),
@@ -1489,6 +1634,49 @@ mod tests {
             (0, 0)
         );
         assert_eq!(merge_gauges(""), (0, 0));
+        assert_eq!(
+            series(metrics, "quickwit_indexing_pending_merge_bytes"),
+            Some(12345)
+        );
+        let written = "quickwit_write_bytes{component=\"split_downloader_merge\"} 7\n\
+                       quickwit_write_bytes{component=\"merger\"} 1048576\n";
+        assert_eq!(series(written, MERGER_WRITE_SERIES), Some(1 << 20));
+        assert_eq!(series("", MERGER_WRITE_SERIES), None);
+    }
+
+    #[test]
+    fn the_burn_down_says_how_fast_the_backlog_goes() {
+        let mb = 1024 * 1024;
+        let t0 = tokio::time::Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let mut b = Burndown::default();
+        b.observe(at(0), 1000 * mb, Some(0));
+        b.observe(at(30), 990 * mb, Some(30 * mb));
+        assert_eq!(b.rates(), Burn::default(), "under a minute: no rate yet");
+        // 100 MB in 10 minutes: 600 MB an hour, 900 MB left, 90 minutes.
+        b.observe(at(600), 900 * mb, Some(600 * mb));
+        assert_eq!(
+            b.rates(),
+            Burn {
+                immature_mb_per_hour: Some(600.0),
+                merge_write_mb_per_sec: Some(1.0),
+                eta_mins: Some(90),
+            }
+        );
+        // The window moves on; a restarted writer's counter starts again.
+        b.observe(at(600 + 1800), 300 * mb, Some(5 * mb));
+        b.observe(at(600 + 1900), 290 * mb, Some(105 * mb));
+        let r = b.rates();
+        assert_eq!(r.merge_write_mb_per_sec, Some(1.0));
+        assert_eq!(r.immature_mb_per_hour, Some(1156.0));
+        assert_eq!(r.eta_mins, Some(15));
+        // Nothing merged: no time left to say.
+        let mut idle = Burndown::default();
+        idle.observe(at(0), 5 * mb, None);
+        idle.observe(at(120), 5 * mb, None);
+        assert_eq!(idle.rates().eta_mins, None);
+        assert_eq!(idle.rates().immature_mb_per_hour, Some(0.0));
+        assert_eq!(idle.rates().merge_write_mb_per_sec, None);
     }
 
     fn ids(v: &[&str]) -> Vec<String> {
@@ -1780,6 +1968,7 @@ mod tests {
                 footer_bytes: Some(3_500_000),
                 partition_id: 0,
                 decades: vec![],
+                immature: false,
             },
             Split {
                 id: "b".into(),
@@ -1788,6 +1977,7 @@ mod tests {
                 footer_bytes: Some(92_377),
                 partition_id: 0,
                 decades: vec![],
+                immature: false,
             },
         ];
         let l = check("idx", 1_040_000, T, &splits).unwrap();
@@ -1838,6 +2028,7 @@ mod tests {
                 footer_bytes: None,
                 partition_id: 0,
                 decades: vec![],
+                immature: false,
             })
             .collect();
         let err = check("idx", 140_000, T, &many).unwrap_err().to_string();
@@ -1939,6 +2130,7 @@ mod tests {
                 footer_bytes: Some(92_377),
                 partition_id: 0,
                 decades: vec![],
+                immature: false,
             }]
         );
         assert!(parse_splits(&serde_json::json!({"message": "index `x` not found"})).is_err());

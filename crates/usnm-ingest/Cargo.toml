@@ -51,6 +51,8 @@ usnm-api = { path = "../usnm-api" }
 usnm-telemetry = { workspace = true, features = ["testing"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }
+# The JSON log a finish reads (`finish::RunLog`), captured in the tests.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

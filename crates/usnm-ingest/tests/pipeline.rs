@@ -6843,3 +6843,403 @@ async fn congress_pages_are_indexed_in_a_quickwit_writer_node() {
     assert_eq!(count("chamber:house AND text:duel").await, 1);
     node.stop().await.unwrap();
 }
+
+// ---------------------------------------------------------- release-finish
+
+/// A JSON log of what `f` logs on this thread, as the release's own log
+/// has it (`usnm_telemetry`'s JSON lines), at `path`.
+fn log_to(path: &Path) -> tracing::subscriber::DefaultGuard {
+    let file = std::fs::File::create(path).unwrap();
+    tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .json()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_max_level(tracing::Level::INFO)
+            .finish(),
+    )
+}
+
+/// A sink that stops like a release whose merge wait runs out: the main
+/// index's count passes, the wait starts, then gives up. Its other indexes
+/// are never reached.
+struct StopsMerging {
+    inner: JsonlSink,
+    index: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl usnm_ingest::sink::IndexSink for StopsMerging {
+    async fn create(
+        &mut self,
+        index_id: &str,
+        layout: usnm_ingest::sink::MainLayout,
+    ) -> anyhow::Result<()> {
+        self.index = Some(index_id.to_owned());
+        self.inner.create(index_id, layout).await
+    }
+    async fn add(&mut self, doc: &Value) -> anyhow::Result<()> {
+        self.inner.add(doc).await
+    }
+    async fn add_line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        self.inner.add_line(line).await
+    }
+    async fn finish(&mut self, expected: u64) -> anyhow::Result<()> {
+        self.inner.finish(expected).await?;
+        let index = self.index.clone().unwrap();
+        tracing::info!(index = %index, step = "settle", "release merges");
+        anyhow::bail!("merges into `{index}` did not finish within 0 s (settle); not publishing")
+    }
+    fn backend(&self) -> &'static str {
+        self.inner.backend()
+    }
+    fn stats(&self) -> Arc<usnm_ingest::sink::SinkStats> {
+        self.inner.stats()
+    }
+}
+
+/// The inputs of a full release with every feature a finish has to carry
+/// over (#283): two batches, American Stories' text, the Japanese overlay
+/// with Latin text (a page curation never had, and one whose LoC text it
+/// beats) and Japanese pages, and our OCR from `ocr-local` with a
+/// revocation (a garbled page and one LoC has no text for take ours).
+async fn finish_inputs(e: &Env) {
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (mut early, mut late): (Vec<Page>, Vec<Page>) =
+        fixture_pages().into_iter().partition(|p| p.date < split);
+    let ours = |v: &[Page]| -> Vec<usize> {
+        v.iter()
+            .enumerate()
+            .filter(|(_, p)| p.lccn == "sn99000001" && !p.text.is_empty())
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let sel = ours(&early);
+    let clean: Vec<String> = (0..5).map(prose).collect();
+    let (a, b, d, j) = (sel[0], sel[1], sel[2], sel[3]);
+    early[a].text = garble(&clean[0]);
+    early[b].text = clean[1].clone();
+    early[d].text = String::new();
+    early[j].text = garble(&clean[3]);
+    let g = ours(&late)[0];
+    late[g].text = garble(&clean[4]);
+    for (name, pages, historical) in [
+        ("batch_fx_early_ver01", &early, true),
+        ("batch_fx_late_ver01", &late, false),
+    ] {
+        let path = e.root.join(format!("{name}.tar.gz"));
+        write_archive(&path, &pages.iter().collect::<Vec<_>>(), historical, true);
+        curate(e, vec![listed(name, &path, None)]).await;
+    }
+    put_american_stories(e).await;
+    let lccn = "sn99000001";
+    let fx = "batch_fx_early";
+    let rows = [
+        local_row(&early[a], fx, &clean[0], &early[a].text, "node1", 10),
+        local_row(
+            &early[b],
+            fx,
+            &garble(&clean[1]),
+            &early[b].text,
+            "node1",
+            10,
+        ),
+        local_row(&early[d], fx, &clean[2], "", "node1", 10),
+        local_row(&early[j], fx, &clean[3], &early[j].text, "node-bad", 10),
+        local_row(
+            &late[g],
+            "batch_fx_late",
+            &clean[4],
+            &late[g].text,
+            "node1",
+            10,
+        ),
+    ];
+    e.curated
+        .put(
+            &usnm_ingest::ocr_local::pages_path(lccn, "20261011T000000Z-aaaa"),
+            usnm_ingest::ocr_local::pages::encode(&rows).unwrap(),
+            "application/octet-stream",
+        )
+        .await
+        .unwrap();
+    e.curated
+        .put(
+            "ocr-local/revoked/20261013T000000Z.json",
+            serde_json::to_vec(&serde_json::json!({
+                "node": "node-bad", "reason": "a bad model", "reference": "#296",
+            }))
+            .unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    // The overlay: a page whose LoC text our Latin reading beats, one
+    // curation never had, and Japanese pages for the Japanese index.
+    let p0 = &early[sel[4]];
+    let latin = format!("{JA_LATIN}\n{JA_LATIN}");
+    put_overlay_part(
+        e,
+        "ocr-ja/pages/a.parquet",
+        &[
+            JaRow {
+                lccn,
+                date: early[j].date,
+                seq: early[j].seq,
+                batch: fx,
+                loc_text: "garbled",
+                text: &latin,
+                ocred_at: 1,
+            },
+            JaRow {
+                lccn,
+                date: p0.date,
+                seq: 90,
+                batch: fx,
+                loc_text: "missing",
+                text: JA_LATIN,
+                ocred_at: 1,
+            },
+            JaRow {
+                lccn,
+                date: p0.date,
+                seq: 91,
+                batch: fx,
+                loc_text: "missing",
+                text: "米國と日本の戰爭",
+                ocred_at: 1,
+            },
+        ],
+    )
+    .await;
+}
+
+/// `to` with `from`'s curated store and batch records, so two releases
+/// read the same inputs (curation names its parts by when it ran).
+async fn same_inputs(from: &Env, to: &Env) {
+    for (path, bytes) in files(&from.root.join("curated")) {
+        let dest = to.root.join("curated").join(path);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(dest, bytes).unwrap();
+    }
+    for (b, _) in from.state.batches(&[]).await.unwrap() {
+        assert!(to.state.create_batch(&b).await.unwrap());
+    }
+}
+
+/// Every file under `dir`, by path below it.
+fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+    fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let p = entry.unwrap().path();
+            if p.is_dir() {
+                walk(root, &p, out);
+            } else {
+                let rel = p.strip_prefix(root).unwrap().display().to_string();
+                out.insert(rel, std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+/// `got` and `want` hold the same files, the same bytes; says which differ.
+fn assert_same_files(got: &BTreeMap<String, Vec<u8>>, want: &BTreeMap<String, Vec<u8>>) {
+    assert_eq!(
+        got.keys().collect::<Vec<_>>(),
+        want.keys().collect::<Vec<_>>()
+    );
+    for (path, bytes) in got {
+        if *bytes != want[path] {
+            let show = |b: &[u8]| {
+                String::from_utf8_lossy(b)
+                    .chars()
+                    .take(3000)
+                    .collect::<String>()
+            };
+            panic!(
+                "{path} differs:\n got: {}\nwant: {}",
+                show(bytes),
+                show(&want[path])
+            );
+        }
+    }
+}
+
+/// A pointer without its publish time, which differs between two runs.
+fn timeless(mut pointer: Value) -> Value {
+    pointer.as_object_mut().unwrap().remove("published_at");
+    pointer
+}
+
+/// A release that stopped after its main index passed the exact count (the
+/// merge wait ran out) is finished by `release-finish` into the version an
+/// uninterrupted run of the same inputs publishes: the same documents in
+/// every index, the same snapshot file for file, the same pointer, and a
+/// run record that says it was published. Our OCR's part written after the
+/// run started is left out (the store as of the run's start); without that,
+/// the run's own log lines stop the finish. A log without the merge wait,
+/// or an index short of a document, is refused.
+#[tokio::test]
+async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() {
+    use usnm_ingest::activity::Reporter;
+    use usnm_ingest::finish::{AsOf, Resume};
+    use usnm_ingest::state::RunStatus;
+    let settings = |e: &Env| Release {
+        american_stories: true,
+        ja_latin: true,
+        ocr_local: true,
+        partition_decade: true,
+        single_text_field: true,
+        page_language: true,
+        split_docs: Some(1000),
+        ..e.releaser(22, true)
+    };
+    let whole = env().await;
+    finish_inputs(&whole).await;
+    let want = settings(&whole)
+        .run(&mut JsonlSink::new(whole.root.join("reference/indexes")))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let e = env().await;
+    same_inputs(&whole, &e).await;
+    let log = e.root.join("release.log");
+    let err = {
+        let _log = log_to(&log);
+        let mut sink = StopsMerging {
+            inner: JsonlSink::new(e.root.join("reference/indexes")),
+            index: None,
+        };
+        settings(&e).run(&mut sink).await.unwrap_err()
+    };
+    assert!(format!("{err:#}").contains("did not finish"), "{err:#}");
+    let version = want.index_version.clone();
+    let run = raw_run(&e, &version).await;
+    assert_eq!(run["status"], "failed", "{run}");
+    // A later part of our OCR, which the run never saw.
+    e.curated
+        .put(
+            &usnm_ingest::ocr_local::pages_path("sn99000001", "20261023T000000Z-cccc"),
+            std::fs::read(
+                e.root
+                    .join("curated/ocr-local/pages/sn99000001/20261011T000000Z-aaaa.parquet"),
+            )
+            .unwrap(),
+            "application/octet-stream",
+        )
+        .await
+        .unwrap();
+
+    // A log without the merge wait: the run never passed its count.
+    let short = e.root.join("short.log");
+    std::fs::write(
+        &short,
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.contains("release merges"))
+            .map(|l| format!("{l}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let err = Resume::load(&e.state, e.reference.as_ref(), &version, &short)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("nothing to finish"), "{err}");
+
+    let finish = |curated: Arc<dyn ObjectStore>| {
+        let (e, log, version) = (&e, &log, &version);
+        async move {
+            let resume = Resume::load(&e.state, e.reference.as_ref(), version, log).await?;
+            let r = Release {
+                curated,
+                ..settings(e)
+            };
+            let lease = r.lock().await?;
+            let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+            let out = r.finish(&mut sink, &lease, &Reporter::off(), &resume).await;
+            r.unlock(lease).await?;
+            out
+        }
+    };
+    let started: std::time::SystemTime = {
+        let (run, _) = e.state.run(&version).await.unwrap().unwrap();
+        run.started_at.into()
+    };
+    // Seen whole, the curated store has a part the run didn't: its log says so.
+    let err = finish(e.curated.clone()).await.unwrap_err().to_string();
+    assert!(
+        err.contains("our OCR in ocr-local") && err.contains("parts = 1, the finish has 2"),
+        "{err}"
+    );
+    // An index short of a document isn't finished.
+    let main = e
+        .root
+        .join(format!("reference/indexes/{}.jsonl", want.indexes[0]));
+    let full = std::fs::read(&main).unwrap();
+    let cut = full[..full.len() - 1]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .unwrap();
+    std::fs::write(&main, &full[..=cut]).unwrap();
+    let err = finish(Arc::new(AsOf::new(e.curated.clone(), started)))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("isn't complete"), "{err}");
+    std::fs::write(&main, &full).unwrap();
+
+    // As of the run's start, it finishes into the version the whole run made.
+    let got = finish(Arc::new(AsOf::new(e.curated.clone(), started)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, want);
+    let run = raw_run(&e, &version).await;
+    assert_eq!(run["status"], "published", "{run}");
+    assert!(run.get("last_error").is_none_or(Value::is_null), "{run}");
+    let whole_run = raw_run(&whole, &version).await;
+    for field in [
+        "indexes",
+        "new_index",
+        "docs",
+        "pages",
+        "duplicate_pages",
+        "batch_count",
+        "batch_list",
+        "build",
+    ] {
+        assert_eq!(run[field], whole_run[field], "{field}");
+    }
+    let (got_run, _) = e.state.run(&version).await.unwrap().unwrap();
+    assert_eq!(got_run.status, RunStatus::Published);
+    assert_eq!(got_run.failed_at, None);
+    // Every index and every snapshot file, byte for byte.
+    let snapshot = |env: &Env| files(&env.root.join("reference").join(&version));
+    assert_same_files(&snapshot(&e), &snapshot(&whole));
+    assert!(snapshot(&e).contains_key("page_languages.json"));
+    assert!(snapshot(&e).contains_key("american_stories.json"));
+    assert!(snapshot(&e).contains_key("ja_latin.json"));
+    assert!(snapshot(&e).contains_key("ocr_local_pages.bin"));
+    let indexes = |env: &Env| files(&env.root.join("reference/indexes"));
+    assert_eq!(
+        indexes(&e).keys().count(),
+        2,
+        "the main and Japanese indexes"
+    );
+    assert_same_files(&indexes(&e), &indexes(&whole));
+    assert_eq!(
+        timeless(e.reference_json("current.json").await),
+        timeless(whole.reference_json("current.json").await)
+    );
+    // The last release progress is the finished index's.
+    let progress = e.state.release_progress().await.unwrap().unwrap();
+    assert_eq!(
+        (progress.index_version.as_str(), progress.docs_sent),
+        (version.as_str(), want.docs)
+    );
+}

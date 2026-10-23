@@ -587,14 +587,8 @@ impl Release {
         if let Some(r) = resume {
             let index = &r.run.new_index;
             let held = sink.published_docs(index).await?;
-            if held != r.docs {
-                bail!(
-                    "`{index}` holds {held} documents in its published splits; the run sent {}. \
-                     Its main index isn't complete: not finishing",
-                    r.docs
-                );
-            }
-            tracing::info!(index = %index, docs = held, "the run's main index holds every document it sent");
+            r.check_count(index, held)?;
+            tracing::info!(index = %index, docs = held, "the run's main index holds the documents it recorded sending");
             for id in [
                 ocr_ja::index_id(&r.run.index_version),
                 congress::index_id(&r.run.index_version),
@@ -2164,12 +2158,11 @@ impl Release {
                 None,
                 (layout.decades == Decades::Partitioned).then(|| json!({"pages": docs})),
             )?;
-            if docs != r.docs {
-                bail!(
-                    "the replay made {docs} documents; the run sent {}: not finishing",
-                    r.docs
-                );
+            let held = sink.published_docs(index_id).await?;
+            if docs != held {
+                bail!("the replay made {docs} documents; `{index_id}` holds {held}: not finishing");
             }
+            r.check_count(index_id, docs)?;
             if format.decade {
                 if let Some(held) = sink.decade_docs(index_id).await? {
                     if held != by_decade {

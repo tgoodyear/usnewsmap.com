@@ -3417,6 +3417,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "unicode-normalization",
  "usnm-alto",
  "usnm-api",
