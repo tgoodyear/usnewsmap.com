@@ -1,0 +1,14 @@
+{
+  "bench-assets": {
+    "asset": "bench-assets.tar.gz",
+    "members": "ocr/bench page images and raw native result archives",
+    "sha256": null,
+    "tag": null
+  },
+  "report-data": {
+    "asset": "report-data.tar.gz",
+    "members": "docs/reports and docs/data files that are not prose or code",
+    "sha256": null,
+    "tag": null
+  }
+}
