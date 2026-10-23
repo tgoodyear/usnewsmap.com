@@ -83,17 +83,17 @@ CORRECTIONS and gaps, in order of how much they affect the design:
    the same container group. A scheduler in one replica and a feeder in another does not work.
    Source: `wiki:MultiHost`, `wiki:Daemons`. This is what rules out scale-to-zero and
    multiple replicas for the scheduler plus daemons (design.md section 2).
-2. CORRECTED, shared filesystem. Scheduler, daemons, upload handler, file*deleter and the
-   validators all read and write one project tree: `upload/`, `download/`, `keys/`, `log*\*`,
-   with a fan-out directory hierarchy (`uldl*dir_fanout`). The web user and the daemon user
+2. CORRECTED, shared filesystem. Scheduler, daemons, upload handler, file_deleter and the
+   validators all read and write one project tree: `upload/`, `download/`, `keys/`, `log_*`,
+   with a fan-out directory hierarchy (`uldl_dir_fanout`). The web user and the daemon user
    share a group; directories are setgid and umask is 0002. Source: `wiki:DirHierarchy`,
    `wiki:Create-a-BOINC-server-(cookbook)`, `wiki:Server-security`. On Container Apps the
    container disk is ephemeral and Azure Files is the persistent mount, and blob storage
-   cannot be mounted (see the Azure notes below). Each replica's `pid*<host>/`is the
-   exception:`boinc-daemons.sh`keeps it on the container disk and links it into the
-   tree.`bin/start`leaves its unlinked`start.lock`open in every daemon it starts, and on
-   Azure Files that file stays delete-pending, so each later`bin/start --cron`failed with
-   ENOENT and never restarted a stopped daemon. Source:`src:sched/start` lines 311-325
+   cannot be mounted (see the Azure notes below). Each replica's `pid_<host>/` is the
+   exception: `boinc-daemons.sh` keeps it on the container disk and links it into the
+   tree. `bin/start` leaves its unlinked `start.lock` open in every daemon it starts, and on
+   Azure Files that file stays delete-pending, so each later `bin/start --cron` failed with
+   ENOENT and never restarted a stopped daemon. Source: `src:sched/start` lines 311-325
    and 785-819.
 3. CORRECTED, MyISAM. Most tables are InnoDB, but `post`, `thread` and `profile` are MyISAM
    because of full-text indexes. Source: `src:db/schema.sql` lines 33 to 35. Azure Database
