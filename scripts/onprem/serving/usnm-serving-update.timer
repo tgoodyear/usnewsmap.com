@@ -1,11 +1,10 @@
 # Starts usnm-serving-update.service 2 minutes after the last run ends
-# (#955). With the pull and the new color's warm-up (its readiness cap is
-# 360 s), the API serves a prod deployment's commit within 10 minutes of
-# CI marking it successful. GitHub doesn't count the run's conditional
-# requests that come back 304 against the unauthenticated rate limit
-# (60 an hour per address). install.sh enables it.
+# (#955). A run that finds the image it serves asks the registry only, not
+# GitHub. With the attestation check and the new color's warm-up (its
+# readiness cap is 360 s), the API serves a new prod image within about 10
+# minutes of CI attesting it. install.sh enables it.
 [Unit]
-Description=usnewsmap API: check for a new prod deployment every 2 minutes (#955)
+Description=usnewsmap API: check for a new prod image every 2 minutes (#955)
 
 [Timer]
 OnBootSec=3min

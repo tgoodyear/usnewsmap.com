@@ -5,10 +5,11 @@ changes the machine: every host tool the scripts call is a stub in a
 directory of each test's own, which also stands in for / (the scripts'
 USNM_SERVING_TEST_ROOT).
 
-The tests that run update-api.sh's deploy and install.sh for real need
-GNU tools (flock, realpath -e, stat -c, base64 -w0), so they run on Linux
-only, as in CI."""
+update-api.sh signs in to the registry on every run, and that and
+install.sh need GNU tools (flock, realpath -e, stat -c, base64 -w0), so
+their tests run on Linux only, as in CI."""
 
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,11 +26,20 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 LINUX = sys.platform.startswith("linux")
 SHA = {n: c * 40 for n, c in (("old", "a"), ("mid", "b"), ("new", "c"))}
 REGISTRY = "crexampletest"
-MANIFEST = '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}'
+HOST = REGISTRY + ".azurecr.io"
 
-# curl, as the scripts call it: the GitHub API (with ETags), the Arc
-# agent's identity endpoint, the registry's token exchange, the searcher's
-# and the colors' health, and Caddy's admin API, which reports the port
+
+def manifest(name):
+    return '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","name":"%s"}' % name
+
+
+def digest(text):
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+
+
+# curl, as the scripts call it: the attestations API, the Arc agent's
+# identity endpoint, the registry's token exchange, the searcher's and the
+# colors' health, and Caddy's admin API, which reports the port
 # upstream.caddy names. Every call is logged to STUB_LOG.
 STUB_CURL = r'''#!/usr/bin/env python3
 import json, os, re, sys
@@ -42,27 +53,18 @@ url = next(a for a in reversed(args) if a.startswith("http"))
 with open(os.environ["STUB_LOG"], "a") as log:
     log.write("curl %s %s\n" % (url, " ".join(h for h in headers if not h.startswith("@"))))
 ready = os.environ.get("STUB_READY_PORTS", "").split()
-code, body, out_headers = 200, "", {}
+code, body = 200, ""
 def upstream():
     try:
         return re.search(r"127\.0\.0\.1:(\d+)", open(root + "/etc/usnm-serving/upstream.caddy").read()).group(1)
     except (OSError, AttributeError):
         return None
-if url.startswith("https://api.github.com/"):
-    path = url.split("/repos/tgoodyear/usnewsmap.com/")[1]
-    m = re.match(r"deployments/(\d+)/statuses", path)
-    name = ("status-%s" % m.group(1)) if m else ("deployments" if path.startswith("deployments") else None)
-    if path.startswith("attestations/"):
-        name = "attestations"
-    f = os.path.join(stubs, name + ".json") if name else None
-    if not f or not os.path.exists(f):
-        code = 404
-    else:
+if url.startswith("https://api.github.com/repos/tgoodyear/usnewsmap.com/attestations/"):
+    f = os.path.join(stubs, "attestations.json")
+    if os.path.exists(f):
         body = open(f).read()
-        etag = '"%s-%d"' % (name, hash(body) & 0xffff)
-        out_headers["ETag"] = etag
-        if "If-None-Match: " + etag in headers:
-            code, body = 304, ""
+    else:
+        code = 404
 elif url.startswith("http://localhost:40342/"):
     if opt("-D") == "-":
         sys.stdout.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=/var/opt/azcmagent/tokens/agent.key\r\n\r\n")
@@ -83,21 +85,18 @@ elif re.match(r"http://127\.0\.0\.1:(\d+)/readyz$", url):
     code = 200 if port in ready else 503
 else:
     code = 404
-if opt("-D") and opt("-D") != "-":
-    with open(opt("-D"), "w") as f:
-        f.write("HTTP/1.1 %d\r\n" % code + "".join("%s: %s\r\n" % kv for kv in out_headers.items()) + "\r\n")
 if opt("-o") and opt("-o") != "/dev/null":
     with open(opt("-o"), "w") as f:
         f.write(body)
 elif not opt("-o"):
     sys.stdout.write(body)
-if opt("-w"):
-    sys.stdout.write(str(code))
 if code >= 400 and any(a.startswith("-") and not a.startswith("--") and "f" in a for a in args):
     sys.exit(22)
 '''
 
-# Logs its arguments and succeeds, with a few answers the scripts read.
+# Logs its arguments and succeeds, with the answers the scripts read: the
+# registry's manifests from STUB_DIR/manifest-<tag>, and gh's verified
+# attestation naming STUB_SOURCE as its source commit.
 STUB_TOOL = r'''#!/usr/bin/env bash
 echo "$(basename "$0") $*" >> "$STUB_LOG"
 case "$(basename "$0") $1" in
@@ -107,9 +106,13 @@ case "$(basename "$0") $1" in
     done
     exit 3 ;;
   "skopeo inspect")
-    [ -z "${STUB_NO_IMAGE:-}" ] || { echo "manifest unknown" >&2; exit 1; }
-    printf '%s' "$STUB_MANIFEST" ;;
-  "gh attestation") [ -z "${STUB_BAD_ATTESTATION:-}" ] || exit 1 ;;
+    for a in "$@"; do ref=$a; done
+    f="$STUB_DIR/manifest-${ref##*:}"
+    [ -f "$f" ] || { echo "reading manifest: manifest unknown" >&2; exit 1; }
+    cat "$f" ;;
+  "gh attestation")
+    [ -z "${STUB_BAD_ATTESTATION:-}" ] || exit 1
+    printf '[{"verificationResult":{"signature":{"certificate":{"sourceRepositoryDigest":"%s"}}}}]\n' "$STUB_SOURCE" ;;
   "podman images") printf '%s\n' ${STUB_IMAGES:-} ;;
   "getent group") echo "himds:x:4242:" ;;
   "getent passwd") exit 2 ;;
@@ -147,7 +150,7 @@ class Stubbed(unittest.TestCase):
         open(self.log, "w").close()
         self.env = {**os.environ, "PATH": self.bin + os.pathsep + os.environ["PATH"],
                     "USNM_SERVING_TEST_ROOT": self.root, "STUB_DIR": self.stubs, "STUB_LOG": self.log,
-                    "STUB_MANIFEST": MANIFEST, "TMPDIR": self.tmp}
+                    "STUB_SOURCE": SHA["new"], "TMPDIR": self.tmp}
         self.env.pop("JOURNAL_STREAM", None)
 
     def calls(self):
@@ -155,122 +158,125 @@ class Stubbed(unittest.TestCase):
             return f.read().splitlines()
 
 
-class UpdateApi(Stubbed):
-    SCRIPT = os.path.join(HERE, "update-api.sh")
-
-    def deployments(self, *rows):
-        """rows: (id, sha, state) newest first."""
-        write(os.path.join(self.stubs, "deployments.json"),
-              json.dumps([{"id": i, "sha": s, "task": "deploy", "environment": "prod"} for i, s, _ in rows]))
-        for i, _, state in rows:
-            write(os.path.join(self.stubs, "status-%d.json" % i), json.dumps([{"state": state}]))
-
-    def serving(self, color, sha):
-        port = {"blue": 8081, "green": 8082}[color]
-        write(os.path.join(self.root, "var/lib/usnm-serving/active"), color + "\n")
-        write(os.path.join(self.root, "etc/usnm-serving/api-%s.env" % color),
-              "API_IMAGE=%s.azurecr.io/usnewsmap-api@sha256:%s\nAPI_COMMIT=%s\nUSNM_BIND=127.0.0.1:%d\n"
-              % (REGISTRY, "0" * 64, sha, port))
-        write(os.path.join(self.root, "etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:%d\n" % port)
-
-    def run_update(self, *extra, **env):
-        return subprocess.run(["bash", self.SCRIPT, "--registry", REGISTRY, *extra],
-                              env={**self.env, **env}, capture_output=True, text=True)
-
-    def dry(self, *extra, **env):
-        r = self.run_update("--dry-run", *extra, **env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return r.stdout
-
-    def test_first_run_deploys_the_newest_success_to_blue(self):
-        self.deployments((3, SHA["new"], "in_progress"), (2, SHA["mid"], "success"), (1, SHA["old"], "success"))
-        self.assertIn("would deploy %s to blue (now nothing)" % SHA["mid"], self.dry())
-
-    def test_a_new_deployment_goes_to_the_idle_color(self):
-        self.deployments((2, SHA["new"], "success"), (1, SHA["old"], "success"))
-        self.serving("blue", SHA["old"])
-        self.assertIn("would deploy %s to green (now %s on blue)" % (SHA["new"], SHA["old"]), self.dry())
-
-    def test_up_to_date_says_nothing(self):
-        self.deployments((2, SHA["new"], "failure"), (1, SHA["old"], "success"))
-        self.serving("green", SHA["old"])
-        self.assertEqual(self.dry(), "")
-
-    def test_a_rejected_commit_is_skipped_but_never_below_the_served_one(self):
-        self.deployments((3, SHA["new"], "success"), (2, SHA["mid"], "success"), (1, SHA["old"], "success"))
-        write(os.path.join(self.root, "var/lib/usnm-serving/rejected"), SHA["new"] + "\n")
-        self.serving("blue", SHA["old"])
-        self.assertIn("would deploy %s to green" % SHA["mid"], self.dry())
-        self.serving("blue", SHA["mid"])
-        self.assertEqual(self.dry(), "")
-
-    def test_hold_and_searcher_down_do_nothing(self):
-        self.deployments((2, SHA["new"], "success"))
-        self.serving("blue", SHA["old"])
-        write(os.path.join(self.root, "etc/usnm-serving/hold"), "")
-        self.assertIn("held:", self.dry())
-        os.remove(os.path.join(self.root, "etc/usnm-serving/hold"))
-        self.assertIn("searcher isn't ready", self.dry(STUB_SEARCHER_DOWN="1"))
-        self.assertIn("searcher isn't ready", self.dry(STUB_ACTIVE=""))
-
-    def test_requests_are_conditional_on_the_last_etag(self):
-        self.deployments((2, SHA["new"], "success"))
-        self.serving("blue", SHA["new"])
-        self.dry()
-        self.assertFalse(any("If-None-Match" in c for c in self.calls()))
-        open(self.log, "w").close()
-        self.dry()
-        github = [c for c in self.calls() if "api.github.com" in c]
-        self.assertEqual(len(github), 2, github)
-        self.assertTrue(all("If-None-Match:" in c for c in github), github)
-
+class UpdateApiFlags(Stubbed):
     def test_flags_are_checked(self):
+        script = os.path.join(HERE, "update-api.sh")
         for args in (["--registry", "UPPER"], ["--registry", REGISTRY, "--commit", "abc"],
-                     ["--registry", REGISTRY, "--ready-secs", "0"], ["--registry", REGISTRY, "extra"]):
-            r = subprocess.run(["bash", self.SCRIPT, *args, "--dry-run"], env=self.env, capture_output=True, text=True)
+                     ["--registry", REGISTRY, "--ready-secs", "0"], ["--registry", REGISTRY, "--tag", "a b"],
+                     ["--registry", REGISTRY, "extra"]):
+            r = subprocess.run(["bash", script, *args, "--dry-run"], env=self.env, capture_output=True, text=True)
             self.assertEqual(r.returncode, 2, (args, r.stderr))
 
 
 @unittest.skipUnless(LINUX, "needs GNU flock, realpath, stat and base64")
-class UpdateApiDeploy(UpdateApi):
+class UpdateApi(Stubbed):
+    SCRIPT = os.path.join(HERE, "update-api.sh")
+
     def setUp(self):
         super().setUp()
-        tokens = os.path.join(self.root, "var/opt/azcmagent/tokens")
-        write(os.path.join(tokens, "agent.key"), "challenge", 0o600)
-        write(os.path.join(self.stubs, "attestations.json"), json.dumps({"attestations": [{"bundle": {"b": 1}}]}))
+        write(os.path.join(self.root, "var/opt/azcmagent/tokens/agent.key"), "challenge", 0o600)
+        self.attested(True)
 
-    def deploy(self, *extra, **env):
-        return self.run_update("--drain-secs", "0", "--ready-secs", "1", *extra, **env)
+    def image(self, tag, name):
+        """The registry's tag points at the manifest called name; its digest."""
+        write(os.path.join(self.stubs, "manifest-" + tag), manifest(name))
+        return digest(manifest(name))
+
+    def release(self, commit, name):
+        """A commit CI published: main and the commit's tag at one manifest."""
+        self.image(commit, name)
+        return self.image("main", name)
+
+    def attested(self, yes):
+        f = os.path.join(self.stubs, "attestations.json")
+        if yes:
+            write(f, json.dumps({"attestations": [{"bundle": {"b": 1}}]}))
+        elif os.path.exists(f):
+            os.remove(f)
+
+    def serving(self, color, commit, name):
+        port = {"blue": 8081, "green": 8082}[color]
+        self.image(commit, name)
+        write(os.path.join(self.root, "var/lib/usnm-serving/active"), color + "\n")
+        write(os.path.join(self.root, "etc/usnm-serving/api-%s.env" % color),
+              "API_IMAGE=%s/usnewsmap-api@%s\nAPI_COMMIT=%s\nUSNM_BIND=127.0.0.1:%d\n"
+              % (HOST, digest(manifest(name)), commit, port))
+        write(os.path.join(self.root, "etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:%d\n" % port)
+
+    def update(self, *extra, **env):
+        return subprocess.run(["bash", self.SCRIPT, "--registry", REGISTRY, "--drain-secs", "0", "--ready-secs", "1",
+                               *extra], env={**self.env, **env}, capture_output=True, text=True)
 
     def read(self, rel):
         with open(os.path.join(self.root, rel)) as f:
             return f.read()
 
+    def exists(self, rel):
+        return os.path.exists(os.path.join(self.root, rel))
+
+    def github_calls(self):
+        return [c for c in self.calls() if c.startswith("curl https://api.github.com/")]
+
     def test_first_deploy_starts_blue_and_points_caddy_at_it(self):
-        self.deployments((1, SHA["new"], "success"))
-        r = self.deploy(STUB_READY_PORTS="8081")
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
-        digest = "sha256:" + __import__("hashlib").sha256(MANIFEST.encode()).hexdigest()
         self.assertEqual(self.read("etc/usnm-serving/api-blue.env"),
-                         "API_IMAGE=%s.azurecr.io/usnewsmap-api@%s\nAPI_COMMIT=%s\nUSNM_BIND=127.0.0.1:8081\n"
-                         % (REGISTRY, digest, SHA["new"]))
+                         "API_IMAGE=%s/usnewsmap-api@%s\nAPI_COMMIT=%s\nUSNM_BIND=127.0.0.1:8081\n" % (HOST, d, SHA["new"]))
         self.assertEqual(self.read("etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:8081\n")
         self.assertEqual(self.read("var/lib/usnm-serving/active"), "blue\n")
         calls = self.calls()
         verify = next(c for c in calls if c.startswith("gh attestation verify"))
-        for part in ("--source-digest " + SHA["new"], "--source-ref refs/heads/main",
-                     "--signer-workflow tgoodyear/usnewsmap.com/.github/workflows/ci.yml"):
+        for part in ("--source-ref refs/heads/main", "--signer-workflow tgoodyear/usnewsmap.com/.github/workflows/ci.yml",
+                     "--format json"):
             self.assertIn(part, verify)
+        self.assertNotIn("--source-digest", verify)
         order = [c for c in calls if c.startswith(("systemctl restart", "systemctl reload", "systemctl enable",
                                                      "podman pull"))]
         self.assertEqual([c.split()[1] for c in order], ["pull", "restart", "reload", "enable"], order)
         self.assertFalse(any("arm-token" in c or "registry-refresh-token" in c for c in calls))
-        self.assertFalse(os.path.exists(os.path.join(self.root, "etc/usnm-serving/hold")))
+        self.assertFalse(self.exists("etc/usnm-serving/hold") or self.exists("var/lib/usnm-serving/pending"))
+
+    def test_the_image_serving_asks_github_nothing(self):
+        self.release(SHA["old"], "old")
+        self.serving("blue", SHA["old"], "old")
+        r = self.update()
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertEqual(self.github_calls(), [])
+
+    def test_a_new_image_waits_for_its_attestation_then_gives_up(self):
+        self.serving("blue", SHA["old"], "old")
+        d = self.release(SHA["new"], "new")
+        self.attested(False)
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("waiting for the attestation", r.stdout)
+        self.assertEqual(self.read("var/lib/usnm-serving/pending").split()[0], d)
+        self.assertEqual(len(self.github_calls()), 1)
+        # Past the first half hour, asked at most every 10 minutes.
+        now = int(time.time())
+        write(os.path.join(self.root, "var/lib/usnm-serving/pending"), "%s %d %d\n" % (d, now - 3600, now - 60))
+        open(self.log, "w").close()
+        self.assertEqual(self.update().returncode, 0)
+        self.assertEqual(self.github_calls(), [])
+        write(os.path.join(self.root, "var/lib/usnm-serving/pending"), "%s %d %d\n" % (d, now - 3600, now - 700))
+        self.update()
+        self.assertEqual(len(self.github_calls()), 1)
+        # After 3 hours, rejected, and then never asked about again.
+        write(os.path.join(self.root, "var/lib/usnm-serving/pending"), "%s %d %d\n" % (d, now - 4 * 3600, now - 700))
+        r = self.update()
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.read("var/lib/usnm-serving/rejected"), d + "\n")
+        open(self.log, "w").close()
+        self.attested(True)
+        r = self.update(STUB_READY_PORTS="8081 8082")
+        self.assertEqual((r.returncode, self.github_calls()), (0, []))
+        self.assertEqual(self.read("var/lib/usnm-serving/active"), "blue\n")
 
     def test_switch_drains_and_stops_the_old_color(self):
-        self.deployments((2, SHA["new"], "success"), (1, SHA["old"], "success"))
-        self.serving("blue", SHA["old"])
-        r = self.deploy(STUB_READY_PORTS="8081 8082")
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081 8082")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertEqual(self.read("etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:8082\n")
         self.assertEqual(self.read("var/lib/usnm-serving/active"), "green\n")
@@ -280,70 +286,92 @@ class UpdateApiDeploy(UpdateApi):
         self.assertLess(calls.index("systemctl reload caddy.service"), calls.index("systemctl stop usnm-api@blue.service"))
 
     def test_a_color_that_never_gets_ready_is_rejected_and_blue_keeps_serving(self):
-        self.deployments((2, SHA["new"], "success"), (1, SHA["old"], "success"))
-        self.serving("blue", SHA["old"])
-        r = self.deploy(STUB_READY_PORTS="8081")
+        self.serving("blue", SHA["old"], "old")
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081")
         self.assertEqual(r.returncode, 1)
         self.assertIn("is rejected", r.stdout + r.stderr)
-        self.assertEqual(self.read("var/lib/usnm-serving/rejected"), SHA["new"] + "\n")
+        self.assertEqual(self.read("var/lib/usnm-serving/rejected"), d + "\n")
         self.assertEqual(self.read("etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:8081\n")
         self.assertEqual(self.read("var/lib/usnm-serving/active"), "blue\n")
         self.assertIn("systemctl stop usnm-api@green.service", self.calls())
         self.assertNotIn("systemctl reload caddy.service", self.calls())
 
-    def test_nothing_ready_means_the_host_not_the_commit(self):
-        self.deployments((2, SHA["new"], "success"), (1, SHA["old"], "success"))
-        self.serving("blue", SHA["old"])
-        r = self.deploy(STUB_READY_PORTS="")
+    def test_nothing_ready_means_the_host_not_the_image(self):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="")
         self.assertEqual(r.returncode, 1)
         self.assertIn("isn't rejected", r.stdout + r.stderr)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "var/lib/usnm-serving/rejected")))
+        self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
 
     def test_a_switch_that_doesnt_take_goes_back(self):
-        self.deployments((2, SHA["new"], "success"), (1, SHA["old"], "success"))
-        self.serving("blue", SHA["old"])
-        r = self.deploy(STUB_READY_PORTS="8081 8082", STUB_CADDY_STUCK="8081")
+        self.serving("blue", SHA["old"], "old")
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_CADDY_STUCK="8081")
         self.assertEqual(r.returncode, 1)
         self.assertEqual(self.read("etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:8081\n")
         self.assertEqual(self.read("var/lib/usnm-serving/active"), "blue\n")
-        self.assertIn(SHA["new"], self.read("var/lib/usnm-serving/rejected"))
+        self.assertIn(d, self.read("var/lib/usnm-serving/rejected"))
 
-    def test_bad_or_missing_attestation_rejects_before_pulling(self):
-        self.deployments((1, SHA["new"], "success"))
-        r = self.deploy(STUB_READY_PORTS="8081", STUB_BAD_ATTESTATION="1")
+    def test_bad_attestation_or_mismatched_tag_rejects_before_pulling(self):
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081", STUB_BAD_ATTESTATION="1")
         self.assertEqual(r.returncode, 1)
+        self.assertIn(d, self.read("var/lib/usnm-serving/rejected"))
+        # main moved on, but the attestation's commit tags another manifest.
+        d2 = self.image("main", "newer")
+        r = self.update(STUB_READY_PORTS="8081")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("isn't the same manifest", r.stdout + r.stderr)
+        self.assertIn(d2, self.read("var/lib/usnm-serving/rejected"))
         self.assertFalse(any(c.startswith("podman pull") for c in self.calls()))
-        self.assertIn(SHA["new"], self.read("var/lib/usnm-serving/rejected"))
-        os.remove(os.path.join(self.root, "var/lib/usnm-serving/rejected"))
-        write(os.path.join(self.stubs, "attestations.json"), json.dumps({"attestations": []}))
-        r = self.deploy(STUB_READY_PORTS="8081")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("has no attestation", r.stdout + r.stderr)
-
-    def test_an_image_not_pushed_yet_waits(self):
-        self.deployments((1, SHA["new"], "success"))
-        r = self.deploy(STUB_READY_PORTS="8081", STUB_NO_IMAGE="1")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("yet", r.stdout)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "var/lib/usnm-serving/rejected")))
 
     def test_commit_rolls_back_and_holds(self):
-        self.deployments((2, SHA["new"], "success"), (1, SHA["old"], "success"))
-        self.serving("green", SHA["new"])
-        r = self.deploy("--commit", SHA["old"], STUB_READY_PORTS="8081 8082")
+        self.release(SHA["old"], "old")
+        self.serving("green", SHA["new"], "new")
+        self.image("main", "new")
+        r = self.update("--commit", SHA["old"], STUB_READY_PORTS="8081 8082", STUB_SOURCE=SHA["old"])
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertIn("API_COMMIT=" + SHA["old"], self.read("etc/usnm-serving/api-blue.env"))
-        self.assertTrue(os.path.exists(os.path.join(self.root, "etc/usnm-serving/hold")))
-        r = self.deploy(STUB_READY_PORTS="8081 8082")
+        verify = next(c for c in self.calls() if c.startswith("gh attestation verify"))
+        self.assertIn("--source-digest " + SHA["old"], verify)
+        self.assertTrue(self.exists("etc/usnm-serving/hold"))
+        r = self.update(STUB_READY_PORTS="8081 8082")
         self.assertIn("held:", r.stdout)
 
+    def test_commit_already_serving_still_holds(self):
+        self.serving("blue", SHA["old"], "old")
+        r = self.update("--commit", SHA["old"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.exists("etc/usnm-serving/hold"))
+        self.assertFalse(any(c.startswith("podman pull") for c in self.calls()))
+
+    def test_dry_run_changes_nothing(self):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        r = self.update("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("would deploy %s to green (now %s on blue)" % (SHA["new"], SHA["old"]), r.stdout)
+        self.assertFalse(self.exists("var/lib/usnm-serving/pending") or self.exists("etc/usnm-serving/api-green.env"))
+
+    def test_hold_and_searcher_down_do_nothing(self):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        write(os.path.join(self.root, "etc/usnm-serving/hold"), "")
+        self.assertIn("held:", self.update().stdout)
+        os.remove(os.path.join(self.root, "etc/usnm-serving/hold"))
+        self.assertIn("searcher isn't ready", self.update(STUB_SEARCHER_DOWN="1").stdout)
+        self.assertIn("searcher isn't ready", self.update(STUB_ACTIVE="").stdout)
+        self.assertFalse(any(c.startswith("skopeo") for c in self.calls()))
+
     def test_unused_images_are_removed(self):
-        self.deployments((2, SHA["new"], "success"), (1, SHA["old"], "success"))
-        self.serving("blue", SHA["old"])
-        keep = "%s.azurecr.io/usnewsmap-api@sha256:%s" % (REGISTRY, "0" * 64)
-        stale = "%s.azurecr.io/usnewsmap-api@sha256:%s" % (REGISTRY, "9" * 64)
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        keep = "%s/usnewsmap-api@%s" % (HOST, digest(manifest("old")))
+        stale = "%s/usnewsmap-api@sha256:%s" % (HOST, "9" * 64)
         other = "docker.io/library/other@sha256:%s" % ("8" * 64)
-        r = self.deploy(STUB_READY_PORTS="8081 8082", STUB_IMAGES=" ".join((keep, stale, other)))
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_IMAGES=" ".join((keep, stale, other)))
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         removed = [c for c in self.calls() if c.startswith("podman rmi")]
         self.assertEqual(removed, ["podman rmi " + stale])
@@ -352,7 +380,7 @@ class UpdateApiDeploy(UpdateApi):
 class GenEnv(unittest.TestCase):
     SCRIPT = os.path.join(HERE, "gen-env.sh")
     LOCAL = {"STORAGE_ACCOUNT": "stexampletest", "COSMOS_ENDPOINT": "https://cosmos-example.documents.azure.com:443/",
-             "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=k;IngestionEndpoint=https://in.example/",
+             "APPLICATIONINSIGHTS_CONNECTION_STRING": "IngestionEndpoint=https://in.example/;ApplicationId=app",
              "API_APP": "ca-example", "AZURE_RESOURCE_GROUP": "rg-example"}
 
     def setUp(self):
@@ -491,8 +519,7 @@ class Install(Stubbed):
         self.assertEqual(r.returncode, 0, r.stderr)
         etc = os.path.join(self.root, "etc")
         with open(os.path.join(etc, "usnm-serving/host.env")) as f:
-            self.assertEqual(f.read(), "HIMDS_GID=4242\nUSNM_SERVING_REGISTRY=%s\nUSNM_SERVING_ENVIRONMENT=prod\n"
-                             % REGISTRY)
+            self.assertEqual(f.read(), "HIMDS_GID=4242\nUSNM_SERVING_REGISTRY=%s\n" % REGISTRY)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(etc, "usnm-serving/api.env")).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.root, "usr/local/sbin/usnm-serving-update")).st_mode),
                          0o755)
@@ -560,21 +587,43 @@ class Static(unittest.TestCase):
             self.assertEqual(rule["service"], "http://127.0.0.1:8080")
 
     def test_logs_keep_no_addresses_or_queries(self):
-        cloudflared = self.read("cloudflared-usnm-serving.service")
-        self.assertIn("--loglevel info", cloudflared)
-        self.assertNotIn("debug", cloudflared.split("[Service]")[1])
+        self.assertIn("ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared",
+                      self.read("cloudflared-usnm-serving.service"))
+        run = self.read("run-cloudflared.sh")
+        self.assertIn("--loglevel info", run)
+        self.assertNotIn("debug", run.split("set -euo pipefail")[1])
         caddy = self.read("Caddyfile")
-        self.assertIsNone(re.search(r"^\s*log\b", caddy, re.M))
+        # No site logs access; the default log drops each line's request.
+        self.assertEqual(caddy.split("http://:8080")[1].count("log"), 0)
+        self.assertIn("\tlog default {\n\t\tformat filter {\n\t\t\twrap json\n\t\t\tfields {\n"
+                      "\t\t\t\trequest delete\n", caddy)
         self.assertIn("MaxRetentionSec=30day", self.read("journald-usnm-serving.conf"))
-        self.assertIn("e /srv/usnm-serving/cache - - - mM:14d", self.read("usnm-serving.tmpfiles"))
+        tmpfiles = self.read("usnm-serving.tmpfiles")
+        for color in ("blue", "green"):
+            self.assertIn("d /srv/usnm-serving/cache/%s 0750 65532 65532 mM:14d" % color, tmpfiles)
+        self.assertIn("-v /srv/usnm-serving/cache/%i:/srv/usnm-serving/cache", self.read("usnm-api@.service"))
+
+    @unittest.skipUnless(LINUX, "needs GNU sed")
+    def test_cloudflared_lines_lose_their_query_strings(self):
+        program = re.search(r"sed -u -E '([^']+)'", self.read("run-cloudflared.sh")).group(1)
+        line = ('ERR  error="Unable to reach the origin service: Get \\"http://127.0.0.1:8080/v1/aggregate'
+                '?q=secret+words&from=1900\\": dial tcp 127.0.0.1:8080: connect: connection refused" '
+                'dest=https://usnewsmap.com/v1/hits?q=other+secret&page=2 ip=198.41.200.13 type=http')
+        out = subprocess.run(["sed", "-E", program], input=line + "\nINF Registered tunnel connection\n",
+                             capture_output=True, text=True, check=True).stdout
+        self.assertNotIn("secret", out)
+        self.assertIn('/v1/aggregate?[query removed]\\": dial tcp', out)
+        self.assertIn("dest=https://usnewsmap.com/v1/hits?[query removed] ip=198.41.200.13", out)
+        self.assertIn("INF Registered tunnel connection\n", out)
 
     def test_no_private_addresses_or_internal_names(self):
         private = re.compile(r"(^|[^0-9.])(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)")
         for name in os.listdir(HERE):
-            with open(os.path.join(HERE, name), errors="replace") as f:
-                text = f.read()
-            if name == os.path.basename(__file__):
+            path = os.path.join(HERE, name)
+            if name == os.path.basename(__file__) or not os.path.isfile(path):
                 continue
+            with open(path, errors="replace") as f:
+                text = f.read()
             self.assertIsNone(private.search(text), name)
             # The home network's domain, from its parts, so it isn't written here either.
             self.assertNotIn("tjg" + "." + "fyi", text, name)

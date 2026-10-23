@@ -7,8 +7,10 @@
 # The ingress (tunnel-ingress.json, applied by apply-tunnel-ingress.sh)
 # sends each hostname to Caddy on 127.0.0.1:8080.
 #
-# Log level info: debug logs every URI, with its query string. IPv4 to
-# the edge only, because the container's firewall passes IPv4 only.
+# run-cloudflared.sh runs it at log level info (debug logs every URI) and
+# cuts query strings from the error lines that carry a failed request's
+# URL. IPv4 to the edge only, because the container's firewall passes IPv4
+# only.
 # Updates come from pkg.cloudflare.com through unattended-upgrades, not
 # from cloudflared itself.
 [Unit]
@@ -19,7 +21,7 @@ ConditionPathExists=/etc/cloudflared/usnm-serving.env
 
 [Service]
 EnvironmentFile=/etc/cloudflared/usnm-serving.env
-ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --loglevel info --edge-ip-version 4 --metrics 127.0.0.1:20241 run
+ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared
 DynamicUser=yes
 NoNewPrivileges=yes
 PrivateTmp=yes

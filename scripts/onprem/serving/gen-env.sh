@@ -67,6 +67,8 @@ done
 [[ $INDEX_DIR =~ ^/[A-Za-z0-9._/-]+$ && $INDEX_DIR != *..* && $INDEX_DIR != */ ]] ||
   { echo "error: --index-dir: an absolute path, letters, digits and ._-/ only, no trailing /" >&2; usage; }
 $DRY_RUN || [ -n "$OUT" ] || { echo "error: --out: a directory to write to (or --dry-run)" >&2; usage; }
+# A relative --out is the caller's, not the repository root's this runs from.
+case $OUT in "" | /*) ;; *) OUT=$PWD/$OUT ;; esac
 [ -z "$OUT" ] || [ ! -e "$OUT" ] || die "$OUT exists: write into a new directory"
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE/../../.."

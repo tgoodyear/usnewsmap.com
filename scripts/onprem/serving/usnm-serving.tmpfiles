@@ -5,4 +5,7 @@
 # last write only (m for files, M for directories): by default tmpfiles
 # also counts the last read, so an entry read often would never go.
 # Entries are rebuilt on demand, so losing one costs only a slower search.
-e /srv/usnm-serving/cache - - - mM:14d
+# Each color has a directory of its own (usnm-api@.service says why), made
+# here, owned by the API image's user.
+d /srv/usnm-serving/cache/blue 0750 65532 65532 mM:14d
+d /srv/usnm-serving/cache/green 0750 65532 65532 mM:14d

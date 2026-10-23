@@ -11,11 +11,24 @@
 # Headers: Caddy passes the request's own headers on (Host, Origin,
 # Sec-Fetch-Site, CF-Connecting-IP, which the API reads), and sets
 # X-Forwarded-For to its peer, cloudflared on loopback, since no proxy is
-# trusted here. Caddy writes no access log unless a `log` directive asks
-# for one, so no client IP or query string is logged here (09 §9.4.2).
+# trusted here.
+#
+# Logs (09 §9.4.2: no client address or query string): no site has a `log`
+# directive, so there's no access log. Caddy's error log still writes the
+# whole request when a color can't be reached (its URI with the search
+# text, and its headers with CF-Connecting-IP), so the default log drops
+# every line's request field; the error, status and duration stay.
 {
 	admin 127.0.0.1:2019
 	auto_https off
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request delete
+			}
+		}
+	}
 }
 
 http://:8080 {

@@ -7,21 +7,19 @@
 # run again.
 #
 #   scripts/onprem/serving/install.sh --registry NAME --config-dir DIR
-#     [--env prod] [--github-environment prod] [--skip-quickwit] [--dry-run]
+#     [--env prod] [--skip-quickwit] [--dry-run]
 #
 # --registry: the environment's registry name (NAME.azurecr.io), which the
 #   Arc identity can pull from (AcrPull).
 # --config-dir: gen-env.sh's output: api.env, searcher.env, searcher.yaml.
 # --env: the environment whose pinned Quickwit to install
 #   (infra/quickwit-image.json, through scripts/onprem/install-quickwit.sh).
-# --github-environment: the GitHub environment whose deployments the update
-#   timer follows.
 # --skip-quickwit: keep the Quickwit binary that's installed.
 # --dry-run: say what would change, and change nothing.
 #
 # It installs:
 #   /etc/usnm-serving/      api.env (0600), searcher.env, searcher.yaml,
-#                           host.env (HIMDS_GID and the timer's settings),
+#                           host.env (HIMDS_GID and the registry's name),
 #                           upstream.caddy (only if missing: blue's port)
 #   /etc/caddy/Caddyfile, /etc/tmpfiles.d/usnm-serving.conf,
 #   /etc/systemd/journald.conf.d/usnm-serving.conf (30 days of journal)
@@ -29,27 +27,28 @@
 #                           cloudflared-usnm-serving.service,
 #                           usnm-serving-update.service and .timer
 #   /usr/local/sbin/usnm-serving-update (update-api.sh)
+#   /usr/local/libexec/usnm-serving/run-cloudflared (run-cloudflared.sh)
 #   /srv/usnm-serving/bin/quickwit
 # and the system user usnm-qw, which runs the searcher. It enables Caddy,
 # the searcher, the timer and cloudflared, and starts or reloads them. The
 # searcher restarts only when its config, environment, binary or unit
 # changed, since a restart empties its caches; cloudflared only when its unit
 # changed, and it starts only once its token file exists.
-# No API color starts here: the timer's first run deploys the latest prod
-# deployment to blue. The response cache, /srv/usnm-serving/cache, should be
-# the host's bind mount from the NVMe pool; it is created if missing and
-# given to the API image's user (65532).
+# No API color starts here: the timer's first run deploys the image prod
+# runs to blue. The response cache, /srv/usnm-serving/cache, should be the
+# host's bind mount from the NVMe pool; it is created if missing and given
+# to the API image's user (65532), and the tmpfiles rule makes a directory
+# in it for each color.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '9,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 
-REGISTRY="" CONFIG="" ENV_NAME=prod GH_ENV=prod SKIP_QW=false DRY_RUN=false
+REGISTRY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --registry) REGISTRY=${2:-}; shift 2 || usage ;;
     --config-dir) CONFIG=${2:-}; shift 2 || usage ;;
     --env) ENV_NAME=${2:-}; shift 2 || usage ;;
-    --github-environment) GH_ENV=${2:-}; shift 2 || usage ;;
     --skip-quickwit) SKIP_QW=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
@@ -59,7 +58,6 @@ done
 [[ $REGISTRY =~ ^[a-z0-9]{5,50}$ ]] || { echo "error: --registry: the registry's name, as in NAME.azurecr.io" >&2; usage; }
 { [ -n "$CONFIG" ] && [ -d "$CONFIG" ]; } || { echo "error: --config-dir: gen-env.sh's output directory" >&2; usage; }
 [[ $ENV_NAME =~ ^[a-z0-9]{1,8}$ ]] || { echo "error: --env: an environment name, such as prod" >&2; usage; }
-[[ $GH_ENV =~ ^[a-z0-9-]{1,32}$ ]] || { echo "error: --github-environment: a GitHub environment, such as prod" >&2; usage; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 # USNM_SERVING_TEST_ROOT: the tests' stand-in for /. Never set in the container.
 R=${USNM_SERVING_TEST_ROOT:-}
@@ -122,7 +120,7 @@ index=$(sed -n 's|^default_index_root_uri: file://||p' "$CONFIG/searcher.yaml")
 # Settings.
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-printf 'HIMDS_GID=%s\nUSNM_SERVING_REGISTRY=%s\nUSNM_SERVING_ENVIRONMENT=%s\n' "$HIMDS_GID" "$REGISTRY" "$GH_ENV" > "$T/host.env"
+printf 'HIMDS_GID=%s\nUSNM_SERVING_REGISTRY=%s\n' "$HIMDS_GID" "$REGISTRY" > "$T/host.env"
 put "$T/host.env" "$ETC/host.env" 0644
 changed=false
 put "$CONFIG/api.env" "$ETC/api.env" 0600
@@ -160,6 +158,9 @@ changed=false
 put "$HERE/journald-usnm-serving.conf" "$R/etc/systemd/journald.conf.d/usnm-serving.conf" 0644
 journald_changed=$changed
 put "$HERE/update-api.sh" "$R/usr/local/sbin/usnm-serving-update" 0755
+changed=false
+put "$HERE/run-cloudflared.sh" "$R/usr/local/libexec/usnm-serving/run-cloudflared" 0755
+! $changed || cloudflared_changed=true
 
 if ! $SKIP_QW; then
   changed=false
