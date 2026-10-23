@@ -576,7 +576,8 @@ class Static(unittest.TestCase):
             if name == os.path.basename(__file__):
                 continue
             self.assertIsNone(private.search(text), name)
-            self.assertNotIn("tjg.fyi", text, name)
+            # The home network's domain, from its parts, so it isn't written here either.
+            self.assertNotIn("tjg" + "." + "fyi", text, name)
             self.assertIsNone(re.search(r"\bpve(-big)?\b", text), name)
 
 
