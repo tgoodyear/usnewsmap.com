@@ -10,7 +10,7 @@ targetScope = 'subscription'
 import { replicaComputeSlots } from 'api-capacity.bicep'
 import { guardrailPolicyNames } from 'guardrails.bicep'
 import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
-import { indexOpen, lakeOpen, nodeIpList, publicAccountIds } from 'public-accounts.bicep'
+import { cosmosOpen, indexOpen, lakeOpen, nodeIpList, publicAccountIds } from 'public-accounts.bicep'
 
 @minLength(2)
 @maxLength(5)
@@ -125,6 +125,12 @@ param onPremRelease bool = false
 
 @description('Object id of the on-prem release container\'s Arc machine identity (usnm-release-arcs-<env>, with onPremRelease). Settings only, never in the repository.')
 param onPremReleaseHost string = ''
+
+@description('Serve the API and site from the on-prem serving container (#955, Phase 2): onPremServingHost gets what id-usnm-app has, less the lake\'s qw-index: read on reference, the cache, the search log writer role on searches and ocr-requests, Cosmos Data Reader on batches, index_runs and ops, Monitoring Metrics Publisher and AcrPull (modules/onprem-serving.bicep). The data lake and the Cosmos account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay), and the public-network policy exempts both. Off until Phase 2.')
+param onPremServing bool = false
+
+@description('Object id of the on-prem serving container\'s Arc machine identity (with onPremServing). Settings only, never in the repository.')
+param onPremServingHost string = ''
 
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
@@ -441,11 +447,14 @@ module identities 'modules/identities.bicep' = {
 }
 
 // The data lake opens to the node IPs only for the on-prem Serial Set
-// runner (serialSetOnPrem); the public-network policy then exempts it by
-// resource id, like the accounts below. Provision writes the policy's
-// exemptions before the stack (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease, ocrNodeIps)
+// runner (serialSetOnPrem), the Japanese OCR, the release or the serving
+// container; the Cosmos account only for the serving container (#955). The
+// public-network policy then exempts each by resource id, like the accounts
+// below. Provision writes the policy's exemptions before the stack
+// (policy-exemptions.bicep, #336).
+var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing, ocrNodeIps)
 var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
+var stateOpen = cosmosOpen(onPremServing, ocrNodeIps)
 
 module storage 'modules/storage.bicep' = {
   scope: rg
@@ -700,11 +709,13 @@ module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
 module cosmos 'modules/cosmos.bicep' = {
   scope: rg
   name: 'cosmos'
+  dependsOn: [policies]
   params: {
     location: location
     tags: tags
     name: n.cosmos
     freeTier: cosmosFreeTier
+    allowedIps: stateOpen ? nodeIpList(ocrNodeIps) : []
   }
 }
 
@@ -741,6 +752,20 @@ module rbac 'modules/rbac.bicep' = {
     appPrincipalId: identities.outputs.appPrincipalId
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     searchLogReaders: filter(map(split(searchLogReaders, ','), r => trim(r)), r => !empty(r))
+  }
+}
+
+// The on-prem serving container's grants (#955): its own identity only.
+module onPremServingGrant 'modules/onprem-serving.bicep' = if (onPremServing && !empty(trim(onPremServingHost))) {
+  scope: rg
+  name: 'onprem-serving'
+  params: {
+    storageName: storage.outputs.name
+    cosmosName: cosmos.outputs.name
+    appInsightsName: monitoring.outputs.appInsightsName
+    registryName: registry.outputs.name
+    principalId: trim(onPremServingHost)
+    searchLogRoleName: rbac.outputs.searchLogRoleName
   }
 }
 
@@ -1146,7 +1171,7 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
       '${guardrailPolicyNames.auditPublicAccess}': {
         effect: { value: 'deny' }
         publicAccountIds: {
-          value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, dataLakeOpen, indexAccountOpen)
+          value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, dataLakeOpen, indexAccountOpen, stateOpen)
         }
       }
     }
