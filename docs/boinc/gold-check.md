@@ -153,7 +153,7 @@ before replacing reports or outcome evidence.
 crops in a language with no locked model are listed as skipped.
 
 **Running a campaign.** With the server deployed with `assessment=true` (`"assessment": true` in
-`contrib-compute/infra/boinc/env/<env>.json`, then `scripts/provision-boinc.sh`; the
+`contrib-compute/infra/boinc/env/<env>.json`, then `scripts/boinc/provision-boinc.sh`; the
 server runs from the bridge image, which carries the validator), a
 `usnm_gold` app version installed (`scripts/boinc/install.py --app usnm_gold
 ...`), signed, and `bin/update_versions` run, and the bundle tar copied to
@@ -163,17 +163,17 @@ server runs from the bridge image, which carries the validator), a
 # Once per bundle: fetch the originals, one request at a time, 5 s apart, into
 # <campaign>/cache on the share; write prepared.json (sizes, md5s, reference
 # counts). Stops if any download fails or a checksum differs.
-scripts/start-boinc-bridge.sh --env prod --step gold-prepare --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 60
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-prepare --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 60
 # Make the units (default 20). Re-running skips units already submitted.
-scripts/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=v1-tess550 \
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_ENGINE_IMAGE=sha256:... --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE> --var GOLD_UNITS=20
 # When results are assimilated, use the calibration's explicit scope. This
 # reads the BOINC result table with the bridge's read-only DB account:
-scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_SPOOL=/project/usnmocr/results/0 \
   --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile>
 # Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
-scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_MAX_CER=<calibrated-threshold> \
   --var GOLD_MANIFEST_SHA256=<calibrated-manifest-sha256> \
   --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile> --wait-mins 10
@@ -188,7 +188,7 @@ stages only the 18 original JPEGs pinned in `bundle-v1.lock.json`, without
 opening BLN600, fetching upstream data, submitting work, or changing clients:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step gold-mirror-loc --var GOLD_CAMPAIGN=v1-tess550
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-mirror-loc --var GOLD_CAMPAIGN=v1-tess550
 ```
 
 Use the normal serialized production-job preflight. The command first checks
@@ -351,10 +351,10 @@ timer, trust promotion or assignment enablement is installed.
 
 The bundle tar can be built inside the VNet, so nothing passes through an
 operator's machine. The job needs a bridge image that has the step, so build it first
-(`scripts/build-boinc-images.sh`, which rewrites `images.bridge`). Then set
+(`scripts/boinc/build-boinc-images.sh`, which rewrites `images.bridge`). Then set
 `"goldBundle": true` in `contrib-compute/infra/boinc/env/<env>.json` in the same
 commit as the new digest; it is false until then. After
-`scripts/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
+`scripts/boinc/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
 output `goldBundleJobName`). It runs the bridge image's `gold-bundle` step with
 `GOLD_CAMPAIGN=v1-tess550` set in the job itself, so it needs no override:
 

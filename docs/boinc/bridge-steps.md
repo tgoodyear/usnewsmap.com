@@ -9,7 +9,7 @@ runs one step of `contrib-compute/images/server/bridge-job.sh` per execution, ch
 `BRIDGE_STEP` and that step's settings. Start it with:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]
+scripts/boinc/start-boinc-bridge.sh --env prod --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]
 ```
 
 Don't use `az containerapp job start --env-vars` for this. With any container flag, the
@@ -19,10 +19,10 @@ and only the variables given, so the job's own settings (`KEY_VAULT_NAME`, `DB_H
 either, and every step needs the project share at `/project`. The script writes the run's
 settings into the job instead (`az containerapp job update --replace-env-vars`: the
 template's own settings, `BRIDGE_STEP` and each `--var`; whatever a previous run set is
-dropped), then starts it with no override. The next `scripts/provision-boinc.sh` restores
+dropped), then starts it with no override. The next `scripts/boinc/provision-boinc.sh` restores
 the template's settings. Run one step at a time.
 
-When a waited-for execution (`--wait-mins`) or a `scripts/provision-boinc.sh` lifecycle job
+When a waited-for execution (`--wait-mins`) or a `scripts/boinc/provision-boinc.sh` lifecycle job
 fails, the script prints the execution's last 50 console lines from the stack's Log Analytics
 workspace (`ContainerAppConsoleLogs_CL`; operators have Log Analytics Reader on it), polling up
 to five minutes for ingestion. To read any execution's log by hand:
@@ -42,14 +42,14 @@ An app added to
 runs `bin/xadd`; it remains available for targeted recovery:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15
+scripts/boinc/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15
 ```
 
 It is safe to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks up each
 `<platform>` and `<app>` by name. It inserts the ones that are missing, updates a changed
 `user_friendly_name` or `min_version`, prints "already in DB" for the rest, and never
 deletes or deprecates anything. The step needs a bridge image with this step in it
-(`scripts/build-boinc-images.sh`, then `scripts/provision-boinc.sh`).
+(`scripts/boinc/build-boinc-images.sh`, then `scripts/boinc/provision-boinc.sh`).
 
 ### Current-worker OCR 1.5 publication, 17 October 2026
 

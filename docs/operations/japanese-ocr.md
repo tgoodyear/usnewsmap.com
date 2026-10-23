@@ -7,8 +7,8 @@ Part of the [operations guide](README.md).
 **Mixed pages** (#204, 04 §4.8). The OCR job's targets (`targets-v3`) include the Japanese titles' pages whose LoC text is from 0.35 to under 0.65 word-like (`loc_text = mixed`, about 2,000 pages). List them once on the one-replica job, then start the OCR job as usual:
 
 ```sh
-RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-scripts/ja-ocr/start-quality.sh --env prod --command targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
+RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+ja-ocr/tools/start-quality.sh --env prod --command targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
 # its log ends with `targets written` and the pages by loc_text (mixed: about 2,000); then
 az containerapp job start -n caj-usnm-jaocr-prod -g "$RG"   # `run`: OCRs the targets not done yet
 ```
@@ -18,8 +18,8 @@ Listing streams the archive of every batch with a Japanese title again, as the f
 **English text of our OCR** (#203, 04 §4.8). Off by default. With `USNM_JA_LATIN` (the job's `--ja-latin`), a release gives the pages LoC ships without text a main-index document with the Latin-script text our OCR read on them (their English ads, mastheads and sections), and gives a page LoC read badly our text in place of LoC's where ours reads more words. No full rebuild is forced:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_JA_LATIN --value true
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_JA_LATIN --value true
+scripts/azure/provision.sh --env prod
 ```
 
 - The next release adds the pages LoC ships without text, a few thousand documents, in a new main index: the weekly delta, or, when LoC has published no new batch, a delta of just these pages (`no newly curated batches; releasing our OCR's Latin text of pages LoC ships without text in a delta of its own`). After that, a run with no new batch and no new OCR releases nothing. The log has `indexed our Japanese OCR's Latin text` with `missing` and `in_place_of_locs`; `reference/<version>/ocr_ja.json` has `latin: {added, pages, hidden, rule}`, `ja_latin.json` lists the pages, and the build record has `features.ja_latin`.
@@ -32,7 +32,7 @@ scripts/provision.sh --env prod
 Our OCR of the Japanese pages LoC ships without text (04 §4.8) goes live only with a release: each release reads the OCR job's output once, near its start, and logs `Japanese OCR overlay` with the pages it took. Pages the job reads after that wait for the next release; when nothing else is new, a run releases them on their own ("releasing the new Japanese OCR on the same indexes"), or, with `USNM_JA_LATIN` and Latin text on pages LoC ships without text, in a delta of just those pages ([above](#japanese-ocr-mixed-pages-and-english-text)). After a release publishes, check from outside:
 
 ```sh
-scripts/check-ja-search.py --expect <issue> … --late <issue> …
+scripts/ops/check-ja-search.py --expect <issue> … --late <issue> …
 ```
 
 Issues are named as the OCR job logs them (`ocr issue done`, `<lccn>_<date>_ed-<n>`): `--expect` ones the job finished before the release's `Japanese OCR overlay` line, `--late` ones after it. The script checks that `/v1/meta` names a Japanese index and its pages, that common words (日本, 戦争, 米国, 真珠湾, 収容所) return pages (a version without the index answers 422), that hits are marked as our OCR with the engine, that each `--expect` issue has pages of our OCR (the paper's hits on that day for any of の, に, は, を, in the issue's edition), and that each `--late` issue has none yet. Every request is pinned to the version `/v1/meta` named and doesn't follow redirects, so a release that publishes mid-check fails it rather than mixing versions. It sends Do Not Track, so its searches stay out of the search log, and exits 1 if a check fails.
@@ -43,7 +43,7 @@ Issues are named as the OCR job logs them (`ocr issue done`, `<lccn>_<date>_ed-<
 
 The default metric, v2, first finds the page's language:
 
-- Candidates are the title's catalog languages with a word list, plus English: wordfreq's, or for Hawaiian and Yiddish our own (`ja-ocr/wordlists/`, built by `scripts/ja-ocr/build-wordlists.py`; sources and licenses in its README). Each language's function words are its 100 most frequent words of 2 letters or more. The winner is the language whose function words are the largest share of the page's tokens, if that share is at least 0.10, at least 10 different function words appear, and, counting only the function words that one of the two languages has and the other lacks, the winner has at least twice the runner-up's tokens. Otherwise the page is `und`: fewer than 20 word tokens, garbled, or in a language with no list (Dakota, Choctaw, Navajo, Latin, Welsh and others).
+- Candidates are the title's catalog languages with a word list, plus English: wordfreq's, or for Hawaiian and Yiddish our own (`ja-ocr/wordlists/`, built by `ja-ocr/tools/build-wordlists.py`; sources and licenses in its README). Each language's function words are its 100 most frequent words of 2 letters or more. The winner is the language whose function words are the largest share of the page's tokens, if that share is at least 0.10, at least 10 different function words appear, and, counting only the function words that one of the two languages has and the other lacks, the winner has at least twice the runner-up's tokens. Otherwise the page is `und`: fewer than 20 word tokens, garbled, or in a language with no list (Dakota, Choctaw, Navajo, Latin, Welsh and others).
 - A page whose words are mostly in another script takes the title's language in that script: Hebrew script is `yid` or `heb` (if the title lists both, the one whose function words clearly fit better), Cyrillic is Russian, Ukrainian, Bulgarian or Serbian. Serbian in Cyrillic is scored letter for letter in Latin script, against wordfreq's Serbo-Croatian list. Words are read with Yiddish ligatures (װ, ױ, ײ) as their two letters. A title that lists no language in that script gets `und`.
 - `mixed`: a page of 200 words or more is cut into 50-word windows (a last, shorter window counts if it has at least 25 words; a shorter tail is left out), and each window gets a language if one clearly wins (the same test, with 5 different function words). Two languages that each win at least 20% of the decided windows, and at least 2 windows, make the page mixed. Each decided window is scored against its own language; windows no language wins (garbled, or too few function words) aren't scored. A second script holding at least 20% of the words in another of the title's languages also makes a page mixed (an English column on a Yiddish page): that part has no word minimum of its own, only the 5 different function words a window needs.
 
@@ -58,7 +58,7 @@ Then it scores the page against its language:
 Start it as one execution of the job with `quality` and its options as the arguments; the script prints the execution's name:
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --sample-pct 10 --min-pages 50
+ja-ocr/tools/start-quality.sh --env prod --sample-pct 10 --min-pages 50
 ```
 
 `az containerapp job start --args quality` alone doesn't work: when any container flag is given, the CLI sends a container override named after the job, with no image, settings or resources. The script sends the job's own template with only the arguments changed.
@@ -75,10 +75,10 @@ Output, in the curated container (the data account is reachable only through its
   - `worst-titles` (100) and `worst-batches` (50) by median `damage_rate`, with the detected-language mix (`ger:40 eng:3 und:2`); `undetermined-titles` (100), the titles with the highest `und` share.
 - `audit/ocr-quality-v2-<version>-<pct>pct-pages.csv.gz`: every sampled page but Japanese titles', one row each: `doc_id`, title, date, batch, the title's languages, the detected language and decision, the winner's and runner-up's function-word shares, the script, `function_share`, `damage_rate`, `garbage_share` and word count. About 475,000 rows at 2%, for spot checks and for deciding how to tag page languages. It is compressed as the run goes; a sample of more than 3,000,000 pages (over about 12%) gets no page file (`ocr quality pages file dropped`), only the tables.
 
-Titles and batches enter the worst lists with at least `--min-pages` pages with a `damage_rate`, and `undetermined-titles` with that many pages with text. The same rows are in Log Analytics, one `ocr quality` line each with `metric` and `table` fields, then `ocr quality finished` with the totals; `ocr quality progress` lines come about once a minute from each replica, with the chunks and batches done so far across the run. `scripts/ja-ocr/quality-rows.sh --env prod --execution <execution>` prints a run's rows as JSON lines:
+Titles and batches enter the worst lists with at least `--min-pages` pages with a `damage_rate`, and `undetermined-titles` with that many pages with text. The same rows are in Log Analytics, one `ocr quality` line each with `metric` and `table` fields, then `ocr quality finished` with the totals; `ocr quality progress` lines come about once a minute from each replica, with the chunks and batches done so far across the run. `ja-ocr/tools/quality-rows.sh --env prod --execution <execution>` prints a run's rows as JSON lines:
 
 ```sh
-scripts/logs.sh --env prod --query-name ocr-quality --span 2d
+scripts/azure/logs.sh --env prod --query-name ocr-quality --span 2d
 ```
 
 A v2 run also writes `status/ocr-quality.json` in the reference container for the status page: `{batches: {done, total}, finished_at, metric, pages_sampled, sample_pct, started_at, summary, updated_at, version}`, at the start, with each progress line and at the end. At the end `finished_at` and `summary` are set: `summary.agreement` (`differs_share`, `mixed_share`, `und_share` of all pages with text, `multilingual_differs_share` of multilingual titles' pages) and `summary.languages`, each detected language with at least 200 sampled pages (`pages`, `function_share_median`, `damage_rate_median`, `damaged_share`). Every field is present, and null when there is nothing to measure: the agreement shares when no sampled page has text, `multilingual_differs_share` when no page of a multilingual title does (a small sample), and a language's three scores when none of its pages was scored (a language with no word list, such as Cherokee). A run that fails leaves its last progress, with no `finished_at`. A failed write is logged and the audit goes on.
@@ -99,17 +99,17 @@ The v2 metric's per-page code is `ja-ocr/damage_v2.py`, which `quality.py` impor
 - In the cloud, on curated text: `jaocr.py damage-parity` samples 400 pages of the 10% audit's per-page CSV, spread across languages, decisions and scripts, and writes `audit/damage-parity/<stamp>.jsonl.zst` in the curated container. It logs each page's doc_id and title languages (`damage parity page`), never text. `usnm-ingest ocr-damage --parity <that path>` scores them in Rust ([below](#ocr-damage-tables-296)).
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
+ja-ocr/tools/start-quality.sh --env prod --command damage-parity --pages 400
 ```
 
 ### OCR damage tables (#296)
 
-`usnm-ingest ocr-damage` scores pages with the Rust port (12 §12.5 Step 6). It runs as one-off executions of the ingest job, which reads and writes the curated container. `scripts/start-job.sh` starts one with the job's image and settings and other arguments. An execution can't mount the job's scratch share, and this command needs none. It logs counts and doc_ids, never text. Run the three modes in this order: parity, the gate, then the full pass.
+`usnm-ingest ocr-damage` scores pages with the Rust port (12 §12.5 Step 6). It runs as one-off executions of the ingest job, which reads and writes the curated container. `scripts/azure/start-job.sh` starts one with the job's image and settings and other arguments. An execution can't mount the job's scratch share, and this command needs none. It logs counts and doc_ids, never text. Run the three modes in this order: parity, the gate, then the full pass.
 
 1. **Parity on curated text** (Step 5's cloud check). Write the pages with `damage-parity` ([above](#damage-metric-parity-296)), take the path from its `damage parity written` line, then:
 
    ```sh
-   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --parity audit/damage-parity/<stamp>.jsonl.zst
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --parity audit/damage-parity/<stamp>.jsonl.zst
    ```
 
    It logs `ocr damage parity` with the pages that agree and up to 50 doc_ids that don't, and fails if any page differs.
@@ -117,14 +117,14 @@ scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
 2. **The gate.** The 10% audit's pages, picked by the audit's own sampler from every curated row of `pages-v20261003-1` (duplicate copies included), scored in Rust and compared with the audit's per-page CSV, joined on doc_id and batch. The CSV rounds every score to 4 decimals, so Rust's are formatted the same way before the comparison. A page agrees when the language, the decision and the three scores all match; the gate passes when at least 99.99% of the CSV's 2,368,911 rows agree. It writes no tables, only its result, `audit/damage/v2/gate/<version>-<pct>pct-<stamp>.json`, and the `ocr damage gate` line (counts by kind of difference, up to 50 doc_ids). It fails when the gate does. The result goes in a draft report PR.
 
    ```sh
-   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1 \
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1 \
      --sample-pct 10 --compare-csv audit/ocr-quality-v2-pages-v20261003-1-10pct-pages.csv.gz
    ```
 
 3. **The full pass**, on the live version (`index_version` in the reference container's `current.json`), once the gate has passed:
 
    ```sh
-   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version <live version> --max-runtime-secs 165600
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version <live version> --max-runtime-secs 165600
    ```
 
    Each batch version gets `audit/damage/v2/<batch>_ver<NN>.parquet`, one row per page: `doc_id`, `lccn`, `date`, `edition`, `seq`, the base `batch`, `batch_version`, `text_status`, `lang`, `decision` (`detected`, `mixed`, `und`, or `no_text` for pages without text), `mixed_with`, `script`, `damage_rate`, `function_share`, `garbage_share`, `words`, `head` and `near`. Beside it, `<batch>_ver<NN>.summary.json` holds per-title counts (pages, scored pages, und, mixed, damaged and badly damaged), the median damage rate and pages by language. The summary is written last and marks the batch version done, so a later run skips it and pays only for new batches. When every batch of the version has its tables, `audit/damage/v2/versions/<version>.json` lists them; the seeder and `ocr-sync` read that list. A second run on the same version writes nothing. `--batches a,b_ver02` scores only those batches and doesn't write the list. A page is scored against its title's languages in the version's `titles.json`, which the command requires (the working catalog only fills in titles it lacks). A later correction to a title's catalog languages doesn't rescore tables already written. Tables are create-only, so to rescore, delete both the `.parquet` and the `.summary.json` of each of that title's batch versions, then run the pass again.
@@ -134,7 +134,7 @@ scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
 **A dev-scale test** (dev holds nothing outside a focused experiment, so this needs the maintainer's approval first). Locally, from the repository root:
 
 ```sh
-python3 scripts/fixture-batches.py --out-dir /tmp/usnm-dmg
+python3 scripts/dev/fixture-batches.py --out-dir /tmp/usnm-dmg
 cd /tmp/usnm-dmg
 ingest="cargo run --release --manifest-path $OLDPWD/Cargo.toml -p usnm-ingest --"
 $ingest --state-file state.json --curated curated --reference reference run --list batches.json --synthetic --index-dir reference/indexes
@@ -146,7 +146,7 @@ $ingest --state-file state.json --curated curated --reference reference ocr-dama
 $ingest --state-file state.json --curated curated --reference reference ocr-damage --version "$v"   # writes nothing
 ```
 
-On 10 October 2026 that gate agreed on all 1,872 fixture pages, and the second full run skipped both batches. In dev, after `scripts/provision.sh --env dev`: curate and release a few small batches (`dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01`), run `scripts/ja-ocr/start-quality.sh --env dev --sample-pct 100`, then the three commands above with `--env dev`, the dev version and the dev audit's CSV, and `--command damage-parity --pages 50`. Check the tables, the gate result and the second run's `skipped`, then `scripts/teardown.sh --env dev`.
+On 10 October 2026 that gate agreed on all 1,872 fixture pages, and the second full run skipped both batches. In dev, after `scripts/azure/provision.sh --env dev`: curate and release a few small batches (`dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01`), run `ja-ocr/tools/start-quality.sh --env dev --sample-pct 100`, then the three commands above with `--env dev`, the dev version and the dev audit's CSV, and `--command damage-parity --pages 50`. Check the tables, the gate result and the second run's `skipped`, then `scripts/azure/teardown.sh --env dev`.
 
 ## Text the Japanese titles' pages hold that search can't reach
 
@@ -156,8 +156,8 @@ On 10 October 2026 that gate agreed on all 1,872 fixture pages, and the second f
 - English on the pages we read: NDLOCR-Lite reads some English (mastheads, short lines), but only into the Japanese index. For every page of our OCR it counts the tokens that are among English's 5,000 most frequent words (3 letters or more).
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --command mixed          # prints the execution's name
-scripts/ja-ocr/quality-rows.sh --env prod --execution <execution>   # its "mixed pages" rows, once it has finished
+ja-ocr/tools/start-quality.sh --env prod --command mixed          # prints the execution's name
+ja-ocr/tools/quality-rows.sh --env prod --execution <execution>   # its "mixed pages" rows, once it has finished
 ```
 
 It writes `audit/mixed-pages-<version>-<execution>.json` and a CSV per table in the curated container (named by execution, so two runs never write the same files): `loc-text-bands` (Japanese titles against the control), `loc-text-by-title`, `loc-text-samples` (15 page ids per band, with their loc.gov links, for looking at the scans), `our-ocr-english` (by why LoC's text wasn't used), `our-ocr-by-title` and `our-ocr-samples`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>`, which `start-quality.sh` picks for it. Should a second replica run it anyway (the ja-ocr job), one does the work, renewing a lock; the other waits for its finished marker (`mixed pages written by another replica`) and takes over if the lock goes stale, and a retried replica of a finished execution exits at once. `our-ocr-english` and `our-ocr-by-title` also give the median Latin share of our OCR's letters and the share of pages over half Latin.

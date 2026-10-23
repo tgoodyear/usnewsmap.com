@@ -9,11 +9,11 @@ Local machines re-read badly OCR'd pages (#296, [ADR-0015](../design/adr/0015-on
 **The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP is a private setting, in the settings store, never in the repository ([Settings](environments-and-deploys.md#settings)). The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_OCR_NODE_IPS --value 203.0.113.7   # the home IP, private: the settings store
-scripts/settings.sh --env prod --key USNM_OCR_NODES --value true   # committed: pull request, merge, then provision from main
+scripts/azure/settings.sh --env prod --key USNM_OCR_NODE_IPS --value 203.0.113.7   # the home IP, private: the settings store
+scripts/azure/settings.sh --env prod --key USNM_OCR_NODES --value true   # committed: pull request, merge, then provision from main
 scripts/ocr-node/group.sh --env prod --dry-run
 scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the settings store (the local file until the store exists)
-scripts/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
+scripts/azure/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
 **Host infrastructure.** Provisioning, OS subscriptions and lab credentials are managed outside this application repository. The legacy `OCR_KEYVAULT` resource remains in its existing deployment stack until a separately reviewed ownership transfer; do not delete it during the source migration.
@@ -39,17 +39,17 @@ scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name us
 - _OCR node: loc.gov asked to wait over an hour_ (severity 2, hourly) fires when a node's worker counts a `Retry-After` over its one-hour cap (`ocr.loc_slowdowns` with `capped`). The worker holds that server for the hour and takes no pages meanwhile; if loc.gov keeps asking, stop the workers and raise their gaps.
 - _OCR nodes' daily cap reached_ (severity 2) fires on the nodes' workspace's `OverQuota` event, as the environment's cap alert does (#279). Until the reset, the node alerts and queries see nothing. In the nodes' workspace, `Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h)` shows what filled it.
 
-`scripts/logs.sh` runs the `ocr-node-*` queries against the nodes' workspace (`OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`):
+`scripts/azure/logs.sh` runs the `ocr-node-*` queries against the nodes' workspace (`OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`):
 
 ```sh
-scripts/logs.sh --env prod --query-name ocr-node-health             # per node: heartbeat, counters, CPU, memory, free space on /, worker lines, PerfMB, SyslogMB, InsightsMB and WorkerMB; DayMB and CapPct for the workspace
-scripts/logs.sh --env prod --query-name ocr-node-errors --span 2d   # worker warnings and errors, panics, failed units, OOM kills, other errors
-scripts/logs.sh --env prod --query-name ocr-node-updates --span 7d  # nightly worker updates, rollbacks and reboots (#471)
+scripts/azure/logs.sh --env prod --query-name ocr-node-health             # per node: heartbeat, counters, CPU, memory, free space on /, worker lines, PerfMB, SyslogMB, InsightsMB and WorkerMB; DayMB and CapPct for the workspace
+scripts/azure/logs.sh --env prod --query-name ocr-node-errors --span 2d   # worker warnings and errors, panics, failed units, OOM kills, other errors
+scripts/azure/logs.sh --env prod --query-name ocr-node-updates --span 7d  # nightly worker updates, rollbacks and reboots (#471)
 ```
 
 The same as charts: the "usnm OCR nodes (<env>)" workbook under Application Insights `usnm-ocr-appi-<env>` → Workbooks, with a time range and a node picker: CPU, memory, free disk space by mount, disk and network bytes per second, heartbeat gaps over 5 minutes (a table and a chart), the worker's warnings and errors (from Syslog and, once it sends telemetry, `AppTraces` and `AppExceptions`), pages done, failed and abandoned per hour (from its metrics; empty until it sends them), and the workspace's billed MB a day against its cap.
 
-`no heartbeat` means the node is down or off the network, or has lost its agent or its association with the rule (run `onboard.sh` again): the agent sends heartbeats only to the workspaces of the rules it's associated with. `no counters` with heartbeats means the agent is associated but its counters aren't arriving: check the rule's counters and the agent's logs under `/var/opt/microsoft/azuremonitoragent/log`. A node with no heartbeat in the whole span isn't listed at all, so widen the span (`scripts/logs.sh --env prod --query-name ocr-node-health --span 7d`) or check the Arc machine's status.
+`no heartbeat` means the node is down or off the network, or has lost its agent or its association with the rule (run `onboard.sh` again): the agent sends heartbeats only to the workspaces of the rules it's associated with. `no counters` with heartbeats means the agent is associated but its counters aren't arriving: check the rule's counters and the agent's logs under `/var/opt/microsoft/azuremonitoragent/log`. A node with no heartbeat in the whole span isn't listed at all, so widen the span (`scripts/azure/logs.sh --env prod --query-name ocr-node-health --span 7d`) or check the Arc machine's status.
 
 **Worker publication catch-up.** A worker-affecting push can finish after an unrelated push: the current-main guard correctly prevents stale publication, but the unrelated push's change selector may skip the worker. To publish current main without the default full CI dispatch's API rollout, use the explicit worker-only scope:
 
@@ -125,7 +125,7 @@ systemctl list-timers usnm-ocr-update.timer
 journalctl -u usnm-ocr-update --since -8d
 sudo /usr/local/sbin/usnm-ocr-update-worker --delay-hours 0 --dry-run   # which release it would take now
 cat /var/lib/usnm-ocr-update/rejected
-scripts/logs.sh --env prod --query-name ocr-node-updates --span 7d
+scripts/azure/logs.sh --env prod --query-name ocr-node-updates --span 7d
 ```
 
 Turn it on, or change a node's order, by running `install-worker.sh` with the node's usual flags and `--auto-update-delay` (and `--auto-update-leader`); `--auto-update-off` turns it off. A run without either keeps the node's timer and refreshes the two scripts.
@@ -135,8 +135,8 @@ To patch by hand, one node at a time: `sudo systemctl stop usnm-ocr-worker usnm-
 **When the home IP changes,** the nodes lose the exchange account until the firewall has the new address. Hidden messages come back on their own once their time runs out.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_OCR_NODE_IPS --value <new IP>
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_OCR_NODE_IPS --value <new IP>
+scripts/azure/provision.sh --env prod
 ```
 
 **Group changes take a while.** Membership is a claim in the identity's access token, and managed identity tokens are cached per resource for around 24 hours; Microsoft says a membership change can take several hours to apply, and a refresh can't be forced ([Microsoft](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization)). So a node that fetched a storage token before it joined the group is refused by the exchange account until that token expires (that's why `node-setup.sh` checks with a Resource Manager token), and a removed node keeps its access for up to about a day on a token it already holds.
@@ -158,14 +158,14 @@ Deploy the scan service and storage using infrastructure tooling. The applicatio
 
 The keep-set scans have been copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](../design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. Production has Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The archive-only identity grant and host installation were applied through #641; the JPEG compatibility fix (#644) was deployed in attested release `ocr-worker-20261016-00fbdd9`. **The 16 October 2026 11:26:03 UTC recovery point is fully verified: 148,127 scans present; no missing scans, mismatches, invalid local files, conflicts or request errors; and no verification skips.** Acceptance used a temporary ZFS snapshot so upload and full property verification covered exactly the same immutable cohort while the source fetcher kept running. Its final top-up uploaded 5,203 scans (17,530,564,063 bytes); the temporary snapshot was destroyed afterward. **On 17 October, daily top-up and monthly verification timers were disabled under the local-first cost decision (#783); existing bytes and manual units remain intact.** That verification covers a dated off-site copy; it says nothing about whether a later fetch manifest is complete or whether scans fetched since then lag the archive. Read the current reports instead of assuming later coverage. Direct-client API and tickets remain deferred in #649. See [local BOINC download hosting](../boinc-file-host.md) for the revised cost and serving boundaries.
 
-1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
+1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/azure/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
 2. **The identity.** Keep pve-big out of the OCR nodes' group: that group grants queue permissions and is counted for node pacing. Save its Arc principal as the archive-only uploader, then provision to grant the existing archive role (create and read, no delete) on `scans`:
 
    ```sh
    az resource show -g <Arc resource group> -n <Arc machine name> --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
-   scripts/settings.sh --env prod --key USNM_SCAN_ARCHIVE_UPLOADER_ID --value <that object id>
-   scripts/provision.sh --env prod --what-if
-   scripts/provision.sh --env prod
+   scripts/azure/settings.sh --env prod --key USNM_SCAN_ARCHIVE_UPLOADER_ID --value <that object id>
+   scripts/azure/provision.sh --env prod --what-if
+   scripts/azure/provision.sh --env prod
    ```
 
    If the full-stack preview includes unrelated active-job changes, do not apply it just to grant archive access. `bash scripts/ocr-node/grant-archive-uploader.sh --env prod --dry-run` previews only the same deterministic archive role assignment, and the command without `--dry-run` applies only that assignment. It validates the existing Arc principal and the archive role (read and write, no delete), adds no OCR group membership, and preserves the main template's resource identity for subsequent full provisions.
@@ -216,17 +216,17 @@ Request lookups scan each relevant damage table once in published batch order, r
 **Queue pages for the pilot.** Nobody but `id-usnm-ingest` can add messages, so `ocr-enqueue` runs as an execution of the pickup job, which has the exchange account's endpoints. It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch). It then writes a ledger row, `curated/ocr-local/queued/<day>/<run>.parquet`, and puts the message: the base batch, the page's detected language in ISO 639-3 (its title's first language for `und`), and LoC's damage rate as the score. It skips pages already outstanding and Japanese titles. `--dry-run` only counts. The ledger rows are written before the messages. If a send fails, the pages after it get a `not_sent` outcome, so running the same command again queues them; the page whose send failed may have gone out, and `--include-outstanding` queues it again. Outside a dry run, `ocr-enqueue` and `ocr-requeue` hold the `ops/ocr-sync` lock, so they fail while a pickup run is going; start them again once it ends.
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-enqueue --pages sn83045462_1890-05-03_ed-1_seq-7,... \
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-enqueue --pages sn83045462_1890-05-03_ed-1_seq-7,... \
   --reason bulk --plan pilot-german [--batch nbu_gage] [--dry-run]
 ```
 
 **Queue dead-lettered pages again,** by cause (`dequeue_count`, `invalid`, `permanent`, `unroutable`) and, for `invalid`, kind. Pages queued since their dead letter, imported since, or whose latest dead letter has another cause, are skipped.
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-requeue --cause dequeue_count [--since 2026-10-20] [--dry-run]
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-requeue --cause dequeue_count [--since 2026-10-20] [--dry-run]
 ```
 
-**Seeding** ([12 §12.5 Step 10](../design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/settings.sh` and provision.
+**Seeding** ([12 §12.5 Step 10](../design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/azure/settings.sh` and provision.
 
 It skips Japanese titles and pages already in the ledger, and copies of a page that another batch's copy wins (the release's duplicate rule). A page of the plan outstanding for 14 days, or dead-lettered with cause `dequeue_count`, is queued again at most 3 times. One dead-lettered as `unroutable` is queued again after 6 hours, doubling per cycle up to 48. A page whose message a failed run never sent (`not_sent`) goes out in the next run. Each batch's ranked units are stored under `curated/ocr-local/seed/rank/`, and the units a plan has finished under `curated/ocr-local/seed/plans/<plan>/done/`. A run that reaches its time limit before every batch is ranked queues no new pages; the next run continues from there.
 
@@ -235,21 +235,21 @@ It skips Japanese titles and pages already in the ledger, and copies of a page t
 `ocr-seed` is the same step on its own. Use `--dry-run` to print what it would queue as JSON, page ids per unit included, without writing anything. Its flags override the settings. For the pilot (Step 11), preview it, then set the plan:
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-seed --dry-run --seed-plan pilot-deu --seed-pilot \
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-seed --dry-run --seed-plan pilot-deu --seed-pilot \
   --seed-languages deu --seed-years 1850-1919 --seed-max-pages 3000 --bulk-window 1000
-scripts/settings.sh --env prod --key USNM_OCR_SEED_PLAN --value pilot-deu
-scripts/settings.sh --env prod --key USNM_OCR_SEED_PILOT --value true
-scripts/settings.sh --env prod --key USNM_OCR_SEED_LANGUAGES --value deu
-scripts/settings.sh --env prod --key USNM_OCR_SEED_YEARS --value 1850-1919
-scripts/settings.sh --env prod --key USNM_OCR_SEED_MAX_PAGES --value 3000
-scripts/settings.sh --env prod --key USNM_OCR_BULK_WINDOW --value 1000
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_PLAN --value pilot-deu
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_PILOT --value true
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_LANGUAGES --value deu
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_YEARS --value 1850-1919
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_MAX_PAGES --value 3000
+scripts/azure/settings.sh --env prod --key USNM_OCR_BULK_WINDOW --value 1000
+scripts/azure/provision.sh --env prod
 ```
 
 **Quarantine.** Rejects are kept for 30 days as `rejects/<run>/<source path>` (a dead letter as `rejects/<run>/deadletter/<message id>.txt`), each with a `.reason.json` record: the reason code, the source, its ETag, size and creation time, never its content. A source over its size limit isn't read, so it has a record only. Read them with your own sign-in from home (the firewall allows the node IPs and the subnet). After a fix, put one reason's rejects back where they came from; the same run checks them again:
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --from-quarantine --reason not_requested
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --from-quarantine --reason not_requested
 ```
 
 Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismatch`, `alto_missing`, `alto_too_large` (checks 1 and 2); `not_requested`, `batch_mismatch`, `reason_mismatch` (3); `text_null`, `text_too_large`, `text_control`, `text_mismatch` (4); `engine`, `engine_tag` (an `ocr_engine` with `image=local`, or not printable), `reason`, `batch_unpublished`, `title_unknown`, `title_japanese`, `image_url` (5); `alto_*` from the ALTO reader (6); `deadletter_*` for dead letters.
@@ -257,7 +257,7 @@ Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismat
 **The gain estimate.** `ocr-sync --report` applies rule v1 (Step 9) to the scores stored in every merged part, without picking anything up. It writes `curated/ocr-local/report/<run>.json` with pages considered and replaced, the reasons LoC's text stays, and counts by language and by engine.
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
 ```
 
 **Alerts** (with alert emails): a failed execution is reported by the pipeline's job-failed rule, `usnm-ingest-job-failed-alert-<env>` (severity 2, its `Execution` names the job; #308), and `usnm-ocrs-backlog-alert-<env>` (severity 3) fires when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
@@ -267,8 +267,8 @@ scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
 With `USNM_OCR_LOCAL` (the ingest job's `--ocr-local`), a release weighs the text `ocr-sync` took into `curated/ocr-local/` against LoC's on the pages of the batches it indexes, and uses ours where rule v1 prefers it ([12 §12.5 Step 9](../design/12-onprem-ocr-pipeline.md)). It is off by default, and with it off a release reads nothing from `ocr-local` and its documents and snapshot files don't change. `id-usnm-ingest` already has Blob Data Contributor on `curated`, so the setting needs no new grant.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_OCR_LOCAL --value true
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_OCR_LOCAL --value true
+scripts/azure/provision.sh --env prod
 ```
 
 - The weekly delta applies it to the batches it indexes. Published batches take it only at a [full rebuild](rebuild-and-index-storage.md#full-rebuild) with the setting on. Each release that builds a main index logs `our OCR in ocr-local` (parts, titles, revocations) and, when the version has published batches, `pages of ocr-local that would replace LoC's text in published batches`, an estimate from the scores `ocr-sync` stored. A release of only the Japanese overlay reads nothing from `ocr-local` and logs neither line. `ocr-sync --report` ([above](#ocr-pickup-ocr-sync-296)) gives the same kind of estimate without a release.
@@ -303,7 +303,7 @@ single-batch adapter's 10,000-row/16 MiB limits, run the stdlib orchestrator
 **on the POSIX machine holding the scan files**:
 
 ```bash
-python3 scripts/scan_cache_inventory.py \
+python3 scripts/corpus/scan_cache_inventory.py \
   --db catalog.sqlite --index scans/index-full.jsonl --scan-root scans \
   --work-dir inventory-20261017 --source local-cache-stat \
   --cache-set keep --cache-set buffer --max-batches 10
@@ -350,7 +350,7 @@ slices or scratch files, into the **same database pathname**:
 ```bash
 for batch in inventory-20261017/batch-*/keep.jsonl inventory-20261017/batch-*/buffer.jsonl; do
   [ -f "$batch" ] || continue
-  python3 scripts/data_catalog.py --db catalog.sqlite ingest --batch "$batch" || break
+  python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest --batch "$batch" || break
 done
 ```
 

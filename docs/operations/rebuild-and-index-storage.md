@@ -12,24 +12,24 @@ publish immediately.
 Rebuild the indexes as one merged base (one-off, or a compaction). A release also builds a full base by itself, without `USNM_INGEST_FULL`, when the published version was built with another search backend, without common-word pairs or with a version of them newer than the release knows (05 §5.5.3), or when `USNM_AMERICAN_STORIES` is on and the published version doesn't have American Stories' text ([American Stories' text](american-stories.md#american-stories-text)); the steps below force one. It is also how merged places and other place changes of published titles reach the site (04 §4.6). Indexes built before the merge settings (September 2026) keep their many small splits: their splits are past any maturation period, so nothing merges them in place, and they are sealed. A full release builds a new base from every curated batch, merged, and publishes a version with no deltas; the previous version stays in Blob for rollback (`current.json`). A full base is also what moves a version to the latest analyzer versions (05 §5.5.3): a delta folds its words as the published version's indexes do, so a change to the folding, such as vulgar fractions as one word (`½`, #168), reaches the site only with a full rebuild. Afterwards `current.json` has the latest `common_grams` and `ja.fold` (2 since #168), as does `build.features` in `reference/<version>/manifest.json`, and the API parses queries for them. It takes the writer lock like any release, so it never runs alongside another writer (08 §8.4.1). Run it when no backfill or ingest execution is running and the backfill has finished:
 
 ```sh
-RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-JOB=$(scripts/settings.sh --env prod --key INGEST_JOB)
-scripts/settings.sh --env prod --key USNM_INGEST_FULL --value true
-scripts/settings.sh --env prod --key USNM_MERGE_TIMEOUT_SECS --value 14400   # the default; set it only to change it
-scripts/settings.sh --env prod --key USNM_DEDICATED_PROFILE --value true     # the E4 profile (#172)
-scripts/settings.sh --env prod --key USNM_INGEST_ON_DEDICATED --value true   # and the ingest job on it
-scripts/settings.sh --env prod --key USNM_INGEST_SCRATCH_GIB --value 128     # the writer's scratch share (08 §8.4)
-scripts/provision.sh --env prod
+RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+JOB=$(scripts/azure/settings.sh --env prod --key INGEST_JOB)
+scripts/azure/settings.sh --env prod --key USNM_INGEST_FULL --value true
+scripts/azure/settings.sh --env prod --key USNM_MERGE_TIMEOUT_SECS --value 14400   # the default; set it only to change it
+scripts/azure/settings.sh --env prod --key USNM_DEDICATED_PROFILE --value true     # the E4 profile (#172)
+scripts/azure/settings.sh --env prod --key USNM_INGEST_ON_DEDICATED --value true   # and the ingest job on it
+scripts/azure/settings.sh --env prod --key USNM_INGEST_SCRATCH_GIB --value 128     # the writer's scratch share (08 §8.4)
+scripts/azure/provision.sh --env prod
 curl -s https://api.usnewsmap.com/v1/status | jq .titles.pipeline   # awaiting_sync: titles to fetch first
 az containerapp job start -n "$JOB" -g "$RG"
 ```
 
 **Replica timeout (#233, #283).** Explicit full rebuilds (`USNM_INGEST_FULL=true`) and index-account staging runs have a **96-hour** replica timeout; ordinary ingest retains **48 hours** and backfill retains 24. The 1% dev candidate with American Stories, one text field, decade partitions, 60,000-page splits and page languages sent 113.79 documents/s, projecting about **58 hours of sending and flushing alone** for 23,766,177 pages. Budget another 8 hours for preparation (the curation and title deadlines are counted from the same start), up to 4 hours for merges, and 20% send-time variation: about 82 hours. The 96-hour limit adds margin; it doesn't guarantee completion, especially with production NFS I/O and OCR overlays, which this sample didn't time. Inspect the deployed job's `replicaTimeout` before starting. Keep automatic replica retries at zero: a release does not resume after timeout, and platform maintenance can still interrupt it.
 
-A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. The job-failed alert leaves this stop out; the severity 3 _ingest not progressing_ alert fires if no execution follows within 3 hours, or if 3 stops in a row leave as many titles as the first. `scripts/logs.sh --env prod --query-name ingest-endings` lists each execution's ending, and the stop's `command failed` line carries `outcome: titles_left`. Once titles-sync finishes, the same execution builds the base. Watch it:
+A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. The job-failed alert leaves this stop out; the severity 3 _ingest not progressing_ alert fires if no execution follows within 3 hours, or if 3 stops in a row leave as many titles as the first. `scripts/azure/logs.sh --env prod --query-name ingest-endings` lists each execution's ending, and the stop's `command failed` line carries `outcome: titles_left`. Once titles-sync finishes, the same execution builds the base. Watch it:
 
 ```sh
-scripts/logs.sh --env prod --query-name release-progress --span 6h    # docs sent, rate, memory (quickwit_rss_mb), merges
+scripts/azure/logs.sh --env prod --query-name release-progress --span 6h    # docs sent, rate, memory (quickwit_rss_mb), merges
 az containerapp job execution list -n "$JOB" -g "$RG" -o table
 ```
 
@@ -41,7 +41,7 @@ az containerapp job execution list -n "$JOB" -g "$RG" -o table
 **Laying the base out by decade (#123, 05 §5.5.5).** To have the rebuild keep each decade in its own splits, so that a date-limited search skips the others, add the setting to the first provision above:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_PARTITION_DECADE --value true   # the job's --partition-decade
+scripts/azure/settings.sh --env prod --key USNM_PARTITION_DECADE --value true   # the job's --partition-decade
 ```
 
 Only a full base takes it. The release then logs `decade layout` when it creates the index, a `sent a decade's pages` line each time a decade's pages go to the writer (at most every 30,000 pages of a decade, or the split target with `USNM_SPLIT_DOCS`, below; until then they wait in `/scratch/usnm/quickwit/decade-spill`, a few GB at most at 30,000), and `sent the pages a decade at a time` with the totals before the merges. The `index layout` line of the base has `splits_by_decade`. Check afterwards: `current.json` has `decades: 1`, and `reference/<version>/manifest.json` has `build.features.decades` and `splits_by_decade` under `indexes`. Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version (with the field and decade tags on a version laid out by decade, without on one that isn't). To stop searches naming decades at once, without a rebuild, publish a `current.json` without the key.
@@ -49,7 +49,7 @@ Only a full base takes it. The release then logs `decade layout` when it creates
 **One searched text field (#283, 05 §5.5.7).** To have the rebuild search LoC's and American Stories' text in one field (`text_all`), so a search looks each word up once, add the setting to the first provision above, alongside `USNM_AMERICAN_STORIES`:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SINGLE_TEXT_FIELD --value true   # the job's --single-text-field
+scripts/azure/settings.sh --env prod --key USNM_SINGLE_TEXT_FIELD --value true   # the job's --single-text-field
 ```
 
 Only a full base takes it. The release logs `one searched text field` when it creates the index, and `building index` with `text_layout: 2`. Check afterwards: `current.json` has `text_layout: 2`; `reference/<version>/manifest.json` has `build.features.text_layout` and, in `build.templates.pages`, the `text_all` and `text_all_cg` fields; `/v1/meta` says `"text_layout": 2`. The aggregate then has no `total.american_stories_only` (the site drops its page-count note), while hits keep `matched_in` and the American Stories badge. `USNM_AMERICAN_STORIES_SEARCH` has no effect on such a version ([American Stories](american-stories.md)). Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version. To go back at once, publish a `current.json` of a version with a field per text (rollback); a full rebuild without the setting does it for good. Turning `USNM_AMERICAN_STORIES` off on such a version makes the next release a full base: the text can't be left out of the field it shares with LoC's in a delta.
@@ -57,7 +57,7 @@ Only a full base takes it. The release logs `one searched text field` when it cr
 **Page languages (#289, 05 §5.5.8).** To have the rebuild give each page its own languages, so `lang=` filters by them, add the setting to the first provision above:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_PAGE_LANGUAGE --value true   # the job's --page-language
+scripts/azure/settings.sh --env prod --key USNM_PAGE_LANGUAGE --value true   # the job's --page-language
 ```
 
 Only a full base takes it. The release logs `building index` with `page_language: true`, and before the merges `pages whose own languages differ from their title's, in the version` with their count (expect about 1.5 to 2 million: mostly pages of multilingual titles). Check afterwards: `current.json` has `page_language: 1`; `reference/<version>/manifest.json` has `build.features.page_language`, the two fields in `build.templates.pages`, `page_languages.pages`, and lists `page_language_baselines.json` (perhaps 10% to 20% more entries than `language_baselines.json`) and `page_languages.json` (about 15 to 20 MB); `/v1/meta` says `"language_filter": "page"`. Compare the release's pages a second with the last rebuild's (`release progress`): detection runs on up to 4 threads beside the writer. Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version and carry the moves forward. To go back to title languages at once, roll back to a version without page languages (publish its `current.json`); a full rebuild without the setting does it for good. Don't edit the key out of the serving version's `current.json`: the API keeps the language filter it loaded the version with, and its caches are keyed by the version (it logs `current.json changed page_language without a new version`).
@@ -65,7 +65,7 @@ Only a full base takes it. The release logs `building index` with `page_language
 **Larger splits (#283).** To have the rebuild's merges stop at more pages per split than the template's 30,000, so a cold search opens fewer splits, add the setting to the first provision above:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SPLIT_DOCS --value 120000   # the job's --split-docs; the value comes from the dev measurement below
+scripts/azure/settings.sh --env prod --key USNM_SPLIT_DOCS --value 120000   # the job's --split-docs; the value comes from the dev measurement below
 ```
 
 Only a full base takes it: a delta's few splits keep the template's target. The release logs `split target` when it creates the index and `building index` with `split_docs`. Check afterwards: the base's `index layout` line has about pages ÷ target splits (plus up to 7, per decade with `USNM_PARTITION_DECADE`) and a `largest_split_docs` near the target; `reference/<version>/manifest.json` has `build.features.split_docs` and `split_num_docs_target` at the target in `build.templates.pages`. The release holds the merged index to that target (`docs / target + 5 + 2`) before it publishes. `current.json` doesn't change, and the API needs nothing: it searches whatever splits the indexes have. What bounds the target is the writer (05 §5.5.1, 08 §8.4): a split holds min(its size, 10 GB) of the writer's memory while it uploads, and merged splits can reach about twice the target, at about 74 KB a page with American Stories' text; and the scratch share holds, at once, the largest merge (about twice the target's pages, about 18 GB at 120,000) and, with `USNM_PARTITION_DECADE`, the decade spill (under one target per populated decade, compressed; count decades from the actual corpus bounds rather than assuming the 1% sample covers every decade). For example, bounds 1736–1963 span 24 possible decades, so at 60,000 the conservative held-page cap is 1.44 million. The sample's compressed bytes per page is an estimate, not a hard bound for the full corpus. Both the spill and the concurrent merge must fit inside 128 GiB, so watch the free scratch while pages are sent and merged. So a target above 30,000 needs the E4 profile. Clear the setting after the rebuild: a full base the release forces by itself (a new analyzer or American Stories version, say) runs on the Consumption profile, whose 7.5 GiB only the template's target fits.
@@ -95,7 +95,7 @@ Only a full base takes it: a delta's few splits keep the template's target. The 
 | `USNM_AMERICAN_STORIES_SEARCH`                                 | `true` (as now)                                                                | No effect on a `text_layout: 2` version                                                                                                                            | No `USNM_AMERICAN_STORIES_SEARCH=false has no effect` warning in the API's log                                                                                                                                                                                                   |
 | `split_footer_cache_capacity` (`infra/quickwit/searcher.yaml`) | Resized after the release if needed                                            | The searcher's footer cache must hold every footer of the version ([Searcher caches](search-serving.md#searcher-caches))                                           | The new version's `footer_bytes` total against the capacity, then footer misses after the warm-up                                                                                                                                                                                |
 
-Afterwards, benchmark with `scripts/bench-cold-searches.py` and compare with `pages-v20261008-1` (1,162 GB; median search 21.4 s with both texts' fields searched, #251), and note the index size, the send rate and the total time on #283.
+Afterwards, benchmark with `scripts/ops/bench-cold-searches.py` and compare with `pages-v20261008-1` (1,162 GB; median search 21.4 s with both texts' fields searched, #251), and note the index size, the send rate and the total time on #283.
 
 **Before the go-ahead: what to measure on dev (#275).** The rebuild runs only once these are measured and the owner says go. Each needs the dev environment stood up with a 1% version (#275, the stand-up flow in PR #351) and American Stories' text:
 
@@ -106,13 +106,13 @@ Afterwards, benchmark with `scripts/bench-cold-searches.py` and compare with `pa
 Then turn the full rebuild off, and the E4 profile and the scratch share with it, in two provisions: the job has to leave the profile before the profile can go. Run them only once the rebuild's execution has ended (`az containerapp job execution list`), since the first one takes the share away from the job.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_INGEST_FULL --unset
-scripts/settings.sh --env prod --key USNM_SPLIT_DOCS --unset   # if it was set: a forced full base on Consumption takes only the template's target
-scripts/settings.sh --env prod --key USNM_INGEST_ON_DEDICATED --unset
-scripts/settings.sh --env prod --key USNM_INGEST_SCRATCH_GIB --unset    # deletes the share, its account, endpoint and DNS zone
-scripts/provision.sh --env prod
-scripts/settings.sh --env prod --key USNM_DEDICATED_PROFILE --unset
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_INGEST_FULL --unset
+scripts/azure/settings.sh --env prod --key USNM_SPLIT_DOCS --unset   # if it was set: a forced full base on Consumption takes only the template's target
+scripts/azure/settings.sh --env prod --key USNM_INGEST_ON_DEDICATED --unset
+scripts/azure/settings.sh --env prod --key USNM_INGEST_SCRATCH_GIB --unset    # deletes the share, its account, endpoint and DNS zone
+scripts/azure/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_DEDICATED_PROFILE --unset
+scripts/azure/provision.sh --env prod
 ```
 
 Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would rebuild the whole corpus. Don't leave `USNM_INGEST_SCRATCH_GIB` set either: the share, its private endpoint and its DNS zone cost about $25 a month (#308), and deltas don't need them. Its contents are scratch: a release empties the writer's data before it starts, so deleting the share loses nothing, and the next rebuild's provision creates it again, empty, under the same names. Don't leave `USNM_DEDICATED_PROFILE` set either: while the environment has the E4 profile it pays the Dedicated plan management fee every hour (about $0.10 an hour in East US 2 in October 2026), whether or not a node runs. An E4 node itself (4 vCPU, 32 GiB) costs about $0.39 an hour while the job runs.
@@ -201,7 +201,7 @@ the ingest job. `v2` is the default; set `v1` for full rebuilds. Test it on
 dev first (a 1% release with the rebuild's settings) and compare its pages
 per second with v2's before a long run.
 
-**Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why ordinary ingest has a 48 h replica timeout (#173). Explicit full rebuilds and staging runs now get 96 h, from the slower #283 dev measurement above. Benchmark afterwards with `scripts/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
+**Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why ordinary ingest has a 48 h replica timeout (#173). Explicit full rebuilds and staging runs now get 96 h, from the slower #283 dev measurement above. Benchmark afterwards with `scripts/ops/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
 
 ### Full rebuild on-prem
 
@@ -213,7 +213,7 @@ In the container, as `usnm`, each step in one run directory (`scripts/onprem/rel
 
 ```sh
 cd /srv/usnm/src && git pull --ff-only     # the commit to build; then cargo build --release -p usnm-ingest
-scripts/onprem/install-quickwit.sh --registry "$(scripts/settings.sh --env prod --key ACR_NAME)"   # once per Quickwit pin
+scripts/onprem/install-quickwit.sh --registry "$(scripts/azure/settings.sh --env prod --key ACR_NAME)"   # once per Quickwit pin
 R=/srv/usnm/runs/full-$(date -u +%Y%m%d)
 scripts/onprem/release.sh --run-dir "$R" --step mirror    # current.json, catalog/, the serving version's snapshot
 scripts/onprem/release.sh --run-dir "$R" --step seed      # batch records from the serving version's batches.json
@@ -228,7 +228,7 @@ scripts/onprem/release.sh --run-dir "$R" --step publish
 Before promotion ([Index storage cutover](#index-storage-cutover) step 4), record the staged run in Cosmos from the snapshot's `index_run.json`, in the ingest job (the host has no Cosmos access):
 
 ```sh
-scripts/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
+scripts/azure/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
 ```
 
 Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none.
@@ -311,7 +311,7 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    not a system temporary directory:
 
    ```sh
-   LAKE=$(scripts/settings.sh --env prod --key STORAGE_ACCOUNT)
+   LAKE=$(scripts/azure/settings.sh --env prod --key STORAGE_ACCOUNT)
    mkdir -p .azure/prod/index-storage
    az storage blob download --auth-mode login --account-name "$LAKE" --container-name reference \
      --name current.json --file .azure/prod/index-storage/serving-before.json --overwrite
@@ -320,9 +320,9 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    jq '{index_version, previous_version, indexes, ja, congress}' .azure/prod/index-storage/pending.json
    az storage blob upload --auth-mode login --account-name "$LAKE" --container-name reference \
      --name current.json --file .azure/prod/index-storage/pending.json --overwrite true --content-type application/json
-   scripts/settings.sh --env prod --key USNM_INDEX_STORAGE_SERVE --value true
+   scripts/azure/settings.sh --env prod --key USNM_INDEX_STORAGE_SERVE --value true
    # Commit/review/merge the setting, then provision from that commit.
-   scripts/provision.sh --env prod
+   scripts/azure/provision.sh --env prod
    ```
 
    The old API may log `reload failed; keeping current version`: its lake
@@ -363,9 +363,9 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    indexes in whichever account holds them:
 
    ```sh
-   RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-   JOB=$(scripts/settings.sh --env prod --key INGEST_JOB)
-   LAKE=$(scripts/settings.sh --env prod --key STORAGE_ACCOUNT)
+   RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+   JOB=$(scripts/azure/settings.sh --env prod --key INGEST_JOB)
+   LAKE=$(scripts/azure/settings.sh --env prod --key STORAGE_ACCOUNT)
    template=$(az containerapp job show -n "$JOB" -g "$RG" --query properties.template -o json)
    DELETE=false  # dry run first; inspect logs, then repeat with true
    body=$(jq -c --arg lake "$LAKE" --argjson delete "$DELETE" '
@@ -377,7 +377,7 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
        .env |= map(if .name == "QW_AZURE_STORAGE_ACCOUNT" then .value = $lake else . end) | exec],
       initContainers: []}' <<< "$template")
    az rest --method post --url "https://management.azure.com/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.App/jobs/$JOB/start?api-version=2025-01-01" --body "$body"
-   scripts/logs.sh --env prod --query-name prune --span 2h
+   scripts/azure/logs.sh --env prod --query-name prune --span 2h
    ```
 
    Wait for success and inspect the dry run before deleting. Once another
@@ -404,22 +404,22 @@ A kept version's indexes are all that its records name: `current.json`, its run 
 
 Without `--delete`, it's a dry run: it lists each index it would delete with its splits, documents and size (its published splits' files), and the total, and changes nothing. It takes the writer lock like a release, so it fails with ``lock `quickwit-writer` is held by …`` while a release runs, and a release can't take the lock while prune holds it. It refuses to run when `current.json` can't be read or names no indexes, when the serving version has no index run, or when neither the rollback's run nor its manifest names its indexes (and when a manifest's `indexes` isn't a list of `index_id`s). With `--delete`, it reads `current.json` and the runs again before each delete and stops if what it keeps has changed. If the writer lock can't be renewed, it gives up the delete under way at once and stops its Quickwit node. So `--delete` needs `--quickwit-bin`, a node prune starts itself; `--quickwit-url` (a node already running, which Quickwit lets finish a delete its caller left) is for dry runs only.
 
-Don't roll `current.json` back by hand while prune runs: a rollback doesn't take the writer lock, and prune checks what it keeps only before each delete, so a version made serving during a delete of its index loses it. Run it in the ingest job, as an execution with other arguments (`scripts/start-job.sh`), after a new version is published and checked, and while no ingest or backfill execution is running. An execution can't mount the scratch share, and prune doesn't need it: its Quickwit node only reads the metastore and deletes, with its data in a temporary directory. You need `az` signed in with access that can start the job (the owner's Contributor on the resource group) and read the logs. Dry run first:
+Don't roll `current.json` back by hand while prune runs: a rollback doesn't take the writer lock, and prune checks what it keeps only before each delete, so a version made serving during a delete of its index loses it. Run it in the ingest job, as an execution with other arguments (`scripts/azure/start-job.sh`), after a new version is published and checked, and while no ingest or backfill execution is running. An execution can't mount the scratch share, and prune doesn't need it: its Quickwit node only reads the metastore and deletes, with its data in a temporary directory. You need `az` signed in with access that can start the job (the owner's Contributor on the resource group) and read the logs. Dry run first:
 
 ```sh
-RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-JOB=$(scripts/settings.sh --env prod --key INGEST_JOB)
+RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+JOB=$(scripts/azure/settings.sh --env prod --key INGEST_JOB)
 QW=(--quickwit-bin /usr/local/bin/quickwit --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index)
-scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}"   # dry run: lists, deletes nothing
+scripts/azure/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}"   # dry run: lists, deletes nothing
 az containerapp job execution list -n "$JOB" -g "$RG" -o table  # until it has Succeeded
-scripts/logs.sh --env prod --query-name prune --span 2h
+scripts/azure/logs.sh --env prod --query-name prune --span 2h
 ```
 
 `prune keeps` names the serving and rollback versions and every index they keep; check that the serving version is the one `/v1/status` reports and that the rollback is the one you want. Then one `prune candidate` line per index it would delete, with `bytes` and `gib`, and `prune plan` with the count and `total_gib` (the execution's console log ends with the whole report as JSON). If the list is what you expect, delete:
 
 ```sh
-scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}" --delete
-scripts/logs.sh --env prod --query-name prune --span 2h    # a "deleted index" line for each, then "pruned"
+scripts/azure/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}" --delete
+scripts/azure/logs.sh --env prod --query-name prune --span 2h    # a "deleted index" line for each, then "pruned"
 ```
 
 A large index can take minutes to delete: Quickwit deletes each split file before it answers. A failed delete stops the run with the error; the indexes already deleted stay deleted, and running it again carries on. Afterwards the rollback is still there, but the versions before it are gone and can't be rolled back to. In the separate index account deletion is immediate, with no retained blob versions or soft-deleted splits. In the legacy lake account the bill drops later than the delete: the deleted split files become previous blob versions, which the `qw-index/` lifecycle rule deletes after a day, and then sit in the 3-day soft delete (08 §8.1).

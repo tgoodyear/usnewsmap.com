@@ -180,7 +180,7 @@ it has replaced searchable text. Continue with the existing `ocr-sync` and relea
 
 The project directory (`/project`: uploads, downloads, staging, results) is one Azure Files share mounted by the server and every job. On the pay-as-you-go Standard account (`usnmboincst…`, TransactionOptimized) it cost about $21 in operations in four days of October 2026: 51M operations, 83% of them open, close and stat. Capacity was $0.61. A provisioned v2 SSD share (`usnmboincv2st…`, `PremiumV2_LRS`) bills only for its provisioned size, about $0.10/GiB a month with 3,000 + 1 IOPS per GiB included, and nothing per operation (#917).
 
-`projectShare` in `contrib-compute/infra/boinc/env/<env>.json` moves the share in stages, each a pull request and a `scripts/provision-boinc.sh` run (claimed on #529):
+`projectShare` in `contrib-compute/infra/boinc/env/<env>.json` moves the share in stages, each a pull request and a `scripts/boinc/provision-boinc.sh` run (claimed on #529):
 
 1. **`copy`.** Creates the provisioned account, share and private endpoint, plus the share copy job `usnm-boinc-sharecopy-caj-<env>` and its own identity. That identity has Storage File Data Privileged Reader on the old account, Storage File Data Privileged Contributor on the new one, and pull rights on the registry.
    - The job runs AzCopy (pinned by version and SHA-256 in `main.bicep`): `azcopy sync https://<old account>.file.core.windows.net/project https://<new account>.file.core.windows.net/project --delete-destination=true`, as the job's identity, both over their private endpoints.

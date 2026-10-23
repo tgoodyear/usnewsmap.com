@@ -48,18 +48,18 @@ only for a host that passed the gold check.
   region and its pair. A private endpoint is not an option: the main VNet's `privatelink.blob`
   zone would then fail to resolve the exchange account for `ocr-sync`. Storage refuses the
   firewall rule until the endpoint exists, so the rule comes with the hand-off job (below). On
-  a new environment: `scripts/provision.sh` with `USNM_BOINC_GROUP` (the group), then
-  `scripts/provision-boinc.sh` (the network, the identity and the images), then
-  `USNM_BOINC_HANDOFF_IMAGE` and `scripts/provision.sh` again (the job, the rule and the
+  a new environment: `scripts/azure/provision.sh` with `USNM_BOINC_GROUP` (the group), then
+  `scripts/boinc/provision-boinc.sh` (the network, the identity and the images), then
+  `USNM_BOINC_HANDOFF_IMAGE` and `scripts/azure/provision.sh` again (the job, the rule and the
   grants);
 - the hand-off job `usnm-boinc-handoff-caj-<env>` and its identity
   `usnm-boinc-handoff-id-<env>` in the main environment (`infra/modules/boinc-handoff-job.bicep`),
   with its own settings `AZURE_CLIENT_ID`, `HANDOFF_URL`, `COSMOS_ENDPOINT`, `CURATED_URL`,
   `REFERENCE_URL` and `OUT_URL`. Its image is the setting `USNM_BOINC_HANDOFF_IMAGE`
   (`infra/env/<env>.json`): `images.bridge` from `contrib-compute/infra/boinc/env/<env>.json`,
-  so a new bridge image means updating both. `scripts/start-boinc-bridge.sh --target handoff`
+  so a new bridge image means updating both. `scripts/boinc/start-boinc-bridge.sh --target handoff`
   starts it with a run's settings. It reads the job name and resource group from the main
-  stack's outputs saved by `scripts/provision.sh`, so it doesn't need an
+  stack's outputs saved by `scripts/azure/provision.sh`, so it doesn't need an
   `infra/names/<env>.json` entry.
 
 The role assignments:
@@ -96,7 +96,7 @@ Then, from the operator's machine, the hand-off job's export. It prints the job 
 log, and `dispatch/jobs/<id>/` appears in the container:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --target handoff --step export \
+scripts/boinc/start-boinc-bridge.sh --env prod --target handoff --step export \
   --var HANDOFF_PAGES=<page key> --var HANDOFF_BATCH=<batch> --var HANDOFF_PLAN=<plan id> \
   --var HANDOFF_MANIFEST=<version>/manifest.parquet \
   --var ENGINE_IMAGE=sha256:<images.worker's digest> --wait-mins 30
@@ -105,14 +105,14 @@ scripts/start-boinc-bridge.sh --env prod --target handoff --step export \
 Then the bridge:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step submit-remote --var JOB_ID=JOB_ID \
+scripts/boinc/start-boinc-bridge.sh --env prod --step submit-remote --var JOB_ID=JOB_ID \
   --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff --wait-mins 30
 ```
 
 When the workunit's result is assimilated (the ops pages show it done):
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
+scripts/boinc/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
   --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff \
   --var HANDOFF_SPOOL=/project/usnmocr/results/0 --wait-mins 15
 ```
@@ -120,7 +120,7 @@ scripts/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
 Then the hand-off job's collect (`HOST_ID` only when the server recorded none):
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --target handoff --step collect --var JOB_ID=JOB_ID --wait-mins 30
+scripts/boinc/start-boinc-bridge.sh --env prod --target handoff --step collect --var JOB_ID=JOB_ID --wait-mins 30
 ```
 
 It publishes to `ocr-out` for a trusted host and writes the
@@ -173,12 +173,12 @@ pct exec 211 -- azcmagent config set incomingconnections.enabled false
 # --tags environment=prod,project=usnewsmap,role=boinc-handoff --config <file>.
 
 # On the operator's machine: the grant.
-az resource show -g "$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)" \
+az resource show -g "$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)" \
   -n usnm-ocr-node5-arcs-prod --resource-type Microsoft.HybridCompute/machines \
   --query identity.principalId -o tsv
-scripts/settings.sh --env prod --key USNM_BOINC_HANDOFF_RUNNER --value <object id>
-scripts/provision.sh --env prod --what-if
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_BOINC_HANDOFF_RUNNER --value <object id>
+scripts/azure/provision.sh --env prod --what-if
+scripts/azure/provision.sh --env prod
 ```
 
 In the container, `az login --identity --allow-no-subscriptions` signs in (the

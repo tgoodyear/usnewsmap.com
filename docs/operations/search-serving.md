@@ -7,7 +7,7 @@ Part of the [operations guide](README.md).
 The Quickwit searcher (a sidecar or its own app) keeps the split footers, fast fields and partial and predicate results in memory, with the capacities in `infra/quickwit/searcher.yaml` (08 §8.4). The API reads the searcher's metrics every minute and reports them as `api.searcher_cache_*` (08 §8.1.2):
 
 ```sh
-scripts/logs.sh --env prod --query-name searcher-caches --span 1d        # per replica and cache: MB and items held, hits, misses, evictions, hit rate
+scripts/azure/logs.sh --env prod --query-name searcher-caches --span 1d        # per replica and cache: MB and items held, hits, misses, evictions, hit rate
 ```
 
 The same table, and charts of MB held and of misses and evictions, are in the "usnm API (<env>)" workbook ("usnewsmap API" before the Phase 2 provision). The saved queries and these workbook panels select one reporting API replica per searcher per UTC minute, before aggregating any instruments. Remote searchers are identified by `Properties["usnm.searcher"]`, the origin of `USNM_QUICKWIT_URL` (without credentials, path or query). Loopback sidecars have no shared identity and keep their per-API-replica rows. The `Replica` column is the shared searcher's origin in app mode and the API replica in sidecar mode; chart series likewise keep sidecars separate. When the reporting replica disappears, the next minute can use another replica. Selection always keeps all rows from the chosen reporter, not just one metric row.
@@ -16,7 +16,7 @@ The `usnm.searcher` property is emitted only by API images that carry it; older 
 
 **Sizing `split_footer_cache_capacity`.** Size it from the release's footer total, and check it against what the cache does after the warm-up. Evictions on their own don't show the footers don't fit: Quickwit 0.9.1 also counts replacing an entry as an eviction, and after a publish the cache drops the old version's footers. The API logs `split footer cache evictions seen` once per searcher run, for the record, without a cause. The footers don't fit when the total is above the capacity, or when footer misses and evictions keep coming hours after the warm-up, with no publish or restart in between. To size it:
 
-1. Add up `footer_bytes` on the version's `index layout` lines (`scripts/logs.sh --env prod --query-name index-layout --span 2d`, column `FooterMb`), or under `indexes` in `reference/<version>/manifest.json`, over every index the version lists: the base, its deltas and the Japanese index.
+1. Add up `footer_bytes` on the version's `index layout` lines (`scripts/azure/logs.sh --env prod --query-name index-layout --span 2d`, column `FooterMb`), or under `indexes` in `reference/<version>/manifest.json`, over every index the version lists: the base, its deltas and the Japanese index.
 2. Set `split_footer_cache_capacity` in `infra/quickwit/searcher.yaml` to that total plus about 25% for the deltas the next weekly releases add, rounded up. Quickwit reads `256MB` as 256,000,000 bytes, the unit `FooterMb` uses.
 3. Check it fits the sidecar's 4 GiB next to the fast field cache (1 GB), the aggregation memory limit (768 MB) and the partial request and predicate caches (32 MB each). If it doesn't, the fast field cache is the one to shrink first; then the container's memory (`infra/modules/containerapp.bicep`).
 
@@ -27,10 +27,10 @@ The change goes live when it merges (CI applies `searcher.yaml` to the running a
 The sidecar runs each split's search on its `search` thread pool, and downloads from Blob and opens the splits on its main Tokio runtime. The API reads both with the caches, every minute, and reports them as `api.searcher_pool_tasks` and `api.searcher_runtime_*` (08 §8.1.2):
 
 ```sh
-scripts/logs.sh --env prod --query-name searcher-threads --span 2h       # per replica and minute: search pool ongoing and pending, main runtime threads and busy share
+scripts/azure/logs.sh --env prod --query-name searcher-threads --span 2h       # per replica and minute: search pool ongoing and pending, main runtime threads and busy share
 ```
 
-Read it while cold searches run (`scripts/load-cold-searches.py`):
+Read it while cold searches run (`scripts/ops/load-cold-searches.py`):
 
 - `SearchPending` above 0 with `SearchOngoing` at the pool's size: searches wait for cores. The pool has `RAYON_NUM_THREADS` threads (4, set on the sidecar in `infra/modules/containerapp.bicep`; without it, one per CPU Rust counts, which rounds the 3.75 vCPU quota down to 3). Quickwit doesn't report the size; it is the most `SearchOngoing` reaches.
 - `MainBusyPercent` near 100 with the search pool below its size and nothing pending: searches wait on the main runtime. It has `QW_TOKIO_RUNTIME_NUM_THREADS` threads (4, same file; `MainThreads`).
@@ -45,7 +45,7 @@ A second searcher (a Quickwit cluster, #239) is deferred until either of these h
 - _Search capacity: searches waiting for a slot_ emails once a day while each of the last two days had more than 10% of its searches (at least 20) wait over 3 s. The first email covers two days and each later one adds a day, so six emails in a row are the week.
 - `usnm-api-replica-cpu-alert-<env>` emails when the replicas' CPU averages over 3 vCPU for 6 hours, and again when it clears (prod only: where the app scales to zero, a window could hold only a start's samples). It averages the replicas together, so with a second replica sharing the load a hot one can sit under it: the workbook's per-replica chart is the record.
 
-An alert can't look back a week (a log search alert reads at most 2 days), so judge the week in the "usnm API (<env>)" workbook's Search capacity section, which covers the last 14 days by day whatever the time range. Leave out days with a release or a new index version (every search is cold then), and check `scripts/logs.sh --env prod --query-name searcher-threads --span 24h` for whether the search pool or the main runtime is the one that's full. If it holds, the next step is moving Quickwit out of the API's replica (#267, [the searcher app](#searcher-app)), then the cluster in #239.
+An alert can't look back a week (a log search alert reads at most 2 days), so judge the week in the "usnm API (<env>)" workbook's Search capacity section, which covers the last 14 days by day whatever the time range. Leave out days with a release or a new index version (every search is cold then), and check `scripts/azure/logs.sh --env prod --query-name searcher-threads --span 24h` for whether the search pool or the main runtime is the one that's full. If it holds, the next step is moving Quickwit out of the API's replica (#267, [the searcher app](#searcher-app)), then the cluster in #239.
 
 ## Searcher app
 
@@ -56,21 +56,21 @@ By default the Quickwit searcher is a sidecar in each API replica, so every new 
 **Turn it on:**
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SEARCHER_APP --value true
-scripts/provision.sh --env prod
-scripts/settings.sh --env prod --key SEARCHER_APP          # usnm-search-ca-prod
+scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP --value true
+scripts/azure/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key SEARCHER_APP          # usnm-search-ca-prod
 ```
 
 The provision creates the searcher app and its role first, then rolls the API onto a revision without the sidecar. On a first switch from the sidecar, removing the app-level system identity cuts off the old revision's sidecar before the new revision is ready, so schedule that switch for a maintenance window; the permanent-searcher decision applies to prod, which already uses the searcher app. The searcher's first revision can start before its role has reached Blob and restart once or twice.
 
 **The API's unused identity and grants are removed (#365).** With the searcher app kept, `apiSystemIdentity = quickwit && !searcherApp` in `infra/modules/containerapp.bicep`. The next provision removes the API's system-assigned identity and its Blob Data Reader assignments on `qw-index` in both the lake and, if configured, the separate index account. The maintainer approved this change to production infrastructure on 15 October 2026; it takes effect at the next provision. The searcher app's own identity and grants are unchanged. With `USNM_SEARCHER_APP=false`, the API retains its identity and grants even when `USNM_INDEX_STORAGE_SERVE=true` removes its sidecar: that separate cutover still needs the old revision's lake-sidecar permissions (ADR-0021). A rollback now recreates the API's identity and grants, so it must keep the searcher app until the permissions have propagated and the sidecar is ready (below).
 
-**Deploys with it on.** CI's publish (`scripts/ci/roll-api.sh`) finds the searcher app from the API's `USNM_QUICKWIT_URL`. When `searcher.yaml` changed, it applies it to the searcher app, waits for its new revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher app alone. A new Quickwit image still moves with a provision, and restarts the searcher alone. The API sees the restart in the searcher's metrics within a minute (its counters start again from 0) and runs a searcher-restart warm-up while it stays ready: `trigger` is `searcher_restart` in `scripts/logs.sh --env prod --query-name warm-up --span 2d`. When another warm-up is running then (a start's or a publish's), that run comes after it, and a publish in the meantime waits for it; the API's log says `the searcher restarted during a warm-up; warming it again after that one`. Unlike a start's, that run bypasses both response caches for searches, including responses the API already holds, so Quickwit's own caches fill too. It keeps cached responses available to visitors, including after a failed refresh, and uses the startup budget (5 minutes by default), giving way while visitor searches are running or queued. Places and coverage still use their response caches because they need no searcher.
+**Deploys with it on.** CI's publish (`scripts/ci/roll-api.sh`) finds the searcher app from the API's `USNM_QUICKWIT_URL`. When `searcher.yaml` changed, it applies it to the searcher app, waits for its new revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher app alone. A new Quickwit image still moves with a provision, and restarts the searcher alone. The API sees the restart in the searcher's metrics within a minute (its counters start again from 0) and runs a searcher-restart warm-up while it stays ready: `trigger` is `searcher_restart` in `scripts/azure/logs.sh --env prod --query-name warm-up --span 2d`. When another warm-up is running then (a start's or a publish's), that run comes after it, and a publish in the meantime waits for it; the API's log says `the searcher restarted during a warm-up; warming it again after that one`. Unlike a start's, that run bypasses both response caches for searches, including responses the API already holds, so Quickwit's own caches fill too. It keeps cached responses available to visitors, including after a failed refresh, and uses the startup budget (5 minutes by default), giving way while visitor searches are running or queued. Places and coverage still use their response caches because they need no searcher.
 
 **Measurements and decision (15 October 2026):** the maintainer chose to keep the separate searcher app permanently and approved dropping the API's unused identity and grants (#365). No new measurements are claimed here. The original comparison checklist (a week with it against a week without, leaving out days with a release or a new index version) is still useful for monitoring, though no decision waits on it.
 
-- **API to searcher latency:** `scripts/logs.sh --env prod --query-name backend-latency --span 14d`, `AvgMs` and `MinMs` per endpoint. The network hop should add a few milliseconds per call to searches of seconds.
-- **Deploys:** after a merge that changes only the site, the API's log has no `the searcher restarted` line, and `scripts/logs.sh --env prod --query-name searcher-caches --span 1d` shows the caches kept their contents.
+- **API to searcher latency:** `scripts/azure/logs.sh --env prod --query-name backend-latency --span 14d`, `AvgMs` and `MinMs` per endpoint. The network hop should add a few milliseconds per call to searches of seconds.
+- **Deploys:** after a merge that changes only the site, the API's log has no `the searcher restarted` line, and `scripts/azure/logs.sh --env prod --query-name searcher-caches --span 1d` shows the caches kept their contents.
 - **Idle billing of each app:** Cost Management, per resource and meter, daily: idle and active vCPU-seconds of `usnm-search-ca-prod` and of `ca-usnm-prod`, against about 180,000 idle and 14,000 to 32,000 active vCPU-seconds a day for the one app at 2.25 vCPU (3 to 8 October 2026, 09 §9.5). The searcher still polls the metastore every 30 s and answers the API's metrics read every minute; the API app now bills on its own between visitors.
 - **Capacity:** with two API replicas, both send searches to the one searcher (each with its own computation slots, 06 §6.6), and both report its metrics. `searcher-caches`, `searcher-threads` and the workbook cache panels automatically take one reporter per shared searcher per minute (see [Searcher caches](#searcher-caches)); do not add the replicas' raw metrics together. The selected capacity policy (#364) divides the configured searcher-wide visitor budget (`USNM_COMPUTE_CONCURRENCY`, default 2) by `USNM_API_MAX_REPLICAS` (default 2), rounding down: each API replica gets 1 slot by default. Provision uses the same maximum for scaling, even while only one replica actually runs. Sidecars keep the full budget per replica; a retained but unused searcher app does not trigger division. A budget that doesn't divide evenly leaves the remainder unused; a budget below the replica maximum is rejected. The partition is static, with no global lease: warm-ups keep their separate slots, and when old and new revisions overlap beyond the configured maximum they can temporarily exceed the visitor budget. The settings take effect when an operator runs a provision; a rollout of the site or API image alone doesn't apply them. Each replica also warms the searcher after it restarts, one warm-up at a time within a replica but not across them: while two replicas run (a rollout, or the HTTP rule's second replica), a searcher restart gets a warm-up from each, which compute the same misses side by side for up to the warm-up's budget (5 minutes). The searcher app runs one replica in prod and the API usually one, so that's a rollout's few minutes.
 
@@ -81,9 +81,9 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 1. Set retention and turn off routing **together**, then commit `infra/env/prod.json`, merge its pull request and pull before provisioning:
 
    ```sh
-   scripts/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --value true
-   scripts/settings.sh --env prod --key USNM_SEARCHER_APP --unset
-   scripts/provision.sh --env prod
+   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --value true
+   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP --unset
+   scripts/azure/provision.sh --env prod
    ```
 
    The first provision recreates the API's system-assigned identity (a new principal) and its Blob Data Reader assignments on `qw-index`, including the separate index account when configured. The assignments depend on the API resource, so the sidecar can start before its new grants reach Blob and may restart or log authorization failures during propagation. It must not take traffic until its startup and readiness checks pass. Allow several minutes for role propagation, in addition to loading and warming (normally up to about 13 minutes); do not assume provision returning means the grants are usable. The old API revision still searches the retained app throughout. If provisioning or startup fails, leave retention on and retry the same first provision before proceeding; do not delete and recreate the identity by hand. `SEARCHER_APP` becomes empty because it describes the new API's backend, not the retained resource. CPU alerts and the workbook also return to the API.
@@ -101,8 +101,8 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 3. Only after those checks, unset retention, commit and merge that **second** settings change, pull, then provision again:
 
    ```sh
-   scripts/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --unset
-   scripts/provision.sh --env prod
+   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --unset
+   scripts/azure/provision.sh --env prod
    ```
 
    The stack now deletes the unused searcher app and its role without changing the API's sidecar template or its identity. Keeping retention on longer is safe but continues billing for the extra searcher. Unsetting both settings in the first provision skips this protection and can drop search until the sidecar is ready.
@@ -114,27 +114,27 @@ The searcher sidecar, the ingest image (whose Quickwit is the release's writer) 
 Build it in an environment's registry, which records the digest in the file:
 
 ```sh
-scripts/build-quickwit.sh --env prod              # ACR Tasks, about an hour; the build log follows
-scripts/build-quickwit.sh --env dev --from prod   # or import prod's build (same digest, no build)
+scripts/azure/build-quickwit.sh --env prod              # ACR Tasks, about an hour; the build log follows
+scripts/azure/build-quickwit.sh --env dev --from prod   # or import prod's build (same digest, no build)
 ```
 
-If your `az` session expires during the build, ACR still finishes it. Once it has, run the same command again: it finds the tag and records its digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it, which the jobs pick up at their next execution. The sidecar and the init container move with `scripts/provision.sh --env <env>`, run once publish has finished.
+If your `az` session expires during the build, ACR still finishes it. Once it has, run the same command again: it finds the tag and records its digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it, which the jobs pick up at their next execution. The sidecar and the init container move with `scripts/azure/provision.sh --env <env>`, run once publish has finished.
 
 **A new patch, or a Quickwit upgrade:**
 
 1. On the fork, commit to the `usnm/v0.9.1-pool` branch (for an upgrade, rebase the commit onto the new upstream tag in a new branch, such as `usnm/v0.9.2-pool`) and tag it with a new `usnm-*` tag, such as `usnm-v0.9.1-pool2`. Names starting `usnm` trigger none of Quickwit's own workflows.
 2. In `docker/Dockerfile.quickwit-patched`, set `QW_COMMIT_HASH` to the tagged commit and `QW_COMMIT_TAGS` to the tag without `usnm-` (`v0.9.1-pool2`), which is also the image's tag. For an upgrade, also take the new version's Dockerfile changes (base images, packages) and its `QW_COMMIT_DATE`, and move the `upstream` pin in `infra/quickwit-image.json` and `docker/Dockerfile.ingest`'s default to the new release (CI checks they match).
-3. `scripts/build-quickwit.sh --env prod`, then commit, merge and provision, as above.
-4. Re-run the cold-search test (`scripts/load-cold-searches.py`) and read [the searcher's threads](#searcher-threads).
+3. `scripts/azure/build-quickwit.sh --env prod`, then commit, merge and provision, as above.
+4. Re-run the cold-search test (`scripts/ops/load-cold-searches.py`) and read [the searcher's threads](#searcher-threads).
 
-**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and run `scripts/provision.sh --env <env>` once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn pooling off in the searcher alone, without a new image, set `QW_AZURE_POOL=false` on the sidecar (`infra/modules/containerapp.bicep`) and provision.
+**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and run `scripts/azure/provision.sh --env <env>` once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn pooling off in the searcher alone, without a new image, set `QW_AZURE_POOL=false` on the sidecar (`infra/modules/containerapp.bicep`) and provision.
 
 ## Cache warm-up
 
 Each API start, and each publish before it swaps the new version in, warms the caches with the home page's examples and the most frequent logged searches (06 §6.5), as does a searcher restart under a running API (`searcher_restart`, [the searcher app](#searcher-app)). They run one at a time: one that starts during another waits for its turn, and none is dropped. One line per run:
 
 ```sh
-scripts/logs.sh --env prod --query-name warm-up --span 2d                # per run: examples warm, cached, computed, skipped, ms
+scripts/azure/logs.sh --env prod --query-name warm-up --span 2d                # per run: examples warm, cached, computed, skipped, ms
 ```
 
 A start isn't ready until its run ends, so in a rollout the old revision serves meanwhile and the new one takes visitors only once it's warm (06 §6.6); every prod start from 3 to 10 October 2026 used its whole 5-minute budget (`Ms` about 300000), but a start that finds everything cached is ready in seconds (below). A start still running at the readiness cap (6 minutes in prod, 1 minute where the app scales to zero) logs `warm-up still running at the readiness cap; reporting ready` and serves visitors while it finishes.
@@ -155,10 +155,10 @@ Each computed search also logs `slow warm-up query` with its `ms` when it takes 
 The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 3 more. To read it:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
+scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
   --value "$(az ad signed-in-user show --query id -o tsv)"   # private: the settings store (Settings, above)
-scripts/provision.sh --env prod
-scripts/searches.sh --env prod --days 30      # searches per day, top queries, queries that found nothing, date spans
+scripts/azure/provision.sh --env prod
+scripts/azure/searches.sh --env prod --days 30      # searches per day, top queries, queries that found nothing, date spans
 ```
 
 The last two tables count searches by date span (the whole corpus range, over 10 years, 1–10 years, a year or less) and by the decade partitions they touch, bucketed as `usnm_core::decade` (pre-1820 is one). They hold counts and shares only, never queries. A search is whole range when it covers the corpus bounds the site serves (`/v1/meta`, read from the environment's `SITE_URL`); if those can't be read, the script says so and takes each version's widest search instead. They decide whether to build the next full base with `USNM_PARTITION_DECADE` (#123): only date-limited searches skip splits.

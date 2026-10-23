@@ -27,7 +27,7 @@ signed-app or campaign-setting drift merely to publish these counts.
 
 ## Workbook query validation
 
-Run `python3 scripts/validate-boinc-workbook.py --workspace <customer-GUID>`
+Run `python3 scripts/boinc/validate-boinc-workbook.py --workspace <customer-GUID>`
 with the Mac's existing Azure CLI user credential. On an authorized Arc host use
 `--identity arc`; the standard localhost:40342 challenge and token stay on that
 host, and its existing identity must already have workspace Reader access.
@@ -35,7 +35,7 @@ Arc membership alone does not grant query access. No login, grant, workload or
 resource is created by validation. `--subscription <id>` selects the existing
 Azure CLI account without changing global CLI configuration.
 
-The shared `scripts/log_analytics.py` client defaults to
+The shared `scripts/azure/log_analytics.py` client defaults to
 `https://<workspace-location>.api.loganalytics.io/v1/workspaces/<customer-GUID>/query`
 with the unchanged token audience `https://api.loganalytics.io`. It derives the
 location from workspace metadata using the existing Azure CLI subscription, or

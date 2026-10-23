@@ -6,35 +6,35 @@ Part of the [operations guide](README.md).
 
 An environment's settings live in three places ([`infra/README.md`](../../infra/README.md#settings-and-the-deployment-stack), #295), and [`infra/env/schema.json`](../../infra/env/schema.json) says which setting goes where:
 
-- **Public choices** (flags, sizes, caps, schedules, most `USNM_*` settings) are committed in `infra/env/<env>.json`. A change to a shared environment goes through a pull request like code, and `scripts/provision.sh` deploys only committed settings:
+- **Public choices** (flags, sizes, caps, schedules, most `USNM_*` settings) are committed in `infra/env/<env>.json`. A change to a shared environment goes through a pull request like code, and `scripts/azure/provision.sh` deploys only committed settings:
 
   ```sh
-  scripts/settings.sh --env prod --key USNM_JA_LATIN --value true   # edits infra/env/prod.json
+  scripts/azure/settings.sh --env prod --key USNM_JA_LATIN --value true   # edits infra/env/prod.json
   git switch -c settings/prod-ja-latin && git commit -am "prod: USNM_JA_LATIN on" && git push -u origin HEAD
   # open the pull request; once it's merged:
   git switch main && git pull
-  scripts/provision.sh --env prod
+  scripts/azure/provision.sh --env prod
   ```
 
-  CI's "stack change needs a provision" warning on the merge stays until you run that provision. Every `scripts/settings.sh` example below that sets a public setting works this way. In dev, an experiment's settings go in its own pull request; to try one before committing it, `scripts/provision.sh --env dev --allow-dirty`.
+  CI's "stack change needs a provision" warning on the merge stays until you run that provision. Every `scripts/azure/settings.sh` example below that sets a public setting works this way. In dev, an experiment's settings go in its own pull request; to try one before committing it, `scripts/azure/provision.sh --env dev --allow-dirty`.
 
-- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, `USNM_VNET_ADDRESS_PREFIX`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the **settings store**, one Azure App Configuration store for every environment in the subscription, `usnm-config-appcs-<suffix>` in `usnm-config-rg`, each environment's under its own label (`dev`, `prod`, ...). The key is the setting's name. Only the operators can reach it, with Entra ID (the store has no access keys); CI never reads it. `scripts/settings.sh` reads and sets them with your sign-in (in the store, removing any local copy), or `az` does directly:
+- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, `USNM_VNET_ADDRESS_PREFIX`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the **settings store**, one Azure App Configuration store for every environment in the subscription, `usnm-config-appcs-<suffix>` in `usnm-config-rg`, each environment's under its own label (`dev`, `prod`, ...). The key is the setting's name. Only the operators can reach it, with Entra ID (the store has no access keys); CI never reads it. `scripts/azure/settings.sh` reads and sets them with your sign-in (in the store, removing any local copy), or `az` does directly:
 
   ```sh
-  scripts/settings.sh --env prod --key USNM_ALERT_EMAILS --value ops@example.org
-  # or: store=$(scripts/settings.sh --env prod --key SETTINGS_STORE_ENDPOINT)
+  scripts/azure/settings.sh --env prod --key USNM_ALERT_EMAILS --value ops@example.org
+  # or: store=$(scripts/azure/settings.sh --env prod --key SETTINGS_STORE_ENDPOINT)
   #     az appconfig kv set --endpoint "$store" --auth-mode login --label prod --key USNM_ALERT_EMAILS --value ops@example.org --yes
-  scripts/provision.sh --env prod
+  scripts/azure/provision.sh --env prod
   ```
 
-  `scripts/settings.sh --env prod --key K --unset` clears a private setting everywhere, so it takes its default: it deletes the key from the store and any local copy. `--unset-local` removes only the local file's entry, so the store's value applies again (provision suggests it when a key is in both places). Until the store exists, private settings stay in the local file; once it does, `scripts/settings.sh --env <env> --migrate` moves them in (it stops, moving none, if the store already has a different value for one), and every provision until then warns. Every script that sets a private setting writes it to the store, only if the value changed, and removes any local copy, so a re-run never leaves it in two places (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` sets the nodes' group; `settings.sh` sets the one you give it). An empty value stays a local `""`, which hides the store's value (`teardown.sh` detaches the archive that way); `--migrate` leaves those.
+  `scripts/azure/settings.sh --env prod --key K --unset` clears a private setting everywhere, so it takes its default: it deletes the key from the store and any local copy. `--unset-local` removes only the local file's entry, so the store's value applies again (provision suggests it when a key is in both places). Until the store exists, private settings stay in the local file; once it does, `scripts/azure/settings.sh --env <env> --migrate` moves them in (it stops, moving none, if the store already has a different value for one), and every provision until then warns. Every script that sets a private setting writes it to the store, only if the value changed, and removes any local copy, so a re-run never leaves it in two places (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` sets the nodes' group; `settings.sh` sets the one you give it). An empty value stays a local `""`, which hides the store's value (`teardown.sh` detaches the archive that way); `--migrate` leaves those.
 
-  **The store's lifecycle.** It sits outside every environment's stack, in its own stack `usnm-config` (`infra/settings/main.bicep`), so no provision or teardown of an environment deletes it: `teardown.sh` keeps the environment's private settings under its label, and the next stand-up reads them again. The first provision in a subscription creates it (`scripts/settings-store.sh --deploy`, in that environment's region, registering the `Microsoft.AppConfiguration` provider first if the subscription lacks it), and so does `bootstrap.sh` through its provision; it then waits up to 15 minutes for its new role on the store to apply. `scripts/settings-store.sh --what-if` shows what a deployment would change. It is on the Free tier: $0, 10 MB, 1,000 requests a day. A provision reads an environment's settings in one request and each script's single read is one more, so the cap is far off. The Free tier has no soft delete: a deleted key is gone.
+  **The store's lifecycle.** It sits outside every environment's stack, in its own stack `usnm-config` (`infra/settings/main.bicep`), so no provision or teardown of an environment deletes it: `teardown.sh` keeps the environment's private settings under its label, and the next stand-up reads them again. The first provision in a subscription creates it (`scripts/azure/settings-store.sh --deploy`, in that environment's region, registering the `Microsoft.AppConfiguration` provider first if the subscription lacks it), and so does `bootstrap.sh` through its provision; it then waits up to 15 minutes for its new role on the store to apply. `scripts/azure/settings-store.sh --what-if` shows what a deployment would change. It is on the Free tier: $0, 10 MB, 1,000 requests a day. A provision reads an environment's settings in one request and each script's single read is one more, so the cap is far off. The Free tier has no soft delete: a deleted key is gone.
 
   **Who can read the store.** App Configuration Data Owner goes to the Entra object ids in the store stack's admin list and to the account that last deployed it. The role covers every label: one maintainer operates every environment, so per-environment access isn't worth a store each. A provision reads the store before it deploys anything, and an operator without access stops there with the commands that fix it. To add someone, an operator who has access adds their object id (`az ad signed-in-user show --query id -o tsv`, run by them); `--admins` replaces the list, so give everyone's:
 
   ```sh
-  scripts/settings-store.sh --deploy --admins "<id>,<id>"
+  scripts/azure/settings-store.sh --deploy --admins "<id>,<id>"
   ```
 
   Without `--admins`, `--deploy` keeps the list it has. With no operator left, an Owner of the subscription grants the role to themselves on the store's group (not on the store, where it would collide with the stack's assignment), adds themselves to the list as above, then deletes that grant: `az role assignment create --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "App Configuration Data Owner" --scope "/subscriptions/<subscription id>/resourceGroups/usnm-config-rg"`. On a new machine, whose local file has no `SETTINGS_STORE_ENDPOINT`, every script that reads or writes a private setting (not only provision) takes the endpoint from the store's stack and records it, so none of them mistakes a store it can't find for an unset setting.
@@ -46,19 +46,19 @@ An environment's settings live in three places ([`infra/README.md`](../../infra/
 A setting in the wrong place, or in two, stops a provision before it deploys anything. **Moving an environment from before #295** (its public settings are still in the local file) is one command, then a pull request:
 
 ```sh
-scripts/settings.sh --env prod --migrate   # moves the public settings into infra/env/prod.json
+scripts/azure/settings.sh --env prod --migrate   # moves the public settings into infra/env/prod.json
 git diff infra/env/prod.json               # check, commit, pull request, merge
-scripts/provision.sh --env prod            # creates the settings store if the subscription has none
-scripts/settings.sh --env prod --migrate   # moves the private settings into it
+scripts/azure/provision.sh --env prod            # creates the settings store if the subscription has none
+scripts/azure/settings.sh --env prod --migrate   # moves the private settings into it
 ```
 
-`scripts/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and calls GA `az stack-whatif sub create` to preview the stack, including unmanaged-resource and deny-setting changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions. What-If results can be retained from `PT1H` to `PT3H`; the scripts request `PT3H`.
+`scripts/azure/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and calls GA `az stack-whatif sub create` to preview the stack, including unmanaged-resource and deny-setting changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions. What-If results can be retained from `PT1H` to `PT3H`; the scripts request `PT3H`.
 
 Known residual What-If noise includes provider normalization: Static Web Apps provider-generated properties, diagnostic-setting destination defaults, and Azure Files soft-delete retention defaults. Compare each result with the deployed resource and template before classifying it; don't change the template merely to silence a provider-generated/default difference. Always review actual deletions and deny-setting changes; `--only-show-errors` is not a substitute for examining the preview. [Microsoft's deployment-stacks What-If documentation](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-stacks-what-if) describes the supported preview and retention behavior.
 
 ## Deploy the jobs
 
-`scripts/bootstrap.sh --env <env> --ingest` deploys both jobs (or `scripts/settings.sh --env <env> --key USNM_INGEST_JOBS --value true` and `scripts/provision.sh --env <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4), and `USNM_BACKFILL_CRON` an optional schedule for it (a UTC cron such as `"0 9 2-4 10 *"`; empty is manual), which every deployment keeps. The ingest job's Quickwit writer works on the replica's own disk, which holds a weekly delta; a full rebuild adds an NFS share for it, `USNM_INGEST_SCRATCH_GIB` in size (default 0, none; 128 for a rebuild, 08 §8.4), only while the rebuild runs ([Full rebuild](rebuild-and-index-storage.md#full-rebuild)). The weekly schedule comes after the first release ([Weekly updates](catalog-and-releases.md#weekly-updates)).
+`scripts/azure/bootstrap.sh --env <env> --ingest` deploys both jobs (or `scripts/azure/settings.sh --env <env> --key USNM_INGEST_JOBS --value true` and `scripts/azure/provision.sh --env <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4), and `USNM_BACKFILL_CRON` an optional schedule for it (a UTC cron such as `"0 9 2-4 10 *"`; empty is manual), which every deployment keeps. The ingest job's Quickwit writer works on the replica's own disk, which holds a weekly delta; a full rebuild adds an NFS share for it, `USNM_INGEST_SCRATCH_GIB` in size (default 0, none; 128 for a rebuild, 08 §8.4), only while the rebuild runs ([Full rebuild](rebuild-and-index-storage.md#full-rebuild)). The weekly schedule comes after the first release ([Weekly updates](catalog-and-releases.md#weekly-updates)).
 
 ## Archival storage
 
@@ -71,19 +71,19 @@ Production keeps no batch archives (ADR-0006): LoC is the source of record. The 
 Check what a deploy would change, then deploy:
 
 ```sh
-scripts/archive-store.sh what-if --subscription <id>    # changes nothing
-scripts/archive-store.sh deploy --subscription <id>     # prints the account's resource id
+scripts/azure/archive-store.sh what-if --subscription <id>    # changes nothing
+scripts/azure/archive-store.sh deploy --subscription <id>     # prints the account's resource id
 ```
 
 `what-if` shows the guard-rail definitions' changes, then the account's. Until the definitions exist, the account's what-if can fail on its assignments; `deploy` creates them first.
 
-**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, the bench identity (`usnm-qw-bench-id-{env}`) also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting this way. `scripts/teardown.sh` detaches an environment that has the setting on by itself first ([Dev environment lifecycle](#dev-environment-lifecycle)).
+**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, the bench identity (`usnm-qw-bench-id-{env}`) also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting this way. `scripts/azure/teardown.sh` detaches an environment that has the setting on by itself first ([Dev environment lifecycle](#dev-environment-lifecycle)).
 
 ```sh
-scripts/archive-store.sh unlock
-scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --unset   # a private setting: deletes it from the settings store
-scripts/provision.sh --env dev
-scripts/archive-store.sh deploy        # the lock back
+scripts/azure/archive-store.sh unlock
+scripts/azure/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --unset   # a private setting: deletes it from the settings store
+scripts/azure/provision.sh --env dev
+scripts/azure/archive-store.sh deploy        # the lock back
 ```
 
 **What curation does with it:**
@@ -100,15 +100,15 @@ To keep the archives of batches curated before, queue them again with `--force` 
 Stopping a curate run mid-batch leaves its batches leased for up to 2 hours (the curate worker's lease, set in `crates/usnm-ingest/src/main.rs`; the 45-minute `BATCH_LIMIT` is a running batch's own limit): `--force` leaves a leased batch alone and a new run skips it until the lease runs out. A batch whose runs are stopped repeatedly can reach the attempt cap (5) and be marked failed at its next claim; `enqueue --force` resets its attempts. Found on the dev 1% run (October 2026): after a stopped run, 8 batches needed two more passes.
 
 ```sh
-scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches "$B" --force
-scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
+scripts/azure/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches "$B" --force
+scripts/azure/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
 ```
 
 **An environment's own `raw` container** (`USNM_RETAIN_RAW true`) does the same inside the environment's data account. It goes with the environment, and turning the setting off deletes it, so it suits a short trial. `USNM_ARCHIVE_ACCOUNT` takes precedence when both are set. To move archives kept there into the archival account, with both settings on, run the copy in the ingest job. It streams each archive, checks it against its manifest, and skips those already there. A batch for which the destination holds another archive is left as it is and fails the copy at the end:
 
 ```sh
-scripts/start-job.sh --env dev --job INGEST_JOB -- archive-copy \
-  --from "$(az storage account show -n "$(scripts/settings.sh --env dev --key STORAGE_ACCOUNT)" --query primaryEndpoints.blob -o tsv)raw" \
+scripts/azure/start-job.sh --env dev --job INGEST_JOB -- archive-copy \
+  --from "$(az storage account show -n "$(scripts/azure/settings.sh --env dev --key STORAGE_ACCOUNT)" --query primaryEndpoints.blob -o tsv)raw" \
   --batches "$B"
 ```
 
@@ -125,7 +125,7 @@ A set packages a sample for reuse in `sets/{name}/`, built once by the search cl
 - `manifest.json`, written last: name and version, how the batches were chosen, the batch list with each archive's bytes and sha256, page and document counts, each file's bytes and sha256, the corpus bounds, the common-word pairs' and American Stories' versions, the index config's sha256, the builder's commit and `created_at`.
 
 ```sh
-J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+J() { scripts/azure/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J bundle --name loc-1pct-v1 --sample dev1pct \
   --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
 J load --set loc-1pct-v1 --index s1ixset          # the cluster loads straight from the set
@@ -149,31 +149,31 @@ Reprovisioning the same experiment preserves the project group's original `start
 
 **The rule** (#275): `dev` (the stack `usnm-dev`, the group `usnm-core-rg-dev`) holds no resources unless a focused experiment is running. Stand it up for the experiment, and tear it down completely once the results are saved. Scaling to zero isn't enough: with no replicas running it still costs about $2 a day, about $60 a month. That's the 4 private endpoints ($0.24 a day each), the Container Apps environment's load balancer (about $0.45 to $0.60 a day) and public IP ($0.12), the registry (ACR Basic, about $0.17), the NFS share (64 GiB, about $0.21), 3 private DNS zones (about $0.05) and storage (Cost Management, October 2026).
 
-**The marker.** Provisioning `dev` needs `USNM_EXPERIMENT`, the experiment's issue number. It tags dev's project group, `usnm-core-rg-dev`, with `experiment` and `started` (UTC), which stays the same while the experiment does. `scripts/dev-status.sh` lists the stack, what's in `usnm-core-rg-dev`, `usnm-core-infra-rg-dev` (the Container Apps environment's own) and `rg-usnm-dev-spot` (and the legacy `rg-usnm-dev` and `ME_cae-usnm-dev_*`, ADR-0017), the tag and its age, and what those groups have cost since the experiment started. It exits 1 if anything is there without the tag, and warns when the tag is older than 7 days. The guard-rail stack, which stays up between experiments, holds a budget on dev's groups (in both name forms), `budget-usnm-dev-groups`, that mails the alert recipients at $5 of actual spend in a month. It needs no `dev`, only an environment with `USNM_ALERT_EMAILS` provisioned since the budget was added. The legacy Container Apps group's name (`ME_cae-usnm-dev_rg-usnm-dev_<region>`) ends in dev's region: each provision of `dev` records its `AZURE_LOCATION` in the budget, and other environments' provisions keep it.
+**The marker.** Provisioning `dev` needs `USNM_EXPERIMENT`, the experiment's issue number. It tags dev's project group, `usnm-core-rg-dev`, with `experiment` and `started` (UTC), which stays the same while the experiment does. `scripts/azure/dev-status.sh` lists the stack, what's in `usnm-core-rg-dev`, `usnm-core-infra-rg-dev` (the Container Apps environment's own) and `rg-usnm-dev-spot` (and the legacy `rg-usnm-dev` and `ME_cae-usnm-dev_*`, ADR-0017), the tag and its age, and what those groups have cost since the experiment started. It exits 1 if anything is there without the tag, and warns when the tag is older than 7 days. The guard-rail stack, which stays up between experiments, holds a budget on dev's groups (in both name forms), `budget-usnm-dev-groups`, that mails the alert recipients at $5 of actual spend in a month. It needs no `dev`, only an environment with `USNM_ALERT_EMAILS` provisioned since the budget was added. The legacy Container Apps group's name (`ME_cae-usnm-dev_rg-usnm-dev_<region>`) ends in dev's region: each provision of `dev` records its `AZURE_LOCATION` in the budget, and other environments' provisions keep it.
 
 When Cost Management throttles `dev-status.sh` (429), the script makes up to four attempts with exponential backoff (2, 4, 8 seconds by default), honouring `Retry-After` (seconds or HTTP date) and `x-ms-ratelimit-microsoft.costmanagement-*-retry-after` values when they appear in the error text. Azure CLI normally prints only the HTTP reason and response body, not the response headers, and the script turns on no verbose or debug logging. Retry waits total at most 60 seconds; if a requested wait would exceed that budget, no early retry is made. Once the attempts are exhausted, the script warns on stderr that cost is unknown, without changing the environment status or treating it as zero cost. Missing Cost Management Reader permissions are a warning; other query errors still fail.
 
 **Stand it up:**
 
 ```sh
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true   # the experiment's own settings, if any, first
-scripts/stand-up.sh --env dev --experiment 240 [--archive]
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true   # the experiment's own settings, if any, first
+scripts/azure/stand-up.sh --env dev --experiment 240 [--archive]
 ```
 
-The experiment's public settings, and the ones `stand-up.sh` and `teardown.sh` write themselves (`USNM_USE_ACR`, `USNM_COSMOS_FREE_TIER`, `USNM_SEARCH_CLUSTER`), land in `infra/env/dev.json` in your checkout ([Settings](#settings)): commit the experiment's in its pull request. Both scripts provision without the uncommitted-changes check; on its own, use `scripts/provision.sh --env dev --allow-dirty`.
+The experiment's public settings, and the ones `stand-up.sh` and `teardown.sh` write themselves (`USNM_USE_ACR`, `USNM_COSMOS_FREE_TIER`, `USNM_SEARCH_CLUSTER`), land in `infra/env/dev.json` in your checkout ([Settings](#settings)): commit the experiment's in its pull request. Both scripts provision without the uncommitted-changes check; on its own, use `scripts/azure/provision.sh --env dev --allow-dirty`.
 
-`scripts/stand-up.sh` starts from the settings the last teardown kept (`.env.deleted-<time>`, beside the settings file), or new ones. It provisions `dev` without images (registry, data, network, identities: about 7 minutes), copies the pinned Quickwit image into the registry, builds the checkout's API and ingest images there with `az acr build` (tag `exp-<commit>`; the Japanese OCR image too with `USNM_JA_OCR_JOB`), sets `USNM_IMAGE_TAG` and `USNM_USE_ACR`, and provisions again. `--archive` sets `USNM_ARCHIVE_ACCOUNT` from the `usnm-archive` stack. With the archival account and the ingest job on (`USNM_INGEST_JOBS`), it then seeds the title records and catalog from the account's newest `raw/titles/{time}.json` (`scripts/titles-seed.sh`, below). It never creates a GitHub Environment or adds `dev` to `USNM_DEPLOY_ENVIRONMENTS`, so no push to main rolls it: an experiment runs a branch's images. It refuses `prod`, and a checkout with uncommitted changes. To run a newer commit, run it again. `scripts/bootstrap.sh --env dev` would also work, but it wires `dev` to deploy from main.
+`scripts/azure/stand-up.sh` starts from the settings the last teardown kept (`.env.deleted-<time>`, beside the settings file), or new ones. It provisions `dev` without images (registry, data, network, identities: about 7 minutes), copies the pinned Quickwit image into the registry, builds the checkout's API and ingest images there with `az acr build` (tag `exp-<commit>`; the Japanese OCR image too with `USNM_JA_OCR_JOB`), sets `USNM_IMAGE_TAG` and `USNM_USE_ACR`, and provisions again. `--archive` sets `USNM_ARCHIVE_ACCOUNT` from the `usnm-archive` stack. With the archival account and the ingest job on (`USNM_INGEST_JOBS`), it then seeds the title records and catalog from the account's newest `raw/titles/{time}.json` (`scripts/azure/titles-seed.sh`, below). It never creates a GitHub Environment or adds `dev` to `USNM_DEPLOY_ENVIRONMENTS`, so no push to main rolls it: an experiment runs a branch's images. It refuses `prod`, and a checkout with uncommitted changes. To run a newer commit, run it again. `scripts/azure/bootstrap.sh --env dev` would also work, but it wires `dev` to deploy from main.
 
 **Data**, depending on the experiment:
 
 - **Search experiments:** load a packaged set (`sets/loc-1pct-v1/docs.ndjson.zst`, [Sample sets](#sample-sets)) straight into Quickwit. No curation, no titles-sync, no LoC traffic.
 - **Curation or release experiments:** enqueue the set's batches. With `USNM_ARCHIVE_ACCOUNT` set, curation reads them from `raw/` without LoC's download pacing. The 1% (30 batches, 23.8 GB) is roughly 2 worker-hours of bzip2, so under an hour on the backfill job's 4 workers. A release also needs the title catalog. Titles-sync is paced against LoC and can take up to 8 hours, and its output (`reference/raw/titles.json` and the catalog) is in dev's own data account, so it goes at teardown. With the archival account, each titles-sync also saves a copy to `raw/titles/{time}.json` ([Archival storage](#archival-storage)), and the next stand-up starts from the newest one, so the release's titles-sync fetches only titles the copy lacks.
 
-**Seeding the titles.** `scripts/titles-seed.sh --env dev` (which `stand-up.sh` runs) starts one ingest job execution of `usnm-ingest titles-seed` and waits for it (`--wait-mins`, default 20). The job reads the newest copy through dev's endpoint with the ingest identity, checks that the pipeline can read it (every record, and the catalog as geocode loads it: both files or neither, unique ids and ordinals, every title's place listed; a copy that fails writes nothing), and writes the catalog files, then `raw/titles.json` last, each create-only. It writes only into an environment with no record cache: a cache dev already has, newer or older than the copy, is never replaced, and a seed stopped partway finishes when run again. A catalog file already there is kept only if it is the copy's; one that differs stops the seed before the cache is written, so dev never gets one copy's records with another catalog. It logs the copy it read (path, time, records, titles, places) and each file it wrote or kept:
+**Seeding the titles.** `scripts/azure/titles-seed.sh --env dev` (which `stand-up.sh` runs) starts one ingest job execution of `usnm-ingest titles-seed` and waits for it (`--wait-mins`, default 20). The job reads the newest copy through dev's endpoint with the ingest identity, checks that the pipeline can read it (every record, and the catalog as geocode loads it: both files or neither, unique ids and ordinals, every title's place listed; a copy that fails writes nothing), and writes the catalog files, then `raw/titles.json` last, each create-only. It writes only into an environment with no record cache: a cache dev already has, newer or older than the copy, is never replaced, and a seed stopped partway finishes when run again. A catalog file already there is kept only if it is the copy's; one that differs stops the seed before the cache is written, so dev never gets one copy's records with another catalog. It logs the copy it read (path, time, records, titles, places) and each file it wrote or kept:
 
 ```sh
-scripts/titles-seed.sh --env dev                       # again, or after turning the ingest job on
-scripts/logs.sh --env dev --query-name titles-archive --span 1h
+scripts/azure/titles-seed.sh --env dev                       # again, or after turning the ingest job on
+scripts/azure/logs.sh --env dev --query-name titles-archive --span 1h
 ```
 
 **ACR build verification.** All build wrappers (`stand-up.sh`, `build-quickwit.sh`,
@@ -198,17 +198,17 @@ streaming CLI exit status (#549).
 **Tear it down** once the results are saved: reports copied out of `qw-bench/runs/`, logs queried, and, if titles-sync ran with the archival account, its copy in the archive. Save that copy first, and don't start the teardown until the command below exits 0:
 
 ```sh
-scripts/start-job.sh --env dev --job INGEST_JOB --wait-mins 20 -- titles-archive
+scripts/azure/start-job.sh --env dev --job INGEST_JOB --wait-mins 20 -- titles-archive
 ```
 
-Without `--wait-mins`, `start-job.sh` returns as soon as Azure accepts the execution, before anything is written, and a teardown started then would delete the record cache before the copy is made. With it, the script waits for the execution and exits 0 only once it has `Succeeded`, so the copy is in `raw/titles/` (or the newest copy there already held the same records, and nothing was written). It exits 1 if the execution ends `Failed`, `Stopped` or `Degraded` or is still running after 20 minutes: then don't tear down. Check the job's log (`scripts/logs.sh --env dev --query-name job-executions`; without `USNM_ARCHIVE_ACCOUNT` the job has no raw store, and the command fails with `titles-archive needs USNM_RAW_URL`), fix it and run it again. The command is create-only and skips a copy the archive already has, so running it when titles-sync's own copy succeeded costs one short execution. Then:
+Without `--wait-mins`, `start-job.sh` returns as soon as Azure accepts the execution, before anything is written, and a teardown started then would delete the record cache before the copy is made. With it, the script waits for the execution and exits 0 only once it has `Succeeded`, so the copy is in `raw/titles/` (or the newest copy there already held the same records, and nothing was written). It exits 1 if the execution ends `Failed`, `Stopped` or `Degraded` or is still running after 20 minutes: then don't tear down. Check the job's log (`scripts/azure/logs.sh --env dev --query-name job-executions`; without `USNM_ARCHIVE_ACCOUNT` the job has no raw store, and the command fails with `titles-archive needs USNM_RAW_URL`), fix it and run it again. The command is create-only and skips a copy the archive already has, so running it when titles-sync's own copy succeeded costs one short execution. Then:
 
 ```sh
-scripts/teardown.sh --env dev
-scripts/dev-status.sh                                  # expect: dev holds nothing
+scripts/azure/teardown.sh --env dev
+scripts/azure/dev-status.sh                                  # expect: dev holds nothing
 ```
 
-With `USNM_ARCHIVE_ACCOUNT` set, `teardown.sh` first detaches `dev` from the archival account. It lifts the account's delete lock, clears `USNM_ARCHIVE_ACCOUNT` and `USNM_SEARCH_CLUSTER` (the settings that grant roles there) and provisions, so the stack deletes its endpoint and roles itself. It then checks that no role assignment in the account's group belongs to one of dev's identities and that no endpoint connection from dev's groups remains, and puts the lock back (`scripts/archive-store.sh deploy`) whatever happened. The account and its data are never changed. Run it again if it stops partway: it picks up where it stopped. Then it removes `dev` from `USNM_DEPLOY_ENVIRONMENTS` if it's there, waiting for any deploy (`ci` on main) that could still roll it; detaches the stack and deletes the groups it manages, including `usnm-core-rg-dev` (the Container Apps environment's `usnm-core-infra-rg-dev` goes with the environment), the custom roles and any role assignment the stack made outside them; keeps `usnm-guardrails` while another environment (or `usnm-archive`) uses it; deletes the GitHub Environment `dev` if there is one; and keeps the settings file as `.env.deleted-<time>`, without the experiment marker. The retired `rg-usnm-dev-spot` is no longer declared; if a provision has already detached it, follow the [Spot group cleanup](../../infra/README.md#retired-spot-resource-group) separately. `dev-status.sh` still detects it until it is deleted. `az deployment group delete -g rg-usnm-archive -n archive-grant-dev` removes the stale deployment record, if wanted.
+With `USNM_ARCHIVE_ACCOUNT` set, `teardown.sh` first detaches `dev` from the archival account. It lifts the account's delete lock, clears `USNM_ARCHIVE_ACCOUNT` and `USNM_SEARCH_CLUSTER` (the settings that grant roles there) and provisions, so the stack deletes its endpoint and roles itself. It then checks that no role assignment in the account's group belongs to one of dev's identities and that no endpoint connection from dev's groups remains, and puts the lock back (`scripts/azure/archive-store.sh deploy`) whatever happened. The account and its data are never changed. Run it again if it stops partway: it picks up where it stopped. Then it removes `dev` from `USNM_DEPLOY_ENVIRONMENTS` if it's there, waiting for any deploy (`ci` on main) that could still roll it; detaches the stack and deletes the groups it manages, including `usnm-core-rg-dev` (the Container Apps environment's `usnm-core-infra-rg-dev` goes with the environment), the custom roles and any role assignment the stack made outside them; keeps `usnm-guardrails` while another environment (or `usnm-archive`) uses it; deletes the GitHub Environment `dev` if there is one; and keeps the settings file as `.env.deleted-<time>`, without the experiment marker. The retired `rg-usnm-dev-spot` is no longer declared; if a provision has already detached it, follow the [Spot group cleanup](../../infra/README.md#retired-spot-resource-group) separately. `dev-status.sh` still detects it until it is deleted. `az deployment group delete -g rg-usnm-archive -n archive-grant-dev` removes the stale deployment record, if wanted.
 
 **Protected removals during archive detachment:** with `USNM_SEARCH_LOCAL_MODE=nfs` and `USNM_INGEST_SCRATCH_GIB=0`, disabling the search cluster also removes its scratch account and file private-DNS zone in that partial provision. Inspect the managed IDs and guard output, then pass repeated `--allow-rename=<exact-old-name>` to `teardown.sh` for each intentional removal (both account and zone). The environment-name confirmation does not grant these approvals. A missing, failed or unsupported plan still blocks, even with overrides; the archive lock is restored and the saved detach marker allows an approved rerun. See [the guard and teardown examples](../../infra/README.md#protected-resource-gate); ordinary partial provisions use the same guard, with no automatic teardown bypass.
 
@@ -226,7 +226,7 @@ An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1
 
 - **Nodes** `usnm-qw-{i}-ca-{env}`, `USNM_SEARCH_CLUSTER_NODES` of them (0 to 4), each exactly one replica of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU (default 2, the API sidecar's size) with 2 GiB per vCPU, on the Consumption profile. Node 0 is the only metastore (the single writer of the file-backed metastore in `qw-cluster`), the control plane, the janitor, an indexer, a searcher, and the root: searches enter there through its internal ingress, `http://usnm-qw-0-ca-{env}` inside the environment. Nodes 1 to `USNM_SEARCH_CLUSTER_INDEXERS - 1` also index; the rest only search. Their node config is `infra/quickwit/cluster-node.yaml`; its searcher settings are the sidecar's (`searcher.yaml`), which a test checks.
 - **Addresses.** Quickwit gossips over UDP and calls leaves over gRPC, both on replica IPs, which change whenever a replica restarts (#239). Each node starts as `usnm-qwcluster node`. That writes its replica IP to `qw-bench/seeds/qw-{i}.json`, reads the other nodes' entries as `QW_PEER_SEEDS`, sets `QW_ADVERTISE_ADDRESS`, and then becomes Quickwit. Every node writes before it reads, so of two nodes starting together at least one sees the other. A node that restarts at a new IP joins through the others, and they learn its new address by gossip.
-- **Bench job** `usnm-qw-bench-caj-{env}` (manual, 4 vCPU / 8 GiB, 6 h timeout), which runs `usnm-qwcluster` with each step's arguments (`scripts/start-job.sh`).
+- **Bench job** `usnm-qw-bench-caj-{env}` (manual, 4 vCPU / 8 GiB, 6 h timeout), which runs `usnm-qwcluster` with each step's arguments (`scripts/azure/start-job.sh`).
 - **Storage, Entra only.** Containers `qw-cluster` (splits and metastore; Blob Data Contributor for each node's system-assigned identity, since Quickwit can use no other) and `qw-bench` (seeds, the sample, reports; Contributor for `usnm-qw-node-id-{env}` and `usnm-qw-bench-id-{env}`). The bench identity also reads `curated` and `reference`. Nothing can write `qw-index`, `reference` or `curated`. Turning the setting off deletes both containers (soft delete keeps them 14 days).
 
 **The steps.** Each `usnm-qwcluster` step logs one `qwcluster report` line and stores the full report in `qw-bench/runs/`.
@@ -244,38 +244,38 @@ An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1
 **Run it** (in `dev`; prod's data account is private, so dev curates its own 1% from LoC):
 
 ```sh
-scripts/archive-store.sh deploy                       # once per subscription; prints the account's id
+scripts/azure/archive-store.sh deploy                       # once per subscription; prints the account's id
 ARCHIVE_ID=<the id it printed>
-scripts/settings.sh --env dev --key USNM_INGEST_JOBS --value true
-scripts/settings.sh --env dev --key USNM_INGEST_SCRATCH_GIB --value 0            # 1% fits the replica's disk
-scripts/settings.sh --env dev --key USNM_LOG_DAILY_CAP_GB --value 1              # blob write logs; clear afterwards
-scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --value "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above; private: the settings store)
-scripts/provision.sh --env dev --allow-dirty    # the experiment's settings, before they're committed
-RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
+scripts/azure/settings.sh --env dev --key USNM_INGEST_JOBS --value true
+scripts/azure/settings.sh --env dev --key USNM_INGEST_SCRATCH_GIB --value 0            # 1% fits the replica's disk
+scripts/azure/settings.sh --env dev --key USNM_LOG_DAILY_CAP_GB --value 1              # blob write logs; clear afterwards
+scripts/azure/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --value "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above; private: the settings store)
+scripts/azure/provision.sh --env dev --allow-dirty    # the experiment's settings, before they're committed
+RG=$(scripts/azure/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/azure/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD)
 . scripts/lib/acr-build.sh
 acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f docker/Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
 acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f docker/Dockerfile.api .
-scripts/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
-scripts/settings.sh --env dev --key USNM_USE_ACR --value true
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
+scripts/azure/settings.sh --env dev --key USNM_USE_ACR --value true
+scripts/azure/provision.sh --env dev --allow-dirty
 
 # The 1%: every 100th batch of LoC's listing by name, from the 40th (offset 39):
 # 30 batches, 238,057 pages of 23,838,683 (0.999%), 26 awardees, 23.8 GB of archives.
 B=arhi_beatles_ver01,az_fireant_ver01,ct_fairfield_ver01,curiv_plasse_ver01,dlc_alpha_ver03,dlc_debaptiste_ver01,dlc_goldenrod_ver01,dlc_leibovitz_ver01,dlc_saluki_ver01,gu_drteeth_ver01,iahi_hypno_ver01,in_irvington_ver01,khi_garwood_ver02,lu_juggernaut_ver01,me_calais_ver03,mnhi_dassel_ver01,mohi_berenice_ver01,mthi_goldeneye_ver01,ncu_cotton_ver04,nhd_lafayette_ver01,nn_keddy_ver01,ohi_himilco_ver01,oru_longspur_ver01,rp_hobgoblin_ver02,tu_eddie_ver02,uuml_anderson_ver01,vi_fezza_ver01,vnstcsc_duggan_ver01,whi_brie_ver01,wvu_jolie_ver02
-scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
-scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
-scripts/start-job.sh --env dev --job INGEST_JOB -- run --batches $B --full --curate-max-runtime-secs 21600 \
+scripts/azure/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
+scripts/azure/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
+scripts/azure/start-job.sh --env dev --job INGEST_JOB -- run --batches $B --full --curate-max-runtime-secs 21600 \
   --titles-max-runtime-secs 28800 --quickwit-bin /usr/local/bin/quickwit \
   --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index
-scripts/logs.sh --env dev --query-name release-progress --span 6h    # the single-writer baseline on the same pages
+scripts/azure/logs.sh --env dev --query-name release-progress --span 6h    # the single-writer baseline on the same pages
 
 # One node, one indexer.
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 1
-scripts/provision.sh --env dev --allow-dirty
-J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 1
+scripts/azure/provision.sh --env dev --allow-dirty
+J() { scripts/azure/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J members
 J sample --name dev1pct --pct 100          # dev's whole version is the 1%
 J bundle --name loc-1pct-v1 --sample dev1pct \
@@ -283,14 +283,14 @@ J bundle --name loc-1pct-v1 --sample dev1pct \
 J load --sample dev1pct --index s1ix
 J bench --label n1 --index s1ix --sample dev1pct --expect-searchers 1
 # Two nodes, both indexing.
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 2
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 2
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 2
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 2
+scripts/azure/provision.sh --env dev --allow-dirty
 J load --sample dev1pct --index s2ix
 J bench --label n2 --index s1ix --sample dev1pct --expect-searchers 2
 # Three nodes; node 2 only searches. Then the restart test.
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 3
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 3
+scripts/azure/provision.sh --env dev --allow-dirty
 J bench --label n3 --index s1ix --sample dev1pct --expect-searchers 3
 J members
 az containerapp revision restart -n usnm-qw-2-ca-dev -g "$RG" \
@@ -299,12 +299,12 @@ J bench --label n3-restart --index s1ix --sample dev1pct --expect-searchers 3 --
 J members                                  # qw-2 has a new address and generation
 
 # The report: Log Analytics, Azure Monitor per node app, list prices.
-scripts/qwcluster-report.py --env dev --since 2d --out qwcluster-report.md
+scripts/azure/qwcluster-report.py --env dev --since 2d --out qwcluster-report.md
 ```
 
-Start each step once the previous execution has ended (`az containerapp job execution list -n "$(scripts/settings.sh --env dev --key SEARCH_CLUSTER_JOB)" -g "$RG" -o table`). For a cold `first` pass, restart the node revisions before a bench. The first provision with the cluster may restart node 0 a few times while its identity's role on `qw-cluster` propagates. If Log Analytics is over its cap, stream the stored reports with `J dump --hold-secs 600` and `az containerapp job logs show -n <job> -g "$RG" --container qwbench --follow > lines.txt`, then run `scripts/qwcluster-report.py --env dev --from-file lines.txt`. Collect the report before scaling down: a deleted app's metrics can't be queried.
+Start each step once the previous execution has ended (`az containerapp job execution list -n "$(scripts/azure/settings.sh --env dev --key SEARCH_CLUSTER_JOB)" -g "$RG" -o table`). For a cold `first` pass, restart the node revisions before a bench. The first provision with the cluster may restart node 0 a few times while its identity's role on `qw-cluster` propagates. If Log Analytics is over its cap, stream the stored reports with `J dump --hold-secs 600` and `az containerapp job logs show -n <job> -g "$RG" --container qwbench --follow > lines.txt`, then run `scripts/azure/qwcluster-report.py --env dev --from-file lines.txt`. Collect the report before scaling down: a deleted app's metrics can't be queried.
 
-**Report lines.** Container Apps keeps about 16 KiB of a console line. A bench report therefore goes out as several `qwcluster report` lines (`bench`, one `bench_pass` per pass, `bench_probe`, `bench_profile`), which `scripts/qwcluster-report.py` puts back together by label. Images before this change logged a whole run on one line, and a run with `--probe` passed the limit (October 2026); the report salvages such a line's passes, and takes its Quickwit version from the run's `bench root` line, but its probe and profile are only in `qw-bench` (`runs/{label}/bench.json`). `J dump` with a current image logs those stored reports again, in parts.
+**Report lines.** Container Apps keeps about 16 KiB of a console line. A bench report therefore goes out as several `qwcluster report` lines (`bench`, one `bench_pass` per pass, `bench_probe`, `bench_profile`), which `scripts/azure/qwcluster-report.py` puts back together by label. Images before this change logged a whole run on one line, and a run with `--probe` passed the limit (October 2026); the report salvages such a line's passes, and takes its Quickwit version from the run's `bench root` line, but its probe and profile are only in `qw-bench` (`runs/{label}/bench.json`). `J dump` with a current image logs those stored reports again, in parts.
 
 **Idle and teardown.** `USNM_SEARCH_CLUSTER_NODES 0` and a provision remove the node apps but keep the containers and the bench job, so nothing is billed but storage. `USNM_SEARCH_CLUSTER ""` and a provision remove everything the setting added, both containers included. Clear `USNM_LOG_DAILY_CAP_GB` afterwards. Once the experiment's results are saved, tear `dev` down ([Dev environment lifecycle](#dev-environment-lifecycle)).
 
@@ -320,7 +320,7 @@ Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; 
 
 ```sh
 cd ~/code/usnewsmap.com-qwcluster
-RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
+RG=$(scripts/azure/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/azure/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD); SHA=$(git rev-parse HEAD)
 . scripts/lib/acr-build.sh
 NIGHTLY=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
@@ -332,14 +332,14 @@ acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f docker/Dockerfile.api 
 **Smoke test** on an index the cluster already holds (`s1ixb`, the 1% without American Stories, 58 splits): cluster nodes off, so nothing writes while they search; both searchers at the sidecar's 4 vCPU.
 
 ```sh
-scripts/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODE_VCPU --value 4
-scripts/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --value "$TAG,$TAG-qw2509"
-scripts/provision.sh --env dev --allow-dirty
-J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
-JOB=$(scripts/settings.sh --env dev --key SEARCH_CLUSTER_JOB)
+scripts/azure/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODE_VCPU --value 4
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --value "$TAG,$TAG-qw2509"
+scripts/azure/provision.sh --env dev --allow-dirty
+J() { scripts/azure/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+JOB=$(scripts/azure/settings.sh --env dev --key SEARCH_CLUSTER_JOB)
 wait_for() {  # until execution $1 has ended; prints how
   local s; while :; do
     s=$(az containerapp job execution show -n "$JOB" -g "$RG" --job-execution-name "$1" --query properties.status -o tsv)
@@ -352,7 +352,7 @@ bench() { wait_for "$(J bench --label "$1" --cluster "http://usnm-qw-cmp-$2-ca-d
 restart; bench cmp-v091-r1 0; bench cmp-n2509-r1 1
 restart; bench cmp-n2509-r2 1; bench cmp-v091-r2 0
 restart; bench cmp-v091-r3 0; bench cmp-n2509-r3 1
-scripts/qwcluster-report.py --env dev --since 6h --out qwcompare.md
+scripts/azure/qwcluster-report.py --env dev --since 6h --out qwcompare.md
 ```
 
 The two `members` lines show each searcher alone in its cluster, with `main_threads` 4 in its counters (the nightly reports the same metric names as 0.9.1). The report's **Quickwit version comparison** section has, per pass, the main runtime's busy seconds per search and per GB downloaded, its busy share, and the search pool's peaks, then each version's averages with ratios to 0.9.1, then whether both versions found the same pages for every search. If they didn't, the timings don't compare. On dev's 1% the searches wait on Blob, not CPU (0.1 to 0.4 vCPU in October 2026), so the latency ratios don't carry to production; busy seconds per GB do, since production's cold searches wait on the main runtime (about 95% busy on 4 threads with an idle search pool, #251). A nightly ratio well under 1 (0.8 or less) on busy seconds per GB is worth the full run; near 1, the regression of #6883 isn't what holds production back.
@@ -360,12 +360,12 @@ The two `members` lines show each searcher alone in its cluster, with `main_thre
 **Full run**, if the smoke test points that way: indexes shaped like production's, built by 0.9.1 (node 0) from the 1% with `text_as` and `text_as_cg` filled from `text` and `text_cg` (`load --as-from-text`; LoC's OCR twice, the shape of production's work but not its matches), at the loader's 3,000 pages per split (production's fan-out per search) and at production's 30,000 (production's split size):
 
 ```sh
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
+scripts/azure/provision.sh --env dev --allow-dirty
 wait_for "$(J load --sample dev1pct --index asdup3k --as-from-text)"
 wait_for "$(J load --sample dev1pct --index asdup30k --split-docs 30000 --as-from-text)"
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
+scripts/azure/provision.sh --env dev --allow-dirty
 bench() { wait_for "$(J bench --label "$1" --cluster "http://usnm-qw-cmp-$2-ca-dev" --index "$3" --sample dev1pct --american-stories --levels 1,4,10)"; }
 # then the same three rounds as above for asdup3k and asdup30k
 ```
@@ -393,16 +393,16 @@ With `RG`, `J`, `JOB` and `wait_for` as in the version comparison above, and the
 lbench() { wait_for "$(J bench --label "$1" --cluster http://usnm-qw-local-ca-dev --index "$IX" --sample dev1pct --variant "$2" --levels 1,4,10 --probe --profile-secs 120 "${@:3}")"; }
 # Until the searcher's newest revision is the ready one (a first nfs copy takes minutes).
 ready() { until [ "$(az containerapp show -n usnm-qw-local-ca-dev -g "$RG" --query "properties.latestReadyRevisionName == properties.latestRevisionName" -o tsv)" = true ]; do sleep 30; done; }
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
-scripts/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --unset
-IX=s1ixb; scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_INDEX --value $IX
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value blob; scripts/provision.sh --env dev --allow-dirty; ready
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --unset
+IX=s1ixb; scripts/azure/settings.sh --env dev --key USNM_SEARCH_LOCAL_INDEX --value $IX
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value blob; scripts/azure/provision.sh --env dev --allow-dirty; ready
 lbench c-blob-r1 blob --offset 200; lbench c-blob-r2 blob --levels-only --offset 210
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value nfs; scripts/provision.sh --env dev --allow-dirty; ready
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value nfs; scripts/azure/provision.sh --env dev --allow-dirty; ready
 lbench c-nfs-r1 nfs --offset 220; lbench c-nfs-r2 nfs --levels-only --offset 230
 az containerapp logs show -n usnm-qw-local-ca-dev -g "$RG" --container qwnode --tail 300 | grep -E 'data directory disk|local copy disk|index copied'
-scripts/qwcluster-report.py --env dev --since 12h --out qwlocal.md
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --unset; scripts/provision.sh --env dev --allow-dirty   # removes the searcher and the share
+scripts/azure/qwcluster-report.py --env dev --since 12h --out qwlocal.md
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --unset; scripts/azure/provision.sh --env dev --allow-dirty   # removes the searcher and the share
 ```
 
 The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (and `cache`, `copy`) with ratios to blob, and its bench rows name each run's mode. Compare the `r2` runs: if `nfs` cuts the main runtime's busy seconds per search and the probe's warm-up seconds as `copy` was meant to show, the Blob path (HTTP, TLS, the Azure client) is the main runtime's cost and an NFS share is a way around it in production; if it barely moves them, the cost is in decoding what a split needs. The flame graphs show which functions those seconds went to.
