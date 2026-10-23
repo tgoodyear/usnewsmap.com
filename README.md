@@ -9,6 +9,31 @@
 
 The pages come from [Chronicling America](https://www.loc.gov/collections/chronicling-america/), the Library of Congress and National Endowment for the Humanities collection of digitized newspapers, 1736–1963. This is a rebuild of the original US News Map (2015–2016, Georgia Tech Research Institute and eHistory.org at the University of Georgia), whose code is preserved at [`tgoodyear/usnewsmap`](https://github.com/tgoodyear/usnewsmap).
 
+## Repository map
+
+Each directory below, except `.github/`, has a README with the details.
+
+| Path                  | What it is                                                                                                                                | Read next                                              |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `catalog/`            | The US place gazetteer and the hand-written place and title corrections that the ingest pipeline compiles in.                             | [catalog/README.md](catalog/README.md)                 |
+| `contrib-compute/`    | The Azure hosting for the stock BOINC server that the volunteer OCR pilot submits to: Bicep, server and bridge images, and project files. | [contrib-compute/README.md](contrib-compute/README.md) |
+| `crates/`             | The Rust workspace of 19 crates: the API, the ingest pipeline, the OCR pipeline and the BOINC bridge and apps.                            | [crates/README.md](crates/README.md)                   |
+| `docker/`             | The Dockerfiles for the API, ingest, Japanese OCR and patched Quickwit images.                                                            | [docker/README.md](docker/README.md)                   |
+| `docs/`               | The guides, design documents, architecture decision records, dated technical notes and reports.                                           | [docs/README.md](docs/README.md)                       |
+| `fixtures/`           | The synthetic corpus for development and tests, and the recorded responses and ground-truth samples some tests read.                      | [fixtures/README.md](fixtures/README.md)               |
+| `fuzz/`               | A standalone cargo-fuzz crate that fuzzes the parsers of untrusted OCR node output; it is outside the Cargo workspace.                    | [fuzz/README.md](fuzz/README.md)                       |
+| `infra/`              | The Azure infrastructure in Bicep, the per-environment settings, the Quickwit configs and the monitoring workbooks.                       | [infra/README.md](infra/README.md)                     |
+| `ja-ocr/`             | The Python job that reads Japanese pages the Library of Congress ships without text, plus the OCR quality audit that shares its image.    | [ja-ocr/README.md](ja-ocr/README.md)                   |
+| `ocr/`                | The OCR engine catalog and routes, the engine contract's schemas, the BOINC app definitions and the OCR benchmark data.                   | [ocr/README.md](ocr/README.md)                         |
+| `ops/`                | The saved log queries, the build records of published index versions and the captures that compare versions.                              | [ops/README.md](ops/README.md)                         |
+| `scripts/`            | The scripts that stand environments up and tear them down, operate BOINC and the OCR nodes, build generated data and run CI checks.       | [scripts/README.md](scripts/README.md)                 |
+| `web/`                | The web app: React, MapLibre GL and deck.gl.                                                                                              | [web/README.md](web/README.md)                         |
+| `.github/`            | The GitHub Actions workflows (CI is `ci.yml`), the actions they share and the Dependabot configuration.                                   | [.github/workflows/ci.yml](.github/workflows/ci.yml)   |
+| `Cargo.toml`          | The Cargo workspace: its member crates, the shared dependency versions and the lint settings.                                             | [crates/README.md](crates/README.md)                   |
+| `rust-toolchain.toml` | The Rust toolchain every build uses: stable, with rustfmt and Clippy.                                                                     | [rust-toolchain.toml](rust-toolchain.toml)             |
+| `CONTRIBUTING.md`     | The checks to run before a pull request and the repository's rules.                                                                       | [CONTRIBUTING.md](CONTRIBUTING.md)                     |
+| `SECURITY.md`         | How to report a vulnerability privately, and what is in scope.                                                                            | [SECURITY.md](SECURITY.md)                             |
+
 ## What it does
 
 - Phrase, all-words, any-word and proximity search over the OCR text, with filters by date, state and language.

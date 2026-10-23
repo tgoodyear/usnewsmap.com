@@ -1,0 +1,112 @@
+# Crates
+
+The Rust workspace: 19 crates. The root `Cargo.toml` lists the members, pins the shared dependency versions in `[workspace.dependencies]`, and sets `unsafe_code = "forbid"` and Clippy's `all` group to warn for every crate through `[lints] workspace = true`. `rust-toolchain.toml` selects the stable toolchain with rustfmt and Clippy. [`fuzz/`](../fuzz/README.md) is a separate crate outside this workspace.
+
+Crates named `usnm-ocr-*` belong to the OCR pipeline ([design 12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md)). `usnm-boinc`, `usnm-quality-app` and `usnm-qwen-app` belong to the BOINC volunteer pilot (status: see [docs/boinc.md](../docs/boinc.md)).
+
+Nine crates are libraries only: `usnm-core`, `usnm-search`, `usnm-store`, `usnm-state`, `usnm-telemetry`, `usnm-alto`, `usnm-overlay`, `usnm-ocr-route` and `usnm-ocr-quality`. Two are BOINC apps with no library: `usnm-quality-app` and `usnm-qwen-app`. The other eight have a library and at least one binary.
+
+## The crates
+
+### Shared libraries
+
+| Crate            | Kind    | What it does                                                                                                                                                                                                                                                                                                         |
+| ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `usnm-core`      | library | Domain types the API and the pipeline share: page keys and ids, day numbers and time buckets, the query language and canonical request parameters, text normalization, the place-by-bucket cube, relative-rate scoring, page-language detection, Japanese folding and, with feature `damage`, the OCR damage metric. |
+| `usnm-search`    | library | The `SearchBackend` trait with a Quickwit client and an in-memory backend. The in-memory backend serves local development and tests and is the correctness oracle for the Quickwit counts.                                                                                                                           |
+| `usnm-store`     | library | Object storage (Azure Blob with Entra ID tokens, or a local directory) and the OCR work queues (Azure Storage Queues, a local directory, or PostgreSQL with pgmq).                                                                                                                                                   |
+| `usnm-state`     | library | Pipeline state: the Cosmos DB document store (Entra ID), a file-backed store for local runs, and the typed items in them. The pipeline writes it and the API reads it for the status page.                                                                                                                           |
+| `usnm-telemetry` | library | JSON logs on stdout and OpenTelemetry export to Application Insights with an Entra token. It also forwards the web app's page views.                                                                                                                                                                                 |
+| `usnm-alto`      | library | The bounded ALTO reader for untrusted OCR node output, the ALTO 3.1 writer, `boxes.json` and reading-order text.                                                                                                                                                                                                     |
+| `usnm-overlay`   | library | The Parquet schema of an OCR overlay part: our own OCR's text, one row per page. The Japanese OCR job and `usnm-ocr-worker` write parts and a release reads them.                                                                                                                                                    |
+
+### Services and the pipeline
+
+| Crate         | Kind                 | What it does                                                                                                                                                                                                                                                                                                                                     | Binaries                                               |
+| ------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| `usnm-api`    | library and binary   | The public search API under `/v1` (axum), which also serves the built web app. Reads the published snapshot, queries the search backend and caches responses.                                                                                                                                                                                    | `usnm-api`                                             |
+| `usnm-ingest` | library and binaries | The ingest pipeline. Subcommands include `enqueue`, `curate`, `release`, `titles-sync`, `geocode`, `prune`, the `ocr-*` commands that exchange work with OCR nodes, the Congress fetches and `run`, which does enqueue, curate and release in one process. `usnm-qwcluster` holds the commands of the Quickwit search cluster experiment (#239). | `usnm-ingest`; `usnm-qwcluster` (status: experimental) |
+
+### OCR pipeline
+
+| Crate               | Kind                 | What it does                                                                                                                                                                                                                                                                                                                                                  | Binaries                                                           |
+| ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `usnm-ocr-contract` | library and binary   | Wire formats of the OCR pipeline: queue messages and dead letters, the scan prefetch manifest, the engine contract `usnm-ocr-engine/1`, the runs record and the BOINC job and result manifests. Feature `pipeline` (on by default) adds the queue, prefetch, engine, runs and status types; the native BOINC apps turn it off.                                | `usnm-ocr-contract-schema` writes the JSON Schemas of the contract |
+| `usnm-ocr-route`    | library              | The engine catalog (`ocr/engines/engines.toml`, embedded at build time) and the single production licence gate. Also builds the credits data the release freezes.                                                                                                                                                                                             | none                                                               |
+| `usnm-ocr-adapter`  | library and binaries | The adapter side of the engine contract for adapters written in Rust. Its binaries are the text-only Tesseract adapter and the pinned CPU NDLOCR-Lite adapter.                                                                                                                                                                                                | `usnm-ocr-adapter-tesseract-text`, `usnm-ocr-adapter-ndlocr-lite`  |
+| `usnm-ocr-worker`   | library and binary   | The on-prem OCR worker: takes pages from a queue, fetches each scan from the Library of Congress, reads it with Tesseract or an engine behind the contract, and writes ALTO and an overlay part. Other subcommands prefetch scans, serve and archive them, check the engine routes and run the engine conformance tests. [README](usnm-ocr-worker/README.md). | `usnm-ocr-worker`                                                  |
+| `usnm-ocr-dash`     | library and binary   | The read-only dashboard for the LAN: the scan fetch, the workers and the Proxmox hosts. It never shows page text.                                                                                                                                                                                                                                             | `usnm-ocrdash`                                                     |
+| `usnm-ocr-quality`  | library              | Per-page OCR quality without a transcription: alignment, the three-cornered-hat error model, consensus, findability, confusion pairs, scan features, crop selection and the engine router. Pure functions, so two hosts give the same bytes. Also the slot runner of `usnm_quality`.                                                                          | none                                                               |
+| `usnm-ocr-survey`   | library and binary   | OCR gold-set scoring (CER and WER, the same numbers as `scripts/ocr-survey/gold.py`), the checksummed gold bundle for BOINC volunteers, and the OCR benchmark release commands (`bench-build`, `bench-verify`, `bench-select`, `bench-score`).                                                                                                                | `usnm-ocr-survey`                                                  |
+
+### BOINC
+
+| Crate              | Kind               | What it does                                                                                                                                                                                                                                                                                                                                                                                          | Binaries       |
+| ------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| `usnm-boinc`       | library and binary | The bridge and controller for the stock BOINC server. It exports cached pages, claims work, submits work units, collects results, and holds the staging, validation and collection code of the `assess`, `gold`, `surya`, `quality` and `qwen` apps and the Japanese `ndlocr` work. Its `work` subcommand is the entry point of the worker image (`ocr/boinc/Containerfile`). Not itself a BOINC app. | `usnm-boinc`   |
+| `usnm-quality-app` | binary (BOINC app) | The native `usnm_quality` app. It runs in a BOINC slot on Linux, macOS and Windows without Docker or Podman and writes the deterministic quality report using `usnm-ocr-quality`.                                                                                                                                                                                                                     | `usnm_quality` |
+| `usnm-qwen-app`    | binary (BOINC app) | The native `usnm_qwen` app. It starts `llama-server` on a local port, sends each crop to it and writes the readings. It runs on GPU or CPU.                                                                                                                                                                                                                                                           | `usnm_qwen`    |
+
+`.github/workflows/boinc-quality-native.yml` builds the two BOINC apps for the volunteer platforms listed in [docs/boinc-quality.md](../docs/boinc-quality.md). They use `usnm-ocr-contract` without feature `pipeline`, so they build without Arrow, Parquet and the pipeline's other dependencies.
+
+## How the crates depend on each other
+
+- `usnm-core`, `usnm-store`, `usnm-alto` and `usnm-ocr-route` depend on no other workspace crate.
+- `usnm-search` depends on `usnm-core`. `usnm-state` and `usnm-telemetry` depend on `usnm-store`. `usnm-overlay` depends on `usnm-core`.
+- `usnm-api` depends on `usnm-core`, `usnm-search`, `usnm-store`, `usnm-state` and `usnm-telemetry`. It does not depend on `usnm-ingest`.
+- `usnm-ingest` depends on `usnm-core`, `usnm-search`, `usnm-store`, `usnm-state`, `usnm-telemetry`, `usnm-alto`, `usnm-overlay`, `usnm-ocr-contract` and `usnm-ocr-route`.
+- `usnm-ocr-worker`, `usnm-ocr-adapter`, `usnm-ocr-dash` and `usnm-ocr-survey` all depend on `usnm-ocr-contract`. `usnm-ocr-dash` also depends on `usnm-ocr-worker`, and `usnm-ocr-survey` on `usnm-ocr-quality`.
+- `usnm-boinc` depends on most of them, `usnm-ingest` and `usnm-ocr-worker` included.
+
+## Where each binary ships
+
+| Binary                                                        | Built and shipped by                                                                                                                                                                                                                   |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `usnm-api`                                                    | [`docker/Dockerfile.api`](../docker/README.md), the `usnewsmap-api` image                                                                                                                                                              |
+| `usnm-ingest`, `usnm-qwcluster`                               | [`docker/Dockerfile.ingest`](../docker/README.md), the `usnewsmap-ingest` image, run as Container Apps jobs                                                                                                                            |
+| `usnm-ocr-worker`, `usnm-ocrdash`                             | The `ocr-worker-release` job in `.github/workflows/ci.yml` builds them on AlmaLinux 9 for a GitHub release. `scripts/ocr-node/install-worker.sh` installs the worker; `usnm-ocrdash.service` in `scripts/ocr-node/` runs the dashboard |
+| `usnm-boinc`                                                  | `ocr/boinc/Containerfile` and the ndlocr-lite, qwen and surya Containerfiles beside it; `contrib-compute/images/bridge-bin/Containerfile` for the bridge image                                                                         |
+| `usnm-ocr-survey`                                             | `contrib-compute/images/bridge-bin/Containerfile`; the `ocr-bench` workflow                                                                                                                                                            |
+| `usnm_quality`, `usnm_qwen`                                   | `.github/workflows/boinc-quality-native.yml`, one build per volunteer platform                                                                                                                                                         |
+| `usnm-ocr-adapter-ndlocr-lite`                                | `ocr/engines/ndlocr-lite/Containerfile`                                                                                                                                                                                                |
+| `usnm-ocr-adapter-tesseract-text`, `usnm-ocr-contract-schema` | Built by the crates' tests; no Containerfile builds them                                                                                                                                                                               |
+
+## Files outside `crates/` that the crates read
+
+Several crates compile these in with `include_str!`, so changing one changes the crate's build. `scripts/ci/changes.sh` names the ones that start CI's Rust job.
+
+| File                                                                                            | Read by                                                                                                          |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `catalog/gazetteer/us-places.csv`, `catalog/overrides/*.json`                                   | `usnm-ingest` ([catalog/](../catalog/README.md))                                                                 |
+| `infra/quickwit/*.yaml`                                                                         | `usnm-ingest`, the index and node configs                                                                        |
+| `ops/index-history.json`                                                                        | `usnm-api`, for `/v1/versions` ([ops/](../ops/README.md))                                                        |
+| `web/src/examples.json`                                                                         | `usnm-api`, to warm the caches                                                                                   |
+| `fixtures/`                                                                                     | the tests of `usnm-api`, `usnm-core`, `usnm-ingest` and others; `usnm-api` also reads `fixtures/data` by default |
+| `ocr/engines/engines.toml`, `ocr/routing/routes.toml`, `ocr/engines/*/models.lock`              | `usnm-ocr-route`, `usnm-ocr-worker`, `usnm-ocr-adapter` ([ocr/](../ocr/README.md))                               |
+| `ocr/contract/v1/*.schema.json`                                                                 | checked against the types by a `usnm-ocr-contract` test                                                          |
+| `ocr/boinc/qwen/{weights.lock,llama.lock,disk-policy.json}`, `ocr/boinc/usnm_qwen_benchmark_in` | `usnm-boinc`, `usnm-qwen-app`                                                                                    |
+| `fixtures/ocr-gold/bundle-v1.lock.json`                                                         | `usnm-boinc`, the gold mirror                                                                                    |
+
+## Build and test
+
+From the repository root (the commands CI runs are in [CONTRIBUTING](../CONTRIBUTING.md)):
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo run -p usnm-api        # the API on :8080, serving the synthetic fixtures
+```
+
+The API and ingest tests run against [`fixtures/`](../fixtures/README.md). The Quickwit parity test skips unless `QUICKWIT_URL` is set ([development guide](../docs/development.md)).
+
+## Regenerating generated files
+
+| Generated file                                                       | How                                                                                                                                                    |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ocr/contract/v1/*.schema.json`                                      | `cargo run -p usnm-ocr-contract --bin usnm-ocr-contract-schema -- --out-dir ocr/contract/v1`; a test fails when the files differ from the types        |
+| `usnm-core/data/*.txt.zst`, `usnm-core/data/page-language-words.txt` | `scripts/build-english-words.py`, `scripts/build-damage-words.py`, `scripts/build-page-language-words.py` ([data/README.md](usnm-core/data/README.md)) |
+| `usnm-core/tests/data/damage-parity.jsonl.zst`                       | `python3 ja-ocr/damage_parity.py`; the test prints the `--rescore` command                                                                             |
+| `usnm-core/tests/data/page-language-parity.jsonl.zst`                | `scripts/page-language-sample.py`                                                                                                                      |
+| `usnm-ocr-survey/tests/golden/`                                      | `python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden` (add `--check` to compare only)                                 |
+| `fixtures/skew-vectors.json`                                         | `UPDATE_SKEW_VECTORS=1 cargo test -p usnm-core --test skew_vectors`                                                                                    |
