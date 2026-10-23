@@ -1,0 +1,16 @@
+# Follows CI's prod deployment (#955): update-api.sh, installed by
+# install.sh as /usr/local/sbin/usnm-serving-update, run by
+# usnm-serving-update.timer. A run that deploys takes up to about 10
+# minutes (the image pull, the new color's start and warm-up, then the old
+# color's drain); the timer doesn't start another while one runs.
+[Unit]
+Description=usnewsmap API: follow the latest prod deployment (#955)
+Wants=network-online.target
+After=network-online.target usnm-searcher.service caddy.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm-serving/host.env
+ExecStart=/usr/local/sbin/usnm-serving-update --registry ${USNM_SERVING_REGISTRY} --environment ${USNM_SERVING_ENVIRONMENT}
+SyslogIdentifier=usnm-serving-update
+TimeoutStartSec=30min

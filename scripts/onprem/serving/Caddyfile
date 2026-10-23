@@ -1,0 +1,24 @@
+# The deploy proxy in the serving container (#955), installed as
+# /etc/caddy/Caddyfile by install.sh. cloudflared sends every request here,
+# and Caddy forwards it to the API color that serves (blue on
+# 127.0.0.1:8081, green on 127.0.0.1:8082). Loopback only and plain HTTP:
+# TLS ends at Cloudflare's edge, and the tunnel carries the request here.
+#
+# update-api.sh switches colors once the new one's /readyz passes: it
+# rewrites /etc/usnm-serving/upstream.caddy and runs `systemctl reload
+# caddy`. Requests in flight finish on the old color.
+#
+# Headers: Caddy passes the request's own headers on (Host, Origin,
+# Sec-Fetch-Site, CF-Connecting-IP, which the API reads), and sets
+# X-Forwarded-For to its peer, cloudflared on loopback, since no proxy is
+# trusted here. Caddy writes no access log unless a `log` directive asks
+# for one, so no client IP or query string is logged here (09 §9.4.2).
+{
+	admin 127.0.0.1:2019
+	auto_https off
+}
+
+http://:8080 {
+	bind 127.0.0.1
+	import /etc/usnm-serving/upstream.caddy
+}

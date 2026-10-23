@@ -1,0 +1,30 @@
+# The connector for the remotely managed tunnel usnm-serving (#955),
+# installed by install.sh as
+# /etc/systemd/system/cloudflared-usnm-serving.service. The tunnel token is
+# in /etc/cloudflared/usnm-serving.env (TUNNEL_TOKEN=..., root only, mode
+# 0600), which home-infra's scripts/lab/serving-ct.sh --tunnel writes from
+# Key Vault (ADR-0024); systemd reads it before dropping to a dynamic user.
+# The ingress (tunnel-ingress.json, applied by apply-tunnel-ingress.sh)
+# sends each hostname to Caddy on 127.0.0.1:8080.
+#
+# Log level info: debug logs every URI, with its query string. IPv4 to
+# the edge only, because the container's firewall passes IPv4 only.
+# Updates come from pkg.cloudflare.com through unattended-upgrades, not
+# from cloudflared itself.
+[Unit]
+Description=Cloudflare Tunnel usnm-serving (#955)
+Wants=network-online.target
+After=network-online.target caddy.service
+ConditionPathExists=/etc/cloudflared/usnm-serving.env
+
+[Service]
+EnvironmentFile=/etc/cloudflared/usnm-serving.env
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --loglevel info --edge-ip-version 4 --metrics 127.0.0.1:20241 run
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

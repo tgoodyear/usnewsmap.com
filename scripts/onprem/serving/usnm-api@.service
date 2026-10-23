@@ -1,0 +1,38 @@
+# One color of the API and site in the serving container (#955):
+# usnm-api@blue on 127.0.0.1:8081, usnm-api@green on 127.0.0.1:8082. Caddy
+# forwards to one of them; update-api.sh starts the other on a new image,
+# switches once its /readyz passes and then stops the old one. install.sh
+# installs this unit as /etc/systemd/system/usnm-api@.service.
+#
+# /etc/usnm-serving/api.env (gen-env.sh) holds the settings both colors
+# share. /etc/usnm-serving/api-<color>.env (update-api.sh) holds the
+# color's own: API_IMAGE (the image by digest), API_COMMIT and USNM_BIND.
+# host.env (install.sh) holds HIMDS_GID.
+#
+# Host network, as on the BOINC host (docs/boinc-onprem.md), so the API
+# reaches the searcher and the Arc agent's identity endpoint on loopback.
+# The himds group reads the agent's challenge files. The stop timeout
+# covers the search-log and OCR-request flushes, up to 10 s each.
+[Unit]
+Description=usnewsmap API and site, %i color (#955)
+Wants=network-online.target usnm-searcher.service
+After=network-online.target usnm-searcher.service
+ConditionPathExists=/etc/usnm-serving/api-%i.env
+
+[Service]
+EnvironmentFile=/etc/usnm-serving/host.env
+EnvironmentFile=/etc/usnm-serving/api-%i.env
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+ExecStartPre=-/usr/bin/podman rm -f usnm-api-%i
+ExecStart=/usr/bin/podman run --rm --name usnm-api-%i --network host --pull never \
+  --env-file /etc/usnm-serving/api.env -e USNM_BIND=${USNM_BIND} \
+  -v /srv/usnm-serving/cache:/srv/usnm-serving/cache \
+  -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro --group-add ${HIMDS_GID} \
+  --read-only --tmpfs /tmp:rw,size=64m --cap-drop all --security-opt no-new-privileges \
+  --memory 2g --stop-timeout 40 ${API_IMAGE}
+ExecStop=/usr/bin/podman stop -t 40 usnm-api-%i
+
+[Install]
+WantedBy=multi-user.target
