@@ -90,6 +90,16 @@
       "type": "string",
       "pattern": "^$|^[a-z0-9]+\\.azurecr\\.io/usnm-boinc-bridge@sha256:[0-9a-f]{64}$"
     },
+    "USNM_BOINC_HANDOFF_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_BOINC_ONPREM_HOST run usnm-boinc claim and collect on-prem (#967 phase 3), with the hand-off job's grants: Cosmos ops, the ledger writer on curated, reader on reference, the node writer role on ocr-out, and Message Processor and Sender on the work queues. Pair it with USNM_COSMOS_ONPREM_ACCESS.",
+      "type": "boolean"
+    },
+    "USNM_BOINC_ONPREM_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The on-prem BOINC host's own Arc machine identity's object id (usnm-boinc-arcs-<env>), with USNM_BOINC_HANDOFF_ONPREM.",
+      "not": {}
+    },
     "USNM_BOINC_HANDOFF_RUNNER": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The scan fetcher's identity's object id (the scan-fetch container's Arc machine identity, #469), which pushes scans to boinc-handoff.",
@@ -123,6 +133,11 @@
     },
     "USNM_COSMOS_FREE_TIER": {
       "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_COSMOS_ONPREM_ACCESS": {
+      "x-usnm-visibility": "public",
+      "description": "Open Cosmos DB to USNM_OCR_NODE_IPS (#967): public network access behind an IP firewall that allows those addresses only; the private endpoint stays and local auth stays off. No effect without USNM_OCR_NODE_IPS.",
       "type": "boolean"
     },
     "USNM_DEDICATED_PROFILE": {

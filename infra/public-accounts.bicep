@@ -15,7 +15,9 @@
 //   private-only, as before;
 // - with cosmosOpen, the Cosmos account, whose firewall allows only the
 //   node IPs while the on-prem serving container reads pipeline state
-//   (onPremServing, #955). Otherwise it stays private-only.
+//   (onPremServing, #955) or the on-prem BOINC host runs claim and collect
+//   (cosmosOnPremAccess, #967). The private endpoint stays for the Azure
+//   apps. Otherwise it stays private-only.
 
 import { Names } from 'naming.bicep'
 
@@ -55,12 +57,12 @@ func lakeOpen(onPremLakeRunner bool, ocrNodeIps string) bool =>
 func indexOpen(onPremRelease bool, indexStorage bool, ocrNodeIps string) bool =>
   onPremRelease && indexStorage && !empty(nodeIpList(ocrNodeIps))
 
-// The Cosmos account opens to the node IPs only for the on-prem serving
-// container (onPremServing), and only when there are IPs to allow: with
-// public access on and no IP rules, Cosmos would accept every network.
+// The Cosmos account opens to the node IPs only when a setting asks for it
+// (onPremServing or cosmosOnPremAccess), and only when there are IPs to
+// allow: with public access on and no IP rules, Cosmos would accept every network.
 @export()
-func cosmosOpen(onPremServing bool, ocrNodeIps string) bool =>
-  onPremServing && !empty(nodeIpList(ocrNodeIps))
+func cosmosOpen(open bool, ocrNodeIps string) bool =>
+  open && !empty(nodeIpList(ocrNodeIps))
 
 // USNM_OCR_NODE_IPS as a list: comma separated, blanks dropped.
 @export()

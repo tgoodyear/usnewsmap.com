@@ -34,6 +34,8 @@ param onPremRelease bool = false
 param indexStorage bool = false
 @description('The on-prem serving container uses the lake and Cosmos (main.bicep onPremServing, #955): both open to the node IPs.')
 param onPremServing bool = false
+@description('As in main.bicep.')
+param cosmosOnPremAccess bool = false
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)
@@ -57,7 +59,7 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
           ocrNodes,
           lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing, ocrNodeIps),
           indexOpen(onPremRelease, indexStorage, ocrNodeIps),
-          cosmosOpen(onPremServing, ocrNodeIps)
+          cosmosOpen(onPremServing || cosmosOnPremAccess, ocrNodeIps)
         )
       }
     }
