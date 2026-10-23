@@ -175,7 +175,7 @@ class Pins(unittest.TestCase):
         path.write_text(text[:second] + f"ndlocr-lite/blob/{OTHER_COMMIT}/LICENCE" + text[second + len(old):])
         found = self.problems()
         self.assertIn("is not one commit", found)
-        self.assertIn(f"{OTHER_COMMIT} in engines.toml (ndlocr-lite)", found)
+        self.assertIn(f"{OTHER_COMMIT} in ocr/engines/engines.toml (ndlocr-lite)", found)
         # DINOv3's licence has its own revision and is not the NDLOCR pin.
         self.reset()
         self.edit(check.CATALOG, "facebookresearch/dinov3/blob/", "facebookresearch/dinov3/blob/0000000000000000000000000000000000000000/", None)
