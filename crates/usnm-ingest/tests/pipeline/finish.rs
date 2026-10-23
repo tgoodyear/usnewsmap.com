@@ -29,7 +29,7 @@ struct ThreadLog(Option<Arc<std::sync::Mutex<std::fs::File>>>);
 impl std::io::Write for ThreadLog {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match &self.0 {
-            Some(f) => f.lock().unwrap().write(buf),
+            Some(f) => f.lock().unwrap().write_all(buf).map(|()| buf.len()),
             None => Ok(buf.len()),
         }
     }

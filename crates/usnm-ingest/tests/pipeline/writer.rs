@@ -464,6 +464,7 @@ async fn v1_writer_merges_by_restarting(local: &Path) {
     for chunk in docs.chunks(docs.len().div_ceil(6)) {
         let body: String = chunk.iter().map(|d| format!("{d}\n")).collect();
         // The v1 queue is created with the index's pipeline, just after it.
+        let until = deadline(60);
         let v: Value = loop {
             let resp = http
                 .post(format!(
@@ -476,6 +477,13 @@ async fn v1_writer_merges_by_restarting(local: &Path) {
                 .unwrap();
             if resp.status() != reqwest::StatusCode::NOT_FOUND {
                 break resp.error_for_status().unwrap().json().await.unwrap();
+            }
+            if tokio::time::Instant::now() >= until {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                panic!(
+                    "the v1 ingest endpoint of {id} did not appear within 60 s: {status} {text}"
+                );
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         };
