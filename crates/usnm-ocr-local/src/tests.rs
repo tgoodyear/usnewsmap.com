@@ -22,7 +22,7 @@ use super::ledger::{self, Queued};
 use super::quarantine::{self, Record};
 use super::sync::{self, ImportRecord, Options, Status, Stores};
 use super::{pages, report, ROOT, STATUS_PATH};
-use crate::curated::{CuratedRow, PartWriter};
+use usnm_overlay::curated::{CuratedRow, PartWriter};
 
 const LCCN: &str = "sn83045462";
 const JA_LCCN: &str = "sn00000001";

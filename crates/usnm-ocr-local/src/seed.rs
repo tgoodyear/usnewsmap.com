@@ -62,6 +62,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use arrow_array::{Array, Date32Array, Float64Array, Int16Array, StringArray};
+use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use futures::{StreamExt, TryStreamExt};
@@ -74,6 +75,7 @@ use usnm_core::ids::PageKey;
 use usnm_ocr_contract::fetched;
 use usnm_ocr_contract::message::{OcrMessage, Reason};
 use usnm_ocr_contract::prefetch::{self, ManifestRow};
+use usnm_overlay::curated::from_unix_days;
 use usnm_state::state::{JaLatin, RunBatch, State, DUPLICATES_FILE, JA_LATIN_FILE};
 use usnm_store::queue::{Queue, BULK};
 use usnm_store::ObjectStore;
@@ -82,7 +84,6 @@ use super::enqueue::{self, message_language, QueueReport, MAX_PAGES};
 use super::ledger::{self, Ledger, Queued, DEAD_LETTERED, IMPORTED, NOT_SENT, UNROUTABLE};
 use super::sync::Lease;
 use super::{run_id, ROOT};
-use crate::curated::from_unix_days;
 use crate::ocr_damage::{self, VersionList};
 
 /// The languages the Tesseract pilot routes (ADR-0016): the default.
@@ -280,7 +281,7 @@ impl Options {
             self.years,
             self.min_damage
         );
-        crate::source::hex(&Sha256::digest(basis.as_bytes()))[..16].to_owned()
+        usnm_core::digest::hex(&Sha256::digest(basis.as_bytes()))[..16].to_owned()
     }
 }
 
@@ -488,7 +489,7 @@ fn rank_path(key: &str, batch: &RunBatch, titles: &HashMap<String, Vec<String>>)
         }
         h.update(b";");
     }
-    let tag = &crate::source::hex(&h.finalize())[..12];
+    let tag = &usnm_core::digest::hex(&h.finalize())[..12];
     let file = format!("{}_ver{:02}-{tag}.json", batch.batch, batch.curated.version);
     if file.len() <= 128 {
         format!("{ROOT}/seed/rank/{key}/{file}")
@@ -765,7 +766,7 @@ fn skip(r: &mut SeedReport, why: &str, n: u64) {
 /// The lccns of the titles in the `ocr-ja` overlay.
 async fn ja_overlay_titles(curated: &dyn ObjectStore) -> anyhow::Result<HashSet<String>> {
     Ok(curated
-        .list(crate::ocr_ja::PREFIX)
+        .list(usnm_overlay::JA_PREFIX)
         .await?
         .iter()
         .filter_map(|p| {
@@ -798,7 +799,7 @@ impl Skips {
             .get(&format!("{version}/{DUPLICATES_FILE}"))
             .await?
         {
-            Some(b) => serde_json::from_slice::<Vec<crate::dedup::Hidden>>(&b)
+            Some(b) => serde_json::from_slice::<Vec<usnm_state::state::Hidden>>(&b)
                 .context("reading duplicates.json")?
                 .into_iter()
                 .map(|h| (h.doc_id, h.batch))
@@ -952,16 +953,19 @@ async fn load_done(curated: &dyn ObjectStore, opts: &Options) -> anyhow::Result<
     Ok(out)
 }
 
-/// American Stories' text of one title in one batch, for the optional skip.
-async fn american_stories_texts(
-    curated: &dyn ObjectStore,
-    source: &crate::american_stories::Source,
-    batch: &RunBatch,
-    lccn: &str,
-) -> anyhow::Result<HashMap<String, String>> {
-    let mut counts = crate::dedup::load_counts(curated, batch).await?;
-    counts.retain(|l, _| l == lccn);
-    Ok(source.load(curated, &counts).await?.texts)
+/// American Stories' text of the pages of a title, for the optional
+/// `skip_american_stories` skip. The loader is the release's (`usnm-ingest`
+/// reads the source for the index, 04 §4.9), so the caller hands it in.
+#[async_trait]
+pub trait AmericanStories: std::fmt::Debug + Send + Sync {
+    /// The normalized text, by doc id, of title `lccn`'s pages in `batch`
+    /// that American Stories has.
+    async fn texts(
+        &self,
+        curated: &dyn ObjectStore,
+        batch: &RunBatch,
+        lccn: &str,
+    ) -> anyhow::Result<HashMap<String, String>>;
 }
 
 /// The stores a seeding run uses.
@@ -971,6 +975,8 @@ pub struct Stores<'a> {
     pub queue: &'a Arc<dyn Queue>,
     /// The exchange account's `ocr-out`, for [`Source::Fetched`]'s list.
     pub out: Option<&'a dyn ObjectStore>,
+    /// American Stories' texts; needed only with `skip_american_stories`.
+    pub american_stories: Option<&'a dyn AmericanStories>,
 }
 
 /// `usnm-ingest ocr-seed`: one seeding run, under the `ocr-sync` lock
@@ -1305,7 +1311,9 @@ pub(super) async fn seed(
             hidden,
         } = Skips::load(curated, stores.reference, &version).await?;
         let american_stories = if opts.skip_american_stories {
-            Some(crate::american_stories::Source::list(curated).await?)
+            Some(stores.american_stories.context(
+                "skip_american_stories needs American Stories' texts, and the caller gave none",
+            )?)
         } else {
             None
         };
@@ -1359,8 +1367,8 @@ pub(super) async fn seed(
                         .map(|r| r.doc_id.clone()),
                 );
             }
-            let as_texts = match &american_stories {
-                Some(src) => Some(american_stories_texts(curated, src, b, &unit.lccn).await?),
+            let as_texts = match american_stories {
+                Some(src) => Some(src.texts(curated, b, &unit.lccn).await?),
                 None => None,
             };
             let as_langs: Vec<&str> = langs.iter().map(String::as_str).collect();

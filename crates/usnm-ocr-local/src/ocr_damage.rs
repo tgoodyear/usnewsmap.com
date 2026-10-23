@@ -56,7 +56,7 @@ use usnm_core::text::TextStatus;
 use usnm_state::state::{RunBatch, RUN_BATCHES_FILE};
 use usnm_store::ObjectStore;
 
-use crate::curated::{read_part, CuratedRow};
+use usnm_overlay::curated::{read_part, CuratedRow};
 
 /// The share of compared pages that must agree for the gate to pass.
 pub const GATE_AGREEMENT: f64 = 0.9999;
@@ -1142,9 +1142,9 @@ mod tests {
         );
     }
 
-    use crate::curated::PartWriter;
     use chrono::DateTime;
     use usnm_core::ids::PageKey;
+    use usnm_overlay::curated::PartWriter;
     use usnm_state::state::Curated;
 
     const ENGLISH: &str = "The council of the city met on Tuesday evening at the court house, and after a long \

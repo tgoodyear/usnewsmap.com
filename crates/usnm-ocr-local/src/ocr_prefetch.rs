@@ -340,7 +340,7 @@ pub async fn run(
     let rows_above_min = damaged.len() as u64;
     let dup_path = format!("{}/{DUPLICATES_FILE}", opts.index_version);
     let hidden: HashSet<(String, String)> = match reference.get(&dup_path).await? {
-        Some(b) => serde_json::from_slice::<Vec<crate::dedup::Hidden>>(&b)
+        Some(b) => serde_json::from_slice::<Vec<usnm_state::state::Hidden>>(&b)
             .with_context(|| format!("reading {dup_path}"))?
             .into_iter()
             .map(|h| (h.doc_id, h.batch))

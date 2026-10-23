@@ -12,8 +12,6 @@ pub mod audit;
 pub mod build_info;
 pub mod catalog;
 pub mod cluster;
-pub mod congress;
-pub mod curated;
 pub mod decade_order;
 pub mod dedup;
 pub mod finish;
@@ -21,10 +19,7 @@ pub mod heartbeat;
 pub mod kafka;
 pub mod local_holder;
 pub mod merges;
-pub mod ocr_damage;
 pub mod ocr_ja;
-pub mod ocr_local;
-pub mod ocr_prefetch;
 pub mod onprem;
 pub mod page_language;
 pub mod places;
@@ -41,16 +36,13 @@ pub mod worker;
 
 // Pipeline state lives in its own crate so the API can read it without
 // the pipeline's dependencies (Parquet, Quickwit, telemetry export).
-pub use usnm_state::{cosmos, docs, state};
+// `owner_id` (leases and attempt paths) lives beside the leases.
+pub use usnm_state::{cosmos, docs, owner_id, state};
 
-/// A process-unique id for leases and attempt paths.
-pub fn owner_id() -> String {
-    let host = std::env::var("HOSTNAME")
-        .ok()
-        .filter(|h| usnm_store::is_safe_segment(h))
-        .unwrap_or_else(|| "local".into());
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    format!("{host}-{}-{nanos:08x}", std::process::id())
-}
+// The Congress fetches and the local OCR pipeline are their own crates. The
+// modules keep their paths here, for the stages above and for the crates
+// that call them (`usnm-boinc`, `usnm-ocr-worker`).
+pub use usnm_congress as congress;
+pub use usnm_ocr_local as ocr_local;
+// The curated page rows (`usnm-overlay` holds the Parquet schemas of a page's text).
+pub use usnm_overlay::curated;

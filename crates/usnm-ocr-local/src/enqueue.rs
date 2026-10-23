@@ -146,7 +146,7 @@ mod cache_tests {
         let mut rows = Vec::new();
         for seq in 1..=200 {
             let key = PageKey::new("sn83045462", day, 1, seq).unwrap();
-            let row = crate::curated::CuratedRow::from_ocr(
+            let row = usnm_overlay::curated::CuratedRow::from_ocr(
                 key,
                 "the newspaper and the people",
                 "batch",
@@ -591,7 +591,7 @@ pub async fn enqueue(
     queue: &Arc<dyn Queue>,
     opts: &EnqueueOptions,
 ) -> anyhow::Result<QueueReport> {
-    let owner = crate::owner_id();
+    let owner = usnm_state::owner_id();
     let lease = take(state, &owner, opts.dry_run).await?;
     let result = enqueue_locked(state, curated, reference, queue, opts, lease.as_ref()).await;
     release(state, &owner, lease, result).await
@@ -928,7 +928,7 @@ pub async fn requeue(
     queue: &Arc<dyn Queue>,
     opts: &RequeueOptions,
 ) -> anyhow::Result<QueueReport> {
-    let owner = crate::owner_id();
+    let owner = usnm_state::owner_id();
     let lease = take(state, &owner, opts.dry_run).await?;
     let result = requeue_locked(state, curated, reference, queue, opts, lease.as_ref()).await;
     release(state, &owner, lease, result).await

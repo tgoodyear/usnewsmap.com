@@ -71,6 +71,8 @@ pub struct Options {
     pub deadline: Option<Instant>,
     /// The seeder's settings; off while its plan is empty.
     pub seed: super::seed::Options,
+    /// American Stories' texts for the seeder's `skip_american_stories`.
+    pub american_stories: Option<Arc<dyn super::seed::AmericanStories>>,
 }
 
 impl Default for Options {
@@ -83,6 +85,7 @@ impl Default for Options {
             from_quarantine: None,
             deadline: None,
             seed: super::seed::Options::default(),
+            american_stories: None,
         }
     }
 }
@@ -410,7 +413,7 @@ pub(super) async fn score_from_curated(
         let found =
             tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<ocr_damage::PageRow>> {
                 let mut rows = Vec::new();
-                crate::curated::read_part(Bytes::from(bytes), true, |row| {
+                usnm_overlay::curated::read_part(Bytes::from(bytes), true, |row| {
                     if lccns.contains(&row.key.lccn) && wanted.contains(&row.key.doc_id()) {
                         let langs: Vec<&str> = titles
                             .get(&row.key.lccn)
@@ -571,7 +574,7 @@ async fn run_locked(
 ) -> anyhow::Result<Status> {
     let started = Utc::now();
     let run = run_id(started);
-    let metrics = crate::telemetry::metrics();
+    let metrics = crate::metrics::metrics();
     let mut counts = Counts::default();
 
     if let Some(reason) = &opts.from_quarantine {
@@ -730,6 +733,7 @@ async fn run_locked(
             reference: stores.reference.as_ref(),
             queue: &stores.queue,
             out: Some(stores.out.as_ref()),
+            american_stories: opts.american_stories.as_deref(),
         };
         Some(super::seed::seed(state, &seed_stores, &seed_opts, Some(lease)).await)
     };
@@ -843,7 +847,7 @@ async fn import(
     written_outcomes: &mut Vec<Outcome>,
     lease: &Lease,
 ) -> anyhow::Result<()> {
-    let metrics = crate::telemetry::metrics();
+    let metrics = crate::metrics::metrics();
     let mut sources: Vec<Consumed> = Vec::new();
     let mut accepted: Vec<(Imported, String)> = Vec::new();
     for part in chunk {

@@ -37,7 +37,7 @@ use usnm_store::ObjectStore;
 
 use super::parse::Speaker;
 use super::{CongressPage, StateRef};
-use crate::source::hex;
+use usnm_core::digest::hex;
 
 /// Where curated Congress pages live in the curated store.
 pub const PREFIX: &str = "congress";
@@ -184,6 +184,10 @@ fn schema() -> SchemaRef {
 fn unix_days(d: NaiveDate) -> i32 {
     let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid");
     i32::try_from((d - epoch).num_days()).expect("dates fit in i32 days")
+}
+
+fn from_unix_days(n: i32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid") + chrono::Duration::days(i64::from(n))
 }
 
 fn to_batch(rows: &[CuratedPage]) -> anyhow::Result<RecordBatch> {
@@ -339,7 +343,7 @@ pub fn read_part(bytes: Bytes) -> anyhow::Result<Vec<CuratedPage>> {
                 seq: seq.value(i),
                 printed_page: opt(printed_page, i),
                 appendix: appendix.value(i),
-                date: crate::curated::from_unix_days(date.value(i)),
+                date: from_unix_days(date.value(i)),
                 date_precision: get(precision, i),
                 date_from: get(date_from, i),
                 congress: (!congress.is_null(i))
