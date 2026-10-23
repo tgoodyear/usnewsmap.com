@@ -1,5 +1,5 @@
 name: ci
-# scripts/bootstrap.sh finds the run it dispatched by its correlation id.
+# scripts/azure/bootstrap.sh finds the run it dispatched by its correlation id.
 run-name: ${{ inputs.correlation != '' && format('ci ({0})', inputs.correlation) || github.event_name == 'pull_request' && github.event.pull_request.title || github.event_name == 'push' && github.event.head_commit.message || 'ci' }}
 
 on:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       correlation:
-        description: "Identifies this run (set by scripts/bootstrap.sh)"
+        description: "Identifies this run (set by scripts/azure/bootstrap.sh)"
         required: false
         default: ""
       scope:
@@ -374,7 +374,7 @@ jobs:
       - name: Install Quickwit
         run: scripts/ci/install-quickwit.sh
       - name: Load fixtures, serve them from a read-only searcher
-        run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
+        run: echo "QUICKWIT_URL=$(scripts/dev/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
       - run: cargo test -p usnm-search --test quickwit_parity --locked
       # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it,
       # with the environment the official Quickwit image sets (the ingest image
@@ -413,14 +413,14 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ops"
           "$RUNNER_TEMP/ops/bin/pip" install --require-hashes --no-deps -r scripts/ci/requirements-ops.txt
       - name: Every snapshot matches ops/version-snapshots/schema.json
-        run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-version-snapshots.py'
+        run: '"$RUNNER_TEMP/ops/bin/python" scripts/ops/check-version-snapshots.py'
       - name: ops/index-history.json matches ops/index-history.schema.json, keys sorted
-        run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-index-history.py'
+        run: '"$RUNNER_TEMP/ops/bin/python" scripts/ops/check-index-history.py'
       - name: The checkers' and searches.sh date-span tests pass
         run: >-
           "$RUNNER_TEMP/ops/bin/python" -m unittest -v
-          scripts/test_check_version_snapshots.py scripts/test_check_index_history.py
-          scripts/test_date_spans.py
+          scripts/ops/test_check_version_snapshots.py scripts/ops/test_check_index_history.py
+          scripts/azure/test_date_spans.py
 
   image:
     name: container image builds
@@ -715,7 +715,7 @@ jobs:
       - name: The BOINC scripts pass shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
-          shellcheck -x -S warning scripts/start-boinc-bridge.sh scripts/provision-boinc.sh scripts/boinc-app-release.sh
+          shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
       - name: Each environment's committed settings match infra/env/schema.json
@@ -877,7 +877,7 @@ jobs:
           ENVS: ${{ vars.USNM_DEPLOY_ENVIRONMENTS || '[]' }}
         run: |
           envs=$(jq -r '.[]' <<< "$ENVS")
-          msg="This merge changes the Azure stack or an environment's settings (infra/), which a deploy doesn't apply. Run scripts/provision.sh for each environment: ${envs//$'\n'/, }."
+          msg="This merge changes the Azure stack or an environment's settings (infra/), which a deploy doesn't apply. Run scripts/azure/provision.sh for each environment: ${envs//$'\n'/, }."
           echo "::warning title=Stack change not deployed::$msg"
           {
             echo "### Stack change not deployed"
@@ -885,7 +885,7 @@ jobs:
             echo "This merge changes \`infra/\` beyond what a deploy applies. From an up-to-date \`main\`, run:"
             echo
             echo '```sh'
-            for e in $envs; do echo "scripts/provision.sh --env $e"; done
+            for e in $envs; do echo "scripts/azure/provision.sh --env $e"; done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -895,7 +895,7 @@ jobs:
     # environment's private registry (08 §8.6) and roll its API onto this
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
-    # Environment holds its own variables, written by scripts/bootstrap.sh.
+    # Environment holds its own variables, written by scripts/azure/bootstrap.sh.
     needs: [changes, rust, queue, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.

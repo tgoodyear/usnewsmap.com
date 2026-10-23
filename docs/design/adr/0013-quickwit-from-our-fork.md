@@ -26,7 +26,7 @@ No search hung at 4 or 10 at once. A hang is the risk `azure_core` turned poolin
 
 - **Production runs Quickwit v0.9.1 plus that commit**, from our fork [`tgoodyear/quickwit`](https://github.com/tgoodyear/quickwit): branch `usnm/v0.9.1-pool`, tag `usnm-v0.9.1-pool1` (`5fecc2c`). The searcher sidecar, the ingest image (whose Quickwit is the release's writer) and the ingest job's init container all use it.
 - **`docker/Dockerfile.quickwit-patched` builds it** from the fork at a pinned commit, with the stages, base images, packages and features of Quickwit's own v0.9.1 Dockerfile, so the image is a drop-in for `quickwit/quickwit:v0.9.1`.
-- **Each environment builds it in its own registry** with ACR Tasks (`scripts/build-quickwit.sh --env <env>`, about an hour), or imports another environment's build by digest. `infra/quickwit-image.json` records each environment's digest; the Bicep and CI's publish read it there. An environment it doesn't list runs upstream v0.9.1, copied in by CI as before, so a new environment still deploys before anyone builds anything.
+- **Each environment builds it in its own registry** with ACR Tasks (`scripts/azure/build-quickwit.sh --env <env>`, about an hour), or imports another environment's build by digest. `infra/quickwit-image.json` records each environment's digest; the Bicep and CI's publish read it there. An environment it doesn't list runs upstream v0.9.1, copied in by CI as before, so a new environment still deploys before anyone builds anything.
 - `QW_AZURE_POOL=false` on a container restores upstream's client without a new image.
 
 ## Alternatives

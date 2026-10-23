@@ -461,6 +461,21 @@ class BuildInputs(unittest.TestCase):
                 on = self.select(path)
                 self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}), {image}, on)
 
+    def test_scripts_grouped_by_purpose_still_select_their_jobs(self):
+        # The loose scripts moved under scripts/azure, boinc, data, dev and ops; the paths in
+        # changes.sh follow them.
+        for path, jobs in [
+            ("scripts/ops/check-version-snapshots.py", {"ops"}),
+            ("scripts/ops/test_check_index_history.py", {"ops"}),
+            ("scripts/azure/test_date_spans.py", {"ops"}),
+            ("scripts/dev/quickwit-fixtures.sh", {"quickwit", "rust", "e2e"}),
+            ("scripts/data/build-page-language-words.py", {"image", "page_language"}),
+            ("scripts/data/page-language-samples.py", {"page_language"}),
+            ("scripts/boinc/boinc-app-release.sh", {"contrib"}),
+        ]:
+            with self.subTest(path=path):
+                self.assertGreaterEqual(self.select(path), jobs)
+
     def test_the_tesseract_image_runs_the_worker_image_and_release_only(self):
         on = self.select("ocr/engines/tesseract/Containerfile")
         self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}),

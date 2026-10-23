@@ -81,18 +81,18 @@ The ALTO staged with each page is retained so the Surya outputs can be scored ag
 
 ## Running a campaign
 
-The server must have the `usnm_surya` app (`register-apps`), the two plan classes and daemons (server and bridge images built from a commit that includes `usnm_surya` with `scripts/build-boinc-images.sh`, then `SERVER_IMAGE` in `/etc/usnm-boinc/server.env` on the on-prem host set to the result and `usnm-boinc-server.service` restarted, as in [boinc-onprem.md](boinc-onprem.md); `scripts/provision-boinc.sh` deploys only the Azure server), and both app versions. 1.4 and 1.5 are published; a new worker image needs an unused pair, and prod's server is on-prem, so the release takes `--onprem-host` and `--onprem-ct`:
+The server must have the `usnm_surya` app (`register-apps`), the two plan classes and daemons (server and bridge images built from a commit that includes `usnm_surya` with `scripts/boinc/build-boinc-images.sh`, then `SERVER_IMAGE` in `/etc/usnm-boinc/server.env` on the on-prem host set to the result and `usnm-boinc-server.service` restarted, as in [boinc-onprem.md](boinc-onprem.md); `scripts/boinc/provision-boinc.sh` deploys only the Azure server), and both app versions. 1.4 and 1.5 are published; a new worker image needs an unused pair, and prod's server is on-prem, so the release takes `--onprem-host` and `--onprem-ct`:
 
 ```sh
 gh workflow run boinc-surya.yml --ref main -f correlation="surya-$(date -u +%Y%m%dT%H%M%S)"
 # From the run's summary: the image, its digest, SURYA_ENGINE_LLAMA and SURYA_ENGINE_WEIGHTS.
-scripts/boinc-app-release.sh --env prod --app usnm_surya --version <N.M> --plan-class docker_mt \
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_surya --version <N.M> --plan-class docker_mt \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST --onprem-host HOST --onprem-ct ID
-scripts/boinc-app-release.sh --env prod --app usnm_surya --version <N.M+1> --plan-class docker_nvidia_cuda \
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_surya --version <N.M+1> --plan-class docker_nvidia_cuda \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST --onprem-host HOST --onprem-ct ID
 ```
 
-Then run the steps on the on-prem host; their files are under `<share>/surya/<campaign>/`. A step runs in a container that mounts the host's `/srv/usnm-boinc/project` at `/project` and gets its `--var` values unchanged, so a path in a `--var` (such as `SURYA_SAMPLE`) is `/project/...`; `/srv/usnm-boinc/project/...` is the same file when you touch it on the host directly. `scripts/boinc/onprem-step.sh` takes the arguments of `scripts/start-boinc-bridge.sh`, which starts the Azure bridge job that prod no longer has:
+Then run the steps on the on-prem host; their files are under `<share>/surya/<campaign>/`. A step runs in a container that mounts the host's `/srv/usnm-boinc/project` at `/project` and gets its `--var` values unchanged, so a path in a `--var` (such as `SURYA_SAMPLE`) is `/project/...`; `/srv/usnm-boinc/project/...` is the same file when you touch it on the host directly. `scripts/boinc/onprem-step.sh` takes the arguments of `scripts/boinc/start-boinc-bridge.sh`, which starts the Azure bridge job that prod no longer has:
 
 ```sh
 # Gets each page's JPEG from the scan archive, else from tile.loc.gov through its batch (see
@@ -241,7 +241,7 @@ To keep the crop queue topped up instead of running step 3 by hand, give the con
 
 The watermarks count results (two per unit): at or below 100 unsent the controller stages crops for 50 more pages and submits up to 150 units, never past 400 unsent. Run `batch_scheduler.py --config surya-wave1.json --state-dir <dir>` once without `--apply` to see the steps, then with `--apply` on the controller's schedule. The pins are held to the campaign: a new engine needs a new `campaign` name.
 
-After steps 4 and 5, `scripts/build-quality-assessment-db.py` over the campaign's `pages.parquet` and `crops.parquet` writes `reader_language_summary`, one row per language and reader, which is the apples-to-apples table [#968](https://github.com/tgoodyear/usnewsmap.com/issues/968) asks for.
+After steps 4 and 5, `scripts/data/build-quality-assessment-db.py` over the campaign's `pages.parquet` and `crops.parquet` writes `reader_language_summary`, one row per language and reader, which is the apples-to-apples table [#968](https://github.com/tgoodyear/usnewsmap.com/issues/968) asks for.
 
 A crop unit takes seconds rather than the 40 minutes a tiled page takes on CPU, so every plan class can run it. `submit` gives it a hundredth of a page's fpops estimate and bound, an 8 GiB memory bound and a one-day delay bound, at the same quorum of two. `check` and `compare` treat it as any unit: `text-whole.txt` is the crop's text. A page unit's job is unchanged, and keeps the identity it had before crops existed.
 
@@ -373,7 +373,7 @@ with the normal `boinc-app-release.sh` commands above.
 
 This section is the Azure publish-job procedure from the time of the probe. Prod's
 server moved on-prem on 21 October 2026, where there is no publish job:
-`scripts/boinc-app-release.sh --onprem-host --onprem-ct` builds the app version
+`scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the app version
 image on the host and runs `usnm-boinc-step --target publish`, whose one input,
 `APPVER_REUSE_PROJECT`, is 0 or 1 ([boinc-onprem.md](boinc-onprem.md)). What
 follows applies to a server with `"server": "azure"`.
@@ -381,7 +381,7 @@ follows applies to a server with `"server": "azure"`.
 When reviewed main differs from the deployed stack, do not run a full-stack
 provision to release this probe. Under the #529 claim and ordinary local mutex /
 controller lease, first verify **all six lifecycle jobs idle**. Prepare each new
-version with `scripts/boinc-app-release.sh --prepare-only` and the normal signing
+version with `scripts/boinc/boinc-app-release.sh --prepare-only` and the normal signing
 host. Review and merge the resulting immutable appver pin before publication.
 Do not reuse a locked signer or change existing signed payloads.
 

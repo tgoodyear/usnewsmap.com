@@ -147,11 +147,11 @@
 #   BRIDGE_STEP=batch-inventory BATCH_NONCE=<32 hex> HANDOFF_URL=<container URL>; writes the
 #                               read-only queue/host/journal/spool inventory to scheduler/
 #
-# Start a step with scripts/start-boinc-bridge.sh, which sets these on the job: an
+# Start a step with scripts/boinc/start-boinc-bridge.sh, which sets these on the job: an
 # `az containerapp job start --env-vars` override drops the job's own settings and the share.
 #
 # The step and its settings (JOB_ID included) are read from the environment. Each run's are
-# written into the job's own template by scripts/start-boinc-bridge.sh, which then starts it
+# written into the job's own template by scripts/boinc/start-boinc-bridge.sh, which then starts it
 # with no execution override (design.md section 9, question 4). UNVERIFIED against a live job.
 set -euo pipefail
 # shellcheck source=lib.sh disable=SC1091

@@ -6,11 +6,11 @@
 //
 // Deployed as the deployment stack usnm-boinc-<env> into the group usnm-boinc-rg-<env>, which
 // infra/main.bicep creates (deployBoincGroup) with the guardrails and two waivers (ADR-0019,
-// decision 5). Settings: env/<env>.json. Deployment: scripts/provision-boinc.sh.
+// decision 5). Settings: env/<env>.json. Deployment: scripts/boinc/provision-boinc.sh.
 //
 // Two phases. Until the settings name the server image, only the base resources are deployed
 // (registry, network, vault, storage, database, monitoring), so the images can be built into
-// the registry (scripts/build-boinc-images.sh); with the images set, the app and the jobs too.
+// the registry (scripts/boinc/build-boinc-images.sh); with the images set, the app and the jobs too.
 targetScope = 'resourceGroup'
 
 import { checkedEnvName, usnmName, usnmCompactName, usnmGlobalName } from '../../../infra/naming.bicep'
@@ -41,7 +41,7 @@ param bridgeImage string = ''
 @description('Optional web/daemon image override, independent of lifecycle pins. Empty uses assessment selection. Preserves additive production releases.')
 param webImage string = ''
 
-@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc-app-release.sh; empty: no publish job.')
+@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc/boinc-app-release.sh; empty: no publish job.')
 param publishImage string = ''
 
 @description('Run the server from the bridge image (the server image plus usnm-boinc), so the usnm_assess validator (#456) can run. Off by default.')

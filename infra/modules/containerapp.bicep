@@ -82,7 +82,7 @@ param searcherName string = ''
 @minValue(0)
 @maxValue(1)
 param searcherMinReplicas int = 1
-@description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
+@description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/azure/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
 var quickwit = searchBackend == 'quickwit'

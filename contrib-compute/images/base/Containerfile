@@ -1,5 +1,5 @@
 # The slow, rarely changing half of the BOINC server image: BOINC compiled from a pinned commit,
-# the runtime packages, and docker_wrapper. scripts/build-boinc-images.sh tags it with a hash of
+# the runtime packages, and docker_wrapper. scripts/boinc/build-boinc-images.sh tags it with a hash of
 # this file and builds it only when that tag is missing, so the server image (our scripts and
 # templates on top) rebuilds in about a minute.
 #

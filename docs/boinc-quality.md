@@ -131,18 +131,18 @@ requirements. Use the cohort operator, not a server restart, to change those win
 
 `scripts/boinc/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
 
-Register the apps and platforms on the server (`scripts/boinc/onprem-step.sh --env prod --target bridge --step register-apps --wait-mins 15` on the on-prem host), then release the container or native versions with `scripts/boinc-app-release.sh` (see [contrib-compute/docs/app-release.md](../contrib-compute/docs/app-release.md)). Prod's server is on-prem, so add `--onprem-host HOST --onprem-ct ID` to each release command below:
+Register the apps and platforms on the server (`scripts/boinc/onprem-step.sh --env prod --target bridge --step register-apps --wait-mins 15` on the on-prem host), then release the container or native versions with `scripts/boinc/boinc-app-release.sh` (see [contrib-compute/docs/app-release.md](../contrib-compute/docs/app-release.md)). Prod's server is on-prem, so add `--onprem-host HOST --onprem-ct ID` to each release command below:
 
 ```sh
 # Container versions:
-scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host <host>
-scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host <host>
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-2b-digest> --signing-host <host>
-scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-8b-digest> --signing-host <host>
 
 # Native usnm_quality binary (from .github/workflows/boinc-quality-native.yml artifacts):
-scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
   --platform arm64-apple-darwin --binary /path/to/usnm_quality_1.1_arm64-apple-darwin \
   --binary-sha256 <sha256> --signing-host <host>
 ```
@@ -346,19 +346,19 @@ usnm-boinc qwen local-unit --image page.jpg --alto loc.xml --dir q --engine-llam
 
 On the server (`contrib-compute/images/server/bridge-job.sh`) and the hand-off job in the main Container Apps environment (`contrib-compute/images/bridge/handoff-job.sh`), a quality campaign lives under `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>` and a Qwen campaign under `$SHARE_DIR/qwen/<QWEN_CAMPAIGN>` (each campaign name is 1 to 41 characters of `[a-z0-9-]`). UNVERIFIED against a live server.
 
-Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scripts/start-boinc-bridge.sh --env prod --step <step>` below there as `scripts/boinc/onprem-step.sh --env prod --target bridge --step <step>`, with the same `--var` and `--wait-mins` arguments (`--wait-mins` is required). The `--target handoff` command stays with `start-boinc-bridge.sh`, because the hand-off job is still in Azure ([boinc-onprem.md](boinc-onprem.md)).
+Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scripts/boinc/start-boinc-bridge.sh --env prod --step <step>` below there as `scripts/boinc/onprem-step.sh --env prod --target bridge --step <step>`, with the same `--var` and `--wait-mins` arguments (`--wait-mins` is required). The `--target handoff` command stays with `start-boinc-bridge.sh`, because the hand-off job is still in Azure ([boinc-onprem.md](boinc-onprem.md)).
 
 1. **Export page texts (`handoff-job.sh`, `HANDOFF_STEP=texts-export`).** The hand-off job reaches `CURATED_URL` and `OUT_URL` privately in the main environment, runs `usnm-boinc quality texts-export` for `HANDOFF_PAGES` (comma-separated doc ids) or `HANDOFF_SAMPLE` (a sample file under `quality-samples/` in `HANDOFF_URL`), and uploads `<doc_id>.json` (and `<doc_id>.ours.xml` when present) to `HANDOFF_URL` under `texts/`:
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --target handoff --step texts-export \
+   scripts/boinc/start-boinc-bridge.sh --env prod --target handoff --step texts-export \
      --var HANDOFF_SAMPLE=v1.jsonl --wait-mins 30
    ```
 
 2. **Stage quality units (`bridge-job.sh`, `BRIDGE_STEP=quality-stage`).** When `HANDOFF_URL` is set, pulls `texts/` into `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>/texts` and, if `QUALITY_SAMPLE` is a relative sample filename, pulls `quality-samples/` into `<campaign>/samples/`; when `QUALITY_LANGS` is set (comma-separated ISO 639-3 codes), writes `<campaign>/function-words` with `usnm-boinc quality function-words`. Runs `usnm-boinc quality stage` for `QUALITY_PAGES` (`group:lang:doc_id:batch[+batch...],...`) or `QUALITY_SAMPLE` (default `<campaign>/sample.jsonl`, with `QUALITY_GROUP` default `sample`), `QUALITY_READERS` (default `loc,as,ours-tesseract`), `QUALITY_PLACES` (default `<campaign>/places.txt`), `QUALITY_ENGINE_IMAGE` (`sha256:<worker-digest>`), `QUALITY_MAX` (default 100), and `QUALITY_BUNDLE_SIZE` (default `300`, up to `500` pages per bundle; at ~1.2–2.0s/page a 300–500 page bundle runs for **10–15 minutes (`0.17–0.25 hours`)** with per-page checkpointing and packs `5,000` pages into `10–17` bundled workunits), reading scans from `SCAN_ARCHIVE_URL` (`--scan-archive`) first and then `tile.loc.gov` through the batch (`--batch-cache`):
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step quality-stage \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step quality-stage \
      --var QUALITY_CAMPAIGN=v1-wave5 \
      --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff \
      --var QUALITY_SAMPLE=v1-wave5.jsonl --var QUALITY_GROUP=v1-wave5 \
@@ -370,7 +370,7 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scr
 3. **Stage Qwen units (`bridge-job.sh`, `BRIDGE_STEP=qwen-stage`).** Cuts the deterministic crops from the staged `usnm_quality` units in `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>` into `$SHARE_DIR/qwen/<QWEN_CAMPAIGN>` without fetching from LoC again:
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step qwen-stage \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step qwen-stage \
      --var QUALITY_CAMPAIGN=v1-probe --var QWEN_CAMPAIGN=v1-probe \
      --var QWEN_ENGINE_IMAGE=sha256:<qwen-digest> \
      --var QWEN_ENGINE_LLAMA=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea \
@@ -381,33 +381,33 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scr
 4. **Submit both apps' workunits (`bridge-job.sh`, `BRIDGE_STEP=quality-submit` and `BRIDGE_STEP=qwen-submit`).** Hands the staged units to `create_work` with two results per workunit (`QUALITY_MAX` default 500, `QWEN_MAX` default 20) and invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` reflects the new queue immediately (live uncached counts are also always available at `https://boinc.usnewsmap.com/server_status.php?counts=1`):
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step quality-submit \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step quality-submit \
      --var QUALITY_CAMPAIGN=v1-probe --var QUALITY_MAX=500 --wait-mins 15
-   scripts/start-boinc-bridge.sh --env prod --step qwen-submit \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step qwen-submit \
      --var QWEN_CAMPAIGN=v1-probe --var QWEN_MAX=20 --wait-mins 15
    ```
 
 5. **Inspect validator summaries (`bridge-job.sh`, `BRIDGE_STEP=quality-summary` and `BRIDGE_STEP=qwen-summary`).** Reads `<project>/quality/{seen,pairs.jsonl}` and `<project>/qwen/{seen,pairs.jsonl}` and writes `<campaign>/summary.md`:
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step quality-summary --var QUALITY_CAMPAIGN=v1-probe
-   scripts/start-boinc-bridge.sh --env prod --step qwen-summary --var QWEN_CAMPAIGN=v1-probe
+   scripts/boinc/start-boinc-bridge.sh --env prod --step quality-summary --var QUALITY_CAMPAIGN=v1-probe
+   scripts/boinc/start-boinc-bridge.sh --env prod --step qwen-summary --var QWEN_CAMPAIGN=v1-probe
    ```
 
 6. **Collect canonical results (`bridge-job.sh`, `BRIDGE_STEP=quality-collect`).** Joins the assimilated `usnm_quality` (`QUALITY_SPOOL`), optional `usnm_qwen` (`QWEN_CAMPAIGN` and `QWEN_SPOOL`) and optional `usnm_surya` crop (`SURYA_CAMPAIGN` and `SURYA_SPOOL`, #968) results into `<campaign>/out/{pages.parquet,crops.parquet,summary.md}`, or uploads them to `QUALITY_CURATED_URL` under `audit/quality/<QUALITY_CAMPAIGN>/`:
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step quality-collect \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step quality-collect \
      --var QUALITY_CAMPAIGN=v1-probe --var QUALITY_SPOOL=/project/usnmocr/results/0 \
      --var QWEN_CAMPAIGN=v1-probe --var QWEN_SPOOL=/project/usnmocr/results/0 --wait-mins 15
    ```
 
-7. **Monitor or manage multi-shard campaigns (`scripts/boinc-quality-campaign.py`).** For 5,000–10,000+ workunit campaigns sharded across parallel Container Apps executions (`v1-wave5`, `v1-wave6`), use the campaign CLI to split non-overlapping manifests into shard archives, inspect live shard + server queue progress, and restore the bridge job specification after completion. The CLI drives the Azure bridge job and the quality wave job, which `"server": "onprem"` removes, and the quality wave does not run on-prem yet ([boinc-onprem.md](boinc-onprem.md)), so this applies to a server with `"server": "azure"`:
+7. **Monitor or manage multi-shard campaigns (`scripts/boinc/boinc-quality-campaign.py`).** For 5,000–10,000+ workunit campaigns sharded across parallel Container Apps executions (`v1-wave5`, `v1-wave6`), use the campaign CLI to split non-overlapping manifests into shard archives, inspect live shard + server queue progress, and restore the bridge job specification after completion. The CLI drives the Azure bridge job and the quality wave job, which `"server": "onprem"` removes, and the quality wave does not run on-prem yet ([boinc-onprem.md](boinc-onprem.md)), so this applies to a server with `"server": "azure"`:
 
    ```sh
-   python3 scripts/boinc-quality-campaign.py prepare --campaign v1-wave6 --manifest sample.jsonl --out-dir /tmp/wave6 --count 10000 --shards 20
-   python3 scripts/boinc-quality-campaign.py status --campaign v1-wave6 --shards 20
-   python3 scripts/boinc-quality-campaign.py restore --env prod
+   python3 scripts/boinc/boinc-quality-campaign.py prepare --campaign v1-wave6 --manifest sample.jsonl --out-dir /tmp/wave6 --count 10000 --shards 20
+   python3 scripts/boinc/boinc-quality-campaign.py status --campaign v1-wave6 --shards 20
+   python3 scripts/boinc/boinc-quality-campaign.py restore --env prod
    ```
 
 ## Calibration

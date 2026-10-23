@@ -32,7 +32,7 @@ not current defects, and mixing sources would break them:
   collide.
 
 `docs/design/14-corpus-data-flow.md` already proposes `loc:<doc_id>`, and only
-`scripts/data_catalog.py` checks for it.
+`scripts/corpus/data_catalog.py` checks for it.
 
 ## Decision
 

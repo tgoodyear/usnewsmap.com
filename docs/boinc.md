@@ -50,7 +50,7 @@ signed-app or campaign-setting drift merely to publish these counts.
 
 ## Workbook query validation
 
-Run `python3 scripts/validate-boinc-workbook.py --workspace <customer-GUID>`
+Run `python3 scripts/boinc/validate-boinc-workbook.py --workspace <customer-GUID>`
 with the Mac's existing Azure CLI user credential. On an authorized Arc host use
 `--identity arc`; the standard localhost:40342 challenge and token stay on that
 host, and its existing identity must already have workspace Reader access.
@@ -58,7 +58,7 @@ Arc membership alone does not grant query access. No login, grant, workload or
 resource is created by validation. `--subscription <id>` selects the existing
 Azure CLI account without changing global CLI configuration.
 
-The shared `scripts/log_analytics.py` client defaults to
+The shared `scripts/azure/log_analytics.py` client defaults to
 `https://<workspace-location>.api.loganalytics.io/v1/workspaces/<customer-GUID>/query`
 with the unchanged token audience `https://api.loganalytics.io`. It derives the
 location from workspace metadata using the existing Azure CLI subscription, or
@@ -494,7 +494,7 @@ runs one step of `contrib-compute/images/server/bridge-job.sh` per execution, ch
 `BRIDGE_STEP` and that step's settings. Start it with:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]
+scripts/boinc/start-boinc-bridge.sh --env prod --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]
 ```
 
 Don't use `az containerapp job start --env-vars` for this. With any container flag, the
@@ -504,10 +504,10 @@ and only the variables given, so the job's own settings (`KEY_VAULT_NAME`, `DB_H
 either, and every step needs the project share at `/project`. The script writes the run's
 settings into the job instead (`az containerapp job update --replace-env-vars`: the
 template's own settings, `BRIDGE_STEP` and each `--var`; whatever a previous run set is
-dropped), then starts it with no override. The next `scripts/provision-boinc.sh` restores
+dropped), then starts it with no override. The next `scripts/boinc/provision-boinc.sh` restores
 the template's settings. Run one step at a time.
 
-When a waited-for execution (`--wait-mins`) or a `scripts/provision-boinc.sh` lifecycle job
+When a waited-for execution (`--wait-mins`) or a `scripts/boinc/provision-boinc.sh` lifecycle job
 fails, the script prints the execution's last 50 console lines from the stack's Log Analytics
 workspace (`ContainerAppConsoleLogs_CL`; operators have Log Analytics Reader on it), polling up
 to five minutes for ingestion. To read any execution's log by hand:
@@ -527,14 +527,14 @@ An app added to
 runs `bin/xadd`; it remains available for targeted recovery:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15
+scripts/boinc/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15
 ```
 
 It is safe to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks up each
 `<platform>` and `<app>` by name. It inserts the ones that are missing, updates a changed
 `user_friendly_name` or `min_version`, prints "already in DB" for the rest, and never
 deletes or deprecates anything. The step needs a bridge image with this step in it
-(`scripts/build-boinc-images.sh`, then `scripts/provision-boinc.sh`).
+(`scripts/boinc/build-boinc-images.sh`, then `scripts/boinc/provision-boinc.sh`).
 
 ### Current-worker OCR 1.5 publication, 17 October 2026
 
@@ -719,18 +719,18 @@ only for a host that passed the gold check.
   region and its pair. A private endpoint is not an option: the main VNet's `privatelink.blob`
   zone would then fail to resolve the exchange account for `ocr-sync`. Storage refuses the
   firewall rule until the endpoint exists, so the rule comes with the hand-off job (below). On
-  a new environment: `scripts/provision.sh` with `USNM_BOINC_GROUP` (the group), then
-  `scripts/provision-boinc.sh` (the network, the identity and the images), then
-  `USNM_BOINC_HANDOFF_IMAGE` and `scripts/provision.sh` again (the job, the rule and the
+  a new environment: `scripts/azure/provision.sh` with `USNM_BOINC_GROUP` (the group), then
+  `scripts/boinc/provision-boinc.sh` (the network, the identity and the images), then
+  `USNM_BOINC_HANDOFF_IMAGE` and `scripts/azure/provision.sh` again (the job, the rule and the
   grants);
 - the hand-off job `usnm-boinc-handoff-caj-<env>` and its identity
   `usnm-boinc-handoff-id-<env>` in the main environment (`infra/modules/boinc-handoff-job.bicep`),
   with its own settings `AZURE_CLIENT_ID`, `HANDOFF_URL`, `COSMOS_ENDPOINT`, `CURATED_URL`,
   `REFERENCE_URL` and `OUT_URL`. Its image is the setting `USNM_BOINC_HANDOFF_IMAGE`
   (`infra/env/<env>.json`): `images.bridge` from `contrib-compute/infra/boinc/env/<env>.json`,
-  so a new bridge image means updating both. `scripts/start-boinc-bridge.sh --target handoff`
+  so a new bridge image means updating both. `scripts/boinc/start-boinc-bridge.sh --target handoff`
   starts it with a run's settings. It reads the job name and resource group from the main
-  stack's outputs saved by `scripts/provision.sh`, so it doesn't need an
+  stack's outputs saved by `scripts/azure/provision.sh`, so it doesn't need an
   `infra/names/<env>.json` entry.
 
 The role assignments:
@@ -767,7 +767,7 @@ Then, from the operator's machine, the hand-off job's export. It prints the job 
 log, and `dispatch/jobs/<id>/` appears in the container:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --target handoff --step export \
+scripts/boinc/start-boinc-bridge.sh --env prod --target handoff --step export \
   --var HANDOFF_PAGES=<page key> --var HANDOFF_BATCH=<batch> --var HANDOFF_PLAN=<plan id> \
   --var HANDOFF_MANIFEST=<version>/manifest.parquet \
   --var ENGINE_IMAGE=sha256:<images.worker's digest> --wait-mins 30
@@ -776,14 +776,14 @@ scripts/start-boinc-bridge.sh --env prod --target handoff --step export \
 Then the bridge:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step submit-remote --var JOB_ID=JOB_ID \
+scripts/boinc/start-boinc-bridge.sh --env prod --step submit-remote --var JOB_ID=JOB_ID \
   --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff --wait-mins 30
 ```
 
 When the workunit's result is assimilated (the ops pages show it done):
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
+scripts/boinc/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
   --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff \
   --var HANDOFF_SPOOL=/project/usnmocr/results/0 --wait-mins 15
 ```
@@ -791,7 +791,7 @@ scripts/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
 Then the hand-off job's collect (`HOST_ID` only when the server recorded none):
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --target handoff --step collect --var JOB_ID=JOB_ID --wait-mins 30
+scripts/boinc/start-boinc-bridge.sh --env prod --target handoff --step collect --var JOB_ID=JOB_ID --wait-mins 30
 ```
 
 It publishes to `ocr-out` for a trusted host and writes the
@@ -844,12 +844,12 @@ pct exec 211 -- azcmagent config set incomingconnections.enabled false
 # --tags environment=prod,project=usnewsmap,role=boinc-handoff --config <file>.
 
 # On the operator's machine: the grant.
-az resource show -g "$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)" \
+az resource show -g "$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)" \
   -n usnm-ocr-node5-arcs-prod --resource-type Microsoft.HybridCompute/machines \
   --query identity.principalId -o tsv
-scripts/settings.sh --env prod --key USNM_BOINC_HANDOFF_RUNNER --value <object id>
-scripts/provision.sh --env prod --what-if
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_BOINC_HANDOFF_RUNNER --value <object id>
+scripts/azure/provision.sh --env prod --what-if
+scripts/azure/provision.sh --env prod
 ```
 
 In the container, `az login --identity --allow-no-subscriptions` signs in (the
@@ -959,7 +959,7 @@ systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache-remote
 
 The project directory (`/project`: uploads, downloads, staging, results) is one Azure Files share mounted by the server and every job. On the pay-as-you-go Standard account (`usnmboincst…`, TransactionOptimized) it cost about $21 in operations in four days of October 2026: 51M operations, 83% of them open, close and stat. Capacity was $0.61. A provisioned v2 SSD share (`usnmboincv2st…`, `PremiumV2_LRS`) bills only for its provisioned size, about $0.10/GiB a month with 3,000 + 1 IOPS per GiB included, and nothing per operation (#917).
 
-`projectShare` in `contrib-compute/infra/boinc/env/<env>.json` moves the share in stages, each a pull request and a `scripts/provision-boinc.sh` run (claimed on #529):
+`projectShare` in `contrib-compute/infra/boinc/env/<env>.json` moves the share in stages, each a pull request and a `scripts/boinc/provision-boinc.sh` run (claimed on #529):
 
 1. **`copy`.** Creates the provisioned account, share and private endpoint, plus the share copy job `usnm-boinc-sharecopy-caj-<env>` and its own identity. That identity has Storage File Data Privileged Reader on the old account, Storage File Data Privileged Contributor on the new one, and pull rights on the registry.
    - The job runs AzCopy (pinned by version and SHA-256 in `main.bicep`): `azcopy sync https://<old account>.file.core.windows.net/project https://<new account>.file.core.windows.net/project --delete-destination=true`, as the job's identity, both over their private endpoints.
@@ -1250,7 +1250,7 @@ before replacing reports or outcome evidence.
 crops in a language with no locked model are listed as skipped.
 
 **Running a campaign.** With the server deployed with `assessment=true` (`"assessment": true` in
-`contrib-compute/infra/boinc/env/<env>.json`, then `scripts/provision-boinc.sh`; the
+`contrib-compute/infra/boinc/env/<env>.json`, then `scripts/boinc/provision-boinc.sh`; the
 server runs from the bridge image, which carries the validator), a
 `usnm_gold` app version installed (`scripts/boinc/install.py --app usnm_gold
 ...`), signed, and `bin/update_versions` run, and the bundle tar copied to
@@ -1260,17 +1260,17 @@ server runs from the bridge image, which carries the validator), a
 # Once per bundle: fetch the originals, one request at a time, 5 s apart, into
 # <campaign>/cache on the share; write prepared.json (sizes, md5s, reference
 # counts). Stops if any download fails or a checksum differs.
-scripts/start-boinc-bridge.sh --env prod --step gold-prepare --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 60
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-prepare --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 60
 # Make the units (default 20). Re-running skips units already submitted.
-scripts/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=v1-tess550 \
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_ENGINE_IMAGE=sha256:... --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE> --var GOLD_UNITS=20
 # When results are assimilated, use the calibration's explicit scope. This
 # reads the BOINC result table with the bridge's read-only DB account:
-scripts/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_SPOOL=/project/usnmocr/results/0 \
   --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile>
 # Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
-scripts/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_MAX_CER=<calibrated-threshold> \
   --var GOLD_MANIFEST_SHA256=<calibrated-manifest-sha256> \
   --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile> --wait-mins 10
@@ -1285,7 +1285,7 @@ stages only the 18 original JPEGs pinned in `bundle-v1.lock.json`, without
 opening BLN600, fetching upstream data, submitting work, or changing clients:
 
 ```sh
-scripts/start-boinc-bridge.sh --env prod --step gold-mirror-loc --var GOLD_CAMPAIGN=v1-tess550
+scripts/boinc/start-boinc-bridge.sh --env prod --step gold-mirror-loc --var GOLD_CAMPAIGN=v1-tess550
 ```
 
 Use the normal serialized production-job preflight. The command first checks
@@ -1448,10 +1448,10 @@ timer, trust promotion or assignment enablement is installed.
 
 The bundle tar can be built inside the VNet, so nothing passes through an
 operator's machine. The job needs a bridge image that has the step, so build it first
-(`scripts/build-boinc-images.sh`, which rewrites `images.bridge`). Then set
+(`scripts/boinc/build-boinc-images.sh`, which rewrites `images.bridge`). Then set
 `"goldBundle": true` in `contrib-compute/infra/boinc/env/<env>.json` in the same
 commit as the new digest; it is false until then. After
-`scripts/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
+`scripts/boinc/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
 output `goldBundleJobName`). It runs the bridge image's `gold-bundle` step with
 `GOLD_CAMPAIGN=v1-tess550` set in the job itself, so it needs no override:
 

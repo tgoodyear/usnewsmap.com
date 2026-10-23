@@ -1,4 +1,4 @@
-# Publish one data set (scripts/data-assets.sh) as the assets of a GitHub release, from the commit
+# Publish one data set (scripts/ops/data-assets.sh) as the assets of a GitHub release, from the commit
 # the run is started on. The release is immutable: a changed set is a new run and a new tag.
 # A set is cumulative: the pack starts from the release ops/data-assets.json records and lays the
 # commit's tracked files over it. After the run, replace ops/data-assets.json with the file the
@@ -28,13 +28,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Pack the set
-        run: scripts/data-assets.sh --pack --set "$SET" --out out
+        run: scripts/ops/data-assets.sh --pack --set "$SET" --out out
       - name: Create the release
         run: |
           tag="data-$SET-$(git log -1 --format=%cd --date=format:%Y%m%d)-$(git rev-parse --short HEAD)"
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --latest=false --target "$GITHUB_SHA" \
             --title "Data assets: $SET at $(git rev-parse --short HEAD)" \
-            --notes "The $SET set of scripts/data-assets.sh, packed from $GITHUB_SHA. Fetch with: scripts/data-assets.sh --fetch --set $SET --tag $tag" \
+            --notes "The $SET set of scripts/ops/data-assets.sh, packed from $GITHUB_SHA. Fetch with: scripts/ops/data-assets.sh --fetch --set $SET --tag $tag" \
             "out/$SET.tar.gz" "out/$SET.members.txt" out/SHA256SUMS
           sha=$(cut -d' ' -f1 < <(grep " $SET.tar.gz\$" out/SHA256SUMS))
           # The whole index with this set's tag and digest set, to replace ops/data-assets.json.

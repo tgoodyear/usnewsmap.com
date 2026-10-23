@@ -10,7 +10,7 @@
 #   committed, so a change to them goes through a pull request;
 # - private ones (addresses, principals, resource ids) in the settings
 #   store, one App Configuration store for every environment in the
-#   subscription (scripts/settings-store.sh; its endpoint is the local
+#   subscription (scripts/azure/settings-store.sh; its endpoint is the local
 #   SETTINGS_STORE_ENDPOINT), under the environment's label, which provision
 #   reads with the operator's sign-in (load_store); until it exists, they
 #   stay in the local file, and --migrate then moves them;
@@ -135,7 +135,7 @@ aget() {
     if [ -z "$v" ] && local_has "$1"; then
       v=$(local_get "$1") || return 1
       [ -z "$v" ] ||
-        echo "warning: $1 is in $ENV_FILE; it belongs in $COMMITTED_FILE: scripts/settings.sh --env $ENV_NAME --migrate" >&2
+        echo "warning: $1 is in $ENV_FILE; it belongs in $COMMITTED_FILE: scripts/azure/settings.sh --env $ENV_NAME --migrate" >&2
     fi
     printf '%s\n' "$v"
     return 0
@@ -177,7 +177,7 @@ store_access_hint() {
   cat >&2 << EOF
 The settings store gives App Configuration Data Owner to the operators in its admin list and to whoever deployed it last. Either:
   - ask one of them to add your object id (az ad signed-in-user show --query id -o tsv) to that list, comma separated:
-      scripts/settings-store.sh --deploy --admins "<ids>"
+      scripts/azure/settings-store.sh --deploy --admins "<ids>"
   - or, as an Owner of the subscription, grant it to yourself on usnm-config-rg, add yourself to the list as above, then delete the grant (a new role takes a few minutes to apply):
       az role assignment create --assignee-object-id "\$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "App Configuration Data Owner" --scope "/subscriptions/\$(az account show --query id -o tsv)/resourceGroups/usnm-config-rg"
 EOF
@@ -407,18 +407,18 @@ settings_check() {
       errors+="  $k is in $ENV_FILE; public settings are committed, in $COMMITTED_FILE"$'\n'
     elif is_private "$k" && [ -n "$(local_get "$k")" ]; then
       if in_list "$k" "$STORE_KEYS"; then
-        errors+="  $k is in both $ENV_FILE and the settings store; keep the store's: scripts/settings.sh --env $ENV_NAME --key $k --unset-local; or the local one: scripts/settings.sh --env $ENV_NAME --key $k --value \"\$(scripts/settings.sh --env $ENV_NAME --key $k)\""$'\n'
+        errors+="  $k is in both $ENV_FILE and the settings store; keep the store's: scripts/azure/settings.sh --env $ENV_NAME --key $k --unset-local; or the local one: scripts/azure/settings.sh --env $ENV_NAME --key $k --value \"\$(scripts/azure/settings.sh --env $ENV_NAME --key $k)\""$'\n'
       elif [ -n "$(local_get SETTINGS_STORE_ENDPOINT)" ]; then
         moves+=" $k"
       fi
     fi
   done
   if [ -n "$moves" ]; then
-    echo "warning: private settings still in $ENV_FILE:$moves; move them to the settings store: scripts/settings.sh --env $ENV_NAME --migrate" >&2
+    echo "warning: private settings still in $ENV_FILE:$moves; move them to the settings store: scripts/azure/settings.sh --env $ENV_NAME --migrate" >&2
   fi
   [ -n "$errors" ] || return 0
   printf 'error: settings in the wrong place:\n%s' "$errors" >&2
-  echo "scripts/settings.sh --env $ENV_NAME --migrate moves the public ones into $COMMITTED_FILE, to commit" >&2
+  echo "scripts/azure/settings.sh --env $ENV_NAME --migrate moves the public ones into $COMMITTED_FILE, to commit" >&2
   return 1
 }
 # Move settings to where they belong. First every public setting in the
@@ -439,7 +439,7 @@ migrate_settings() {
     fi
   done
   if [ -n "$conflicts" ]; then
-    printf 'error: these differ; settle each in one place first (scripts/settings.sh --env %s --key K --value V):\n%s' "$ENV_NAME" "$conflicts" >&2
+    printf 'error: these differ; settle each in one place first (scripts/azure/settings.sh --env %s --key K --value V):\n%s' "$ENV_NAME" "$conflicts" >&2
     return 1
   fi
   for k in $(local_keys); do
@@ -455,9 +455,9 @@ migrate_settings() {
   done
   echo "moved $moved public settings from $ENV_FILE to $COMMITTED_FILE"
   # The settings vault this replaced (#295) gave its role to a list of its
-  # own; the store's list is its stack's (scripts/settings-store.sh).
+  # own; the store's list is its stack's (scripts/azure/settings-store.sh).
   if local_has USNM_SETTINGS_VAULT_ADMINS; then
-    echo "note: USNM_SETTINGS_VAULT_ADMINS in $ENV_FILE is now the settings store's admin list: pass its value to scripts/settings-store.sh --deploy --admins, then remove it from $ENV_FILE"
+    echo "note: USNM_SETTINGS_VAULT_ADMINS in $ENV_FILE is now the settings store's admin list: pass its value to scripts/azure/settings-store.sh --deploy --admins, then remove it from $ENV_FILE"
   fi
   endpoint=$(settings_store_endpoint) || return 1
   if [ -z "$endpoint" ]; then
@@ -475,7 +475,7 @@ migrate_settings() {
     [ "$v" = "$c" ] || conflicts+="  $k"$'\n'
   done
   if [ -n "$conflicts" ]; then
-    printf 'error: these differ between %s and the settings store; keep one of each (scripts/settings.sh --env %s --key K --unset-local keeps the store'"'"'s):\n%s' "$ENV_FILE" "$ENV_NAME" "$conflicts" >&2
+    printf 'error: these differ between %s and the settings store; keep one of each (scripts/azure/settings.sh --env %s --key K --unset-local keeps the store'"'"'s):\n%s' "$ENV_FILE" "$ENV_NAME" "$conflicts" >&2
     return 1
   fi
   moved=0
@@ -490,7 +490,7 @@ migrate_settings() {
   echo "moved $moved private settings from $ENV_FILE to the settings store $endpoint (label $ENV_NAME)"
 }
 # Whether the committed file (and the schema) match the checkout's commit:
-# scripts/provision.sh deploys only committed settings, unless --allow-dirty.
+# scripts/azure/provision.sh deploys only committed settings, unless --allow-dirty.
 committed_clean() {
   local dir out
   dir=$(dirname "$COMMITTED_FILE")
@@ -507,9 +507,9 @@ committed_clean() {
 # ME_<environment>_<group>_<region>, which starts with LEGACY_INFRA_GROUP.
 # Keep the retired Spot group discoverable until operators remove it (#309).
 PROJECT_GROUPS="usnm-core-rg-$ENV_NAME rg-usnm-$ENV_NAME"
-# shellcheck disable=SC2034 # used by scripts/dev-status.sh
+# shellcheck disable=SC2034 # used by scripts/azure/dev-status.sh
 ENV_GROUPS="$PROJECT_GROUPS usnm-core-infra-rg-$ENV_NAME rg-usnm-$ENV_NAME-spot"
-# shellcheck disable=SC2034 # used by scripts/dev-status.sh
+# shellcheck disable=SC2034 # used by scripts/azure/dev-status.sh
 LEGACY_INFRA_GROUP="ME_cae-usnm-${ENV_NAME}_"
 # One deployment stack per environment, at subscription scope (it holds the
 # resource groups). Resources dropped from the template are deleted; deny
@@ -602,7 +602,7 @@ deploy_stack() (
   # The VNet's address space has no default anywhere: private addresses
   # aren't committed (scripts/ci/no-private-addresses.sh).
   [ -n "${USNM_VNET_ADDRESS_PREFIX:-}" ] || {
-    echo "error: USNM_VNET_ADDRESS_PREFIX isn't set for $ENV_NAME: the VNet's address space, a private IPv4 block in CIDR, /26 or larger. Set it with scripts/settings.sh --env $ENV_NAME --key USNM_VNET_ADDRESS_PREFIX --value <cidr> (an existing environment: its VNet's current block, az network vnet show)" >&2
+    echo "error: USNM_VNET_ADDRESS_PREFIX isn't set for $ENV_NAME: the VNet's address space, a private IPv4 block in CIDR, /26 or larger. Set it with scripts/azure/settings.sh --env $ENV_NAME --key USNM_VNET_ADDRESS_PREFIX --value <cidr> (an existing environment: its VNet's current block, az network vnet show)" >&2
     exit 1
   }
   valid_vnet_prefix "$USNM_VNET_ADDRESS_PREFIX" || exit 1
@@ -611,7 +611,7 @@ deploy_stack() (
   location=$(stack_location) || exit 1
   local stack_args=(--name "$STACK" --location "$location" --parameters infra/main.bicepparam
     --action-on-unmanage deleteResources --deny-settings-mode denyDelete
-    --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)")
+    --description "usnewsmap $ENV_NAME (scripts/azure/bootstrap.sh, scripts/azure/provision.sh)")
   if [ "${1:-}" = --what-if ]; then
     # Validate the stack first (including policy); the GA stack What-If then
     # previews the actual stack operation, including unmanaged resources and deny settings.
@@ -637,7 +637,7 @@ deploy_stack() (
     local preview_args=(--subscription "$subscription_id" --name "$preview" --stack-id "$stack_id"
       --location "$location" --parameters infra/main.bicepparam
       --action-on-unmanage deleteResources --deny-settings-mode denyDelete
-      --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)"
+      --description "usnewsmap $ENV_NAME (scripts/azure/bootstrap.sh, scripts/azure/provision.sh)"
       --retention-interval PT3H --no-color)
     echo "stack $STACK passes preflight; previewing its stack changes, including unmanage and deny settings:"
     az stack-whatif sub create "${preview_args[@]}" ${what_if_args[@]+"${what_if_args[@]}"} || exit 1
@@ -797,12 +797,12 @@ vaults_recover() {
 # The settings store is shared by every environment in the subscription and
 # outside their stacks (infra/settings/main.bicep): the first provision in a
 # subscription creates it, in the environment's region. Its private
-# settings then move in with scripts/settings.sh --migrate (settings_check
+# settings then move in with scripts/azure/settings.sh --migrate (settings_check
 # says so). A local SETTINGS_KEYVAULT, the name of the settings vault the
 # store replaced (#295), goes, unless that vault still exists: its secrets
 # would be lost with it (the stack no longer declares it), so the provision
 # stops until they're copied.
-settings_store_script() { scripts/settings-store.sh "$@"; }
+settings_store_script() { scripts/azure/settings-store.sh "$@"; }
 # Whether settings_store_ensure just created the store, so its new role may
 # not apply yet (load_store_after_create).
 STORE_CREATED=false
@@ -811,7 +811,7 @@ settings_store_ensure() {
   vault=$(local_get SETTINGS_KEYVAULT) || return 1
   if [ -n "$vault" ]; then
     if out=$(az keyvault show -n "$vault" --query name -o tsv 2>&1); then
-      echo "error: the settings vault $vault still exists, and this provision would delete it with its secrets: copy each to the settings store first (scripts/settings.sh --env $ENV_NAME --key KEY --value \"\$(az keyvault secret show --vault-name $vault --name KEY-WITH-HYPHENS --query value -o tsv)\"), then remove SETTINGS_KEYVAULT from $ENV_FILE" >&2
+      echo "error: the settings vault $vault still exists, and this provision would delete it with its secrets: copy each to the settings store first (scripts/azure/settings.sh --env $ENV_NAME --key KEY --value \"\$(az keyvault secret show --vault-name $vault --name KEY-WITH-HYPHENS --query value -o tsv)\"), then remove SETTINGS_KEYVAULT from $ENV_FILE" >&2
       return 1
     fi
     grep -qiE 'NotFound|not found' <<< "$out" || { echo "error: can't check the settings vault $vault: $out" >&2; return 1; }
@@ -860,7 +860,7 @@ experiment_marker() {
   [ "${NO_EXPERIMENT_CHECK:-}" = true ] && return 0
   exp=$(aget USNM_EXPERIMENT) || return 1
   if [ -z "$exp" ]; then
-    echo "error: dev exists only during an experiment: first scripts/settings.sh --env dev --key USNM_EXPERIMENT --value <issue number> (or scripts/stand-up.sh)" >&2
+    echo "error: dev exists only during an experiment: first scripts/azure/settings.sh --env dev --key USNM_EXPERIMENT --value <issue number> (or scripts/azure/stand-up.sh)" >&2
     return 1
   fi
   [[ $exp =~ ^[0-9]+$ ]] || { echo "error: USNM_EXPERIMENT is an issue number, not \"$exp\"" >&2; return 1; }
@@ -924,7 +924,7 @@ provision_what_if() {
   endpoint=$(settings_store_endpoint) || die "no what-if for $ENV_NAME"
   location=$(stack_location) || die "no what-if for $ENV_NAME"
   if [ -z "$endpoint" ]; then
-    echo "no settings store yet: the provision creates it (scripts/settings-store.sh):"
+    echo "no settings store yet: the provision creates it (scripts/azure/settings-store.sh):"
     settings_store_script --what-if --location "$location" || die "no what-if for $ENV_NAME"
   fi
   load_store || die "no what-if for $ENV_NAME"

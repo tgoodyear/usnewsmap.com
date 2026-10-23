@@ -4,7 +4,7 @@
 //!
 //! - **Gazetteer** (`catalog/gazetteer/us-places.csv`, compiled in): the
 //!   Census Bureau's national places file reduced to `state,name,lat,lon`
-//!   by `scripts/build-gazetteer.py` (public domain, a US government work).
+//!   by `scripts/data/build-gazetteer.py` (public domain, a US government work).
 //! - **Aliases** (`catalog/overrides/place-aliases.json`, compiled in):
 //!   misspellings and renamed towns, `[{added, from, reason, ref, source, state, to}]`, applied to
 //!   a city before it is keyed.
@@ -27,7 +27,7 @@ use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
 use usnm_core::names::{State, STATES};
 
-/// `state,name,lat,lon`, from `scripts/build-gazetteer.py`.
+/// `state,name,lat,lon`, from `scripts/data/build-gazetteer.py`.
 pub const GAZETTEER: &str = include_str!("../../../catalog/gazetteer/us-places.csv");
 
 /// `[{added, from, reason, ref, source, state, to}]` (with the audit fields

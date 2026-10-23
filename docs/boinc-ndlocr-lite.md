@@ -451,7 +451,7 @@ After merge:
    `xadd`, and restart daemons so its script validator and batch assimilator
    run. Install the input/output templates when publishing the app version.
 3. Publish a signed **x86_64 Linux container** app version with
-   `scripts/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
+   `scripts/boinc/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
 --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_MANIFEST
 --signing-host HOST --onprem-host HOST --onprem-ct ID` (the last two because prod's
    server is on-prem). Its dedicated `job.toml` is selected automatically.

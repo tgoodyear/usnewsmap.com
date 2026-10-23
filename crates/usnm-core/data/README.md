@@ -6,11 +6,11 @@ The english and damage lists are committed zstd-compressed (`zstd -19`) as `<nam
 
 | Files                                                   | Used by                                              | Built by                                           | Source                                   | Licence      |
 | ------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------- | ---------------------------------------- | ------------ |
-| `english-words.txt.zst`, `english-shared-words.txt.zst` | `usnm_core::query_language` (06 §6.3.3, #237)        | `scripts/build-english-words.py`                   | wordfreq 3.1.1                           | CC BY-SA 4.0 |
-| `damage-words/<code>.txt.zst`, except `haw` and `yi`    | `usnm_core::lang`, feature `damage` (12 §12.5, #296) | `scripts/build-damage-words.py`                    | wordfreq 3.1.1, `top_n_list(code, 5000)` | CC BY-SA 4.0 |
+| `english-words.txt.zst`, `english-shared-words.txt.zst` | `usnm_core::query_language` (06 §6.3.3, #237)        | `scripts/data/build-english-words.py`              | wordfreq 3.1.1                           | CC BY-SA 4.0 |
+| `damage-words/<code>.txt.zst`, except `haw` and `yi`    | `usnm_core::lang`, feature `damage` (12 §12.5, #296) | `scripts/data/build-damage-words.py`               | wordfreq 3.1.1, `top_n_list(code, 5000)` | CC BY-SA 4.0 |
 | `damage-words/haw.txt.zst`                              | the same                                             | copied from `ja-ocr/wordlists/` by the same script | Hawaiian Corpus Project frequency list   | CC0          |
 | `damage-words/yi.txt.zst`                               | the same                                             | copied from `ja-ocr/wordlists/` by the same script | Yiddish Wikipedia and Wikisource         | CC BY-SA 4.0 |
-| `page-language-words.txt`                               | `usnm_core::page_language` (05 §5.5.8, #289)         | `scripts/build-page-language-words.py`             | the function words of the 30 lists above | CC BY-SA 4.0 |
+| `page-language-words.txt`                               | `usnm_core::page_language` (05 §5.5.8, #289)         | `scripts/data/build-page-language-words.py`        | the function words of the 30 lists above | CC BY-SA 4.0 |
 
 `ja-ocr/wordlists/README.md` describes how the Hawaiian and Yiddish lists were built.
 
@@ -21,8 +21,8 @@ One `.txt.zst` file per word list code in `usnm_core::lang` (wordfreq's codes: `
 Rebuild or check them with wordfreq 3.1.1 installed (`pip install wordfreq==3.1.1`) and the `zstd` command line tool on `PATH`:
 
 ```sh
-scripts/build-damage-words.py --check
-scripts/build-damage-words.py --out-dir crates/usnm-core/data/damage-words
+scripts/data/build-damage-words.py --check
+scripts/data/build-damage-words.py --out-dir crates/usnm-core/data/damage-words
 ```
 
 Nothing in the pipeline runs the script; the files are committed data. To read one: `zstd -dc crates/usnm-core/data/damage-words/fr.txt.zst`.
@@ -34,8 +34,8 @@ Nothing in the pipeline runs the script; the files are committed data. To read o
 Rebuild or check it with wordfreq 3.1.1 installed:
 
 ```sh
-scripts/build-page-language-words.py --check
-scripts/build-page-language-words.py
+scripts/data/build-page-language-words.py --check
+scripts/data/build-page-language-words.py
 ```
 
 The Japanese OCR image's tests run the same check (`ja-ocr/test_page_language_parity.py`).

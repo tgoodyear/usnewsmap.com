@@ -8,7 +8,7 @@
 //! - `bench`: the benchmark searches against the cluster's root.
 //!
 //! Each of the last four logs one `qwcluster report` line (JSON) that
-//! `scripts/qwcluster-report.py` reads back, and keeps the full report in
+//! `scripts/azure/qwcluster-report.py` reads back, and keeps the full report in
 //! the bench store (`runs/`).
 
 use std::net::IpAddr;
@@ -189,7 +189,7 @@ enum Command {
     /// Print every stored report (`runs/*/*.json`, `sample/*/manifest.json`)
     /// as `qwcluster report` lines, then wait: with Log Analytics over its
     /// daily cap, `az containerapp job logs show --follow` still streams them
-    /// (scripts/qwcluster-report.py --from-file).
+    /// (scripts/azure/qwcluster-report.py --from-file).
     Dump {
         /// Seconds to keep running after printing, for the log stream.
         #[arg(long, default_value_t = 600)]
@@ -247,7 +247,7 @@ enum Command {
         #[arg(long)]
         profile_secs: Option<u64>,
         /// What the run tests (`blob`, `cache`, `copy`, ...), for grouping
-        /// runs in scripts/qwcluster-report.py.
+        /// runs in scripts/azure/qwcluster-report.py.
         #[arg(long)]
         variant: Option<String>,
         #[arg(long, env = "USNM_QWCLUSTER_URL")]

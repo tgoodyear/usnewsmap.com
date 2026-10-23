@@ -83,14 +83,14 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
 }
 
 // Nobody deletes the account by accident. A lock on a private endpoint's
-// target can block removing the endpoint, so scripts/archive-store.sh lifts
+// target can block removing the endpoint, so scripts/azure/archive-store.sh lifts
 // it for that and puts it back (docs/operations.md, "Archival storage").
 resource lock 'Microsoft.Authorization/locks@2020-05-01' = {
   scope: account
   name: 'usnm-archive-keep'
   properties: {
     level: 'CanNotDelete'
-    notes: 'The archival account outlives every environment. scripts/archive-store.sh lifts this to remove an environment\'s private endpoint.'
+    notes: 'The archival account outlives every environment. scripts/azure/archive-store.sh lifts this to remove an environment\'s private endpoint.'
   }
 }
 

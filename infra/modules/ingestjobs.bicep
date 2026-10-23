@@ -29,7 +29,7 @@
 //   seed plan (`ocrSeed`), each run then tops `ocr-bulk` up with the
 //   pages LoC read worst (12 §12.5 Step 10).
 //   `ocr-enqueue`, `ocr-requeue` and `ocr-seed` run as one-off executions of
-//   it (scripts/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
+//   it (scripts/azure/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
 //   account's endpoints.
 // - `usnm-cong-caj-{env}` (when `congressJob`, named in main.bicep): manual, one replica of
 //   `usnm-ingest congress-globe` as id-usnm-ingest (#229, 04 §4.10): fetches
@@ -50,7 +50,7 @@
 // - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
-//   added a way for the execution to fail. scripts/ja-ocr/start-quality.sh
+//   added a way for the execution to fail. ja-ocr/tools/start-quality.sh
 //   starts those here and `quality` (which shares its chunks) on the jaocr job.
 //
 // The ingest job's Quickwit writer keeps its data on an NFS share

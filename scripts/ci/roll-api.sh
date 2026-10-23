@@ -44,7 +44,7 @@ esac
 
 # The searcher's config is infra/quickwit/searcher.yaml. Apply it when the
 # running one differs, so a change to it goes live on merge rather than
-# waiting for scripts/provision.sh. The storage account is read from the
+# waiting for scripts/azure/provision.sh. The storage account is read from the
 # running config (the file has a placeholder for it). An app without a
 # searcher (the memory backend) is left alone, and so is the searcher app
 # when its config is current: an API image never restarts it.

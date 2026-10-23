@@ -307,7 +307,7 @@ var rules = [
   {
     name: alertNames.jobFailed
     displayName: 'Pipeline job failed'
-    description: 'A replica of the ingest or backfill job, the Japanese OCR or audit job (caj-usnm-jaocr, caj-usnm-jaone) or the OCR pickup job (usnm-ocrs-caj) failed in the last 30 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Japanese OCR, audit and pickup runs touch no published index. Next: scripts/logs.sh --env <env> --query-name job-executions --span 1d for how each replica ended, and errors-by-batch 1d for the warnings before it (for a Japanese OCR run, scripts/ja-ocr/quality-rows.sh --env <env> --execution <execution>). Fix the cause, then start the job again (or wait for the pickup\'s hourly run); the next run picks up where this one stopped.'
+    description: 'A replica of the ingest or backfill job, the Japanese OCR or audit job (caj-usnm-jaocr, caj-usnm-jaone) or the OCR pickup job (usnm-ocrs-caj) failed in the last 30 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Japanese OCR, audit and pickup runs touch no published index. Next: scripts/azure/logs.sh --env <env> --query-name job-executions --span 1d for how each replica ended, and errors-by-batch 1d for the warnings before it (for a Japanese OCR run, ja-ocr/tools/quality-rows.sh --env <env> --execution <execution>). Fix the cause, then start the job again (or wait for the pickup\'s hourly run); the next run picks up where this one stopped.'
     severity: 2
     frequency: 'PT15M'
     // Azure accepts only 5, 10, 15, 30, 45, 60 min and up; the query reports the last 30 min
@@ -319,7 +319,7 @@ var rules = [
   {
     name: alertNames.ingestNotProgressing
     displayName: 'Ingest not progressing'
-    description: 'The ingest job keeps stopping at the titles-sync deadline: Condition says how. "not started again": the last stop was 3 or more hours ago and no execution has run since; start the job (and check whatever restarts it). "no titles progress": 3 stops in a row left as many titles as the first; LoC may be refusing title records. Next: scripts/logs.sh --env <env> --query-name ingest-endings --span 2d for each stop and the titles left, and /v1/status (titles.pipeline.awaiting_sync).'
+    description: 'The ingest job keeps stopping at the titles-sync deadline: Condition says how. "not started again": the last stop was 3 or more hours ago and no execution has run since; start the job (and check whatever restarts it). "no titles progress": 3 stops in a row left as many titles as the first; LoC may be refusing title records. Next: scripts/azure/logs.sh --env <env> --query-name ingest-endings --span 2d for each stop and the titles left, and /v1/status (titles.pipeline.awaiting_sync).'
     severity: 3
     frequency: 'PT1H'
     window: 'P2D'
@@ -329,7 +329,7 @@ var rules = [
   {
     name: alertNames.releaseStalled
     displayName: 'Release stalled'
-    description: 'A release is building an index but has logged no progress for 10 minutes; Execution and Detail say which version and where it stopped. Next: scripts/logs.sh --env <env> --query-name release-progress for the last lines (disk, memory, Quickwit retries) and job-executions to see if the replica is still running.'
+    description: 'A release is building an index but has logged no progress for 10 minutes; Execution and Detail say which version and where it stopped. Next: scripts/azure/logs.sh --env <env> --query-name release-progress for the last lines (disk, memory, Quickwit retries) and job-executions to see if the replica is still running.'
     severity: 2
     frequency: 'PT15M'
     window: 'P2D'
@@ -344,7 +344,7 @@ var backfillRules = [
   {
     name: alertNames.backfillStalled
     displayName: 'Backfill stalled'
-    description: 'Backfill workers have run for the last hour but none has curated a batch in it (and LoC is not rate limiting). Next: scripts/logs.sh --env <env> --query-name curation-throughput for the recent work, curate-replicas for each worker\'s stage, and errors-by-batch 2h for repeated failures on the same batches.'
+    description: 'Backfill workers have run for the last hour but none has curated a batch in it (and LoC is not rate limiting). Next: scripts/azure/logs.sh --env <env> --query-name curation-throughput for the recent work, curate-replicas for each worker\'s stage, and errors-by-batch 2h for repeated failures on the same batches.'
     severity: 2
     frequency: 'PT15M'
     window: 'PT2H'
@@ -354,7 +354,7 @@ var backfillRules = [
   {
     name: alertNames.backfillReplicaSilent
     displayName: 'Backfill replica silent'
-    description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. Replica and Detail say which and its last line. Next: scripts/logs.sh --env <env> --query-name curate-replicas for each replica\'s last stage and heartbeat; stop the execution if it is stuck (its batch lease expires and another worker retries it).'
+    description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. Replica and Detail say which and its last line. Next: scripts/azure/logs.sh --env <env> --query-name curate-replicas for each replica\'s last stage and heartbeat; stop the execution if it is stuck (its batch lease expires and another worker retries it).'
     severity: 2
     frequency: 'PT15M'
     window: 'P1D'
@@ -412,7 +412,7 @@ var ocrSyncRules = [
   {
     name: alertNames.ocrSyncBacklog
     displayName: 'OCR output waiting over 72 hours'
-    description: 'The OCR pickup\'s last run left node output in ocr-out that is more than 72 hours old; Detail says how much. ocr-out deletes blobs 30 days after their last change. Next: reference status/ocr-local.json (parts_left, oldest_age_s) and the pickup\'s logs; raise --max-parts or start extra executions (scripts/start-job.sh --job OCR_SYNC_JOB -- ocr-sync).'
+    description: 'The OCR pickup\'s last run left node output in ocr-out that is more than 72 hours old; Detail says how much. ocr-out deletes blobs 30 days after their last change. Next: reference status/ocr-local.json (parts_left, oldest_age_s) and the pickup\'s logs; raise --max-parts or start extra executions (scripts/azure/start-job.sh --job OCR_SYNC_JOB -- ocr-sync).'
     severity: 3
     frequency: 'PT1H'
     window: 'PT3H'

@@ -13,11 +13,11 @@ One directory per report, named `<year>-<month>-<topic>`. A report is `report.md
 
 ## Data
 
-`scripts/data-assets.sh` defines the `report-data` set as every tracked file under `docs/reports/` and `docs/data/` that is not prose or code (`.csv`, `.json`, `.jsonl`, `.parquet`, `.txt`, `.gz`, `.pdf`, `.tar`). `ops/data-assets.json` records the release that holds the current set and the tarball's sha256.
+`scripts/ops/data-assets.sh` defines the `report-data` set as every tracked file under `docs/reports/` and `docs/data/` that is not prose or code (`.csv`, `.json`, `.jsonl`, `.parquet`, `.txt`, `.gz`, `.pdf`, `.tar`). `ops/data-assets.json` records the release that holds the current set and the tarball's sha256.
 
 ```sh
-scripts/data-assets.sh --fetch --set report-data     # downloads, checks the digest, extracts under the repository root
-scripts/data-assets.sh --members --set report-data   # what the set holds at this commit
+scripts/ops/data-assets.sh --fetch --set report-data     # downloads, checks the digest, extracts under the repository root
+scripts/ops/data-assets.sh --members --set report-data   # what the set holds at this commit
 ```
 
 To publish a changed set, run the `publish data assets` workflow (`.github/workflows/publish-data.yml`) on the commit that holds the new files, with `set` = `report-data`. A set is cumulative: the pack starts from the release `ops/data-assets.json` records (its tarball, checked against the recorded digest) and lays the commit's tracked files over it, so one tag always holds every report's data, including the ones whose files left the tree long ago. The run creates the release `data-report-data-<date>-<commit>` from that commit with the tarball, its member list and `SHA256SUMS`, and prints the whole `ops/data-assets.json` with the new tag and digest to commit. A release is never rebuilt: a changed set is a new run and a new tag, and an old tag stays fetchable with `--tag`.

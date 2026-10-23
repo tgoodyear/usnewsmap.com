@@ -5,7 +5,7 @@
 # image's base.
 #
 # - An environment the file lists runs our build, which only
-#   scripts/build-quickwit.sh pushes: if the registry lacks that digest,
+#   scripts/azure/build-quickwit.sh pushes: if the registry lacks that digest,
 #   fail and say so.
 # - Any other runs upstream's image, copied in with its digest unchanged. A
 #   registry that already has the digest is left alone, so a deploy doesn't
@@ -27,7 +27,7 @@ echo "image=${ACR}/${name}@${want}" >> "${GITHUB_OUTPUT:-/dev/stdout}"
 if [ "$ours" = true ]; then
   got=$(az acr repository show -n "${ACR%%.*}" --image "${name}@${want}" --query digest -o tsv 2> /dev/null || true)
   if [ "$got" != "$want" ]; then
-    echo "::error::${ACR} has no ${name}@${want}, the Quickwit build $pins records for $ENVIRONMENT. Build it there (scripts/build-quickwit.sh --env $ENVIRONMENT, then commit the digest it records) or drop $ENVIRONMENT from the file for upstream's image."
+    echo "::error::${ACR} has no ${name}@${want}, the Quickwit build $pins records for $ENVIRONMENT. Build it there (scripts/azure/build-quickwit.sh --env $ENVIRONMENT, then commit the digest it records) or drop $ENVIRONMENT from the file for upstream's image."
     exit 1
   fi
   echo "The registry has our Quickwit build ${name}:${tag}@${want}."

@@ -23,8 +23,8 @@ bridge. This design does not change its model:
 - a stock, self-hosted BOINC server (provisioned separately by this directory).
 
 This directory is that last item: Azure hosting for the stock server and the notes on how the
-bridge reaches it. Provisioning and image builds are driven by `scripts/provision-boinc.sh`
-and `scripts/build-boinc-images.sh`. It contains no BOINC code, no work generator, no validator,
+bridge reaches it. Provisioning and image builds are driven by `scripts/boinc/provision-boinc.sh`
+and `scripts/boinc/build-boinc-images.sh`. It contains no BOINC code, no work generator, no validator,
 no assimilator and no app. The interface to #441 is in
 [interface.md](interface.md).
 
@@ -183,7 +183,7 @@ Decision:
    uploads go to `file_upload_handler`, which cannot be redirected to blob storage.
 4. Scheduler RPC goes to the dynamic app at `https://boinc.usnewsmap.com/<project>_cgi/cgi`.
 
-Custom-domain provisioning is declarative and staged by `scripts/provision-boinc.sh`:
+Custom-domain provisioning is declarative and staged by `scripts/boinc/provision-boinc.sh`:
 
 1. The Bicep `custom-domain-dns` module writes the CNAME to the Container App FQDN and the
    `asuid` TXT verification record in the existing public zone.
@@ -246,7 +246,7 @@ choices were:
   need the database credential on a person's machine.
 
 The bridge image combines the server image and bridge binary (`images/bridge/Containerfile`).
-`scripts/build-boinc-images.sh` records its digest in the environment settings, and Bicep gives
+`scripts/boinc/build-boinc-images.sh` records its digest in the environment settings, and Bicep gives
 the runtime and secrets identities `AcrPull` on the app's shared registry. `bridge-job`
 (`images/server/bridge-job.sh`) renders `config.xml` into tmpfs and runs `usnm-boinc submit` or
 `reconcile` for the job id in `JOB_ID`.
@@ -321,7 +321,7 @@ check. The master URL is part of every volunteer's attachment and cannot change.
   in decision 6 of ADR-0019). `infra/main.bicep` waives exactly those two policies for the
   dedicated BOINC resource group when `USNM_BOINC_GROUP` is set. The group must hold only
   BOINC resources, and provisioning runs before this stack is deployed.
-- Images: `scripts/build-boinc-images.sh` uses ACR Tasks in the shared registry. The build
+- Images: `scripts/boinc/build-boinc-images.sh` uses ACR Tasks in the shared registry. The build
   reuses `usnm-boinc-base` (pinned BOINC source and runtime dependencies) and
   `usnm-boinc-bridge-bin` (the Rust binary) when their input hashes are unchanged, then builds
   digest-pinned server and bridge images. The worker image remains in public GHCR for volunteer
@@ -467,7 +467,7 @@ the images would be preferred if one exists. It is not planned until the maintai
    maintainer's side, or does the hand-off use the account key?
 4. ~~Does a Container Apps Job accept per-run argument overrides at start (the job id to
    submit), or does each run need a new execution template?~~ Settled in code: an execution
-   template drops the job's settings and has no mounts, so `scripts/start-boinc-bridge.sh`
+   template drops the job's settings and has no mounts, so `scripts/boinc/start-boinc-bridge.sh`
    writes the run's settings into the job and starts it without an override (docs/boinc.md,
    "Start a bridge step"). UNVERIFIED against a live job.
 5. Does the BOINC client follow a redirect for `get_project_config.php`?
@@ -475,7 +475,7 @@ the images would be preferred if one exists. It is not planned until the maintai
 7. Code-signing key custody: which offline machine, and who holds the backup?
 8. The terms of use and any change to project metadata. The production domain and master URL
    are set; a URL change after volunteers attach would require them to reattach.
-9. ~~Who builds the server image and bridge job?~~ `scripts/build-boinc-images.sh` builds both in ACR Tasks and writes their digests to the settings (docs/images.md).
+9. ~~Who builds the server image and bridge job?~~ `scripts/boinc/build-boinc-images.sh` builds both in ACR Tasks and writes their digests to the settings (docs/images.md).
 10. Should `submit` get a remote mode in #441, or is the manual hand-off enough for the pilot?
 11. What network path does the maintainer use to reach the Files share for the hand-off in
     section 4? Secrets and project initialization are handled by in-VNet jobs; the share

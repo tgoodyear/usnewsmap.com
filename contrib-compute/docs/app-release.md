@@ -48,12 +48,12 @@ units through `native-qwen-cohort.php --plan-class shared_8b`, under the existin
 release coordination and locks. Preserve live configuration, quality metrics,
 queues and pins; this code change neither deploys nor opens a cohort.
 
-`scripts/boinc-app-release.sh` builds, stages, signs and publishes one app version on the
+`scripts/boinc/boinc-app-release.sh` builds, stages, signs and publishes one app version on the
 live server in one command:
 
 ```sh
-scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST --what-if
-scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST --what-if
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST
 ```
 
 With `"server": "onprem"` in the settings (prod since 21 October 2026) the script stops
@@ -67,7 +67,7 @@ read-only checks and prints the plan.
 For a **PR-first release**, use `--prepare-only` to stage, sign and build the
 immutable app-version image without publishing. On the Azure server it changes only
 `images.appver`; the key stays on the signing host. After pin review, green CI and merge,
-run `scripts/provision-boinc.sh --env prod` to publish and verify registration. On the
+run `scripts/boinc/provision-boinc.sh --env prod` to publish and verify registration. On the
 on-prem server it writes no pin: it builds the image there and prints the
 `usnm-boinc-step --target publish` command to publish it with.
 Preparation proves neither publication nor volunteer execution. Omit
@@ -286,10 +286,10 @@ fake migration.
      [disk policy and rollout](../../docs/boinc-quality.md#qwen-disk-admission-and-cold-cache-acceptance-559).
 
    ```sh
-   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
      --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
      --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
    ```
 
@@ -303,15 +303,15 @@ fake migration.
      `apps/usnm_quality/<version>/<platform>/` with no plan-class suffix):
 
    ```sh
-   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
      --platform x86_64-pc-linux-gnu \
      --binary /path/to/usnm_quality_1.1_x86_64-pc-linux-gnu \
      --binary-sha256 CHECKED_SHA256 --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
      --platform arm64-apple-darwin \
      --binary /path/to/usnm_quality_1.1_arm64-apple-darwin \
      --binary-sha256 CHECKED_SHA256 --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
      --platform windows_x86_64 \
      --binary /path/to/usnm_quality_1.1_windows_x86_64.exe \
      --binary-sha256 CHECKED_SHA256 --signing-host HOST
@@ -332,7 +332,7 @@ fake migration.
 
 ## What it needs
 
-- The server and bridge images in `infra/boinc/env/<env>.json` (`scripts/build-boinc-images.sh`).
+- The server and bridge images in `infra/boinc/env/<env>.json` (`scripts/boinc/build-boinc-images.sh`).
   Provisioning ensures the project is initialised automatically.
 - `codeSignPublicKey` in the settings: the public half of the key on the signing host.
 - `images.worker`: the public GHCR worker image, by digest (below).
@@ -416,14 +416,14 @@ noise reduction is not evidence that all differences are real or safe.
 An end-to-end test needs a BOINC client with Docker (and an NVIDIA GPU for `docker_nvidia_cuda`
 versions), attached to the master URL with a test account, that downloads a staged workunit
 and returns a result that validates and is assimilated (#484). Container Apps and ACI cannot
-run Docker in a container, so `scripts/boinc-test-client.sh` and
+run Docker in a container, so `scripts/boinc/boinc-test-client.sh` and
 `contrib-compute/infra/boinc/test-client.bicep` deploy a short-lived VM in its own resource
 group (`usnm-boinc-test-rg-<env>`) and delete the group when the test is done:
 
 ```sh
-scripts/boinc-test-client.sh --env prod --create [--sku Standard_NC4as_T4_v3] [--spot|--paygo] \
+scripts/boinc/boinc-test-client.sh --env prod --create [--sku Standard_NC4as_T4_v3] [--spot|--paygo] \
   [--authenticator-file <path>] [--what-if]
-scripts/boinc-test-client.sh --env prod --delete [--what-if]
+scripts/boinc/boinc-test-client.sh --env prod --delete [--what-if]
 ```
 
 Flags:
@@ -618,7 +618,7 @@ Every catchable exit (success, timeout, command failure, SIGINT/SIGTERM/SIGHUP)
 attempts fixture release and ephemeral-client teardown. Teardown has its own
 bounded budget and polls until the resource group is absent; an unconfirmed
 delete makes acceptance fail and records the exact group for recovery. Recovery
-can use `scripts/boinc-test-client.sh --env prod --delete --resource-suffix <run_id>`
+can use `scripts/boinc/boinc-test-client.sh --env prod --delete --resource-suffix <run_id>`
 without an authenticator file. If the runner itself is killed or its host fails,
 also reconcile/remove its local `.boinc-acceptance-<run_id>` credential copy and
 `.boinc-provision-<run_id>` parameter directory; these private artifacts are ignored
@@ -677,7 +677,7 @@ maintainer publishes and signs from the merged commit.
    ```sh
    (cd /tmp/mac-wrappers && shasum -a 256 -c SHA256SUMS)
    # Run from the clean repository checkout, using the checked checksum below.
-   scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.1 \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_ocr --version 1.1 \
      --signing-host HOST --platform arm64-apple-darwin \
      --wrapper /tmp/mac-wrappers/docker_wrapper_arm64 \
      --wrapper-sha256 CHECKED_SHA256 \

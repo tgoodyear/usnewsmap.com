@@ -20,35 +20,35 @@ names remain pinned until their migration and rebuild windows.
 
 An environment's settings live in three places ([`infra/README.md`](../infra/README.md#settings-and-the-deployment-stack), #295), and [`infra/env/schema.json`](../infra/env/schema.json) says which setting goes where:
 
-- **Public choices** (flags, sizes, caps, schedules, most `USNM_*` settings) are committed in `infra/env/<env>.json`. A change to a shared environment goes through a pull request like code, and `scripts/provision.sh` deploys only committed settings:
+- **Public choices** (flags, sizes, caps, schedules, most `USNM_*` settings) are committed in `infra/env/<env>.json`. A change to a shared environment goes through a pull request like code, and `scripts/azure/provision.sh` deploys only committed settings:
 
   ```sh
-  scripts/settings.sh --env prod --key USNM_JA_LATIN --value true   # edits infra/env/prod.json
+  scripts/azure/settings.sh --env prod --key USNM_JA_LATIN --value true   # edits infra/env/prod.json
   git switch -c settings/prod-ja-latin && git commit -am "prod: USNM_JA_LATIN on" && git push -u origin HEAD
   # open the pull request; once it's merged:
   git switch main && git pull
-  scripts/provision.sh --env prod
+  scripts/azure/provision.sh --env prod
   ```
 
-  CI's "stack change needs a provision" warning on the merge stays until you run that provision. Every `scripts/settings.sh` example below that sets a public setting works this way. In dev, an experiment's settings go in its own pull request; to try one before committing it, `scripts/provision.sh --env dev --allow-dirty`.
+  CI's "stack change needs a provision" warning on the merge stays until you run that provision. Every `scripts/azure/settings.sh` example below that sets a public setting works this way. In dev, an experiment's settings go in its own pull request; to try one before committing it, `scripts/azure/provision.sh --env dev --allow-dirty`.
 
-- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, `USNM_VNET_ADDRESS_PREFIX`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the **settings store**, one Azure App Configuration store for every environment in the subscription, `usnm-config-appcs-<suffix>` in `usnm-config-rg`, each environment's under its own label (`dev`, `prod`, ...). The key is the setting's name. Only the operators can reach it, with Entra ID (the store has no access keys); CI never reads it. `scripts/settings.sh` reads and sets them with your sign-in (in the store, removing any local copy), or `az` does directly:
+- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, `USNM_VNET_ADDRESS_PREFIX`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the **settings store**, one Azure App Configuration store for every environment in the subscription, `usnm-config-appcs-<suffix>` in `usnm-config-rg`, each environment's under its own label (`dev`, `prod`, ...). The key is the setting's name. Only the operators can reach it, with Entra ID (the store has no access keys); CI never reads it. `scripts/azure/settings.sh` reads and sets them with your sign-in (in the store, removing any local copy), or `az` does directly:
 
   ```sh
-  scripts/settings.sh --env prod --key USNM_ALERT_EMAILS --value ops@example.org
-  # or: store=$(scripts/settings.sh --env prod --key SETTINGS_STORE_ENDPOINT)
+  scripts/azure/settings.sh --env prod --key USNM_ALERT_EMAILS --value ops@example.org
+  # or: store=$(scripts/azure/settings.sh --env prod --key SETTINGS_STORE_ENDPOINT)
   #     az appconfig kv set --endpoint "$store" --auth-mode login --label prod --key USNM_ALERT_EMAILS --value ops@example.org --yes
-  scripts/provision.sh --env prod
+  scripts/azure/provision.sh --env prod
   ```
 
-  `scripts/settings.sh --env prod --key K --unset` clears a private setting everywhere, so it takes its default: it deletes the key from the store and any local copy. `--unset-local` removes only the local file's entry, so the store's value applies again (provision suggests it when a key is in both places). Until the store exists, private settings stay in the local file; once it does, `scripts/settings.sh --env <env> --migrate` moves them in (it stops, moving none, if the store already has a different value for one), and every provision until then warns. Every script that sets a private setting writes it to the store, only if the value changed, and removes any local copy, so a re-run never leaves it in two places (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` sets the nodes' group; `settings.sh` sets the one you give it). An empty value stays a local `""`, which hides the store's value (`teardown.sh` detaches the archive that way); `--migrate` leaves those.
+  `scripts/azure/settings.sh --env prod --key K --unset` clears a private setting everywhere, so it takes its default: it deletes the key from the store and any local copy. `--unset-local` removes only the local file's entry, so the store's value applies again (provision suggests it when a key is in both places). Until the store exists, private settings stay in the local file; once it does, `scripts/azure/settings.sh --env <env> --migrate` moves them in (it stops, moving none, if the store already has a different value for one), and every provision until then warns. Every script that sets a private setting writes it to the store, only if the value changed, and removes any local copy, so a re-run never leaves it in two places (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` sets the nodes' group; `settings.sh` sets the one you give it). An empty value stays a local `""`, which hides the store's value (`teardown.sh` detaches the archive that way); `--migrate` leaves those.
 
-  **The store's lifecycle.** It sits outside every environment's stack, in its own stack `usnm-config` (`infra/settings/main.bicep`), so no provision or teardown of an environment deletes it: `teardown.sh` keeps the environment's private settings under its label, and the next stand-up reads them again. The first provision in a subscription creates it (`scripts/settings-store.sh --deploy`, in that environment's region, registering the `Microsoft.AppConfiguration` provider first if the subscription lacks it), and so does `bootstrap.sh` through its provision; it then waits up to 15 minutes for its new role on the store to apply. `scripts/settings-store.sh --what-if` shows what a deployment would change. It is on the Free tier: $0, 10 MB, 1,000 requests a day. A provision reads an environment's settings in one request and each script's single read is one more, so the cap is far off. The Free tier has no soft delete: a deleted key is gone.
+  **The store's lifecycle.** It sits outside every environment's stack, in its own stack `usnm-config` (`infra/settings/main.bicep`), so no provision or teardown of an environment deletes it: `teardown.sh` keeps the environment's private settings under its label, and the next stand-up reads them again. The first provision in a subscription creates it (`scripts/azure/settings-store.sh --deploy`, in that environment's region, registering the `Microsoft.AppConfiguration` provider first if the subscription lacks it), and so does `bootstrap.sh` through its provision; it then waits up to 15 minutes for its new role on the store to apply. `scripts/azure/settings-store.sh --what-if` shows what a deployment would change. It is on the Free tier: $0, 10 MB, 1,000 requests a day. A provision reads an environment's settings in one request and each script's single read is one more, so the cap is far off. The Free tier has no soft delete: a deleted key is gone.
 
   **Who can read the store.** App Configuration Data Owner goes to the Entra object ids in the store stack's admin list and to the account that last deployed it. The role covers every label: one maintainer operates every environment, so per-environment access isn't worth a store each. A provision reads the store before it deploys anything, and an operator without access stops there with the commands that fix it. To add someone, an operator who has access adds their object id (`az ad signed-in-user show --query id -o tsv`, run by them); `--admins` replaces the list, so give everyone's:
 
   ```sh
-  scripts/settings-store.sh --deploy --admins "<id>,<id>"
+  scripts/azure/settings-store.sh --deploy --admins "<id>,<id>"
   ```
 
   Without `--admins`, `--deploy` keeps the list it has. With no operator left, an Owner of the subscription grants the role to themselves on the store's group (not on the store, where it would collide with the stack's assignment), adds themselves to the list as above, then deletes that grant: `az role assignment create --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "App Configuration Data Owner" --scope "/subscriptions/<subscription id>/resourceGroups/usnm-config-rg"`. On a new machine, whose local file has no `SETTINGS_STORE_ENDPOINT`, every script that reads or writes a private setting (not only provision) takes the endpoint from the store's stack and records it, so none of them mistakes a store it can't find for an unset setting.
@@ -60,19 +60,19 @@ An environment's settings live in three places ([`infra/README.md`](../infra/REA
 A setting in the wrong place, or in two, stops a provision before it deploys anything. **Moving an environment from before #295** (its public settings are still in the local file) is one command, then a pull request:
 
 ```sh
-scripts/settings.sh --env prod --migrate   # moves the public settings into infra/env/prod.json
+scripts/azure/settings.sh --env prod --migrate   # moves the public settings into infra/env/prod.json
 git diff infra/env/prod.json               # check, commit, pull request, merge
-scripts/provision.sh --env prod            # creates the settings store if the subscription has none
-scripts/settings.sh --env prod --migrate   # moves the private settings into it
+scripts/azure/provision.sh --env prod            # creates the settings store if the subscription has none
+scripts/azure/settings.sh --env prod --migrate   # moves the private settings into it
 ```
 
-`scripts/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and calls GA `az stack-whatif sub create` to preview the stack, including unmanaged-resource and deny-setting changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions. What-If results can be retained from `PT1H` to `PT3H`; the scripts request `PT3H`.
+`scripts/azure/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and calls GA `az stack-whatif sub create` to preview the stack, including unmanaged-resource and deny-setting changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions. What-If results can be retained from `PT1H` to `PT3H`; the scripts request `PT3H`.
 
 Known residual What-If noise includes provider normalization: Static Web Apps provider-generated properties, diagnostic-setting destination defaults, and Azure Files soft-delete retention defaults. Compare each result with the deployed resource and template before classifying it; don't change the template merely to silence a provider-generated/default difference. Always review actual deletions and deny-setting changes; `--only-show-errors` is not a substitute for examining the preview. [Microsoft's deployment-stacks What-If documentation](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-stacks-what-if) describes the supported preview and retention behavior.
 
 ## Deploy the jobs
 
-`scripts/bootstrap.sh --env <env> --ingest` deploys both jobs (or `scripts/settings.sh --env <env> --key USNM_INGEST_JOBS --value true` and `scripts/provision.sh --env <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4), and `USNM_BACKFILL_CRON` an optional schedule for it (a UTC cron such as `"0 9 2-4 10 *"`; empty is manual), which every deployment keeps. The ingest job's Quickwit writer works on the replica's own disk, which holds a weekly delta; a full rebuild adds an NFS share for it, `USNM_INGEST_SCRATCH_GIB` in size (default 0, none; 128 for a rebuild, 08 §8.4), only while the rebuild runs ([Full rebuild](#full-rebuild)). The weekly schedule comes after the first release ([Weekly updates](#weekly-updates)).
+`scripts/azure/bootstrap.sh --env <env> --ingest` deploys both jobs (or `scripts/azure/settings.sh --env <env> --key USNM_INGEST_JOBS --value true` and `scripts/azure/provision.sh --env <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4), and `USNM_BACKFILL_CRON` an optional schedule for it (a UTC cron such as `"0 9 2-4 10 *"`; empty is manual), which every deployment keeps. The ingest job's Quickwit writer works on the replica's own disk, which holds a weekly delta; a full rebuild adds an NFS share for it, `USNM_INGEST_SCRATCH_GIB` in size (default 0, none; 128 for a rebuild, 08 §8.4), only while the rebuild runs ([Full rebuild](#full-rebuild)). The weekly schedule comes after the first release ([Weekly updates](#weekly-updates)).
 
 ## The title catalog
 
@@ -83,61 +83,61 @@ The catalog (`reference/catalog/titles.json`, `places.json`) is built by `titles
 - **A title whose record lists several places** (a paper that moved): add `{"added": "…", "city": "Chicago", "lccn": "sn84024055", "reason": "…", "ref": 190, "source": "…", "state": "IL"}` to `catalog/overrides/title-places.json`, sorted by `lccn`, keys in alphabetical order.
 - **Check the effect first**: run `curl -s https://api.usnewsmap.com/v1/places > /tmp/places.json`, then `cargo run -p usnm-ingest --example place-report -- --places /tmp/places.json`; the report lists the merges, renamed places and places that move.
 
-A corrected point or name ships with the next release, delta or full. A change that moves a published title to another place (most aliases, a title place, new merging rules) waits for the next full release: incremental releases keep published titles where they were published, and log `N published titles' place changes wait for the next full release`. Run a [full rebuild](#full-rebuild) on the E4 profile to apply them; the weekly run never starts one for this, since on the Consumption profile a full release runs out of memory (#172). To refresh the gazetteer for a newer Census year, run `scripts/build-gazetteer.py --year YYYY` and commit `catalog/gazetteer/us-places.csv`.
+A corrected point or name ships with the next release, delta or full. A change that moves a published title to another place (most aliases, a title place, new merging rules) waits for the next full release: incremental releases keep published titles where they were published, and log `N published titles' place changes wait for the next full release`. Run a [full rebuild](#full-rebuild) on the E4 profile to apply them; the weekly run never starts one for this, since on the Consumption profile a full release runs out of memory (#172). To refresh the gazetteer for a newer Census year, run `scripts/data/build-gazetteer.py --year YYYY` and commit `catalog/gazetteer/us-places.csv`.
 
 ## Backfill and the first version
 
 Backfill, then publish the first version:
 
 ```sh
-RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
 # Queue every batch from LoC's listing and curate it. Downloads are paced to
 # LoC's limit (10 bulk requests per 10 minutes per IP), one every 75 s across
 # all workers, so this takes about 2.5 days. Each worker stops claiming 22 h
 # after it starts and exits 0 once its current batch is done (by about
 # 22 h 45 min). Start the job again when an execution has ended, until the
 # queue is empty (it resumes where it left off).
-az containerapp job start -n "$(scripts/settings.sh --env prod --key BACKFILL_JOB)" -g "$RG"
+az containerapp job start -n "$(scripts/azure/settings.sh --env prod --key BACKFILL_JOB)" -g "$RG"
 # When that has finished: curate any leftovers, build the base index, publish.
-az containerapp job start -n "$(scripts/settings.sh --env prod --key INGEST_JOB)" -g "$RG"
+az containerapp job start -n "$(scripts/azure/settings.sh --env prod --key INGEST_JOB)" -g "$RG"
 ```
 
 Watch with `az containerapp job execution list -n <job> -g "$RG" -o table` and the saved log queries:
 
 ```sh
-scripts/logs.sh --list                                                  # the saved queries (ops/queries/)
-scripts/logs.sh --env prod --query-name release-progress --span 6h      # docs sent, rate, retries, free disk, memory, merges
-scripts/logs.sh --env prod --query-name index-layout --span 2d          # splits, docs and size of each index a release published
-scripts/logs.sh --env prod --query-name curation-throughput --span 1d   # batches and pages per hour
-scripts/logs.sh --env prod --query-name curate-replicas --span 6h       # each worker's last line, batch and stage
-scripts/logs.sh --env prod --query-name errors-by-batch --span 1d
-scripts/logs.sh --env prod --query-name job-executions --span 2d
+scripts/azure/logs.sh --list                                                  # the saved queries (ops/queries/)
+scripts/azure/logs.sh --env prod --query-name release-progress --span 6h      # docs sent, rate, retries, free disk, memory, merges
+scripts/azure/logs.sh --env prod --query-name index-layout --span 2d          # splits, docs and size of each index a release published
+scripts/azure/logs.sh --env prod --query-name curation-throughput --span 1d   # batches and pages per hour
+scripts/azure/logs.sh --env prod --query-name curate-replicas --span 6h       # each worker's last line, batch and stage
+scripts/azure/logs.sh --env prod --query-name errors-by-batch --span 1d
+scripts/azure/logs.sh --env prod --query-name job-executions --span 2d
 ```
 
 The workspace id is the stack output `LOG_ANALYTICS_WORKSPACE_ID`; the queries run with your own sign-in (Log Analytics Reader or more). Traces (`release`, `curate`) and metrics are in the environment's Application Insights component (`appi-usnm-prod` in the pinned prod, `usnm-core-appi-<env>` otherwise). With alert emails set, a failed job, a stalled release, a stalled backfill or a backfill replica silent for 15 minutes sends an email (08 §8.1.2). So does a full Log Analytics daily cap (08 §8.1.1): until the cap resets nothing is logged, so a job that looks stalled may still be working; check `az containerapp job execution list` before stopping it. The same views appear as charts in the "usnm pipeline (<env>)" workbook, under that component → Workbooks ("usnewsmap pipeline" before the Phase 2 provision).
 
-The last lines of each worker say why it stopped: `max runtime reached; claiming no more batches` (with the number of batches still queued) when the execution should be started again. `curation finished` on its own means the worker found nothing more it could claim. A batch that failed in this execution is queued again but skipped by that worker, so check `scripts/logs.sh --env prod --query-name errors-by-batch --span 1d` and start the job once more if it lists batches that weren't curated later.
+The last lines of each worker say why it stopped: `max runtime reached; claiming no more batches` (with the number of batches still queued) when the execution should be started again. `curation finished` on its own means the worker found nothing more it could claim. A batch that failed in this execution is queued again but skipped by that worker, so check `scripts/azure/logs.sh --env prod --query-name errors-by-batch --span 1d` and start the job once more if it lists batches that weren't curated later.
 
 ## Switch the API to the published indexes
 
-Once a version is published (`current.json` exists in `reference/`): `scripts/settings.sh --env <env> --key USNM_SEARCH_BACKEND --value quickwit`, then `scripts/provision.sh --env <env>`. Until then the API would have nothing to serve ([`infra/README.md`](../infra/README.md#what-this-slice-runs)).
+Once a version is published (`current.json` exists in `reference/`): `scripts/azure/settings.sh --env <env> --key USNM_SEARCH_BACKEND --value quickwit`, then `scripts/azure/provision.sh --env <env>`. Until then the API would have nothing to serve ([`infra/README.md`](../infra/README.md#what-this-slice-runs)).
 
 ## Weekly updates
 
-Poll LoC weekly for new batches: `scripts/settings.sh --env <env> --key USNM_INGEST_CRON --value "17 3 * * 1"` (Mondays 03:17 UTC), then `scripts/provision.sh --env <env>` while no ingest execution is running. The schedule is committed in `infra/env/<env>.json` ([Settings](#settings)). Each run fetches LoC's listing once, curates and releases what is new, and exits 0 when there is nothing (08 §8.4). It stops curating 6 h in and releases what it has; if its log says `max runtime reached; claiming no more batches` with batches still queued, start the backfill job to curate the rest. A scheduled job can still be started by hand.
+Poll LoC weekly for new batches: `scripts/azure/settings.sh --env <env> --key USNM_INGEST_CRON --value "17 3 * * 1"` (Mondays 03:17 UTC), then `scripts/azure/provision.sh --env <env>` while no ingest execution is running. The schedule is committed in `infra/env/<env>.json` ([Settings](#settings)). Each run fetches LoC's listing once, curates and releases what is new, and exits 0 when there is nothing (08 §8.4). It stops curating 6 h in and releases what it has; if its log says `max runtime reached; claiming no more batches` with batches still queued, start the backfill job to curate the rest. A scheduled job can still be started by hand.
 
 A delta's writer works on the replica's own disk (about 13 GiB free at the start), with no scratch share (#308). That holds a weekly delta: the delta of 10 October 2026 (5,647 pages) used about 0.1 GB, and the full rebuilds of 6 to 9 October (23.7M pages each) peaked at 11 to 14 GB on the share (sampled every 30 s). The writer's disk use grows with a delta's size only up to its caps (a 4 GiB write-ahead log, a 4 GiB split cache and one merge of about 30,000 pages at a time, up to about 9 GB with American Stories' text, 08 §8.4), and a weekly delta reaches none of them. The tightest case is a large delta after a backfill, hundreds of thousands of pages: if the writer reports a full disk, the release fails and publishes nothing (`current.json` stays where it was). Then turn the share on for one run (`USNM_INGEST_SCRATCH_GIB=128`, provision, start the job), and clear it afterwards as in [Full rebuild](#full-rebuild). `disk_free_mb` in the `release progress` lines shows how close a delta came.
 
 ## Check a release's splits
 
-Before it publishes, a release waits for the writer's merges: `release merges` lines (every 30 s: step `settle` then `finalize`, splits, merges running and queued, free disk), then `merges settled; closing the index for its final merges`, then `merged; the index is closed to further writes` with the new index's split count. It then logs one `index layout` line per index of the new version and records the same under `indexes` in `reference/<version>/manifest.json`. `scripts/logs.sh --env prod --query-name index-layout --span 2d` lists them. A merged index has at most `pages / 30,000` (rounded down) `+ 7` splits (`split_num_docs_target` in `infra/quickwit/pages-index.yaml`), and the release fails rather than publish more. It also fails if the merges don't finish within `USNM_MERGE_TIMEOUT_SECS`, if the writer reports a full disk or a failed merge, or if the writer exits. The timeout is a setting (default 14400, 4 hours): `scripts/settings.sh --env <env> --key USNM_MERGE_TIMEOUT_SECS --value <secs>`, then `scripts/provision.sh --env <env>`. It is budgeted under the ingest job's 48-hour replica timeout in `infra/modules/ingestjobs.bicep` (the backfill and Japanese OCR jobs keep 24 hours). A writer the kernel killed for memory shows as `the Quickwit writer was killed by signal 9 (SIGKILL): it ran out of memory (…)` in the `command failed` line; `quickwit_rss_mb` in `release progress` is its memory (08 §8.4).
+Before it publishes, a release waits for the writer's merges: `release merges` lines (every 30 s: step `settle` then `finalize`, splits, merges running and queued, free disk), then `merges settled; closing the index for its final merges`, then `merged; the index is closed to further writes` with the new index's split count. It then logs one `index layout` line per index of the new version and records the same under `indexes` in `reference/<version>/manifest.json`. `scripts/azure/logs.sh --env prod --query-name index-layout --span 2d` lists them. A merged index has at most `pages / 30,000` (rounded down) `+ 7` splits (`split_num_docs_target` in `infra/quickwit/pages-index.yaml`), and the release fails rather than publish more. It also fails if the merges don't finish within `USNM_MERGE_TIMEOUT_SECS`, if the writer reports a full disk or a failed merge, or if the writer exits. The timeout is a setting (default 14400, 4 hours): `scripts/azure/settings.sh --env <env> --key USNM_MERGE_TIMEOUT_SECS --value <secs>`, then `scripts/azure/provision.sh --env <env>`. It is budgeted under the ingest job's 48-hour replica timeout in `infra/modules/ingestjobs.bicep` (the backfill and Japanese OCR jobs keep 24 hours). A writer the kernel killed for memory shows as `the Quickwit writer was killed by signal 9 (SIGKILL): it ran out of memory (…)` in the `command failed` line; `quickwit_rss_mb` in `release progress` is its memory (08 §8.4).
 
 ## Searcher caches
 
 The Quickwit searcher (a sidecar or its own app) keeps the split footers, fast fields and partial and predicate results in memory, with the capacities in `infra/quickwit/searcher.yaml` (08 §8.4). The API reads the searcher's metrics every minute and reports them as `api.searcher_cache_*` (08 §8.1.2):
 
 ```sh
-scripts/logs.sh --env prod --query-name searcher-caches --span 1d        # per replica and cache: MB and items held, hits, misses, evictions, hit rate
+scripts/azure/logs.sh --env prod --query-name searcher-caches --span 1d        # per replica and cache: MB and items held, hits, misses, evictions, hit rate
 ```
 
 The same table, and charts of MB held and of misses and evictions, are in the "usnm API (<env>)" workbook ("usnewsmap API" before the Phase 2 provision). The saved queries and these workbook panels select one reporting API replica per searcher per UTC minute, before aggregating any instruments. Remote searchers are identified by `Properties["usnm.searcher"]`, the origin of `USNM_QUICKWIT_URL` (without credentials, path or query). Loopback sidecars have no shared identity and keep their per-API-replica rows. The `Replica` column is the shared searcher's origin in app mode and the API replica in sidecar mode; chart series likewise keep sidecars separate. When the reporting replica disappears, the next minute can use another replica. Selection always keeps all rows from the chosen reporter, not just one metric row.
@@ -146,7 +146,7 @@ The `usnm.searcher` property is emitted only by API images that carry it; older 
 
 **Sizing `split_footer_cache_capacity`.** Size it from the release's footer total, and check it against what the cache does after the warm-up. Evictions on their own don't show the footers don't fit: Quickwit 0.9.1 also counts replacing an entry as an eviction, and after a publish the cache drops the old version's footers. The API logs `split footer cache evictions seen` once per searcher run, for the record, without a cause. The footers don't fit when the total is above the capacity, or when footer misses and evictions keep coming hours after the warm-up, with no publish or restart in between. To size it:
 
-1. Add up `footer_bytes` on the version's `index layout` lines (`scripts/logs.sh --env prod --query-name index-layout --span 2d`, column `FooterMb`), or under `indexes` in `reference/<version>/manifest.json`, over every index the version lists: the base, its deltas and the Japanese index.
+1. Add up `footer_bytes` on the version's `index layout` lines (`scripts/azure/logs.sh --env prod --query-name index-layout --span 2d`, column `FooterMb`), or under `indexes` in `reference/<version>/manifest.json`, over every index the version lists: the base, its deltas and the Japanese index.
 2. Set `split_footer_cache_capacity` in `infra/quickwit/searcher.yaml` to that total plus about 25% for the deltas the next weekly releases add, rounded up. Quickwit reads `256MB` as 256,000,000 bytes, the unit `FooterMb` uses.
 3. Check it fits the sidecar's 4 GiB next to the fast field cache (1 GB), the aggregation memory limit (768 MB) and the partial request and predicate caches (32 MB each). If it doesn't, the fast field cache is the one to shrink first; then the container's memory (`infra/modules/containerapp.bicep`).
 
@@ -157,10 +157,10 @@ The change goes live when it merges (CI applies `searcher.yaml` to the running a
 The sidecar runs each split's search on its `search` thread pool, and downloads from Blob and opens the splits on its main Tokio runtime. The API reads both with the caches, every minute, and reports them as `api.searcher_pool_tasks` and `api.searcher_runtime_*` (08 §8.1.2):
 
 ```sh
-scripts/logs.sh --env prod --query-name searcher-threads --span 2h       # per replica and minute: search pool ongoing and pending, main runtime threads and busy share
+scripts/azure/logs.sh --env prod --query-name searcher-threads --span 2h       # per replica and minute: search pool ongoing and pending, main runtime threads and busy share
 ```
 
-Read it while cold searches run (`scripts/load-cold-searches.py`):
+Read it while cold searches run (`scripts/ops/load-cold-searches.py`):
 
 - `SearchPending` above 0 with `SearchOngoing` at the pool's size: searches wait for cores. The pool has `RAYON_NUM_THREADS` threads (4, set on the sidecar in `infra/modules/containerapp.bicep`; without it, one per CPU Rust counts, which rounds the 3.75 vCPU quota down to 3). Quickwit doesn't report the size; it is the most `SearchOngoing` reaches.
 - `MainBusyPercent` near 100 with the search pool below its size and nothing pending: searches wait on the main runtime. It has `QW_TOKIO_RUNTIME_NUM_THREADS` threads (4, same file; `MainThreads`).
@@ -175,7 +175,7 @@ A second searcher (a Quickwit cluster, #239) is deferred until either of these h
 - _Search capacity: searches waiting for a slot_ emails once a day while each of the last two days had more than 10% of its searches (at least 20) wait over 3 s. The first email covers two days and each later one adds a day, so six emails in a row are the week.
 - `usnm-api-replica-cpu-alert-<env>` emails when the replicas' CPU averages over 3 vCPU for 6 hours, and again when it clears (prod only: where the app scales to zero, a window could hold only a start's samples). It averages the replicas together, so with a second replica sharing the load a hot one can sit under it: the workbook's per-replica chart is the record.
 
-An alert can't look back a week (a log search alert reads at most 2 days), so judge the week in the "usnm API (<env>)" workbook's Search capacity section, which covers the last 14 days by day whatever the time range. Leave out days with a release or a new index version (every search is cold then), and check `scripts/logs.sh --env prod --query-name searcher-threads --span 24h` for whether the search pool or the main runtime is the one that's full. If it holds, the next step is moving Quickwit out of the API's replica (#267, [the searcher app](#searcher-app)), then the cluster in #239.
+An alert can't look back a week (a log search alert reads at most 2 days), so judge the week in the "usnm API (<env>)" workbook's Search capacity section, which covers the last 14 days by day whatever the time range. Leave out days with a release or a new index version (every search is cold then), and check `scripts/azure/logs.sh --env prod --query-name searcher-threads --span 24h` for whether the search pool or the main runtime is the one that's full. If it holds, the next step is moving Quickwit out of the API's replica (#267, [the searcher app](#searcher-app)), then the cluster in #239.
 
 ## Searcher app
 
@@ -186,21 +186,21 @@ By default the Quickwit searcher is a sidecar in each API replica, so every new 
 **Turn it on:**
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SEARCHER_APP --value true
-scripts/provision.sh --env prod
-scripts/settings.sh --env prod --key SEARCHER_APP          # usnm-search-ca-prod
+scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP --value true
+scripts/azure/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key SEARCHER_APP          # usnm-search-ca-prod
 ```
 
 The provision creates the searcher app and its role first, then rolls the API onto a revision without the sidecar. On a first switch from the sidecar, removing the app-level system identity cuts off the old revision's sidecar before the new revision is ready, so schedule that switch for a maintenance window; the permanent-searcher decision applies to prod, which already uses the searcher app. The searcher's first revision can start before its role has reached Blob and restart once or twice.
 
 **The API's unused identity and grants are removed (#365).** With the searcher app kept, `apiSystemIdentity = quickwit && !searcherApp` in `infra/modules/containerapp.bicep`. The next provision removes the API's system-assigned identity and its Blob Data Reader assignments on `qw-index` in both the lake and, if configured, the separate index account. The maintainer approved this change to production infrastructure on 15 October 2026; it takes effect at the next provision. The searcher app's own identity and grants are unchanged. With `USNM_SEARCHER_APP=false`, the API retains its identity and grants even when `USNM_INDEX_STORAGE_SERVE=true` removes its sidecar: that separate cutover still needs the old revision's lake-sidecar permissions (ADR-0021). A rollback now recreates the API's identity and grants, so it must keep the searcher app until the permissions have propagated and the sidecar is ready (below).
 
-**Deploys with it on.** CI's publish (`scripts/ci/roll-api.sh`) finds the searcher app from the API's `USNM_QUICKWIT_URL`. When `searcher.yaml` changed, it applies it to the searcher app, waits for its new revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher app alone. A new Quickwit image still moves with a provision, and restarts the searcher alone. The API sees the restart in the searcher's metrics within a minute (its counters start again from 0) and runs a searcher-restart warm-up while it stays ready: `trigger` is `searcher_restart` in `scripts/logs.sh --env prod --query-name warm-up --span 2d`. When another warm-up is running then (a start's or a publish's), that run comes after it, and a publish in the meantime waits for it; the API's log says `the searcher restarted during a warm-up; warming it again after that one`. Unlike a start's, that run bypasses both response caches for searches, including responses the API already holds, so Quickwit's own caches fill too. It keeps cached responses available to visitors, including after a failed refresh, and uses the startup budget (5 minutes by default), giving way while visitor searches are running or queued. Places and coverage still use their response caches because they need no searcher.
+**Deploys with it on.** CI's publish (`scripts/ci/roll-api.sh`) finds the searcher app from the API's `USNM_QUICKWIT_URL`. When `searcher.yaml` changed, it applies it to the searcher app, waits for its new revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher app alone. A new Quickwit image still moves with a provision, and restarts the searcher alone. The API sees the restart in the searcher's metrics within a minute (its counters start again from 0) and runs a searcher-restart warm-up while it stays ready: `trigger` is `searcher_restart` in `scripts/azure/logs.sh --env prod --query-name warm-up --span 2d`. When another warm-up is running then (a start's or a publish's), that run comes after it, and a publish in the meantime waits for it; the API's log says `the searcher restarted during a warm-up; warming it again after that one`. Unlike a start's, that run bypasses both response caches for searches, including responses the API already holds, so Quickwit's own caches fill too. It keeps cached responses available to visitors, including after a failed refresh, and uses the startup budget (5 minutes by default), giving way while visitor searches are running or queued. Places and coverage still use their response caches because they need no searcher.
 
 **Measurements and decision (15 October 2026):** the maintainer chose to keep the separate searcher app permanently and approved dropping the API's unused identity and grants (#365). No new measurements are claimed here. The original comparison checklist (a week with it against a week without, leaving out days with a release or a new index version) is still useful for monitoring, though no decision waits on it.
 
-- **API to searcher latency:** `scripts/logs.sh --env prod --query-name backend-latency --span 14d`, `AvgMs` and `MinMs` per endpoint. The network hop should add a few milliseconds per call to searches of seconds.
-- **Deploys:** after a merge that changes only the site, the API's log has no `the searcher restarted` line, and `scripts/logs.sh --env prod --query-name searcher-caches --span 1d` shows the caches kept their contents.
+- **API to searcher latency:** `scripts/azure/logs.sh --env prod --query-name backend-latency --span 14d`, `AvgMs` and `MinMs` per endpoint. The network hop should add a few milliseconds per call to searches of seconds.
+- **Deploys:** after a merge that changes only the site, the API's log has no `the searcher restarted` line, and `scripts/azure/logs.sh --env prod --query-name searcher-caches --span 1d` shows the caches kept their contents.
 - **Idle billing of each app:** Cost Management, per resource and meter, daily: idle and active vCPU-seconds of `usnm-search-ca-prod` and of `ca-usnm-prod`, against about 180,000 idle and 14,000 to 32,000 active vCPU-seconds a day for the one app at 2.25 vCPU (3 to 8 October 2026, 09 §9.5). The searcher still polls the metastore every 30 s and answers the API's metrics read every minute; the API app now bills on its own between visitors.
 - **Capacity:** with two API replicas, both send searches to the one searcher (each with its own computation slots, 06 §6.6), and both report its metrics. `searcher-caches`, `searcher-threads` and the workbook cache panels automatically take one reporter per shared searcher per minute (see [Searcher caches](#searcher-caches)); do not add the replicas' raw metrics together. The selected capacity policy (#364) divides the configured searcher-wide visitor budget (`USNM_COMPUTE_CONCURRENCY`, default 2) by `USNM_API_MAX_REPLICAS` (default 2), rounding down: each API replica gets 1 slot by default. Provision uses the same maximum for scaling, even while only one replica actually runs. Sidecars keep the full budget per replica; a retained but unused searcher app does not trigger division. A budget that doesn't divide evenly leaves the remainder unused; a budget below the replica maximum is rejected. The partition is static, with no global lease: warm-ups keep their separate slots, and when old and new revisions overlap beyond the configured maximum they can temporarily exceed the visitor budget. The settings take effect when an operator runs a provision; a rollout of the site or API image alone doesn't apply them. Each replica also warms the searcher after it restarts, one warm-up at a time within a replica but not across them: while two replicas run (a rollout, or the HTTP rule's second replica), a searcher restart gets a warm-up from each, which compute the same misses side by side for up to the warm-up's budget (5 minutes). The searcher app runs one replica in prod and the API usually one, so that's a rollout's few minutes.
 
@@ -211,9 +211,9 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 1. Set retention and turn off routing **together**, then commit `infra/env/prod.json`, merge its pull request and pull before provisioning:
 
    ```sh
-   scripts/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --value true
-   scripts/settings.sh --env prod --key USNM_SEARCHER_APP --unset
-   scripts/provision.sh --env prod
+   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --value true
+   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP --unset
+   scripts/azure/provision.sh --env prod
    ```
 
    The first provision recreates the API's system-assigned identity (a new principal) and its Blob Data Reader assignments on `qw-index`, including the separate index account when configured. The assignments depend on the API resource, so the sidecar can start before its new grants reach Blob and may restart or log authorization failures during propagation. It must not take traffic until its startup and readiness checks pass. Allow several minutes for role propagation, in addition to loading and warming (normally up to about 13 minutes); do not assume provision returning means the grants are usable. The old API revision still searches the retained app throughout. If provisioning or startup fails, leave retention on and retry the same first provision before proceeding; do not delete and recreate the identity by hand. `SEARCHER_APP` becomes empty because it describes the new API's backend, not the retained resource. CPU alerts and the workbook also return to the API.
@@ -231,8 +231,8 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 3. Only after those checks, unset retention, commit and merge that **second** settings change, pull, then provision again:
 
    ```sh
-   scripts/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --unset
-   scripts/provision.sh --env prod
+   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --unset
+   scripts/azure/provision.sh --env prod
    ```
 
    The stack now deletes the unused searcher app and its role without changing the API's sidecar template or its identity. Keeping retention on longer is safe but continues billing for the extra searcher. Unsetting both settings in the first provision skips this protection and can drop search until the sidecar is ready.
@@ -244,27 +244,27 @@ The searcher sidecar, the ingest image (whose Quickwit is the release's writer) 
 Build it in an environment's registry, which records the digest in the file:
 
 ```sh
-scripts/build-quickwit.sh --env prod              # ACR Tasks, about an hour; the build log follows
-scripts/build-quickwit.sh --env dev --from prod   # or import prod's build (same digest, no build)
+scripts/azure/build-quickwit.sh --env prod              # ACR Tasks, about an hour; the build log follows
+scripts/azure/build-quickwit.sh --env dev --from prod   # or import prod's build (same digest, no build)
 ```
 
-If your `az` session expires during the build, ACR still finishes it. Once it has, run the same command again: it finds the tag and records its digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it, which the jobs pick up at their next execution. The sidecar and the init container move with `scripts/provision.sh --env <env>`, run once publish has finished.
+If your `az` session expires during the build, ACR still finishes it. Once it has, run the same command again: it finds the tag and records its digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it, which the jobs pick up at their next execution. The sidecar and the init container move with `scripts/azure/provision.sh --env <env>`, run once publish has finished.
 
 **A new patch, or a Quickwit upgrade:**
 
 1. On the fork, commit to the `usnm/v0.9.1-pool` branch (for an upgrade, rebase the commit onto the new upstream tag in a new branch, such as `usnm/v0.9.2-pool`) and tag it with a new `usnm-*` tag, such as `usnm-v0.9.1-pool2`. Names starting `usnm` trigger none of Quickwit's own workflows.
 2. In `docker/Dockerfile.quickwit-patched`, set `QW_COMMIT_HASH` to the tagged commit and `QW_COMMIT_TAGS` to the tag without `usnm-` (`v0.9.1-pool2`), which is also the image's tag. For an upgrade, also take the new version's Dockerfile changes (base images, packages) and its `QW_COMMIT_DATE`, and move the `upstream` pin in `infra/quickwit-image.json` and `docker/Dockerfile.ingest`'s default to the new release (CI checks they match).
-3. `scripts/build-quickwit.sh --env prod`, then commit, merge and provision, as above.
-4. Re-run the cold-search test (`scripts/load-cold-searches.py`) and read [the searcher's threads](#searcher-threads).
+3. `scripts/azure/build-quickwit.sh --env prod`, then commit, merge and provision, as above.
+4. Re-run the cold-search test (`scripts/ops/load-cold-searches.py`) and read [the searcher's threads](#searcher-threads).
 
-**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and run `scripts/provision.sh --env <env>` once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn pooling off in the searcher alone, without a new image, set `QW_AZURE_POOL=false` on the sidecar (`infra/modules/containerapp.bicep`) and provision.
+**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and run `scripts/azure/provision.sh --env <env>` once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn pooling off in the searcher alone, without a new image, set `QW_AZURE_POOL=false` on the sidecar (`infra/modules/containerapp.bicep`) and provision.
 
 ## Cache warm-up
 
 Each API start, and each publish before it swaps the new version in, warms the caches with the home page's examples and the most frequent logged searches (06 §6.5), as does a searcher restart under a running API (`searcher_restart`, [the searcher app](#searcher-app)). They run one at a time: one that starts during another waits for its turn, and none is dropped. One line per run:
 
 ```sh
-scripts/logs.sh --env prod --query-name warm-up --span 2d                # per run: examples warm, cached, computed, skipped, ms
+scripts/azure/logs.sh --env prod --query-name warm-up --span 2d                # per run: examples warm, cached, computed, skipped, ms
 ```
 
 A start isn't ready until its run ends, so in a rollout the old revision serves meanwhile and the new one takes visitors only once it's warm (06 §6.6); every prod start from 3 to 10 October 2026 used its whole 5-minute budget (`Ms` about 300000), but a start that finds everything cached is ready in seconds (below). A start still running at the readiness cap (6 minutes in prod, 1 minute where the app scales to zero) logs `warm-up still running at the readiness cap; reporting ready` and serves visitors while it finishes.
@@ -290,24 +290,24 @@ publish immediately.
 Rebuild the indexes as one merged base (one-off, or a compaction). A release also builds a full base by itself, without `USNM_INGEST_FULL`, when the published version was built with another search backend, without common-word pairs or with a version of them newer than the release knows (05 §5.5.3), or when `USNM_AMERICAN_STORIES` is on and the published version doesn't have American Stories' text (below); the steps below force one. It is also how merged places and other place changes of published titles reach the site (04 §4.6). Indexes built before the merge settings (September 2026) keep their many small splits: their splits are past any maturation period, so nothing merges them in place, and they are sealed. A full release builds a new base from every curated batch, merged, and publishes a version with no deltas; the previous version stays in Blob for rollback (`current.json`). A full base is also what moves a version to the latest analyzer versions (05 §5.5.3): a delta folds its words as the published version's indexes do, so a change to the folding, such as vulgar fractions as one word (`½`, #168), reaches the site only with a full rebuild. Afterwards `current.json` has the latest `common_grams` and `ja.fold` (2 since #168), as does `build.features` in `reference/<version>/manifest.json`, and the API parses queries for them. It takes the writer lock like any release, so it never runs alongside another writer (08 §8.4.1). Run it when no backfill or ingest execution is running and the backfill has finished:
 
 ```sh
-RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-JOB=$(scripts/settings.sh --env prod --key INGEST_JOB)
-scripts/settings.sh --env prod --key USNM_INGEST_FULL --value true
-scripts/settings.sh --env prod --key USNM_MERGE_TIMEOUT_SECS --value 14400   # the default; set it only to change it
-scripts/settings.sh --env prod --key USNM_DEDICATED_PROFILE --value true     # the E4 profile (#172)
-scripts/settings.sh --env prod --key USNM_INGEST_ON_DEDICATED --value true   # and the ingest job on it
-scripts/settings.sh --env prod --key USNM_INGEST_SCRATCH_GIB --value 128     # the writer's scratch share (08 §8.4)
-scripts/provision.sh --env prod
+RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+JOB=$(scripts/azure/settings.sh --env prod --key INGEST_JOB)
+scripts/azure/settings.sh --env prod --key USNM_INGEST_FULL --value true
+scripts/azure/settings.sh --env prod --key USNM_MERGE_TIMEOUT_SECS --value 14400   # the default; set it only to change it
+scripts/azure/settings.sh --env prod --key USNM_DEDICATED_PROFILE --value true     # the E4 profile (#172)
+scripts/azure/settings.sh --env prod --key USNM_INGEST_ON_DEDICATED --value true   # and the ingest job on it
+scripts/azure/settings.sh --env prod --key USNM_INGEST_SCRATCH_GIB --value 128     # the writer's scratch share (08 §8.4)
+scripts/azure/provision.sh --env prod
 curl -s https://api.usnewsmap.com/v1/status | jq .titles.pipeline   # awaiting_sync: titles to fetch first
 az containerapp job start -n "$JOB" -g "$RG"
 ```
 
 **Replica timeout (#233, #283).** Explicit full rebuilds (`USNM_INGEST_FULL=true`) and index-account staging runs have a **96-hour** replica timeout; ordinary ingest retains **48 hours** and backfill retains 24. The 1% dev candidate with American Stories, one text field, decade partitions, 60,000-page splits and page languages sent 113.79 documents/s, projecting about **58 hours of sending and flushing alone** for 23,766,177 pages. Budget another 8 hours for preparation (the curation and title deadlines are counted from the same start), up to 4 hours for merges, and 20% send-time variation: about 82 hours. The 96-hour limit adds margin; it doesn't guarantee completion, especially with production NFS I/O and OCR overlays, which this sample didn't time. Inspect the deployed job's `replicaTimeout` before starting. Keep automatic replica retries at zero: a release does not resume after timeout, and platform maintenance can still interrupt it.
 
-A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. The job-failed alert leaves this stop out; the severity 3 _ingest not progressing_ alert fires if no execution follows within 3 hours, or if 3 stops in a row leave as many titles as the first. `scripts/logs.sh --env prod --query-name ingest-endings` lists each execution's ending, and the stop's `command failed` line carries `outcome: titles_left`. Once titles-sync finishes, the same execution builds the base. Watch it:
+A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. The job-failed alert leaves this stop out; the severity 3 _ingest not progressing_ alert fires if no execution follows within 3 hours, or if 3 stops in a row leave as many titles as the first. `scripts/azure/logs.sh --env prod --query-name ingest-endings` lists each execution's ending, and the stop's `command failed` line carries `outcome: titles_left`. Once titles-sync finishes, the same execution builds the base. Watch it:
 
 ```sh
-scripts/logs.sh --env prod --query-name release-progress --span 6h    # docs sent, rate, memory (quickwit_rss_mb), merges
+scripts/azure/logs.sh --env prod --query-name release-progress --span 6h    # docs sent, rate, memory (quickwit_rss_mb), merges
 az containerapp job execution list -n "$JOB" -g "$RG" -o table
 ```
 
@@ -319,7 +319,7 @@ az containerapp job execution list -n "$JOB" -g "$RG" -o table
 **Laying the base out by decade (#123, 05 §5.5.5).** To have the rebuild keep each decade in its own splits, so that a date-limited search skips the others, add the setting to the first provision above:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_PARTITION_DECADE --value true   # the job's --partition-decade
+scripts/azure/settings.sh --env prod --key USNM_PARTITION_DECADE --value true   # the job's --partition-decade
 ```
 
 Only a full base takes it. The release then logs `decade layout` when it creates the index, a `sent a decade's pages` line each time a decade's pages go to the writer (at most every 30,000 pages of a decade, or the split target with `USNM_SPLIT_DOCS`, below; until then they wait in `/scratch/usnm/quickwit/decade-spill`, a few GB at most at 30,000), and `sent the pages a decade at a time` with the totals before the merges. The `index layout` line of the base has `splits_by_decade`. Check afterwards: `current.json` has `decades: 1`, and `reference/<version>/manifest.json` has `build.features.decades` and `splits_by_decade` under `indexes`. Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version (with the field and decade tags on a version laid out by decade, without on one that isn't). To stop searches naming decades at once, without a rebuild, publish a `current.json` without the key.
@@ -327,7 +327,7 @@ Only a full base takes it. The release then logs `decade layout` when it creates
 **One searched text field (#283, 05 §5.5.7).** To have the rebuild search LoC's and American Stories' text in one field (`text_all`), so a search looks each word up once, add the setting to the first provision above, alongside `USNM_AMERICAN_STORIES`:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SINGLE_TEXT_FIELD --value true   # the job's --single-text-field
+scripts/azure/settings.sh --env prod --key USNM_SINGLE_TEXT_FIELD --value true   # the job's --single-text-field
 ```
 
 Only a full base takes it. The release logs `one searched text field` when it creates the index, and `building index` with `text_layout: 2`. Check afterwards: `current.json` has `text_layout: 2`; `reference/<version>/manifest.json` has `build.features.text_layout` and, in `build.templates.pages`, the `text_all` and `text_all_cg` fields; `/v1/meta` says `"text_layout": 2`. The aggregate then has no `total.american_stories_only` (the site drops its page-count note), while hits keep `matched_in` and the American Stories badge. `USNM_AMERICAN_STORIES_SEARCH` has no effect on such a version (below). Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version. To go back at once, publish a `current.json` of a version with a field per text (rollback); a full rebuild without the setting does it for good. Turning `USNM_AMERICAN_STORIES` off on such a version makes the next release a full base: the text can't be left out of the field it shares with LoC's in a delta.
@@ -335,7 +335,7 @@ Only a full base takes it. The release logs `one searched text field` when it cr
 **Page languages (#289, 05 §5.5.8).** To have the rebuild give each page its own languages, so `lang=` filters by them, add the setting to the first provision above:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_PAGE_LANGUAGE --value true   # the job's --page-language
+scripts/azure/settings.sh --env prod --key USNM_PAGE_LANGUAGE --value true   # the job's --page-language
 ```
 
 Only a full base takes it. The release logs `building index` with `page_language: true`, and before the merges `pages whose own languages differ from their title's, in the version` with their count (expect about 1.5 to 2 million: mostly pages of multilingual titles). Check afterwards: `current.json` has `page_language: 1`; `reference/<version>/manifest.json` has `build.features.page_language`, the two fields in `build.templates.pages`, `page_languages.pages`, and lists `page_language_baselines.json` (perhaps 10% to 20% more entries than `language_baselines.json`) and `page_languages.json` (about 15 to 20 MB); `/v1/meta` says `"language_filter": "page"`. Compare the release's pages a second with the last rebuild's (`release progress`): detection runs on up to 4 threads beside the writer. Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version and carry the moves forward. To go back to title languages at once, roll back to a version without page languages (publish its `current.json`); a full rebuild without the setting does it for good. Don't edit the key out of the serving version's `current.json`: the API keeps the language filter it loaded the version with, and its caches are keyed by the version (it logs `current.json changed page_language without a new version`).
@@ -343,7 +343,7 @@ Only a full base takes it. The release logs `building index` with `page_language
 **Larger splits (#283).** To have the rebuild's merges stop at more pages per split than the template's 30,000, so a cold search opens fewer splits, add the setting to the first provision above:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SPLIT_DOCS --value 120000   # the job's --split-docs; the value comes from the dev measurement below
+scripts/azure/settings.sh --env prod --key USNM_SPLIT_DOCS --value 120000   # the job's --split-docs; the value comes from the dev measurement below
 ```
 
 Only a full base takes it: a delta's few splits keep the template's target. The release logs `split target` when it creates the index and `building index` with `split_docs`. Check afterwards: the base's `index layout` line has about pages ÷ target splits (plus up to 7, per decade with `USNM_PARTITION_DECADE`) and a `largest_split_docs` near the target; `reference/<version>/manifest.json` has `build.features.split_docs` and `split_num_docs_target` at the target in `build.templates.pages`. The release holds the merged index to that target (`docs / target + 5 + 2`) before it publishes. `current.json` doesn't change, and the API needs nothing: it searches whatever splits the indexes have. What bounds the target is the writer (05 §5.5.1, 08 §8.4): a split holds min(its size, 10 GB) of the writer's memory while it uploads, and merged splits can reach about twice the target, at about 74 KB a page with American Stories' text; and the scratch share holds, at once, the largest merge (about twice the target's pages, about 18 GB at 120,000) and, with `USNM_PARTITION_DECADE`, the decade spill (under one target per populated decade, compressed; count decades from the actual corpus bounds rather than assuming the 1% sample covers every decade). For example, bounds 1736–1963 span 24 possible decades, so at 60,000 the conservative held-page cap is 1.44 million. The sample's compressed bytes per page is an estimate, not a hard bound for the full corpus. Both the spill and the concurrent merge must fit inside 128 GiB, so watch the free scratch while pages are sent and merged. So a target above 30,000 needs the E4 profile. Clear the setting after the rebuild: a full base the release forces by itself (a new analyzer or American Stories version, say) runs on the Consumption profile, whose 7.5 GiB only the template's target fits.
@@ -373,7 +373,7 @@ Only a full base takes it: a delta's few splits keep the template's target. The 
 | `USNM_AMERICAN_STORIES_SEARCH`                                 | `true` (as now)                                                                | No effect on a `text_layout: 2` version                                                                                                                       | No `USNM_AMERICAN_STORIES_SEARCH=false has no effect` warning in the API's log                                                                                                                                                                                                   |
 | `split_footer_cache_capacity` (`infra/quickwit/searcher.yaml`) | Resized after the release if needed                                            | The searcher's footer cache must hold every footer of the version ([Searcher caches](#searcher-caches))                                                       | The new version's `footer_bytes` total against the capacity, then footer misses after the warm-up                                                                                                                                                                                |
 
-Afterwards, benchmark with `scripts/bench-cold-searches.py` and compare with `pages-v20261008-1` (1,162 GB; median search 21.4 s with both texts' fields searched, #251), and note the index size, the send rate and the total time on #283.
+Afterwards, benchmark with `scripts/ops/bench-cold-searches.py` and compare with `pages-v20261008-1` (1,162 GB; median search 21.4 s with both texts' fields searched, #251), and note the index size, the send rate and the total time on #283.
 
 **Before the go-ahead: what to measure on dev (#275).** The rebuild runs only once these are measured and the owner says go. Each needs the dev environment stood up with a 1% version (#275, the stand-up flow in PR #351) and American Stories' text:
 
@@ -384,13 +384,13 @@ Afterwards, benchmark with `scripts/bench-cold-searches.py` and compare with `pa
 Then turn the full rebuild off, and the E4 profile and the scratch share with it, in two provisions: the job has to leave the profile before the profile can go. Run them only once the rebuild's execution has ended (`az containerapp job execution list`), since the first one takes the share away from the job.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_INGEST_FULL --unset
-scripts/settings.sh --env prod --key USNM_SPLIT_DOCS --unset   # if it was set: a forced full base on Consumption takes only the template's target
-scripts/settings.sh --env prod --key USNM_INGEST_ON_DEDICATED --unset
-scripts/settings.sh --env prod --key USNM_INGEST_SCRATCH_GIB --unset    # deletes the share, its account, endpoint and DNS zone
-scripts/provision.sh --env prod
-scripts/settings.sh --env prod --key USNM_DEDICATED_PROFILE --unset
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_INGEST_FULL --unset
+scripts/azure/settings.sh --env prod --key USNM_SPLIT_DOCS --unset   # if it was set: a forced full base on Consumption takes only the template's target
+scripts/azure/settings.sh --env prod --key USNM_INGEST_ON_DEDICATED --unset
+scripts/azure/settings.sh --env prod --key USNM_INGEST_SCRATCH_GIB --unset    # deletes the share, its account, endpoint and DNS zone
+scripts/azure/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_DEDICATED_PROFILE --unset
+scripts/azure/provision.sh --env prod
 ```
 
 Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would rebuild the whole corpus. Don't leave `USNM_INGEST_SCRATCH_GIB` set either: the share, its private endpoint and its DNS zone cost about $25 a month (#308), and deltas don't need them. Its contents are scratch: a release empties the writer's data before it starts, so deleting the share loses nothing, and the next rebuild's provision creates it again, empty, under the same names. Don't leave `USNM_DEDICATED_PROFILE` set either: while the environment has the E4 profile it pays the Dedicated plan management fee every hour (about $0.10 an hour in East US 2 in October 2026), whether or not a node runs. An E4 node itself (4 vCPU, 32 GiB) costs about $0.39 an hour while the job runs.
@@ -479,7 +479,7 @@ the ingest job. `v2` is the default; set `v1` for full rebuilds. Test it on
 dev first (a 1% release with the rebuild's settings) and compare its pages
 per second with v2's before a long run.
 
-**Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why ordinary ingest has a 48 h replica timeout (#173). Explicit full rebuilds and staging runs now get 96 h, from the slower #283 dev measurement above. Benchmark afterwards with `scripts/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
+**Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why ordinary ingest has a 48 h replica timeout (#173). Explicit full rebuilds and staging runs now get 96 h, from the slower #283 dev measurement above. Benchmark afterwards with `scripts/ops/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
 
 ### Full rebuild on-prem
 
@@ -491,7 +491,7 @@ In the container, as `usnm`, each step in one run directory (`scripts/onprem/rel
 
 ```sh
 cd /srv/usnm/src && git pull --ff-only     # the commit to build; then cargo build --release -p usnm-ingest
-scripts/onprem/install-quickwit.sh --registry "$(scripts/settings.sh --env prod --key ACR_NAME)"   # once per Quickwit pin
+scripts/onprem/install-quickwit.sh --registry "$(scripts/azure/settings.sh --env prod --key ACR_NAME)"   # once per Quickwit pin
 R=/srv/usnm/runs/full-$(date -u +%Y%m%d)
 scripts/onprem/release.sh --run-dir "$R" --step mirror    # current.json, catalog/, the serving version's snapshot
 scripts/onprem/release.sh --run-dir "$R" --step seed      # batch records from the serving version's batches.json
@@ -506,7 +506,7 @@ scripts/onprem/release.sh --run-dir "$R" --step publish
 Before promotion ([Index storage cutover](#index-storage-cutover) step 4), record the staged run in Cosmos from the snapshot's `index_run.json`, in the ingest job (the host has no Cosmos access):
 
 ```sh
-scripts/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
+scripts/azure/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
 ```
 
 Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none.
@@ -589,7 +589,7 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    not a system temporary directory:
 
    ```sh
-   LAKE=$(scripts/settings.sh --env prod --key STORAGE_ACCOUNT)
+   LAKE=$(scripts/azure/settings.sh --env prod --key STORAGE_ACCOUNT)
    mkdir -p .azure/prod/index-storage
    az storage blob download --auth-mode login --account-name "$LAKE" --container-name reference \
      --name current.json --file .azure/prod/index-storage/serving-before.json --overwrite
@@ -598,9 +598,9 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    jq '{index_version, previous_version, indexes, ja, congress}' .azure/prod/index-storage/pending.json
    az storage blob upload --auth-mode login --account-name "$LAKE" --container-name reference \
      --name current.json --file .azure/prod/index-storage/pending.json --overwrite true --content-type application/json
-   scripts/settings.sh --env prod --key USNM_INDEX_STORAGE_SERVE --value true
+   scripts/azure/settings.sh --env prod --key USNM_INDEX_STORAGE_SERVE --value true
    # Commit/review/merge the setting, then provision from that commit.
-   scripts/provision.sh --env prod
+   scripts/azure/provision.sh --env prod
    ```
 
    The old API may log `reload failed; keeping current version`: its lake
@@ -641,9 +641,9 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    indexes in whichever account holds them:
 
    ```sh
-   RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-   JOB=$(scripts/settings.sh --env prod --key INGEST_JOB)
-   LAKE=$(scripts/settings.sh --env prod --key STORAGE_ACCOUNT)
+   RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+   JOB=$(scripts/azure/settings.sh --env prod --key INGEST_JOB)
+   LAKE=$(scripts/azure/settings.sh --env prod --key STORAGE_ACCOUNT)
    template=$(az containerapp job show -n "$JOB" -g "$RG" --query properties.template -o json)
    DELETE=false  # dry run first; inspect logs, then repeat with true
    body=$(jq -c --arg lake "$LAKE" --argjson delete "$DELETE" '
@@ -655,7 +655,7 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
        .env |= map(if .name == "QW_AZURE_STORAGE_ACCOUNT" then .value = $lake else . end) | exec],
       initContainers: []}' <<< "$template")
    az rest --method post --url "https://management.azure.com/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.App/jobs/$JOB/start?api-version=2025-01-01" --body "$body"
-   scripts/logs.sh --env prod --query-name prune --span 2h
+   scripts/azure/logs.sh --env prod --query-name prune --span 2h
    ```
 
    Wait for success and inspect the dry run before deleting. Once another
@@ -682,22 +682,22 @@ A kept version's indexes are all that its records name: `current.json`, its run 
 
 Without `--delete`, it's a dry run: it lists each index it would delete with its splits, documents and size (its published splits' files), and the total, and changes nothing. It takes the writer lock like a release, so it fails with ``lock `quickwit-writer` is held by …`` while a release runs, and a release can't take the lock while prune holds it. It refuses to run when `current.json` can't be read or names no indexes, when the serving version has no index run, or when neither the rollback's run nor its manifest names its indexes (and when a manifest's `indexes` isn't a list of `index_id`s). With `--delete`, it reads `current.json` and the runs again before each delete and stops if what it keeps has changed. If the writer lock can't be renewed, it gives up the delete under way at once and stops its Quickwit node. So `--delete` needs `--quickwit-bin`, a node prune starts itself; `--quickwit-url` (a node already running, which Quickwit lets finish a delete its caller left) is for dry runs only.
 
-Don't roll `current.json` back by hand while prune runs: a rollback doesn't take the writer lock, and prune checks what it keeps only before each delete, so a version made serving during a delete of its index loses it. Run it in the ingest job, as an execution with other arguments (`scripts/start-job.sh`), after a new version is published and checked, and while no ingest or backfill execution is running. An execution can't mount the scratch share, and prune doesn't need it: its Quickwit node only reads the metastore and deletes, with its data in a temporary directory. You need `az` signed in with access that can start the job (the owner's Contributor on the resource group) and read the logs. Dry run first:
+Don't roll `current.json` back by hand while prune runs: a rollback doesn't take the writer lock, and prune checks what it keeps only before each delete, so a version made serving during a delete of its index loses it. Run it in the ingest job, as an execution with other arguments (`scripts/azure/start-job.sh`), after a new version is published and checked, and while no ingest or backfill execution is running. An execution can't mount the scratch share, and prune doesn't need it: its Quickwit node only reads the metastore and deletes, with its data in a temporary directory. You need `az` signed in with access that can start the job (the owner's Contributor on the resource group) and read the logs. Dry run first:
 
 ```sh
-RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-JOB=$(scripts/settings.sh --env prod --key INGEST_JOB)
+RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+JOB=$(scripts/azure/settings.sh --env prod --key INGEST_JOB)
 QW=(--quickwit-bin /usr/local/bin/quickwit --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index)
-scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}"   # dry run: lists, deletes nothing
+scripts/azure/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}"   # dry run: lists, deletes nothing
 az containerapp job execution list -n "$JOB" -g "$RG" -o table  # until it has Succeeded
-scripts/logs.sh --env prod --query-name prune --span 2h
+scripts/azure/logs.sh --env prod --query-name prune --span 2h
 ```
 
 `prune keeps` names the serving and rollback versions and every index they keep; check that the serving version is the one `/v1/status` reports and that the rollback is the one you want. Then one `prune candidate` line per index it would delete, with `bytes` and `gib`, and `prune plan` with the count and `total_gib` (the execution's console log ends with the whole report as JSON). If the list is what you expect, delete:
 
 ```sh
-scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}" --delete
-scripts/logs.sh --env prod --query-name prune --span 2h    # a "deleted index" line for each, then "pruned"
+scripts/azure/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}" --delete
+scripts/azure/logs.sh --env prod --query-name prune --span 2h    # a "deleted index" line for each, then "pruned"
 ```
 
 A large index can take minutes to delete: Quickwit deletes each split file before it answers. A failed delete stops the run with the error; the indexes already deleted stay deleted, and running it again carries on. Afterwards the rollback is still there, but the versions before it are gone and can't be rolled back to. In the separate index account deletion is immediate, with no retained blob versions or soft-deleted splits. In the legacy lake account the bill drops later than the delete: the deleted split files become previous blob versions, which the `qw-index/` lifecycle rule deletes after a day, and then sit in the 3-day soft delete (08 §8.1).
@@ -706,12 +706,12 @@ A large index can take minutes to delete: Quickwit deletes each split file befor
 
 The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #218) only with `USNM_AMERICAN_STORIES` (the job's `--american-stories`), off by default. The first release with it builds a full base, so turn it on for a full rebuild, after step 4 of #218 has measured the index size and rebuild time, and with an explicit go-ahead:
 
-1. Run the writer to the end: `scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
+1. Run the writer to the end: `ja-ocr/tools/start-quality.sh --env prod --command american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
 2. Do the [full rebuild](#full-rebuild), with the setting added to its first provision:
 
    ```sh
-   scripts/settings.sh --env prod --key USNM_AMERICAN_STORIES --value true
-   scripts/settings.sh --env prod --key USNM_INGEST_FULL --value true          # optional: the setting forces a full base anyway
+   scripts/azure/settings.sh --env prod --key USNM_AMERICAN_STORIES --value true
+   scripts/azure/settings.sh --env prod --key USNM_INGEST_FULL --value true          # optional: the setting forces a full base anyway
    ```
 
    With no year marked yet, the run fails at its start, before curation and titles-sync (`--american-stories (USNM_AMERICAN_STORIES) is set, but the curated store has no finished year of American Stories' text`). Its log has `American Stories' text` (years, parts) near the start, then `American Stories' text for the batch` per batch (pages, `text_mb`: what the release holds in memory for the batch), and `American Stories' text indexed` (documents with the text, and those with only it) before the merges.
@@ -723,8 +723,8 @@ Keep `USNM_AMERICAN_STORIES` set afterwards: weekly deltas then write the text f
 To stop searching the text at once, without a release (to time cold searches without it, #251, or if it costs too much), switch the API's setting off, and on again the same way:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_AMERICAN_STORIES_SEARCH --value false   # on again: true, or --unset for the default
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_AMERICAN_STORIES_SEARCH --value false   # on again: true, or --unset for the default
+scripts/azure/provision.sh --env prod
 ```
 
 The API then searches LoC's text alone, whatever `current.json` says (05 §5.5.4): no `matched_in`, no American Stories snippets or badge, no `total.american_stories_only`. The indexes keep the text, so switching back needs no rebuild. The provision changes the API container's settings, so Container Apps starts a new replica: it loads the version, runs the startup warm-up and reports ready when it ends (about 5 minutes) or the readiness cap passes (6 minutes in prod, `USNM_READY_CAP_SECS`, 06 §6.6), and the old replica serves until then. Responses computed in one state are cached under keys of their own (`…|american_stories=off` when off), so the first switch off finds none cached: the warm-up computes what its budget allows and other searches start cold. Switching back on finds the responses persisted before (in Blob) still there. Check the result in the replica's start-up log line `American Stories' text search (USNM_AMERICAN_STORIES_SEARCH)` (`setting`, `in_version`, `searched`, `text_layout`) or in `/v1/meta` (`"american_stories"`). Browsers may keep a response they fetched in the other state for up to a day (06 §6.5).
@@ -736,8 +736,8 @@ On a version with one searched text field (`text_layout: 2`, [Full rebuild](#ful
 **Mixed pages** (#204, 04 §4.8). The OCR job's targets (`targets-v3`) include the Japanese titles' pages whose LoC text is from 0.35 to under 0.65 word-like (`loc_text = mixed`, about 2,000 pages). List them once on the one-replica job, then start the OCR job as usual:
 
 ```sh
-RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-scripts/ja-ocr/start-quality.sh --env prod --command targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
+RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+ja-ocr/tools/start-quality.sh --env prod --command targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
 # its log ends with `targets written` and the pages by loc_text (mixed: about 2,000); then
 az containerapp job start -n caj-usnm-jaocr-prod -g "$RG"   # `run`: OCRs the targets not done yet
 ```
@@ -747,8 +747,8 @@ Listing streams the archive of every batch with a Japanese title again, as the f
 **English text of our OCR** (#203, 04 §4.8). Off by default. With `USNM_JA_LATIN` (the job's `--ja-latin`), a release gives the pages LoC ships without text a main-index document with the Latin-script text our OCR read on them (their English ads, mastheads and sections), and gives a page LoC read badly our text in place of LoC's where ours reads more words. No full rebuild is forced:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_JA_LATIN --value true
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_JA_LATIN --value true
+scripts/azure/provision.sh --env prod
 ```
 
 - The next release adds the pages LoC ships without text, a few thousand documents, in a new main index: the weekly delta, or, when LoC has published no new batch, a delta of just these pages (`no newly curated batches; releasing our OCR's Latin text of pages LoC ships without text in a delta of its own`). After that, a run with no new batch and no new OCR releases nothing. The log has `indexed our Japanese OCR's Latin text` with `missing` and `in_place_of_locs`; `reference/<version>/ocr_ja.json` has `latin: {added, pages, hidden, rule}`, `ja_latin.json` lists the pages, and the build record has `features.ja_latin`.
@@ -761,7 +761,7 @@ scripts/provision.sh --env prod
 Our OCR of the Japanese pages LoC ships without text (04 §4.8) goes live only with a release: each release reads the OCR job's output once, near its start, and logs `Japanese OCR overlay` with the pages it took. Pages the job reads after that wait for the next release; when nothing else is new, a run releases them on their own ("releasing the new Japanese OCR on the same indexes"), or, with `USNM_JA_LATIN` and Latin text on pages LoC ships without text, in a delta of just those pages ([above](#japanese-ocr-mixed-pages-and-english-text)). After a release publishes, check from outside:
 
 ```sh
-scripts/check-ja-search.py --expect <issue> … --late <issue> …
+scripts/ops/check-ja-search.py --expect <issue> … --late <issue> …
 ```
 
 Issues are named as the OCR job logs them (`ocr issue done`, `<lccn>_<date>_ed-<n>`): `--expect` ones the job finished before the release's `Japanese OCR overlay` line, `--late` ones after it. The script checks that `/v1/meta` names a Japanese index and its pages, that common words (日本, 戦争, 米国, 真珠湾, 収容所) return pages (a version without the index answers 422), that hits are marked as our OCR with the engine, that each `--expect` issue has pages of our OCR (the paper's hits on that day for any of の, に, は, を, in the issue's edition), and that each `--late` issue has none yet. Every request is pinned to the version `/v1/meta` named and doesn't follow redirects, so a release that publishes mid-check fails it rather than mixing versions. It sends Do Not Track, so its searches stay out of the search log, and exits 1 if a check fails.
@@ -774,13 +774,13 @@ The Congressional Globe (#229 phase 1, [04 §4.10](design/04-data-sources-and-in
 2. **The job.** Deploy `usnm-cong-caj-<env>` (saved as `CONGRESS_JOB`): manual, one replica of 0.5 vCPU and 1 GiB, on the ingest image as `id-usnm-ingest`.
 
    ```sh
-   scripts/settings.sh --env prod --key USNM_CONGRESS_JOB --value true
-   scripts/provision.sh --env prod
-   RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-   az containerapp job start -n "$(scripts/settings.sh --env prod --key CONGRESS_JOB)" -g "$RG"
+   scripts/azure/settings.sh --env prod --key USNM_CONGRESS_JOB --value true
+   scripts/azure/provision.sh --env prod
+   RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+   az containerapp job start -n "$(scripts/azure/settings.sh --env prod --key CONGRESS_JOB)" -g "$RG"
    ```
 
-   Each execution lists the collection, leaves out the items another holds, and fetches the items without a finished attempt. It goes one request every 3 seconds, as UNT's robots.txt asks, and stops between pages at 22 hours. Start it again after each execution until its report (JSON, at the end of the log) has `"left": 0`. The whole Globe is about 105,000 pages, about 4 days. The log has `Congressional Globe items` with the counts, `Globe item curated` per item with its pages by `date_from`, and `the server asked us to wait` (with `server=UNT`) on a 429 or 5xx. One item, or a fetch again: `scripts/start-job.sh --env prod --job CONGRESS_JOB -- congress-globe --items metadc29274 --max-runtime-secs 79200 [--refetch]` (the arguments after `--` replace the job's, so keep its `--max-runtime-secs`). The Cosmos lock `congress-globe` refuses a second execution while one runs.
+   Each execution lists the collection, leaves out the items another holds, and fetches the items without a finished attempt. It goes one request every 3 seconds, as UNT's robots.txt asks, and stops between pages at 22 hours. Start it again after each execution until its report (JSON, at the end of the log) has `"left": 0`. The whole Globe is about 105,000 pages, about 4 days. The log has `Congressional Globe items` with the counts, `Globe item curated` per item with its pages by `date_from`, and `the server asked us to wait` (with `server=UNT`) on a 429 or 5xx. One item, or a fetch again: `scripts/azure/start-job.sh --env prod --job CONGRESS_JOB -- congress-globe --items metadc29274 --max-runtime-secs 79200 [--refetch]` (the arguments after `--` replace the job's, so keep its `--max-runtime-secs`). The Cosmos lock `congress-globe` refuses a second execution while one runs.
 
 3. **The release.** Turn on `USNM_CONGRESS` (the ingest job's `--congress`), then provision. The next ingest run builds `congress-<stamp>-<n>` from the finished items, even with no new LoC batch (`no newly curated batches; releasing the changed Congress pages on the same indexes`). Later runs keep it until the fetch writes more items. Check `reference/<version>/congress.json` (the items and pages indexed), `congress/baselines.json` and `current.json`'s `congress` block. The API serves the pages with `source=congress` while `USNM_CONGRESS_SEARCH` is on (the default; [configuration](configuration.md)).
 
@@ -794,13 +794,13 @@ Clearing `USNM_CONGRESS` makes the next release publish a version without the Co
 2. **The job.** Deploy `usnm-sset-caj-<env>` (saved as `SERIALSET_JOB`): manual, one replica of 1 vCPU and 2 GiB, on the ingest image (which carries poppler-utils) as `id-usnm-ingest`.
 
    ```sh
-   scripts/settings.sh --env prod --key USNM_SERIALSET_JOB --value true
-   scripts/provision.sh --env prod
-   RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
-   az containerapp job start -n "$(scripts/settings.sh --env prod --key SERIALSET_JOB)" -g "$RG"
+   scripts/azure/settings.sh --env prod --key USNM_SERIALSET_JOB --value true
+   scripts/azure/provision.sh --env prod
+   RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+   az containerapp job start -n "$(scripts/azure/settings.sh --env prod --key SERIALSET_JOB)" -g "$RG"
    ```
 
-   Each execution reads the sitemap index and the 182 yearly sitemaps (all of them even with `--years`), then fetches the volumes without a finished or empty attempt, and those whose packages differ from the ones their newest attempt read (`source_packages`, a fingerprint of each package id and its `lastmod`: a document GPO changed, added or dropped, whatever its `lastmod`). An attempt written before the fingerprint was kept has none, so its volume is fetched once more (from the raw store's copies) and counted in `changed`. It goes about one request a second, backs off on 429 and 5xx (`the server asked us to wait`, `server=GovInfo`), and stops between documents at 22 hours. A sitemap or MODS request may take 120 seconds a try and a PDF 30 minutes, and every request ends by an hour after the deadline (a try that couldn't start with time left, and a retry past then, fail the request), so the job finishes and unlocks before its 24-hour timeout. Start it again after each execution until its report (JSON, at the end of the log) has `"left": 0` and `incomplete` empty. The log has `Serial Set volumes` with the counts, `Serial Set volume curated` per volume, and a warning per document not read. A volume is written only when every document is read or left out for good; otherwise it is in `incomplete` (with how many documents weren't read), nothing is written for it and the next execution fetches it again (what was read is in the raw store). The report lists the documents: `missing` (GovInfo answered 404 for the MODS, or for a PDF the MODS names; never kept, so asked for again) and `unreadable` (pdftotext failed, or MODS that isn't MODS), which keep their volume `incomplete`; `no_pdf` (the MODS names no PDF and GovInfo has none) and `undated` (no usable `dateIssued` or session year), left out for good; and `empty_volumes` (every document left out for good: an empty attempt, `empty.json` with the documents and why, is written in place of pages, so later executions skip the volume until GPO changes its packages or `--refetch`). A volume still `incomplete` after a few executions with the same document is a file GovInfo lacks or pdftotext can't read: look at the document on GovInfo before deciding what to do. `date_precision` counts documents dated to the day, month or year. Some volumes or years: `scripts/start-job.sh --env prod --job SERIALSET_JOB -- congress-serialset --years 1820,1821 --max-runtime-secs 79200 [--serials 33] [--refetch]` (the arguments after `--` replace the job's, so keep its `--max-runtime-secs`: without it the job has no deadline and a long run can hit the 24-hour timeout before it unlocks). `--years` picks the volumes with a package in those years' sitemaps; each is still made of its packages in every sitemap, so it is written whole and a later run of all years skips it. The Cosmos lock `congress-serialset` refuses a second execution while one runs; it is separate from the Globe's, so the two fetches can run together.
+   Each execution reads the sitemap index and the 182 yearly sitemaps (all of them even with `--years`), then fetches the volumes without a finished or empty attempt, and those whose packages differ from the ones their newest attempt read (`source_packages`, a fingerprint of each package id and its `lastmod`: a document GPO changed, added or dropped, whatever its `lastmod`). An attempt written before the fingerprint was kept has none, so its volume is fetched once more (from the raw store's copies) and counted in `changed`. It goes about one request a second, backs off on 429 and 5xx (`the server asked us to wait`, `server=GovInfo`), and stops between documents at 22 hours. A sitemap or MODS request may take 120 seconds a try and a PDF 30 minutes, and every request ends by an hour after the deadline (a try that couldn't start with time left, and a retry past then, fail the request), so the job finishes and unlocks before its 24-hour timeout. Start it again after each execution until its report (JSON, at the end of the log) has `"left": 0` and `incomplete` empty. The log has `Serial Set volumes` with the counts, `Serial Set volume curated` per volume, and a warning per document not read. A volume is written only when every document is read or left out for good; otherwise it is in `incomplete` (with how many documents weren't read), nothing is written for it and the next execution fetches it again (what was read is in the raw store). The report lists the documents: `missing` (GovInfo answered 404 for the MODS, or for a PDF the MODS names; never kept, so asked for again) and `unreadable` (pdftotext failed, or MODS that isn't MODS), which keep their volume `incomplete`; `no_pdf` (the MODS names no PDF and GovInfo has none) and `undated` (no usable `dateIssued` or session year), left out for good; and `empty_volumes` (every document left out for good: an empty attempt, `empty.json` with the documents and why, is written in place of pages, so later executions skip the volume until GPO changes its packages or `--refetch`). A volume still `incomplete` after a few executions with the same document is a file GovInfo lacks or pdftotext can't read: look at the document on GovInfo before deciding what to do. `date_precision` counts documents dated to the day, month or year. Some volumes or years: `scripts/azure/start-job.sh --env prod --job SERIALSET_JOB -- congress-serialset --years 1820,1821 --max-runtime-secs 79200 [--serials 33] [--refetch]` (the arguments after `--` replace the job's, so keep its `--max-runtime-secs`: without it the job has no deadline and a long run can hit the 24-hour timeout before it unlocks). `--years` picks the volumes with a package in those years' sitemaps; each is still made of its packages in every sitemap, so it is written whole and a later run of all years skips it. The Cosmos lock `congress-serialset` refuses a second execution while one runs; it is separate from the Globe's, so the two fetches can run together.
 
 3. **Updates.** GPO is still adding volumes. Run the job again monthly: it rereads the sitemaps and fetches only new or changed volumes. The next release with `USNM_CONGRESS` rebuilds the Congress set.
 4. **Check.** After the release, `current.json`'s `congress.series` has `serialset` with its pages and dates (1817 to 1998), and `source=congress&series=serialset` searches only its pages. A hit links to the page in the document's PDF (`…/content/pkg/{id}/pdf/{id}.pdf#page={seq}`).
@@ -813,9 +813,9 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
 
    ```sh
    az resource show -g rg-usnm-prod -n usnm-ocr-node3-arcs-prod --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
-   scripts/settings.sh --env prod --key USNM_SERIALSET_RUNNER --value <object id>
-   scripts/provision.sh --env prod --what-if   # the policy step adds the lake; the stack adds the IP rule and the grant
-   scripts/provision.sh --env prod
+   scripts/azure/settings.sh --env prod --key USNM_SERIALSET_RUNNER --value <object id>
+   scripts/azure/provision.sh --env prod --what-if   # the policy step adds the lake; the stack adds the IP rule and the grant
+   scripts/azure/provision.sh --env prod
    ```
 
    A role assignment can take a few minutes to apply.
@@ -852,7 +852,7 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
 
    Restarts don't wait for the fetch's lock (`congress-serialset`, in `USNM_STATE_FILE`, a 30-minute lease renewed every 5 minutes). With a local state file the holder id is `{host}:{boot id}:{pid}:{nanos}`, and a new run takes the lock over at once when the holder was on the same host and is gone: from an earlier boot, or from this boot with its process no longer running (it logs `took over the lock of a run that is gone`). A holder on another host, a live process or an id in another form still waits out the lease. A failure releases the lock, and so does SIGTERM (`systemctl stop`): the fetch drops what it was doing, releases the lock and exits 143, which the unit counts as a clean stop. A volume stopped mid-way writes nothing, and the next run resumes it from the raw store. The Azure job's Cosmos lock is held as before. A failure starts it again after 60 s, then about 2, 4 and 8 minutes, then every 15 minutes (`RestartSteps`), so a GovInfo outage longer than the fetch's own retries doesn't hammer it; the count starts again at boot or with `sudo systemctl reset-failed usnm-sset`. To stop it for good before it's done: `sudo systemctl disable --now usnm-sset`.
 
-4. **Close.** When it's done, set `USNM_SERIALSET_ONPREM` to false and provision: the lake closes, the grant goes and the policy drops the exemption. Remove the private setting with `scripts/settings.sh --env prod --key USNM_SERIALSET_RUNNER --unset`.
+4. **Close.** When it's done, set `USNM_SERIALSET_ONPREM` to false and provision: the lake closes, the grant goes and the policy drops the exemption. Remove the private setting with `scripts/azure/settings.sh --env prod --key USNM_SERIALSET_RUNNER --unset`.
 
 ### The Japanese OCR on-prem
 
@@ -880,7 +880,7 @@ The one-off measurements (`mixed`, `american-stories`, `quality`), which ran on 
 
 The default metric, v2, first finds the page's language:
 
-- Candidates are the title's catalog languages with a word list, plus English: wordfreq's, or for Hawaiian and Yiddish our own (`ja-ocr/wordlists/`, built by `scripts/ja-ocr/build-wordlists.py`; sources and licenses in its README). Each language's function words are its 100 most frequent words of 2 letters or more. The winner is the language whose function words are the largest share of the page's tokens, if that share is at least 0.10, at least 10 different function words appear, and, counting only the function words that one of the two languages has and the other lacks, the winner has at least twice the runner-up's tokens. Otherwise the page is `und`: fewer than 20 word tokens, garbled, or in a language with no list (Dakota, Choctaw, Navajo, Latin, Welsh and others).
+- Candidates are the title's catalog languages with a word list, plus English: wordfreq's, or for Hawaiian and Yiddish our own (`ja-ocr/wordlists/`, built by `ja-ocr/tools/build-wordlists.py`; sources and licenses in its README). Each language's function words are its 100 most frequent words of 2 letters or more. The winner is the language whose function words are the largest share of the page's tokens, if that share is at least 0.10, at least 10 different function words appear, and, counting only the function words that one of the two languages has and the other lacks, the winner has at least twice the runner-up's tokens. Otherwise the page is `und`: fewer than 20 word tokens, garbled, or in a language with no list (Dakota, Choctaw, Navajo, Latin, Welsh and others).
 - A page whose words are mostly in another script takes the title's language in that script: Hebrew script is `yid` or `heb` (if the title lists both, the one whose function words clearly fit better), Cyrillic is Russian, Ukrainian, Bulgarian or Serbian. Serbian in Cyrillic is scored letter for letter in Latin script, against wordfreq's Serbo-Croatian list. Words are read with Yiddish ligatures (װ, ױ, ײ) as their two letters. A title that lists no language in that script gets `und`.
 - `mixed`: a page of 200 words or more is cut into 50-word windows (a last, shorter window counts if it has at least 25 words; a shorter tail is left out), and each window gets a language if one clearly wins (the same test, with 5 different function words). Two languages that each win at least 20% of the decided windows, and at least 2 windows, make the page mixed. Each decided window is scored against its own language; windows no language wins (garbled, or too few function words) aren't scored. A second script holding at least 20% of the words in another of the title's languages also makes a page mixed (an English column on a Yiddish page): that part has no word minimum of its own, only the 5 different function words a window needs.
 
@@ -895,7 +895,7 @@ Then it scores the page against its language:
 Start it as one execution of the job with `quality` and its options as the arguments; the script prints the execution's name:
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --sample-pct 10 --min-pages 50
+ja-ocr/tools/start-quality.sh --env prod --sample-pct 10 --min-pages 50
 ```
 
 `az containerapp job start --args quality` alone doesn't work: when any container flag is given, the CLI sends a container override named after the job, with no image, settings or resources. The script sends the job's own template with only the arguments changed.
@@ -912,10 +912,10 @@ Output, in the curated container (the data account is reachable only through its
   - `worst-titles` (100) and `worst-batches` (50) by median `damage_rate`, with the detected-language mix (`ger:40 eng:3 und:2`); `undetermined-titles` (100), the titles with the highest `und` share.
 - `audit/ocr-quality-v2-<version>-<pct>pct-pages.csv.gz`: every sampled page but Japanese titles', one row each: `doc_id`, title, date, batch, the title's languages, the detected language and decision, the winner's and runner-up's function-word shares, the script, `function_share`, `damage_rate`, `garbage_share` and word count. About 475,000 rows at 2%, for spot checks and for deciding how to tag page languages. It is compressed as the run goes; a sample of more than 3,000,000 pages (over about 12%) gets no page file (`ocr quality pages file dropped`), only the tables.
 
-Titles and batches enter the worst lists with at least `--min-pages` pages with a `damage_rate`, and `undetermined-titles` with that many pages with text. The same rows are in Log Analytics, one `ocr quality` line each with `metric` and `table` fields, then `ocr quality finished` with the totals; `ocr quality progress` lines come about once a minute from each replica, with the chunks and batches done so far across the run. `scripts/ja-ocr/quality-rows.sh --env prod --execution <execution>` prints a run's rows as JSON lines:
+Titles and batches enter the worst lists with at least `--min-pages` pages with a `damage_rate`, and `undetermined-titles` with that many pages with text. The same rows are in Log Analytics, one `ocr quality` line each with `metric` and `table` fields, then `ocr quality finished` with the totals; `ocr quality progress` lines come about once a minute from each replica, with the chunks and batches done so far across the run. `ja-ocr/tools/quality-rows.sh --env prod --execution <execution>` prints a run's rows as JSON lines:
 
 ```sh
-scripts/logs.sh --env prod --query-name ocr-quality --span 2d
+scripts/azure/logs.sh --env prod --query-name ocr-quality --span 2d
 ```
 
 A v2 run also writes `status/ocr-quality.json` in the reference container for the status page: `{batches: {done, total}, finished_at, metric, pages_sampled, sample_pct, started_at, summary, updated_at, version}`, at the start, with each progress line and at the end. At the end `finished_at` and `summary` are set: `summary.agreement` (`differs_share`, `mixed_share`, `und_share` of all pages with text, `multilingual_differs_share` of multilingual titles' pages) and `summary.languages`, each detected language with at least 200 sampled pages (`pages`, `function_share_median`, `damage_rate_median`, `damaged_share`). Every field is present, and null when there is nothing to measure: the agreement shares when no sampled page has text, `multilingual_differs_share` when no page of a multilingual title does (a small sample), and a language's three scores when none of its pages was scored (a language with no word list, such as Cherokee). A run that fails leaves its last progress, with no `finished_at`. A failed write is logged and the audit goes on.
@@ -936,17 +936,17 @@ The v2 metric's per-page code is `ja-ocr/damage_v2.py`, which `quality.py` impor
 - In the cloud, on curated text: `jaocr.py damage-parity` samples 400 pages of the 10% audit's per-page CSV, spread across languages, decisions and scripts, and writes `audit/damage-parity/<stamp>.jsonl.zst` in the curated container. It logs each page's doc_id and title languages (`damage parity page`), never text. `usnm-ingest ocr-damage --parity <that path>` scores them in Rust ([below](#ocr-damage-tables-296)).
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
+ja-ocr/tools/start-quality.sh --env prod --command damage-parity --pages 400
 ```
 
 ### OCR damage tables (#296)
 
-`usnm-ingest ocr-damage` scores pages with the Rust port (12 §12.5 Step 6). It runs as one-off executions of the ingest job, which reads and writes the curated container. `scripts/start-job.sh` starts one with the job's image and settings and other arguments. An execution can't mount the job's scratch share, and this command needs none. It logs counts and doc_ids, never text. Run the three modes in this order: parity, the gate, then the full pass.
+`usnm-ingest ocr-damage` scores pages with the Rust port (12 §12.5 Step 6). It runs as one-off executions of the ingest job, which reads and writes the curated container. `scripts/azure/start-job.sh` starts one with the job's image and settings and other arguments. An execution can't mount the job's scratch share, and this command needs none. It logs counts and doc_ids, never text. Run the three modes in this order: parity, the gate, then the full pass.
 
 1. **Parity on curated text** (Step 5's cloud check). Write the pages with `damage-parity` ([above](#damage-metric-parity-296)), take the path from its `damage parity written` line, then:
 
    ```sh
-   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --parity audit/damage-parity/<stamp>.jsonl.zst
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --parity audit/damage-parity/<stamp>.jsonl.zst
    ```
 
    It logs `ocr damage parity` with the pages that agree and up to 50 doc_ids that don't, and fails if any page differs.
@@ -954,14 +954,14 @@ scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
 2. **The gate.** The 10% audit's pages, picked by the audit's own sampler from every curated row of `pages-v20261003-1` (duplicate copies included), scored in Rust and compared with the audit's per-page CSV, joined on doc_id and batch. The CSV rounds every score to 4 decimals, so Rust's are formatted the same way before the comparison. A page agrees when the language, the decision and the three scores all match; the gate passes when at least 99.99% of the CSV's 2,368,911 rows agree. It writes no tables, only its result, `audit/damage/v2/gate/<version>-<pct>pct-<stamp>.json`, and the `ocr damage gate` line (counts by kind of difference, up to 50 doc_ids). It fails when the gate does. The result goes in a draft report PR.
 
    ```sh
-   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1 \
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1 \
      --sample-pct 10 --compare-csv audit/ocr-quality-v2-pages-v20261003-1-10pct-pages.csv.gz
    ```
 
 3. **The full pass**, on the live version (`index_version` in the reference container's `current.json`), once the gate has passed:
 
    ```sh
-   scripts/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version <live version> --max-runtime-secs 165600
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version <live version> --max-runtime-secs 165600
    ```
 
    Each batch version gets `audit/damage/v2/<batch>_ver<NN>.parquet`, one row per page: `doc_id`, `lccn`, `date`, `edition`, `seq`, the base `batch`, `batch_version`, `text_status`, `lang`, `decision` (`detected`, `mixed`, `und`, or `no_text` for pages without text), `mixed_with`, `script`, `damage_rate`, `function_share`, `garbage_share`, `words`, `head` and `near`. Beside it, `<batch>_ver<NN>.summary.json` holds per-title counts (pages, scored pages, und, mixed, damaged and badly damaged), the median damage rate and pages by language. The summary is written last and marks the batch version done, so a later run skips it and pays only for new batches. When every batch of the version has its tables, `audit/damage/v2/versions/<version>.json` lists them; the seeder and `ocr-sync` read that list. A second run on the same version writes nothing. `--batches a,b_ver02` scores only those batches and doesn't write the list. A page is scored against its title's languages in the version's `titles.json`, which the command requires (the working catalog only fills in titles it lacks). A later correction to a title's catalog languages doesn't rescore tables already written. Tables are create-only, so to rescore, delete both the `.parquet` and the `.summary.json` of each of that title's batch versions, then run the pass again.
@@ -971,7 +971,7 @@ scripts/ja-ocr/start-quality.sh --env prod --command damage-parity --pages 400
 **A dev-scale test** (dev holds nothing outside a focused experiment, so this needs the maintainer's approval first). Locally, from the repository root:
 
 ```sh
-python3 scripts/fixture-batches.py --out-dir /tmp/usnm-dmg
+python3 scripts/dev/fixture-batches.py --out-dir /tmp/usnm-dmg
 cd /tmp/usnm-dmg
 ingest="cargo run --release --manifest-path $OLDPWD/Cargo.toml -p usnm-ingest --"
 $ingest --state-file state.json --curated curated --reference reference run --list batches.json --synthetic --index-dir reference/indexes
@@ -983,7 +983,7 @@ $ingest --state-file state.json --curated curated --reference reference ocr-dama
 $ingest --state-file state.json --curated curated --reference reference ocr-damage --version "$v"   # writes nothing
 ```
 
-On 10 October 2026 that gate agreed on all 1,872 fixture pages, and the second full run skipped both batches. In dev, after `scripts/provision.sh --env dev`: curate and release a few small batches (`dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01`), run `scripts/ja-ocr/start-quality.sh --env dev --sample-pct 100`, then the three commands above with `--env dev`, the dev version and the dev audit's CSV, and `--command damage-parity --pages 50`. Check the tables, the gate result and the second run's `skipped`, then `scripts/teardown.sh --env dev`.
+On 10 October 2026 that gate agreed on all 1,872 fixture pages, and the second full run skipped both batches. In dev, after `scripts/azure/provision.sh --env dev`: curate and release a few small batches (`dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01`), run `ja-ocr/tools/start-quality.sh --env dev --sample-pct 100`, then the three commands above with `--env dev`, the dev version and the dev audit's CSV, and `--command damage-parity --pages 50`. Check the tables, the gate result and the second run's `skipped`, then `scripts/azure/teardown.sh --env dev`.
 
 ## Text the Japanese titles' pages hold that search can't reach
 
@@ -993,8 +993,8 @@ On 10 October 2026 that gate agreed on all 1,872 fixture pages, and the second f
 - English on the pages we read: NDLOCR-Lite reads some English (mastheads, short lines), but only into the Japanese index. For every page of our OCR it counts the tokens that are among English's 5,000 most frequent words (3 letters or more).
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --command mixed          # prints the execution's name
-scripts/ja-ocr/quality-rows.sh --env prod --execution <execution>   # its "mixed pages" rows, once it has finished
+ja-ocr/tools/start-quality.sh --env prod --command mixed          # prints the execution's name
+ja-ocr/tools/quality-rows.sh --env prod --execution <execution>   # its "mixed pages" rows, once it has finished
 ```
 
 It writes `audit/mixed-pages-<version>-<execution>.json` and a CSV per table in the curated container (named by execution, so two runs never write the same files): `loc-text-bands` (Japanese titles against the control), `loc-text-by-title`, `loc-text-samples` (15 page ids per band, with their loc.gov links, for looking at the scans), `our-ocr-english` (by why LoC's text wasn't used), `our-ocr-by-title` and `our-ocr-samples`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>`, which `start-quality.sh` picks for it. Should a second replica run it anyway (the ja-ocr job), one does the work, renewing a lock; the other waits for its finished marker (`mixed pages written by another replica`) and takes over if the lock goes stale, and a retried replica of a finished execution exits at once. `our-ocr-english` and `our-ocr-by-title` also give the median Latin share of our OCR's letters and the share of pages over half Latin.
@@ -1004,8 +1004,8 @@ It writes `audit/mixed-pages-<version>-<execution>.json` and a CSV per table in 
 `jaocr.py american-stories --year Y [--year …] [--sample-pct 10]` (`ja-ocr/american_stories.py`, #205) compares [American Stories](https://huggingface.co/datasets/dell-research-harvard/AmericanStories) (Dell et al. 2023, CC BY 4.0), a re-OCR of Chronicling America, with LoC's text on our pages. It streams each year's tarball from Hugging Face (0.4 to 7.6 GB; nothing is written to disk), joins scans to our pages using the shared placement policy below (names read in a first pass), keeps the audit's fixed sample (`quality.sampled`), and reads LoC's text for the sampled pages of those years from the batches whose dates overlap them. For pages of titles whose first language is English it reports the join, words per page, the audit's English damage rate and function-word share for each text, pages matching a fixed term list in either text, and LoC's damage rate by the share of regions American Stories marked Illegible.
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --command american-stories --year 1865 --year 1925
-scripts/ja-ocr/quality-rows.sh --env prod --execution <execution>    # its "american stories" rows
+ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1865 --year 1925
+ja-ocr/tools/quality-rows.sh --env prod --execution <execution>    # its "american stories" rows
 ```
 
 It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ja-ocr/solo.py` still keeps a second replica out, as for `jaocr.py mixed`). A failed run raises _Japanese OCR or audit job failed_ (severity 3), not the ingest alert.
@@ -1019,7 +1019,7 @@ It writes `audit/american-stories-<version>-<execution>.json`. It runs on the on
 - `diff_edge_examples`: up to 10 pages a year with a phrase whose words are all in LoC's text but together only in American Stories', with loc.gov links.
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 --diff
+ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 --diff
 ```
 
 The diff runs after the comparison and takes about 40 s per 1,000 pages of 8,000 tokens (measured on synthetic pages; the run logs its own figure in `american stories diff year`).
@@ -1029,8 +1029,8 @@ The diff runs after the comparison and takes about 40 s per 1,000 pages of 8,000
 `jaocr.py american-stories-write [--year Y …]` (`ja-ocr/american_stories_write.py`, #218) writes American Stories' text (Dell et al. 2023, CC BY 4.0) for our pages to the curated container, for the release to index beside LoC's. It streams each year's tarball from Hugging Face twice on a fresh run (names/placement, then text), places every scan on our page as `american-stories` does, and writes `american-stories/pages/<lccn>/<year>-<nnn>.parquet`: one row per resolved page with `doc_id`, `scan_key` (JSON physical identity tuple), `source_name` (archive member), `lccn`, `date`, `text` (each article's headline, byline and text in American Stories' order, separated by blank lines), `articles` (JSON: each article's headline, byline, `start`/`end` in `text`, bounding boxes in scan pixels and the legibility of its regions), `legibility` (the page's text regions by legibility) and the scan's `width` and `height`. A page's second copy is skipped. Each year ends with a marker `american-stories/years/<year>.json` holding its counts; a rerun skips marked years, so an interrupted run resumes. A download that goes 5 minutes without data, or breaks off, fails and the year retries (reusing a frozen placement if already written; up to 3 tries, a minute apart, each logged as `american stories year failed; retrying`); a retry writes the same parts under the same names. A year counts as read only when the gzip stream reached its end marker and, when Hugging Face sends one, the byte count matches `Content-Length`, so a download that stops at a file boundary inside the tarball is retried rather than marked. All 180 archives total about 340 GB compressed (about 680 GB transferred for two fresh passes).
 
 ```sh
-scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write          # every year
-scripts/ja-ocr/start-quality.sh --env prod --command american-stories-write --year 1865
+ja-ocr/tools/start-quality.sh --env prod --command american-stories-write          # every year
+ja-ocr/tools/start-quality.sh --env prod --command american-stories-write --year 1865
 ```
 
 It runs on the one-replica job and logs `american stories year written` per year. `jaocr.py american-stories` also lists, per term and year, up to 8 pages that match only in American Stories' text with the words around the match (`only_american_stories`), for checking those matches by hand.
@@ -1103,10 +1103,10 @@ additional provenance columns; the canonical `doc_id` format is unchanged.
 The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 3 more. To read it:
 
 ```sh
-scripts/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
+scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
   --value "$(az ad signed-in-user show --query id -o tsv)"   # private: the settings store (Settings, above)
-scripts/provision.sh --env prod
-scripts/searches.sh --env prod --days 30      # searches per day, top queries, queries that found nothing, date spans
+scripts/azure/provision.sh --env prod
+scripts/azure/searches.sh --env prod --days 30      # searches per day, top queries, queries that found nothing, date spans
 ```
 
 The last two tables count searches by date span (the whole corpus range, over 10 years, 1–10 years, a year or less) and by the decade partitions they touch, bucketed as `usnm_core::decade` (pre-1820 is one). They hold counts and shares only, never queries. A search is whole range when it covers the corpus bounds the site serves (`/v1/meta`, read from the environment's `SITE_URL`); if those can't be read, the script says so and takes each version's widest search instead. They decide whether to build the next full base with `USNM_PARTITION_DECADE` (#123): only date-limited searches skip splits.
@@ -1124,19 +1124,19 @@ Production keeps no batch archives (ADR-0006): LoC is the source of record. The 
 Check what a deploy would change, then deploy:
 
 ```sh
-scripts/archive-store.sh what-if --subscription <id>    # changes nothing
-scripts/archive-store.sh deploy --subscription <id>     # prints the account's resource id
+scripts/azure/archive-store.sh what-if --subscription <id>    # changes nothing
+scripts/azure/archive-store.sh deploy --subscription <id>     # prints the account's resource id
 ```
 
 `what-if` shows the guard-rail definitions' changes, then the account's. Until the definitions exist, the account's what-if can fail on its assignments; `deploy` creates them first.
 
-**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, the bench identity (`usnm-qw-bench-id-{env}`) also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting this way. `scripts/teardown.sh` detaches an environment that has the setting on by itself first ([Dev environment lifecycle](#dev-environment-lifecycle)).
+**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, the bench identity (`usnm-qw-bench-id-{env}`) also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting this way. `scripts/azure/teardown.sh` detaches an environment that has the setting on by itself first ([Dev environment lifecycle](#dev-environment-lifecycle)).
 
 ```sh
-scripts/archive-store.sh unlock
-scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --unset   # a private setting: deletes it from the settings store
-scripts/provision.sh --env dev
-scripts/archive-store.sh deploy        # the lock back
+scripts/azure/archive-store.sh unlock
+scripts/azure/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --unset   # a private setting: deletes it from the settings store
+scripts/azure/provision.sh --env dev
+scripts/azure/archive-store.sh deploy        # the lock back
 ```
 
 **What curation does with it:**
@@ -1153,15 +1153,15 @@ To keep the archives of batches curated before, queue them again with `--force` 
 Stopping a curate run mid-batch leaves its batches leased for up to 2 hours (the curate worker's lease, set in `crates/usnm-ingest/src/main.rs`; the 45-minute `BATCH_LIMIT` is a running batch's own limit): `--force` leaves a leased batch alone and a new run skips it until the lease runs out. A batch whose runs are stopped repeatedly can reach the attempt cap (5) and be marked failed at its next claim; `enqueue --force` resets its attempts. Found on the dev 1% run (October 2026): after a stopped run, 8 batches needed two more passes.
 
 ```sh
-scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches "$B" --force
-scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
+scripts/azure/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches "$B" --force
+scripts/azure/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
 ```
 
 **An environment's own `raw` container** (`USNM_RETAIN_RAW true`) does the same inside the environment's data account. It goes with the environment, and turning the setting off deletes it, so it suits a short trial. `USNM_ARCHIVE_ACCOUNT` takes precedence when both are set. To move archives kept there into the archival account, with both settings on, run the copy in the ingest job. It streams each archive, checks it against its manifest, and skips those already there. A batch for which the destination holds another archive is left as it is and fails the copy at the end:
 
 ```sh
-scripts/start-job.sh --env dev --job INGEST_JOB -- archive-copy \
-  --from "$(az storage account show -n "$(scripts/settings.sh --env dev --key STORAGE_ACCOUNT)" --query primaryEndpoints.blob -o tsv)raw" \
+scripts/azure/start-job.sh --env dev --job INGEST_JOB -- archive-copy \
+  --from "$(az storage account show -n "$(scripts/azure/settings.sh --env dev --key STORAGE_ACCOUNT)" --query primaryEndpoints.blob -o tsv)raw" \
   --batches "$B"
 ```
 
@@ -1178,7 +1178,7 @@ A set packages a sample for reuse in `sets/{name}/`, built once by the search cl
 - `manifest.json`, written last: name and version, how the batches were chosen, the batch list with each archive's bytes and sha256, page and document counts, each file's bytes and sha256, the corpus bounds, the common-word pairs' and American Stories' versions, the index config's sha256, the builder's commit and `created_at`.
 
 ```sh
-J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+J() { scripts/azure/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J bundle --name loc-1pct-v1 --sample dev1pct \
   --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
 J load --set loc-1pct-v1 --index s1ixset          # the cluster loads straight from the set
@@ -1202,31 +1202,31 @@ Reprovisioning the same experiment preserves the project group's original `start
 
 **The rule** (#275): `dev` (the stack `usnm-dev`, the group `usnm-core-rg-dev`) holds no resources unless a focused experiment is running. Stand it up for the experiment, and tear it down completely once the results are saved. Scaling to zero isn't enough: with no replicas running it still costs about $2 a day, about $60 a month. That's the 4 private endpoints ($0.24 a day each), the Container Apps environment's load balancer (about $0.45 to $0.60 a day) and public IP ($0.12), the registry (ACR Basic, about $0.17), the NFS share (64 GiB, about $0.21), 3 private DNS zones (about $0.05) and storage (Cost Management, October 2026).
 
-**The marker.** Provisioning `dev` needs `USNM_EXPERIMENT`, the experiment's issue number. It tags dev's project group, `usnm-core-rg-dev`, with `experiment` and `started` (UTC), which stays the same while the experiment does. `scripts/dev-status.sh` lists the stack, what's in `usnm-core-rg-dev`, `usnm-core-infra-rg-dev` (the Container Apps environment's own) and `rg-usnm-dev-spot` (and the legacy `rg-usnm-dev` and `ME_cae-usnm-dev_*`, ADR-0017), the tag and its age, and what those groups have cost since the experiment started. It exits 1 if anything is there without the tag, and warns when the tag is older than 7 days. The guard-rail stack, which stays up between experiments, holds a budget on dev's groups (in both name forms), `budget-usnm-dev-groups`, that mails the alert recipients at $5 of actual spend in a month. It needs no `dev`, only an environment with `USNM_ALERT_EMAILS` provisioned since the budget was added. The legacy Container Apps group's name (`ME_cae-usnm-dev_rg-usnm-dev_<region>`) ends in dev's region: each provision of `dev` records its `AZURE_LOCATION` in the budget, and other environments' provisions keep it.
+**The marker.** Provisioning `dev` needs `USNM_EXPERIMENT`, the experiment's issue number. It tags dev's project group, `usnm-core-rg-dev`, with `experiment` and `started` (UTC), which stays the same while the experiment does. `scripts/azure/dev-status.sh` lists the stack, what's in `usnm-core-rg-dev`, `usnm-core-infra-rg-dev` (the Container Apps environment's own) and `rg-usnm-dev-spot` (and the legacy `rg-usnm-dev` and `ME_cae-usnm-dev_*`, ADR-0017), the tag and its age, and what those groups have cost since the experiment started. It exits 1 if anything is there without the tag, and warns when the tag is older than 7 days. The guard-rail stack, which stays up between experiments, holds a budget on dev's groups (in both name forms), `budget-usnm-dev-groups`, that mails the alert recipients at $5 of actual spend in a month. It needs no `dev`, only an environment with `USNM_ALERT_EMAILS` provisioned since the budget was added. The legacy Container Apps group's name (`ME_cae-usnm-dev_rg-usnm-dev_<region>`) ends in dev's region: each provision of `dev` records its `AZURE_LOCATION` in the budget, and other environments' provisions keep it.
 
 When Cost Management throttles `dev-status.sh` (429), the script makes up to four attempts with exponential backoff (2, 4, 8 seconds by default), honouring `Retry-After` (seconds or HTTP date) and `x-ms-ratelimit-microsoft.costmanagement-*-retry-after` values when they appear in the error text. Azure CLI normally prints only the HTTP reason and response body, not the response headers, and the script turns on no verbose or debug logging. Retry waits total at most 60 seconds; if a requested wait would exceed that budget, no early retry is made. Once the attempts are exhausted, the script warns on stderr that cost is unknown, without changing the environment status or treating it as zero cost. Missing Cost Management Reader permissions are a warning; other query errors still fail.
 
 **Stand it up:**
 
 ```sh
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true   # the experiment's own settings, if any, first
-scripts/stand-up.sh --env dev --experiment 240 [--archive]
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true   # the experiment's own settings, if any, first
+scripts/azure/stand-up.sh --env dev --experiment 240 [--archive]
 ```
 
-The experiment's public settings, and the ones `stand-up.sh` and `teardown.sh` write themselves (`USNM_USE_ACR`, `USNM_COSMOS_FREE_TIER`, `USNM_SEARCH_CLUSTER`), land in `infra/env/dev.json` in your checkout ([Settings](#settings)): commit the experiment's in its pull request. Both scripts provision without the uncommitted-changes check; on its own, use `scripts/provision.sh --env dev --allow-dirty`.
+The experiment's public settings, and the ones `stand-up.sh` and `teardown.sh` write themselves (`USNM_USE_ACR`, `USNM_COSMOS_FREE_TIER`, `USNM_SEARCH_CLUSTER`), land in `infra/env/dev.json` in your checkout ([Settings](#settings)): commit the experiment's in its pull request. Both scripts provision without the uncommitted-changes check; on its own, use `scripts/azure/provision.sh --env dev --allow-dirty`.
 
-`scripts/stand-up.sh` starts from the settings the last teardown kept (`.env.deleted-<time>`, beside the settings file), or new ones. It provisions `dev` without images (registry, data, network, identities: about 7 minutes), copies the pinned Quickwit image into the registry, builds the checkout's API and ingest images there with `az acr build` (tag `exp-<commit>`; the Japanese OCR image too with `USNM_JA_OCR_JOB`), sets `USNM_IMAGE_TAG` and `USNM_USE_ACR`, and provisions again. `--archive` sets `USNM_ARCHIVE_ACCOUNT` from the `usnm-archive` stack. With the archival account and the ingest job on (`USNM_INGEST_JOBS`), it then seeds the title records and catalog from the account's newest `raw/titles/{time}.json` (`scripts/titles-seed.sh`, below). It never creates a GitHub Environment or adds `dev` to `USNM_DEPLOY_ENVIRONMENTS`, so no push to main rolls it: an experiment runs a branch's images. It refuses `prod`, and a checkout with uncommitted changes. To run a newer commit, run it again. `scripts/bootstrap.sh --env dev` would also work, but it wires `dev` to deploy from main.
+`scripts/azure/stand-up.sh` starts from the settings the last teardown kept (`.env.deleted-<time>`, beside the settings file), or new ones. It provisions `dev` without images (registry, data, network, identities: about 7 minutes), copies the pinned Quickwit image into the registry, builds the checkout's API and ingest images there with `az acr build` (tag `exp-<commit>`; the Japanese OCR image too with `USNM_JA_OCR_JOB`), sets `USNM_IMAGE_TAG` and `USNM_USE_ACR`, and provisions again. `--archive` sets `USNM_ARCHIVE_ACCOUNT` from the `usnm-archive` stack. With the archival account and the ingest job on (`USNM_INGEST_JOBS`), it then seeds the title records and catalog from the account's newest `raw/titles/{time}.json` (`scripts/azure/titles-seed.sh`, below). It never creates a GitHub Environment or adds `dev` to `USNM_DEPLOY_ENVIRONMENTS`, so no push to main rolls it: an experiment runs a branch's images. It refuses `prod`, and a checkout with uncommitted changes. To run a newer commit, run it again. `scripts/azure/bootstrap.sh --env dev` would also work, but it wires `dev` to deploy from main.
 
 **Data**, depending on the experiment:
 
 - **Search experiments:** load a packaged set (`sets/loc-1pct-v1/docs.ndjson.zst`, [Sample sets](#sample-sets)) straight into Quickwit. No curation, no titles-sync, no LoC traffic.
 - **Curation or release experiments:** enqueue the set's batches. With `USNM_ARCHIVE_ACCOUNT` set, curation reads them from `raw/` without LoC's download pacing. The 1% (30 batches, 23.8 GB) is roughly 2 worker-hours of bzip2, so under an hour on the backfill job's 4 workers. A release also needs the title catalog. Titles-sync is paced against LoC and can take up to 8 hours, and its output (`reference/raw/titles.json` and the catalog) is in dev's own data account, so it goes at teardown. With the archival account, each titles-sync also saves a copy to `raw/titles/{time}.json` ([Archival storage](#archival-storage)), and the next stand-up starts from the newest one, so the release's titles-sync fetches only titles the copy lacks.
 
-**Seeding the titles.** `scripts/titles-seed.sh --env dev` (which `stand-up.sh` runs) starts one ingest job execution of `usnm-ingest titles-seed` and waits for it (`--wait-mins`, default 20). The job reads the newest copy through dev's endpoint with the ingest identity, checks that the pipeline can read it (every record, and the catalog as geocode loads it: both files or neither, unique ids and ordinals, every title's place listed; a copy that fails writes nothing), and writes the catalog files, then `raw/titles.json` last, each create-only. It writes only into an environment with no record cache: a cache dev already has, newer or older than the copy, is never replaced, and a seed stopped partway finishes when run again. A catalog file already there is kept only if it is the copy's; one that differs stops the seed before the cache is written, so dev never gets one copy's records with another catalog. It logs the copy it read (path, time, records, titles, places) and each file it wrote or kept:
+**Seeding the titles.** `scripts/azure/titles-seed.sh --env dev` (which `stand-up.sh` runs) starts one ingest job execution of `usnm-ingest titles-seed` and waits for it (`--wait-mins`, default 20). The job reads the newest copy through dev's endpoint with the ingest identity, checks that the pipeline can read it (every record, and the catalog as geocode loads it: both files or neither, unique ids and ordinals, every title's place listed; a copy that fails writes nothing), and writes the catalog files, then `raw/titles.json` last, each create-only. It writes only into an environment with no record cache: a cache dev already has, newer or older than the copy, is never replaced, and a seed stopped partway finishes when run again. A catalog file already there is kept only if it is the copy's; one that differs stops the seed before the cache is written, so dev never gets one copy's records with another catalog. It logs the copy it read (path, time, records, titles, places) and each file it wrote or kept:
 
 ```sh
-scripts/titles-seed.sh --env dev                       # again, or after turning the ingest job on
-scripts/logs.sh --env dev --query-name titles-archive --span 1h
+scripts/azure/titles-seed.sh --env dev                       # again, or after turning the ingest job on
+scripts/azure/logs.sh --env dev --query-name titles-archive --span 1h
 ```
 
 **ACR build verification.** All build wrappers (`stand-up.sh`, `build-quickwit.sh`,
@@ -1251,17 +1251,17 @@ streaming CLI exit status (#549).
 **Tear it down** once the results are saved: reports copied out of `qw-bench/runs/`, logs queried, and, if titles-sync ran with the archival account, its copy in the archive. Save that copy first, and don't start the teardown until the command below exits 0:
 
 ```sh
-scripts/start-job.sh --env dev --job INGEST_JOB --wait-mins 20 -- titles-archive
+scripts/azure/start-job.sh --env dev --job INGEST_JOB --wait-mins 20 -- titles-archive
 ```
 
-Without `--wait-mins`, `start-job.sh` returns as soon as Azure accepts the execution, before anything is written, and a teardown started then would delete the record cache before the copy is made. With it, the script waits for the execution and exits 0 only once it has `Succeeded`, so the copy is in `raw/titles/` (or the newest copy there already held the same records, and nothing was written). It exits 1 if the execution ends `Failed`, `Stopped` or `Degraded` or is still running after 20 minutes: then don't tear down. Check the job's log (`scripts/logs.sh --env dev --query-name job-executions`; without `USNM_ARCHIVE_ACCOUNT` the job has no raw store, and the command fails with `titles-archive needs USNM_RAW_URL`), fix it and run it again. The command is create-only and skips a copy the archive already has, so running it when titles-sync's own copy succeeded costs one short execution. Then:
+Without `--wait-mins`, `start-job.sh` returns as soon as Azure accepts the execution, before anything is written, and a teardown started then would delete the record cache before the copy is made. With it, the script waits for the execution and exits 0 only once it has `Succeeded`, so the copy is in `raw/titles/` (or the newest copy there already held the same records, and nothing was written). It exits 1 if the execution ends `Failed`, `Stopped` or `Degraded` or is still running after 20 minutes: then don't tear down. Check the job's log (`scripts/azure/logs.sh --env dev --query-name job-executions`; without `USNM_ARCHIVE_ACCOUNT` the job has no raw store, and the command fails with `titles-archive needs USNM_RAW_URL`), fix it and run it again. The command is create-only and skips a copy the archive already has, so running it when titles-sync's own copy succeeded costs one short execution. Then:
 
 ```sh
-scripts/teardown.sh --env dev
-scripts/dev-status.sh                                  # expect: dev holds nothing
+scripts/azure/teardown.sh --env dev
+scripts/azure/dev-status.sh                                  # expect: dev holds nothing
 ```
 
-With `USNM_ARCHIVE_ACCOUNT` set, `teardown.sh` first detaches `dev` from the archival account. It lifts the account's delete lock, clears `USNM_ARCHIVE_ACCOUNT` and `USNM_SEARCH_CLUSTER` (the settings that grant roles there) and provisions, so the stack deletes its endpoint and roles itself. It then checks that no role assignment in the account's group belongs to one of dev's identities and that no endpoint connection from dev's groups remains, and puts the lock back (`scripts/archive-store.sh deploy`) whatever happened. The account and its data are never changed. Run it again if it stops partway: it picks up where it stopped. Then it removes `dev` from `USNM_DEPLOY_ENVIRONMENTS` if it's there, waiting for any deploy (`ci` on main) that could still roll it; detaches the stack and deletes the groups it manages, including `usnm-core-rg-dev` (the Container Apps environment's `usnm-core-infra-rg-dev` goes with the environment), the custom roles and any role assignment the stack made outside them; keeps `usnm-guardrails` while another environment (or `usnm-archive`) uses it; deletes the GitHub Environment `dev` if there is one; and keeps the settings file as `.env.deleted-<time>`, without the experiment marker. The retired `rg-usnm-dev-spot` is no longer declared; if a provision has already detached it, follow the [Spot group cleanup](../infra/README.md#retired-spot-resource-group) separately. `dev-status.sh` still detects it until it is deleted. `az deployment group delete -g rg-usnm-archive -n archive-grant-dev` removes the stale deployment record, if wanted.
+With `USNM_ARCHIVE_ACCOUNT` set, `teardown.sh` first detaches `dev` from the archival account. It lifts the account's delete lock, clears `USNM_ARCHIVE_ACCOUNT` and `USNM_SEARCH_CLUSTER` (the settings that grant roles there) and provisions, so the stack deletes its endpoint and roles itself. It then checks that no role assignment in the account's group belongs to one of dev's identities and that no endpoint connection from dev's groups remains, and puts the lock back (`scripts/azure/archive-store.sh deploy`) whatever happened. The account and its data are never changed. Run it again if it stops partway: it picks up where it stopped. Then it removes `dev` from `USNM_DEPLOY_ENVIRONMENTS` if it's there, waiting for any deploy (`ci` on main) that could still roll it; detaches the stack and deletes the groups it manages, including `usnm-core-rg-dev` (the Container Apps environment's `usnm-core-infra-rg-dev` goes with the environment), the custom roles and any role assignment the stack made outside them; keeps `usnm-guardrails` while another environment (or `usnm-archive`) uses it; deletes the GitHub Environment `dev` if there is one; and keeps the settings file as `.env.deleted-<time>`, without the experiment marker. The retired `rg-usnm-dev-spot` is no longer declared; if a provision has already detached it, follow the [Spot group cleanup](../infra/README.md#retired-spot-resource-group) separately. `dev-status.sh` still detects it until it is deleted. `az deployment group delete -g rg-usnm-archive -n archive-grant-dev` removes the stale deployment record, if wanted.
 
 **Protected removals during archive detachment:** with `USNM_SEARCH_LOCAL_MODE=nfs` and `USNM_INGEST_SCRATCH_GIB=0`, disabling the search cluster also removes its scratch account and file private-DNS zone in that partial provision. Inspect the managed IDs and guard output, then pass repeated `--allow-rename=<exact-old-name>` to `teardown.sh` for each intentional removal (both account and zone). The environment-name confirmation does not grant these approvals. A missing, failed or unsupported plan still blocks, even with overrides; the archive lock is restored and the saved detach marker allows an approved rerun. See [the guard and teardown examples](../infra/README.md#protected-resource-gate); ordinary partial provisions use the same guard, with no automatic teardown bypass.
 
@@ -1279,7 +1279,7 @@ An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1
 
 - **Nodes** `usnm-qw-{i}-ca-{env}`, `USNM_SEARCH_CLUSTER_NODES` of them (0 to 4), each exactly one replica of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU (default 2, the API sidecar's size) with 2 GiB per vCPU, on the Consumption profile. Node 0 is the only metastore (the single writer of the file-backed metastore in `qw-cluster`), the control plane, the janitor, an indexer, a searcher, and the root: searches enter there through its internal ingress, `http://usnm-qw-0-ca-{env}` inside the environment. Nodes 1 to `USNM_SEARCH_CLUSTER_INDEXERS - 1` also index; the rest only search. Their node config is `infra/quickwit/cluster-node.yaml`; its searcher settings are the sidecar's (`searcher.yaml`), which a test checks.
 - **Addresses.** Quickwit gossips over UDP and calls leaves over gRPC, both on replica IPs, which change whenever a replica restarts (#239). Each node starts as `usnm-qwcluster node`. That writes its replica IP to `qw-bench/seeds/qw-{i}.json`, reads the other nodes' entries as `QW_PEER_SEEDS`, sets `QW_ADVERTISE_ADDRESS`, and then becomes Quickwit. Every node writes before it reads, so of two nodes starting together at least one sees the other. A node that restarts at a new IP joins through the others, and they learn its new address by gossip.
-- **Bench job** `usnm-qw-bench-caj-{env}` (manual, 4 vCPU / 8 GiB, 6 h timeout), which runs `usnm-qwcluster` with each step's arguments (`scripts/start-job.sh`).
+- **Bench job** `usnm-qw-bench-caj-{env}` (manual, 4 vCPU / 8 GiB, 6 h timeout), which runs `usnm-qwcluster` with each step's arguments (`scripts/azure/start-job.sh`).
 - **Storage, Entra only.** Containers `qw-cluster` (splits and metastore; Blob Data Contributor for each node's system-assigned identity, since Quickwit can use no other) and `qw-bench` (seeds, the sample, reports; Contributor for `usnm-qw-node-id-{env}` and `usnm-qw-bench-id-{env}`). The bench identity also reads `curated` and `reference`. Nothing can write `qw-index`, `reference` or `curated`. Turning the setting off deletes both containers (soft delete keeps them 14 days).
 
 **The steps.** Each `usnm-qwcluster` step logs one `qwcluster report` line and stores the full report in `qw-bench/runs/`.
@@ -1297,38 +1297,38 @@ An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1
 **Run it** (in `dev`; prod's data account is private, so dev curates its own 1% from LoC):
 
 ```sh
-scripts/archive-store.sh deploy                       # once per subscription; prints the account's id
+scripts/azure/archive-store.sh deploy                       # once per subscription; prints the account's id
 ARCHIVE_ID=<the id it printed>
-scripts/settings.sh --env dev --key USNM_INGEST_JOBS --value true
-scripts/settings.sh --env dev --key USNM_INGEST_SCRATCH_GIB --value 0            # 1% fits the replica's disk
-scripts/settings.sh --env dev --key USNM_LOG_DAILY_CAP_GB --value 1              # blob write logs; clear afterwards
-scripts/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --value "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above; private: the settings store)
-scripts/provision.sh --env dev --allow-dirty    # the experiment's settings, before they're committed
-RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
+scripts/azure/settings.sh --env dev --key USNM_INGEST_JOBS --value true
+scripts/azure/settings.sh --env dev --key USNM_INGEST_SCRATCH_GIB --value 0            # 1% fits the replica's disk
+scripts/azure/settings.sh --env dev --key USNM_LOG_DAILY_CAP_GB --value 1              # blob write logs; clear afterwards
+scripts/azure/settings.sh --env dev --key USNM_ARCHIVE_ACCOUNT --value "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above; private: the settings store)
+scripts/azure/provision.sh --env dev --allow-dirty    # the experiment's settings, before they're committed
+RG=$(scripts/azure/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/azure/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD)
 . scripts/lib/acr-build.sh
 acr_build_verified az "$ACR" "usnewsmap-ingest:$TAG" 3600 -f docker/Dockerfile.ingest --build-arg USNM_GIT_SHA=$(git rev-parse HEAD) .
 acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f docker/Dockerfile.api .
-scripts/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
-scripts/settings.sh --env dev --key USNM_USE_ACR --value true
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
+scripts/azure/settings.sh --env dev --key USNM_USE_ACR --value true
+scripts/azure/provision.sh --env dev --allow-dirty
 
 # The 1%: every 100th batch of LoC's listing by name, from the 40th (offset 39):
 # 30 batches, 238,057 pages of 23,838,683 (0.999%), 26 awardees, 23.8 GB of archives.
 B=arhi_beatles_ver01,az_fireant_ver01,ct_fairfield_ver01,curiv_plasse_ver01,dlc_alpha_ver03,dlc_debaptiste_ver01,dlc_goldenrod_ver01,dlc_leibovitz_ver01,dlc_saluki_ver01,gu_drteeth_ver01,iahi_hypno_ver01,in_irvington_ver01,khi_garwood_ver02,lu_juggernaut_ver01,me_calais_ver03,mnhi_dassel_ver01,mohi_berenice_ver01,mthi_goldeneye_ver01,ncu_cotton_ver04,nhd_lafayette_ver01,nn_keddy_ver01,ohi_himilco_ver01,oru_longspur_ver01,rp_hobgoblin_ver02,tu_eddie_ver02,uuml_anderson_ver01,vi_fezza_ver01,vnstcsc_duggan_ver01,whi_brie_ver01,wvu_jolie_ver02
-scripts/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
-scripts/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
-scripts/start-job.sh --env dev --job INGEST_JOB -- run --batches $B --full --curate-max-runtime-secs 21600 \
+scripts/azure/start-job.sh --env dev --job INGEST_JOB -- enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
+scripts/azure/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
+scripts/azure/start-job.sh --env dev --job INGEST_JOB -- run --batches $B --full --curate-max-runtime-secs 21600 \
   --titles-max-runtime-secs 28800 --quickwit-bin /usr/local/bin/quickwit \
   --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index
-scripts/logs.sh --env dev --query-name release-progress --span 6h    # the single-writer baseline on the same pages
+scripts/azure/logs.sh --env dev --query-name release-progress --span 6h    # the single-writer baseline on the same pages
 
 # One node, one indexer.
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 1
-scripts/provision.sh --env dev --allow-dirty
-J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 1
+scripts/azure/provision.sh --env dev --allow-dirty
+J() { scripts/azure/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
 J members
 J sample --name dev1pct --pct 100          # dev's whole version is the 1%
 J bundle --name loc-1pct-v1 --sample dev1pct \
@@ -1336,14 +1336,14 @@ J bundle --name loc-1pct-v1 --sample dev1pct \
 J load --sample dev1pct --index s1ix
 J bench --label n1 --index s1ix --sample dev1pct --expect-searchers 1
 # Two nodes, both indexing.
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 2
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 2
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 2
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_INDEXERS --value 2
+scripts/azure/provision.sh --env dev --allow-dirty
 J load --sample dev1pct --index s2ix
 J bench --label n2 --index s1ix --sample dev1pct --expect-searchers 2
 # Three nodes; node 2 only searches. Then the restart test.
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 3
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 3
+scripts/azure/provision.sh --env dev --allow-dirty
 J bench --label n3 --index s1ix --sample dev1pct --expect-searchers 3
 J members
 az containerapp revision restart -n usnm-qw-2-ca-dev -g "$RG" \
@@ -1352,12 +1352,12 @@ J bench --label n3-restart --index s1ix --sample dev1pct --expect-searchers 3 --
 J members                                  # qw-2 has a new address and generation
 
 # The report: Log Analytics, Azure Monitor per node app, list prices.
-scripts/qwcluster-report.py --env dev --since 2d --out qwcluster-report.md
+scripts/azure/qwcluster-report.py --env dev --since 2d --out qwcluster-report.md
 ```
 
-Start each step once the previous execution has ended (`az containerapp job execution list -n "$(scripts/settings.sh --env dev --key SEARCH_CLUSTER_JOB)" -g "$RG" -o table`). For a cold `first` pass, restart the node revisions before a bench. The first provision with the cluster may restart node 0 a few times while its identity's role on `qw-cluster` propagates. If Log Analytics is over its cap, stream the stored reports with `J dump --hold-secs 600` and `az containerapp job logs show -n <job> -g "$RG" --container qwbench --follow > lines.txt`, then run `scripts/qwcluster-report.py --env dev --from-file lines.txt`. Collect the report before scaling down: a deleted app's metrics can't be queried.
+Start each step once the previous execution has ended (`az containerapp job execution list -n "$(scripts/azure/settings.sh --env dev --key SEARCH_CLUSTER_JOB)" -g "$RG" -o table`). For a cold `first` pass, restart the node revisions before a bench. The first provision with the cluster may restart node 0 a few times while its identity's role on `qw-cluster` propagates. If Log Analytics is over its cap, stream the stored reports with `J dump --hold-secs 600` and `az containerapp job logs show -n <job> -g "$RG" --container qwbench --follow > lines.txt`, then run `scripts/azure/qwcluster-report.py --env dev --from-file lines.txt`. Collect the report before scaling down: a deleted app's metrics can't be queried.
 
-**Report lines.** Container Apps keeps about 16 KiB of a console line. A bench report therefore goes out as several `qwcluster report` lines (`bench`, one `bench_pass` per pass, `bench_probe`, `bench_profile`), which `scripts/qwcluster-report.py` puts back together by label. Images before this change logged a whole run on one line, and a run with `--probe` passed the limit (October 2026); the report salvages such a line's passes, and takes its Quickwit version from the run's `bench root` line, but its probe and profile are only in `qw-bench` (`runs/{label}/bench.json`). `J dump` with a current image logs those stored reports again, in parts.
+**Report lines.** Container Apps keeps about 16 KiB of a console line. A bench report therefore goes out as several `qwcluster report` lines (`bench`, one `bench_pass` per pass, `bench_probe`, `bench_profile`), which `scripts/azure/qwcluster-report.py` puts back together by label. Images before this change logged a whole run on one line, and a run with `--probe` passed the limit (October 2026); the report salvages such a line's passes, and takes its Quickwit version from the run's `bench root` line, but its probe and profile are only in `qw-bench` (`runs/{label}/bench.json`). `J dump` with a current image logs those stored reports again, in parts.
 
 **Idle and teardown.** `USNM_SEARCH_CLUSTER_NODES 0` and a provision remove the node apps but keep the containers and the bench job, so nothing is billed but storage. `USNM_SEARCH_CLUSTER ""` and a provision remove everything the setting added, both containers included. Clear `USNM_LOG_DAILY_CAP_GB` afterwards. Once the experiment's results are saved, tear `dev` down ([Dev environment lifecycle](#dev-environment-lifecycle)).
 
@@ -1373,7 +1373,7 @@ Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; 
 
 ```sh
 cd ~/code/usnewsmap.com-qwcluster
-RG=$(scripts/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh --env dev --key ACR_NAME)
+RG=$(scripts/azure/settings.sh --env dev --key AZURE_RESOURCE_GROUP); ACR=$(scripts/azure/settings.sh --env dev --key ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD); SHA=$(git rev-parse HEAD)
 . scripts/lib/acr-build.sh
 NIGHTLY=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
@@ -1385,14 +1385,14 @@ acr_build_verified az "$ACR" "usnewsmap-api:$TAG" 3600 -f docker/Dockerfile.api 
 **Smoke test** on an index the cluster already holds (`s1ixb`, the 1% without American Stories, 58 splits): cluster nodes off, so nothing writes while they search; both searchers at the sidecar's 4 vCPU.
 
 ```sh
-scripts/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODE_VCPU --value 4
-scripts/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --value "$TAG,$TAG-qw2509"
-scripts/provision.sh --env dev --allow-dirty
-J() { scripts/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
-JOB=$(scripts/settings.sh --env dev --key SEARCH_CLUSTER_JOB)
+scripts/azure/settings.sh --env dev --key USNM_IMAGE_TAG --value $TAG
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER --value true
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODE_VCPU --value 4
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --value "$TAG,$TAG-qw2509"
+scripts/azure/provision.sh --env dev --allow-dirty
+J() { scripts/azure/start-job.sh --env dev --job SEARCH_CLUSTER_JOB -- "$@"; }
+JOB=$(scripts/azure/settings.sh --env dev --key SEARCH_CLUSTER_JOB)
 wait_for() {  # until execution $1 has ended; prints how
   local s; while :; do
     s=$(az containerapp job execution show -n "$JOB" -g "$RG" --job-execution-name "$1" --query properties.status -o tsv)
@@ -1405,7 +1405,7 @@ bench() { wait_for "$(J bench --label "$1" --cluster "http://usnm-qw-cmp-$2-ca-d
 restart; bench cmp-v091-r1 0; bench cmp-n2509-r1 1
 restart; bench cmp-n2509-r2 1; bench cmp-v091-r2 0
 restart; bench cmp-v091-r3 0; bench cmp-n2509-r3 1
-scripts/qwcluster-report.py --env dev --since 6h --out qwcompare.md
+scripts/azure/qwcluster-report.py --env dev --since 6h --out qwcompare.md
 ```
 
 The two `members` lines show each searcher alone in its cluster, with `main_threads` 4 in its counters (the nightly reports the same metric names as 0.9.1). The report's **Quickwit version comparison** section has, per pass, the main runtime's busy seconds per search and per GB downloaded, its busy share, and the search pool's peaks, then each version's averages with ratios to 0.9.1, then whether both versions found the same pages for every search. If they didn't, the timings don't compare. On dev's 1% the searches wait on Blob, not CPU (0.1 to 0.4 vCPU in October 2026), so the latency ratios don't carry to production; busy seconds per GB do, since production's cold searches wait on the main runtime (about 95% busy on 4 threads with an idle search pool, #251). A nightly ratio well under 1 (0.8 or less) on busy seconds per GB is worth the full run; near 1, the regression of #6883 isn't what holds production back.
@@ -1413,12 +1413,12 @@ The two `members` lines show each searcher alone in its cluster, with `main_thre
 **Full run**, if the smoke test points that way: indexes shaped like production's, built by 0.9.1 (node 0) from the 1% with `text_as` and `text_as_cg` filled from `text` and `text_cg` (`load --as-from-text`; LoC's OCR twice, the shape of production's work but not its matches), at the loader's 3,000 pages per split (production's fan-out per search) and at production's 30,000 (production's split size):
 
 ```sh
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 1
+scripts/azure/provision.sh --env dev --allow-dirty
 wait_for "$(J load --sample dev1pct --index asdup3k --as-from-text)"
 wait_for "$(J load --sample dev1pct --index asdup30k --split-docs 30000 --as-from-text)"
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
-scripts/provision.sh --env dev --allow-dirty
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
+scripts/azure/provision.sh --env dev --allow-dirty
 bench() { wait_for "$(J bench --label "$1" --cluster "http://usnm-qw-cmp-$2-ca-dev" --index "$3" --sample dev1pct --american-stories --levels 1,4,10)"; }
 # then the same three rounds as above for asdup3k and asdup30k
 ```
@@ -1446,16 +1446,16 @@ With `RG`, `J`, `JOB` and `wait_for` as in the version comparison above, and the
 lbench() { wait_for "$(J bench --label "$1" --cluster http://usnm-qw-local-ca-dev --index "$IX" --sample dev1pct --variant "$2" --levels 1,4,10 --probe --profile-secs 120 "${@:3}")"; }
 # Until the searcher's newest revision is the ready one (a first nfs copy takes minutes).
 ready() { until [ "$(az containerapp show -n usnm-qw-local-ca-dev -g "$RG" --query "properties.latestReadyRevisionName == properties.latestRevisionName" -o tsv)" = true ]; do sleep 30; done; }
-scripts/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
-scripts/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --unset
-IX=s1ixb; scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_INDEX --value $IX
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value blob; scripts/provision.sh --env dev --allow-dirty; ready
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_CLUSTER_NODES --value 0
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_COMPARE_TAGS --unset
+IX=s1ixb; scripts/azure/settings.sh --env dev --key USNM_SEARCH_LOCAL_INDEX --value $IX
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value blob; scripts/azure/provision.sh --env dev --allow-dirty; ready
 lbench c-blob-r1 blob --offset 200; lbench c-blob-r2 blob --levels-only --offset 210
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value nfs; scripts/provision.sh --env dev --allow-dirty; ready
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --value nfs; scripts/azure/provision.sh --env dev --allow-dirty; ready
 lbench c-nfs-r1 nfs --offset 220; lbench c-nfs-r2 nfs --levels-only --offset 230
 az containerapp logs show -n usnm-qw-local-ca-dev -g "$RG" --container qwnode --tail 300 | grep -E 'data directory disk|local copy disk|index copied'
-scripts/qwcluster-report.py --env dev --since 12h --out qwlocal.md
-scripts/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --unset; scripts/provision.sh --env dev --allow-dirty   # removes the searcher and the share
+scripts/azure/qwcluster-report.py --env dev --since 12h --out qwlocal.md
+scripts/azure/settings.sh --env dev --key USNM_SEARCH_LOCAL_MODE --unset; scripts/azure/provision.sh --env dev --allow-dirty   # removes the searcher and the share
 ```
 
 The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (and `cache`, `copy`) with ratios to blob, and its bench rows name each run's mode. Compare the `r2` runs: if `nfs` cuts the main runtime's busy seconds per search and the probe's warm-up seconds as `copy` was meant to show, the Blob path (HTTP, TLS, the Azure client) is the main runtime's cost and an NFS share is a way around it in production; if it barely moves them, the cost is in decoding what a split needs. The flame graphs show which functions those seconds went to.
@@ -1467,11 +1467,11 @@ Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onpre
 **The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP is a private setting, in the settings store, never in the repository ([Settings](#settings)). The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_OCR_NODE_IPS --value 203.0.113.7   # the home IP, private: the settings store
-scripts/settings.sh --env prod --key USNM_OCR_NODES --value true   # committed: pull request, merge, then provision from main
+scripts/azure/settings.sh --env prod --key USNM_OCR_NODE_IPS --value 203.0.113.7   # the home IP, private: the settings store
+scripts/azure/settings.sh --env prod --key USNM_OCR_NODES --value true   # committed: pull request, merge, then provision from main
 scripts/ocr-node/group.sh --env prod --dry-run
 scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the settings store (the local file until the store exists)
-scripts/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
+scripts/azure/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
 **Host infrastructure.** Provisioning, OS subscriptions and lab credentials are managed outside this application repository. The legacy `OCR_KEYVAULT` resource remains in its existing deployment stack until a separately reviewed ownership transfer; do not delete it during the source migration.
@@ -1497,17 +1497,17 @@ scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name us
 - _OCR node: loc.gov asked to wait over an hour_ (severity 2, hourly) fires when a node's worker counts a `Retry-After` over its one-hour cap (`ocr.loc_slowdowns` with `capped`). The worker holds that server for the hour and takes no pages meanwhile; if loc.gov keeps asking, stop the workers and raise their gaps.
 - _OCR nodes' daily cap reached_ (severity 2) fires on the nodes' workspace's `OverQuota` event, as the environment's cap alert does (#279). Until the reset, the node alerts and queries see nothing. In the nodes' workspace, `Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h)` shows what filled it.
 
-`scripts/logs.sh` runs the `ocr-node-*` queries against the nodes' workspace (`OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`):
+`scripts/azure/logs.sh` runs the `ocr-node-*` queries against the nodes' workspace (`OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`):
 
 ```sh
-scripts/logs.sh --env prod --query-name ocr-node-health             # per node: heartbeat, counters, CPU, memory, free space on /, worker lines, PerfMB, SyslogMB, InsightsMB and WorkerMB; DayMB and CapPct for the workspace
-scripts/logs.sh --env prod --query-name ocr-node-errors --span 2d   # worker warnings and errors, panics, failed units, OOM kills, other errors
-scripts/logs.sh --env prod --query-name ocr-node-updates --span 7d  # nightly worker updates, rollbacks and reboots (#471)
+scripts/azure/logs.sh --env prod --query-name ocr-node-health             # per node: heartbeat, counters, CPU, memory, free space on /, worker lines, PerfMB, SyslogMB, InsightsMB and WorkerMB; DayMB and CapPct for the workspace
+scripts/azure/logs.sh --env prod --query-name ocr-node-errors --span 2d   # worker warnings and errors, panics, failed units, OOM kills, other errors
+scripts/azure/logs.sh --env prod --query-name ocr-node-updates --span 7d  # nightly worker updates, rollbacks and reboots (#471)
 ```
 
 The same as charts: the "usnm OCR nodes (<env>)" workbook under Application Insights `usnm-ocr-appi-<env>` → Workbooks, with a time range and a node picker: CPU, memory, free disk space by mount, disk and network bytes per second, heartbeat gaps over 5 minutes (a table and a chart), the worker's warnings and errors (from Syslog and, once it sends telemetry, `AppTraces` and `AppExceptions`), pages done, failed and abandoned per hour (from its metrics; empty until it sends them), and the workspace's billed MB a day against its cap.
 
-`no heartbeat` means the node is down or off the network, or has lost its agent or its association with the rule (run `onboard.sh` again): the agent sends heartbeats only to the workspaces of the rules it's associated with. `no counters` with heartbeats means the agent is associated but its counters aren't arriving: check the rule's counters and the agent's logs under `/var/opt/microsoft/azuremonitoragent/log`. A node with no heartbeat in the whole span isn't listed at all, so widen the span (`scripts/logs.sh --env prod --query-name ocr-node-health --span 7d`) or check the Arc machine's status.
+`no heartbeat` means the node is down or off the network, or has lost its agent or its association with the rule (run `onboard.sh` again): the agent sends heartbeats only to the workspaces of the rules it's associated with. `no counters` with heartbeats means the agent is associated but its counters aren't arriving: check the rule's counters and the agent's logs under `/var/opt/microsoft/azuremonitoragent/log`. A node with no heartbeat in the whole span isn't listed at all, so widen the span (`scripts/azure/logs.sh --env prod --query-name ocr-node-health --span 7d`) or check the Arc machine's status.
 
 **Worker publication catch-up.** A worker-affecting push can finish after an unrelated push: the current-main guard correctly prevents stale publication, but the unrelated push's change selector may skip the worker. To publish current main without the default full CI dispatch's API rollout, use the explicit worker-only scope:
 
@@ -1583,7 +1583,7 @@ systemctl list-timers usnm-ocr-update.timer
 journalctl -u usnm-ocr-update --since -8d
 sudo /usr/local/sbin/usnm-ocr-update-worker --delay-hours 0 --dry-run   # which release it would take now
 cat /var/lib/usnm-ocr-update/rejected
-scripts/logs.sh --env prod --query-name ocr-node-updates --span 7d
+scripts/azure/logs.sh --env prod --query-name ocr-node-updates --span 7d
 ```
 
 Turn it on, or change a node's order, by running `install-worker.sh` with the node's usual flags and `--auto-update-delay` (and `--auto-update-leader`); `--auto-update-off` turns it off. A run without either keeps the node's timer and refreshes the two scripts.
@@ -1593,8 +1593,8 @@ To patch by hand, one node at a time: `sudo systemctl stop usnm-ocr-worker usnm-
 **When the home IP changes,** the nodes lose the exchange account until the firewall has the new address. Hidden messages come back on their own once their time runs out.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_OCR_NODE_IPS --value <new IP>
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_OCR_NODE_IPS --value <new IP>
+scripts/azure/provision.sh --env prod
 ```
 
 **Group changes take a while.** Membership is a claim in the identity's access token, and managed identity tokens are cached per resource for around 24 hours; Microsoft says a membership change can take several hours to apply, and a refresh can't be forced ([Microsoft](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization)). So a node that fetched a storage token before it joined the group is refused by the exchange account until that token expires (that's why `node-setup.sh` checks with a Resource Manager token), and a removed node keeps its access for up to about a day on a token it already holds.
@@ -1616,14 +1616,14 @@ Deploy the scan service and storage using infrastructure tooling. The applicatio
 
 The keep-set scans have been copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. Production has Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The archive-only identity grant and host installation were applied through #641; the JPEG compatibility fix (#644) was deployed in attested release `ocr-worker-20261016-00fbdd9`. **The 16 October 2026 11:26:03 UTC recovery point is fully verified: 148,127 scans present; no missing scans, mismatches, invalid local files, conflicts or request errors; and no verification skips.** Acceptance used a temporary ZFS snapshot so upload and full property verification covered exactly the same immutable cohort while the source fetcher kept running. Its final top-up uploaded 5,203 scans (17,530,564,063 bytes); the temporary snapshot was destroyed afterward. **On 17 October, daily top-up and monthly verification timers were disabled under the local-first cost decision (#783); existing bytes and manual units remain intact.** That verification covers a dated off-site copy; it says nothing about whether a later fetch manifest is complete or whether scans fetched since then lag the archive. Read the current reports instead of assuming later coverage. Direct-client API and tickets remain deferred in #649. See [local BOINC download hosting](boinc-file-host.md) for the revised cost and serving boundaries.
 
-1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
+1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/azure/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
 2. **The identity.** Keep pve-big out of the OCR nodes' group: that group grants queue permissions and is counted for node pacing. Save its Arc principal as the archive-only uploader, then provision to grant the existing archive role (create and read, no delete) on `scans`:
 
    ```sh
    az resource show -g <Arc resource group> -n <Arc machine name> --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
-   scripts/settings.sh --env prod --key USNM_SCAN_ARCHIVE_UPLOADER_ID --value <that object id>
-   scripts/provision.sh --env prod --what-if
-   scripts/provision.sh --env prod
+   scripts/azure/settings.sh --env prod --key USNM_SCAN_ARCHIVE_UPLOADER_ID --value <that object id>
+   scripts/azure/provision.sh --env prod --what-if
+   scripts/azure/provision.sh --env prod
    ```
 
    If the full-stack preview includes unrelated active-job changes, do not apply it just to grant archive access. `bash scripts/ocr-node/grant-archive-uploader.sh --env prod --dry-run` previews only the same deterministic archive role assignment, and the command without `--dry-run` applies only that assignment. It validates the existing Arc principal and the archive role (read and write, no delete), adds no OCR group membership, and preserves the main template's resource identity for subsequent full provisions.
@@ -1674,17 +1674,17 @@ Request lookups scan each relevant damage table once in published batch order, r
 **Queue pages for the pilot.** Nobody but `id-usnm-ingest` can add messages, so `ocr-enqueue` runs as an execution of the pickup job, which has the exchange account's endpoints. It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch). It then writes a ledger row, `curated/ocr-local/queued/<day>/<run>.parquet`, and puts the message: the base batch, the page's detected language in ISO 639-3 (its title's first language for `und`), and LoC's damage rate as the score. It skips pages already outstanding and Japanese titles. `--dry-run` only counts. The ledger rows are written before the messages. If a send fails, the pages after it get a `not_sent` outcome, so running the same command again queues them; the page whose send failed may have gone out, and `--include-outstanding` queues it again. Outside a dry run, `ocr-enqueue` and `ocr-requeue` hold the `ops/ocr-sync` lock, so they fail while a pickup run is going; start them again once it ends.
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-enqueue --pages sn83045462_1890-05-03_ed-1_seq-7,... \
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-enqueue --pages sn83045462_1890-05-03_ed-1_seq-7,... \
   --reason bulk --plan pilot-german [--batch nbu_gage] [--dry-run]
 ```
 
 **Queue dead-lettered pages again,** by cause (`dequeue_count`, `invalid`, `permanent`, `unroutable`) and, for `invalid`, kind. Pages queued since their dead letter, imported since, or whose latest dead letter has another cause, are skipped.
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-requeue --cause dequeue_count [--since 2026-10-20] [--dry-run]
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-requeue --cause dequeue_count [--since 2026-10-20] [--dry-run]
 ```
 
-**Seeding** ([12 §12.5 Step 10](design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/settings.sh` and provision.
+**Seeding** ([12 §12.5 Step 10](design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/azure/settings.sh` and provision.
 
 It skips Japanese titles and pages already in the ledger, and copies of a page that another batch's copy wins (the release's duplicate rule). A page of the plan outstanding for 14 days, or dead-lettered with cause `dequeue_count`, is queued again at most 3 times. One dead-lettered as `unroutable` is queued again after 6 hours, doubling per cycle up to 48. A page whose message a failed run never sent (`not_sent`) goes out in the next run. Each batch's ranked units are stored under `curated/ocr-local/seed/rank/`, and the units a plan has finished under `curated/ocr-local/seed/plans/<plan>/done/`. A run that reaches its time limit before every batch is ranked queues no new pages; the next run continues from there.
 
@@ -1693,21 +1693,21 @@ It skips Japanese titles and pages already in the ledger, and copies of a page t
 `ocr-seed` is the same step on its own. Use `--dry-run` to print what it would queue as JSON, page ids per unit included, without writing anything. Its flags override the settings. For the pilot (Step 11), preview it, then set the plan:
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-seed --dry-run --seed-plan pilot-deu --seed-pilot \
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-seed --dry-run --seed-plan pilot-deu --seed-pilot \
   --seed-languages deu --seed-years 1850-1919 --seed-max-pages 3000 --bulk-window 1000
-scripts/settings.sh --env prod --key USNM_OCR_SEED_PLAN --value pilot-deu
-scripts/settings.sh --env prod --key USNM_OCR_SEED_PILOT --value true
-scripts/settings.sh --env prod --key USNM_OCR_SEED_LANGUAGES --value deu
-scripts/settings.sh --env prod --key USNM_OCR_SEED_YEARS --value 1850-1919
-scripts/settings.sh --env prod --key USNM_OCR_SEED_MAX_PAGES --value 3000
-scripts/settings.sh --env prod --key USNM_OCR_BULK_WINDOW --value 1000
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_PLAN --value pilot-deu
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_PILOT --value true
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_LANGUAGES --value deu
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_YEARS --value 1850-1919
+scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_MAX_PAGES --value 3000
+scripts/azure/settings.sh --env prod --key USNM_OCR_BULK_WINDOW --value 1000
+scripts/azure/provision.sh --env prod
 ```
 
 **Quarantine.** Rejects are kept for 30 days as `rejects/<run>/<source path>` (a dead letter as `rejects/<run>/deadletter/<message id>.txt`), each with a `.reason.json` record: the reason code, the source, its ETag, size and creation time, never its content. A source over its size limit isn't read, so it has a record only. Read them with your own sign-in from home (the firewall allows the node IPs and the subnet). After a fix, put one reason's rejects back where they came from; the same run checks them again:
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --from-quarantine --reason not_requested
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --from-quarantine --reason not_requested
 ```
 
 Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismatch`, `alto_missing`, `alto_too_large` (checks 1 and 2); `not_requested`, `batch_mismatch`, `reason_mismatch` (3); `text_null`, `text_too_large`, `text_control`, `text_mismatch` (4); `engine`, `engine_tag` (an `ocr_engine` with `image=local`, or not printable), `reason`, `batch_unpublished`, `title_unknown`, `title_japanese`, `image_url` (5); `alto_*` from the ALTO reader (6); `deadletter_*` for dead letters.
@@ -1715,7 +1715,7 @@ Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismat
 **The gain estimate.** `ocr-sync --report` applies rule v1 (Step 9) to the scores stored in every merged part, without picking anything up. It writes `curated/ocr-local/report/<run>.json` with pages considered and replaced, the reasons LoC's text stays, and counts by language and by engine.
 
 ```sh
-scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
+scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
 ```
 
 **Alerts** (with alert emails): a failed execution is reported by the pipeline's job-failed rule, `usnm-ingest-job-failed-alert-<env>` (severity 2, its `Execution` names the job; #308), and `usnm-ocrs-backlog-alert-<env>` (severity 3) fires when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
@@ -1725,8 +1725,8 @@ scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
 With `USNM_OCR_LOCAL` (the ingest job's `--ocr-local`), a release weighs the text `ocr-sync` took into `curated/ocr-local/` against LoC's on the pages of the batches it indexes, and uses ours where rule v1 prefers it ([12 §12.5 Step 9](design/12-onprem-ocr-pipeline.md)). It is off by default, and with it off a release reads nothing from `ocr-local` and its documents and snapshot files don't change. `id-usnm-ingest` already has Blob Data Contributor on `curated`, so the setting needs no new grant.
 
 ```sh
-scripts/settings.sh --env prod --key USNM_OCR_LOCAL --value true
-scripts/provision.sh --env prod
+scripts/azure/settings.sh --env prod --key USNM_OCR_LOCAL --value true
+scripts/azure/provision.sh --env prod
 ```
 
 - The weekly delta applies it to the batches it indexes. Published batches take it only at a [full rebuild](#full-rebuild) with the setting on. Each release that builds a main index logs `our OCR in ocr-local` (parts, titles, revocations) and, when the version has published batches, `pages of ocr-local that would replace LoC's text in published batches`, an estimate from the scores `ocr-sync` stored. A release of only the Japanese overlay reads nothing from `ocr-local` and logs neither line. `ocr-sync --report` ([above](#ocr-pickup-ocr-sync-296)) gives the same kind of estimate without a release.
@@ -1761,7 +1761,7 @@ single-batch adapter's 10,000-row/16 MiB limits, run the stdlib orchestrator
 **on the POSIX machine holding the scan files**:
 
 ```bash
-python3 scripts/scan_cache_inventory.py \
+python3 scripts/corpus/scan_cache_inventory.py \
   --db catalog.sqlite --index scans/index-full.jsonl --scan-root scans \
   --work-dir inventory-20261017 --source local-cache-stat \
   --cache-set keep --cache-set buffer --max-batches 10
@@ -1808,7 +1808,7 @@ slices or scratch files, into the **same database pathname**:
 ```bash
 for batch in inventory-20261017/batch-*/keep.jsonl inventory-20261017/batch-*/buffer.jsonl; do
   [ -f "$batch" ] || continue
-  python3 scripts/data_catalog.py --db catalog.sqlite ingest --batch "$batch" || break
+  python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest --batch "$batch" || break
 done
 ```
 

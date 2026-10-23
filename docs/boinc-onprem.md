@@ -6,13 +6,13 @@ The scripts are in `scripts/boinc/onprem/`, and the step runner is `scripts/boin
 
 ## What runs on the host
 
-| Unit                               | What                                                                                  | Notes                                                                                                               |
-| ---------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `usnm-boinc-mysql.service`         | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh`       | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                 |
-| `usnm-boinc-server.service`        | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons        | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                                       |
-| `usnm-boinc-step`                  | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job         | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh`                     |
-| `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job | Root on the host only; `scripts/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
-| `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`        | Public ingress with no inbound port                                                                                 |
+| Unit                               | What                                                                                  | Notes                                                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `usnm-boinc-mysql.service`         | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh`       | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                       |
+| `usnm-boinc-server.service`        | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons        | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                                             |
+| `usnm-boinc-step`                  | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job         | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh`                           |
+| `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job | Root on the host only; `scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
+| `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`        | Public ingress with no inbound port                                                                                       |
 
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.
@@ -47,7 +47,7 @@ After a Debian security advisory for a package in the image (PHP, Apache, OpenSS
 3. Set `SERVER_IMAGE` in `server.env` to the new image and restart `usnm-boinc-server.service`. The step runner reads the same file, so the next step uses it too.
 4. Check the running image: `podman exec usnm-boinc-server php -v`, and `podman exec usnm-boinc-server dpkg-query -W php8.2-common apache2 openssl libcurl3-gnutls` against the advisory's fixed versions.
 
-A full rebuild from `main` (base, then server, then bridge, as `scripts/build-boinc-images.sh`
+A full rebuild from `main` (base, then server, then bridge, as `scripts/boinc/build-boinc-images.sh`
 orders them) also takes the updates, since the server and bridge stages upgrade.
 
 ## Moving the data
@@ -78,7 +78,7 @@ than the images. After each pull, before the server starts:
 3. On the host: `r2-pull.sh`, `db-import.sh --replace`, then the project tree steps above.
 4. On the host, remove `stop_maintenance`, `stop_sched` and `stop_upload` (they came over in the copy) and start the server. Point `boinc.usnewsmap.com` at the tunnel (proxied CNAME).
 5. Start the controller under a new plan whose `step_command` reaches `usnm-boinc-step` (plans are immutable, so the change needs a drain). End `step_command` with `--` after the host (`["ssh", "-i", "<key>", "-o", "BatchMode=yes", "root@<host>", "--"]`). Without it, ssh reads the step's `--env` as one of its own options.
-6. After it is verified, set `"server": "onprem"` in `contrib-compute/infra/boinc/env/<env>.json` and run `scripts/provision-boinc.sh`. It deletes the project storage accounts, their private endpoints and the rest of the Azure server (see below).
+6. After it is verified, set `"server": "onprem"` in `contrib-compute/infra/boinc/env/<env>.json` and run `scripts/boinc/provision-boinc.sh`. It deletes the project storage accounts, their private endpoints and the rest of the Azure server (see below).
 
 The bridge steps read and write the hand-off container in the main environment's storage, so
 the on-prem group needs a role there before step 5. The hand-off job itself has no project tree
@@ -92,12 +92,12 @@ With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem se
 
 Work that ran as Azure jobs, and where it runs now:
 
-| Work                                                         | On-prem                                                                                                                                                                     |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bridge steps (the controller's submit, spool-out, inventory) | `usnm-boinc-step`                                                                                                                                                           |
-| Gold bundle                                                  | `usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=<campaign> --wait-mins 360`, run as root on the host                                                     |
-| App version publish                                          | `scripts/boinc-app-release.sh --onprem-host <Proxmox host> --onprem-ct <id>`: builds the `appver` image in the container and runs `usnm-boinc-step --target publish` (#961) |
-| Quality wave                                                 | not yet: it reads the scan archive in the main environment's storage, where the on-prem group has no role                                                                   |
+| Work                                                         | On-prem                                                                                                                                                                           |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bridge steps (the controller's submit, spool-out, inventory) | `usnm-boinc-step`                                                                                                                                                                 |
+| Gold bundle                                                  | `usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=<campaign> --wait-mins 360`, run as root on the host                                                           |
+| App version publish                                          | `scripts/boinc/boinc-app-release.sh --onprem-host <Proxmox host> --onprem-ct <id>`: builds the `appver` image in the container and runs `usnm-boinc-step --target publish` (#961) |
+| Quality wave                                                 | not yet: it reads the scan archive in the main environment's storage, where the on-prem group has no role                                                                         |
 
 ## Cloudflare
 

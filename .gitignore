@@ -14,7 +14,7 @@ __pycache__/
 .boinc-provision-*
 .boinc-work-*
 
-# Data assets live in GitHub releases and are fetched in place by scripts/data-assets.sh
+# Data assets live in GitHub releases and are fetched in place by scripts/ops/data-assets.sh
 # (ops/data-assets.json, docs/reports/README.md); the sets are these kinds of files.
 docs/reports/**/*.csv
 docs/reports/**/*.json
