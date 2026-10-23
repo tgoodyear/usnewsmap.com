@@ -152,9 +152,9 @@ before replacing reports or outcome evidence.
 **Models.** The worker image's model lock decides which crops a host can score;
 crops in a language with no locked model are listed as skipped.
 
-**Running a campaign.** With the server deployed with `assessment=true` (`"assessment": true` in
-`contrib-compute/infra/boinc/env/<env>.json`, then `scripts/boinc/provision-boinc.sh`; the
-server runs from the bridge image, which carries the validator), a
+**Running a campaign.** With the server running the bridge image, which carries the validator (the
+on-prem server does; an Azure server needs `"assessment": true` in
+`contrib-compute/infra/boinc/env/<env>.json`, then `scripts/boinc/provision-boinc.sh`), a
 `usnm_gold` app version installed (`scripts/boinc/install.py --app usnm_gold
 ...`), signed, and `bin/update_versions` run, and the bundle tar copied to
 `<share>/gold/<campaign>/bundle.tar`:
@@ -163,21 +163,25 @@ server runs from the bridge image, which carries the validator), a
 # Once per bundle: fetch the originals, one request at a time, 5 s apart, into
 # <campaign>/cache on the share; write prepared.json (sizes, md5s, reference
 # counts). Stops if any download fails or a checksum differs.
-scripts/boinc/start-boinc-bridge.sh --env prod --step gold-prepare --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 60
+scripts/boinc/onprem-step.sh --env prod --target bridge --step gold-prepare --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 60
 # Make the units (default 20). Re-running skips units already submitted.
-scripts/boinc/start-boinc-bridge.sh --env prod --step gold-submit --var GOLD_CAMPAIGN=v1-tess550 \
-  --var GOLD_ENGINE_IMAGE=sha256:... --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE> --var GOLD_UNITS=20
+scripts/boinc/onprem-step.sh --env prod --target bridge --step gold-submit --var GOLD_CAMPAIGN=v1-tess550 \
+  --var GOLD_ENGINE_IMAGE=sha256:... --var GOLD_ENGINE_BASE=<its TESSERACT_IMAGE> --var GOLD_UNITS=20 --wait-mins 30
 # When results are assimilated, use the calibration's explicit scope. This
 # reads the BOINC result table with the bridge's read-only DB account:
-scripts/boinc/start-boinc-bridge.sh --env prod --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
+scripts/boinc/onprem-step.sh --env prod --target bridge --step gold-collect --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_SPOOL=/project/usnmocr/results/0 \
-  --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile>
+  --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile> --wait-mins 30
 # Then the trust list for `collect --trust` (see Host trust below), at <share>/gold/trust.json:
-scripts/boinc/start-boinc-bridge.sh --env prod --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
+scripts/boinc/onprem-step.sh --env prod --target bridge --step gold-trust --var GOLD_CAMPAIGN=v1-tess550 \
   --var GOLD_MAX_CER=<calibrated-threshold> \
   --var GOLD_MANIFEST_SHA256=<calibrated-manifest-sha256> \
   --var GOLD_LANGUAGE=<source-language> --var GOLD_PROFILE=<model-profile> --wait-mins 10
 ```
+
+These steps run on the on-prem host, and `scripts/boinc/onprem-step.sh` requires
+`--wait-mins`, so each command carries one. A `"server": "azure"` environment starts the
+same steps with `scripts/boinc/start-boinc-bridge.sh`, where `--wait-mins` is optional.
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
 These commands describe the code path; no production mirror or campaign is
@@ -188,7 +192,7 @@ stages only the 18 original JPEGs pinned in `bundle-v1.lock.json`, without
 opening BLN600, fetching upstream data, submitting work, or changing clients:
 
 ```sh
-scripts/boinc/start-boinc-bridge.sh --env prod --step gold-mirror-loc --var GOLD_CAMPAIGN=v1-tess550
+scripts/boinc/onprem-step.sh --env prod --target bridge --step gold-mirror-loc --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 30
 ```
 
 Use the normal serialized production-job preflight. The command first checks
@@ -349,14 +353,22 @@ timer, trust promotion or assignment enablement is installed.
 
 ### Build the gold bundle
 
-The bundle tar can be built inside the VNet, so nothing passes through an
-operator's machine. The job needs a bridge image that has the step, so build it first
-(`scripts/boinc/build-boinc-images.sh`, which rewrites `images.bridge`). Then set
-`"goldBundle": true` in `contrib-compute/infra/boinc/env/<env>.json` in the same
-commit as the new digest; it is false until then. After
+The bundle tar can be built on the BOINC host, so nothing passes through an
+operator's machine. The step needs a bridge image that has it, so build it first
+(`scripts/boinc/build-boinc-images.sh`, which rewrites `images.bridge`) and set `SERVER_IMAGE`
+in `/etc/usnm-boinc/server.env` to it, which the step runner reads. Then run the bridge
+image's `gold-bundle` step as root on the host:
+
+```sh
+usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 360
+```
+
+`"goldBundle": true` in `contrib-compute/infra/boinc/env/<env>.json` applies to the Azure
+server only. With `"server": "azure"`, the bundle is built inside the VNet instead: set it
+in the same commit as the new digest (it is false until then). After
 `scripts/boinc/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
-output `goldBundleJobName`). It runs the bridge image's `gold-bundle` step with
-`GOLD_CAMPAIGN=v1-tess550` set in the job itself, so it needs no override:
+output `goldBundleJobName`). It runs the same step with `GOLD_CAMPAIGN=v1-tess550` set in
+the job itself, so it needs no override:
 
 ```sh
 az containerapp job start --subscription <subscription> --resource-group usnm-boinc-rg-prod \
@@ -390,7 +402,7 @@ and bsdtar for BLN600's AES zip. The crops are JPEG re-encodes, so a different
 Pillow or libjpeg could change the tar's bytes, and step 4 would catch that.
 UNVERIFIED: that this build reproduces the lock byte for byte (it was built on
 another machine), and how long the run takes on the share. The job allows six
-hours.
+hours (`--wait-mins 360` on the host).
 
 Then run `gold-prepare` as above.
 

@@ -702,8 +702,8 @@ maintainer publishes and signs from the merged commit.
 
 The standalone Mac spike found an upstream `Run_Podman` command-quoting failure
 when restarting a paused container, which `scripts/boinc/patch-mac-wrapper.py`
-fixes during `scripts/boinc/build-mac-wrapper.sh` ([evaluation
-note](../../docs/notes/boinc-buda-arm-evaluation.md)). Native image execution
+fixes during `scripts/boinc/build-mac-wrapper.sh` ([Mac tests without a project
+server](../../docs/notes/2026-10-14-buda-mac-offline-tests.md)). Native image execution
 succeeds; BOINC lifecycle behavior still needs full client and server validation
 on a reserved Mac workunit. See
 [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476),

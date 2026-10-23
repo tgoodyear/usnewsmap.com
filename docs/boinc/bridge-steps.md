@@ -4,13 +4,25 @@ Part of the [BOINC batch pilot guide](README.md).
 
 ## Start a bridge step
 
-The deployed server's bridge job (`contrib-compute/infra/boinc/modules/bridge-job.bicep`)
-runs one step of `contrib-compute/images/server/bridge-job.sh` per execution, chosen by
-`BRIDGE_STEP` and that step's settings. Start it with:
+The bridge runs one step of `contrib-compute/images/server/bridge-job.sh` per execution,
+chosen by `BRIDGE_STEP` and that step's settings. Prod's server has been on-prem since
+21 October 2026 ([boinc-onprem.md](../boinc-onprem.md)), and there each step runs on the
+host (installed there as `usnm-boinc-step`) as:
 
 ```sh
-scripts/boinc/start-boinc-bridge.sh --env prod --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]
+scripts/boinc/onprem-step.sh --env prod --target bridge --step <step> [--var NAME=VALUE ...] --wait-mins N
 ```
+
+`--wait-mins` is required. `scripts/boinc/start-boinc-bridge.sh` starts only the Azure bridge job
+(`contrib-compute/infra/boinc/modules/bridge-job.bicep`) of a `"server": "azure"`
+environment and the hand-off job (`--target handoff`), which stays in Azure:
+
+```sh
+scripts/boinc/start-boinc-bridge.sh --env <env> --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]
+```
+
+The next two paragraphs and the log query describe that Azure job, so they apply to a
+`"server": "azure"` environment only.
 
 Don't use `az containerapp job start --env-vars` for this. With any container flag, the
 CLI sends an execution template holding one container named after the job, with no image
@@ -34,22 +46,28 @@ az monitor log-analytics query --workspace <workspace customerId> --analytics-qu
 
 ### Register the apps
 
-Provisioning runs the idempotent `--ensure-project` lifecycle job and then `bin/xadd`.
-An app added to
+On a `"server": "azure"` environment, provisioning runs the idempotent `--ensure-project`
+lifecycle job and then `bin/xadd`. An app added to
 `contrib-compute/boinc/project.xml` later (`usnm_assess`, `usnm_gold`, `usnm_surya`,
-`usnm_quality`, `usnm_qwen`) is registered automatically on the next provision. The
-`register-apps` step copies the deployed image's `project.xml` into the project and
-runs `bin/xadd`; it remains available for targeted recovery:
+`usnm_quality`, `usnm_qwen`) is registered automatically on the next provision. On the
+on-prem server provisioning does not deploy the server, so run the `register-apps` step
+yourself once the new image is in place. The step copies the deployed image's
+`project.xml` into the project and runs `bin/xadd`; it remains available for targeted
+recovery:
 
 ```sh
-scripts/boinc/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15
+scripts/boinc/onprem-step.sh --env prod --target bridge --step register-apps --wait-mins 15
 ```
 
-It is safe to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks up each
+On a `"server": "azure"` environment, start the same step with
+`scripts/boinc/start-boinc-bridge.sh --env <env> --step register-apps --wait-mins 15`. It is safe
+to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks up each
 `<platform>` and `<app>` by name. It inserts the ones that are missing, updates a changed
 `user_friendly_name` or `min_version`, prints "already in DB" for the rest, and never
 deletes or deprecates anything. The step needs a bridge image with this step in it
-(`scripts/boinc/build-boinc-images.sh`, then `scripts/boinc/provision-boinc.sh`).
+(`scripts/boinc/build-boinc-images.sh`, then `SERVER_IMAGE` in `/etc/usnm-boinc/server.env` and a
+restart of `usnm-boinc-server.service`; `scripts/boinc/provision-boinc.sh` deploys only the Azure
+server).
 
 ### Current-worker OCR 1.5 publication, 17 October 2026
 
@@ -186,4 +204,4 @@ For a small pilot, use a manual hand-off over a trusted transfer channel:
 This is a manual single-writer protocol, not tested remote orchestration. Keep
 journals on persistent local storage at each stage; Azure Files/SMB lock and
 atomic-rename durability have not been verified. Exercise the hand-off on a
-small cohort before using the Azure-hosted submission job from #439.
+small cohort before using the bridge's submission step on the on-prem server.

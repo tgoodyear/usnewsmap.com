@@ -85,20 +85,20 @@ target/debug/usnm-boinc submit --root /srv/usnm/boinc-state \
 
 The native `usnm-boinc submit` command alone accepts
 `--download-base-url https://downloads.example.org/ocr-pages/` for an
-independently published origin. The Azure submitting process does not need an
+independently published origin. The BOINC server's submitting process does not need an
 origin mount: the trusted local producer must first publish the exact staged
 page as `<origin-root>/<sha256>`, atomically and immutably. Default submission is
 unchanged. This does **not** migrate gold, Qwen, quality, Surya, NDLOCR, model,
 application, upload or result files; the scheduler, application and database
-remain in Azure.
+run on the on-prem host.
 
-Two-host flow (no origin filesystem mount on Azure):
+Two-host flow (no origin filesystem mount on the BOINC host):
 
 ```sh
 # Trusted local producer: receipt records publication, NOT HTTPS readiness.
 usnm-boinc prepare-download --page /srv/local/staged-page \
   --download-root /srv/usnm/immutable-ocr-pages
-# Azure project server: retains the existing verified staged job/request.
+# BOINC project server (on-prem): retains the existing verified staged job/request.
 usnm-boinc submit --root /srv/usnm/boinc-state \
   --project /srv/boinc/newspapers --job JOB_ID \
   --download-base-url https://downloads.example.org/ocr-pages/
@@ -177,6 +177,8 @@ A `published` bridge entry means its native output pair is in `ocr-out`, not tha
 it has replaced searchable text. Continue with the existing `ocr-sync` and release.
 
 ## Moving the project share
+
+The share left Azure on 21 October 2026 ([boinc-onprem.md](../boinc-onprem.md)). This section records the staged move of the Azure Files share and applies to `"server": "azure"`.
 
 The project directory (`/project`: uploads, downloads, staging, results) is one Azure Files share mounted by the server and every job. On the pay-as-you-go Standard account (`usnmboincst…`, TransactionOptimized) it cost about $21 in operations in four days of October 2026: 51M operations, 83% of them open, close and stat. Capacity was $0.61. A provisioned v2 SSD share (`usnmboincv2st…`, `PremiumV2_LRS`) bills only for its provisioned size, about $0.10/GiB a month with 3,000 + 1 IOPS per GiB included, and nothing per operation (#917).
 
