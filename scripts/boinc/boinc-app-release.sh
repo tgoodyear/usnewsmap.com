@@ -313,7 +313,7 @@ elif [ -z "$WORKER_IMAGE" ] && $WHAT_IF; then
   echo "1. no images.worker in $BOINC_SETTINGS: a real run builds the worker in ACR as a check and stops there (publish it with .github/workflows/boinc-worker.yml)"
 elif [ -z "$WORKER_IMAGE" ]; then
   build_worker_in_acr
-  die "no images.worker in $BOINC_SETTINGS. Publish the worker to GHCR (gh workflow run boinc-worker.yml --ref main; docs/boinc.md, \"Publish the worker image\"), make the package public once, put its ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... in images.worker, commit, and run this again"
+  die "no images.worker in $BOINC_SETTINGS. Publish the worker to GHCR (gh workflow run boinc-worker.yml --ref main; docs/boinc/worker-image.md, \"Publish the worker image\"), make the package public once, put its ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... in images.worker, commit, and run this again"
 else
   ghcr_public "$WORKER_IMAGE" ||
     die "$WORKER_IMAGE is not anonymously readable or lacks the required native Linux architecture for $PLATFORM"

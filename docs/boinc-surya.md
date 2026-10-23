@@ -1,6 +1,6 @@
 # Surya 2 on BOINC
 
-Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md).
+Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc/README.md](boinc/README.md) and [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md).
 
 Status: a probe of a few pages, to find out whether volunteers' container runtimes can give the job a GPU, how long a page takes, and how far two hosts' texts agree. The larger sample comes after it.
 

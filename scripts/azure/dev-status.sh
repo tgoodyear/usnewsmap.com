@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Is dev up, and for which experiment (#275; docs/operations.md, "Dev
+# Is dev up, and for which experiment (#275; docs/operations/environments-and-deploys.md, "Dev
 # environment lifecycle")? Lists its deployment stack and what's in its
 # groups (usnm-core-rg-dev, the Container Apps environment's
 # usnm-core-infra-rg-dev; the retired rg-usnm-dev-spot and legacy rg-usnm-dev

@@ -7,7 +7,7 @@ Data, locks, templates and image definitions for the OCR pipeline: the engine ca
 | [`engines/`](engines/)   | The engine catalog with each engine's and model's licence, and the Containerfiles and model locks of the Tesseract and NDLOCR-Lite engine images | live                                                                         |
 | [`routing/`](routing/)   | `routes.toml`: which engine and profile a page goes to                                                                                           | live; the file is the minimal Tesseract route, full matching is a later step |
 | [`contract/`](contract/) | The JSON Schemas of the engine contract `usnm-ocr-engine/1` and the fixtures the conformance suite uses                                          | live                                                                         |
-| [`boinc/`](boinc/)       | The BOINC apps: the worker image, job files, server daemons, input and output templates, and one directory per app image                         | status: see [docs/boinc.md](../docs/boinc.md)                                |
+| [`boinc/`](boinc/)       | The BOINC apps: the worker image, job files, server daemons, input and output templates, and one directory per app image                         | status: see [docs/boinc/README.md](../docs/boinc/README.md)                  |
 | [`bench/`](bench/)       | The OCR benchmark: release recipes and index, audits, adapter locks, recorded results and the Serial Set pilot                                   | live (the `ocr-bench` workflow); see below for the trial records             |
 
 ## `engines/`
@@ -57,7 +57,7 @@ The files that define the volunteer apps. The stock BOINC server runs them; `usn
 | `surya/`                             | `usnm_surya`: Surya 2 on llama.cpp, with CPU, NVIDIA and Intel job files; `engine.lock` holds the image's pins (surya-ocr, the llama.cpp images, the weights digest) and `weights.lock` the weights. See [docs/boinc-surya.md](../docs/boinc-surya.md).  |
 | `train/`                             | `usnm_qwen_train`: bounded LoRA transcription trials. See [the transcription note](../docs/notes/2026-10-16-boinc-transcription.md).                                                                                                                     |
 
-Status of each app: see the document in its row, and [docs/boinc.md](../docs/boinc.md) for the pilot as a whole.
+Status of each app: see the document in its row, and [docs/boinc/README.md](../docs/boinc/README.md) for the pilot as a whole.
 
 Read by:
 

@@ -454,7 +454,7 @@
     },
     "USNM_WRITER_INGEST": {
       "x-usnm-visibility": "public",
-      "description": "The Quickwit writer's ingest API: v2 (Quickwit's default, at least once) or v1 (each accepted page once; the release restarts the writer for its final merges). docs/operations.md, \"Duplicate-safe ingest\" (#283).",
+      "description": "The Quickwit writer's ingest API: v2 (Quickwit's default, at least once) or v1 (each accepted page once; the release restarts the writer for its final merges). docs/operations/rebuild-and-index-storage.md, \"Duplicate-safe ingest\" (#283).",
       "type": "string",
       "pattern": "^v[12]$"
     },

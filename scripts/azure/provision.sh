@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy an existing environment's stack from its current settings, without
 # the rest of bootstrap (no CI run, no GitHub or domain steps). Use it once
-# a settings change is merged (docs/operations.md, "Settings"):
+# a settings change is merged (docs/operations/environments-and-deploys.md, "Settings"):
 #
 #   scripts/azure/settings.sh --env prod --key USNM_SEARCH_BACKEND --value quickwit
 #   # commit infra/env/prod.json, open a pull request, merge, pull
@@ -60,7 +60,7 @@ if ! $ALLOW_DIRTY; then
 fi
 # A searcher switch without its account must fail before any Azure change.
 if [ "$(aget USNM_INDEX_STORAGE_SERVE)" = true ] && [ "$(aget USNM_INDEX_STORAGE)" != true ]; then
-  die "USNM_INDEX_STORAGE_SERVE requires USNM_INDEX_STORAGE; see docs/operations.md, Index storage cutover"
+  die "USNM_INDEX_STORAGE_SERVE requires USNM_INDEX_STORAGE; see docs/operations/rebuild-and-index-storage.md, Index storage cutover"
 fi
 need_stack_az
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/azure/bootstrap.sh --env $ENV_NAME first"

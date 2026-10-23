@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The archival storage account (infra/archive/, docs/operations.md,
+# The archival storage account (infra/archive/, docs/operations/environments-and-deploys.md,
 # "Archival storage"): its own deployment stack, usnm-archive, outside every
 # environment's, so no provision or teardown of an environment deletes it.
 #

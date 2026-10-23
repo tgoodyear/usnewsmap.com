@@ -781,7 +781,7 @@ impl Release {
                     titles = n,
                     first = ?moved.iter().take(10).collect::<Vec<_>>(),
                     "{n} published titles' place changes wait for the next full release \
-                     (USNM_INGEST_FULL, run on the E4 profile: docs/operations.md, Full rebuild)"
+                     (USNM_INGEST_FULL, run on the E4 profile: docs/operations/rebuild-and-index-storage.md, Full rebuild)"
                 );
             }
             let catalog = Catalog::carried_forward(&published_catalog, &current)?;

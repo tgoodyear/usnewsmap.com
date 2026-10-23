@@ -617,7 +617,7 @@ class ProductionReconciliation(unittest.TestCase):
         self.assertIn('sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)',
                       (ROOT / "scripts/lib/boinc.sh").read_text())
         # Uploads and scheduler requests stop during the final copy; Apache stays up.
-        runbook = (ROOT / "docs/boinc.md").read_text().split("## Moving the project share")[1].split("\n## ")[0]
+        runbook = (ROOT / "docs/boinc/server-and-apps.md").read_text().split("## Moving the project share")[1].split("\n## ")[0]
         self.assertIn("touch stop_sched stop_upload", runbook)
         settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/schema.json").read_text())
         self.assertEqual(settings["properties"]["projectShare"]["enum"],

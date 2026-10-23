@@ -1,4 +1,4 @@
-//! The experimental search cluster (#238, #239; docs/operations.md, "Search
+//! The experimental search cluster (#238, #239; docs/operations/environments-and-deploys.md, "Search
 //! cluster experiment"): Quickwit nodes as Container Apps, each one replica,
 //! and the tooling that measures them on a sample of the corpus.
 //!

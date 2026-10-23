@@ -24,7 +24,7 @@
 // searcherAppRetain keeps the app and its role during rollback while the
 // API recreates its identity and reader roles and returns to its sidecar.
 // Clear retention only after role propagation and the sidecar revision's
-// readiness and search checks (docs/operations.md, "Searcher app").
+// readiness and search checks (docs/operations/search-serving.md, "Searcher app").
 
 param location string
 param tags object

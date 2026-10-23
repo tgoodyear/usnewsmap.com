@@ -261,7 +261,7 @@ resource noRegistryLocalAuth 'Microsoft.Authorization/policyDefinitions@2023-04-
   }
 }
 
-// dev holds nothing between experiments (#275; docs/operations.md, "Dev
+// dev holds nothing between experiments (#275; docs/operations/environments-and-deploys.md, "Dev
 // environment lifecycle"). An alert at $5 of actual spend in a month on its
 // groups says it was left up. It lives here, not in dev's stack, so it
 // exists while dev doesn't. A budget filters by exact group names: the

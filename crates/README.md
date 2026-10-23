@@ -2,7 +2,7 @@
 
 The Rust workspace: 21 crates. The root `Cargo.toml` lists the members, pins the shared dependency versions in `[workspace.dependencies]`, and sets `unsafe_code = "forbid"` and Clippy's `all` group to warn for every crate through `[lints] workspace = true`. `rust-toolchain.toml` selects the stable toolchain with rustfmt and Clippy. [`fuzz/`](../fuzz/README.md) is a separate crate outside this workspace.
 
-Crates named `usnm-ocr-*` belong to the OCR pipeline ([design 12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md)). `usnm-boinc`, `usnm-quality-app` and `usnm-qwen-app` belong to the BOINC volunteer pilot (status: see [docs/boinc.md](../docs/boinc.md)).
+Crates named `usnm-ocr-*` belong to the OCR pipeline ([design 12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md)). `usnm-boinc`, `usnm-quality-app` and `usnm-qwen-app` belong to the BOINC volunteer pilot (status: see [docs/boinc/README.md](../docs/boinc/README.md)).
 
 Eleven crates are libraries only: `usnm-core`, `usnm-search`, `usnm-store`, `usnm-state`, `usnm-telemetry`, `usnm-alto`, `usnm-overlay`, `usnm-congress`, `usnm-ocr-local`, `usnm-ocr-route` and `usnm-ocr-quality`. Two are BOINC apps with no library: `usnm-quality-app` and `usnm-qwen-app`. The other eight have a library and at least one binary.
 

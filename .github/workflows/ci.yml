@@ -320,7 +320,7 @@ jobs:
             -f contrib-compute/images/bridge/Containerfile --build-arg SERVER_IMAGE=usnm-boinc-server:check \
             --build-arg BIN_IMAGE=usnm-boinc-bridge-bin:check .
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
-          # The gold-bundle step's tools (docs/boinc.md#build-the-gold-bundle).
+          # The gold-bundle step's tools (docs/boinc/gold-check.md#build-the-gold-bundle).
           docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
             bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"11.3.0\", PIL.__version__" &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/gold.py --help > /dev/null &&

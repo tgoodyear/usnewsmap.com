@@ -1,5 +1,5 @@
 //! Title records kept outside an environment's lifetime (#275;
-//! docs/operations.md, "Dev environment lifecycle").
+//! docs/operations/environments-and-deploys.md, "Dev environment lifecycle").
 //!
 //! titles-sync's record cache (`raw/titles.json` in the reference store) and
 //! the catalog geocode built from it (`catalog/titles.json`,

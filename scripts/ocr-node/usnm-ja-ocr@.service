@@ -3,7 +3,7 @@
 # the Azure job caj-usnm-jaocr-<env>. Replicas claim issues through create-only blobs, so
 # instances never take the same issue, and pace loc.gov together (JAOCR_REPLICAS).
 # scripts/ocr-node/ja-ocr-onprem.sh builds the image and installs this; settings are in
-# /etc/usnm/ja-ocr.env (docs/operations.md, "The Japanese OCR on-prem").
+# /etc/usnm/ja-ocr.env (docs/operations/congress-pages.md, "The Japanese OCR on-prem").
 #
 # A run ends when no target issue is left to claim; like the Azure job, start it again
 # until the status page (reference/status/ocr-ja.json) shows every target done.

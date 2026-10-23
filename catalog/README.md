@@ -19,7 +19,7 @@ The reference data that places a newspaper title on the map: a US gazetteer buil
 
 ## Changing it
 
-- **An override.** Add the entry to the right file in `overrides/`, keeping the sort order and alphabetical keys, with the fields `added`, `reason`, `source` and `ref`. [`overrides/README.md`](overrides/README.md) has the format of each file. [Operations](../docs/operations.md#the-title-catalog) says when to use which file and how to check the effect with `cargo run -p usnm-ingest --example place-report`.
+- **An override.** Add the entry to the right file in `overrides/`, keeping the sort order and alphabetical keys, with the fields `added`, `reason`, `source` and `ref`. [`overrides/README.md`](overrides/README.md) has the format of each file. [Operations](../docs/operations/catalog-and-releases.md#the-title-catalog) says when to use which file and how to check the effect with `cargo run -p usnm-ingest --example place-report`.
 - **The gazetteer.** Do not edit the CSV by hand. To refresh it for a newer Census year:
 
   ```sh
@@ -29,4 +29,4 @@ The reference data that places a newspaper title on the map: a US gazetteer buil
 
   The script writes `gazetteer/us-places.csv` and nothing else changes. The Census file is a work of the US government and in the public domain.
 
-A change that moves an already published title to another place waits for the next full release. [Operations](../docs/operations.md#the-title-catalog) explains why.
+A change that moves an already published title to another place waits for the next full release. [Operations](../docs/operations/catalog-and-releases.md#the-title-catalog) explains why.

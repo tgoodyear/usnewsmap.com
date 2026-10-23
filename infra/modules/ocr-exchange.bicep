@@ -57,7 +57,7 @@ var outputContainer = 'ocr-out'
 // 8), with a reason record each. No node role; ocr-sync replays them after
 // a fix (--from-quarantine).
 var quarantineContainer = 'ocr-quarantine'
-// The BOINC hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache): the scan fetcher's
+// The BOINC hand-off (#469, docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache): the scan fetcher's
 // scans and manifests, the hand-off job's dispatch root, the bridge's spool and trust list.
 var handoffContainer = 'boinc-handoff'
 

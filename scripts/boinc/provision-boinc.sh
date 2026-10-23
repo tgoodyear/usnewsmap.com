@@ -180,7 +180,7 @@ if [[ $PROJECT_SHARE == provisioned* ]]; then
     # and accepts them (files regenerated on start, such as run_state and the web cache).
     jq -e --arg ok "${BOINC_COPY_ACCEPTED:-}" 'length > 0 and (last | (.s == "Succeeded" or ($ok != "" and .n == $ok))
       and (now - ((.e // .t) | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601)) < 7200)' <<< "$execs" > /dev/null ||
-      die "the latest $copy_job execution did not succeed within the last two hours: run the final pass (docs/boinc.md, \"Moving the project share\") first"
+      die "the latest $copy_job execution did not succeed within the last two hours: run the final pass (docs/boinc/server-and-apps.md, \"Moving the project share\") first"
   elif ! grep -q ResourceNotFound <<< "$out"; then
     die "could not look up $copy_job: $out"
   fi

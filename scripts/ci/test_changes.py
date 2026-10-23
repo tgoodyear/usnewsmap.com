@@ -405,12 +405,12 @@ class BuildInputs(unittest.TestCase):
         return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
     def test_dashboard_renderer_and_markdown_change_runs_only_the_dashboard_checks(self):
-        # The change #734 makes: html.rs and docs/operations.md.
-        on = self.select("crates/usnm-ocr-dash/src/html.rs", "docs/operations.md")
+        # The change #734 makes: html.rs and docs/operations/onprem-ocr.md.
+        on = self.select("crates/usnm-ocr-dash/src/html.rs", "docs/operations/onprem-ocr.md")
         self.assertEqual(on, {"rust", "ocr_dash", "ocr_dashboard", "markdown", "code"})
 
     def test_docs_only_change_runs_only_the_markdown_check(self):
-        self.assertEqual(self.select("docs/operations.md", "README.md"), {"markdown"})
+        self.assertEqual(self.select("docs/operations/onprem-ocr.md", "README.md"), {"markdown"})
 
     def test_boinc_only_change_runs_the_boinc_images_but_no_dashboard_or_worker_release(self):
         on = self.select("crates/usnm-boinc/src/lib.rs")

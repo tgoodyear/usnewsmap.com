@@ -4,7 +4,7 @@
 # the keep set's scans that aren't in the archive yet, on the Cold tier,
 # create-only, and exits non-zero if any scan failed or didn't match its
 # sidecar (the timer starts it again). Not enabled by anything in this
-# repository: docs/operations.md, "The scan archive".
+# repository: docs/operations/onprem-ocr.md, "The scan archive".
 #
 # Settings in /etc/usnm/scan-archive.env (never committed):
 #   USNM_ARCHIVE_URL   https://<account>.blob.core.windows.net/scans

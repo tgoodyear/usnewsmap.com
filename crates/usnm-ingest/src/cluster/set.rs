@@ -1,5 +1,5 @@
 //! Packaged sample sets in the archival account's `sets` container
-//! (docs/operations.md, "Sample sets"), built once and never replaced:
+//! (docs/operations/environments-and-deploys.md, "Sample sets"), built once and never replaced:
 //!
 //! - `{name}/raw.tar`: the set's LoC batch archives as retained (`raw/`),
 //!   each with its manifest, in a plain tar (the archives are bzip2

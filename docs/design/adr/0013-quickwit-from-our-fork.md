@@ -41,7 +41,7 @@ No search hung at 4 or 10 at once. A hang is the risk `azure_core` turned poolin
 
 ## Consequences
 
-- **We maintain a Quickwit build.** A Quickwit upgrade means rebasing the commit onto the new tag on the fork, a new `usnm-*` tag, and a new build in each environment ([operations](../../operations.md#the-quickwit-image)).
+- **We maintain a Quickwit build.** A Quickwit upgrade means rebasing the commit onto the new tag on the fork, a new `usnm-*` tag, and a new build in each environment ([operations](../../operations/search-serving.md#the-quickwit-image)).
 - **A build takes about an hour** on ACR Tasks' default agent, by hand, not in CI. Two builds of the same commit get different digests, so the file records one per environment.
 - **CI's Quickwit tests stay on upstream's v0.9.1 binary.** Our commit changes only the Blob client, which the parity and pipeline tests don't reach; they index and search local files.
 - **The writer runs the same build.** The dev measurements were of searches; the ingest job's uploads were not measured before the switch.
