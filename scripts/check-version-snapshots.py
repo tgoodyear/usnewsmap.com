@@ -41,12 +41,14 @@ def problems(path: Path, validate) -> list[str]:
         doc = json.loads(text)
     except ValueError as e:
         return [f"not JSON: {e}"]
-    if text != snapshot_text(doc):
-        return [f"not one search per line; run scripts/compare-versions.py fmt --path {path}"]
     try:
         validate(doc)
     except fastjsonschema.JsonSchemaValueException as e:
         return [f"schema: {e.message} (at {'/'.join(map(str, e.path))})"]
+    # After the schema: the layout is computed from the document's shape, which the schema has
+    # now vouched for (a `null` document or `searches` would otherwise stop the checker here).
+    if text != snapshot_text(doc):
+        return [f"not one search per line; run scripts/compare-versions.py fmt --path {path}"]
     out = []
     if path.stem != doc["index_version"]:
         out.append(f"named {path.name} but captures {doc['index_version']}")

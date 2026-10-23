@@ -120,6 +120,15 @@ class Check(unittest.TestCase):
         self.assertEqual(len(text.splitlines()), 7 + len(GOOD["searches"]))  # "{", three scalars, the searches frame, "}"
         self.assertEqual(json.loads(text), GOOD)
 
+    def test_valid_json_of_the_wrong_shape_gets_a_schema_message_not_a_crash(self):
+        for text in ("null", '{"searches": null}', "[]"):
+            with tempfile.TemporaryDirectory() as d:
+                path = Path(d) / "pages-v20261006-2.json"
+                path.write_text(text)
+                found = check.problems(path, self.validate)
+            self.assertEqual(len(found), 1, text)
+            self.assertTrue(found[0].startswith("schema:"), found[0])
+
     def test_not_json(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "pages-v20261006-2.json"
