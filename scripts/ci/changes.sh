@@ -137,7 +137,7 @@ matches '^\.github/workflows/ci\.yml$' && {
       !injobs { if (hit[NR]) print "ALL"; next }
       /^  [a-z0-9_-]+:$/ { job = $1; if (job == "changes:") job = "ALL"; hitjob[job] = hitjob[job] || hit[NR]; cur = job; next }
       { if (hit[NR]) hitjob[cur] = 1
-        while (match($0, /outputs\.[a-z_]+/)) { flags[cur] = flags[cur] " " substr($0, RSTART + 8, RLENGTH - 8); $0 = substr($0, RSTART + RLENGTH) } }
+        while (match($0, /outputs\.[a-z0-9_]+/)) { flags[cur] = flags[cur] " " substr($0, RSTART + 8, RLENGTH - 8); $0 = substr($0, RSTART + RLENGTH) } }
       END { for (j in hitjob) if (hitjob[j]) { if (j == "ALL") print "ALL"; else print flags[j] } }' .github/workflows/ci.yml | tr -s ' \n' ' ')
   rm -f "$lines"
   case " $forced " in *" ALL "*) ops=true; all "workflow changed" ;; esac

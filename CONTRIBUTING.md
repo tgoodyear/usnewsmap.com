@@ -34,7 +34,6 @@ scripts/ci/check-engine-pins.py
 scripts/ci/check-workbooks.py
 scripts/lib/env_settings.py --check
 scripts/ci/check-names.py --base origin/main
-scripts/ci/lint-bicep.sh
 scripts/ci/build-bicep.sh
 AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
