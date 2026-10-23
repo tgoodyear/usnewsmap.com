@@ -13,6 +13,9 @@
 // Run it from each network that matters, as for scripts/bench-site-speed.py
 // (the same site, and the same split between from-here and from-elsewhere).
 //
+// The runs send DNT and Sec-GPC, which the site reads as an opt-out: its page-view
+// beacon (POST /v1/beacon) and its search log leave these visits out.
+//
 // Needs Playwright with a Chromium build, which the web app's tests already
 // use: `npm ci` in web/, then `npx playwright install chromium`. --web-dir
 // (or USNM_WEB_DIR) points at another web/ directory that has node_modules;
@@ -42,7 +45,7 @@ if (!Number.isInteger(runs) || runs < 1) throw new Error("--runs must be a whole
 if (!["desktop", "mobile"].includes(a.profile)) throw new Error("--profile is desktop or mobile");
 const base = a["base-url"].replace(/\/+$/, "");
 const webDir = a["web-dir"] || path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "web");
-const { chromium, devices } = createRequire(path.join(webDir, "package.json"))("@playwright/test");
+const { chromium, devices } = createRequire(path.resolve(webDir, "package.json"))("@playwright/test");
 
 const median = (xs) => {
   const s = [...xs].sort((x, y) => x - y);
@@ -59,7 +62,10 @@ try {
   for (const p of a.paths.split(",")) {
     const rows = [];
     for (let i = 0; i < runs; i++) {
-      const context = await browser.newContext(a.profile === "mobile" ? { ...devices["Pixel 7"] } : {});
+      // DNT and GPC are the opt-outs the site honours: the page-view beacon checks the navigator
+      // properties and the search log the headers, so these visits are neither counted nor logged.
+      const privacy = { extraHTTPHeaders: { DNT: "1", "Sec-GPC": "1" } };
+      const context = await browser.newContext(a.profile === "mobile" ? { ...devices["Pixel 7"], ...privacy } : privacy);
       const page = await context.newPage();
       if (a.profile === "mobile") {
         const cdp = await context.newCDPSession(page);
@@ -73,6 +79,8 @@ try {
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
       }
       await page.addInitScript(() => {
+        Object.defineProperty(Navigator.prototype, "doNotTrack", { get: () => "1" });
+        Object.defineProperty(Navigator.prototype, "globalPrivacyControl", { get: () => true });
         window.__lcp = { time: 0, el: "" };
         new PerformanceObserver((list) => {
           for (const e of list.getEntries()) window.__lcp = { time: e.startTime, el: e.element ? e.element.tagName.toLowerCase() : "" };

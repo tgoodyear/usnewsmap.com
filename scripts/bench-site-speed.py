@@ -30,6 +30,11 @@ server's share plus one round trip); ttfb is dns + tcp + tls + wait, the
 the body; warm is wait again on the open connection. `cache` is a CDN's
 cache status header when there is one.
 
+Every request carries `DNT: 1`, which the API reads as an opt-out, so these
+requests don't reach the search log. Globalping keeps only the first 10 KB of a
+body: for a larger file (the script bundle) its dl and total are left blank and
+only the first byte counts; time the download from here instead.
+
 This measures the network and the origin. It does not render: for the largest
 contentful paint, see scripts/bench-site-lcp.mjs, or paste a URL into
 https://pagespeed.web.dev. Every request is a GET of a page, a small file or
@@ -76,7 +81,7 @@ CACHE_HEADERS = ("cf-cache-status", "x-cache", "x-cache-status", "age")
 
 
 def fetch_text(url):
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "DNT": "1"})
     with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
         return resp.read().decode("utf-8", "replace")
 
@@ -93,24 +98,43 @@ def cache_status(headers):
     return ""
 
 
-def sample(host, port, path, tls=True):
-    """One request on a new connection, then the same one again on that connection.
+def connect(infos):
+    """Connect to the first address that answers. Returns (socket, seconds the successful attempt took)."""
+    last_error = None
+    for family, socktype, proto, _, sockaddr in infos:
+        step = time.perf_counter()
+        candidate = socket.socket(family, socktype, proto)
+        candidate.settimeout(TIMEOUT_S)
+        try:
+            candidate.connect(sockaddr)
+        except OSError as e:
+            candidate.close()
+            last_error = e
+            continue
+        candidate.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return candidate, time.perf_counter() - step
+    raise last_error or OSError("no address to connect to")
+
+
+def sample(host, port, path, tls=True, warm=True):
+    """One request on a new connection, then (with `warm`) the same one again on that connection.
 
     Times are seconds from the start of each step. The body is read as sent
     (compressed when the server compresses it); `bytes` is what crossed the wire.
+    The connect time is the address that answered; an address tried first and
+    refused isn't in it.
     """
-    headers = {"Host": host, "User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "gzip"}
+    headers = {"Host": host, "User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "gzip", "DNT": "1"}
     started = time.perf_counter()
-    addr = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     dns = time.perf_counter() - started
-    step = time.perf_counter()
-    sock = socket.create_connection(addr[4][:2], timeout=TIMEOUT_S)
-    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    tcp = time.perf_counter() - step
+    sock, tcp = connect(infos)
     tls_s = 0.0
     if tls:
         step = time.perf_counter()
-        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        sock = context.wrap_socket(sock, server_hostname=host)
         tls_s = time.perf_counter() - step
         conn = http.client.HTTPSConnection(host, port, timeout=TIMEOUT_S)
     else:
@@ -118,7 +142,7 @@ def sample(host, port, path, tls=True):
     conn.sock = sock
     try:
         out = {"dns": dns, "tcp": tcp, "tls": tls_s}
-        for label in ("cold", "warm"):
+        for label in ("cold", "warm") if warm else ("cold",):
             step = time.perf_counter()
             conn.request("GET", path, headers=headers)
             resp = conn.getresponse()
@@ -223,7 +247,7 @@ def run_direct(base, runs):
         # The first visit's critical path: HTML, then every asset at once on its own connection.
         def one(a):
             t = time.perf_counter()
-            sample(host, port, a["path"], tls)
+            sample(host, port, a["path"], tls, warm=False)
             return time.perf_counter() - t
 
         walls = []
@@ -260,6 +284,31 @@ def globalping(body):
     raise SystemExit("Globalping measurement didn't finish in 90 s")
 
 
+def globalping_row(r):
+    """One probe's result as a table row, or {"probe", "error"} when it didn't finish."""
+    res, probe = r["result"], r["probe"]
+    t = res.get("timings") or {}
+    if res.get("status") != "finished" or not t:
+        return {"probe": probe, "error": res.get("rawOutput", "")[:120] or res.get("status")}
+    # A phase that didn't happen (no TLS over http, no DNS for an address) is null.
+    phase = {k: t.get(k) or 0 for k in ("dns", "tcp", "tls", "firstByte", "download", "total")}
+    # Globalping keeps the first 10 KB of a body; its download and total then cover only that part.
+    truncated = bool(res.get("truncated"))
+    return {
+        "probe": {k: probe.get(k) for k in ("continent", "country", "city", "network")},
+        "status": res.get("statusCode"),
+        "dns": phase["dns"],
+        "tcp": phase["tcp"],
+        "tls": phase["tls"],
+        "wait": phase["firstByte"],
+        "dl": None if truncated else phase["download"],
+        "ttfb": phase["dns"] + phase["tcp"] + phase["tls"] + phase["firstByte"],
+        "total": None if truncated else phase["total"],
+        "truncated": truncated,
+        "cache": cache_status({k.lower(): v for k, v in (res.get("headers") or {}).items()}),
+    }
+
+
 def run_globalping(base):
     parts = urllib.parse.urlsplit(base)
     home_html = fetch_text(base + "/")
@@ -269,7 +318,7 @@ def run_globalping(base):
     summary = []
     for name, path in items:
         parsed = urllib.parse.urlsplit(path)
-        request = {"method": "GET", "path": parsed.path or "/", "headers": {"Accept-Encoding": "gzip"}}
+        request = {"method": "GET", "path": parsed.path or "/", "headers": {"Accept-Encoding": "gzip", "DNT": "1"}}
         if parsed.query:
             request["query"] = parsed.query
         done = globalping(
@@ -280,30 +329,10 @@ def run_globalping(base):
                 "measurementOptions": {"request": request, "protocol": parts.scheme.upper()},
             }
         )
-        rows = []
-        for r in done["results"]:
-            res, probe = r["result"], r["probe"]
-            t = res.get("timings") or {}
-            if res.get("status") != "finished" or not t:
-                rows.append({"probe": probe, "error": res.get("rawOutput", "")[:120] or res.get("status")})
-                continue
-            ttfb = sum(t.get(k) or 0 for k in ("dns", "tcp", "tls", "firstByte"))
-            rows.append(
-                {
-                    "probe": {k: probe.get(k) for k in ("continent", "country", "city", "network")},
-                    "status": res.get("statusCode"),
-                    "dns": t.get("dns"),
-                    "tcp": t.get("tcp"),
-                    "tls": t.get("tls"),
-                    "wait": t.get("firstByte"),
-                    "dl": t.get("download"),
-                    "ttfb": ttfb,
-                    "total": t.get("total"),
-                    "cache": cache_status({k.lower(): v for k, v in (res.get("headers") or {}).items()}),
-                }
-            )
+        rows = [globalping_row(r) for r in done["results"]]
         print(f"\n{name}  {path[:80]}")
         print(f"  {'probe':<30} {'status':>6} {'dns':>5} {'tcp':>5} {'tls':>5} {'wait':>5} {'ttfb':>5} {'dl':>5} {'total':>6}  cache")
+        cell = lambda v, width: f"{'-' if v is None else v:>{width}}"
         for row in sorted(rows, key=lambda x: (x["probe"].get("country") or "", x["probe"].get("city") or "")):
             p = row["probe"]
             label = f"{p.get('country')} {p.get('city')} ({(p.get('network') or '')[:14]})"
@@ -312,15 +341,20 @@ def run_globalping(base):
                 continue
             print(
                 f"  {label:<30} {row['status']:>6} {row['dns']:>5} {row['tcp']:>5} {row['tls']:>5} {row['wait']:>5} "
-                f"{row['ttfb']:>5} {row['dl']:>5} {row['total']:>6}  {row['cache']}"
+                f"{row['ttfb']:>5} {cell(row['dl'], 5)} {cell(row['total'], 6)}  {row['cache']}"
             )
         ok = [r for r in rows if "error" not in r]
         if ok:
+            totals = [r["total"] for r in ok if r["total"] is not None]
             print(
                 f"  median over {len(ok)} probes: wait {med([r['wait'] for r in ok])} ms, "
-                f"ttfb {med([r['ttfb'] for r in ok])} ms, total {med([r['total'] for r in ok])} ms; "
-                f"worst ttfb {max(r['ttfb'] for r in ok)} ms"
+                f"ttfb {med([r['ttfb'] for r in ok])} ms, "
+                + (f"total {med(totals)} ms" if totals else "no total")
+                + f"; worst ttfb {max(r['ttfb'] for r in ok)} ms"
             )
+            cut = sum(1 for r in ok if r["truncated"])
+            if cut:
+                print(f"  {cut} of {len(ok)} bodies passed Globalping's 10 KB limit, so dl and total are left out; time the download with the form without --globalping")
         summary.append({"name": name, "path": path, "rows": rows})
     return {"base_url": base, "mode": "globalping", "results": summary}
 

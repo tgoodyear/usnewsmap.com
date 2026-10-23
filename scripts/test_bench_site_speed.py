@@ -5,6 +5,7 @@ import gzip
 import importlib.util
 import io
 import json
+import socket
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,7 @@ spec.loader.exec_module(bench)
 
 HTML = b'<html><head><link rel="stylesheet" href="/assets/index-AAA.css"></head><body><script src="/assets/index-BBB.js"></script></body></html>'
 SEEN = []
+DNT = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -24,6 +26,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         SEEN.append(self.path)
+        DNT.append(self.headers.get("DNT"))
         if self.path == "/":
             body = gzip.compress(HTML)
             headers = {"Content-Type": "text/html", "Content-Encoding": "gzip", "CF-Cache-Status": "DYNAMIC"}
@@ -78,6 +81,65 @@ class BenchSiteSpeed(unittest.TestCase):
         self.assertGreaterEqual(s["wait"], 0)
         self.assertGreaterEqual(s["warm_wait"], 0)
 
+    def test_sample_asks_not_to_be_tracked(self):
+        DNT.clear()
+        bench.sample("127.0.0.1", self.server.server_address[1], "/v1/meta", tls=False)
+        self.assertEqual(DNT, ["1", "1"])
+
+    def test_sample_without_warm_makes_one_request(self):
+        SEEN.clear()
+        s = bench.sample("127.0.0.1", self.server.server_address[1], "/x", tls=False, warm=False)
+        self.assertNotIn("warm_wait", s)
+        self.assertEqual(SEEN, ["/x"])
+
+    def test_connect_falls_back_to_the_next_address(self):
+        live = self.server.server_address[1]
+        infos = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1)),  # nothing listens here
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", live)),
+        ]
+        sock, seconds = bench.connect(infos)
+        try:
+            self.assertEqual(sock.getpeername()[1], live)
+            self.assertGreaterEqual(seconds, 0)
+        finally:
+            sock.close()
+
+    def test_connect_raises_the_last_error_when_none_answers(self):
+        infos = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1))]
+        with self.assertRaises(OSError):
+            bench.connect(infos)
+
+    def test_globalping_row_counts_missing_phases_as_zero(self):
+        probe = {"continent": "EU", "country": "DE", "city": "Falkenstein", "network": "x"}
+        result = {
+            "status": "finished",
+            "statusCode": 200,
+            "timings": {"dns": None, "tcp": 20, "tls": None, "firstByte": 30, "download": 1, "total": 51},
+            "headers": {},
+        }
+        row = bench.globalping_row({"probe": probe, "result": result})
+        self.assertEqual((row["dns"], row["tls"], row["ttfb"], row["dl"], row["total"]), (0, 0, 50, 1, 51))
+        self.assertFalse(row["truncated"])
+
+    def test_globalping_row_drops_download_and_total_of_a_truncated_body(self):
+        probe = {"country": "IN"}
+        result = {
+            "status": "finished",
+            "statusCode": 200,
+            "truncated": True,
+            "timings": {"dns": 5, "tcp": 100, "tls": 100, "firstByte": 100, "download": 1, "total": 306},
+        }
+        row = bench.globalping_row({"probe": probe, "result": result})
+        self.assertTrue(row["truncated"])
+        self.assertIsNone(row["dl"])
+        self.assertIsNone(row["total"])
+        self.assertEqual(row["ttfb"], 305)
+
+    def test_globalping_row_reports_a_probe_that_failed(self):
+        row = bench.globalping_row({"probe": {"country": "ZA"}, "result": {"status": "failed", "rawOutput": "timeout"}})
+        self.assertEqual(row["error"], "timeout")
+
     def test_run_direct_covers_pages_search_and_assets(self):
         SEEN.clear()
         out = io.StringIO()
@@ -91,6 +153,9 @@ class BenchSiteSpeed(unittest.TestCase):
         self.assertTrue(all(r["status"] == [200] and len(r["runs"]) == 2 for r in result["results"]))
         self.assertTrue(any(p.startswith("/v1/aggregate?") and p.endswith("&v=pages-v1") for p in SEEN))
         self.assertIn("assets together", out.getvalue())
+        # Each asset: a cold and a warm request per run in the table, one cold request per run in the
+        # assets-together time. Two downloads in that time would make it 8, not 6.
+        self.assertEqual(SEEN.count("/assets/index-AAA.css"), 2 * 2 + 2)
         self.assertEqual(set(result["assets_together"]), {"median_ms", "max_ms"})
 
 
