@@ -80,7 +80,7 @@ pub(crate) struct ReleaseArgs {
 /// run and its index on the writer's data, replay the build without
 /// sending anything, check the replay against the run's state, index and
 /// log, then merge, seal and publish as the release would have
-/// (docs/operations.md, "Finishing a release"). Give the release's own
+/// (docs/operations/rebuild-and-index-storage.md, "Finishing a release"). Give the release's own
 /// settings: the run's build record must come out the same. How it
 /// publishes isn't recorded, so it is said again: `--stage-index-storage`
 /// as the release had it, or `--publish-serving`.
