@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the gold bundle v1 (docs/ocr-gold-set.md#volunteer-bundle) inside the VNet, onto the
-# project share, and install it for a gold campaign (docs/boinc.md#build-the-gold-bundle):
+# project share, and install it for a gold campaign (docs/boinc/gold-check.md#build-the-gold-bundle):
 #
 #   gold-bundle.sh --share /project --campaign v1-tess550
 #

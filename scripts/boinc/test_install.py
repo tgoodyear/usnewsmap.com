@@ -391,7 +391,7 @@ class InstallTest(unittest.TestCase):
 
     def test_app_release_script_accepts_native_and_new_platforms(self):
         import subprocess
-        release = Path(__file__).resolve().parents[2] / "scripts/boinc-app-release.sh"
+        release = Path(__file__).resolve().parents[2] / "scripts/boinc/boinc-app-release.sh"
         binary = self.project / "usnm-quality"
         binary.write_bytes(b"native-bin")
         for args, expected_err in (

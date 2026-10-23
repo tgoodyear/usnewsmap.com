@@ -1,0 +1,27 @@
+name: build-check-image
+description: >-
+  Builds one image from the repository root into the local Docker daemon, without pushing, reading and
+  writing the GitHub Actions build cache under a scope of its own. The image and contrib-images jobs of
+  .github/workflows/ci.yml then check what it built. A job that calls this runs after its checkout and
+  after docker/setup-buildx-action.
+inputs:
+  file:
+    description: The Dockerfile or Containerfile, relative to the repository root
+    required: true
+  tag:
+    description: The local tag to give the image
+    required: true
+  cache-scope:
+    description: The build cache scope that every run of this image shares
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: ${{ inputs.file }}
+        tags: ${{ inputs.tag }}
+        load: true
+        cache-from: type=gha,scope=${{ inputs.cache-scope }}
+        cache-to: type=gha,scope=${{ inputs.cache-scope }},mode=max

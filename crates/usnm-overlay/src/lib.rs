@@ -8,6 +8,12 @@
 //! (`ocr_source`, `ocr_engine`, `loc_text`, `image_url`, `ocred_at`) and the
 //! text (`text_status`, `text`, `text_chars`, `text_sha256`). Every field is
 //! nullable, as pyarrow writes them.
+//!
+//! [`curated`] holds the other page-text Parquet format of the lake: LoC's
+//! own text, one row per page (04 §4.3.1), which the curate job writes and
+//! the release, the damage pass and the local OCR pipeline read.
+
+pub mod curated;
 
 use std::sync::Arc;
 
@@ -30,6 +36,10 @@ use parquet::file::properties::WriterProperties;
 use sha2::{Digest, Sha256};
 use usnm_core::ids::PageKey;
 use usnm_core::text::{text_status, TextStatus};
+
+/// Where the Japanese OCR job writes its overlay parts in the curated store
+/// (a directory: stores list it without the trailing slash).
+pub const JA_PREFIX: &str = "ocr-ja/pages";
 
 /// The overlay schema, column for column as `jaocr.py write_part` declares it.
 pub fn schema() -> SchemaRef {

@@ -2,9 +2,9 @@
 python3 -m unittest discover ja-ocr (wordfreq, and pyarrow for zstd before Python 3.14).
 
 - The function words the port embeds (crates/usnm-core/data/page-language-words.txt) are the ones
-  damage_v2.Models builds: scripts/build-page-language-words.py renders the file again and it must match.
+  damage_v2.Models builds: scripts/data/build-page-language-words.py renders the file again and it must match.
 - The pages of the parity fixtures (crates/usnm-core/tests/data/damage-parity.jsonl.zst and
-  page-language-parity.jsonl.zst, scripts/page-language-sample.py) still get the language, decision,
+  page-language-parity.jsonl.zst, scripts/data/page-language-sample.py) still get the language, decision,
   second language, script and shares recorded there, which the Rust test checks the port against
   (crates/usnm-core/tests/page_language_parity.rs).
 
@@ -25,7 +25,7 @@ except ImportError:  # the image has it
     wordfreq = None
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BUILDER = os.path.join(ROOT, "scripts", "build-page-language-words.py")
+BUILDER = os.path.join(ROOT, "scripts", "data", "build-page-language-words.py")
 WORDS = os.path.join(ROOT, "crates", "usnm-core", "data", "page-language-words.txt")
 FIXTURES = [os.path.join(ROOT, "crates", "usnm-core", "tests", "data", f"{name}.jsonl.zst")
             for name in ("damage-parity", "page-language-parity")]
@@ -45,7 +45,7 @@ class WordList(unittest.TestCase):
         with open(WORDS, encoding="utf-8") as f:
             committed = f.read()
         self.assertEqual(builder().render(damage_v2), committed,
-                         "run scripts/build-page-language-words.py")
+                         "run scripts/data/build-page-language-words.py")
 
     def test_one_line_per_list(self):
         lines = [line.split(" ") for line in builder().render(damage_v2).splitlines() if not line.startswith("#")]

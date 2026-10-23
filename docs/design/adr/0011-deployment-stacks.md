@@ -12,7 +12,7 @@ Azure **deployment stacks** track the resources a template deploys. They can del
 
 ## Decision
 
-- **The environment is one stack at subscription scope, `usnm-<env>`.** It covers both resource groups and everything in them, including the guard-rail policy assignments. `scripts/bootstrap.sh` and `scripts/provision.sh` deploy it with:
+- **The environment is one stack at subscription scope, `usnm-<env>`.** It covers both resource groups and everything in them, including the guard-rail policy assignments. `scripts/azure/bootstrap.sh` and `scripts/azure/provision.sh` deploy it with:
   ```
   az stack sub create --parameters infra/main.bicepparam \
     --action-on-unmanage deleteResources --deny-settings-mode denyDelete
@@ -24,7 +24,7 @@ Azure **deployment stacks** track the resources a template deploys. They can del
   - **Settings:** they stay in `.azure/<env>/.env`, in the same `KEY="value"` layout, so existing environments carry over unchanged.
   - **Parameters:** `infra/main.bicepparam` reads them with `readEnvironmentVariable`. Bootstrap exports only the settings that have a value, so empty ones fall back to the parameter defaults.
   - **Outputs:** they're written back to the settings after each deployment.
-  - **Commands:** `scripts/settings.sh` reads and writes settings. `scripts/provision.sh` deploys the stack alone. `scripts/teardown.sh` replaces `azd down`.
+  - **Commands:** `scripts/azure/settings.sh` reads and writes settings. `scripts/azure/provision.sh` deploys the stack alone. `scripts/azure/teardown.sh` replaces `azd down`.
 - **Teardown detaches, then deletes explicitly.** It removes the environment's stack in detach mode, then deletes the resource groups and the environment's custom role. The stack's own `deleteAll` would fail on a resource group that also holds resources the stack doesn't manage. The last environment in the subscription also deletes `usnm-guardrails` with its definitions.
 
 ## Alternatives

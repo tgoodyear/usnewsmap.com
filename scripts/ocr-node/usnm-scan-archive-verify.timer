@@ -2,7 +2,7 @@
 # the local file (size, md5, tier, sha256 metadata). It reads and hashes
 # every local scan and makes one properties request per blob, so it runs
 # rarely; the daily upload does not. Not enabled by anything in this
-# repository: docs/operations.md, "The scan archive".
+# repository: docs/operations/onprem-ocr.md, "The scan archive".
 [Unit]
 Description=usnewsmap scan archive verify, monthly
 

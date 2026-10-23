@@ -21,6 +21,10 @@ python3 scripts/boinc/smoke-ndlocr.py --image usnm-ndlocr-lite --work "$PWD/ndlo
 
 The Python and Rust bases are pinned by digest. `NDLOCR_COMMIT` is
 `636d1cfeb1331f89f4048f416e49e23a09a714b5`, matching the existing Japanese job.
+`ocr/engines/ndlocr-lite/models.lock` is where the commit is pinned (its header and
+every model URL); a Dockerfile, the adapter's `COMMIT` and the engine catalog cannot
+read it, so `scripts/ci/check-engine-pins.py` fails CI when any of them, including
+`docker/Dockerfile.ja-ocr` and the source archive's checksum, names another commit.
 The upstream source archive has a SHA-256 check, and
 `ocr/engines/ndlocr-lite/models.lock` independently pins all four ONNX models
 (DEIM layout and the 30-, 50-, and 100-character PARSeq recognizers). The build
@@ -451,9 +455,10 @@ After merge:
    `xadd`, and restart daemons so its script validator and batch assimilator
    run. Install the input/output templates when publishing the app version.
 3. Publish a signed **x86_64 Linux container** app version with
-   `scripts/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
+   `scripts/boinc/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
 --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_MANIFEST
---signing-host HOST`. Its dedicated `job.toml` is selected automatically.
+--signing-host HOST --onprem-host HOST --onprem-ct ID` (the last two because prod's
+   server is on-prem). Its dedicated `job.toml` is selected automatically.
    Do not reuse the Tesseract image or publish unsupported native or GPU
    versions.
 4. Pilot a small classified set not yet read by `jaocr.py`, comparing independent

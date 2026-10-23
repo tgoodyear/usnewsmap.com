@@ -57,7 +57,7 @@ var outputContainer = 'ocr-out'
 // 8), with a reason record each. No node role; ocr-sync replays them after
 // a fix (--from-quarantine).
 var quarantineContainer = 'ocr-quarantine'
-// The BOINC hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache): the scan fetcher's
+// The BOINC hand-off (#469, docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache): the scan fetcher's
 // scans and manifests, the hand-off job's dispatch root, the bridge's spool and trust list.
 var handoffContainer = 'boinc-handoff'
 
@@ -88,7 +88,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
       ]
       // The BOINC subnet is in another region and group, through its Global endpoint (the
       // BOINC stack's network.bicep). Storage refuses the rule until that endpoint exists, so
-      // scripts/provision-boinc.sh goes first.
+      // scripts/boinc/provision-boinc.sh goes first.
       virtualNetworkRules: concat(
         [{ id: subnetId, action: 'Allow' }],
         empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]

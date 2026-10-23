@@ -15,6 +15,8 @@ use usnm_ocr_contract::{
 };
 use usnm_store::ObjectStore;
 
+pub mod cli;
+
 pub const APP: &str = "usnm_ndlocr";
 pub const JOB_FILE: &str = "ndlocr.json";
 pub const OUTPUTS: [&str; 3] = ["text.txt", "layout.xml", "result.json"];

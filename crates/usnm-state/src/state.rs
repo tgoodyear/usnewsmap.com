@@ -162,6 +162,14 @@ pub struct TitleDates {
 /// it existed don't have it.
 pub const DUPLICATES_FILE: &str = "duplicates.json";
 
+/// A copy of a page that searches must not see: the document with this id
+/// from this batch. The rows of [`DUPLICATES_FILE`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Hidden {
+    pub doc_id: String,
+    pub batch: String,
+}
+
 /// The file in a version's reference snapshot with pages published per place
 /// and day for each distinct set of title languages ([`LanguageBaselines`]),
 /// so a language filter keeps exact baselines. Snapshots written before it
@@ -635,6 +643,16 @@ impl State {
             None => self.docs.create(OPS, FETCH_PACER, &doc).await?,
         }
         .is_some())
+    }
+
+    /// The last release's progress, as it last recorded it: for a release
+    /// that stopped, how many documents it had sent when it did.
+    pub async fn release_progress(&self) -> anyhow::Result<Option<ReleaseProgress>> {
+        self.docs
+            .get(OPS, RELEASE_PROGRESS, RELEASE_PROGRESS)
+            .await?
+            .map(|v| from(v).map(|(p, _)| p))
+            .transpose()
     }
 
     /// Record the running release's progress (unconditional: only the

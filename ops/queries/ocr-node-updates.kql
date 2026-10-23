@@ -1,5 +1,5 @@
 // The OCR nodes' nightly worker updates and weekly reboots, newest first
-// (#471), from the nodes' workspace usnm-ocr-log-<env> (scripts/logs.sh
+// (#471), from the nodes' workspace usnm-ocr-log-<env> (scripts/azure/logs.sh
 // runs ocr-node-* queries there). Only their Warning lines reach the
 // workspace: an update applied, a rollback, a refused release, a reboot
 // and any problem. No Syslog table yet gives no rows, not an error.

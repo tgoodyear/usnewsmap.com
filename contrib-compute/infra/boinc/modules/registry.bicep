@@ -1,5 +1,5 @@
 // AcrPull for the BOINC identities on the app's shared registry (infra/names/<env>.json), which
-// holds the server and bridge images (scripts/build-boinc-images.sh). Deployed by the BOINC
+// holds the server and bridge images (scripts/boinc/build-boinc-images.sh). Deployed by the BOINC
 // stack at the registry's group, so the grant lives with the BOINC infrastructure. The worker
 // image that volunteers pull is a public GHCR package (ADR-0019, addendum).
 param registryName string

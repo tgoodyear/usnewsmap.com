@@ -496,8 +496,9 @@ class CanaryPreferences(unittest.TestCase):
                 self.assertIn("CPU/GPU", source)
         scheduler = (ROOT / "scripts/boinc/patch-server-apple-gpu.py").read_text()
         self.assertNotIn("qwen_native_cuda_canary", scheduler)
-        driver = (ROOT / "crates/usnm-qwen-app/src/main.rs").read_text()
-        self.assertNotIn("qwen_native_cuda_canary", driver)
+        for module in sorted((ROOT / "crates/usnm-qwen-app/src").glob("*.rs")):
+            with self.subTest(module=module.name):
+                self.assertNotIn("qwen_native_cuda_canary", module.read_text())
 
     @unittest.skipUnless(shutil.which("php"), "PHP required")
     def test_operator_cohort_has_one_exact_workunit_stop_and_durable_preview(self):

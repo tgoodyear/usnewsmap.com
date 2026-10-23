@@ -1,0 +1,660 @@
+"""Exercise deployment ordering and failure gates without Azure or project mutation."""
+import json
+import re
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+SUB = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())["subscriptionId"]
+
+AZ = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG"
+case "$*" in
+  "account show"*) echo "$STUB_SUB" ;;
+  "group show"*) ;;
+  "identity list"*) echo '[{"name":"usnm-boinc-id-prod","principalId":"11111111-1111-1111-1111-111111111111"},{"name":"usnm-boinc-secrets-id-prod","principalId":"22222222-2222-2222-2222-222222222222"}]' ;;
+  "stack sub show"*) echo '{"OCR_EXCHANGE_ACCOUNT":{"value":"exchangeprod"}}' ;;
+  "storage blob exists"*) echo true ;;
+  "storage blob lease acquire"* | "storage blob lease release"*) ;;
+  "stack group show"*)
+    if [ "${STUB_STACK_SHOW_FAIL_AFTER:-0}" -gt 0 ]; then
+      count=$(cat "$STUB_LOG.stack_show_count" 2>/dev/null || echo 0)
+      count=$((count + 1))
+      echo "$count" > "$STUB_LOG.stack_show_count"
+      [ "$count" -lt "$STUB_STACK_SHOW_FAIL_AFTER" ] || { echo "transient stack show error" >&2; exit 1; }
+    fi
+    echo '{"appFqdn":{"value":"example.azurecontainerapps.io"},"secretsJobName":{"value":"secrets"},"initJobName":{"value":"init"},"bridgeJobName":{"value":"bridge"},"publishJobName":{"value":"publish"},"goldBundleJobName":{"value":"gold"},"qualityWaveJobName":{"value":"'"${STUB_QUALITY_JOB:-}"'"},"keyVaultName":{"value":"vault"},"mysqlHost":{"value":"db.example.org"}}' ;;
+  "containerapp env certificate list"*) echo Succeeded ;;
+  "stack-whatif group create"*"--help"*) ;;
+  "stack-whatif group create"*) exit "${STUB_PREVIEW_STATUS:-0}" ;;
+  "stack group create"*) [ -z "${STUB_STACK_FAILURE:-}" ] || exit 9 ;;
+  "containerapp job list"*) [ -z "${STUB_JOB_LIST_FAIL:-}" ] || exit 1; printf '%s\n' ${STUB_JOB_LIST:-} ;;
+  "containerapp job execution list"*)
+    if [[ "$*" == *"--name quality "* ]] || [[ "$*" == *"--name usnm-boinc-quality-caj-prod "* ]]; then
+      [ "${STUB_QUALITY_ACTIVE:-0}" != 1 ] || echo quality-existing-execution
+    elif [[ "$*" == *"--name publish "* ]]; then
+      [ "${STUB_PUBLISH_ACTIVE:-0}" != 1 ] || echo publish-existing-execution
+    elif [[ "$*" == *"--name gold "* ]]; then
+      [ "${STUB_GOLD_ACTIVE:-0}" != 1 ] || echo gold-existing-execution
+    elif [[ "$*" == *"--name bridge "* ]]; then
+      [ "${STUB_REGISTRATION_LIST_FAIL:-0}" != 1 ] || exit 1
+      if [ "${STUB_REGISTRATION_ACTIVE:-0}" = 1 ] || [ "${STUB_BRIDGE_ACTIVE:-0}" = 1 ]; then
+        echo bridge-existing-execution
+      fi
+    fi ;;
+  "containerapp job show"*"--name usnm-boinc-sharecopy-caj-"*)
+    [ "${STUB_SHARECOPY_PRESENT:-0}" = 1 ] || { echo "ERROR: (ResourceNotFound) not found" >&2; exit 1; }
+    echo usnm-boinc-sharecopy-caj-prod ;;
+  "containerapp job show"*)
+    extra_secret='{"name":"PRIVATE_SETTING","secretRef":"runtime-secret"},'
+    [ "${STUB_BRIDGE_CLEAN_ENV:-0}" != 1 ] || extra_secret=""
+    storage_name=${STUB_DEPLOYED_STORAGE_NAME:-$STUB_PROJECT_STORAGE}
+    mount_options=${STUB_DEPLOYED_MOUNT_OPTIONS:-mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict}
+    if [[ "$*" == *"--name gold "* ]]; then
+      echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"$storage_name\",\"mountOptions\":\"$mount_options\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_GOLD_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":1,\"memory\":\"2Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_GOLD_STEP:-gold-bundle}\"},{\"name\":\"GOLD_CAMPAIGN\",\"value\":\"v1-tess550\"},${extra_secret}{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}"
+    else
+      echo "{\"volumes\":[{\"name\":\"project\",\"storageType\":\"AzureFile\",\"storageName\":\"$storage_name\",\"mountOptions\":\"$mount_options\"}],\"containers\":[{\"name\":\"bridge\",\"image\":\"${STUB_DEPLOYED_BRIDGE_IMAGE:-fixture@sha256:unchanged}\",\"resources\":{\"cpu\":0.5,\"memory\":\"1Gi\"},\"volumeMounts\":[{\"volumeName\":\"project\",\"mountPath\":\"/project\"}],\"env\":[{\"name\":\"BRIDGE_STEP\",\"value\":\"${STUB_DEPLOYED_BRIDGE_STEP:-iris-bundle-collect}\"},{\"name\":\"IRIS_CAMPAIGN\",\"value\":\"overproof-100-v12\"},${extra_secret}{\"name\":\"AZURE_CLIENT_ID\",\"value\":\"client\"},{\"name\":\"KEY_VAULT_NAME\",\"value\":\"vault\"},{\"name\":\"DB_HOST\",\"value\":\"db.example.org\"},{\"name\":\"DB_NAME\",\"value\":\"usnmocr\"},{\"name\":\"MASTER_HOST\",\"value\":\"boinc.usnewsmap.com\"},{\"name\":\"PROJECT_DIR\",\"value\":\"/project\"},{\"name\":\"HANDOFF_DIR\",\"value\":\"/project/handoff\"}]}]}"
+    fi ;;
+  "containerapp job update"*) ;;
+  "containerapp job start"*)
+    if [[ "$*" == *"--yaml"* ]] && [ "${STUB_REGISTRATION_START_FAIL:-0}" = 1 ]; then exit 1; fi
+    if [[ "$*" == *"--yaml"* ]]; then
+      for ((i=1; i<=$#; i++)); do
+        if [ "${!i}" = --yaml ]; then
+          j=$((i+1)); cp "${!j}" "$STUB_LOG.registration.json"; break
+        fi
+      done
+    fi
+    while [ $# -gt 0 ]; do
+      if [ "$1" = --name ]; then echo "$2-execution"; break; fi
+      shift
+    done ;;
+  "containerapp job execution show"*"--query properties.status"*)
+    case "$*" in
+      *"--name init "*) echo "${STUB_INIT_STATUS:-Succeeded}" ;;
+      *"--name publish "*) echo "${STUB_PUBLISH_STATUS:-Succeeded}" ;;
+      *) echo Succeeded ;;
+    esac ;;
+  "containerapp job execution show"*"properties.template"*)
+    grep '^containerapp job update' "$STUB_LOG" | tail -n 1 |
+      sed -e 's/.*--replace-env-vars //' -e 's/ -o none.*//' | tr ' ' '\n' |
+      jq -R 'split("=") | {name: .[0], value: (.[1:] | join("="))}' | jq -s . ;;
+  *) echo "unexpected az call: $*" >&2; exit 9 ;;
+esac
+"""
+
+
+class Provision(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        directory = Path(self.tmp.name)
+        self.log = directory / "az.log"
+        for name, content in [
+            ("az", AZ),
+            ("curl", '#!/bin/sh\nprintf "%s\\n" "$STUB_HEALTH"\n'),
+        ]:
+            path = directory / name
+            path.write_text(content)
+            path.chmod(0o755)
+        # Prod's settings with the server in Azure: these tests cover the Azure lifecycle
+        # (the committed prod.json has "server": "onprem", #942; OnPremServer covers that).
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        settings.pop("server", None)
+        self.settings = directory / "prod.json"
+        self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+        self.env = {
+            **os.environ, "PATH": str(directory) + os.pathsep + os.environ["PATH"],
+            "STUB_LOG": str(self.log), "STUB_SUB": SUB,
+            "USNM_BOINC_SETTINGS_FILE": str(self.settings), "USNM_BOINC_TEST": "1",
+            # The storage name /project's jobs mount follows the settings' projectShare stage.
+            "STUB_PROJECT_STORAGE": "project-v2" if settings.get("projectShare", "standard").startswith("provisioned") else "project",
+            "USNM_BOINC_LOCK_DIR": str(directory / "provision.lock"),
+            "BOINC_START_RECONCILE_SECS": "0", "BOINC_START_RECONCILE_POLL": "0",
+            "STUB_HEALTH": '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
+                           '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
+        }
+
+    def run_script(self, *args, **env):
+        return subprocess.run(
+            ["bash", "scripts/boinc/provision-boinc.sh", "--env", "prod", *args], cwd=ROOT,
+            env={**self.env, **env}, capture_output=True, text=True,
+        )
+
+    def calls(self):
+        return self.log.read_text().splitlines()
+
+    def test_stack_preview_includes_same_destructive_and_deny_settings_without_deploying(self):
+        result = self.run_script("--what-if")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [preview] = [call for call in self.calls() if call.startswith("stack-whatif") and "--help" not in call]
+        self.assertIn("--action-on-unmanage deleteResources", preview)
+        self.assertIn("--deny-settings-mode denyDelete", preview)
+        self.assertIn("--deny-settings-excluded-actions", preview)
+        self.assertIn("--retention-interval PT3H", preview)
+        self.assertIn(f"--stack-id /subscriptions/{SUB}/resourceGroups/usnm-boinc-rg-prod/", preview)
+        self.assertFalse(any(call.startswith(("stack group create", "containerapp job start", "deployment group what-if")) for call in self.calls()))
+
+    def test_preview_failure_stops_before_deployment(self):
+        result = self.run_script(STUB_PREVIEW_STATUS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(call.startswith("stack group create") for call in self.calls()))
+
+    def test_workbook_smoke_serializes_hosts_and_preserves_operator_override(self):
+        script = (ROOT / "scripts/boinc/provision-boinc.sh").read_text()
+        smoke = script[script.index("workspace=$(baz monitor log-analytics workspace list"):]
+        setup = """
+set -eu
+BOINC_RG=fixture SUBSCRIPTION=fixture
+baz() { echo fixture; }
+boinc_workdir() { echo "$FIXTURE_DIR"; }
+boinc_output() {
+  if [ "$1" = logAnalyticsQueryHosts ]; then
+    echo '["westus.api.loganalytics.io","eastus.api.loganalytics.io"]'
+  else echo westus2.api.loganalytics.io; fi
+}
+python3() { printf '%s' "$LOG_ANALYTICS_QUERY_HOSTS" > "$FIXTURE_DIR/hosts"; echo '{}'; }
+"""
+        for override in (None, "eastus.api.loganalytics.io", ""):
+            env = {**self.env, "FIXTURE_DIR": self.tmp.name}
+            env.pop("LOG_ANALYTICS_QUERY_HOSTS", None)
+            if override is not None:
+                env["LOG_ANALYTICS_QUERY_HOSTS"] = override
+            result = subprocess.run(["bash", "-c", setup + smoke], cwd=ROOT,
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((Path(self.tmp.name) / "hosts").read_text(),
+                             override if override is not None else
+                             "westus.api.loganalytics.io,eastus.api.loganalytics.io")
+        self.assertIn("output LOG_ANALYTICS_QUERY_HOSTS string = join(",
+                      (ROOT / "infra/main.bicep").read_text())
+
+    def test_automates_lifecycle_in_order_and_checks_public_configuration(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        starts = [call for call in self.calls() if call.startswith("containerapp job start")]
+        self.assertEqual([call.split("--name ")[1].split()[0] for call in starts],
+                         ["secrets", "init", "bridge", "publish"])
+        self.assertIn("deployment ready", result.stdout)
+        self.assertNotIn("by hand", result.stdout)
+        self.assertNotIn("Directory Readers", result.stdout)
+
+
+    def test_registration_uses_complete_execution_override_without_replacing_iris_defaults(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call.startswith("containerapp job update") for call in self.calls()))
+        template = json.loads(Path(str(self.log) + ".registration.json").read_text())
+        [container] = template["containers"]
+        env = {v["name"]: v.get("value") for v in container["env"]}
+        self.assertEqual(env["BRIDGE_STEP"], "register-apps")
+        self.assertEqual(env["IRIS_CAMPAIGN"], "overproof-100-v12")
+        self.assertIn({"name": "PRIVATE_SETTING", "secretRef": "runtime-secret"}, container["env"])
+        self.assertEqual(container["image"], "fixture@sha256:unchanged")
+        self.assertEqual(container["resources"], {"cpu": 0.5, "memory": "1Gi"})
+        self.assertEqual(container["volumeMounts"], [{"volumeName": "project", "mountPath": "/project"}])
+        self.assertEqual(template["volumes"][0]["name"], "project")
+        acquires = [i for i, c in enumerate(self.calls()) if c.startswith("storage blob lease acquire")]
+        starts = [i for i, c in enumerate(self.calls()) if c.startswith("containerapp job start") and "--yaml" in c]
+        releases = [i for i, c in enumerate(self.calls()) if c.startswith("storage blob lease release")]
+        self.assertEqual(len(acquires), 1)
+        self.assertEqual(len(releases), 1)
+        self.assertLess(acquires[0], starts[0])
+        self.assertLess(starts[0], releases[0])
+
+    def test_registration_preflight_failures_release_lease_without_starting(self):
+        for variable in ("STUB_REGISTRATION_LIST_FAIL", "STUB_REGISTRATION_ACTIVE"):
+            with self.subTest(variable=variable):
+                self.log.write_text("")
+                result = self.run_script(**{variable: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(call.startswith("containerapp job start") and "--name bridge" in call
+                                     for call in self.calls()))
+                self.assertEqual(sum(call.startswith("storage blob lease acquire") for call in self.calls()), 1)
+                self.assertEqual(sum(call.startswith("storage blob lease release") for call in self.calls()), 1)
+                self.assertNotIn("lease retained", result.stderr)
+
+    def test_failed_stack_deployment_never_auto_releases_the_lease(self):
+        # A failed `stack group create` can still be rewriting job templates in Azure, which no
+        # execution listing shows: the lease stays for the operator.
+        result = self.run_script(STUB_STACK_FAILURE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed", result.stderr)
+        self.assertTrue(any(call.startswith("storage blob lease acquire") for call in self.calls()))
+        self.assertIn("lease retained", result.stderr)
+        self.assertNotIn("releasing the cross-host lease", result.stderr)
+        self.assertFalse(any(call.startswith("storage blob lease release") for call in self.calls()))
+
+    def test_failed_registration_start_releases_lease_once_listed(self):
+        # The start call failed and returned no execution: once the job's executions have been
+        # listed for the settling window, anything it did start is visible, so the lease goes.
+        result = self.run_script(STUB_REGISTRATION_START_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("releasing the cross-host lease", result.stderr)
+        self.assertNotIn("lease retained", result.stderr)
+        self.assertTrue(any(call.startswith("containerapp job start") and "--yaml" in call
+                            for call in self.calls()))
+        self.assertTrue(any(call.startswith("storage blob lease release") for call in self.calls()))
+
+    def test_failed_init_or_publish_never_reports_readiness(self):
+        for variable in ["STUB_INIT_STATUS", "STUB_PUBLISH_STATUS"]:
+            result = self.run_script(**{variable: "Failed"})
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("deployment ready", result.stdout)
+
+    def test_running_quality_job_does_not_block_appver_publish_or_server_rollout(self):
+        appver = "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:" + "a" * 64
+        for args in (
+            ("--publish-image", appver),
+            (),
+        ):
+            with self.subTest(args=args):
+                self.log.write_text("")
+                result = self.run_script(*args, STUB_QUALITY_ACTIVE="1")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                starts = [call.split("--name ")[1].split()[0]
+                          for call in self.calls() if call.startswith("containerapp job start")]
+                self.assertEqual(starts, ["secrets", "init", "bridge", "publish"])
+                # The stack carries the quality job's template (qualityWave), but provisioning
+                # never starts, stops or waits on its runs: a template update reaches only the
+                # next run, so a running wave neither blocks a deploy nor is touched by one.
+                self.assertFalse(any(name in call for call in self.calls()
+                                     if call.startswith("containerapp job")
+                                     for name in ("--name quality ", "usnm-boinc-quality-caj")))
+
+    def test_running_bridge_job_blocks_only_bridge_template_update(self):
+        committed_bridge = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())["images"]["bridge"]
+        appver = "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:" + "a" * 64
+        for args in (
+            ("--publish-image", appver),
+            (),
+        ):
+            with self.subTest(non_conflicting=args):
+                self.log.write_text("")
+                result = self.run_script(*args, STUB_BRIDGE_ACTIVE="1",
+                                         STUB_BRIDGE_CLEAN_ENV="1",
+                                         STUB_DEPLOYED_BRIDGE_IMAGE=committed_bridge)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                starts = [call.split("--name ")[1].split()[0]
+                          for call in self.calls() if call.startswith("containerapp job start")]
+                self.assertEqual(starts, ["secrets", "init", "publish"])
+                self.assertEqual(sum(call.startswith("storage blob lease acquire") for call in self.calls()), 1)
+                self.assertEqual(sum(call.startswith("storage blob lease release") for call in self.calls()), 1)
+                self.assertIn("deferring bridge registration while bridge-existing-execution is running",
+                              result.stdout)
+
+        for env in (
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": "fixture@sha256:stale"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge,
+             "STUB_DEPLOYED_BRIDGE_STEP": "submit"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge,
+             "STUB_DEPLOYED_STORAGE_NAME": "other-project"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge,
+             "STUB_DEPLOYED_MOUNT_OPTIONS": "mfsymlinks,uid=1000,gid=1000"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge,
+             "STUB_STACK_SHOW_FAIL_AFTER": "7"},
+            {"STUB_DEPLOYED_BRIDGE_IMAGE": committed_bridge},
+        ):
+            with self.subTest(conflicting_env=env):
+                self.log.write_text("")
+                Path(str(self.log) + ".stack_show_count").unlink(missing_ok=True)
+                result = self.run_script(STUB_BRIDGE_ACTIVE="1", **env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("bridge already has an active execution", result.stderr)
+                self.assertEqual(sum(call.startswith("storage blob lease acquire") for call in self.calls()), 1)
+                self.assertEqual(sum(call.startswith("storage blob lease release") for call in self.calls()), 1)
+                self.assertFalse(any(call.startswith(("stack group create", "containerapp job start"))
+                                     for call in self.calls()))
+
+        self.log.write_text("")
+        result_publish = self.run_script("--publish-image", "", STUB_PUBLISH_ACTIVE="1")
+        self.assertNotEqual(result_publish.returncode, 0)
+        self.assertIn("publish already has an active execution", result_publish.stderr)
+        self.assertFalse(any(call.startswith(("stack group create", "containerapp job start"))
+                             for call in self.calls()))
+
+        self.log.write_text("")
+        result_gold_ok = self.run_script("--publish-image", appver, STUB_GOLD_ACTIVE="1",
+                                         STUB_BRIDGE_CLEAN_ENV="1",
+                                         STUB_DEPLOYED_GOLD_IMAGE=committed_bridge)
+        self.assertEqual(result_gold_ok.returncode, 0, result_gold_ok.stderr)
+        starts = [call.split("--name ")[1].split()[0]
+                  for call in self.calls() if call.startswith("containerapp job start")]
+        self.assertEqual(starts, ["secrets", "init", "bridge", "publish"])
+
+        for gold_env in (
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_GOLD_IMAGE": "fixture@sha256:stale"},
+            {"STUB_BRIDGE_CLEAN_ENV": "1", "STUB_DEPLOYED_GOLD_IMAGE": committed_bridge,
+             "STUB_DEPLOYED_GOLD_STEP": "submit"},
+            {"STUB_DEPLOYED_GOLD_IMAGE": committed_bridge},
+        ):
+            with self.subTest(conflicting_gold_env=gold_env):
+                self.log.write_text("")
+                result_gold_conflict = self.run_script("--publish-image", appver, STUB_GOLD_ACTIVE="1", **gold_env)
+                self.assertNotEqual(result_gold_conflict.returncode, 0)
+                self.assertIn("gold already has an active execution", result_gold_conflict.stderr)
+                self.assertFalse(any(call.startswith(("stack group create", "containerapp job start"))
+                                     for call in self.calls()))
+
+    def test_rejects_placeholder_foreign_or_stopped_project(self):
+        for health in [
+            "not initialised",
+            self.env["STUB_HEALTH"].replace("boinc.usnewsmap.com", "example.org"),
+            self.env["STUB_HEALTH"].replace("<sched_stopped>0", "<sched_stopped>1"),
+        ]:
+            result = self.run_script(STUB_HEALTH=health)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("deployment ready", result.stdout)
+
+
+class OnPremServer(unittest.TestCase):
+    """"server": "onprem" (#942): the stack keeps only what the on-prem server uses.
+    Borrows Provision's fixture without inheriting its Azure lifecycle tests."""
+
+    run_script = Provision.run_script
+    calls = Provision.calls
+
+    def setUp(self):
+        Provision.setUp(self)
+        settings = json.loads(self.settings.read_text())
+        settings["server"] = "onprem"
+        self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+
+    def deploys(self):
+        # No log at all: the run stopped before any Azure call.
+        if not self.log.exists():
+            return []
+        return [c for c in self.calls() if c.startswith("stack group create")]
+
+    def test_deploys_without_lifecycle_jobs_and_checks_the_master_url(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.deploys()), 1)
+        self.assertFalse(any(c.startswith("containerapp job start") for c in self.calls()))
+        self.assertIn("reduced to the on-prem set", result.stdout)
+
+    def test_passes_server_on_prem_to_the_template(self):
+        # The parameters file is deleted on exit; the stack call names it, and its content
+        # comes from write_params, which reads the settings' server.
+        script = (ROOT / "scripts/boinc/provision-boinc.sh").read_text()
+        self.assertIn('serverOnPrem: {value: (($s | fromjson | .server // "azure") == "onprem")}', script)
+
+    def test_a_stopped_or_foreign_project_fails_the_check(self):
+        for health in (
+            '<project_config><master_url>https://elsewhere.example/</master_url>'
+            '<web_stopped>0</web_stopped><sched_stopped>0</sched_stopped></project_config>',
+            '<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
+            '<web_stopped>0</web_stopped><sched_stopped>1</sched_stopped></project_config>',
+            'not xml',
+        ):
+            with self.subTest(health=health[:40]):
+                result = self.run_script(STUB_HEALTH=health)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_maintenance_accepts_a_closed_scheduler(self):
+        health = ('<project_config><master_url>https://boinc.usnewsmap.com/</master_url>'
+                  '<web_stopped>0</web_stopped><sched_stopped>1</sched_stopped></project_config>')
+        result = self.run_script(STUB_HEALTH=health, BOINC_MAINTENANCE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refuses_while_a_job_it_would_delete_is_running(self):
+        result = self.run_script(STUB_JOB_LIST="bridge gold", STUB_GOLD_ACTIVE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gold is still running", result.stderr)
+        self.assertEqual(self.deploys(), [])
+
+    def test_refuses_when_the_jobs_cant_be_listed(self):
+        result = self.run_script(STUB_JOB_LIST_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not list the jobs", result.stderr)
+        self.assertEqual(self.deploys(), [])
+
+    def test_only_azure_or_onprem_is_a_server(self):
+        settings = json.loads(self.settings.read_text())
+        for value in ("onpre", "", "azur", ["onprem"]):
+            with self.subTest(value=value):
+                settings["server"] = value
+                self.settings.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n")
+                result = self.run_script()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("server must be azure or onprem", result.stderr)
+                self.assertEqual(self.deploys(), [])
+
+
+class ProjectInitialization(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.project = self.root / "project/usnmocr"
+        self.project.mkdir(parents=True)
+        lib = self.root / "lib.sh"
+        lib.write_text(
+            f'PROJ="{self.project}"\nSHARE_DIR="{self.project.parent}"\n'
+            f'SECRETS="{self.root}/secrets"\n'
+            'PROJECT=usnmocr\n'
+            'fail() { echo "$*" >&2; exit 1; }\nlog() { echo "$*"; }\n'
+        )
+        source = ROOT / "contrib-compute/images/server/entrypoint.sh"
+        self.script = self.root / "entrypoint.sh"
+        self.script.write_text(source.read_text().replace("/usr/local/lib/usnm-boinc/lib.sh", str(lib)))
+
+    def run_script(self, mode):
+        return subprocess.run(["bash", str(self.script), mode], capture_output=True, text=True)
+
+    def test_completed_initialization_is_idempotent_and_explicit_init_still_refuses(self):
+        (self.project / ".usnm-initialised").touch()
+        (self.project / "html/inc").mkdir(parents=True)
+        (self.project / "html/inc/boinc_db.inc").touch()
+        (self.project / "bin").mkdir()
+        xadd = self.project / "bin/xadd"
+        xadd.write_text("#!/bin/sh\nexit 99\n")
+        xadd.chmod(0o755)
+        result = self.run_script("--ensure-project")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already initialised", result.stdout)
+        self.assertNotEqual(self.run_script("--init-project").returncode, 0)
+
+    def test_partial_project_or_broken_marker_never_triggers_destructive_recovery(self):
+        (self.project / "existing-data").write_text("preserve")
+        result = self.run_script("--ensure-project")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing destructive", result.stderr)
+        self.assertEqual((self.project / "existing-data").read_text(), "preserve")
+        (self.project / ".usnm-initialised").touch()
+        result = self.run_script("--ensure-project")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("tree is incomplete", result.stderr)
+        source = (ROOT / "contrib-compute/images/server/entrypoint.sh").read_text()
+        self.assertNotIn("--drop_db_first", source)
+        self.assertNotIn("--delete_prev_inst", source)
+
+
+class TlsSettings(unittest.TestCase):
+    def test_committed_boolean_and_legacy_default_are_preserved(self):
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        self.assertIs(settings["requireSecureTransport"], False)
+        for value in (None, False, True):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                candidate = dict(settings)
+                if value is None:
+                    candidate.pop("requireSecureTransport")
+                else:
+                    candidate["requireSecureTransport"] = value
+                path = Path(directory) / "settings.json"
+                path.write_text(json.dumps(candidate, sort_keys=True))
+                result = self.load(path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "true" if value is True else "false")
+
+    def test_explicit_null_strings_numbers_and_objects_are_rejected(self):
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        for value in (None, "true", "false", 0, 1, {}, []):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                path = Path(directory) / "settings.json"
+                path.write_text(json.dumps({**settings, "requireSecureTransport": value}, sort_keys=True))
+                result = self.load(path)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("requireSecureTransport must be true or false", result.stderr)
+
+    def load(self, path):
+        return subprocess.run(
+            ["bash", "-c", 'set -eu; ENV_NAME=prod; die() { echo "$*" >&2; exit 1; }; '
+             '. scripts/lib/boinc.sh; BOINC_SETTINGS="$1"; boinc_load_settings; '
+             'printf "%s\\n" "$REQUIRE_SECURE_TRANSPORT"', "fixture", str(path)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+
+    def test_parameter_writer_forwards_boolean_not_string(self):
+        source = (ROOT / "scripts/boinc/provision-boinc.sh").read_text()
+        writer = source[source.index("write_params() {"):source.index("STAGE=$(domain_stage)")]
+        for value in ("true", "false"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                setup = (
+                    'set -eu; runtime_principal=x; secrets_principal=y; ASSESSMENT=false; '
+                    'GOLD_BUNDLE=false; DNS_ZONE=example.org; REGISTRY_RG=rg; REGISTRY_NAME=registry; '
+                    'ENV_NAME=prod; LOCATION=westus2; SERVER_IMAGE=; BRIDGE_IMAGE=; PUBLISH_IMAGE=; '
+                    'MASTER_HOST=boinc.usnewsmap.com; OPERATOR_ID=x; WEB_IMAGE=immutable-web; '
+                    'BOINC_SETTINGS=contrib-compute/infra/boinc/env/prod.json; '
+                    'work="$1"; REQUIRE_SECURE_TRANSPORT="$2"; '
+                )
+                result = subprocess.run(["bash", "-c", setup + writer + '\nwrite_params 2',
+                                         "fixture", directory, value], cwd=ROOT,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parameters = json.loads((Path(directory) / "params.json").read_text())["parameters"]
+                self.assertIs(parameters["requireSecureTransport"]["value"], value == "true")
+                self.assertEqual(parameters["webImage"]["value"], "immutable-web")
+
+
+class ProductionReconciliation(unittest.TestCase):
+    def test_optional_web_image_is_validated_and_loaded_without_changing_lifecycle_images(self):
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        web = settings["images"]["web"]
+        for value in ("absent", "", web, None, False, 42, "mutable:latest"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(dir=ROOT) as directory:
+                candidate = json.loads(json.dumps(settings))
+                if value == "absent":
+                    candidate["images"].pop("web")
+                else:
+                    candidate["images"]["web"] = value
+                path = Path(directory) / "settings.json"
+                path.write_text(json.dumps(candidate, sort_keys=True))
+                result = subprocess.run([
+                    "bash", "-c", 'ENV_NAME=prod; die() { echo "$*" >&2; exit 1; }; '
+                    '. scripts/lib/boinc.sh; BOINC_SETTINGS="$1"; boinc_load_settings; '
+                    'printf "%s\\n%s\\n%s" "$WEB_IMAGE" "$SERVER_IMAGE" "$BRIDGE_IMAGE"',
+                    "fixture", str(path)], cwd=ROOT, text=True, capture_output=True)
+                if value in ("absent", "", web):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(), [
+                        "" if value == "absent" else value,
+                        settings["images"]["server"], settings["images"]["bridge"]])
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_build_replaces_additive_web_pin_with_rebuilt_bridge_containing_endpoint(self):
+        source = (ROOT / "scripts/boinc/build-boinc-images.sh").read_text()
+        expression = source.split('--arg b "$bridge_image" ')[1].split("'", 2)[1]
+        for images in ({"server": "old", "bridge": "old"},
+                       {"server": "old", "bridge": "old", "web": "additive"}):
+            result = subprocess.run(["jq", "--arg", "s", "new-server", "--arg", "b", "new-bridge",
+                                     expression], input=json.dumps({"images": images}),
+                                    text=True, capture_output=True, check=True)
+            actual = json.loads(result.stdout)["images"]
+            self.assertEqual(actual["server"], "new-server")
+            self.assertEqual(actual["bridge"], "new-bridge")
+            self.assertEqual(actual.get("web"), "new-bridge" if "web" in images else None)
+
+    def test_project_share_moves_to_provisioned_v2_in_stages(self):
+        source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()
+        storage = (ROOT / "contrib-compute/infra/boinc/modules/storage.bicep").read_text()
+        app = (ROOT / "contrib-compute/infra/boinc/modules/app.bicep").read_text()
+        # Provisioned v2 SSD: no per-operation billing; SMB for the same mount.
+        v2 = storage.split("resource v2 ")[1].split("resource v2Endpoint")[0]
+        self.assertIn("kind: 'FileStorage'", v2)
+        self.assertIn("sku: { name: 'PremiumV2_LRS' }", v2)
+        self.assertIn("enabledProtocols: 'SMB'", storage.split("resource v2Share")[1])
+        # The old account stays until the last stage, so the cutover can be rolled back.
+        self.assertIn("legacyShare: projectShare != 'provisioned-final'", source)
+        self.assertIn("provisionedShare: projectShare != 'standard'", source)
+        self.assertIn("var projectOnV2 = projectShare == 'provisioned' || projectShare == 'provisioned-final'", source)
+        # The copy stage fills the new share with AzCopy, pinned by sha256, as its own identity,
+        # REST to REST (listing the old share over SMB took most of every pass): privileged
+        # read on the old account, privileged write on the new one, nothing wider.
+        job = source.split("module shareCopyJob ")[1].split("module secretsJob ")[0]
+        self.assertIn("if (withApp && projectShare == 'copy')", job)
+        self.assertIn('sha256sum -c -', job)
+        self.assertIn('azcopy sync "$SHARE_COPY_SRC" "$SHARE_COPY_DEST"', job)
+        self.assertIn("'SHARE_COPY_SRC', value: 'https://${names.files}.file.", job)
+        self.assertIn("69566ab7-960f-475b-8e7c-b3118f30c6bd", storage.split("resource copyWriter")[1].split("resource ")[0])
+        self.assertIn("scope: v2", storage.split("resource copyWriter")[1])
+        self.assertIn("b8eda974-7b85-4f76-af95-65846b26df6d", storage.split("resource copyReader")[1].split("output ")[0])
+        self.assertIn("scope: files", storage.split("resource copyReader")[1])
+        self.assertNotIn("SAS", job)
+        # It mounts neither share: the SMB mount would be read-write with the account key.
+        self.assertIn("mountProject: false", job)
+        bridge_job = (ROOT / "contrib-compute/infra/boinc/modules/bridge-job.bicep").read_text()
+        self.assertIn("volumes: mountProject ?", bridge_job)
+        # Each account has its own environment storage name, so switching (or rolling back)
+        # changes the revision template and no running replica keeps the old mount.
+        self.assertIn("name: projectStorageName", app)
+        self.assertIn("projectStorageName: projectOnV2 ? 'project-v2' : 'project'", source)
+        # Leaving the copy stage needs a final copy that succeeded, and none running.
+        provision = (ROOT / "scripts/boinc/provision-boinc.sh").read_text()
+        gate = provision.split('copy_job="usnm-boinc-sharecopy-caj-')[1].split("\nfi\n")[0]
+        self.assertIn("is still running", gate)
+        self.assertIn('.s == "Succeeded"', gate)
+        self.assertIn("grep -q ResourceNotFound", gate)
+        # Active-job checks expect the storage name of the selected stage.
+        self.assertIn('.volumes[0].storageName == $storage', provision)
+        self.assertIn("PROJECT_STORAGE=project-v2", provision)
+        # The cutover provision runs with the scheduler closed on purpose.
+        # The public health check is shared with the on-prem app release, in scripts/lib/boinc.sh.
+        self.assertIn('sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)',
+                      (ROOT / "scripts/lib/boinc.sh").read_text())
+        # Uploads and scheduler requests stop during the final copy; Apache stays up.
+        runbook = (ROOT / "docs/boinc/server-and-apps.md").read_text().split("## Moving the project share")[1].split("\n## ")[0]
+        self.assertIn("touch stop_sched stop_upload", runbook)
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/schema.json").read_text())
+        self.assertEqual(settings["properties"]["projectShare"]["enum"],
+                         ["standard", "copy", "provisioned", "provisioned-final"])
+
+    def test_key_vault_opens_only_to_listed_ips_behind_a_vault_scoped_exemption(self):
+        vault = (ROOT / "contrib-compute/infra/boinc/modules/keyvault.bicep").read_text()
+        self.assertIn("publicNetworkAccess: open ? 'Enabled' : 'Disabled'", vault)
+        self.assertIn("defaultAction: 'Deny', bypass: 'None', ipRules: [for ip in allowedIps: { value: ip }]", vault)
+        self.assertIn("usnm-boinc-kv-home-ip", vault)  # the exemption is on this vault alone
+        settings = json.loads((ROOT / "contrib-compute/infra/boinc/env/prod.json").read_text())
+        self.assertTrue(all(re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) for ip in settings.get("keyVaultAllowedIps", [])))
+
+    def test_live_iris_settings_quota_and_additive_endpoint_are_preserved(self):
+        source = (ROOT / "contrib-compute/infra/boinc/main.bicep").read_text()
+        bridge = source.split("module bridgeJob ")[1].split("module initJob ")[0]
+        self.assertIn("value: 'iris-bundle-collect'", bridge)
+        self.assertIn("value: 'overproof-100-v12'", bridge)
+        # The live share quota (raised by hand from 200 GB after #858), so a provision never
+        # shrinks it under live data.
+        self.assertIn("shareQuotaGb: 250", source)
+        self.assertIn("!empty(webImage) ? webImage", source)
+        self.assertIn("command: assessment || !empty(webImage)", source)
+        self.assertTrue((ROOT / "contrib-compute/boinc/html/user/work_summary.php").is_file())
+        # The quality runner's template is in the stack (qualityWave), but provisioning only
+        # updates it: the job is started by hand, and a running wave keeps the template it
+        # started with.
+        quality = source.split("module qualityWaveJob ")[1].split("module secretsJob ")[0]
+        # Each shard's exit status reaches the job's: a failed shard fails the run.
+        self.assertIn('wait "$p" || rc=1', quality)
+        self.assertIn('exit "$rc"', quality)
+        provision = (ROOT / "scripts/boinc/provision-boinc.sh").read_text()
+        # Removing qualityWave deletes the job, so it waits for a running wave.
+        self.assertIn("removing qualityWave would delete it", provision)
+        self.assertIn("if (withApp && !empty(qualityWaveScript))", quality)
+        self.assertIn("sha256sum -c -", quality)
+
+
+if __name__ == "__main__":
+    unittest.main()

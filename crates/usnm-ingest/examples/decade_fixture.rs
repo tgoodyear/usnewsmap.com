@@ -1,5 +1,5 @@
 //! The fixture indexes laid out by decade (05 §5.5.5, #123), for
-//! scripts/quickwit-fixtures.sh and the parity test:
+//! scripts/dev/quickwit-fixtures.sh and the parity test:
 //!
 //! - `decade_fixture --template partitioned|tagged`: the index template on
 //!   stdin, with the `decade` field and its partitions (a full base) or its

@@ -13,7 +13,7 @@ One JSON object a line:
 
 - `language`: the MARC code the detector reports (`ger`, `hrv`); `wordlist`: its word list (`de`, `sh`);
 - `source` (`wikipedia` or `wikisource`), `wiki` (the domain), `title` (the page read) and `revid`, the revision read; `url` is that revision's permalink;
-- for Wikisource: `work` (the Wikidata item, if it has one), `author`, `year` (of publication) and `year_source` (where it comes from: the item's publication date, P577, for all but the few works Wikidata doesn't date), `decade`, `median_decade` (the language's median decade in our corpus: the decade where its pages in the OCR audit's `by_language_decade` table, `docs/reports/2026-10-language-analysis/data/ocr-quality-v2-10pct.jsonl`, reach half, or the corpus's own median decade for a language with fewer than 50 pages there), `target_decade` (the decade the script looked in first), `decade_note` (why they differ) and `copyright`;
+- for Wikisource: `work` (the Wikidata item, if it has one), `author`, `year` (of publication) and `year_source` (where it comes from: the item's publication date, P577, for all but the few works Wikidata doesn't date), `decade`, `median_decade` (the language's median decade in our corpus: the decade where its pages in the OCR audit's `by_language_decade` table, `docs/reports/2026-10-language-analysis/data/ocr-quality-v2-10pct.jsonl`, reach half, or the corpus's own median decade for a language with fewer than 50 pages there), `target_decade` (the decade the script looked in first), `decade_note` (why they differ) and `copyright`; The report's data files are fetched with `scripts/ops/data-assets.sh --fetch --set report-data`.
 - for Wikipedia: `licence`;
 - `words` and `text`: the prose, a paragraph a line. Only `<p>` paragraphs of 6 words or more are kept, without headings, references, tables, lists, figures, quotations, poems, page numbers or templates' boxes, and the last is cut at the end of the sentence that reaches 300 words;
 - `expect` (added by hand): where the detector can't tell the sample's language from another on this text, the candidate languages (in title order), the result it gives (a code, `und`, or `mixed` and two codes) and why. The test checks that result instead of the sample's language, so a change shows either way.
@@ -26,7 +26,7 @@ The Wikipedia excerpts are shared under the Creative Commons Attribution-ShareAl
 
 Each Wikisource text was published in 1930 or earlier, so it is in the public domain in the US. Some are translations; their year is the translation's, from the Wikidata item of that edition. A language's texts come from its median decade in our corpus if that is the 1920s or earlier, and from the 1920s (to 1930) if it is later. When Wikisource has too few texts of that decade with an author, a sourced date and enough prose, they come from the nearest decade that has them. Each sample's `decade_note` says which. They are:
 
-<!-- The list below is written by scripts/page-language-samples.py. -->
+<!-- The list below is written by scripts/data/page-language-samples.py. -->
 
 - `ara`: الأدب الكبير/مقدمة, by عبد الله بن المقفع, 1912 (ar.wikisource.org)
 - `ara`: مجلة البيان للبرقوقي/العدد 50/ملكة الورق, by ألكسندر بوشكين, 1919 (ar.wikisource.org)
@@ -127,8 +127,8 @@ Every language has three Wikipedia excerpts. In these languages, Wikisource has 
 The script reads Wikidata's query service and the MediaWiki API, one request at a time with a descriptive User-Agent, waiting out rate limits, so a full run takes an hour or two. Regenerate some languages (the others' samples are kept, and so is a sample's `expect` when the same revision is chosen again), or check that every sample's revision still gives the same text:
 
 ```sh
-scripts/page-language-samples.py --languages ger,fre
-scripts/page-language-samples.py --check
+scripts/data/page-language-samples.py --languages ger,fre
+scripts/data/page-language-samples.py --check
 ```
 
 MediaWiki renders an old revision with today's templates, and a Wikisource text transcluded from its scans' `Page:` pages with their current revisions, so `--check` can report a change the pinned revision doesn't explain. When it does, regenerate that language. Then run the test:
