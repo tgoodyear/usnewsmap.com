@@ -127,7 +127,8 @@ fn unix_days(d: NaiveDate) -> i32 {
     i32::try_from((d - epoch).num_days()).expect("dates fit in i32 days")
 }
 
-pub(crate) fn from_unix_days(n: i32) -> NaiveDate {
+/// A Parquet `Date32` (days since 1970-01-01) as a date.
+pub fn from_unix_days(n: i32) -> NaiveDate {
     NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid") + chrono::Duration::days(i64::from(n))
 }
 

@@ -201,6 +201,7 @@ impl Fx {
             reference: self.reference.as_ref(),
             queue: &self.queue,
             out: Some(self.out.as_ref()),
+            american_stories: None,
         };
         seed::run(&self.state, "test", &stores, opts).await
     }
@@ -638,6 +639,7 @@ async fn a_failed_put_leaves_the_rest_not_sent_and_they_go_out_next_run() {
         reference: fx.reference.as_ref(),
         queue: &flaky,
         out: None,
+        american_stories: None,
     };
     let err = seed::run(&fx.state, "test", &stores, &plan(5))
         .await
@@ -880,4 +882,81 @@ fn marc_codes_are_taken_as_iso() {
     );
     assert!("fetched".parse::<seed::Source>().unwrap() == seed::Source::Fetched);
     assert!("nope".parse::<seed::Source>().is_err());
+}
+
+/// American Stories' texts for the pages it is told about, by doc id.
+#[derive(Debug)]
+struct Texts(std::collections::HashMap<String, String>);
+
+#[async_trait::async_trait]
+impl seed::AmericanStories for Texts {
+    async fn texts(
+        &self,
+        _curated: &dyn ObjectStore,
+        _batch: &RunBatch,
+        lccn: &str,
+    ) -> anyhow::Result<std::collections::HashMap<String, String>> {
+        Ok(self
+            .0
+            .iter()
+            .filter(|(id, _)| id.starts_with(lccn))
+            .map(|(id, text)| (id.clone(), text.clone()))
+            .collect())
+    }
+}
+
+const CLEAN: &str = "The committee of the house met on the following morning to consider the \
+    bill which had been laid before them by the governor of the state, and after a long \
+    debate upon the question of the public lands they agreed that the measure should be \
+    sent to the senate with the amendments that had been proposed by the members from the \
+    northern counties, who thought that the money would be better spent upon the roads.";
+
+#[tokio::test]
+async fn skipping_by_american_stories_needs_its_texts_from_the_caller() {
+    let fx = fixture().await;
+    let opts = Options {
+        skip_american_stories: true,
+        ..plan(100)
+    };
+    let err = fx.seed(&opts).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("needs American Stories' texts"),
+        "{err:#}"
+    );
+    assert_eq!(fx.queue.approximate_count(BULK).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_page_whose_american_stories_text_is_undamaged_is_skipped() {
+    let fx = fixture().await;
+    let texts = Texts(
+        [doc(ENG, 7, 1), doc(ENG, 7, 2)]
+            .into_iter()
+            .map(|id| (id, CLEAN.to_owned()))
+            .collect(),
+    );
+    let stores = seed::Stores {
+        curated: fx.curated.as_ref(),
+        reference: fx.reference.as_ref(),
+        queue: &fx.queue,
+        out: Some(fx.out.as_ref()),
+        american_stories: Some(&texts),
+    };
+    let opts = Options {
+        skip_american_stories: true,
+        ..plan(100)
+    };
+    let r = seed::run(&fx.state, "test", &stores, &opts).await.unwrap();
+    // The two English pages American Stories reads cleanly stay home; the
+    // rest of the fixture goes out as in `a_dry_run_ranks_units_and_writes_nothing`.
+    assert_eq!(r.skipped.get("american_stories_undamaged"), Some(&2));
+    assert_eq!(r.queued, 9);
+    let queued: Vec<String> = fx
+        .drain()
+        .await
+        .iter()
+        .map(|m| m.key().unwrap().doc_id())
+        .collect();
+    assert!(!queued.contains(&doc(ENG, 7, 1)));
+    assert!(queued.contains(&doc(ENG, 7, 3)));
 }

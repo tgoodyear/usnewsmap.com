@@ -86,7 +86,7 @@ pub async fn reserve(
         !rows.is_empty() && rows.len() <= 100,
         "reserve 1 to 100 pages"
     );
-    let owner = crate::owner_id();
+    let owner = usnm_state::owner_id();
     let lease = Lease::take(state, &owner).await?;
     let result = async {
         anyhow::ensure!(
@@ -153,7 +153,7 @@ pub async fn adopt(
         !rows.is_empty() && rows.len() <= 100,
         "adopt 1 to 100 pages"
     );
-    let owner = crate::owner_id();
+    let owner = usnm_state::owner_id();
     let lease = Lease::take(state, &owner).await?;
     let result = async {
         anyhow::ensure!(
@@ -203,7 +203,7 @@ pub struct Held {
 
 impl Held {
     pub async fn take(state: &State) -> anyhow::Result<Self> {
-        let owner = crate::owner_id();
+        let owner = usnm_state::owner_id();
         let lease = Lease::take(state, &owner).await?;
         Ok(Self { lease, owner })
     }

@@ -739,7 +739,7 @@ impl Volume {
             h.update(lastmod.as_bytes());
             h.update(b"\n");
         }
-        crate::source::hex(&h.finalize())
+        usnm_core::digest::hex(&h.finalize())
     }
 }
 
@@ -1301,9 +1301,9 @@ pub async fn run(
 
 /// Hold [`LOCK`] while `body` runs, renewing it; `lost` is set if a renewal
 /// fails. A holder that `gone` says has stopped is taken over at once
-/// (the on-prem runner's [`crate::local_holder`]; `|_| false` otherwise).
+/// (the on-prem runner's `usnm_ingest::local_holder`; `|_| false` otherwise).
 pub async fn locked<T>(
-    state: &crate::state::State,
+    state: &usnm_state::state::State,
     owner: &str,
     gone: &(dyn Fn(&str) -> bool + Send + Sync),
     body: impl std::future::Future<Output = anyhow::Result<T>>,

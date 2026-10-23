@@ -31,7 +31,7 @@ use super::pages::{self, Scores, StoredRow};
 use super::report::{engine_key, Tally as Count};
 use super::rule::{self, Keep};
 use super::ROOT;
-use crate::source::hex;
+use usnm_core::digest::hex;
 
 /// Where revocations are.
 pub fn revoked_prefix() -> String {

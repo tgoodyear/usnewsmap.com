@@ -431,6 +431,16 @@ class BuildInputs(unittest.TestCase):
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
 
+    def test_the_crates_split_out_of_ingest_run_what_ingest_runs(self):
+        # The Congress fetches and the local OCR pipeline are crates of their own that usnm-ingest
+        # links: the ingest image, the Quickwit job and the BOINC client rebuild for them; the
+        # web end-to-end job, the worker and the dashboard don't.
+        for path in ["crates/usnm-congress/src/lib.rs", "crates/usnm-ocr-local/src/lib.rs"]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertGreaterEqual(on, {"rust", "quickwit", "image"} | BOINC_IMAGES)
+                self.assertFalse(on & (DASHBOARD | NATIVE | {"ocr_worker", "e2e"}), on)
+
     def test_a_file_a_crate_embeds_counts_for_what_links_the_crate(self):
         # usnm-ingest embeds the catalog; the BOINC client links usnm-ingest, the worker doesn't.
         on = self.select("catalog/overrides/places.json")

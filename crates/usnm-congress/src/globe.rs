@@ -862,7 +862,7 @@ pub async fn run(
 
 /// Hold [`LOCK`] while `body` runs, renewing it; `lost` is set if a renewal fails.
 pub async fn locked<T>(
-    state: &crate::state::State,
+    state: &usnm_state::state::State,
     owner: &str,
     body: impl std::future::Future<Output = anyhow::Result<T>>,
     lost: Arc<AtomicBool>,
@@ -1322,16 +1322,16 @@ mod tests {
 
     /// Memory docs whose replaces take ten seconds, counting those that finish.
     #[derive(Default)]
-    struct SlowReplaces(crate::docs::MemoryDocs, std::sync::atomic::AtomicUsize);
+    struct SlowReplaces(usnm_state::docs::MemoryDocs, std::sync::atomic::AtomicUsize);
 
     #[async_trait::async_trait]
-    impl crate::docs::DocStore for SlowReplaces {
+    impl usnm_state::docs::DocStore for SlowReplaces {
         async fn get(
             &self,
             c: &str,
             pk: &str,
             id: &str,
-        ) -> anyhow::Result<Option<crate::docs::Versioned>> {
+        ) -> anyhow::Result<Option<usnm_state::docs::Versioned>> {
             self.0.get(c, pk, id).await
         }
         async fn create(
@@ -1362,7 +1362,7 @@ mod tests {
             c: &str,
             field: &str,
             values: &[&str],
-        ) -> anyhow::Result<Vec<crate::docs::Versioned>> {
+        ) -> anyhow::Result<Vec<usnm_state::docs::Versioned>> {
             self.0.list(c, field, values).await
         }
     }
@@ -1370,7 +1370,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_lock_is_released_after_a_renewal_under_way() {
         let docs = Arc::new(SlowReplaces::default());
-        let state = crate::state::State::new(docs.clone());
+        let state = usnm_state::state::State::new(docs.clone());
         let lost = Arc::new(AtomicBool::new(false));
         // The body ends while the first renewal (at 300 s) is still writing.
         let body = async {

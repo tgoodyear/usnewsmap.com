@@ -294,7 +294,7 @@ Without the setting nothing is read, the documents are byte for byte what they w
 
 The Congressional Globe (UNT's page OCR), the Serial Set (GovInfo, no key) and the Annals of Congress and Register of Debates (the Library of Congress's scans on Congress.gov, with our own OCR) are planned as a second corpus, searched apart from the newspapers (05 §5.5.6, 06 §6.3.10). The sources, sizes, fetch plans and the design are on #229.
 
-Phase 0 added the shapes: the page a release indexes (`usnm_ingest::congress::CongressPage`) and its engine document (`congress_doc`). Phase 1 added the first source, the Globe, and the release step. Phase 2 adds the Serial Set from GovInfo ([below](#the-serial-set-from-govinfo-phase-2)); the release takes its volumes into the same Congress set. Neither fetch has run yet. The Annals and Register wait for the Congress.gov PDFs.
+Phase 0 added the shapes: the page a release indexes (`usnm_congress::CongressPage`) and its engine document (`congress_doc`). Phase 1 added the first source, the Globe, and the release step. Phase 2 adds the Serial Set from GovInfo ([below](#the-serial-set-from-govinfo-phase-2)); the release takes its volumes into the same Congress set. Neither fetch has run yet. The Annals and Register wait for the Congress.gov PDFs.
 
 **The Globe from UNT** (`usnm-ingest congress-globe`, `congress::globe`). It runs as the manual job `usnm-cong-caj-<env>` ([operations](../operations.md#congress-pages)):
 

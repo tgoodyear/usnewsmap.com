@@ -787,7 +787,7 @@ class CatalogTests(unittest.TestCase):
             self.assertIn(phrase, result.stdout)
 
     def test_mere_worker_success_or_imported_never_implies_accepted_or_published(self):
-        sync_rs = (ROOT / "crates/usnm-ingest/src/ocr_local/sync.rs").read_text()
+        sync_rs = (ROOT / "crates/usnm-ocr-local/src/sync.rs").read_text()
         import_struct = sync_rs.split("pub struct ImportRecord {", 1)[1].split("\n}", 1)[0]
         self.assertEqual(set(re.findall(r"pub (\w+):", import_struct)),
                          {"run", "at", "index_version", "sources", "pages", "outcomes"})

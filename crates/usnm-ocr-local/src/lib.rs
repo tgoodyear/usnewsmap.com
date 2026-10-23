@@ -2,6 +2,13 @@
 //! lake (#296, 12 §12.5 Steps 8 and 10): `usnm-ingest ocr-sync`,
 //! `ocr-enqueue`, `ocr-requeue` and the seeder ([`seed`], `ocr-seed`).
 //!
+//! The crate also holds what the seeder, `ocr-sync` and `ocr-enqueue` read
+//! first: the damage tables of Step 6 ([`ocr_damage`], `usnm-ingest
+//! ocr-damage`) and the prefetch manifest built from them ([`ocr_prefetch`],
+//! `usnm-ingest ocr-prefetch-manifest`). The `usnm-ingest` binary runs all of
+//! these commands and hands the seeder what it takes from the rest of the
+//! pipeline ([`seed::AmericanStories`]).
+//!
 //! The nodes write to the exchange account's `ocr-out` and `ocr-deadletter`
 //! (ADR-0015). Everything there is untrusted: any member of the nodes'
 //! group can write or overwrite any blob in `ocr-out` and put any message
@@ -44,6 +51,8 @@
 pub mod checks;
 pub mod enqueue;
 pub mod ledger;
+pub mod ocr_damage;
+pub mod ocr_prefetch;
 pub mod pages;
 pub mod quarantine;
 pub mod replace;
@@ -52,6 +61,8 @@ pub mod requests;
 pub mod rule;
 pub mod seed;
 pub mod sync;
+
+mod metrics;
 
 use chrono::{DateTime, Utc};
 

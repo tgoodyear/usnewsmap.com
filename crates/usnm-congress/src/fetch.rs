@@ -366,7 +366,7 @@ pub async fn keep(raw: &dyn ObjectStore, path: &str, body: &[u8]) -> anyhow::Res
 /// stop between requests when it is. `name` is an item id in the `ops`
 /// container, so it has no `/`.
 pub async fn locked<T>(
-    state: &crate::state::State,
+    state: &usnm_state::state::State,
     name: &'static str,
     owner: &str,
     body: impl std::future::Future<Output = anyhow::Result<T>>,
@@ -376,10 +376,10 @@ pub async fn locked<T>(
 }
 
 /// [`locked`], taking the lock over at once from a holder that `gone` says
-/// has stopped ([`crate::state::State::lock_or_take_over`]) rather than
+/// has stopped ([`usnm_state::state::State::lock_or_take_over`]) rather than
 /// waiting out its lease. Renewals are plain: the holder is this run.
 pub async fn locked_taking_over<T>(
-    state: &crate::state::State,
+    state: &usnm_state::state::State,
     name: &'static str,
     owner: &str,
     gone: &(dyn Fn(&str) -> bool + Send + Sync),
@@ -456,7 +456,8 @@ mod tests {
     /// A gone holder's lock is taken over; a stopped body still releases it.
     #[tokio::test]
     async fn a_stopped_run_takes_over_and_releases_its_lock() {
-        let state = crate::state::State::new(Arc::new(crate::docs::MemoryDocs::default()));
+        let state =
+            usnm_state::state::State::new(Arc::new(usnm_state::docs::MemoryDocs::default()));
         let ttl = chrono::Duration::minutes(30);
         state.lock("congress-serialset", "dead", ttl).await.unwrap();
         let gone = |h: &str| h == "dead";

@@ -9,7 +9,12 @@ rust-version.workspace = true
 [dependencies]
 # The damage metric (12 §12.5 Step 6): only this binary embeds its word lists.
 usnm-core = { workspace = true, features = ["damage"] }
-usnm-alto.workspace = true
+# The Congress fetches (`usnm-ingest congress-globe`, `congress-serialset`) and the
+# release's Congress index set.
+usnm-congress.workspace = true
+# The local OCR pipeline (`ocr-sync`, `ocr-seed`, `ocr-enqueue`, `ocr-damage`, ...)
+# and the release's replacement rule.
+usnm-ocr-local.workspace = true
 usnm-ocr-route.workspace = true
 usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-overlay.workspace = true
@@ -20,9 +25,7 @@ usnm-telemetry.workspace = true
 usnm-search.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
-arrow-schema.workspace = true
 async-trait.workspace = true
-blake2.workspace = true
 bytes.workspace = true
 bzip2.workspace = true
 chrono.workspace = true
@@ -31,8 +34,6 @@ flate2.workspace = true
 futures.workspace = true
 opentelemetry.workspace = true
 parquet.workspace = true
-# The OAI-PMH listing of the Congressional Globe (congress::globe, #229).
-quick-xml.workspace = true
 reqwest = { workspace = true, features = ["stream", "http2"] }
 rskafka.workspace = true
 rustix.workspace = true

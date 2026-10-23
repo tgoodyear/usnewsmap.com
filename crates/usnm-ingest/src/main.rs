@@ -1715,7 +1715,7 @@ async fn command(
             max_runtime_secs,
             parallel,
         } => {
-            let opts = usnm_ingest::ocr_damage::Options {
+            let opts = usnm_ingest::ocr_local::ocr_damage::Options {
                 index_version: index_version.clone().unwrap_or_default(),
                 batches: batches.clone(),
                 sample_pct: *sample_pct,
@@ -1728,7 +1728,7 @@ async fn command(
             };
             let curated = usnm_store::open(&cli.stores.curated)?;
             let reference = usnm_store::open(&cli.stores.reference)?;
-            usnm_ingest::ocr_damage::run(curated, reference.as_ref(), &opts)
+            usnm_ingest::ocr_local::ocr_damage::run(curated, reference.as_ref(), &opts)
                 .await
                 .map(|()| None)
         }
@@ -1741,12 +1741,12 @@ async fn command(
             let curated = usnm_store::open(&cli.stores.curated)?;
             let reference = usnm_store::open(&cli.stores.reference)?;
             let exchange = exchange_url.as_deref().map(usnm_store::open).transpose()?;
-            let opts = usnm_ingest::ocr_prefetch::Options {
+            let opts = usnm_ingest::ocr_local::ocr_prefetch::Options {
                 index_version: index_version.clone(),
                 partial: *partial,
                 min_damage: *min_damage,
             };
-            usnm_ingest::ocr_prefetch::run(
+            usnm_ingest::ocr_local::ocr_prefetch::run(
                 curated.as_ref(),
                 reference.as_ref(),
                 exchange.as_deref(),
@@ -1795,6 +1795,10 @@ async fn command(
                 from_quarantine: from_quarantine.then(|| reason.clone()).flatten(),
                 deadline: deadline(start, *max_runtime_secs),
                 seed,
+                // Read only with `--seed-skip-american-stories`, on first use.
+                american_stories: Some(std::sync::Arc::new(
+                    usnm_ingest::american_stories::SeedTexts::default(),
+                )),
             };
             usnm_ingest::ocr_local::sync::run(&state, &owner_id(), &stores, &opts)
                 .await
@@ -1815,11 +1819,13 @@ async fn command(
             let reference = usnm_store::open(&cli.stores.reference)?;
             let queue = usnm_store::queue::open(queue_url)?;
             let out = out_url.as_deref().map(usnm_store::open).transpose()?;
+            let american_stories = usnm_ingest::american_stories::SeedTexts::default();
             let stores = usnm_ingest::ocr_local::seed::Stores {
                 curated: curated.as_ref(),
                 reference: reference.as_ref(),
                 queue: &queue,
                 out: out.as_deref(),
+                american_stories: Some(&american_stories),
             };
             let report =
                 usnm_ingest::ocr_local::seed::run(&state, &owner_id(), &stores, &opts).await?;

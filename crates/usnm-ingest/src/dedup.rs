@@ -30,7 +30,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
 use usnm_core::ids::PageKey;
 use usnm_core::text::TextStatus;
 use usnm_core::time::day_number;
@@ -40,13 +39,10 @@ use crate::curated::read_part;
 use crate::state::{RunBatch, State};
 use crate::worker::Counts;
 
-/// A copy of a page that searches must not see: the document with this id
-/// from this batch. Written to the snapshot's `duplicates.json`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Hidden {
-    pub doc_id: String,
-    pub batch: String,
-}
+/// A copy of a page that searches must not see (the snapshot's
+/// `duplicates.json`). The row type lives beside the file's name, in
+/// `usnm-state`, for the local OCR seeder and the prefetch manifest.
+pub use usnm_state::state::Hidden;
 
 /// Which copy of each duplicated page a version keeps.
 #[derive(Debug, Default)]
