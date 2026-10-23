@@ -576,6 +576,30 @@ pub trait IndexSink: Send {
     async fn line_sender(&mut self) -> anyhow::Result<Option<LineSender>> {
         Ok(None)
     }
+    /// Take up the main index `index_id` a release that stopped wrote, laid
+    /// out as `layout` says, in place of [`IndexSink::create`]: nothing is
+    /// added to it, and [`IndexSink::finish`] then counts and seals it as it
+    /// would a new one (`crate::finish`).
+    async fn attach(&mut self, index_id: &str, _layout: MainLayout) -> anyhow::Result<()> {
+        bail!("this sink can't take up `{index_id}`, an index a stopped release wrote")
+    }
+    /// Whether `index_id` exists.
+    async fn has_index(&mut self, index_id: &str) -> anyhow::Result<bool> {
+        bail!("this sink can't tell whether `{index_id}` exists")
+    }
+    /// The documents `index_id` holds where searches see them (Quickwit's
+    /// published splits).
+    async fn published_docs(&mut self, index_id: &str) -> anyhow::Result<u64> {
+        bail!("this sink can't count `{index_id}`")
+    }
+    /// The documents of `index_id` by decade, when it is partitioned by
+    /// decade (05 §5.5.5) and the sink can tell; `None` otherwise.
+    async fn decade_docs(
+        &mut self,
+        _index_id: &str,
+    ) -> anyhow::Result<Option<std::collections::BTreeMap<u16, u64>>> {
+        Ok(None)
+    }
 }
 
 /// What a sink has sent so far, and where to look for its resources.
@@ -593,6 +617,16 @@ pub struct SinkStats {
 }
 
 impl SinkStats {
+    /// Counters of their own, reporting the free space of `work_dir`: a
+    /// finish's replay counts the documents it makes again here, so the
+    /// release's progress lines follow it (`crate::finish`).
+    pub fn replaying(work_dir: Option<PathBuf>) -> Self {
+        Self {
+            work_dir,
+            ..Self::default()
+        }
+    }
+
     pub fn docs_sent(&self) -> u64 {
         self.docs_sent.load(Ordering::Relaxed)
     }
@@ -700,6 +734,46 @@ impl IndexSink for JsonlSink {
         Ok(())
     }
 
+    async fn attach(&mut self, index_id: &str, _layout: MainLayout) -> anyhow::Result<()> {
+        let path = self.dir.join(format!("{index_id}.jsonl"));
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("{} (the stopped release's index)", path.display()))?;
+        self.current = Some((path, std::io::BufWriter::new(file)));
+        Ok(())
+    }
+
+    async fn has_index(&mut self, index_id: &str) -> anyhow::Result<bool> {
+        Ok(self.dir.join(format!("{index_id}.jsonl")).exists())
+    }
+
+    async fn published_docs(&mut self, index_id: &str) -> anyhow::Result<u64> {
+        use std::io::BufRead;
+        let path = self.dir.join(format!("{index_id}.jsonl"));
+        let file = std::fs::File::open(&path).with_context(|| path.display().to_string())?;
+        Ok(std::io::BufReader::new(file).lines().count() as u64)
+    }
+
+    /// Read from the documents' own `decade` field.
+    async fn decade_docs(
+        &mut self,
+        index_id: &str,
+    ) -> anyhow::Result<Option<std::collections::BTreeMap<u16, u64>>> {
+        use std::io::BufRead;
+        let path = self.dir.join(format!("{index_id}.jsonl"));
+        let file = std::fs::File::open(&path).with_context(|| path.display().to_string())?;
+        let mut by = std::collections::BTreeMap::new();
+        for line in std::io::BufReader::new(file).lines() {
+            let doc: Value = serde_json::from_str(&line?)?;
+            let Some(decade) = doc["decade"].as_u64().and_then(|d| u16::try_from(d).ok()) else {
+                return Ok(None);
+            };
+            *by.entry(decade).or_default() += 1;
+        }
+        Ok(Some(by))
+    }
+
     fn backend(&self) -> &'static str {
         "memory"
     }
@@ -735,6 +809,12 @@ pub struct QuickwitSink {
     kafka: Option<crate::kafka::Kafka>,
     /// The index with a Kafka topic and source, when it is the current one.
     kafka_index: Option<String>,
+    /// When the writer node this release runs started, in seconds since the
+    /// epoch: splits staged before it are a stopped writer's.
+    node_started: Option<i64>,
+    /// The current index is a stopped release's, taken up by `attach`: its
+    /// Kafka source and topic may be gone already.
+    resumed: bool,
 }
 
 /// Posts ingest requests to one index on the writer node: the request,
@@ -905,6 +985,8 @@ impl QuickwitSink {
             ingest: IngestApi::default(),
             kafka: None,
             kafka_index: None,
+            node_started: None,
+            resumed: false,
         })
     }
 
@@ -919,6 +1001,7 @@ impl QuickwitSink {
         });
         self.events = Some(node.events.clone());
         self.process = Some(node.process.clone());
+        self.node_started = Some(node.started);
         self
     }
 
@@ -1044,6 +1127,22 @@ impl QuickwitSink {
         Ok(())
     }
 
+    /// [`QuickwitSink::delete_source`], for a source that may be gone.
+    async fn delete_source_if_exists(&self, index_id: &str, source_id: &str) -> anyhow::Result<()> {
+        if self
+            .node()
+            .sources(index_id)
+            .await?
+            .iter()
+            .any(|s| s == source_id)
+        {
+            self.delete_source(index_id, source_id).await
+        } else {
+            tracing::info!(index = index_id, source = source_id, "no source to delete");
+            Ok(())
+        }
+    }
+
     async fn count(&self, id: &str) -> anyhow::Result<u64> {
         let counted = self.count_once(id).await;
         merges::explained(self.events.as_deref(), counted).await
@@ -1132,6 +1231,7 @@ impl IndexSink for QuickwitSink {
         }
         self.index = Some(index_id.to_owned());
         self.split_docs = None;
+        self.resumed = false;
         Ok(())
     }
 
@@ -1242,10 +1342,19 @@ impl IndexSink for QuickwitSink {
         // get the final merge factor too (Quickwit merges by source); then
         // it and its topic go: every record is in the index.
         if via_kafka {
-            self.delete_source(&id, "kafka").await?;
+            // A stopped release's may be gone already (`attach`).
+            if self.resumed {
+                self.delete_source_if_exists(&id, "kafka").await?;
+            } else {
+                self.delete_source(&id, "kafka").await?;
+            }
             self.kafka_index = None;
             if let Some(k) = &self.kafka {
-                k.delete_topic(&id).await?;
+                if self.resumed {
+                    k.delete_topic_if_exists(&id).await?;
+                } else {
+                    k.delete_topic(&id).await?;
+                }
             }
         }
         tracing::info!(
@@ -1254,6 +1363,99 @@ impl IndexSink for QuickwitSink {
             "merged; the index is closed to further writes"
         );
         Ok(())
+    }
+
+    /// The stopped release's index, as `create` would have left it: its
+    /// split target, and its Kafka source and topic when the release sent
+    /// through Kafka. Before anything is counted or merged, its merge
+    /// policy is the template's again if the release stopped with the final
+    /// merges' in place, and the splits a stopped writer left staged are
+    /// marked for deletion: they hold no document the published splits
+    /// don't, and `publish-staged` refuses an index that has any.
+    async fn attach(&mut self, index_id: &str, layout: MainLayout) -> anyhow::Result<()> {
+        let started = self.node_started.with_context(|| {
+            format!(
+                "taking up `{index_id}` needs a writer node this command runs (--quickwit-bin): \
+                 the splits staged before it started are the stopped writer's"
+            )
+        })?;
+        let node = self.node();
+        let events = self.events.as_deref();
+        let config = merges::explained(events, node.index_config(index_id).await)
+            .await
+            .with_context(|| format!("`{index_id}` isn't in the writer's metastore"))?;
+        if let Some(fixed) = merges::template_merge_factor(&config)? {
+            tracing::warn!(
+                index = index_id,
+                "the stopped release left the final merges' merge factor in the index's config; \
+                 putting the template's back"
+            );
+            merges::explained(events, node.update_index(index_id, &fixed).await).await?;
+        }
+        let staged =
+            merges::explained(events, node.staged_splits_before(index_id, started).await).await?;
+        if !staged.is_empty() {
+            tracing::warn!(
+                index = index_id,
+                splits = staged.len(),
+                first = ?staged.iter().take(10).collect::<Vec<_>>(),
+                "marking the splits a stopped writer left staged for deletion"
+            );
+            merges::explained(events, node.mark_for_deletion(index_id, &staged).await).await?;
+        }
+        let sources = merges::explained(events, node.sources(index_id).await).await?;
+        // Only a partitioned base sends through Kafka (`create`).
+        let kafka = self.kafka.is_some() && layout.decades == Decades::Partitioned;
+        if sources.iter().any(|s| s == "kafka") && !kafka {
+            bail!(
+                "`{index_id}` has a Kafka source: set USNM_WRITER_KAFKA (and its partitions) as the \
+                 release had them, so the writer runs the source's pipelines and merges its splits"
+            );
+        }
+        if kafka {
+            self.ingest.check_kafka(true)?;
+            self.kafka_index = Some(index_id.to_owned());
+        }
+        self.index = Some(index_id.to_owned());
+        self.split_docs = layout.split_docs;
+        self.resumed = true;
+        tracing::info!(
+            index = index_id,
+            sources = ?sources,
+            split_docs = layout.split_docs,
+            "took up the stopped release's index"
+        );
+        Ok(())
+    }
+
+    async fn has_index(&mut self, index_id: &str) -> anyhow::Result<bool> {
+        let node = self.node();
+        merges::explained(self.events.as_deref(), node.has_index(index_id).await).await
+    }
+
+    async fn published_docs(&mut self, index_id: &str) -> anyhow::Result<u64> {
+        self.count(index_id).await
+    }
+
+    /// From the published splits, when each holds one decade (a partitioned
+    /// index's do).
+    async fn decade_docs(
+        &mut self,
+        index_id: &str,
+    ) -> anyhow::Result<Option<std::collections::BTreeMap<u16, u64>>> {
+        let node = self.node();
+        let splits = merges::explained(self.events.as_deref(), node.splits(index_id).await).await?;
+        if splits
+            .iter()
+            .any(|s| s.partition_id == 0 || s.decades.len() != 1)
+        {
+            return Ok(None);
+        }
+        let mut by = std::collections::BTreeMap::new();
+        for s in &splits {
+            *by.entry(s.decades[0]).or_default() += s.docs;
+        }
+        Ok(Some(by))
     }
 
     fn backend(&self) -> &'static str {
@@ -1485,6 +1687,9 @@ fn writer_log_filter(inherited: Option<&str>) -> String {
 /// the last lines into error messages.
 pub struct QuickwitNode {
     pub url: String,
+    /// When it was started, in seconds since the epoch (taken before the
+    /// process starts).
+    started: i64,
     work_dir: PathBuf,
     events: Arc<NodeEvents>,
     /// Shared with the sink, which restarts it for ingest v1's final merges.
@@ -1895,6 +2100,7 @@ impl QuickwitNode {
         metastore: &str,
         index_root: &str,
     ) -> anyhow::Result<Self> {
+        let started = chrono::Utc::now().timestamp();
         let data = work_dir.join("qwdata");
         // Only this release writes here (it holds the writer lock), and a
         // previous run's data must not come back: on a persistent scratch
@@ -1950,6 +2156,7 @@ impl QuickwitNode {
         process.spawn()?;
         let node = Self {
             url,
+            started,
             work_dir: work_dir.to_owned(),
             events,
             process,

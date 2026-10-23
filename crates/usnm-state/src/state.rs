@@ -637,6 +637,16 @@ impl State {
         .is_some())
     }
 
+    /// The last release's progress, as it last recorded it: for a release
+    /// that stopped, how many documents it had sent when it did.
+    pub async fn release_progress(&self) -> anyhow::Result<Option<ReleaseProgress>> {
+        self.docs
+            .get(OPS, RELEASE_PROGRESS, RELEASE_PROGRESS)
+            .await?
+            .map(|v| from(v).map(|(p, _)| p))
+            .transpose()
+    }
+
     /// Record the running release's progress (unconditional: only the
     /// writer-lock holder writes it).
     pub async fn set_release_progress(&self, p: &ReleaseProgress) -> anyhow::Result<()> {

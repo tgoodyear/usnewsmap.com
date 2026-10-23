@@ -16,6 +16,7 @@ pub mod congress;
 pub mod curated;
 pub mod decade_order;
 pub mod dedup;
+pub mod finish;
 pub mod heartbeat;
 pub mod kafka;
 pub mod local_holder;

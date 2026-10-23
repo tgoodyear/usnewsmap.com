@@ -628,6 +628,115 @@ impl Node<'_> {
         Ok(())
     }
 
+    /// Whether the writer's metastore has `index_id`.
+    pub async fn has_index(&self, index_id: &str) -> anyhow::Result<bool> {
+        let resp = self
+            .http
+            .get(format!("{}/api/v1/indexes/{index_id}", self.base))
+            .send()
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        resp.error_for_status()
+            .with_context(|| format!("reading the metadata of `{index_id}`"))?;
+        Ok(true)
+    }
+
+    /// The ids of `index_id`'s sources (`_ingest-api-source`, `kafka`, …).
+    pub async fn sources(&self, index_id: &str) -> anyhow::Result<Vec<String>> {
+        let v: Value = self
+            .http
+            .get(format!("{}/api/v1/indexes/{index_id}", self.base))
+            .send()
+            .await?
+            .error_for_status()
+            .with_context(|| format!("reading the metadata of `{index_id}`"))?
+            .json()
+            .await?;
+        Ok(v["sources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s["source_id"].as_str().map(str::to_owned))
+            .collect())
+    }
+
+    /// `index_id`'s staged splits created before `before` (seconds since
+    /// the epoch), by id: what a writer that stopped in the middle of a
+    /// merge or a commit left behind. A merge stages its output before it
+    /// replaces its inputs, so such a split holds no document the published
+    /// splits don't.
+    pub async fn staged_splits_before(
+        &self,
+        index_id: &str,
+        before: i64,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let v: Value = self
+                .http
+                .get(format!("{}/api/v1/indexes/{index_id}/splits", self.base))
+                .query(&[
+                    ("split_states", "Staged"),
+                    ("offset", &offset.to_string()),
+                    ("limit", &PAGE.to_string()),
+                ])
+                .send()
+                .await?
+                .error_for_status()
+                .with_context(|| format!("listing the staged splits of `{index_id}`"))?
+                .json()
+                .await?;
+            let page = v["splits"]
+                .as_array()
+                .context("the split list has no `splits`")?;
+            for s in page {
+                let id = s["split_id"].as_str().context("a split has no id")?;
+                let created = s["create_timestamp"]
+                    .as_i64()
+                    .with_context(|| format!("split `{id}` has no create_timestamp"))?;
+                if s["split_state"] == "Staged" && created < before {
+                    out.push(id.to_owned());
+                }
+            }
+            offset += page.len();
+            if page.len() < PAGE {
+                break;
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// Mark `split_ids` of `index_id` for deletion: they leave the split
+    /// lists, and the writer's janitor removes their files.
+    pub async fn mark_for_deletion(
+        &self,
+        index_id: &str,
+        split_ids: &[String],
+    ) -> anyhow::Result<()> {
+        let resp = self
+            .http
+            .put(format!(
+                "{}/api/v1/indexes/{index_id}/splits/mark-for-deletion",
+                self.base
+            ))
+            .json(&serde_json::json!({ "split_ids": split_ids }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            bail!(
+                "marking splits of `{index_id}` for deletion returned {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
+        }
+        Ok(())
+    }
+
     async fn toggle(&self, index_id: &str, enable: bool) -> anyhow::Result<()> {
         let resp = self
             .http
@@ -1010,6 +1119,27 @@ pub fn with_merge_factor(config: &Value, factor: u64) -> anyhow::Result<Value> {
         .unwrap_or(factor);
     policy.insert("max_merge_factor".into(), max.max(factor).into());
     Ok(out)
+}
+
+/// `config` with the template's merge factor back, when a release that
+/// stopped during its final merges left [`FINAL_MERGE_FACTOR`] in it
+/// ([`seal_restarting`] puts the config back, but that request can fail
+/// too); `None` when it has the template's already. Any other factor is
+/// refused: nothing this code writes sets one.
+pub fn template_merge_factor(config: &Value) -> anyhow::Result<Option<Value>> {
+    let want =
+        template_setting("merge_factor").context("the index template has no merge_factor")?;
+    let have = config["indexing_settings"]["merge_policy"]["merge_factor"].as_u64();
+    if have == Some(want) {
+        return Ok(None);
+    }
+    if have != Some(FINAL_MERGE_FACTOR) {
+        bail!(
+            "the index's merge_factor is {have:?}: neither the template's {want} nor the final \
+             merges' {FINAL_MERGE_FACTOR}"
+        );
+    }
+    with_merge_factor(config, want).map(Some)
 }
 
 /// [`seal`] for an index written through ingest v1, whose source can't be
@@ -1565,6 +1695,68 @@ mod tests {
         other["indexing_settings"]["merge_policy"] = serde_json::json!({"type": "no_merge"});
         assert!(with_merge_factor(&other, 2).is_err());
         assert!(with_merge_factor(&serde_json::json!({}), 2).is_err());
+    }
+
+    #[test]
+    fn a_final_merge_factor_left_behind_goes_back_to_the_templates() {
+        let config = serde_json::json!({
+            "index_id": "i",
+            "indexing_settings": {
+                "merge_policy": {"type": "limit_merge", "merge_factor": 10, "max_merge_factor": 12},
+            },
+        });
+        assert_eq!(template_merge_factor(&config).unwrap(), None);
+        let left = with_merge_factor(&config, FINAL_MERGE_FACTOR).unwrap();
+        assert_eq!(template_merge_factor(&left).unwrap(), Some(config.clone()));
+        let mut odd = config.clone();
+        odd["indexing_settings"]["merge_policy"]["merge_factor"] = 7.into();
+        let err = template_merge_factor(&odd).unwrap_err().to_string();
+        assert!(err.contains("Some(7)"), "{err}");
+    }
+
+    /// The splits a stopped writer left staged are the ones created before
+    /// this writer started; one it staged since is its own merge's.
+    #[tokio::test]
+    async fn only_splits_staged_before_the_writer_started_are_left_over() {
+        let marked: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                axum::routing::get(|q: axum::extract::RawQuery| async move {
+                    let q = q.0.unwrap_or_default();
+                    assert!(q.contains("split_states=Staged"), "{q}");
+                    axum::Json(serde_json::json!({"splits": [
+                        {"split_id": "old", "split_state": "Staged", "create_timestamp": 99},
+                        {"split_id": "new", "split_state": "Staged", "create_timestamp": 100},
+                    ]}))
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits/mark-for-deletion",
+                axum::routing::put({
+                    let marked = marked.clone();
+                    move |axum::Json(v): axum::Json<Value>| async move {
+                        marked.lock().unwrap().push(v);
+                        axum::Json(Value::Null)
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let left = node.staged_splits_before("i", 100).await.unwrap();
+        assert_eq!(left, ["old"]);
+        node.mark_for_deletion("i", &left).await.unwrap();
+        assert_eq!(
+            *marked.lock().unwrap(),
+            [serde_json::json!({"split_ids": ["old"]})]
+        );
     }
 
     #[test]

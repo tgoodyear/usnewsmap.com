@@ -188,9 +188,10 @@ struct IndexTarget {
     #[arg(long, env = "USNM_QUICKWIT_PORT", default_value_t = 7380)]
     quickwit_port: u16,
     /// Seconds to wait for the new index's merges before giving up without
-    /// publishing (Quickwit targets).
-    #[arg(long, env = "USNM_MERGE_TIMEOUT_SECS", default_value_t = merges::DEFAULT_TIMEOUT_SECS)]
-    merge_timeout_secs: u64,
+    /// publishing (Quickwit targets). Default: 4 hours for a release, 24
+    /// for `release-finish`.
+    #[arg(long, env = "USNM_MERGE_TIMEOUT_SECS")]
+    merge_timeout_secs: Option<u64>,
     /// Refuse to start a writer node with less free disk than this (GiB) in
     /// the work directory: the scratch volume isn't mounted, or a previous
     /// run's files fill it.
@@ -688,6 +689,57 @@ enum Command {
         #[arg(long, conflicts_with_all = ["years", "serials"])]
         done_file: Option<PathBuf>,
     },
+    /// Finish a release whose main index passed its exact count but that
+    /// failed later, e.g. when its merge wait ran out (#283): take up its
+    /// run and its index on the writer's data, replay the build without
+    /// sending anything, check the replay against the run's state, index and
+    /// log, then merge, seal and publish as the release would have
+    /// (docs/operations.md, "Finishing a release"). Give the release's own
+    /// settings: the run's build record must come out the same.
+    ReleaseFinish {
+        /// The run's version (`pages-v20261022-1`).
+        #[arg(long)]
+        run: String,
+        /// The run's JSON log (on-prem, the run directory's `release.log`).
+        #[arg(long)]
+        release_log: PathBuf,
+        /// Read the curated store's listings as of this time (RFC 3339)
+        /// instead of the run's start.
+        #[arg(long)]
+        listed_before: Option<chrono::DateTime<chrono::Utc>>,
+        /// As for `release`.
+        #[arg(long)]
+        full: bool,
+        /// As for `release`.
+        #[arg(long)]
+        synthetic: bool,
+        /// As for `release`.
+        #[arg(long)]
+        american_stories: bool,
+        /// As for `release`.
+        #[arg(long)]
+        ja_latin: bool,
+        /// As for `release`.
+        #[arg(long)]
+        ocr_local: bool,
+        /// As for `release`.
+        #[arg(long, env = "USNM_CONGRESS")]
+        congress: bool,
+        /// As for `release`.
+        #[arg(long)]
+        partition_decade: bool,
+        /// As for `release`.
+        #[arg(long)]
+        single_text_field: bool,
+        /// As for `release`.
+        #[arg(long)]
+        page_language: bool,
+        /// As for `release`.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..usnm_ingest::sink::MAX_SPLIT_DOCS))]
+        split_docs: Option<u64>,
+        #[command(flatten)]
+        target: IndexTarget,
+    },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
         /// As for `enqueue`: LoC's listing unless another list is given.
@@ -1007,7 +1059,9 @@ async fn release_locked(
 ) -> anyhow::Result<Option<Published>> {
     let mut node = None;
     let wait = MergeWait {
-        timeout: std::time::Duration::from_secs(t.merge_timeout_secs),
+        timeout: std::time::Duration::from_secs(
+            t.merge_timeout_secs.unwrap_or(merges::DEFAULT_TIMEOUT_SECS),
+        ),
         report: report.clone(),
         ..MergeWait::default()
     };
@@ -1048,6 +1102,117 @@ async fn release_locked(
         n.stop().await?;
     }
     result
+}
+
+/// The settings `release` and `release-finish` share.
+struct ReleaseFlags {
+    full: bool,
+    synthetic: bool,
+    american_stories: bool,
+    ja_latin: bool,
+    ocr_local: bool,
+    congress: bool,
+    partition_decade: bool,
+    single_text_field: bool,
+    page_language: bool,
+    split_docs: Option<u64>,
+}
+
+/// `release-finish`: the run's evidence checked under the writer lock, then
+/// the writer started on the run's data and the release finished
+/// (`usnm_ingest::finish`), the node stopped, the lock released.
+// The command's options, passed through.
+#[allow(clippy::too_many_arguments)]
+async fn release_finish(
+    cli: &Stores,
+    state: &State,
+    flags: &ReleaseFlags,
+    version: &str,
+    log: &std::path::Path,
+    listed_before: Option<chrono::DateTime<chrono::Utc>>,
+    t: &IndexTarget,
+    report: &Reporter,
+) -> anyhow::Result<Option<Published>> {
+    use usnm_ingest::finish::{AsOf, Resume};
+    if t.quickwit_url.is_some() {
+        bail!("release-finish runs its own writer on the run's data: use --quickwit-bin");
+    }
+    let reference = usnm_store::open(&cli.reference)?;
+    let owner = owner_id();
+    let lease = release::lock_writer(state, &owner).await?;
+    let result = async {
+        // Under the lock: no release is running, so a run still `building`
+        // has stopped.
+        let resume = Resume::load(state, reference.as_ref(), version, log).await?;
+        let before = listed_before.unwrap_or(resume.run.started_at);
+        tracing::info!(listed_before = %before, "reading the curated store's listings as of then");
+        let r = Release {
+            state: state.clone(),
+            curated: Arc::new(AsOf::new(usnm_store::open(&cli.curated)?, before.into())),
+            reference: reference.clone(),
+            owner: owner.clone(),
+            full: flags.full,
+            stage_index_storage: t.stage_index_storage,
+            synthetic: flags.synthetic,
+            now: resume.run.started_at,
+            titles_left: None,
+            american_stories: flags.american_stories,
+            ja_latin: flags.ja_latin,
+            ocr_local: flags.ocr_local,
+            congress: flags.congress,
+            partition_decade: flags.partition_decade,
+            single_text_field: flags.single_text_field,
+            page_language: flags.page_language,
+            split_docs: flags.split_docs,
+        };
+        let wait = MergeWait {
+            timeout: std::time::Duration::from_secs(
+                t.merge_timeout_secs
+                    .unwrap_or(usnm_ingest::finish::DEFAULT_TIMEOUT_SECS),
+            ),
+            report: report.clone(),
+            ..MergeWait::default()
+        };
+        match (&t.index_dir, &t.quickwit_bin) {
+            (Some(dir), None) => {
+                let mut sink = JsonlSink::new(dir);
+                r.finish(&mut sink, &lease, report, &resume).await
+            }
+            (None, Some(bin)) => {
+                let metastore = t
+                    .quickwit_metastore
+                    .as_deref()
+                    .context("--quickwit-bin needs --quickwit-metastore")?;
+                let ingest = IngestApi::from_env()?;
+                let dir = cli.work_dir.join("quickwit");
+                std::fs::create_dir_all(&dir)?;
+                remove_stale_spill(&dir)?;
+                check_free_disk(&dir, t.min_free_gib)?;
+                let kafka = usnm_ingest::kafka::Kafka::from_env()?;
+                ingest.check_kafka(kafka.is_some())?;
+                let n =
+                    QuickwitNode::start(bin, &dir, t.quickwit_port, metastore, root(t)?).await?;
+                tracing::info!(api = ingest.name(), "writer ingest api");
+                let mut sink = QuickwitSink::new(&n.url, root(t)?)?
+                    .watching(&n)
+                    .merges(wait)
+                    .ingest(ingest)
+                    .kafka(kafka);
+                let result = r.finish(&mut sink, &lease, report, &resume).await;
+                n.stop().await?;
+                result
+            }
+            _ => bail!("choose one of --index-dir or --quickwit-bin"),
+        }
+    }
+    .await;
+    let unlocked = release::unlock_writer(state, &owner, lease).await;
+    let published = result?;
+    unlocked?;
+    if let Some(p) = &published {
+        tracing::info!(version = %p.index_version, docs = p.docs, pages = p.pages, full = p.full, "released");
+    }
+    Ok(published)
 }
 
 /// Remove the decade files (`decade_order::SPILL_DIR`) a release that
@@ -1250,6 +1415,7 @@ impl Command {
             Command::Enqueue { .. } => "enqueue",
             Command::Curate { .. } => "curate",
             Command::Release { .. } => "release",
+            Command::ReleaseFinish { .. } => "release-finish",
             Command::TitlesSync { .. } => "titles-sync",
             Command::Geocode => "geocode",
             Command::TitlesArchive => "titles-archive",
@@ -1286,7 +1452,7 @@ fn first_step(command: &Command) -> Option<Step> {
     match command {
         Command::Run { .. } => Some(Step::Listing),
         Command::TitlesSync { .. } => Some(Step::Titles),
-        Command::Release { .. } => Some(Step::Indexing),
+        Command::Release { .. } | Command::ReleaseFinish { .. } => Some(Step::Indexing),
         Command::Enqueue { .. }
         | Command::Curate { .. }
         | Command::Geocode
@@ -1925,6 +2091,46 @@ async fn command(
             )
             .await
         }
+        Command::ReleaseFinish {
+            run,
+            release_log,
+            listed_before,
+            full,
+            synthetic,
+            american_stories,
+            ja_latin,
+            ocr_local,
+            congress,
+            partition_decade,
+            single_text_field,
+            page_language,
+            split_docs,
+            target,
+        } => {
+            let flags = ReleaseFlags {
+                full: *full,
+                synthetic: *synthetic,
+                american_stories: *american_stories,
+                ja_latin: *ja_latin,
+                ocr_local: *ocr_local,
+                congress: *congress,
+                partition_decade: *partition_decade,
+                single_text_field: *single_text_field,
+                page_language: *page_language,
+                split_docs: *split_docs,
+            };
+            release_finish(
+                &cli.stores,
+                &state,
+                &flags,
+                run,
+                release_log,
+                *listed_before,
+                target,
+                report,
+            )
+            .await
+        }
         Command::Run {
             list,
             batches,
@@ -2380,8 +2586,64 @@ mod tests {
         assert!(!partition_decade, "off unless asked for");
         assert!(!single_text_field, "off unless asked for");
         assert!(!page_language, "off unless asked for");
-        assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
+        // Each command's own default: 4 hours for a release.
+        assert_eq!(target.merge_timeout_secs, None);
         assert_eq!(target.min_free_gib, 0);
+    }
+
+    #[test]
+    fn release_finish_arguments() {
+        let cli = Cli::try_parse_from([
+            "usnm-ingest",
+            "--state-file",
+            "s",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "release-finish",
+            "--run",
+            "pages-v20261022-1",
+            "--release-log",
+            "/srv/run/release.log",
+            "--full",
+            "--partition-decade",
+            "--split-docs",
+            "60000",
+            "--quickwit-bin",
+            "qw",
+        ])
+        .unwrap();
+        let Command::ReleaseFinish {
+            run,
+            release_log,
+            listed_before,
+            full,
+            partition_decade,
+            split_docs,
+            target,
+            ..
+        } = cli.command
+        else {
+            panic!("not a finish");
+        };
+        assert_eq!(run, "pages-v20261022-1");
+        assert_eq!(release_log, PathBuf::from("/srv/run/release.log"));
+        assert_eq!(listed_before, None);
+        assert!(full && partition_decade);
+        assert_eq!(split_docs, Some(60000));
+        assert_eq!(target.merge_timeout_secs, None);
+        // Named flags only.
+        assert!(Cli::try_parse_from([
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "release-finish",
+            "pages-v20261022-1",
+        ])
+        .is_err());
     }
 
     #[test]

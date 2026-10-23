@@ -174,6 +174,27 @@ impl Kafka {
         Ok(())
     }
 
+    /// [`Kafka::delete_topic`], for a release finished after it stopped
+    /// (`crate::finish`): a topic that is gone already is no error. Returns
+    /// whether there was one to delete.
+    pub async fn delete_topic_if_exists(&self, index_id: &str) -> anyhow::Result<bool> {
+        let topic = Self::topic(index_id);
+        let exists = self
+            .client()
+            .await?
+            .list_topics()
+            .await
+            .context("listing Kafka topics")?
+            .iter()
+            .any(|t| t.name == topic);
+        if !exists {
+            tracing::info!(topic, "no Kafka topic to delete");
+            return Ok(false);
+        }
+        self.delete_topic(index_id).await?;
+        Ok(true)
+    }
+
     /// The index's Kafka source, as Quickwit takes it: one pipeline per
     /// partition, from the start of the topic, with consumer timeouts long
     /// enough to outlast a broker stalled on a busy disk (45 s in run e,

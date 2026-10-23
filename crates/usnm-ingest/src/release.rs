@@ -48,12 +48,13 @@ use crate::congress;
 use crate::curated::{read_part, CuratedRow};
 use crate::decade_order::DecadeOrder;
 use crate::dedup::{self, Plan};
+use crate::finish::{self, Resume};
 use crate::merges::IndexLayout;
 use crate::ocr_ja;
 use crate::ocr_local;
 use crate::page_language::{self as page_lang, Moves};
 use crate::progress::{self, Progress};
-use crate::sink::{Decades, IndexSink, MainLayout};
+use crate::sink::{Decades, IndexSink, MainLayout, SinkStats};
 use crate::source::hex;
 use crate::state::{
     Curated, IndexRun, JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, RunBatch, RunStatus,
@@ -524,6 +525,32 @@ impl Release {
         lease: &WriterLease,
         report: &Reporter,
     ) -> anyhow::Result<Option<Published>> {
+        self.run_spanned(sink, lease, report, None).await
+    }
+
+    /// Finish the release `resume` took up: one whose main index passed its
+    /// exact count before it stopped (`crate::finish`). This release's
+    /// settings must be that run's. `sink` runs a writer on the run's
+    /// Quickwit data; the caller holds the writer lock, as for
+    /// [`Release::run_held`]. The version it publishes is the one the run
+    /// would have.
+    pub async fn finish(
+        &self,
+        sink: &mut dyn IndexSink,
+        lease: &WriterLease,
+        report: &Reporter,
+        resume: &Resume,
+    ) -> anyhow::Result<Option<Published>> {
+        self.run_spanned(sink, lease, report, Some(resume)).await
+    }
+
+    async fn run_spanned(
+        &self,
+        sink: &mut dyn IndexSink,
+        lease: &WriterLease,
+        report: &Reporter,
+        resume: Option<&Resume>,
+    ) -> anyhow::Result<Option<Published>> {
         let span = tracing::info_span!(
             "release",
             otel.kind = "consumer",
@@ -535,7 +562,7 @@ impl Release {
             otel.status_description = Empty,
         );
         let result = self
-            .run_in_span(sink, lease, &span, report)
+            .run_in_span(sink, lease, &span, report, resume)
             .instrument(span.clone())
             .await;
         if let Err(e) = &result {
@@ -551,8 +578,35 @@ impl Release {
         lease: &WriterLease,
         span: &tracing::Span,
         report: &Reporter,
+        resume: Option<&Resume>,
     ) -> anyhow::Result<Option<Published>> {
         self.confirm(lease).await?;
+        // A finish refuses before it plans: the run's index must hold every
+        // document the run sent, and the indexes the tail builds mustn't
+        // exist yet (`crate::finish`).
+        if let Some(r) = resume {
+            let index = &r.run.new_index;
+            let held = sink.published_docs(index).await?;
+            if held != r.docs {
+                bail!(
+                    "`{index}` holds {held} documents in its published splits; the run sent {}. \
+                     Its main index isn't complete: not finishing",
+                    r.docs
+                );
+            }
+            tracing::info!(index = %index, docs = held, "the run's main index holds every document it sent");
+            for id in [
+                ocr_ja::index_id(&r.run.index_version),
+                congress::index_id(&r.run.index_version),
+            ] {
+                if sink.has_index(&id).await? {
+                    bail!(
+                        "`{id}` exists already: the run stopped after it started building it. \
+                         Delete that index and finish again"
+                    );
+                }
+            }
+        }
         let current = Catalog::load(self.reference.as_ref()).await?;
         let (previous, pointer) = match self.published_run().await? {
             Some((run, pointer)) => (Some(run), Some(pointer)),
@@ -771,6 +825,18 @@ impl Release {
                 skipped = overlay.skipped,
                 "Japanese OCR overlay"
             );
+        }
+        if let Some(r) = resume {
+            r.log.check_planned(
+                finish::OVERLAY_LINE,
+                (!overlay.parts.is_empty()).then(|| {
+                    json!({
+                        "parts": overlay.parts.len(),
+                        "pages": overlay.pages.len(),
+                        "skipped": overlay.skipped,
+                    })
+                }),
+            )?;
         }
         // Of the pages of our OCR that curation never had, and of the pages
         // a main index of the version holds with our OCR's Latin text
@@ -1067,6 +1133,18 @@ impl Release {
         } else {
             None
         };
+        if let Some(r) = resume {
+            r.log.check_planned(
+                finish::OCR_LOCAL_LINE,
+                local.as_ref().map(|l| {
+                    json!({
+                        "parts": l.listing.parts(),
+                        "titles": l.listing.titles(),
+                        "revocations": l.revoked.len(),
+                    })
+                }),
+            )?;
+        }
 
         // American Stories' text, listed once: the parts of the years the
         // writer has finished. With the setting on and nothing written yet,
@@ -1088,7 +1166,31 @@ impl Release {
             None
         };
 
-        let (version, index_id) = self.next_names(full).await?;
+        if let Some(r) = resume {
+            r.log.check_planned(
+                finish::STORIES_LINE,
+                stories.as_ref().map(|s| {
+                    json!({
+                        "years": s.years.len(),
+                        "first": s.years.first(),
+                        "last": s.years.last(),
+                        "parts": s.parts(),
+                        "unfinished_parts": s.unfinished_parts,
+                    })
+                }),
+            )?;
+            if overlay_only {
+                bail!(
+                    "{} built no main index: there is nothing to finish",
+                    r.run.index_version
+                );
+            }
+        }
+        // A finish takes the run's names; `next_names` would skip them.
+        let (version, index_id) = match resume {
+            Some(r) => r.names(full)?,
+            None => self.next_names(full).await?,
+        };
         // An overlay-only release adds no main index: the run's new index is
         // the Japanese one, or with no Japanese pages to index, the Congress
         // one. A release that only removes the Congress set writes none, and
@@ -1147,14 +1249,31 @@ impl Release {
             failed_at: None,
             build: Some(build_info::summary(&built)),
         };
-        if !self.state.create_run(&run).await? {
-            bail!("index run `{version}` already exists");
-        }
-        let (_, mut etag) = self.state.run(&version).await?.context("run vanished")?;
+        let mut etag = match resume {
+            None => {
+                if !self.state.create_run(&run).await? {
+                    bail!("index run `{version}` already exists");
+                }
+                self.state.run(&version).await?.context("run vanished")?.1
+            }
+            // The run as the plan comes to it, building again from when it
+            // started; checked against its record first.
+            Some(r) => {
+                r.check_run(&run)?;
+                run.started_at = r.run.started_at;
+                self.state.update_run(&run, &r.etag).await?
+            }
+        };
         span.record("version", version.as_str());
         span.record("full", full);
         span.record("batches", scope.len());
-        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), page_language, split_docs, "building index");
+        // A finish's line is its own: the run's "building index" is what
+        // its log is read from (`finish::RunLog`).
+        if resume.is_some() {
+            tracing::info!(%version, index = %new_index, full, batches = scope.len(), "finishing index");
+        } else {
+            tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), page_language, split_docs, "building index");
+        }
 
         report.version(&version);
         report.step(Step::Indexing).await;
@@ -1184,6 +1303,7 @@ impl Release {
                     analyzer,
                     moves.as_mut(),
                     report,
+                    resume,
                 )
                 .await?
             };
@@ -1249,6 +1369,7 @@ impl Release {
                     congress_out.as_ref(),
                     &build_info::record(&built),
                     analyzer,
+                    resume.is_some(),
                 )
                 .await?;
             Ok::<_, anyhow::Error>((docs, bounds, ja, added, congress_out))
@@ -1677,12 +1798,17 @@ impl Release {
         analyzer: Analyzer,
         mut moves: Option<&mut Moves>,
         report: &Reporter,
+        resume: Option<&Resume>,
     ) -> anyhow::Result<(
         u64,
         Option<american_stories::Record>,
         Vec<(String, JaLatinPage)>,
         (ocr_local::replace::Tally, LocalReplaced),
     )> {
+        // A finish replays the build: every document is made as the release
+        // makes it, and none is sent; the stopped release's index takes
+        // them in its place (`crate::finish`).
+        let replay = resume.is_some();
         // Every title must resolve before anything is written.
         let mut missing = BTreeSet::new();
         for b in scope {
@@ -1695,7 +1821,11 @@ impl Release {
         if !missing.is_empty() {
             bail!("titles missing from the catalog: {missing:?}");
         }
-        sink.create(index_id, layout).await?;
+        if replay {
+            sink.attach(index_id, layout).await?;
+        } else {
+            sink.create(index_id, layout).await?;
+        }
         let format = DocFormat {
             decade: layout.decades.on(),
             analyzer,
@@ -1704,7 +1834,7 @@ impl Release {
         // A partitioned base's pages go out a decade at a time, through
         // files on the writer's scratch disk (`crate::decade_order`).
         let mut order = match layout.decades {
-            Decades::Partitioned => {
+            Decades::Partitioned if !replay => {
                 let work = sink
                     .stats()
                     .work_dir
@@ -1731,14 +1861,24 @@ impl Release {
                     .saturating_sub(dedup.skipped_docs(&b.batch))
             })
             .sum();
-        let progress = Progress::new(sink.stats(), expected);
+        // A replay counts what it makes on counters of its own, and leaves
+        // the stopped run's last progress (what it sent) as it is until the
+        // index is sealed.
+        let replayed =
+            replay.then(|| Arc::new(SinkStats::replaying(sink.stats().work_dir.clone())));
+        let progress = Progress::new(replayed.clone().unwrap_or_else(|| sink.stats()), expected);
         progress.snapshot().log(None);
-        progress::report(&self.state, version, &progress.snapshot()).await;
+        if !replay {
+            progress::report(&self.state, version, &progress.snapshot()).await;
+        }
         let _ticker = progress.every(progress::INTERVAL);
         // The same counts for the status page, in their own `ops` item: the
         // run item's ETag stays the release's alone.
-        let _reporter =
-            progress.report_every(progress::INTERVAL, self.state.clone(), version.to_owned());
+        let _reporter = (!replay).then(|| {
+            progress.report_every(progress::INTERVAL, self.state.clone(), version.to_owned())
+        });
+        // The replay's documents by decade, for the index's own count.
+        let mut by_decade = finish::DecadeDocs::new();
         let mut docs = 0u64;
         let mut record = stories.map(|_| american_stories::Record::default());
         // The pages given our Latin text in place of LoC's (#203).
@@ -1789,10 +1929,27 @@ impl Release {
                         parts = loaded.parts.len(),
                         "our OCR for the batch's titles"
                     );
+                    if let Some(r) = resume {
+                        r.log.check_built(
+                            finish::BATCH_OCR_LOCAL_LINE,
+                            Some(&b.batch),
+                            Some(json!({
+                                "pages": loaded.pages.len(),
+                                "revoked": loaded.revoked.len(),
+                                "parts": loaded.parts.len(),
+                            })),
+                        )?;
+                    }
                     local_tally.add_parts(&loaded.parts);
                     loaded
                 }
-                _ => ocr_local::replace::Loaded::default(),
+                _ => {
+                    if let Some(r) = resume {
+                        r.log
+                            .check_built(finish::BATCH_OCR_LOCAL_LINE, Some(&b.batch), None)?;
+                    }
+                    ocr_local::replace::Loaded::default()
+                }
             };
             // This batch's American Stories texts, dropped after the batch.
             let texts = match loaded_stories {
@@ -1805,6 +1962,18 @@ impl Release {
                         empty = loaded.empty,
                         "American Stories' text for the batch"
                     );
+                    if let Some(r) = resume {
+                        r.log.check_built(
+                            finish::BATCH_STORIES_LINE,
+                            Some(&b.batch),
+                            Some(json!({
+                                "pages": loaded.texts.len(),
+                                "text_mb": loaded.text_bytes / (1024 * 1024),
+                                "parts": loaded.parts.len(),
+                                "empty": loaded.empty,
+                            })),
+                        )?;
+                    }
                     if let Some(r) = record.as_mut() {
                         r.add(&loaded);
                     }
@@ -1893,10 +2062,16 @@ impl Release {
                     r.only += only_as;
                 }
                 let t_add = std::time::Instant::now();
-                for (d, line) in part_docs.iter().zip(part_lines) {
-                    match order.as_mut() {
-                        Some(o) => o.add_line(sink, d, line).await?,
-                        None => sink.add_line(&line).await?,
+                if let Some(stats) = &replayed {
+                    let bytes: usize = part_lines.iter().map(|l| l.len() + 1).sum();
+                    stats.sent(part_docs.len() as u64, bytes as u64);
+                    count_decades(&mut by_decade, &part_docs);
+                } else {
+                    for (d, line) in part_docs.iter().zip(part_lines) {
+                        match order.as_mut() {
+                            Some(o) => o.add_line(sink, d, line).await?,
+                            None => sink.add_line(&line).await?,
+                        }
                     }
                 }
                 add_secs += t_add.elapsed().as_secs_f64();
@@ -1936,6 +2111,11 @@ impl Release {
                     page_lang::annotate_one(&mut d);
                     m.record(&d)?;
                 }
+                if let Some(stats) = &replayed {
+                    stats.sent(1, 0);
+                    count_decades(&mut by_decade, std::slice::from_ref(&d));
+                    continue;
+                }
                 match order.as_mut() {
                     Some(o) => o.add(sink, &d).await?,
                     None => sink.add(&d).await?,
@@ -1962,6 +2142,51 @@ impl Release {
             );
         }
         drop(order);
+        // The replay has made what the run sent: the same numbers as the
+        // run's lines, the same count, and decade by decade what the index
+        // holds.
+        if let Some(r) = resume {
+            r.log.check_built(
+                finish::STORIES_INDEXED_LINE,
+                None,
+                record
+                    .as_ref()
+                    .map(|r| json!({"docs_with_text": r.docs, "only_american_stories": r.only})),
+            )?;
+            r.log.check_built(
+                finish::LATIN_INDEXED_LINE,
+                None,
+                (!latin.is_empty() || !replaced.is_empty())
+                    .then(|| json!({"missing": latin.len(), "in_place_of_locs": replaced.len()})),
+            )?;
+            r.log.check_built(
+                finish::DECADES_SENT_LINE,
+                None,
+                (layout.decades == Decades::Partitioned).then(|| json!({"pages": docs})),
+            )?;
+            if docs != r.docs {
+                bail!(
+                    "the replay made {docs} documents; the run sent {}: not finishing",
+                    r.docs
+                );
+            }
+            if format.decade {
+                if let Some(held) = sink.decade_docs(index_id).await? {
+                    if held != by_decade {
+                        bail!(
+                            "`{index_id}` holds {held:?} documents by decade; the replay made \
+                             {by_decade:?}: not finishing"
+                        );
+                    }
+                }
+            }
+            tracing::info!(
+                index = index_id,
+                docs,
+                decades = ?by_decade,
+                "the replay made the documents the run sent"
+            );
+        }
         // The last commit and the merge wait, given up as soon as the lock is.
         report.step(Step::Merging).await;
         tokio::select! {
@@ -2274,6 +2499,7 @@ impl Release {
         congress: Option<&CongressOut>,
         build: &Value,
         analyzer: Analyzer,
+        finishing: bool,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
@@ -2530,7 +2756,8 @@ impl Release {
                 "sha256": hex(&Sha256::digest(&body)),
                 "bytes": body.len(),
             }));
-            self.put_new(&format!("{version}/{name}"), body).await?;
+            self.put_new(&format!("{version}/{name}"), body, finishing)
+                .await?;
         }
         let mut manifest = json!({
             "index_version": version,
@@ -2569,6 +2796,7 @@ impl Release {
         self.put_new(
             &format!("{version}/manifest.json"),
             serde_json::to_vec_pretty(&manifest)?,
+            finishing,
         )
         .await?;
         Ok(((date_from_day(first), date_from_day(last)), added))
@@ -2722,17 +2950,36 @@ impl Release {
         }
     }
 
-    async fn put_new(&self, path: &str, body: Vec<u8>) -> anyhow::Result<()> {
+    /// Write a snapshot file, create-only. A finish (`finishing`) takes one
+    /// a stopped run wrote already when it has the same bytes.
+    async fn put_new(&self, path: &str, body: Vec<u8>, finishing: bool) -> anyhow::Result<()> {
         // Every snapshot file is JSON but `ocr_local_pages.bin`.
         let content_type = if path.ends_with(".bin") {
             "application/octet-stream"
         } else {
             "application/json"
         };
+        let same = finishing.then(|| body.clone());
         if !self.reference.put_new(path, body, content_type).await? {
+            if same.is_some() && self.reference.get(path).await? == same {
+                tracing::info!(
+                    path,
+                    "the stopped run wrote this snapshot file already, the same"
+                );
+                return Ok(());
+            }
             bail!("`{path}` already exists; reference snapshots are immutable");
         }
         Ok(())
+    }
+}
+
+/// Count `docs` by their `decade` field (05 §5.5.5), those that have one.
+fn count_decades(by: &mut finish::DecadeDocs, docs: &[Value]) {
+    for d in docs {
+        if let Some(decade) = d["decade"].as_u64().and_then(|d| u16::try_from(d).ok()) {
+            *by.entry(decade).or_default() += 1;
+        }
     }
 }
 
