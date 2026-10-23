@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderValue, Method};
 use axum::middleware::{self, Next};
@@ -63,6 +63,41 @@ pub enum Engine {
     Shared(Arc<dyn SearchBackend>),
 }
 
+/// Why a version couldn't be loaded.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The search engine has no index the version needs: Quickwit's
+    /// metastore (on Blob or a local directory) or the memory engine's
+    /// index directory lacks it. A Congress index that's missing never
+    /// holds a version back (#229), so it isn't one of these.
+    MissingIndex(String),
+    Other(String),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingIndex(id) => write!(f, "the search engine has no index `{id}`"),
+            Self::Other(e) => f.write_str(e),
+        }
+    }
+}
+
+impl From<String> for LoadError {
+    fn from(e: String) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl From<usnm_search::SearchError> for LoadError {
+    fn from(e: usnm_search::SearchError) -> Self {
+        match e {
+            usnm_search::SearchError::MissingIndex(id) => Self::MissingIndex(id),
+            e => Self::Other(e.to_string()),
+        }
+    }
+}
+
 /// Builds snapshots from the reference store (Blob or a local directory).
 pub struct Loader {
     pub reference: Arc<dyn ObjectStore>,
@@ -80,18 +115,18 @@ impl Loader {
     }
 
     /// The snapshot for whatever `current.json` names now.
-    pub async fn snapshot(&self) -> Result<Snapshot, String> {
+    pub async fn snapshot(&self) -> Result<Snapshot, LoadError> {
         let current = self.current().await?;
         self.load(current).await
     }
 
-    pub async fn load(&self, current: Current) -> Result<Snapshot, String> {
+    pub async fn load(&self, current: Current) -> Result<Snapshot, LoadError> {
         let mut refdata = RefData::load_for(self.reference.as_ref(), current).await?;
         // The setting applies before the Congress set is loaded or prepared,
         // which only the set the version will search is (#229).
         refdata.congress_search = self.congress_search;
         let congress = refdata.congress_index_set();
-        let (backend, congress_loaded): (Arc<dyn SearchBackend>, Result<(), String>) =
+        let (backend, congress_loaded): (Arc<dyn SearchBackend>, Result<(), LoadError>) =
             match &self.engine {
                 Engine::Shared(b) => (b.clone(), Ok(())),
                 Engine::Memory { indexes_dir } => {
@@ -110,24 +145,24 @@ impl Loader {
                         // On their own: a Congress index that won't load
                         // leaves the newspapers' (#229).
                         let congress = add_memory_indexes(&mut backend, &dir, &congress_ids);
-                        Ok::<_, String>((Arc::new(backend) as Arc<dyn SearchBackend>, congress))
+                        Ok::<_, LoadError>((Arc::new(backend) as Arc<dyn SearchBackend>, congress))
                     })
                     .await
                     .map_err(|e| e.to_string())??
                 }
             };
         let set = refdata.index_set();
-        backend.prepare(&set).await.map_err(|e| e.to_string())?;
+        backend.prepare(&set).await?;
         // A version goes live only with its Japanese index searchable too.
         if let Some(ja) = refdata.ja_index_set() {
-            backend.prepare(&ja).await.map_err(|e| e.to_string())?;
+            backend.prepare(&ja).await?;
         }
         // Its Congress index, when it has one, goes live only when it's
         // searchable, but never holds back the newspapers (#229).
         let mut congress_dropped = false;
         if let Some(congress) = congress {
             let ready = match congress_loaded {
-                Ok(()) => backend.prepare(&congress).await.map_err(|e| e.to_string()),
+                Ok(()) => backend.prepare(&congress).await.map_err(LoadError::from),
                 Err(e) => Err(e),
             };
             if let Err(e) = ready {
@@ -188,6 +223,12 @@ pub struct AppState {
     /// Set while the first version warms up after a start: `/readyz` says
     /// not ready (see [`spawn_startup_warm_up`]).
     pub warming: AtomicBool,
+    /// An index the published version (`current.json`) needs that the
+    /// search engine doesn't have, as the last reload found
+    /// ([`reload_if_changed`]). The replica keeps serving the version it
+    /// has, but a restart couldn't load any: with
+    /// `USNM_READY_REQUIRES_PUBLISHED_INDEXES`, `/readyz` says not ready.
+    pub missing_index: ArcSwapOption<String>,
     /// Runs the warm-ups one at a time (see [`WarmUps`]).
     pub(crate) warm_ups: WarmUps,
     /// The anonymous search log (`None` records nothing).
@@ -234,6 +275,7 @@ impl AppState {
             metrics: telemetry::Metrics::global(),
             page_views: None,
             warming: AtomicBool::new(false),
+            missing_index: ArcSwapOption::empty(),
             warm_ups: WarmUps::default(),
             search_log: None,
             ocr_requests: None,
@@ -352,11 +394,14 @@ fn add_memory_indexes(
     backend: &mut usnm_search::memory::MemoryBackend,
     dir: &std::path::Path,
     ids: &[String],
-) -> Result<(), String> {
+) -> Result<(), LoadError> {
     use std::io::BufRead;
     for id in ids {
         let path = dir.join(format!("{id}.jsonl"));
-        let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let file = std::fs::File::open(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => LoadError::MissingIndex(id.clone()),
+            _ => LoadError::Other(format!("{}: {e}", path.display())),
+        })?;
         let mut docs = Vec::new();
         for line in std::io::BufReader::new(file).lines() {
             let line = line.map_err(|e| format!("{}: {e}", path.display()))?;
@@ -375,6 +420,11 @@ fn add_memory_indexes(
 /// the new snapshot, warm it up and swap it in atomically. Returns whether it
 /// swapped. The old version serves until the swap; a warm-up that fails or
 /// runs out of budget is logged and the swap goes ahead.
+///
+/// A load that fails because the search engine lacks one of the version's
+/// indexes is kept in [`AppState::missing_index`] until a reload succeeds
+/// (or `current.json` names the serving version again); other failures leave
+/// it as it was.
 pub async fn reload_if_changed(state: &Arc<AppState>) -> Result<bool, String> {
     let Some(loader) = &state.loader else {
         return Ok(false);
@@ -385,10 +435,15 @@ pub async fn reload_if_changed(state: &Arc<AppState>) -> Result<bool, String> {
         Ok(false) => {}
         Err(_) => state.metrics.reload("failed"),
     }
-    result
+    match &result {
+        Ok(_) => state.missing_index.store(None),
+        Err(LoadError::MissingIndex(id)) => state.missing_index.store(Some(Arc::new(id.clone()))),
+        Err(LoadError::Other(_)) => {}
+    }
+    result.map_err(|e| e.to_string())
 }
 
-async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> {
+async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, LoadError> {
     let next = loader.current().await?;
     let serving = state.snapshot.load_full();
     if next.index_version == serving.refdata.version() {

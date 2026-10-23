@@ -13,21 +13,32 @@ use super::{cached, Ctx, Job};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
+/// Anyone can call it, so every failure gets the same body. The reason,
+/// which can hold the searcher's address, is logged instead (a backend
+/// failure), or was logged by the reload that found it (a missing index).
 pub async fn readyz(State(state): State<Arc<AppState>>) -> Response {
+    let not_ready = || (StatusCode::SERVICE_UNAVAILABLE, "not ready").into_response();
     // Not ready until the first version's caches are warm (or the cap passes),
     // so the first visitors after a start don't wait on cold searches.
     if state.warming.load(std::sync::atomic::Ordering::Relaxed) {
-        return (StatusCode::SERVICE_UNAVAILABLE, "warming up").into_response();
+        return not_ready();
+    }
+    // A publish this engine can't serve: the replica serves the version it
+    // has, but a restart would load none.
+    if state.config.ready_requires_published_indexes && state.missing_index.load().is_some() {
+        return not_ready();
     }
     let backend = state.snapshot.load().backend.clone();
     match tokio::time::timeout(Duration::from_secs(2), backend.health()).await {
         Ok(Ok(())) => (StatusCode::OK, "ready").into_response(),
-        Ok(Err(e)) => (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
-        Err(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "search backend health check timed out",
-        )
-            .into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "not ready: the search backend's health check failed");
+            not_ready()
+        }
+        Err(_) => {
+            tracing::warn!("not ready: the search backend's health check timed out");
+            not_ready()
+        }
     }
 }
 

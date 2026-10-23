@@ -2348,6 +2348,111 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn readyz_fails_with_one_body_whatever_the_reason() {
+    // A searcher that refuses connections: its error names its address.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let url = format!("http://127.0.0.1:{port}");
+    let backend =
+        usnm_search::quickwit::QuickwitBackend::new(&url, Duration::from_secs(1)).unwrap();
+    let s = Arc::new(AppState::new(config(), Arc::new(backend), refdata().await));
+    let (status, _, body) = get_site(&s, "/readyz", None).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
+    );
+    s.warming.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (status, _, body) = get_site(&s, "/readyz", None).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
+    );
+
+    let s = state_with(None).await;
+    let (status, _, body) = get_site(&s, "/readyz", None).await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "ready"));
+}
+
+#[tokio::test]
+async fn a_publish_naming_an_index_the_engine_lacks_keeps_serving_and_can_fail_readyz() {
+    let dir = temp_data_dir("missing-index");
+    let state = |requires: bool| {
+        let dir = dir.clone();
+        async move {
+            let loader = Loader {
+                reference: Arc::new(LocalStore::new(&dir)),
+                engine: Engine::Memory {
+                    indexes_dir: dir.join("indexes"),
+                },
+                congress_search: true,
+            };
+            let snapshot = loader.snapshot().await.unwrap();
+            let mut cfg = config();
+            cfg.ready_requires_published_indexes = requires;
+            Arc::new(AppState::with_loader(cfg, snapshot, Some(loader)))
+        }
+    };
+    let (on, off) = (state(true).await, state(false).await);
+    let readyz = |s: Arc<AppState>| async move { get_site(&s, "/readyz", None).await.0 };
+    let v1: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("current.json")).unwrap()).unwrap();
+
+    // A version with a delta this engine never got (published elsewhere).
+    snapshot_copy(&dir, "fixture-v1", "fixture-v2");
+    let mut v2 = v1.clone();
+    v2["index_version"] = "fixture-v2".into();
+    v2["reference"] = "fixture-v2".into();
+    v2["indexes"] = json!(["pages-base-fixture", "pages-delta-fixture-2"]);
+    std::fs::write(dir.join("current.json"), v2.to_string()).unwrap();
+    for s in [&on, &off] {
+        let err = reload_if_changed(s).await.unwrap_err();
+        assert!(err.contains("no index `pages-delta-fixture-2`"), "{err}");
+        assert_eq!(s.snapshot.load().refdata.version(), "fixture-v1");
+        assert_eq!(
+            s.missing_index.load().as_deref().map(String::as_str),
+            Some("pages-delta-fixture-2")
+        );
+        let (status, _, body) = get(s, "/v1/aggregate?q=fever").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["index_version"], "fixture-v1");
+    }
+    assert_eq!(readyz(on.clone()).await, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(readyz(off.clone()).await, StatusCode::OK);
+
+    // A load that fails for another reason doesn't clear it.
+    let mut v3 = v2.clone();
+    v3["index_version"] = "fixture-v3".into();
+    v3["reference"] = "fixture-v3".into();
+    std::fs::write(dir.join("current.json"), v3.to_string()).unwrap();
+    assert!(reload_if_changed(&on).await.is_err());
+    assert_eq!(readyz(on.clone()).await, StatusCode::SERVICE_UNAVAILABLE);
+
+    // Taking the publish back clears it.
+    std::fs::write(dir.join("current.json"), v1.to_string()).unwrap();
+    assert!(!reload_if_changed(&on).await.unwrap());
+    assert!(on.missing_index.load().is_none());
+    assert_eq!(readyz(on.clone()).await, StatusCode::OK);
+
+    // So does the index arriving.
+    std::fs::write(dir.join("current.json"), v2.to_string()).unwrap();
+    assert!(reload_if_changed(&on).await.is_err());
+    assert_eq!(readyz(on.clone()).await, StatusCode::SERVICE_UNAVAILABLE);
+    std::fs::copy(
+        dir.join("indexes/pages-delta-fixture-1.jsonl"),
+        dir.join("indexes/pages-delta-fixture-2.jsonl"),
+    )
+    .unwrap();
+    assert!(reload_if_changed(&on).await.unwrap());
+    assert_eq!(on.snapshot.load().refdata.version(), "fixture-v2");
+    assert!(on.missing_index.load().is_none());
+    assert_eq!(readyz(on.clone()).await, StatusCode::OK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f7")) else {
         return Vec::new();

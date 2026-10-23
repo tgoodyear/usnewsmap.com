@@ -502,6 +502,10 @@ pub enum SearchError {
     /// `Backend`, trying again won't help.
     #[error("search backend rejected the request: {0}")]
     Rejected(String),
+    /// The backend has no index by this id: a lookup found nothing (Quickwit's
+    /// metastore answered 404). Only [`SearchBackend::prepare`] returns it.
+    #[error("the search backend has no index `{0}`")]
+    MissingIndex(String),
 }
 
 #[async_trait]
