@@ -23,6 +23,10 @@ use crate::telemetry;
 /// The index config every base and delta shares (05 §5.5.1).
 pub const INDEX_TEMPLATE: &str = include_str!("../../../infra/quickwit/pages-index.yaml");
 
+/// What a writer node that doesn't see itself as a searcher yet answers a
+/// search with (Quickwit 0.9.1), just after it starts.
+const NO_SEARCHER: &str = "there are no available searcher nodes in the cluster";
+
 /// Documents per ingest request, bounded well under Quickwit's 10 MiB body limit.
 const CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
@@ -652,6 +656,13 @@ impl SinkStats {
         let m = telemetry::metrics();
         m.docs_sent.add(docs, &[]);
         m.bytes_sent.add(bytes, &[]);
+    }
+
+    /// Count documents a finish's replay made again (`SinkStats::replaying`):
+    /// the progress lines follow them, the sent-documents metric doesn't.
+    pub(crate) fn replayed(&self, docs: u64, bytes: u64) {
+        self.docs_sent.fetch_add(docs, Ordering::Relaxed);
+        self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
     }
 
     fn retried(&self, status: u16) {
@@ -1433,8 +1444,37 @@ impl IndexSink for QuickwitSink {
         merges::explained(self.events.as_deref(), node.has_index(index_id).await).await
     }
 
+    /// A writer just started takes a moment to see itself as a searcher;
+    /// until then it answers searches with an error that says so.
     async fn published_docs(&mut self, index_id: &str) -> anyhow::Result<u64> {
-        self.count(index_id).await
+        let until = tokio::time::Instant::now() + Duration::from_secs(60);
+        let text = loop {
+            let resp = self
+                .http
+                .get(format!(
+                    "{}/api/v1/{index_id}/search?query=*&max_hits=0",
+                    self.base
+                ))
+                .send()
+                .await;
+            let resp = merges::explained(self.events.as_deref(), resp.map_err(Into::into)).await?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                break text;
+            }
+            if !text.contains(NO_SEARCHER) || tokio::time::Instant::now() >= until {
+                bail!(
+                    "counting `{index_id}` returned {status}: {}",
+                    text.chars().take(500).collect::<String>()
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
+        let v: Value = serde_json::from_str(&text).context("search response")?;
+        v["num_hits"]
+            .as_u64()
+            .context("search response has no num_hits")
     }
 
     /// From the published splits, when each holds one decade (a partitioned

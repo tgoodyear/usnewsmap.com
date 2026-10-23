@@ -2058,7 +2058,7 @@ impl Release {
                 let t_add = std::time::Instant::now();
                 if let Some(stats) = &replayed {
                     let bytes: usize = part_lines.iter().map(|l| l.len() + 1).sum();
-                    stats.sent(part_docs.len() as u64, bytes as u64);
+                    stats.replayed(part_docs.len() as u64, bytes as u64);
                     count_decades(&mut by_decade, &part_docs);
                 } else {
                     for (d, line) in part_docs.iter().zip(part_lines) {
@@ -2106,7 +2106,7 @@ impl Release {
                     m.record(&d)?;
                 }
                 if let Some(stats) = &replayed {
-                    stats.sent(1, 0);
+                    stats.replayed(1, 0);
                     count_decades(&mut by_decade, std::slice::from_ref(&d));
                     continue;
                 }

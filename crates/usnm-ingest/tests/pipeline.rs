@@ -6846,17 +6846,58 @@ async fn congress_pages_are_indexed_in_a_quickwit_writer_node() {
 
 // ---------------------------------------------------------- release-finish
 
-/// A JSON log of what `f` logs on this thread, as the release's own log
-/// has it (`usnm_telemetry`'s JSON lines), at `path`.
-fn log_to(path: &Path) -> tracing::subscriber::DefaultGuard {
+thread_local! {
+    /// Where this thread's log lines go, while a test logs them (`log_to`).
+    static LOG: std::cell::RefCell<Option<Arc<std::sync::Mutex<std::fs::File>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The writer of one log line: this thread's log, or nowhere.
+struct ThreadLog(Option<Arc<std::sync::Mutex<std::fs::File>>>);
+
+impl std::io::Write for ThreadLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match &self.0 {
+            Some(f) => f.lock().unwrap().write(buf),
+            None => Ok(buf.len()),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match &self.0 {
+            Some(f) => f.lock().unwrap().flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Logs this thread's lines to `path` until dropped.
+struct LogGuard;
+
+impl Drop for LogGuard {
+    fn drop(&mut self) {
+        LOG.with(|l| *l.borrow_mut() = None);
+    }
+}
+
+/// The JSON log lines this thread writes, as the release's own log has them
+/// (`usnm_telemetry`'s), at `path` until the guard drops. One subscriber
+/// for the whole process, writing to each thread's file: subscribers set
+/// per thread can miss lines while other tests' come and go.
+fn log_to(path: &Path) -> LogGuard {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .json()
+                .with_writer(|| ThreadLog(LOG.with(|l| l.borrow().clone())))
+                .with_max_level(tracing::Level::INFO)
+                .finish(),
+        )
+        .expect("no other subscriber");
+    });
     let file = std::fs::File::create(path).unwrap();
-    tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .json()
-            .with_writer(std::sync::Mutex::new(file))
-            .with_max_level(tracing::Level::INFO)
-            .finish(),
-    )
+    LOG.with(|l| *l.borrow_mut() = Some(Arc::new(std::sync::Mutex::new(file))));
+    LogGuard
 }
 
 /// A sink that stops like a release whose merge wait runs out: the main
@@ -7241,5 +7282,252 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
     assert_eq!(
         (progress.index_version.as_str(), progress.docs_sent),
         (version.as_str(), want.docs)
+    );
+}
+
+/// A manifest without its splits' sizes, which differ between two writers
+/// that merged the same documents into the same splits.
+fn sizeless(mut manifest: Value) -> Value {
+    for l in manifest["indexes"].as_array_mut().unwrap() {
+        let l = l.as_object_mut().unwrap();
+        for k in ["bytes", "footer_bytes", "largest_footer_bytes"] {
+            l.remove(k);
+        }
+    }
+    manifest
+}
+
+/// The splits of `index`'s file-backed metastore, with their states.
+fn metastore_splits(qw: &Path, index: &str) -> Vec<(String, String)> {
+    let meta: Value = serde_json::from_slice(
+        &std::fs::read(qw.join(format!("meta/{index}/metastore.json"))).unwrap(),
+    )
+    .unwrap();
+    meta["splits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["split_id"].as_str().unwrap().to_owned(),
+                s["split_state"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// `release-finish` on a real Quickwit writer through ingest v1 (#283): a
+/// full base laid out by decade whose merge wait runs out after its count
+/// (a one-second deadline), the writer stopped, and a staged split left in
+/// its metastore as a writer stopped mid-merge leaves one. A finish on a new
+/// writer over the same data marks the staged split for deletion, merges the
+/// index with the release's restart, puts its merge policy back, builds the
+/// Japanese index and publishes the version an uninterrupted run of the same
+/// inputs publishes: the same counts, the same splits by decade within the
+/// split ceiling, the same snapshot and pointer, each page once. Runs when
+/// `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn a_release_whose_merge_wait_ran_out_is_finished_on_a_real_writer() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_ingest::activity::Reporter;
+    use usnm_ingest::finish::{AsOf, Resume};
+    use usnm_ingest::merges::Node;
+    use usnm_ingest::sink::{IngestApi, QuickwitNode, QuickwitSink};
+
+    let whole = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let (early, late) = (over_decades(&early), over_decades(&late));
+    for (name, pages) in [
+        ("batch_fx_early_ver01", &early),
+        ("batch_fx_late_ver01", &late),
+    ] {
+        let path = whole.root.join(format!("{name}.tar.gz"));
+        write_archive(&path, &pages.iter().collect::<Vec<_>>(), false, true);
+        curate(&whole, vec![listed(name, &path, None)]).await;
+    }
+    let p0 = early.iter().find(|p| !p.text.is_empty()).unwrap();
+    put_overlay_part(
+        &whole,
+        "ocr-ja/pages/a.parquet",
+        &[
+            JaRow {
+                lccn: &p0.lccn,
+                date: p0.date,
+                seq: 90,
+                batch: "batch_fx_early",
+                loc_text: "missing",
+                text: JA_LATIN,
+                ocred_at: 1,
+            },
+            JaRow {
+                lccn: &p0.lccn,
+                date: p0.date,
+                seq: 91,
+                batch: "batch_fx_early",
+                loc_text: "missing",
+                text: "米國と日本の戰爭",
+                ocred_at: 1,
+            },
+        ],
+    )
+    .await;
+    let e = env().await;
+    same_inputs(&whole, &e).await;
+    let settings = |e: &Env| Release {
+        ja_latin: true,
+        partition_decade: true,
+        single_text_field: true,
+        page_language: true,
+        ..e.releaser(22, true)
+    };
+    let writer = |e: &Env, port| {
+        let qw = e.root.join("qw");
+        std::fs::create_dir_all(&qw).unwrap();
+        let meta = format!("file://{}/meta", qw.display());
+        let root = format!("file://{}/indexes", qw.display());
+        let bin = bin.clone();
+        async move {
+            let node = QuickwitNode::start(Path::new(&bin), &qw, port, &meta, &root)
+                .await
+                .unwrap();
+            (node, root)
+        }
+    };
+
+    // The whole run.
+    let (node, root) = writer(&whole, 7461).await;
+    let mut sink = QuickwitSink::new(&node.url, &root)
+        .unwrap()
+        .watching(&node)
+        .merges(quick_merges())
+        .ingest(IngestApi::V1);
+    let want = settings(&whole).run(&mut sink).await.unwrap().unwrap();
+    node.stop().await.unwrap();
+
+    // The run whose merge wait runs out, logged as the release logs.
+    let log = e.root.join("release.log");
+    let (node, root) = writer(&e, 7465).await;
+    let err = {
+        let _log = log_to(&log);
+        let mut sink = QuickwitSink::new(&node.url, &root)
+            .unwrap()
+            .watching(&node)
+            .merges(usnm_ingest::merges::MergeWait {
+                timeout: std::time::Duration::from_secs(1),
+                ..quick_merges()
+            })
+            .ingest(IngestApi::V1);
+        settings(&e).run(&mut sink).await.unwrap_err()
+    };
+    assert!(
+        format!("{err:#}").contains("did not finish within 1 s"),
+        "{err:#}"
+    );
+    node.stop().await.unwrap();
+    let version = want.index_version.clone();
+    let main = want.indexes[0].clone();
+    assert_eq!(raw_run(&e, &version).await["status"], "failed");
+
+    // A split the stopped writer left staged: a merge's output it never
+    // published, a copy of documents the published splits hold.
+    let qw = e.root.join("qw");
+    let path = qw.join(format!("meta/{main}/metastore.json"));
+    let mut meta: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut staged = meta["splits"][0].clone();
+    staged["split_id"] = "01M5STALESTAGEDSPLIT000000".into();
+    staged["split_state"] = "Staged".into();
+    staged["create_timestamp"] = 1.into();
+    staged["update_timestamp"] = 1.into();
+    staged["publish_timestamp"] = Value::Null;
+    meta["splits"].as_array_mut().unwrap().push(staged);
+    std::fs::write(&path, serde_json::to_vec(&meta).unwrap()).unwrap();
+
+    // The finish, on a new writer over the same data.
+    let (node, root) = writer(&e, 7465).await;
+    let resume = Resume::load(&e.state, e.reference.as_ref(), &version, &log)
+        .await
+        .unwrap();
+    let r = Release {
+        curated: Arc::new(AsOf::new(e.curated.clone(), resume.run.started_at.into())),
+        ..settings(&e)
+    };
+    let lease = r.lock().await.unwrap();
+    let mut sink = QuickwitSink::new(&node.url, &root)
+        .unwrap()
+        .watching(&node)
+        .merges(quick_merges())
+        .ingest(IngestApi::V1);
+    let got = r
+        .finish(&mut sink, &lease, &Reporter::off(), &resume)
+        .await
+        .unwrap()
+        .unwrap();
+    r.unlock(lease).await.unwrap();
+    assert_eq!(got, want);
+    assert_eq!(raw_run(&e, &version).await["status"], "published");
+
+    // The staged split is gone from the index; nothing else is staged.
+    let states = metastore_splits(&qw, &main);
+    assert!(
+        states
+            .iter()
+            .any(|(id, s)| id == "01M5STALESTAGEDSPLIT000000" && s == "MarkedForDeletion"),
+        "{states:?}"
+    );
+    assert!(!states.iter().any(|(_, s)| s == "Staged"), "{states:?}");
+    // The index's own merge policy, and each page once.
+    let http = reqwest::Client::new();
+    let n = Node {
+        http: &http,
+        base: &node.url,
+    };
+    let config = n.index_config(&main).await.unwrap();
+    assert_eq!(
+        config["indexing_settings"]["merge_policy"]["merge_factor"],
+        10
+    );
+    let v: Value = http
+        .post(format!("{}/api/v1/{main}/search", node.url))
+        .json(&serde_json::json!({
+            "query": "*", "max_hits": 0,
+            "aggs": {"twice": {"terms": {"field": "doc_id", "size": 100, "min_doc_count": 2}}},
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["aggregations"]["twice"]["buckets"], serde_json::json!([]));
+    node.stop().await.unwrap();
+
+    // The same version as the whole run's: snapshot, layout and pointer.
+    let snapshot = |env: &Env| {
+        let mut f = files(&env.root.join("reference").join(&version));
+        f.remove("manifest.json");
+        f
+    };
+    assert_same_files(&snapshot(&e), &snapshot(&whole));
+    let manifest = format!("{version}/manifest.json");
+    let (m, w) = (
+        e.reference_json(&manifest).await,
+        whole.reference_json(&manifest).await,
+    );
+    assert_eq!(sizeless(m.clone()), sizeless(w));
+    assert_eq!(m["indexes"].as_array().unwrap().len(), 2, "{m}");
+    assert_eq!(
+        m["indexes"][0]["splits_by_decade"],
+        serde_json::json!({"1830": 1, "1840": 1, "1860": 1, "1890": 1}),
+        "{}",
+        m["indexes"][0]
+    );
+    assert_eq!(
+        timeless(e.reference_json("current.json").await),
+        timeless(whole.reference_json("current.json").await)
     );
 }
