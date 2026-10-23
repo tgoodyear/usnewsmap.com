@@ -331,6 +331,32 @@ impl Resume {
              finish replays. Not finishing",
             run.batch_list.as_deref().unwrap_or("inline batches")
         );
+        // The documents were built from each batch's curation as it was
+        // when the run started: one committed since (a re-curation) would
+        // be replayed in its place.
+        let changed: Vec<String> = state
+            .batches(&[])
+            .await?
+            .into_iter()
+            .filter(|(b, _)| {
+                b.curated.is_some()
+                    && (b.updated_at > run.started_at
+                        || b.curated_at.is_some_and(|t| t > run.started_at))
+            })
+            .map(|(b, _)| b.batch)
+            .collect();
+        ensure!(
+            changed.is_empty(),
+            "{} curated batches changed after {version} started ({}): the finish would replay \
+             other curations than the run built from. Not finishing",
+            changed.len(),
+            changed
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         // The documents carry the catalog the run read: titles and places
         // written since would be published beside documents that don't
         // match them.
@@ -894,6 +920,41 @@ mod tests {
             let err = load(id).await;
             assert!(err.contains(want), "{id}: {err}");
         }
+        // A batch curated again after the run started.
+        let curated = crate::state::Curated {
+            version: 2,
+            parts: vec![],
+            counts: String::new(),
+            pages: 1,
+            ok_pages: 1,
+            lccns: vec![],
+            source_sha256: String::new(),
+            first: String::new(),
+            last: String::new(),
+        };
+        assert!(state
+            .create_batch(&crate::state::Batch {
+                id: "b".into(),
+                batch: "b".into(),
+                version: 2,
+                source_url: String::new(),
+                source_sha256: None,
+                ocr_source: String::new(),
+                status: crate::state::BatchStatus::Curated,
+                attempts: 0,
+                lease: None,
+                curated: Some(curated),
+                last_error: None,
+                updated_at: chrono::Utc::now(),
+                curated_at: None,
+            })
+            .await
+            .unwrap());
+        let err = load("v3").await;
+        assert!(
+            err.contains("1 curated batches changed after v3 started (b)"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

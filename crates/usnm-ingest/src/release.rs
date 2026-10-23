@@ -2172,16 +2172,6 @@ impl Release {
                 bail!("the replay made {docs} documents; `{index_id}` holds {held}: not finishing");
             }
             r.check_count(index_id, docs)?;
-            if format.decade {
-                if let Some(held) = sink.decade_docs(index_id).await? {
-                    if held != by_decade {
-                        bail!(
-                            "`{index_id}` holds {held:?} documents by decade; the replay made \
-                             {by_decade:?}: not finishing"
-                        );
-                    }
-                }
-            }
             tracing::info!(
                 index = index_id,
                 docs,
@@ -2194,6 +2184,18 @@ impl Release {
         tokio::select! {
             r = sink.finish(docs) => r?,
             () = lease.lost() => lease.check()?,
+        }
+        // Decade by decade too, once the index is sealed and its split list
+        // stays as it is.
+        if replay && format.decade {
+            if let Some(held) = sink.decade_docs(index_id).await? {
+                if held != by_decade {
+                    bail!(
+                        "`{index_id}` holds {held:?} documents by decade; the replay made \
+                         {by_decade:?}: not finishing"
+                    );
+                }
+            }
         }
         if local.is_some() {
             tracing::info!(
