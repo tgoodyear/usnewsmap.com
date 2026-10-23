@@ -218,6 +218,7 @@ def run_direct(base, runs):
             }
         )
     assets = [r for r in results if r["name"].startswith("asset:")]
+    together = None
     if assets:
         # The first visit's critical path: HTML, then every asset at once on its own connection.
         def one(a):
@@ -231,11 +232,12 @@ def run_direct(base, runs):
             with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
                 list(pool.map(one, assets))
             walls.append(time.perf_counter() - t)
+        together = {"median_ms": ms(med(walls)), "max_ms": ms(max(walls))}
         print(
             f"assets together, one new connection each (as a first visit without HTTP/2): "
-            f"median {ms(med(walls))} ms, max {ms(max(walls))} ms"
+            f"median {together['median_ms']} ms, max {together['max_ms']} ms"
         )
-    return {"base_url": base, "mode": "direct", "runs": runs, "results": results}
+    return {"base_url": base, "mode": "direct", "runs": runs, "results": results, "assets_together": together}
 
 
 def globalping(body):

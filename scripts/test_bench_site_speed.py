@@ -91,6 +91,7 @@ class BenchSiteSpeed(unittest.TestCase):
         self.assertTrue(all(r["status"] == [200] and len(r["runs"]) == 2 for r in result["results"]))
         self.assertTrue(any(p.startswith("/v1/aggregate?") and p.endswith("&v=pages-v1") for p in SEEN))
         self.assertIn("assets together", out.getvalue())
+        self.assertEqual(set(result["assets_together"]), {"median_ms", "max_ms"})
 
 
 if __name__ == "__main__":
