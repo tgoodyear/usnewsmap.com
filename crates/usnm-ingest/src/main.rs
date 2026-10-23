@@ -695,7 +695,14 @@ enum Command {
     /// sending anything, check the replay against the run's state, index and
     /// log, then merge, seal and publish as the release would have
     /// (docs/operations.md, "Finishing a release"). Give the release's own
-    /// settings: the run's build record must come out the same.
+    /// settings: the run's build record must come out the same. How it
+    /// publishes isn't recorded, so it is said again: `--stage-index-storage`
+    /// as the release had it, or `--publish-serving`.
+    #[command(group(
+        clap::ArgGroup::new("publication")
+            .required(true)
+            .args(["stage_index_storage", "publish_serving"])
+    ))]
     ReleaseFinish {
         /// The run's version (`pages-v20261022-1`).
         #[arg(long)]
@@ -707,6 +714,10 @@ enum Command {
         /// instead of the run's start.
         #[arg(long)]
         listed_before: Option<chrono::DateTime<chrono::Utc>>,
+        /// The run was a release that writes the serving pointer
+        /// (`current.json`), not a staged one (`--stage-index-storage`).
+        #[arg(long)]
+        publish_serving: bool,
         /// As for `release`.
         #[arg(long)]
         full: bool,
@@ -2095,6 +2106,7 @@ async fn command(
             run,
             release_log,
             listed_before,
+            publish_serving: _,
             full,
             synthetic,
             american_stories,
@@ -2610,6 +2622,7 @@ mod tests {
             "--partition-decade",
             "--split-docs",
             "60000",
+            "--stage-index-storage",
             "--quickwit-bin",
             "qw",
         ])
@@ -2633,6 +2646,28 @@ mod tests {
         assert!(full && partition_decade);
         assert_eq!(split_docs, Some(60000));
         assert_eq!(target.merge_timeout_secs, None);
+        assert!(target.stage_index_storage);
+        // How the run publishes is said, once: the run doesn't record it, and
+        // a staged run finished as a serving one would write current.json.
+        let finish = |publication: &[&'static str]| {
+            let mut args = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "release-finish",
+                "--run",
+                "pages-v20261022-1",
+                "--release-log",
+                "l",
+            ];
+            args.extend_from_slice(publication);
+            Cli::try_parse_from(args)
+        };
+        assert!(finish(&[]).is_err());
+        assert!(finish(&["--stage-index-storage", "--publish-serving"]).is_err());
+        assert!(finish(&["--publish-serving"]).is_ok());
         // Named flags only.
         assert!(Cli::try_parse_from([
             "usnm-ingest",
