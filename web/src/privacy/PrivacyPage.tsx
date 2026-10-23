@@ -7,6 +7,10 @@ const ext = { target: "_blank", rel: "noopener noreferrer" } as const;
 /**
  * `/privacy`: what the site collects. Every statement here is checked
  * against the code and the deployment (09 §9.4.2); change them together.
+ *
+ * DRAFT for on-prem serving behind Cloudflare (#955, ADR-0027). It ships with
+ * the Phase 3 cutover and not before. The comments marked "Before Phase 3"
+ * name what has to be settled first.
  */
 export default function PrivacyPage() {
   useEffect(() => {
@@ -19,6 +23,7 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
+        {/* Before Phase 3: set this to the cutover date. */}
         <p className="privacy-updated">Last updated 15 October 2026.</p>
         <p>
           US News Map has no accounts, sets no cookies and saves nothing in your browser's storage. It shows no ads and
@@ -53,6 +58,8 @@ export default function PrivacyPage() {
         </p>
 
         <h2>Searches</h2>
+        {/* Before Phase 3: this first sentence holds only if Cloudflare keeps no search words with IP addresses
+            (ADR-0027 open decision 1). If the maintainer accepts that it does, say so here. */}
         <p>
           The words you search for are never stored with your IP address or anything else about you. The server keeps a
           record of each request it answers: the kind of request (such as search results or map places), its status and
@@ -79,9 +86,38 @@ export default function PrivacyPage() {
           salted hash of the address in memory for this and never writes it anywhere.
         </p>
 
-        <h2>Storage and retention</h2>
+        <h2>Cloudflare</h2>
         <p>
-          Microsoft Azure processes and stores this data in its East US 2 region (Virginia, United States). Page views,
+          Every request to this site passes through Cloudflare, which delivers the site and blocks some attacks before
+          they reach its server. Cloudflare decrypts each request to pass it on, so it sees what the site's server sees:
+          your IP address, the full web address you asked for (which includes the words of a search) and the headers
+          your browser sends, such as its user agent. It sees all of this even when your browser sends Do Not Track or
+          Global Privacy Control.
+        </p>
+        {/* Before Phase 3: the 31-day sample is what Security Analytics shows on the Free plan. Whether it keeps
+            the query string is measured in Phase 2; add the answer here (ADR-0027 open decision 1). "Sets no
+            cookies" holds while Bot Fight Mode is off and no Cloudflare rule challenges visitors. */}
+        <p>
+          Cloudflare shows the site's maintainer a sample of recent requests, each with its IP address and page address,
+          going back 31 days. For this sample and for the content that passes through its network, Cloudflare is a
+          processor: it handles them on the site's behalf and follows the site's instructions. For other information
+          about your traffic, Cloudflare is a controller, which means it decides how that information is used. The{" "}
+          <a href="https://www.cloudflare.com/privacypolicy/" {...ext}>
+            Cloudflare privacy policy
+          </a>{" "}
+          sets out both. Cloudflare sets no cookies on this site.
+        </p>
+        <p>
+          To make pages load faster, Cloudflare keeps copies of the site's files and of data such as its lists of places
+          and newspapers. It never keeps copies of search results, so every search reaches the site's server.
+        </p>
+
+        <h2>Storage and retention</h2>
+        {/* Before Phase 3: the server's location, and journald on the serving host kept to 30 days so that
+            "other logs after 30 days" still holds. */}
+        <p>
+          The site's server runs on hardware its maintainer operates. Microsoft Azure stores the page views, request
+          records, error reports and the search record in its East US 2 region (Virginia, United States). Page views,
           request records and the server's error reports are deleted after 90 days, and its other logs after 30 days.
           The search words described above are kept indefinitely.
         </p>
@@ -89,8 +125,9 @@ export default function PrivacyPage() {
         <h2>Legal basis</h2>
         <p>
           The site uses this data for aggregate statistics, such as visits per day and which sites send visitors, and to
-          keep the service working. That is a legitimate interest, and the records keep no IP address, cookie or
-          identifier. The site doesn't ask for consent because it stores nothing on your device.
+          keep the service working. That is a legitimate interest, and the site's own records keep no IP address, cookie
+          or identifier. The same legitimate interest covers the site's use of Cloudflare to deliver its pages and keep
+          the service working. The site doesn't ask for consent because it stores nothing on your device.
         </p>
 
         <h2>Other sites</h2>
