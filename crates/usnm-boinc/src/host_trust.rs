@@ -12,6 +12,8 @@ use std::{
 use tokio::process::Command;
 use usnm_ocr_contract::boinc::{self, ResultManifest};
 
+pub mod cli;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {

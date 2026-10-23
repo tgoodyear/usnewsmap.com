@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use usnm_ocr_survey::{bundle, score};
 use usnm_ocr_worker::engine::{self, Engine, Runner, Tesseract, TesseractOptions};
 
+pub mod cli;
 pub mod collect;
 pub mod job;
 pub mod mirror;

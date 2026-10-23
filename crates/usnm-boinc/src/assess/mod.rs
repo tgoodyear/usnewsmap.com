@@ -12,6 +12,7 @@ use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod cli;
 pub mod collect;
 pub mod sample;
 pub mod stage;

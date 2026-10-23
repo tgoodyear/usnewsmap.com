@@ -17,6 +17,7 @@ use anyhow::{bail, ensure, Context};
 use std::path::{Path, PathBuf};
 use usnm_core::page_id::{PageId, Source};
 
+pub mod cli;
 pub mod collect;
 pub mod crops;
 pub mod gold;
