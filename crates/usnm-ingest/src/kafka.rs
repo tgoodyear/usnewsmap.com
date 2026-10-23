@@ -259,6 +259,14 @@ enum Lost {
     Unexplained,
 }
 
+/// Nothing more goes to Kafka once the writer lock is gone.
+fn holding(lease_gone: bool) -> anyhow::Result<()> {
+    if lease_gone {
+        bail!("the writer lock could not be renewed; the Kafka producer stopped");
+    }
+    Ok(())
+}
+
 fn lost(expected: i64, n: i64, end: i64) -> Lost {
     if end == expected + n {
         Lost::Written
@@ -624,13 +632,7 @@ impl Producer {
             self.keep_up(target).await?;
         }
         // The lock may have gone while the watch waited for the writer.
-        if self
-            .lease_lost
-            .as_ref()
-            .is_some_and(|l| l.load(std::sync::atomic::Ordering::SeqCst))
-        {
-            bail!("the writer lock could not be renewed; the Kafka producer stopped");
-        }
+        holding(self.lease_gone())?;
         let records = std::mem::take(&mut self.batch);
         let (n, bytes) = (records.len() as u64, self.batch_bytes as u64);
         self.batch_bytes = 0;
@@ -685,6 +687,9 @@ impl Producer {
                     tracing::warn!(partition = p, records = n, "the lost produce was written");
                 }
                 Lost::NotWritten => {
+                    // The lock may have gone during the wait or the
+                    // reconnect: only its holder may send again.
+                    holding(self.lease_gone())?;
                     if let Err(e) = self.partitions[p]
                         .produce(records.clone(), Compression::Zstd)
                         .await
@@ -704,6 +709,12 @@ impl Producer {
             self.stats.sent(n, bytes);
             return Ok(());
         }
+    }
+
+    fn lease_gone(&self) -> bool {
+        self.lease_lost
+            .as_ref()
+            .is_some_and(|l| l.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// The writer lock's flag, for the watch to stop on.
@@ -803,6 +814,13 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn nothing_is_sent_once_the_writer_lock_is_gone() {
+        assert!(holding(false).is_ok());
+        let e = holding(true).unwrap_err();
+        assert!(format!("{e:#}").contains("writer lock"), "{e:#}");
     }
 
     #[test]
