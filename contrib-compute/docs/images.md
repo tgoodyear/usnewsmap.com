@@ -1,8 +1,10 @@
 # Images and deployment steps
 
-The production stack was deployed and checked as recorded in #470. CI builds and smoke-tests
+The production stack was deployed in Azure and checked as recorded in #470. CI builds and smoke-tests
 the server image; this page does not claim a fresh live check. Remaining unverified behavior is
-listed below.
+listed below. Prod's server runs on-prem since 21 October 2026 ([boinc-onprem.md](../../docs/boinc-onprem.md)):
+the images below are the ones the host runs, but "Deploy, in order" and the work-volume workbook
+describe the Azure server, whose app, jobs, MySQL, storage and workbook `"server": "onprem"` deletes.
 
 ## What is built
 

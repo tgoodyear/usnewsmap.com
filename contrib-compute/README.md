@@ -1,8 +1,8 @@
 # contrib-compute
 
-Azure hosting for the stock BOINC server that PR #441 (the BOINC batch OCR pilot, `usnm-boinc`) submits to. #441 is the client base and the bridge: a Docker-wrapper app, one cached page per task, a bridge that reserves and journals pages and publishes native output. It does not provision a server. This directory does. The decision is in [ADR-0019](../docs/design/adr/0019-boinc-server-hosting.md); the on-prem workers it sits beside are in [ADR-0015](../docs/design/adr/0015-onprem-ocr-workers.md).
+Hosting for the stock BOINC server that PR #441 (the BOINC batch OCR pilot, `usnm-boinc`) submits to. Prod's server runs on an on-prem host since 21 October 2026 ([docs/boinc-onprem.md](../docs/boinc-onprem.md)); the Bicep below, which hosts it in Azure, is the fallback, and with `"server": "onprem"` in the settings it deploys only the identities, Key Vault, VNet and static site. #441 is the client base and the bridge: a Docker-wrapper app, one cached page per task, a bridge that reserves and journals pages and publishes native output. It does not provision a server. This directory does. The decision is in [ADR-0019](../docs/design/adr/0019-boinc-server-hosting.md); the on-prem workers it sits beside are in [ADR-0015](../docs/design/adr/0015-onprem-ocr-workers.md).
 
-The production BOINC stack was deployed and checked as recorded in #470. The committed settings and Bicep are the declarative source of truth; this repository change does not re-check the live service. Each document keeps remaining unverified behavior explicit.
+The production BOINC stack was deployed in Azure and checked as recorded in #470, before the move on-prem. The committed settings and Bicep are the declarative source of truth; this repository change does not re-check the live service. Each document keeps remaining unverified behavior explicit.
 
 Volunteers should start with [docs/boinc-volunteer.md](../docs/boinc-volunteer.md).
 

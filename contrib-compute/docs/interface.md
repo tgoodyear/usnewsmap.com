@@ -1,6 +1,6 @@
 # Interface to PR #441
 
-What the Azure-hosted server and the files in this directory assume about #441's client and bridge, and what #441 can assume about the server. Design reasons are in [design.md](design.md). The production deployment and checks are recorded in #470; this interface page does not imply a fresh live check.
+What the Azure-hosted server and the files in this directory assume about #441's client and bridge, and what #441 can assume about the server. Prod's server has run on an on-prem host, from the same server and bridge images, since 21 October 2026 ([boinc-onprem.md](../../docs/boinc-onprem.md)); the Azure rows below describe the Azure deployment. Design reasons are in [design.md](design.md). The production deployment in Azure and its checks are recorded in #470; this interface page does not imply a fresh live check.
 
 Where this page and #441 differ, #441 wins; it is the client base.
 
