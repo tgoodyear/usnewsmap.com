@@ -29,16 +29,22 @@ The infrastructure checks, and the scan for shared keys, run on every pull reque
 scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh
 scripts/ci/no-positional-args.py
-scripts/ci/run-unit-tests.py
 scripts/ci/check-engine-pins.py
-scripts/ci/check-workbooks.py
+scripts/ci/run-unit-tests.py
+python3 -m unittest scripts/ocr-survey/test_gold.py
+python3 -m unittest discover -s scripts/ocr-survey -p test_transcription.py
+python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
+python3 -m unittest scripts/ocr-node/test_quality_jpeg_cache.py scripts/ocr-node/test_quality_jpeg_list.py
+shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh
 scripts/lib/env_settings.py --check
 scripts/ci/check-names.py --base origin/main
+scripts/ci/check-workbooks.py
+scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
 scripts/ci/build-bicep.sh
 AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
-`scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included.
+`scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included. The gold set and OCR node tests need `pillow`; the `infra` job also runs shellcheck over the OCR node install scripts (see [the CI map](docs/development.md#what-ci-runs)).
 
 Use Bicep CLI v0.48.1, the single version pinned in `scripts/ci/bicep-version`; CI installs that release. The lint and build helpers above verify the pinned compiler and cover every tracked `.bicep` template. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
