@@ -107,6 +107,7 @@ case "$(basename "$0") $1" in
     exit 3 ;;
   "skopeo inspect")
     for a in "$@"; do ref=$a; done
+    [ "${ref##*:}" != "${STUB_SKOPEO_DOWN:-}" ] || { echo "pinging container registry: connection reset" >&2; exit 1; }
     f="$STUB_DIR/manifest-${ref##*:}"
     [ -f "$f" ] || { echo "reading manifest: manifest unknown" >&2; exit 1; }
     cat "$f" ;;
@@ -326,6 +327,35 @@ class UpdateApi(Stubbed):
         self.assertIn("isn't the same manifest", r.stdout + r.stderr)
         self.assertIn(d2, self.read("var/lib/usnm-serving/rejected"))
         self.assertFalse(any(c.startswith("podman pull") for c in self.calls()))
+
+    def test_a_registry_error_on_the_commit_tag_is_tried_again(self):
+        self.serving("blue", SHA["old"], "old")
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_SKOPEO_DOWN=SHA["new"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("connection reset", r.stdout + r.stderr)
+        self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
+        # The registry answering that there's no such tag is final.
+        os.remove(os.path.join(self.stubs, "manifest-" + SHA["new"]))
+        r = self.update(STUB_READY_PORTS="8081 8082")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.read("var/lib/usnm-serving/rejected"), d + "\n")
+
+    def test_dry_run_never_records_a_rejection(self):
+        self.release(SHA["new"], "new")
+        r = self.update("--dry-run", STUB_BAD_ATTESTATION="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("dry run:", r.stdout + r.stderr)
+        self.assertFalse(self.exists("var/lib/usnm-serving/rejected") or self.exists("var/lib/usnm-serving/pending"))
+
+    def test_the_default_wait_covers_the_apis_start_budget(self):
+        with open(self.SCRIPT) as f:
+            default = int(re.search(r"READY_SECS=(\d+)", f.read()).group(1))
+        with open(os.path.join(ROOT, "infra/modules/containerapp.bicep")) as f:
+            bicep = f.read()
+        load = int(re.search(r"var loadSecs = (\d+)", bicep).group(1))
+        warm = int(re.search(r"var startupWarmUpSecs = (\d+)", bicep).group(1))
+        self.assertGreaterEqual(default, load + warm + 60)
 
     def test_commit_rolls_back_and_holds(self):
         self.release(SHA["old"], "old")

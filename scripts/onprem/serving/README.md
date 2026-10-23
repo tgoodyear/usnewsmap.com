@@ -77,7 +77,7 @@ Until the attestation appears, the script asks for it on every run for 30 minute
 
 If the new color doesn't get ready, or Caddy doesn't switch, the old color keeps serving and the manifest's digest is listed in `/var/lib/usnm-serving/rejected`. If the serving color isn't ready either, the host is the likely cause (a missing index, no lake access), so nothing is rejected. A manifest whose attestation doesn't verify is rejected before anything is pulled.
 
-A new image serves within about 10 minutes of CI attesting it, as long as CI attests it within 30 minutes of moving `main`: up to 2 minutes until the next run, then the pull and the new color's start and warm-up (its readiness cap is 360 s).
+Once CI attests a new image, the next run picks it up within about 2 minutes, as long as the attestation came within 30 minutes of `main` moving. Then come the pull and the new color's start, which takes at most 800 s: the API's own budget of 420 s to load the published version and a 360 s readiness cap.
 
 To roll back by hand, deploy an earlier commit:
 

@@ -5,7 +5,7 @@
 # runs it 2 minutes after the last run ended.
 #
 #   usnm-serving-update --registry NAME [--tag main] [--commit SHA]
-#     [--redeploy] [--ready-secs 600] [--drain-secs 130] [--dry-run]
+#     [--redeploy] [--ready-secs 800] [--drain-secs 130] [--dry-run]
 #
 # Each run reads the registry's usnewsmap-api:main manifest (NAME.azurecr.io,
 # the tag CI's publish job moves on every prod run) with the container's Arc
@@ -29,7 +29,10 @@
 # A deploy:
 #  1. pulls the image by digest and writes the idle color's
 #     /etc/usnm-serving/api-<color>.env (blue on :8081, green on :8082);
-#  2. starts that color and waits up to --ready-secs for its /readyz;
+#  2. starts that color and waits up to --ready-secs for its /readyz: by
+#     default the API's own start budget as containerapp.bicep allows it
+#     (420 s to load the published version, then a readiness cap of 360 s),
+#     plus 20 s;
 #  3. points Caddy at it (upstream.caddy, then `systemctl reload caddy`) and
 #     checks that Caddy's admin API names the new port and that /readyz
 #     answers through Caddy;
@@ -65,7 +68,7 @@ pri() { if [ -n "${JOURNAL_STREAM:-}" ]; then printf '<%s>%s\n' "$1" "$2"; else 
 log() { pri 5 "$*"; }
 warn() { pri 4 "$*"; }
 
-REGISTRY="" TAG=main COMMIT="" REDEPLOY=false READY_SECS=600 DRAIN_SECS=130 DRY_RUN=false
+REGISTRY="" TAG=main COMMIT="" REDEPLOY=false READY_SECS=800 DRAIN_SECS=130 DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --registry) REGISTRY=${2:-}; shift 2 || usage ;;
@@ -184,6 +187,10 @@ manifest() {
   echo "sha256:$(sha256sum "$2" | awk '{ print $1 }')"
 }
 reject() {
+  if $DRY_RUN; then
+    warn "dry run: $*; would reject $IMAGE_REPO@$digest"
+    exit 1
+  fi
   mkdir -p "$STATE"
   echo "$digest" >> "$REJECTED"
   rm -f "$PENDING"
@@ -249,11 +256,14 @@ fi
 commits=$(jq -r '[.[].verificationResult.signature.certificate.sourceRepositoryDigest] | unique | .[]' "$TMP/verified.json")
 [[ $commits =~ ^[0-9a-f]{40}$ ]] || reject "its attestations name no single source commit"
 target=$commits
-# The commit's own tag must point at the same manifest.
+# The commit's own tag must point at the same manifest. Only an answer from
+# the registry rejects; a failed request is tried again next run.
 if [ -z "$COMMIT" ]; then
-  if ! tagged=$(manifest "$target" "$TMP/commit-manifest.json" 2> "$TMP/why") || [ "$tagged" != "$digest" ]; then
-    reject "$IMAGE_REPO:$target isn't the same manifest as $IMAGE_REPO:$TAG"
+  if ! tagged=$(manifest "$target" "$TMP/commit-manifest.json" 2> "$TMP/why"); then
+    [ "$(cat "$TMP/why")" = missing ] || { warn "warning: can't read $IMAGE_REPO:$target from $HOST: $(cat "$TMP/why")"; exit 1; }
+    reject "the registry has no $IMAGE_REPO:$target"
   fi
+  [ "$tagged" = "$digest" ] || reject "$IMAGE_REPO:$target isn't the same manifest as $IMAGE_REPO:$TAG"
 fi
 $DRY_RUN || rm -f "$PENDING"
 log "$IMAGE_REPO@$digest: attestation verified for $target"
