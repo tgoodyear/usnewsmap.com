@@ -1,4 +1,4 @@
-//! The plain types, constants and URL helpers of [`super`]: errors, sizes,
+//! The plain types, constants and URL helpers of the `loc` module: errors, sizes,
 //! formats, servers, scans and the client's configuration.
 
 use std::collections::BTreeMap;
