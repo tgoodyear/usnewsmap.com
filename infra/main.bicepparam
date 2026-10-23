@@ -107,6 +107,7 @@ param searchLocalCacheGib = int(readEnvironmentVariable('USNM_SEARCH_LOCAL_CACHE
 param searchNfsGiB = int(readEnvironmentVariable('USNM_SEARCH_NFS_GIB', '64'))
 param budgetStartDate = readEnvironmentVariable('USNM_BUDGET_START', '')
 param dnsZoneName = readEnvironmentVariable('USNM_DNS_ZONE', '')
+param dnsZoneHosted = bool(readEnvironmentVariable('USNM_DNS_ZONE_HOSTED', 'true'))
 // Google Search Console domain verification, published at the apex next to SPF.
 param dnsApexTxtValues = {
   'usnewsmap.com': ['google-site-verification=5KCwOzVrZH4QvucrU0UkbqJ1I1jYmjkKNnUuy78VTWg']

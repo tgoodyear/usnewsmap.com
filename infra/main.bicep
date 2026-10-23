@@ -313,6 +313,8 @@ param availabilityFrequency string = '900'
 
 @description('Public DNS zone for the site (e.g. usnewsmap.com); empty skips it. Delegate the domain to the NAME_SERVERS output.')
 param dnsZoneName string = ''
+@description('Whether Azure DNS hosts dnsZoneName (the dns module and the NAME_SERVERS output). False: the domain is hosted elsewhere (Cloudflare for prod since October 2026, #944), and the stack no longer manages a zone; the custom domains, certificates, CORS origins and web tests still use dnsZoneName.')
+param dnsZoneHosted bool = true
 @description('More TXT values at the zone apex, keyed by zone name (site-verification tokens). They are public, so they live in git.')
 param dnsApexTxtValues object = {}
 
@@ -1226,7 +1228,7 @@ module boincExemptions 'modules/boinc-exemptions.bicep' = if (deployPolicies && 
   dependsOn: [boincPolicies]
 }
 
-module dns 'modules/dns.bicep' = if (!empty(dnsZoneName)) {
+module dns 'modules/dns.bicep' = if (!empty(dnsZoneName) && dnsZoneHosted) {
   scope: rg
   name: 'dns'
   params: {
@@ -1254,8 +1256,8 @@ output SITE_URL string = !deployApi
   ? ''
   : (!empty(dnsZoneName) && !empty(siteCertificateId) ? 'https://${dnsZoneName}' : 'https://${api!.outputs.fqdn}')
 output CONTAINER_ENV_NAME string = containerEnv.outputs.name
-// Set these as the domain's name servers at the registrar.
-output NAME_SERVERS string = empty(dnsZoneName) ? '' : join(dns!.outputs.nameServers, ' ')
+// Set these as the domain's name servers at the registrar (empty when Azure DNS doesn't host the domain).
+output NAME_SERVERS string = empty(dnsZoneName) || !dnsZoneHosted ? '' : join(dns!.outputs.nameServers, ' ')
 output STORAGE_ACCOUNT string = storage.outputs.name
 output INDEX_STORAGE_ACCOUNT string = indexStorage ? indexStore!.outputs.name : ''
 output COSMOS_ENDPOINT string = cosmos.outputs.endpoint

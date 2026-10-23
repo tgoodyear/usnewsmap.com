@@ -133,6 +133,10 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_DNS_ZONE_HOSTED": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
     "USNM_EXPERIMENT": {
       "x-usnm-visibility": "local",
       "description": "Local: in the environment's local settings file. dev's current experiment (an issue number), which scripts/azure/stand-up.sh sets and scripts/azure/teardown.sh clears.",
