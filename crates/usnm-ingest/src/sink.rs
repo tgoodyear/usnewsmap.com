@@ -826,6 +826,9 @@ pub struct QuickwitSink {
     /// The current index is a stopped release's, taken up by `attach`: its
     /// Kafka source and topic may be gone already.
     resumed: bool,
+    /// While a finish replays its build, the lines that say how the
+    /// writer's merges go; `finish` stops it.
+    replay_watch: Option<merges::MergeWatch>,
 }
 
 /// Posts ingest requests to one index on the writer node: the request,
@@ -998,6 +1001,7 @@ impl QuickwitSink {
             kafka_index: None,
             node_started: None,
             resumed: false,
+            replay_watch: None,
         })
     }
 
@@ -1273,6 +1277,8 @@ impl IndexSink for QuickwitSink {
     /// Commit, confirm the count, then wait for the index's merges and
     /// close it (`merges::seal`): nothing is published half merged.
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()> {
+        // The merge wait logs its own lines from here.
+        self.replay_watch = None;
         // A forced commit publishes everything still buffered in the node.
         // `add` always leaves its document in the buffer, so an empty one
         // means none was added (a batch with no text): there is nothing to
@@ -1430,6 +1436,13 @@ impl IndexSink for QuickwitSink {
         self.index = Some(index_id.to_owned());
         self.split_docs = layout.split_docs;
         self.resumed = true;
+        self.replay_watch = Some(merges::MergeWatch::start(
+            self.http.clone(),
+            self.base.clone(),
+            index_id.to_owned(),
+            "replay",
+            self.stats.work_dir.clone(),
+        ));
         tracing::info!(
             index = index_id,
             sources = ?sources,

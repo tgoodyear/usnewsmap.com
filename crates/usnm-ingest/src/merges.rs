@@ -441,12 +441,106 @@ impl Burndown {
     }
 }
 
-/// The bytes of `splits`' immature ones, and how many there are.
+/// How many of `splits` are immature, and their bytes.
 fn immature(splits: &[Split]) -> (u64, u64) {
     splits
         .iter()
         .filter(|s| s.immature)
         .fold((0, 0), |(n, b), s| (n + 1, b + s.bytes))
+}
+
+/// One "release merges" line: where `index_id`'s merges are, `elapsed`
+/// into the wait's `step`, and how fast they go ([`Burndown`]).
+fn log_wait(
+    index_id: &str,
+    step: &str,
+    elapsed: Duration,
+    g: &Gauges,
+    splits: &[Split],
+    burndown: &Burndown,
+    work_dir: Option<&Path>,
+) {
+    let burn = burndown.rates();
+    let (immature_splits, immature_bytes) = immature(splits);
+    tracing::info!(
+        index = index_id,
+        step,
+        splits = splits.len(),
+        merges_running = g.running,
+        merges_queued = g.queued,
+        elapsed_secs = elapsed.as_secs(),
+        immature_splits,
+        immature_mb = immature_bytes / (1024 * 1024),
+        pending_merge_mb = g.pending_bytes.map(|b| b / (1024 * 1024)),
+        immature_mb_per_hour = burn.immature_mb_per_hour,
+        merge_write_mb_per_sec = burn.merge_write_mb_per_sec,
+        eta_mins = burn.eta_mins,
+        disk_free_mb = work_dir
+            .and_then(progress::disk_free)
+            .map(|b| b / (1024 * 1024)),
+        wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
+        "release merges"
+    );
+}
+
+/// Logs [`log_wait`]'s line for an index every [`LOG_EVERY`] until dropped:
+/// a finish's writer merges while the finish replays its build, before the
+/// merge wait proper starts (`crate::finish`).
+pub struct MergeWatch(tokio::task::JoinHandle<()>);
+
+impl Drop for MergeWatch {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl MergeWatch {
+    /// Watch `index_id` on the writer at `base`, as step `step`. A poll that
+    /// fails is logged and the next one tried.
+    pub fn start(
+        http: reqwest::Client,
+        base: String,
+        index_id: String,
+        step: &'static str,
+        work_dir: Option<std::path::PathBuf>,
+    ) -> Self {
+        use tracing::Instrument;
+        Self(tokio::spawn(
+            async move {
+                let node = Node {
+                    http: &http,
+                    base: &base,
+                };
+                let start = tokio::time::Instant::now();
+                let mut burndown = Burndown::default();
+                loop {
+                    match (node.gauges().await, node.splits(&index_id).await) {
+                        (Ok(g), Ok(splits)) => {
+                            burndown.observe(
+                                tokio::time::Instant::now(),
+                                immature(&splits).1,
+                                g.merged_bytes,
+                            );
+                            log_wait(
+                                &index_id,
+                                step,
+                                start.elapsed(),
+                                &g,
+                                &splits,
+                                &burndown,
+                                work_dir.as_deref(),
+                            );
+                        }
+                        (Err(e), _) | (_, Err(e)) => {
+                            tracing::warn!(index = %index_id, error = %format!("{e:#}"), "could not read the writer's merges")
+                        }
+                    }
+                    tokio::time::sleep(LOG_EVERY).await;
+                }
+            }
+            .instrument(tracing::Span::current()),
+        ))
+    }
 }
 
 /// How long a failed request to the writer waits for its exit to be reaped.
@@ -1008,8 +1102,11 @@ async fn poll_until_sealed(
         let g = explained(events, node.gauges().await).await?;
         let (running, queued) = (g.running, g.queued);
         let splits = explained(events, node.splits(index_id).await).await?;
-        let (immature_splits, immature_bytes) = immature(&splits);
-        burndown.observe(tokio::time::Instant::now(), immature_bytes, g.merged_bytes);
+        burndown.observe(
+            tokio::time::Instant::now(),
+            immature(&splits).1,
+            g.merged_bytes,
+        );
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let settled = settle.observe(running == 0 && queued == 0, &ids);
         wait.report.merges(MergeProgress {
@@ -1020,25 +1117,14 @@ async fn poll_until_sealed(
         });
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
             last_log = Some(tokio::time::Instant::now());
-            let burn = burndown.rates();
-            tracing::info!(
-                index = index_id,
+            log_wait(
+                index_id,
                 step,
-                splits = splits.len(),
-                merges_running = running,
-                merges_queued = queued,
-                elapsed_secs = start.elapsed().as_secs(),
-                immature_splits,
-                immature_mb = immature_bytes / (1024 * 1024),
-                pending_merge_mb = g.pending_bytes.map(|b| b / (1024 * 1024)),
-                immature_mb_per_hour = burn.immature_mb_per_hour,
-                merge_write_mb_per_sec = burn.merge_write_mb_per_sec,
-                eta_mins = burn.eta_mins,
-                disk_free_mb = work_dir
-                    .and_then(progress::disk_free)
-                    .map(|b| b / (1024 * 1024)),
-                wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
-                "release merges"
+                start.elapsed(),
+                &g,
+                &splits,
+                &burndown,
+                work_dir,
             );
         }
         match closed_at {
@@ -1503,8 +1589,11 @@ async fn settled(
         let g = explained(events, node.gauges().await).await?;
         let (running, queued) = (g.running, g.queued);
         let splits = explained(events, node.splits(index_id).await).await?;
-        let (immature_splits, immature_bytes) = immature(&splits);
-        burndown.observe(tokio::time::Instant::now(), immature_bytes, g.merged_bytes);
+        burndown.observe(
+            tokio::time::Instant::now(),
+            immature(&splits).1,
+            g.merged_bytes,
+        );
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let done = settle.observe(running == 0 && queued == 0, &ids);
         wait.report.merges(MergeProgress {
@@ -1515,25 +1604,14 @@ async fn settled(
         });
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
             last_log = Some(tokio::time::Instant::now());
-            let burn = burndown.rates();
-            tracing::info!(
-                index = index_id,
+            log_wait(
+                index_id,
                 step,
-                splits = splits.len(),
-                merges_running = running,
-                merges_queued = queued,
-                elapsed_secs = start.elapsed().as_secs(),
-                immature_splits,
-                immature_mb = immature_bytes / (1024 * 1024),
-                pending_merge_mb = g.pending_bytes.map(|b| b / (1024 * 1024)),
-                immature_mb_per_hour = burn.immature_mb_per_hour,
-                merge_write_mb_per_sec = burn.merge_write_mb_per_sec,
-                eta_mins = burn.eta_mins,
-                disk_free_mb = work_dir
-                    .and_then(progress::disk_free)
-                    .map(|b| b / (1024 * 1024)),
-                wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
-                "release merges"
+                start.elapsed(),
+                &g,
+                &splits,
+                &burndown,
+                work_dir,
             );
         }
         if done {
