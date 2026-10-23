@@ -910,9 +910,10 @@ jobs:
         environment: ${{ fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
     environment: ${{ matrix.environment }}
     runs-on: ubuntu-latest
-    # id-token: the Azure sign-in below uses OIDC, so no secret is stored,
-    # and the API image's attestation is signed with the same token;
-    # attestations: that attestation is stored on the repository.
+    # id-token: the Azure sign-in below uses OIDC, so no secret is stored;
+    # the API image's attestation step needs it too, for its Sigstore
+    # signing certificate. attestations: that attestation is stored on the
+    # repository.
     permissions:
       contents: read
       id-token: write
@@ -1007,10 +1008,11 @@ jobs:
         continue-on-error: true
         run: scripts/ci/indexnow.sh
       # A build provenance attestation for the API image, for an origin that
-      # checks it before it runs the image (#955), as install-worker.sh does
-      # the OCR worker's. Its subject is the digest the push returned, the one
-      # `usnewsmap-api:<sha>` names. Last, so a failure here doesn't hold back
-      # the rollout or IndexNow, but still fails the deployment.
+      # checks it before it runs the image (#955), as the OCR nodes check the
+      # worker's (scripts/ocr-node/update-worker.sh). Its subject is the
+      # digest the push returned, the one `usnewsmap-api:<sha>` names. Last,
+      # so a failure here doesn't hold back the rollout or IndexNow, but
+      # still fails the deployment.
       - name: Attest the API image
         if: steps.head.outputs.current == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
