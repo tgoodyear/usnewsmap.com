@@ -86,20 +86,23 @@ class SuryaVulkanDetectionTest(unittest.TestCase):
                 "cpu",
             )
 
-    def test_containerfile_pins_same_surya_weights_and_llama_vulkan_digest(self):
+    def test_containerfile_takes_its_pins_from_engine_lock_and_builds_the_vulkan_variant(self):
         containerfile = (HERE / "Containerfile").read_text()
+        lock = dict(
+            line.split("=", 1)
+            for line in (HERE / "engine.lock").read_text().splitlines()
+            if line and not line.startswith("#")
+        )
+        self.assertEqual(sorted(lock), ["LLAMA_DIGEST", "LLAMA_VULKAN_DIGEST", "SURYA_VERSION", "SURYA_WEIGHTS"])
         self.assertIn("ARG LLAMA_VARIANT=cuda", containerfile)
-        self.assertIn(
-            "ARG LLAMA_DIGEST=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea",
-            containerfile,
-        )
-        self.assertIn(
-            "ARG LLAMA_VULKAN_DIGEST=sha256:d64043576ad8fb29170563c769a997dbc1b9928f0d4a127fb9e4a9706ccb475b",
-            containerfile,
-        )
+        for key in lock:
+            # An argument with no default: the value is the lock's, passed by the build.
+            self.assertRegex(containerfile, rf"(?m)^ARG {key}$")
+            self.assertNotRegex(containerfile, rf"(?m)^ARG {key}=")
         self.assertIn("FROM ghcr.io/ggml-org/llama.cpp:server-vulkan@${LLAMA_VULKAN_DIGEST} AS llama-vulkan", containerfile)
         self.assertIn("ENV USNM_SURYA_LLAMA_IMAGE=${LLAMA_VULKAN_DIGEST} USNM_SURYA_BACKEND=vulkan", containerfile)
-        self.assertIn("surya-ocr==0.22.1", containerfile)
+        self.assertIn('surya-ocr=="$SURYA_VERSION"', containerfile)
+        self.assertIn("USNM_SURYA_VERSION=${SURYA_VERSION}", containerfile)
         self.assertIn("TORCH_DEVICE=cpu", containerfile)
         job_intel = (HERE / "job-intel.toml").read_text()
         self.assertIn("use_gpu = false", job_intel)

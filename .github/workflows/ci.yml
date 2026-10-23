@@ -686,6 +686,12 @@ jobs:
         run: scripts/ci/no-shared-keys.sh
       - name: Scripts and CLIs take named arguments, not positional ones (#277)
         run: scripts/ci/no-positional-args.py
+      # The Surya image's pins live in ocr/boinc/surya/engine.lock and the NDLOCR-Lite commit in its
+      # models.lock; this checks the places that can't read them (the Containerfiles, the adapter's
+      # COMMIT, the engine catalog). Its unit test runs with the others below.
+      - name: Engine pins written in more than one place agree
+        if: needs.changes.outputs.infra == 'true'
+        run: scripts/ci/check-engine-pins.py
       # Every scripts/**/test_*.py (changes.sh, the corpus catalog, model downloads, the
       # environment and BOINC scripts against stub tools, the checkers, ...). A new test file
       # runs without being listed here. The files it leaves out (Pillow, the ops venv, their own

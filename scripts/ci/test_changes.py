@@ -446,6 +446,11 @@ class BuildInputs(unittest.TestCase):
         on = self.select("ocr/boinc/usnm_qwen_benchmark_in")
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
+        # usnm-boinc embeds the Surya image's pins (the default of `surya stage --engine-surya`),
+        # so it rebuilds every image that links it; the rest of ocr/boinc/surya/ is the Surya image's alone.
+        on = self.select("ocr/boinc/surya/engine.lock")
+        self.assertGreaterEqual(on, BOINC_IMAGES)
+        self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
 
     def test_an_images_own_recipe_runs_that_image_only(self):
         for path, image in [
