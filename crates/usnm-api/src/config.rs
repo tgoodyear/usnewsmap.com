@@ -110,6 +110,10 @@ pub struct Config {
     /// (1 = Container Apps ingress; 2 = a proxy such as Front Door + ingress).
     /// 0 ignores the header and uses the peer address.
     pub trusted_proxy_hops: usize,
+    /// Take the client address from `CF-Connecting-IP` instead, and only on
+    /// requests from a loopback peer: behind a cloudflared and proxy on the
+    /// same host (`USNM_TRUST_CF_CONNECTING_IP`). Off by default.
+    pub trust_cf_connecting_ip: bool,
     /// Requests allowed to query the search backend at once.
     pub backend_concurrency: usize,
     /// The built web app to serve alongside the API (`web/dist`); none
@@ -282,6 +286,7 @@ impl Config {
             rate_limit,
             trusted_proxy_hops: usize::try_from(num("USNM_TRUSTED_PROXY_HOPS", 1)?)
                 .map_err(|e| e.to_string())?,
+            trust_cf_connecting_ip: flag("USNM_TRUST_CF_CONNECTING_IP", false)?,
             backend_concurrency: usize::try_from(num("USNM_BACKEND_CONCURRENCY", 8)?.max(1))
                 .map_err(|e| e.to_string())?,
             site_dir: var("USNM_SITE_DIR").map(PathBuf::from),
@@ -317,6 +322,19 @@ impl Config {
     }
 }
 
+impl Config {
+    /// Where the rate limiter and page views take a request's client address.
+    pub fn client_address(&self) -> crate::ratelimit::ClientAddress {
+        if self.trust_cf_connecting_ip {
+            crate::ratelimit::ClientAddress::CloudflareViaLoopback
+        } else {
+            crate::ratelimit::ClientAddress::Forwarded {
+                hops: self.trusted_proxy_hops,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +365,17 @@ mod tests {
         assert_eq!(c.searcher_metrics_interval, Duration::from_secs(60));
         assert!(c.american_stories_search);
         assert!(!c.browse_pages);
+        assert_eq!(
+            c.client_address(),
+            crate::ratelimit::ClientAddress::Forwarded { hops: 1 }
+        );
+        let cf =
+            Config::from_lookup(|k| (k == "USNM_TRUST_CF_CONNECTING_IP").then(|| "true".into()))
+                .unwrap();
+        assert_eq!(
+            cf.client_address(),
+            crate::ratelimit::ClientAddress::CloudflareViaLoopback
+        );
         let browse = |v: &str| {
             let v = v.to_owned();
             Config::from_lookup(move |k| (k == "USNM_BROWSE_PAGES").then(|| v.clone()))
