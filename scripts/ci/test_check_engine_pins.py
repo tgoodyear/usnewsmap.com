@@ -164,6 +164,23 @@ class Pins(unittest.TestCase):
                 self.assertIn(f"{OTHER_COMMIT} in", found)
                 self.assertIn(where, found)
 
+    def test_one_models_licence_link_with_another_commit_is_reported(self):
+        # The engine's own terms link is the first occurrence; the PARSeq models' links follow.
+        # Change the second occurrence only, so only one model's licence commit moves.
+        path = self.root / check.CATALOG
+        old = f"ndlocr-lite/blob/{COMMIT}/LICENCE"
+        text = path.read_text()
+        self.assertGreaterEqual(text.count(old), 3)
+        second = text.index(old, text.index(old) + 1)
+        path.write_text(text[:second] + f"ndlocr-lite/blob/{OTHER_COMMIT}/LICENCE" + text[second + len(old):])
+        found = self.problems()
+        self.assertIn("is not one commit", found)
+        self.assertIn(f"{OTHER_COMMIT} in engines.toml (ndlocr-lite)", found)
+        # DINOv3's licence has its own revision and is not the NDLOCR pin.
+        self.reset()
+        self.edit(check.CATALOG, "facebookresearch/dinov3/blob/", "facebookresearch/dinov3/blob/0000000000000000000000000000000000000000/", None)
+        self.assertNotIn("is not one commit", self.problems())
+
     def test_a_literal_copy_of_the_commit_left_in_a_dockerfile_is_compared_too(self):
         self.edit(check.NDLOCR_IMAGES[0], "NDLOCR_COMMIT=${NDLOCR_COMMIT}", f"NDLOCR_COMMIT={OTHER_COMMIT}")
         self.assertIn("is not one commit", self.problems())

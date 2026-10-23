@@ -165,6 +165,10 @@ def ndlocr_problems(root: Path) -> list[str]:
         for model in engine.get("model", []):
             note(where, [model.get("version", "")] if re.fullmatch(SHA1, model.get("version", "")) else [])
             note(where, re.findall(rf"/ndl-lab/ndlocr-lite/({SHA1})/", model.get("source", "")))
+            # A model's licence link into ndlocr-lite carries the commit too; a licence that
+            # lives elsewhere (DINOv3's) has its own revision and is not this pin.
+            if "/ndl-lab/ndlocr-lite/" in model.get("terms", ""):
+                note(where, re.findall(rf"/ndl-lab/ndlocr-lite/blob/({SHA1})/", model["terms"]))
 
     if len(found) > 1:
         out.append(
