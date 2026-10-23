@@ -30,3 +30,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0024](0024-cloudflare-tunnel-and-r2-credentials.md) | Cloudflare Tunnel and R2 credentials for the on-prem BOINC server (an ADR-0009 exception)                              | Accepted                                |
 | [0025](0025-onprem-database-client-certificates.md)  | Client certificates for on-prem databases (on-prem PostgreSQL, outside ADR-0009)                                       | Proposed                                |
 | [0026](0026-source-qualified-page-ids.md)            | Source-qualified page identifiers (`<source>:<local id>`; a bare id means LoC)                                         | Proposed                                |
+| [0027](0027-onprem-serving-behind-cloudflare.md)     | Serving moves on-prem behind a Cloudflare Tunnel; Azure keeps a cold off-site copy                                     | Proposed                                |
