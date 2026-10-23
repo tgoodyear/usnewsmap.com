@@ -249,6 +249,8 @@ The transcriptions of the 60 crops are not written yet. Every `transcription` fi
 - **Not stratified by typeface.** The sample records no typeface (Fraktur or Antiqua, for German). Record it in `notes` when transcribing; if a stratum turns out to hold one typeface only, add pages.
 - **Crop box.** One text region per page, chosen as the survey's `crops.py` does (a line of LoC's ALTO with 4 or more words in a block at least 600 pixels wide, and the region below it, up to 1,600 pixels wide and 6% of the page high), seeded per page. The box is fixed in the manifest.
 
+The survey's `scores.jsonl` is in the `report-data` set, so fetch it first: `scripts/data-assets.sh --fetch --set report-data` ([reports/README.md](reports/README.md), "Data").
+
 ```sh
 scripts/ocr-survey/gold.py select --scores docs/reports/2026-10-ocr-engine-survey/data/scores.jsonl \
   --out fixtures/ocr-gold/selection.jsonl --target 60 --seed 296

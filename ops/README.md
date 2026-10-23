@@ -9,6 +9,7 @@ Operations data kept in git: the saved Log Analytics queries, the build records 
 | `index-history.schema.json`     | The JSON Schema of `index-history.json`.                                                                                 | `scripts/check-index-history.py`                                                                          |
 | `version-snapshots/*.json`      | One capture per index version, named `{index_version}.json`: the fixed searches, asked of the live version.              | `scripts/compare-versions.py diff`; `scripts/check-version-snapshots.py`; the `ops` job in `ci.yml`       |
 | `version-snapshots/schema.json` | The JSON Schema of a capture.                                                                                            | `scripts/check-version-snapshots.py`                                                                      |
+| `data-assets.json`              | The release tag and tarball sha256 of each data set kept outside the tree (`report-data`, `bench-assets`).               | `scripts/data-assets.sh --fetch`; `scripts/test_data_assets.py` checks its shape                          |
 
 ## Saved queries
 
@@ -56,7 +57,7 @@ scripts/compare-versions.py diff --before ops/version-snapshots/<older>.json --a
 scripts/check-version-snapshots.py                 # as CI does
 ```
 
-`diff` flags a search whose hits changed by more than 1% (`--threshold`), or whose status or query changed. `check-version-snapshots.py` checks every file here against `schema.json`, that the file is named after its `index_version`, and that each answered search's per-bucket hits add up to its total.
+`diff` flags a search whose hits changed by more than 1% (`--threshold`), or whose status or query changed. `check-version-snapshots.py` checks every file here against `schema.json`, that the file is named after its `index_version`, and that each answered search's per-bucket hits add up to its total. A capture is laid out one search per line (`compare-versions.py fmt --path FILE` rewrites one), so a diff between captures shows the searches that changed.
 
 ## CI
 
