@@ -58,7 +58,7 @@ enum Commands {
     /// Japanese NDLOCR-Lite staging, redundant validation and ocr-ja publication.
     #[command(subcommand)]
     Ndlocr(ndlocr::cli::NdlocrCommands),
-    /// The remote hand-off between the OCR node and the BOINC server (#469, docs/boinc.md).
+    /// The remote hand-off between the OCR node and the BOINC server (#469, docs/boinc/scan-cache-handoff.md).
     #[command(subcommand)]
     Handoff(handoff::cli::HandoffCommands),
     /// Inspect the local submission/publication journal; emits no page text.
