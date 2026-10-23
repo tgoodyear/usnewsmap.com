@@ -23,6 +23,6 @@ names remain pinned until their migration and rebuild windows.
 - [Full rebuilds and index storage](rebuild-and-index-storage.md): the full rebuild (with duplicate-safe ingest and the on-prem rebuild), the index storage cutover and pruning old index versions.
 - [Search serving](search-serving.md): the Quickwit searcher's caches, threads, capacity, app and image, cache warm-up, and the search log.
 - [American Stories](american-stories.md): American Stories' text in the index, its comparison against LoC's text, and writing the text for our pages.
-- [Congress pages and the Serial Set](congress-pages.md): the Congressional Globe and Serial Set fetches, the Serial Set on an OCR node, and the Japanese OCR on an OCR node.
-- [Japanese OCR and the OCR quality audit](japanese-ocr.md): mixed pages and English text, checking Japanese search, the OCR quality audit, and the text that search can't reach.
+- [Congress pages and the Serial Set](congress-pages.md): the Congressional Globe and Serial Set fetches, and the Serial Set on an OCR node.
+- [Japanese OCR and the OCR quality audit](japanese-ocr.md): mixed pages and English text, checking Japanese search, the OCR quality audit, the text that search can't reach, and the Japanese OCR on an OCR node.
 - [On-prem OCR](onprem-ocr.md): the on-prem OCR nodes, the ocr-sync pickup, our OCR in releases and the OCR dashboard on the LAN.

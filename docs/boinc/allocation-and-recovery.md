@@ -95,7 +95,7 @@ Replicas of one workunit go to different **hosts**
 share one account, and with the per-account rule they could take only one of
 each quorum-2 pair, so they idled while the second copies waited for another
 user. The cost: a volunteer with several hosts can supply both copies of a unit.
-Gold units and spot checks (Host trust below) are the guard against that, not
+Gold units and spot checks ([Host trust](gold-check.md#host-trust-for-usnm_ocr)) are the guard against that, not
 the quorum.
 
 ## Live acceptance exercise

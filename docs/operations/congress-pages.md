@@ -89,23 +89,3 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
    Restarts don't wait for the fetch's lock (`congress-serialset`, in `USNM_STATE_FILE`, a 30-minute lease renewed every 5 minutes). With a local state file the holder id is `{host}:{boot id}:{pid}:{nanos}`, and a new run takes the lock over at once when the holder was on the same host and is gone: from an earlier boot, or from this boot with its process no longer running (it logs `took over the lock of a run that is gone`). A holder on another host, a live process or an id in another form still waits out the lease. A failure releases the lock, and so does SIGTERM (`systemctl stop`): the fetch drops what it was doing, releases the lock and exits 143, which the unit counts as a clean stop. A volume stopped mid-way writes nothing, and the next run resumes it from the raw store. The Azure job's Cosmos lock is held as before. A failure starts it again after 60 s, then about 2, 4 and 8 minutes, then every 15 minutes (`RestartSteps`), so a GovInfo outage longer than the fetch's own retries doesn't hammer it; the count starts again at boot or with `sudo systemctl reset-failed usnm-sset`. To stop it for good before it's done: `sudo systemctl disable --now usnm-sset`.
 
 4. **Close.** When it's done, set `USNM_SERIALSET_ONPREM` to false and provision: the lake closes, the grant goes and the policy drops the exemption. Remove the private setting with `scripts/settings.sh --env prod --key USNM_SERIALSET_RUNNER --unset`.
-
-### The Japanese OCR on-prem
-
-The Japanese OCR (`ja-ocr/jaocr.py run`, #128) runs on an OCR node instead of the Azure job `caj-usnm-jaocr-<env>` (#917: Azure keeps only the search cluster, the API and the web app). It's the same image, built on the node from a pinned commit (`docker/Dockerfile.ja-ocr`), as the node's Arc machine identity.
-
-1. **Settings.** `USNM_JA_OCR_ONPREM=true` and `USNM_JA_OCR_JOB=false` in `infra/env/<env>.json` (through a pull request), with `USNM_ONPREM_GROUP` set and the node's Arc identity in that group. Provision. That grants the group read on `curated` and `reference` and create-only writes under `curated/ocr-ja/` and to `reference/status/ocr-ja.json`, with no delete (`infra/modules/jaocr-runner.bicep`). It opens the lake to `USNM_OCR_NODE_IPS` and removes the Azure job.
-2. **Install and start**, on the node as root, from a checkout of the scripts:
-
-   ```sh
-   scripts/ocr-node/ja-ocr-onprem.sh --commit <sha on main> \
-     --curated-url https://<lake>.blob.core.windows.net/curated \
-     --reference-url https://<lake>.blob.core.windows.net/reference --replicas 2 --start
-   journalctl -fu 'usnm-ja-ocr@*'
-   ```
-
-   Each replica (`usnm-ja-ocr@N`) gets 4 CPUs and 8 GiB, as in Azure. The script multiplies loc.gov's gaps by `JAOCR_REPLICAS`, so the replicas stay under LoC's limits together. Don't run them while another host is fetching from LoC at full pace.
-
-3. **Until done.** A run ends when no target issue is left to claim; like the Azure job, start it again (`systemctl start usnm-ja-ocr@1 usnm-ja-ocr@2`) until the status page shows every target done. A newly added host needs a fresh Arc token before its group grants apply: restart `himdsd`.
-
-The one-off measurements (`mixed`, `american-stories`, `quality`), which ran on `caj-usnm-jaone-<env>`, aren't covered by this grant: it only lets the runner write under `ocr-ja/`.

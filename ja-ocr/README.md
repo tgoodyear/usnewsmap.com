@@ -2,7 +2,7 @@
 
 The Python job that reads, with [NDLOCR-Lite](https://github.com/ndl-lab/ndlocr-lite), the pages of Japanese-language titles that the Library of Congress ships without usable text, and the audit and measurement commands that share its image. Design: [04 §4.8](../docs/design/04-data-sources-and-ingestion.md). The write-up of the work and its measurements is [Japanese pages: OCR of the pages LoC ships without text](../docs/notes/2026-10-05-japanese-ocr.md).
 
-Status: live. CI builds the job into the `usnewsmap-ja-ocr` image and tests it. In `prod` the Azure job is off and the OCR runs on an OCR node (`USNM_JA_OCR_JOB` is `false` and `USNM_JA_OCR_ONPREM` is `true` in `infra/env/prod.json`; [Operations](../docs/operations/congress-pages.md#the-japanese-ocr-on-prem)). How many pages have been read so far is not recorded in this directory: see the note and `/v1/status`.
+Status: live. CI builds the job into the `usnewsmap-ja-ocr` image and tests it. In `prod` the Azure job is off and the OCR runs on an OCR node (`USNM_JA_OCR_JOB` is `false` and `USNM_JA_OCR_ONPREM` is `true` in `infra/env/prod.json`; [Operations](../docs/operations/japanese-ocr.md#the-japanese-ocr-on-prem)). How many pages have been read so far is not recorded in this directory: see the note and `/v1/status`.
 
 ## What it writes and who reads it
 

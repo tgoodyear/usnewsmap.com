@@ -65,7 +65,7 @@ scripts/ja-ocr/start-quality.sh --env prod --sample-pct 10 --min-pages 50
 
 The job's replicas (`USNM_JA_OCR_REPLICAS`, 2) share the work. The parts are cut into chunks of whole batches (about 40 parts each); a replica claims a chunk under `audit/ocr-quality-v2-<version>-<pct>pct.run/<execution>/claims/`, scans it, and writes its sampled pages to `pages/<chunk>.jsonl.gz` and a `done/<chunk>.json` marker. A replica renews its claims every 5 minutes; a claim not renewed for `JAOCR_AUDIT_LOCK_MINUTES` (60) is taken over, and the replica that lost it drops its copy (a chunk's pages are the same whoever scans it). So a replica that dies costs only its chunks' time. When every chunk is done, the replica that creates `reduce.lock` tallies all the chunks, writes the outputs and the final status, renewing the lock as it goes, and then writes `finished.json`. The other waits for `finished.json` (taking over a reduce lock that goes stale), logs `ocr quality results written by another replica` and exits; a retried replica of a finished run exits at once. Progress writes stop once every chunk is done, and a waiting replica restores the final status if a late one replaced it. A new execution starts a new run directory, so a rerun redoes the work and overwrites the outputs. The outputs are shared by every execution with the same version and sample size, so the reducer publishes under `audit/ocr-quality-v2-<version>-<pct>pct.publish.lock` (released after, taken over when stale): two overlapping runs publish one after the other, and the later one's files win. Each replica scores parts in 6 worker processes (`JAOCR_QUALITY_WORKERS`; reading the parts is partly I/O, so more workers than the 4 vCPUs pays) and needs well under the job's 8 GiB: each worker holds a few small word lists and a cache of the last 262,144 distinct tokens' scores. The 2% run took 69 minutes on one replica before the work was shared and the token cache added (October 2026). The job's 24-hour replica timeout is its limit. `ja-ocr/bench_quality.py` times the per-page scoring on synthetic pages.
 
-Output, in the curated container (the data account is reachable only through its private endpoint, like the search log below):
+Output, in the curated container (the data account is reachable only through its private endpoint, like the search log ([Search log](search-serving.md#search-log))):
 
 - `audit/ocr-quality-v2-<version>-<pct>pct.json`: every table, the summary (with the language agreement shares), the word lists and thresholds used.
 - `audit/ocr-quality-v2-<version>-<pct>pct-<table>.csv`, one per table:
@@ -161,3 +161,23 @@ scripts/ja-ocr/quality-rows.sh --env prod --execution <execution>   # its "mixed
 ```
 
 It writes `audit/mixed-pages-<version>-<execution>.json` and a CSV per table in the curated container (named by execution, so two runs never write the same files): `loc-text-bands` (Japanese titles against the control), `loc-text-by-title`, `loc-text-samples` (15 page ids per band, with their loc.gov links, for looking at the scans), `our-ocr-english` (by why LoC's text wasn't used), `our-ocr-by-title` and `our-ocr-samples`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>`, which `start-quality.sh` picks for it. Should a second replica run it anyway (the ja-ocr job), one does the work, renewing a lock; the other waits for its finished marker (`mixed pages written by another replica`) and takes over if the lock goes stale, and a retried replica of a finished execution exits at once. `our-ocr-english` and `our-ocr-by-title` also give the median Latin share of our OCR's letters and the share of pages over half Latin.
+
+## The Japanese OCR on-prem
+
+The Japanese OCR (`ja-ocr/jaocr.py run`, #128) runs on an OCR node instead of the Azure job `caj-usnm-jaocr-<env>` (#917: Azure keeps only the search cluster, the API and the web app). It's the same image, built on the node from a pinned commit (`docker/Dockerfile.ja-ocr`), as the node's Arc machine identity.
+
+1. **Settings.** `USNM_JA_OCR_ONPREM=true` and `USNM_JA_OCR_JOB=false` in `infra/env/<env>.json` (through a pull request), with `USNM_ONPREM_GROUP` set and the node's Arc identity in that group. Provision. That grants the group read on `curated` and `reference` and create-only writes under `curated/ocr-ja/` and to `reference/status/ocr-ja.json`, with no delete (`infra/modules/jaocr-runner.bicep`). It opens the lake to `USNM_OCR_NODE_IPS` and removes the Azure job.
+2. **Install and start**, on the node as root, from a checkout of the scripts:
+
+   ```sh
+   scripts/ocr-node/ja-ocr-onprem.sh --commit <sha on main> \
+     --curated-url https://<lake>.blob.core.windows.net/curated \
+     --reference-url https://<lake>.blob.core.windows.net/reference --replicas 2 --start
+   journalctl -fu 'usnm-ja-ocr@*'
+   ```
+
+   Each replica (`usnm-ja-ocr@N`) gets 4 CPUs and 8 GiB, as in Azure. The script multiplies loc.gov's gaps by `JAOCR_REPLICAS`, so the replicas stay under LoC's limits together. Don't run them while another host is fetching from LoC at full pace.
+
+3. **Until done.** A run ends when no target issue is left to claim; like the Azure job, start it again (`systemctl start usnm-ja-ocr@1 usnm-ja-ocr@2`) until the status page shows every target done. A newly added host needs a fresh Arc token before its group grants apply: restart `himdsd`.
+
+The one-off measurements (`mixed`, `american-stories`, `quality`), which ran on `caj-usnm-jaone-<env>`, aren't covered by this grant: it only lets the runner write under `ocr-ja/`.
