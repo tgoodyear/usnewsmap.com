@@ -51,7 +51,12 @@ Three other options were considered and not chosen: a VPN gateway into the VNet 
 
 ## Amendment, October 2026: Cosmos for the on-prem BOINC host (#967)
 
-The BOINC server and its controller run on-prem (#942), and the hand-off's `claim` and `collect` steps move there too (#967 phase 3), which retires the Azure hand-off job. Both steps read and write Cosmos (the `ops` lock and the published version), so the maintainer chose to open Cosmos to the home IP rather than wait for its data to move on-prem with serving (#955). With `USNM_COSMOS_ONPREM_ACCESS` on (PR #1044):
+The BOINC server and its controller run on-prem (#942), and the hand-off's `claim` and `collect` steps move there too (#967 phase 3), which retires the Azure hand-off job. `claim pull` needs Cosmos: it takes the `ops` lock and reads the published version. `collect` needs no Cosmos: it writes the ledger in `curated` and pages in `ocr-out`, through the lake and the exchange account, which already allow the node IPs. So the maintainer chose to open Cosmos to the home IP rather than wait for its data to move on-prem with serving (#955). PR #1044 has two separate switches:
+
+- `USNM_COSMOS_ONPREM_ACCESS` opens Cosmos's firewall only.
+- `USNM_BOINC_HANDOFF_ONPREM` grants the roles, and needs `USNM_OCR_NODES` on and `USNM_BOINC_ONPREM_HOST` set.
+
+With both on:
 
 - **Cosmos allows public network access from the node IPs only.** `publicNetworkAccess: Enabled`, `networkAclBypass: None`, and one `ipRules` entry per address in `USNM_OCR_NODE_IPS`, with no `0.0.0.0` rule, which would admit every Azure network. With no node IPs, it stays closed. The private endpoint stays, and Azure callers keep using it: private endpoint traffic isn't filtered by the IP rules.
 - **Entra only.** `disableLocalAuth: true` and `disableKeyBasedMetadataWriteAccess` stay, so a request from that IP still needs an Entra token with a data-plane role.
