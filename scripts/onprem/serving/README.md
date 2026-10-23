@@ -100,9 +100,8 @@ The journal keeps 30 days.
 
 - **How a new index version reaches the running container.** The searcher reads one `file://` metastore, and each release writes its own under its run directory. So a new version needs a new `--index-dir`, a new `searcher.yaml` and a searcher restart, which with one searcher is a short outage with cold caches. The choice is between a mount per version, added ahead of the switch, and one mount whose contents the host swaps.
 - **Searcher upgrades.** An upgrade restarts the only searcher, so it is an outage too. `install.sh` restarts it only when its config, binary or unit changed.
-- **The client address.** `api.env` sets `USNM_TRUSTED_PROXY_HOPS=0` for now, so the API sees loopback for every visitor, and all visitors share one rate-limit bucket. The API's loopback-only `CF-Connecting-IP` setting (a Phase 0 code PR) goes into `gen-env.sh` once it merges.
+- **Settings from the Phase 0 API PRs.** `api.env` sets `USNM_TRUST_CF_CONNECTING_IP=true`, so the API takes the visitor's address from `CF-Connecting-IP` when the peer is loopback, and `USNM_READY_REQUIRES_PUBLISHED_INDEXES=true`, so `/readyz` fails while the searcher lacks an index `current.json` names. An image from before those PRs ignores both. It then keys rate limits on the loopback peer (`USNM_TRUSTED_PROXY_HOPS=0`), so all visitors share one bucket.
 - **The API image's attestation** (a Phase 0 code PR). Until CI attests the image, `update-api.sh` rejects every commit.
-- **`USNM_READY_REQUIRES_PUBLISHED_INDEXES`.** Whether to turn it on here.
 - **Limits and hardening to confirm on the host:**
   - the 2 GiB memory limit for each API color;
   - the API container's read-only root;

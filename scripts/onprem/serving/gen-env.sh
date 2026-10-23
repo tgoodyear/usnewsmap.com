@@ -38,9 +38,14 @@
 # - Identity: the container's Arc identity (IDENTITY_ENDPOINT and
 #   IMDS_ENDPOINT on loopback, no IDENTITY_HEADER) instead of the app's
 #   managed identity, so no AZURE_CLIENT_ID.
-# - The client address: USNM_TRUSTED_PROXY_HOPS=0 (the peer address), with
-#   the API's loopback-only CF-Connecting-IP setting on top once it exists.
-#   cloudflared and Caddy both connect from loopback.
+# - The client address: USNM_TRUST_CF_CONNECTING_IP=true, so the API takes
+#   CF-Connecting-IP from a loopback peer (Caddy, behind cloudflared) and
+#   reads neither X-Forwarded-For nor USNM_TRUSTED_PROXY_HOPS. The hops are
+#   0, the peer address, for an image from before that setting.
+# - USNM_READY_REQUIRES_PUBLISHED_INDEXES=true: /readyz fails while
+#   current.json names an index the local searcher lacks. The color keeps
+#   serving the version it has; nothing here restarts a color on /readyz,
+#   and update-api.sh switches to a new color only once it's ready.
 # USNM_BIND isn't here: each color's unit sets it.
 set -euo pipefail
 usage() { sed -n '7,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
@@ -95,7 +100,9 @@ trap 'rm -f "$API_ENV"' EXIT
   echo "USNM_REFERENCE_URL=https://$STORAGE.blob.core.windows.net/reference"
   echo "USNM_RESPONSE_CACHE_URL=/srv/usnm-serving/cache"
   echo "USNM_ALLOWED_ORIGINS=https://$ZONE,https://www.$ZONE"
+  echo "USNM_TRUST_CF_CONNECTING_IP=true"
   echo "USNM_TRUSTED_PROXY_HOPS=0"
+  echo "USNM_READY_REQUIRES_PUBLISHED_INDEXES=true"
   echo "USNM_COSMOS_ENDPOINT=$COSMOS"
   [ -z "$INSIGHTS" ] || echo "APPLICATIONINSIGHTS_CONNECTION_STRING=$INSIGHTS"
   [ -z "$CRON" ] || echo "USNM_INGEST_CRON=$CRON"
@@ -155,7 +162,7 @@ if $CHECK_APP; then
     | ($onprem | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add) as $o
     | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS"] as $differ
     | ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL", "AZURE_CLIENT_ID"] as $azure_only
-    | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT"] as $onprem_only
+    | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES"] as $onprem_only
     | ($a | keys) as $ak | ($o | keys) as $ok
     | [($ak - $ok - $azure_only)[] as $k | "\($k): only in the Azure app (\($a[$k]))"]
     + [($ok - $ak - $onprem_only)[] as $k | "\($k): only here (\($o[$k]))"]

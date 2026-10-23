@@ -395,6 +395,8 @@ class GenEnv(unittest.TestCase):
         self.assertEqual(api["USNM_COMPUTE_CONCURRENCY"], "2")
         self.assertEqual((api["USNM_PREWARM_STARTUP_BUDGET_SECS"], api["USNM_READY_CAP_SECS"]), ("300", "360"))
         self.assertEqual(api["IDENTITY_ENDPOINT"], "http://localhost:40342/metadata/identity/oauth2/token")
+        self.assertEqual(api["USNM_TRUST_CF_CONNECTING_IP"], "true")
+        self.assertEqual(api["USNM_READY_REQUIRES_PUBLISHED_INDEXES"], "true")
         for unset in ("USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL", "AZURE_CLIENT_ID", "IDENTITY_HEADER",
                       "USNM_AMERICAN_STORIES_SEARCH", "USNM_BIND"):
             self.assertNotIn(unset, api)
@@ -434,7 +436,8 @@ class GenEnv(unittest.TestCase):
 
     def azure_app(self, **changes):
         api = dict(line.split("=", 1) for line in self.files(self.gen("--dry-run").stdout)["api.env"].splitlines())
-        for k in ("IDENTITY_ENDPOINT", "IMDS_ENDPOINT"):
+        for k in ("IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_TRUST_CF_CONNECTING_IP",
+                  "USNM_READY_REQUIRES_PUBLISHED_INDEXES"):
             del api[k]
         api.update({"USNM_QUICKWIT_URL": "http://usnm-search-ca-prod", "USNM_RESPONSE_CACHE_URL": "https://x/cache",
                     "USNM_TRUSTED_PROXY_HOPS": "1", "USNM_COMPUTE_CONCURRENCY": "1", "AZURE_CLIENT_ID": "id",
