@@ -18,6 +18,7 @@ pub mod credential;
 pub mod local;
 pub mod pgmq;
 pub mod queue;
+pub mod retry;
 
 pub use blob::BlobStore;
 pub use local::LocalStore;

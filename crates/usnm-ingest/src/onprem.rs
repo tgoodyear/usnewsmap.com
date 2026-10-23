@@ -13,12 +13,21 @@
 //!   the lake, and the pending pointer last. A rerun skips what is already
 //!   there with the same size, so an interrupted copy continues.
 //!
+//! The copy rides out a flaky uplink: each request is tried again after a
+//! failure that may pass (a dropped or hung connection, a 408, 429 or 5xx),
+//! a split whose blocks ran out of tries is sent again after a wait, and a
+//! split sent again (in this run or a rerun) sends only the blocks that
+//! weren't staged already. A refusal (403, a different object of the same
+//! name) stops it at once.
+//!
 //! Promotion stays the operator step of docs/operations.md, "Index storage
 //! cutover".
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context};
 use bytes::Bytes;
@@ -28,6 +37,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use usnm_state::state::{Batch, BatchStatus, IndexRun, RunStatus, State};
+use usnm_store::retry::{retryable_write, retrying, Retry};
 use usnm_store::{ObjectStore, StoreError};
 
 use crate::cluster::local::{rewrite_metastore, METASTORE_FILE};
@@ -46,6 +56,30 @@ const RESERVE_DAYS: i64 = 3;
 const COPIES: usize = 4;
 /// Bytes per chunk read from a local split.
 const CHUNK: usize = 8 * 1024 * 1024;
+/// Tries of each request to Azure other than a split's blocks and commit
+/// (the store tries those): listings, metastores, the manifest, the
+/// snapshot and the pointer.
+const RETRY: Retry = if cfg!(test) {
+    Retry {
+        tries: 3,
+        first_wait: Duration::from_millis(1),
+        max_wait: Duration::from_millis(1),
+    }
+} else {
+    Retry::STANDARD
+};
+/// Tries of one split's whole upload, [`SPLIT_WAIT`] apart, once its
+/// blocks or commit ran out of tries. A later try sends only what the
+/// earlier ones didn't stage, so an outage longer than a block's tries costs
+/// a wait, not the split.
+const SPLIT_TRIES: u32 = 4;
+const SPLIT_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(1)
+} else {
+    Duration::from_secs(300)
+};
+/// How often an index's copy logs how far it is.
+const PROGRESS_EVERY: Duration = Duration::from_secs(60);
 
 /// Which of a version's batches to seed: every `every`th by name, from the
 /// `offset`th (0-based), as docs/operations.md's 1% set takes them
@@ -509,30 +543,25 @@ pub async fn publish_staged(s: &Staged<'_>) -> anyhow::Result<Published> {
             Some(_) => bail!("the lake's reference has a different {path}"),
             None if s.dry_run => out.reference_files += 1,
             None => {
-                if !s
-                    .reference
-                    .put_new(&path, body, content_type(&path))
-                    .await?
-                {
-                    bail!("{path} appeared in the lake's reference meanwhile");
-                }
+                create_same(s.reference, &path, body, "the lake's reference").await?;
                 out.reference_files += 1;
             }
         }
     }
     // The API loads a version from its manifest: no manifest in the lake,
     // no pointer.
+    let manifest = format!("{version}/manifest.json");
     ensure!(
-        s.dry_run
-            || s.reference
-                .exists(&format!("{version}/manifest.json"))
-                .await?,
-        "the lake's reference has no {version}/manifest.json after the copy"
+        s.dry_run || again("head", &manifest, |_| s.reference.exists(&manifest)).await?,
+        "the lake's reference has no {manifest} after the copy"
     );
     if !s.dry_run {
-        s.reference
-            .put(PENDING_POINTER, pointer_bytes, "application/json")
-            .await?;
+        // Replacing the pointer with the same bytes again is harmless.
+        again("put", PENDING_POINTER, |_| {
+            s.reference
+                .put(PENDING_POINTER, pointer_bytes.clone(), "application/json")
+        })
+        .await?;
         out.pointer_written = true;
     }
     out.secs = started.elapsed().as_secs_f64();
@@ -593,13 +622,12 @@ async fn copy_index(
     meta: &[u8],
     splits: &[Split],
 ) -> anyhow::Result<IndexCopy> {
-    let there: std::collections::HashMap<String, u64> = s
-        .index
-        .list_info(id)
-        .await?
-        .into_iter()
-        .map(|o| (o.path, o.size))
-        .collect();
+    let there: std::collections::HashMap<String, u64> =
+        again("list", id, |_| s.index.list_info(id))
+            .await?
+            .into_iter()
+            .map(|o| (o.path, o.size))
+            .collect();
     let mut copy = IndexCopy {
         index: id.to_owned(),
         splits: splits.len(),
@@ -620,55 +648,165 @@ async fn copy_index(
         }
         jobs
     };
+    let to_copy: u64 = jobs.iter().map(|(_, _, n)| n).sum();
     tracing::info!(
         index = id,
         splits = copy.splits,
         to_copy = jobs.len(),
+        gb = gb(to_copy),
         skipped = copy.skipped,
         "copying an index"
     );
     if !s.dry_run {
         let index = s.index;
-        let sizes: Vec<u64> = stream::iter(jobs)
+        let progress = Progress {
+            index: id.to_owned(),
+            splits: jobs.len(),
+            bytes: to_copy,
+            copied: AtomicUsize::new(0),
+            sent: AtomicU64::new(0),
+        };
+        let p = &progress;
+        let copies = stream::iter(jobs)
             .map(|(path, file, size)| async move {
-                upload_file(index, &path, &file).await?;
-                tracing::info!(path, mb = size / 1_000_000, "split copied");
+                copy_split(index, &path, &file, size, p).await?;
                 Ok::<u64, anyhow::Error>(size)
             })
             .buffer_unordered(COPIES)
-            .try_collect()
-            .await?;
+            .try_collect::<Vec<u64>>();
+        let sizes = progress.logging(copies).await?;
         copy.bytes = sizes.iter().sum();
         let meta_path = format!("{id}/{METASTORE_FILE}");
         let rewritten = rewrite_metastore(meta, &format!("{}/{id}", s.index_root_uri))?;
-        if s.index.get(&meta_path).await?.is_none()
-            && !s
-                .index
-                .put_new(&meta_path, rewritten, "application/json")
-                .await?
-        {
-            bail!("{meta_path} appeared in the index account meanwhile");
-        }
+        create_same(s.index, &meta_path, rewritten, "the index account").await?;
     } else {
         copy.bytes = jobs.iter().map(|(_, _, n)| n).sum();
     }
     Ok(copy)
 }
 
-/// Stream a local file into `store` at `path` (create-only).
-async fn upload_file(store: &dyn ObjectStore, path: &str, file: &Path) -> anyhow::Result<()> {
+/// How far one index's copy is, for the log.
+struct Progress {
+    index: String,
+    splits: usize,
+    bytes: u64,
+    copied: AtomicUsize,
+    /// Bytes read into uploads: the splits copied, and how far the ones in
+    /// flight are.
+    sent: AtomicU64,
+}
+
+impl Progress {
+    /// Run `copy`, logging every [`PROGRESS_EVERY`] how far it is, so a
+    /// copy that is moving can be told from one that stalled.
+    async fn logging<T>(&self, copy: impl Future<Output = T>) -> T {
+        let started = Instant::now();
+        let ticker = async {
+            let mut tick = tokio::time::interval(PROGRESS_EVERY);
+            tick.tick().await;
+            let mut last = 0u64;
+            loop {
+                tick.tick().await;
+                let sent = self.sent.load(Ordering::Relaxed);
+                tracing::info!(
+                    index = %self.index,
+                    splits_copied = self.copied.load(Ordering::Relaxed),
+                    splits = self.splits,
+                    gb_sent = gb(sent),
+                    gb = gb(self.bytes),
+                    mb_per_s = mb_per_s(sent.saturating_sub(last), PROGRESS_EVERY.as_secs_f64()),
+                    mins = started.elapsed().as_secs() / 60,
+                    "index copy progress"
+                );
+                last = sent;
+            }
+        };
+        tokio::select! {
+            r = copy => r,
+            () = ticker => unreachable!("the ticker never ends"),
+        }
+    }
+}
+
+fn gb(bytes: u64) -> f64 {
+    (bytes as f64 / 1e8).round() / 10.0
+}
+
+fn mb_per_s(bytes: u64, secs: f64) -> f64 {
+    (bytes as f64 / 1e5 / secs.max(0.001)).round() / 10.0
+}
+
+/// Copy one split, sending it again after [`SPLIT_WAIT`] (as many as
+/// [`SPLIT_TRIES`] times) while it fails in a way that may pass.
+async fn copy_split(
+    index: &dyn ObjectStore,
+    path: &str,
+    file: &Path,
+    size: u64,
+    progress: &Progress,
+) -> anyhow::Result<()> {
+    let started = Instant::now();
+    tracing::info!(path, mb = size / 1_000_000, "copying a split");
+    let mut round = 1;
+    loop {
+        match upload_file(index, path, file, &progress.sent).await {
+            Ok(()) => break,
+            Err(e)
+                if round < SPLIT_TRIES
+                    && e.downcast_ref::<StoreError>().is_some_and(retryable_write) =>
+            {
+                tracing::warn!(
+                    path,
+                    round,
+                    rounds = SPLIT_TRIES,
+                    wait_secs = SPLIT_WAIT.as_secs(),
+                    error = %format!("{e:#}"),
+                    "split upload failed; sending it again, keeping the blocks it staged"
+                );
+                tokio::time::sleep(SPLIT_WAIT).await;
+                round += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let secs = started.elapsed().as_secs_f64();
+    tracing::info!(
+        index = %progress.index,
+        path,
+        split = progress.copied.fetch_add(1, Ordering::Relaxed) + 1,
+        of = progress.splits,
+        mb = size / 1_000_000,
+        secs = secs.round(),
+        mb_per_s = mb_per_s(size, secs),
+        "split copied"
+    );
+    Ok(())
+}
+
+/// Stream a local file into `store` at `path` (create-only), adding the
+/// bytes read to `sent` (and taking them off again if it fails).
+async fn upload_file(
+    store: &dyn ObjectStore,
+    path: &str,
+    file: &Path,
+    sent: &AtomicU64,
+) -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(2);
     let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
-    let file = file.to_owned();
+    let read_here = AtomicU64::new(0);
+    let read = &read_here;
     let reader = async move {
-        let mut f = tokio::fs::File::open(&file)
+        let mut f = tokio::fs::File::open(file)
             .await
             .with_context(|| format!("opening {}", file.display()))?;
         loop {
             let mut buf = vec![0u8; CHUNK];
             let mut filled = 0;
             while filled < CHUNK {
-                let n = f.read(&mut buf[filled..]).await?;
+                let n = f
+                    .read(&mut buf[filled..])
+                    .await
+                    .with_context(|| format!("reading {}", file.display()))?;
                 if n == 0 {
                     break;
                 }
@@ -678,24 +816,64 @@ async fn upload_file(store: &dyn ObjectStore, path: &str, file: &Path) -> anyhow
                 break;
             }
             buf.truncate(filled);
+            read.fetch_add(filled as u64, Ordering::Relaxed);
+            sent.fetch_add(filled as u64, Ordering::Relaxed);
             if tx.send(Bytes::from(buf)).await.is_err() {
-                bail!("the upload of {} stopped reading", file.display());
+                // The upload stopped taking chunks: its error says why.
+                return Ok(());
             }
         }
         drop(tx);
         let _ = commit_tx.send(true);
         Ok::<(), anyhow::Error>(())
     };
-    let (read, put) = tokio::join!(
+    let (read_result, put) = tokio::join!(
         reader,
         store.put_stream(path, "application/octet-stream", None, rx, commit_rx)
     );
-    read?;
-    match put {
-        Ok(_) => Ok(()),
-        Err(StoreError::AlreadyExists(p)) => bail!("{p} appeared in the index account meanwhile"),
-        Err(e) => Err(e.into()),
+    let result = match (read_result, put) {
+        // A local read failed, and the upload was abandoned for it.
+        (Err(e), _) => Err(e),
+        (Ok(()), Ok(_)) => Ok(()),
+        (Ok(()), Err(StoreError::AlreadyExists(p))) => Err(anyhow::anyhow!(
+            "{p} appeared in the index account meanwhile"
+        )),
+        (Ok(()), Err(e)) => Err(e.into()),
+    };
+    if result.is_err() {
+        sent.fetch_sub(read.load(Ordering::Relaxed), Ordering::Relaxed);
     }
+    result
+}
+
+/// `f`, tried again as [`RETRY`] says after a failure that may pass.
+async fn again<T, F, Fut>(op: &str, path: &str, f: F) -> Result<T, StoreError>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = Result<T, StoreError>>,
+{
+    retrying(op, path, RETRY, retryable_write, f).await
+}
+
+/// Create `path` in `store` with `body`, create-only, tried again after a
+/// failure that may pass. An object already there is accepted only with
+/// these bytes: what an earlier try wrote when only its answer was lost,
+/// or what an earlier run copied. Anything else there stops the publish.
+async fn create_same(
+    store: &dyn ObjectStore,
+    path: &str,
+    body: Vec<u8>,
+    place: &str,
+) -> anyhow::Result<()> {
+    let kind = content_type(path);
+    if !again("put", path, |_| store.put_new(path, body.clone(), kind)).await? {
+        let there = store.get(path).await?;
+        ensure!(
+            there.as_deref() == Some(body.as_slice()),
+            "{path} appeared in {place} meanwhile"
+        );
+    }
+    Ok(())
 }
 
 /// Add `ids` to the index account's metastore manifest as active indexes,
@@ -723,13 +901,12 @@ async fn add_to_manifest(index: &dyn ObjectStore, ids: &[String]) -> anyhow::Res
         }
     }
     if added > 0 || absent {
-        index
-            .put(
-                METASTORE_MANIFEST,
-                serde_json::to_vec_pretty(&m)?,
-                "application/json",
-            )
-            .await?;
+        // Replacing it with the same bytes again is harmless.
+        let body = serde_json::to_vec_pretty(&m)?;
+        again("put", METASTORE_MANIFEST, |_| {
+            index.put(METASTORE_MANIFEST, body.clone(), "application/json")
+        })
+        .await?;
     }
     tracing::info!(added, "index account's metastore manifest");
     Ok(())
@@ -1199,6 +1376,243 @@ mod tests {
             format!("{e:#}").contains("two versions under one name"),
             "{e:#}"
         );
+    }
+
+    /// A failure [`Flaky`] gives an operation: before doing it, after (done,
+    /// but the answer lost), or another writer's bytes at the path first.
+    enum Fault {
+        Before(StoreError),
+        After(StoreError),
+        Raced(&'static [u8]),
+    }
+
+    fn io() -> StoreError {
+        StoreError::Io("connection reset".into())
+    }
+
+    fn http(status: u16) -> StoreError {
+        StoreError::Http {
+            op: "test",
+            path: "p".into(),
+            status,
+        }
+    }
+
+    /// A local store whose operations fail as scripted: each call takes the
+    /// first fault left for its operation.
+    #[derive(Debug)]
+    struct Flaky {
+        inner: LocalStore,
+        faults: std::sync::Mutex<Vec<(&'static str, Fault)>>,
+        calls: std::sync::Mutex<Vec<&'static str>>,
+    }
+
+    impl std::fmt::Debug for Fault {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Fault::Before(e) => write!(f, "before: {e}"),
+                Fault::After(e) => write!(f, "after: {e}"),
+                Fault::Raced(_) => write!(f, "raced"),
+            }
+        }
+    }
+
+    impl Flaky {
+        fn new(root: &Path, faults: Vec<(&'static str, Fault)>) -> Self {
+            Self {
+                inner: LocalStore::new(root),
+                faults: std::sync::Mutex::new(faults),
+                calls: std::sync::Mutex::default(),
+            }
+        }
+
+        fn fault(&self, op: &'static str) -> Option<Fault> {
+            self.calls.lock().unwrap().push(op);
+            let mut faults = self.faults.lock().unwrap();
+            let i = faults.iter().position(|(o, _)| *o == op)?;
+            Some(faults.remove(i).1)
+        }
+
+        fn calls(&self, op: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|o| **o == op)
+                .count()
+        }
+
+        fn faults_left(&self) -> usize {
+            self.faults.lock().unwrap().len()
+        }
+
+        async fn run<T>(
+            &self,
+            op: &'static str,
+            path: &str,
+            f: impl Future<Output = Result<T, StoreError>>,
+        ) -> Result<T, StoreError> {
+            match self.fault(op) {
+                Some(Fault::Before(e)) => Err(e),
+                Some(Fault::After(e)) => {
+                    f.await?;
+                    Err(e)
+                }
+                Some(Fault::Raced(other)) => {
+                    self.inner.put(path, other.to_vec(), "").await?;
+                    f.await
+                }
+                None => f.await,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for Flaky {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            self.run("get", path, self.inner.get(path)).await
+        }
+        async fn put_new(&self, path: &str, body: Vec<u8>, ct: &str) -> Result<bool, StoreError> {
+            self.run("put_new", path, self.inner.put_new(path, body, ct))
+                .await
+        }
+        async fn put(&self, path: &str, body: Vec<u8>, ct: &str) -> Result<(), StoreError> {
+            self.run("put", path, self.inner.put(path, body, ct)).await
+        }
+        async fn exists(&self, path: &str) -> Result<bool, StoreError> {
+            self.run("exists", path, self.inner.exists(path)).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+            self.run("list", prefix, self.inner.list(prefix)).await
+        }
+        async fn list_info(&self, prefix: &str) -> Result<Vec<usnm_store::ObjectInfo>, StoreError> {
+            self.run("list_info", prefix, self.inner.list_info(prefix))
+                .await
+        }
+        async fn put_stream(
+            &self,
+            path: &str,
+            content_type: &str,
+            tier: Option<&str>,
+            mut chunks: tokio::sync::mpsc::Receiver<Bytes>,
+            commit: tokio::sync::oneshot::Receiver<bool>,
+        ) -> Result<u64, StoreError> {
+            match self.fault("put_stream") {
+                // Mid-upload: a chunk taken, then the failure.
+                Some(Fault::Before(e) | Fault::After(e)) => {
+                    let _ = chunks.recv().await;
+                    Err(e)
+                }
+                Some(Fault::Raced(_)) | None => {
+                    self.inner
+                        .put_stream(path, content_type, tier, chunks, commit)
+                        .await
+                }
+            }
+        }
+    }
+
+    /// Failures that may pass, in the splits' uploads and every other write
+    /// and listing, are tried again, and the publish completes. Writes whose
+    /// answer was lost are found done.
+    #[tokio::test]
+    async fn transient_failures_are_ridden_out() {
+        let f = fixture().await;
+        let index = Flaky::new(
+            f.index.root(),
+            vec![
+                ("list_info", Fault::Before(io())),
+                ("put_stream", Fault::Before(io())),
+                ("put_stream", Fault::Before(http(503))),
+                ("put_new", Fault::After(io())),
+                ("put", Fault::Before(http(500))),
+            ],
+        );
+        let reference = Flaky::new(
+            f.reference.root(),
+            vec![
+                ("put_new", Fault::After(http(503))),
+                ("exists", Fault::Before(io())),
+                (
+                    "put",
+                    Fault::Before(StoreError::Credential("refresh".into())),
+                ),
+            ],
+        );
+        let p = publish_staged(&Staged {
+            index: &index,
+            reference: &reference,
+            ..staged(&f, false)
+        })
+        .await
+        .unwrap();
+        assert!(p.pointer_written);
+        assert_eq!(p.indexes[0].bytes, 20_000_000);
+        assert_eq!((index.faults_left(), reference.faults_left()), (0, 0));
+        // base2's split three times, ja2's once.
+        assert_eq!(index.calls("put_stream"), 4);
+        assert_eq!(
+            f.index.get("base2/sA.split").await.unwrap().unwrap().len(),
+            20_000_000
+        );
+        assert!(f.index.get("base2/metastore.json").await.unwrap().is_some());
+        assert!(f.reference.get(PENDING_POINTER).await.unwrap().is_some());
+    }
+
+    /// A refusal stops the publish at its first try, and a split that keeps
+    /// failing stops it after its tries; nothing after the splits is written.
+    #[tokio::test]
+    async fn refusals_and_lasting_failures_stop_it() {
+        let f = fixture().await;
+        let index = Flaky::new(
+            f.index.root(),
+            vec![("put_stream", Fault::Before(http(403)))],
+        );
+        let e = publish_staged(&Staged {
+            index: &index,
+            ..staged(&f, false)
+        })
+        .await
+        .unwrap_err();
+        // The store's own error, not the reader's "stopped".
+        assert!(format!("{e:#}").contains("HTTP 403"), "{e:#}");
+        assert_eq!(index.calls("put_stream"), 1);
+        assert!(f.reference.get(PENDING_POINTER).await.unwrap().is_none());
+
+        let index = Flaky::new(
+            f.index.root(),
+            (0..SPLIT_TRIES + 1)
+                .map(|_| ("put_stream", Fault::Before(io())))
+                .collect(),
+        );
+        let e = publish_staged(&Staged {
+            index: &index,
+            ..staged(&f, false)
+        })
+        .await
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("connection reset"), "{e:#}");
+        assert_eq!(index.calls("put_stream"), SPLIT_TRIES as usize);
+        assert!(f.index.get("base2/metastore.json").await.unwrap().is_none());
+
+        // Another writer's bytes under a snapshot file's name, between the
+        // check and the create: they stay, and stop it.
+        let f = fixture().await;
+        let reference = Flaky::new(
+            f.reference.root(),
+            vec![("put_new", Fault::Raced(b"other"))],
+        );
+        let e = publish_staged(&Staged {
+            reference: &reference,
+            ..staged(&f, false)
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{e:#}").contains("appeared in the lake's reference meanwhile"),
+            "{e:#}"
+        );
+        assert!(f.reference.get(PENDING_POINTER).await.unwrap().is_none());
     }
 
     /// No snapshot manifest, no copy and no pointer.
