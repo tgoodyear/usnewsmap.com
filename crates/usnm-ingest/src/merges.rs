@@ -615,7 +615,7 @@ pub async fn seal_restarting(
         Err(r) => Err(anyhow::anyhow!(
             "{e:#}; `{index_id}` keeps merge_factor {FINAL_MERGE_FACTOR} in the metastore: putting its \
              merge policy back failed ({r:#}). Prune the failed index, or PUT its config back \
-             (docs/operations.md, \"Duplicate-safe ingest\")"
+             (docs/operations/rebuild-and-index-storage.md, \"Duplicate-safe ingest\")"
         )),
     }
 }

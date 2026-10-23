@@ -654,7 +654,7 @@ maintainer publishes and signs from the merged commit.
 1. Merge the native build changes, then dispatch `boinc-worker.yml` from `main`.
    Verify both architecture checks and anonymous pulls, and commit its index
    digest as `images.worker` through a PR. Follow the cohort drain procedure in
-   [docs/boinc.md](../../docs/boinc.md#publish-the-worker-image).
+   [docs/boinc/worker-image.md](../../docs/boinc/worker-image.md#publish-the-worker-image).
 2. Dispatch `boinc-mac-wrapper.yml` from the same reviewed commit. Download the
    `boinc-mac-wrappers` artifact: `docker_wrapper_arm64`, `docker_wrapper_x86_64`,
    `BOINC_COMMIT`, and `SHA256SUMS`. Alternatively, on a Mac with Xcode:

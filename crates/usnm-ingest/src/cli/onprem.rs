@@ -1,5 +1,5 @@
 //! `seed-state`, `import-staged-run`, `mirror-store` and `publish-staged`: a release built on an
-//! on-prem host and copied into Azure (docs/operations.md, "Full rebuild on-prem").
+//! on-prem host and copied into Azure (docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem").
 use std::path::PathBuf;
 
 use anyhow::{bail, Context};
@@ -11,7 +11,7 @@ use crate::Cli;
 
 /// Give a local state file (`--state-file`) a curated record for each
 /// batch of a published version's batch list, for a release built on an
-/// on-prem host (docs/operations.md, "Full rebuild on-prem"). With
+/// on-prem host (docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"). With
 /// `--every`, only every `every`th batch by name from `--offset` (the
 /// 1% set: 100 and 39). Refuses Cosmos.
 #[derive(Args)]
@@ -32,7 +32,7 @@ pub(crate) struct SeedStateArgs {
 
 /// Record in pipeline state (Cosmos) the run of a version built on-prem,
 /// from its snapshot's `index_run.json`, before it is promoted
-/// (docs/operations.md, "Full rebuild on-prem"): prune then keeps it as
+/// (docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"): prune then keeps it as
 /// a newer published run, rollback or not. A failed earlier attempt of
 /// the same name is replaced; another published version of it stops this.
 #[derive(Args)]
@@ -42,7 +42,7 @@ pub(crate) struct ImportStagedRunArgs {
 }
 
 /// Copy objects from one store to another: the lake's `reference` into
-/// the local mirror an on-prem release uses (docs/operations.md, "Full
+/// the local mirror an on-prem release uses (docs/operations/rebuild-and-index-storage.md, "Full
 /// rebuild on-prem"). Only the named prefixes and files; one already
 /// there with other bytes stops it.
 #[derive(Args)]
@@ -64,7 +64,7 @@ pub(crate) struct MirrorStoreArgs {
 /// Copy a release staged on an on-prem host into Azure: each index of the
 /// local `index-storage-pending.json` into the index account, then the
 /// version's reference snapshot and the pending pointer into the lake
-/// (docs/operations.md, "Full rebuild on-prem"). The stores of the
+/// (docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"). The stores of the
 /// release (`--reference`, the writer's `file://` index root) are the
 /// local side. A rerun skips what is already copied.
 #[derive(Args)]

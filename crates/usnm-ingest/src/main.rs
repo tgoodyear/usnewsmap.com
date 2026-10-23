@@ -35,7 +35,7 @@ enum Command {
     Geocode,
     /// Save titles-sync's record cache and the catalog to the raw store
     /// (`USNM_RAW_URL`) as `titles/{time}.json`, unless the newest copy
-    /// there is the same (docs/operations.md, "Dev environment lifecycle").
+    /// there is the same (docs/operations/environments-and-deploys.md, "Dev environment lifecycle").
     /// titles-sync does this itself after each run; this is for doing it by
     /// hand, e.g. before a teardown.
     TitlesArchive,

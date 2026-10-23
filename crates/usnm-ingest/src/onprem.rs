@@ -20,7 +20,7 @@
 //! weren't staged already. A refusal (403, a different object of the same
 //! name) stops it at once.
 //!
-//! Promotion stays the operator step of docs/operations.md, "Index storage
+//! Promotion stays the operator step of docs/operations/rebuild-and-index-storage.md, "Index storage
 //! cutover".
 
 use std::collections::BTreeSet;
@@ -82,7 +82,7 @@ const SPLIT_WAIT: Duration = if cfg!(test) {
 const PROGRESS_EVERY: Duration = Duration::from_secs(60);
 
 /// Which of a version's batches to seed: every `every`th by name, from the
-/// `offset`th (0-based), as docs/operations.md's 1% set takes them
+/// `offset`th (0-based), as docs/operations/environments-and-deploys.md's 1% set takes them
 /// (`every` 100, `offset` 39).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Every {
@@ -278,7 +278,7 @@ pub fn metastore_splits(meta: &Value) -> anyhow::Result<Vec<Split>> {
 
 /// The run record a staged on-prem release left in `version`'s snapshot,
 /// recorded in `state`: what `import-staged-run` does in Azure before a
-/// promotion (docs/operations.md, "Full rebuild on-prem"), and a
+/// promotion (docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"), and a
 /// Cosmos-backed release or prune when `current.json` names a version built
 /// on-prem. `None` when the snapshot has no such record and `state` has no
 /// run for `version`.

@@ -29,7 +29,7 @@
     },
     "goldBundle": {
       "type": "boolean",
-      "description": "Deploy the gold bundle job, which builds the gold bundle v1 from its publishers onto the share inside the VNet (docs/boinc.md#build-the-gold-bundle): main.bicep's goldBundle parameter."
+      "description": "Deploy the gold bundle job, which builds the gold bundle v1 from its publishers onto the share inside the VNet (docs/boinc/gold-check.md#build-the-gold-bundle): main.bicep's goldBundle parameter."
     },
     "images": {
       "type": "object",
@@ -111,7 +111,7 @@
         "provisioned",
         "provisioned-final"
       ],
-      "description": "The project share's billing (#917): standard (pay-as-you-go StorageV2), copy (the provisioned v2 SSD share also mounted at /project-v2 to fill it), provisioned (/project is the provisioned share; the old account kept for rollback), provisioned-final (the old account removed). main.bicep's projectShare parameter; docs/boinc.md, \"Moving the project share\"."
+      "description": "The project share's billing (#917): standard (pay-as-you-go StorageV2), copy (the provisioned v2 SSD share also mounted at /project-v2 to fill it), provisioned (/project is the provisioned share; the old account kept for rollback), provisioned-final (the old account removed). main.bicep's projectShare parameter; docs/boinc/server-and-apps.md, \"Moving the project share\"."
     },
     "projectUrl": {
       "type": "string",

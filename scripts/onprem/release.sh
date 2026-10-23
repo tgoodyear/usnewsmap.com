@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A full release on an on-prem host (docs/operations.md, "Full rebuild
+# A full release on an on-prem host (docs/operations/rebuild-and-index-storage.md, "Full rebuild
 # on-prem"; #283, #917): run inside the release container as its usnm user,
 # one step at a time, each in its own run directory.
 #

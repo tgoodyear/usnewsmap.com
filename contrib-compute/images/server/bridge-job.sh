@@ -16,7 +16,7 @@
 #   BRIDGE_STEP=assess-collect  ASSESS_SPOOL=<assimilator results directory>; runs score.py
 #                               and aggregate.py into <campaign>/out
 #
-# The gold check (#462, docs/boinc.md#gold-check), under $SHARE_DIR/gold/<GOLD_CAMPAIGN> (one
+# The gold check (#462, docs/boinc/gold-check.md#gold-check), under $SHARE_DIR/gold/<GOLD_CAMPAIGN> (one
 # campaign per bundle and engine build; same name rule as ASSESS_CAMPAIGN). Copy the bundle tar
 # to <campaign>/bundle.tar first.
 #   BRIDGE_STEP=gold-prepare    fetches the original files the bundle names, one request at a
@@ -123,7 +123,7 @@
 #   BRIDGE_STEP=iris-bundle-cancel IRIS_CAMPAIGN=<name>   [IRIS_APPLY=1] cancels the workunits of a
 #                               batch-105 campaign, which the scheduler can never send (dry run without)
 #
-# The remote hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache), through the
+# The remote hand-off (#469, docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache), through the
 # hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
 # and written with this job's identity:
 #   BRIDGE_STEP=submit-remote   JOB_ID; copies the exported job from the container's
@@ -138,7 +138,7 @@
 #                               (when there) to gold/trust.json. HANDOFF_SPOOLS=<id>=<spool>[,...]
 #                               (up to 100) does a tick's results in one execution (#932).
 #
-# Registering the apps after init (docs/boinc.md#register-the-apps):
+# Registering the apps after init (docs/boinc/bridge-steps.md#register-the-apps):
 #   BRIDGE_STEP=register-apps   copies this image's project.xml into the project and runs
 #                               bin/xadd, which adds the apps and platforms the database lacks
 #                               and leaves the others (safe to repeat)

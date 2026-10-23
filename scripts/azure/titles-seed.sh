@@ -2,7 +2,7 @@
 # Start an environment's title records and catalog from the newest copy in
 # the archival account (`raw/titles/{time}.json`, which titles-sync saves
 # there after each run), so a release in a new environment doesn't wait for
-# a titles-sync paced against LoC (up to 8 hours). #275; docs/operations.md,
+# a titles-sync paced against LoC (up to 8 hours). #275; docs/operations/environments-and-deploys.md,
 # "Dev environment lifecycle". scripts/azure/stand-up.sh runs it.
 #
 #   scripts/azure/titles-seed.sh --env dev [--wait-mins 20]

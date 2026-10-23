@@ -188,7 +188,7 @@ var backfillMaxRuntimeSecs = 79200
 // ordinary ingest keeps its 48 h timeout; explicit full/staging runs get 96 h
 // (`ingestReplicaTimeoutSecs`). A full run that titles-sync didn't
 // finish releases nothing and fails, so the next execution resumes the sync
-// before it rebuilds (docs/operations.md, "Full rebuild").
+// before it rebuilds (docs/operations/rebuild-and-index-storage.md, "Full rebuild").
 var ingestCurateMaxRuntimeSecs = 21600
 var ingestTitlesMaxRuntimeSecs = 28800
 

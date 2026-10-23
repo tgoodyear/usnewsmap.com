@@ -34,7 +34,7 @@ param jaAuditJobName string
 param alertNames object
 @description('Alert on the OCR pickup job\'s backlog, usnm-ocrs-caj-<env> (with the on-prem OCR nodes, 12 §12.5 Step 8). Its failures are in the job-failed rule either way.')
 param ocrSync bool = false
-@description('Deploy the backfill rules (stalled, replica silent): while a backfill lasts, which is while USNM_BACKFILL_CRON schedules it (docs/operations.md). The backfill job\'s failures are in the job-failed rule either way.')
+@description('Deploy the backfill rules (stalled, replica silent): while a backfill lasts, which is while USNM_BACKFILL_CRON schedules it (docs/operations/catalog-and-releases.md). The backfill job\'s failures are in the job-failed rule either way.')
 param backfill bool = false
 
 // Every error exit of usnm-ingest ends with one "command failed" line: the

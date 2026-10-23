@@ -48,11 +48,11 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
 
 ## Addendum (2026-10-13): where the worker image is published
 
-Implemented by `.github/workflows/boinc-worker.yml` (docs/boinc.md, "Publish the worker image").
+Implemented by `.github/workflows/boinc-worker.yml` (docs/boinc/worker-image.md, "Publish the worker image").
 
 **Problem.** Each volunteer's Docker pulls the worker image: the app version's `Dockerfile` is `FROM <image>` (`scripts/boinc/install.py` in PR #441). Volunteers have no credentials for us. The project's Azure Container Registry has no anonymous pull and no admin user (design.md, 5.2), and that is right for the server images, so it cannot serve volunteers.
 
-**Decision.** Publish the worker image as a public GHCR package under this repository: `ghcr.io/tgoodyear/usnm-boinc-worker`, linked to the repository. It is built the way #441 describes (`docs/boinc.md`, "Build the worker image"): first the engine image from `ocr/engines/tesseract/Containerfile`, then `ocr/boinc/Containerfile` with `--build-arg TESSERACT_IMAGE=sha256:<engine image id>`. The app version records the registry digest of the pushed worker image (`ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>`), not the local image id and not the engine's pin.
+**Decision.** Publish the worker image as a public GHCR package under this repository: `ghcr.io/tgoodyear/usnm-boinc-worker`, linked to the repository. It is built the way #441 describes (`docs/boinc/worker-image.md`, "Build the worker image"): first the engine image from `ocr/engines/tesseract/Containerfile`, then `ocr/boinc/Containerfile` with `--build-arg TESSERACT_IMAGE=sha256:<engine image id>`. The app version records the registry digest of the pushed worker image (`ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>`), not the local image id and not the engine's pin.
 
 - The image holds Tesseract, its pinned models, and the `usnm-boinc` binary. It holds no credential, no data and no scan, so a public package discloses nothing that the repository does not already publish.
 - A GHCR package is private by default. The maintainer sets its visibility once in the package settings; a workflow cannot do it. Before the first task is sent, verify an anonymous pull from a logged-out Docker on a host that is not the maintainer's (#441 asks for the same check from the volunteer runtime).

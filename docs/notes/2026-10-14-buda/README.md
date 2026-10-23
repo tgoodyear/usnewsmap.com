@@ -6,7 +6,7 @@ Status: not executed against a BOINC server. [ADR-0020](../../design/adr/0020-bo
 
 An operator needs access to the server/bridge job, the offline signing host, a Linux test client and an arm64 Mac. Use a test project or a scheduled experimental revision of the existing server. Confirm the actual deployed BOINC commit; this procedure was reviewed against `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`.
 
-Record the baseline app versions, active workunit counts and daemon configuration. Keep those observations locally; commit only aggregate test results without account, host or subscription identifiers. Use the [synthetic cached-page fixture](../../boinc.md#local-synthetic-demonstration), fresh dispatch and state directories and directory-backed native stores. Do not publish the experimental outputs to the production OCR lake.
+Record the baseline app versions, active workunit counts and daemon configuration. Keep those observations locally; commit only aggregate test results without account, host or subscription identifiers. Use the [synthetic cached-page fixture](../../boinc/worker-image.md#local-synthetic-demonstration), fresh dispatch and state directories and directory-backed native stores. Do not publish the experimental outputs to the production OCR lake.
 
 Choose a released, anonymously pullable worker image by full GHCR digest. Verify its architecture and preserve the matching engine metadata used by `usnm-boinc export`. The `--image` argument to that exporter is the worker digest `sha256:<hex>`; the Dockerfile needs the full pullable reference `ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<hex>`. Do not substitute the engine or base image digest for the worker digest.
 

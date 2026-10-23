@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The settings store (infra/settings/main.bicep, docs/operations.md,
+# The settings store (infra/settings/main.bicep, docs/operations/environments-and-deploys.md,
 # "Settings"): one App Configuration store for every environment in the
 # subscription, each environment's private settings under its own label.
 # Its own deployment stack, usnm-config, outside every environment's, so no

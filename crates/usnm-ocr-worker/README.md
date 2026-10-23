@@ -270,7 +270,7 @@ The status server runs apart from the OCR loop: if it can't bind, fails or panic
 
 ## Building for AlmaLinux 9
 
-CI builds the worker on AlmaLinux 9 (`ocr-worker-el9` in `.github/workflows/ci.yml`), fails if it needs a glibc symbol newer than EL9's 2.34, runs it on AlmaLinux 10, and reads a rendered line through the Tesseract image with `check-engine`. On `main` it publishes the binary and the image as an attested GitHub release, `ocr-worker-<yyyymmdd>-<sha7>`, which `scripts/ocr-node/install-worker.sh` verifies and installs ([operations](../../docs/operations.md#on-prem-ocr-nodes)). The binary uses rustls and has no OpenSSL dependency. To build one by hand, use an EL9 container, not a newer distribution:
+CI builds the worker on AlmaLinux 9 (`ocr-worker-el9` in `.github/workflows/ci.yml`), fails if it needs a glibc symbol newer than EL9's 2.34, runs it on AlmaLinux 10, and reads a rendered line through the Tesseract image with `check-engine`. On `main` it publishes the binary and the image as an attested GitHub release, `ocr-worker-<yyyymmdd>-<sha7>`, which `scripts/ocr-node/install-worker.sh` verifies and installs ([operations](../../docs/operations/onprem-ocr.md#on-prem-ocr-nodes)). The binary uses rustls and has no OpenSSL dependency. To build one by hand, use an EL9 container, not a newer distribution:
 
 ```sh
 podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
@@ -284,7 +284,7 @@ podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
 
 ## Optional BOINC batch pool
 
-The [BOINC pilot](../../docs/boinc.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO and Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing, and volunteers receive no Azure credentials. The `run` command is unchanged.
+The [BOINC pilot](../../docs/boinc/README.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO and Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing, and volunteers receive no Azure credentials. The `run` command is unchanged.
 
 ## Engine catalog and production licences
 

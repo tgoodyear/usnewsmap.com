@@ -1,4 +1,4 @@
-// The on-prem release host's access (#283, #917; docs/operations.md, "Full
+// The on-prem release host's access (#283, #917; docs/operations/rebuild-and-index-storage.md, "Full
 // rebuild on-prem"): `usnm-ingest release` built on the release container
 // (usnm-release-arcs-<env>) with the Quickwit writer on its own disk, then
 // copied into Azure with `usnm-ingest publish-staged`, as that container's

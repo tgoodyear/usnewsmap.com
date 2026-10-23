@@ -1,4 +1,4 @@
-// The BOINC hand-off job (#469, docs/boinc.md#one-page-from-the-scan-cache): the BOINC
+// The BOINC hand-off job (#469, docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache): the BOINC
 // bridge image running /usr/local/lib/usnm-boinc/handoff-job.sh in the main Container Apps
 // environment, which reaches Cosmos and the lake through their private endpoints and the
 // exchange account through the subnet's service endpoint. It never talks to the BOINC

@@ -1,4 +1,4 @@
-// Experimental Quickwit search cluster (#238, #239; docs/operations.md,
+// Experimental Quickwit search cluster (#238, #239; docs/operations/environments-and-deploys.md,
 // "Search cluster experiment"). Deployed only with `searchCluster` on; with
 // it off main.bicep skips this module, and the stack deletes what it made.
 //
@@ -35,7 +35,7 @@
 // Both identities pull the ingest image (AcrPull): it has Quickwit and the
 // `usnm-qwcluster` binary.
 //
-// Version comparison (#251; docs/operations.md, "Quickwit version
+// Version comparison (#251; docs/operations/environments-and-deploys.md, "Quickwit version
 // comparison"): with `compareImages`, one standalone searcher per image,
 // `usnm-qw-cmp-{i}-ca-{env}`, each the API sidecar's shape (searcher and metastore,
 // polling the file-backed metastore in `qw-cluster`), with a cluster id of

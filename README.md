@@ -80,7 +80,7 @@ cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost
 
 - [Development](docs/development.md): running and testing locally.
 - [Configuration](docs/configuration.md): the API's settings.
-- [Operations](docs/operations.md): running the ingest pipeline in Azure.
+- [Operations](docs/operations/README.md): running the ingest pipeline in Azure.
 - [Infrastructure](infra/README.md): what the Bicep deploys and how to stand an environment up.
 - [Design documents](docs/design/README.md) and [architecture decision records](docs/design/adr/README.md): what was built and why.
 - [Technical notes](docs/notes/README.md): dated write-ups of work on the index, the OCR and the corpus's coverage, with the measurements behind each change.

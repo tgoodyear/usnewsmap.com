@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stand an environment up for one experiment (#275; docs/operations.md, "Dev
+# Stand an environment up for one experiment (#275; docs/operations/environments-and-deploys.md, "Dev
 # environment lifecycle"), running this checkout's code. Unlike bootstrap it
 # creates no GitHub Environment and leaves USNM_DEPLOY_ENVIRONMENTS alone,
 # so no push to main rolls it. It provisions the environment, builds the

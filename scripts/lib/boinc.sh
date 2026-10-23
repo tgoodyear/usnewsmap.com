@@ -221,7 +221,7 @@ boinc_check_public_health() {
   curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
     --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$out" ||
     die "the public BOINC project endpoint is not healthy"
-  # BOINC_MAINTENANCE=1 (the share cutover, docs/boinc.md): the scheduler is closed on purpose
+  # BOINC_MAINTENANCE=1 (the share cutover, docs/boinc/server-and-apps.md): the scheduler is closed on purpose
   # (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
   python3 - "$out" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
 import sys

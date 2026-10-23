@@ -1,4 +1,4 @@
-//! The experimental search cluster's commands (#239; docs/operations.md,
+//! The experimental search cluster's commands (#239; docs/operations/environments-and-deploys.md,
 //! "Search cluster experiment", and `usnm_ingest::cluster`):
 //!
 //! - `node`: start a cluster node (each node app's command).

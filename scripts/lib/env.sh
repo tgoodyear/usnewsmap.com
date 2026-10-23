@@ -841,7 +841,7 @@ load_store_after_create() {
   done
   load_store
 }
-# dev exists only while an experiment runs (#275; docs/operations.md, "Dev
+# dev exists only while an experiment runs (#275; docs/operations/environments-and-deploys.md, "Dev
 # environment lifecycle"), so its provision needs USNM_EXPERIMENT, the
 # experiment's issue number. The template tags the project group
 # (usnm-core-rg-<env>) with it and with USNM_EXPERIMENT_STARTED, set here:

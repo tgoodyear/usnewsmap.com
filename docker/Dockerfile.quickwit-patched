@@ -15,7 +15,7 @@
 # It needs no build context: the source comes from the fork. A new patch goes
 # on the fork's `usnm/v0.9.1-pool` branch with a new `usnm-*` tag (names that
 # trigger none of Quickwit's own workflows); then update QW_COMMIT_HASH and
-# QW_COMMIT_TAGS below, which also names the image tag (docs/operations.md,
+# QW_COMMIT_TAGS below, which also names the image tag (docs/operations/search-serving.md,
 # "The Quickwit image").
 
 # The fork's commit tagged usnm-v0.9.1-pool1 (its parent is 962685f, v0.9.1).

@@ -1,5 +1,5 @@
 //! Progress and summary of the OCR quality audit (`jaocr.py quality`,
-//! docs/operations.md "OCR quality audit"): it samples the curated pages,
+//! docs/operations/japanese-ocr.md "OCR quality audit"): it samples the curated pages,
 //! detects each page's language and scores its OCR, and writes its progress,
 //! then a summary, to `status/ocr-quality.json` in the reference store.
 

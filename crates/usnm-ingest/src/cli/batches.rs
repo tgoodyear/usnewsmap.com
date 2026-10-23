@@ -8,7 +8,7 @@ use crate::Cli;
 
 /// Copy retained archives and kept batch lists between raw stores, e.g.
 /// from this environment's own `raw` container into the archival
-/// account (docs/operations.md, "Archival storage"). Each archive is
+/// account (docs/operations/environments-and-deploys.md, "Archival storage"). Each archive is
 /// checked against its manifest's sha256; one already there is skipped.
 #[derive(Args)]
 pub(crate) struct ArchiveCopyArgs {

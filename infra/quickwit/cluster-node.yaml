@@ -1,4 +1,4 @@
-# Node config of the experimental search cluster (#239; docs/operations.md,
+# Node config of the experimental search cluster (#239; docs/operations/environments-and-deploys.md,
 # "Search cluster experiment"). Compiled into `usnm-qwcluster`
 # (crates/usnm-ingest/src/cluster/node.rs), which fills in the __NAMES__
 # from its flags (set per node by infra/modules/searchcluster.bicep), sets

@@ -10,7 +10,7 @@ UNVERIFIED marks behavior that remains unconfirmed.
 
 ## 1. What this covers
 
-PR #441 (`docs/boinc.md`, `crates/usnm-boinc`, `ocr/boinc/`) is the client side and the
+PR #441 (`docs/boinc/README.md`, `crates/usnm-boinc`, `ocr/boinc/`) is the client side and the
 bridge. This design does not change its model:
 
 - a Docker-wrapper app, `usnm_ocr`, whose worker image runs Tesseract directly; BOINC's
@@ -468,7 +468,7 @@ the images would be preferred if one exists. It is not planned until the maintai
 4. ~~Does a Container Apps Job accept per-run argument overrides at start (the job id to
    submit), or does each run need a new execution template?~~ Settled in code: an execution
    template drops the job's settings and has no mounts, so `scripts/boinc/start-boinc-bridge.sh`
-   writes the run's settings into the job and starts it without an override (docs/boinc.md,
+   writes the run's settings into the job and starts it without an override (docs/boinc/bridge-steps.md,
    "Start a bridge step"). UNVERIFIED against a live job.
 5. Does the BOINC client follow a redirect for `get_project_config.php`?
 6. ~~Which registry holds the worker image?~~ Public GHCR package (ADR-0019, addendum).

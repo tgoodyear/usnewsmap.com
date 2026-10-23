@@ -13,7 +13,7 @@ use crate::Cli;
 /// rollback names (#245): older versions' and stopped rebuilds'. Without
 /// `--delete`, only lists them with their sizes (a dry run). Takes the
 /// writer lock like a release, and refuses if `current.json` can't be
-/// read (docs/operations.md, "Prune old index versions").
+/// read (docs/operations/rebuild-and-index-storage.md, "Prune old index versions").
 #[derive(Args)]
 pub(crate) struct PruneArgs {
     /// Delete the listed indexes. Without it nothing is deleted.

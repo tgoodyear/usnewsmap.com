@@ -1,4 +1,4 @@
-// Archival storage (docs/operations.md, "Archival storage"): one storage
+// Archival storage (docs/operations/environments-and-deploys.md, "Archival storage"): one storage
 // account that keeps everything we download from outside Azure, so
 // re-curation, benchmarks and other environments never download it again:
 // LoC's batch archives and listings (`raw`) and packaged sample sets

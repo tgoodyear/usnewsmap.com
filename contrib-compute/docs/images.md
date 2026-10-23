@@ -146,7 +146,7 @@ All use the same `https://api.loganalytics.io` audience, without IP pinning,
 resolver changes or permission changes. Earlier regional 9/9 acceptance remains
 historical evidence, not a guarantee of continued single-host health.
 Use `scripts/boinc/validate-boinc-workbook.py --workspace <customer-GUID> --location westus2` for the nine
-panels; see [query routing and retries](../../docs/boinc.md#workbook-query-validation).
+panels; see [query routing and retries](../../docs/boinc/boundaries-and-monitoring.md#workbook-query-validation).
 Successful empty panels do not establish status/filter or recent-sample acceptance.
 
 `scripts/boinc/build-boinc-images.sh` builds and pins the server and bridge artifacts.
