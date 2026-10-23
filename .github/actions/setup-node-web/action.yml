@@ -1,0 +1,12 @@
+name: setup-node-web
+description: >-
+  Node.js 24 for the web app, with npm's download cache keyed on web/package-lock.json, as the web
+  jobs of .github/workflows/ci.yml set it up. A job that calls this runs after its checkout.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: web/package-lock.json

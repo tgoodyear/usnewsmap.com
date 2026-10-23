@@ -496,6 +496,26 @@ class BuildInputs(unittest.TestCase):
                 on = self.select(path)
                 self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | NATIVE | {"ocr_worker"}), {job}, on)
 
+    def test_a_shared_ci_action_runs_the_ci_jobs_that_call_it(self):
+        # An action ci.yml calls holds steps of its jobs, so an edit to it must run them, as an
+        # edit to the same steps in ci.yml would (the flags each job's `if:` reads).
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        called = {}
+        for job in re.findall(r"(?m)^  ([a-z0-9_-]+):$", ci.split("\njobs:\n", 1)[1]):
+            text = job_text(ci, job)
+            flags = set(re.findall(r"needs\.changes\.outputs\.(\w+)", text))
+            for action in re.findall(r"uses: \./\.github/actions/([\w-]+)", text):
+                called.setdefault(action, set()).update(flags)
+        self.assertGreaterEqual(len(called), 3)
+        for action, flags in sorted(called.items()):
+            # The markdown flag comes from the changed files alone, and the web job, which
+            # runs the same check, is forced with it.
+            expected = flags - {"markdown"}
+            with self.subTest(action=action):
+                self.assertTrue((ROOT / ".github/actions" / action / "action.yml").is_file())
+                self.assertTrue(expected)
+                self.assertGreaterEqual(self.select(f".github/actions/{action}/action.yml"), expected)
+
     def test_the_native_apps_run_for_the_crates_they_build_and_no_others(self):
         # #744: usnm-core and usnm-overlay are built by both apps and were on no path list.
         for path in ["crates/usnm-core/src/lib.rs", "crates/usnm-overlay/src/lib.rs",

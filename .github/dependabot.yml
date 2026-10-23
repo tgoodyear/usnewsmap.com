@@ -1,9 +1,12 @@
 # Weekly update PRs. GitHub Actions are pinned to commit SHAs in the
-# workflows, so this is what keeps those pins current.
+# workflows and in the composite actions under .github/actions, so this is
+# what keeps those pins current.
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/*
     schedule:
       interval: weekly
     groups:

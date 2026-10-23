@@ -26,6 +26,9 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # What each job checks, when it runs, how long it takes and which ones a pull request
+  # needs green: docs/development.md, "What CI runs".
+  #
   # What a change touches (scripts/ci/changes.sh): jobs it can't affect are
   # skipped, so an infra-only fix doesn't wait on Rust, web and image builds.
   changes:
@@ -69,11 +72,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -100,10 +101,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
       - name: Start the queue fixture
         run: |
           location=$(scripts/onprem/queue/ci-fixture.sh --workdir "$RUNNER_TEMP/queue")
@@ -293,14 +291,11 @@ jobs:
           [ -z "$bad" ] || { echo "::error::base image without a digest:"; echo "$bad"; exit 1; }
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # The base (BOINC from source) is the slow layer: cached across runs.
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: contrib-compute/images/base/Containerfile
-          tags: usnm-boinc-base:check
-          load: true
-          cache-from: type=gha,scope=boinc-base
-          cache-to: type=gha,scope=boinc-base,mode=max
+          tag: usnm-boinc-base:check
+          cache-scope: boinc-base
       - name: The server image builds on the base
         run: |
           docker buildx build --builder default --load -t usnm-boinc-server:check \
@@ -345,10 +340,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
       - run: cargo test -p usnm-core --test page_language_samples --locked -- --ignored
 
   quickwit:
@@ -367,10 +359,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
       - name: Install Quickwit
         run: scripts/ci/install-quickwit.sh
       - name: Load fixtures, serve them from a read-only searcher
@@ -442,24 +431,18 @@ jobs:
           buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: docker/Dockerfile.api
-          tags: usnewsmap-api:check
-          load: true
-          cache-from: type=gha,scope=api
-          cache-to: type=gha,scope=api,mode=max
+          tag: usnewsmap-api:check
+          cache-scope: api
       - name: The API image serves the API and the site
         run: scripts/ci/check-api-image.sh --image usnewsmap-api:check
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: docker/Dockerfile.ingest
-          tags: usnm-ingest-check
-          load: true
-          cache-from: type=gha,scope=ingest
-          cache-to: type=gha,scope=ingest,mode=max
+          tag: usnm-ingest-check
+          cache-scope: ingest
       - name: The ingest image runs
         run: scripts/ci/check-ingest-image.sh --image usnm-ingest-check
       # PR builds have no registry, so docker/Dockerfile.ingest's default base is
@@ -469,14 +452,11 @@ jobs:
           want=$(jq -r '.upstream | "\(.image):\(.tag)@\(.digest)"' infra/quickwit-image.json)
           grep -qxF "ARG QUICKWIT_IMAGE=$want" docker/Dockerfile.ingest ||
             { echo "::error::docker/Dockerfile.ingest's QUICKWIT_IMAGE default isn't $want"; exit 1; }
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: docker/Dockerfile.ja-ocr
-          tags: usnm-ja-ocr-check
-          load: true
-          cache-from: type=gha,scope=ja-ocr
-          cache-to: type=gha,scope=ja-ocr,mode=max
+          tag: usnm-ja-ocr-check
+          cache-scope: ja-ocr
       # The whole checkout, read-only: test_page_language_parity.py checks
       # the Rust port's word list and parity fixture against this Python.
       - name: The Japanese OCR job's tests pass
@@ -506,12 +486,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: el9
+          cache-key: el9
       # --version prints the commit (USNM_GIT_SHA at build time).
       # The LAN dashboard (usnm-ocrdash, 12 §12.2.5) ships in the same
       # release; its container on pve-big is Debian 12 (glibc 2.36).
@@ -770,11 +747,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-node-web
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run lint
@@ -798,11 +771,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-node-web
       - run: npm ci
       - run: npm run format:check
 
@@ -815,15 +784,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-node-web
       # The API's build overlaps the site's; start-api-fixtures.sh runs cargo
       # build again, which waits for this one and fails the same way if it did.
       - name: Build the API in the background
