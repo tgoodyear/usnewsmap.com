@@ -10,7 +10,7 @@ use anyhow::bail;
 use super::{INGEST_SOURCE, INGEST_V1_SOURCE};
 
 /// What the writer node's output has said about the release so far: read
-/// line by line as the node writes it (`sink::forward`).
+/// line by line as the node writes it (`sink::node::forward`).
 #[derive(Debug, Default)]
 pub struct NodeEvents(Mutex<Events>);
 
