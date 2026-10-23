@@ -57,11 +57,11 @@ cd "$ROOT"
 . scripts/lib/env.sh
 # shellcheck source=scripts/lib/names.sh
 . scripts/lib/names.sh
-[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"
+[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/azure/bootstrap.sh --env $ENV_NAME first"
 
 TENANT=$(aget AZURE_TENANT_ID)
 SAVED=$(aget "$KEY")
-[ -n "$TENANT" ] || die "$ENV_FILE has no AZURE_TENANT_ID; run scripts/provision.sh --env $ENV_NAME"
+[ -n "$TENANT" ] || die "$ENV_FILE has no AZURE_TENANT_ID; run scripts/azure/provision.sh --env $ENV_NAME"
 az account show -o none 2> /dev/null || die "run: az login --tenant $TENANT"
 # az ad works in the current account's tenant.
 current_tenant=$(az account show --query tenantId -o tsv 2> /dev/null || true)
@@ -111,7 +111,7 @@ else
   legacy_name=$LEGACY_NAME
   ids=$(az ad group list --filter "displayName eq '$GROUP_NAME' or displayName eq '$legacy_name'" --query '[].id' -o tsv)
   [ -z "$ids" ] ||
-    die "a group named $GROUP_NAME or $legacy_name already exists ($(echo "$ids" | tr '\n' ' ')) and $KEY is empty. Check its members and its owners, who can add members (az ad group member list --group <id>; az ad group owner list --group <id>); if it's this environment's, scripts/settings.sh --env $ENV_NAME --key $KEY --value <id>, otherwise delete or rename it"
+    die "a group named $GROUP_NAME or $legacy_name already exists ($(echo "$ids" | tr '\n' ' ')) and $KEY is empty. Check its members and its owners, who can add members (az ad group member list --group <id>; az ad group owner list --group <id>); if it's this environment's, scripts/azure/settings.sh --env $ENV_NAME --key $KEY --value <id>, otherwise delete or rename it"
   if [ "$DRY_RUN" = true ]; then
     echo "would create security group $GROUP_NAME and set $KEY to its id"
   else
@@ -144,4 +144,4 @@ else
 fi
 
 echo "Grant the group its roles by provisioning (needs Owner on the subscription):"
-echo "  scripts/provision.sh --env $ENV_NAME"
+echo "  scripts/azure/provision.sh --env $ENV_NAME"

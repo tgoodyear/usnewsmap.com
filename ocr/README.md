@@ -24,7 +24,7 @@ Read by:
 
 - `usnm-ocr-route` embeds `engines.toml` and checks it. The on-prem worker (`usnm-ocr-worker`) embeds a copy and `tesseract/models.lock`; `usnm-ocr-adapter` embeds `ndlocr-lite/models.lock`.
 - The web app parses `engines.toml` at build time for the credits page (`web/vite.config.ts`, `web/src/credits/data.ts`). `docker/Dockerfile.api` and `docker/Dockerfile.ingest` copy it into their builds.
-- The image builds: `ci.yml` and `.github/actions/boinc-worker-build` build `tesseract/Containerfile`, and `.github/workflows/boinc-ndlocr-lite.yml` builds `ndlocr-lite/Containerfile`. `scripts/boinc-app-release.sh` builds the Tesseract image in ACR.
+- The image builds: `ci.yml` and `.github/actions/boinc-worker-build` build `tesseract/Containerfile`, and `.github/workflows/boinc-ndlocr-lite.yml` builds `ndlocr-lite/Containerfile`. `scripts/boinc/boinc-app-release.sh` builds the Tesseract image in ACR.
 
 ## `routing/`
 
@@ -61,7 +61,7 @@ Status of each app: see the document in its row, and [docs/boinc.md](../docs/boi
 
 Read by:
 
-- `scripts/boinc/install.py` installs templates and job files into a project; `scripts/boinc-app-release.sh` builds the worker image and stages the files; `contrib-compute/images/bridge/Containerfile` copies templates and the Iris and training helpers into the bridge image.
+- `scripts/boinc/install.py` installs templates and job files into a project; `scripts/boinc/boinc-app-release.sh` builds the worker image and stages the files; `contrib-compute/images/bridge/Containerfile` copies templates and the Iris and training helpers into the bridge image.
 - `usnm-boinc` and `usnm-qwen-app` embed the Qwen locks, the disk policy and the benchmark template.
 - One workflow builds each image: `boinc-worker.yml`, `boinc-ndlocr-lite.yml`, `boinc-qwen.yml`, `boinc-surya.yml`, `boinc-iris.yml` and `boinc-train.yml`. Each builds without publishing on a pull request that touches what it is built from, and publishes only from a manual run on `main`.
 
@@ -79,7 +79,7 @@ The OCR benchmark ([docs/ocr-bench.md](../docs/ocr-bench.md)): versioned archive
 | `results/`               | Recorded outputs and scores of those trials, and of the Qwen CUDA against Vulkan comparison                                                   |
 | `serialset-pilot/`       | The GovInfo Serial Set pilot: four page images, references, source ALTO, Tesseract and source OCR outputs, reports and checksums              |
 
-The page images and the raw native result archives are not tracked. They are the `bench-assets` set of `scripts/data-assets.sh`: `scripts/data-assets.sh --fetch --set bench-assets` puts them back ([docs/ocr-bench.md](../docs/ocr-bench.md)).
+The page images and the raw native result archives are not tracked. They are the `bench-assets` set of `scripts/ops/data-assets.sh`: `scripts/ops/data-assets.sh --fetch --set bench-assets` puts them back ([docs/ocr-bench.md](../docs/ocr-bench.md)).
 
 Read by:
 

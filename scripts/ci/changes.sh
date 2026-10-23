@@ -8,7 +8,7 @@
 # file changed, so Prettier checks its format), and provision=true|false:
 # whether it changes the Azure stack beyond what a deploy applies (the API
 # image and infra/quickwit/searcher.yaml, which scripts/ci/roll-api.sh
-# applies), so scripts/provision.sh must run. Documentation (Markdown
+# applies), so scripts/azure/provision.sh must run. Documentation (Markdown
 # anywhere, anything under docs/) counts for no output but markdown: a change
 # to it alone runs only the Markdown format check.
 # ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/, and the
@@ -20,7 +20,7 @@
 # only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
 # XML and Bicep; ADR-0019), which no other job builds.
-# Everything runs for a default workflow_dispatch (scripts/bootstrap.sh dispatches ci
+# Everything runs for a default workflow_dispatch (scripts/azure/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
 # the changed files can't be worked out; everything but ops, which runs only
 # when its own files change (the snapshots, the index history, their schemas,
@@ -120,8 +120,8 @@ if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwi
   provision=true
 fi
 # The index version snapshots and the index history must match their schemas
-# (and what writes them); searches.sh's date-span summary has its tests there too.
-matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history|test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$)' && ops=true
+# (and what writes them); azure/searches.sh's date-span summary has its tests there too.
+matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(ops/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history)|azure/test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$)' && ops=true
 # Another workflow or dependabot.yml defines no job here. An edit to ci.yml
 # outside a job (triggers, env) or to the changes job runs everything; an edit
 # inside other jobs forces just the flags those jobs' `if:` lines read.
@@ -166,7 +166,7 @@ files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # reconstructed index history), the fixtures the tests read, and the Python
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
-rust_files='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
+rust_files='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/dev/quickwit-fixtures\.sh)'
 rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$rust_files"
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer) runs `cargo test -p usnm-search --test quickwit_parity` and
@@ -175,13 +175,13 @@ rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$ru
 # Cargo resolves for them. Not catalog/, web/src/examples.json,
 # ops/index-history.json or other CI scripts, which the rust job's own tests
 # cover; editing them doesn't change what Quickwit is asked to do.
-quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$)'
+quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$)'
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
 # Crates count for these two below, by closure.
 e2e="$rust_files|$web"
-image="$rust_files|^(web/|ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+image="$rust_files|^(web/|ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
@@ -215,10 +215,10 @@ boinc_native='^(ocr/contract/|ocr/boinc/qwen/amd-device-map\.cpp$|scripts/boinc/
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
 # scripts that write the lists and the samples.
-page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
+page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/data/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|fixtures/ocr-gold/(selections/|bundle-v1\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/boinc-app-release\.sh$|scripts/ci/check-boinc-server-image\.sh$)'
+contrib='^(contrib-compute/|fixtures/ocr-gold/(selections/|bundle-v1\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # closure_crates ROOT...: the directories of the workspace crates the roots
 # depend on, directly or not (normal, build and dev dependencies: path

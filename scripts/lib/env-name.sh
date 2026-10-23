@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # The environment name rule, shared by scripts/lib/env.sh and
-# scripts/bootstrap.sh (which checks it before it signs in).
+# scripts/azure/bootstrap.sh (which checks it before it signs in).
 #
 # The name becomes part of resource names, the stack's name (usnm-<env>)
 # and the settings path. ADR-0017 makes it a closed list: prod, dev, or x

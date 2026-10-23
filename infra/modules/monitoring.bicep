@@ -151,7 +151,7 @@ resource capAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!emp
 
 output workspaceId string = workspace.id
 output workspaceName string = workspace.name
-// The workspace's id in the Log Analytics query API (scripts/logs.sh).
+// The workspace's id in the Log Analytics query API (scripts/azure/logs.sh).
 output workspaceCustomerId string = workspace.properties.customerId
 output logAnalyticsQueryHost string = '${location}.api.loganalytics.io'
 output logAnalyticsQueryHosts array = union([

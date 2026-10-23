@@ -38,7 +38,7 @@ entrypoint renders the project's configuration at container startup.
 
 ## Build
 
-The supported image builder is `scripts/build-boinc-images.sh --env <prod|dev>`. It builds
+The supported image builder is `scripts/boinc/build-boinc-images.sh --env <prod|dev>`. It builds
 inside Azure Container Registry Tasks in the app's shared registry, tags the server and bridge
 with the committed Git revision, and writes their registry digests into
 `contrib-compute/infra/boinc/env/<env>.json`. The script refuses a dirty tree for production.
@@ -60,7 +60,7 @@ anonymous pull or registry admin access.
 ## Deploy, in order
 
 The production BOINC regional resources use `westus2`; Static Web Apps retains its limited-region
-`eastus2` setting. `scripts/provision-boinc.sh --env <prod|dev>`
+`eastus2` setting. `scripts/boinc/provision-boinc.sh --env <prod|dev>`
 uses committed settings, creates a retained stack-aware What-If preview, and deploys the Bicep.
 The custom-domain CNAME and `asuid` TXT records are declared in Bicep; provisioning advances
 the Container App binding and managed certificate in stages.
@@ -81,7 +81,7 @@ but persisted project files need separate acceptance. The BOINC template's expli
 pass and deployment is coordinated under #529. The database is private to the VNet.
 
 To record a work-volume sample, run
-`scripts/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record
+`scripts/boinc/start-boinc-bridge.sh --env prod --step work-volume`. This emits one JSON record
 containing aggregate workunit and result counts plus BOINC's recent-credit user and host counts;
 the workbook reads it from console logs. Its KQL uses a fuzzy union of both Container Apps
 resource-specific tables (`ContainerAppConsoleLogs`, `ContainerAppSystemLogs`) and legacy `_CL`
@@ -124,7 +124,7 @@ Keep #510 acceptance open until an authorized operator can:
    unrestricted database errors. If the query still fails, retain only an
    allowlisted numeric MySQL error code or SQLSTATE and the failure stage for
    diagnosis.
-3. Run `scripts/start-boinc-bridge.sh --env prod --step work-volume`, record its
+3. Run `scripts/boinc/start-boinc-bridge.sh --env prod --step work-volume`, record its
    execution ID and successful exit, and verify exactly one schema-version-1
    aggregate event in the BOINC workspace.
 4. Deploy the workbook through the normal main-stack process with its required
@@ -145,12 +145,12 @@ pass and a 90s cap. Configure the order with `LOG_ANALYTICS_QUERY_HOSTS` CSV.
 All use the same `https://api.loganalytics.io` audience, without IP pinning,
 resolver changes or permission changes. Earlier regional 9/9 acceptance remains
 historical evidence, not a guarantee of continued single-host health.
-Use `scripts/validate-boinc-workbook.py --workspace <customer-GUID> --location westus2` for the nine
+Use `scripts/boinc/validate-boinc-workbook.py --workspace <customer-GUID> --location westus2` for the nine
 panels; see [query routing and retries](../../docs/boinc.md#workbook-query-validation).
 Successful empty panels do not establish status/filter or recent-sample acceptance.
 
-`scripts/build-boinc-images.sh` builds and pins the server and bridge artifacts.
-`scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
+`scripts/boinc/build-boinc-images.sh` builds and pins the server and bridge artifacts.
+`scripts/boinc/boinc-app-release.sh` stages, signs and publishes a selected app version on the
 designated signing host without exporting its private key. These are release inputs, not
 steps printed after every deployment. See [app-release.md](app-release.md) for signing and
 acceptance boundaries. The code-signing private key stays offline.

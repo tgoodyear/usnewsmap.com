@@ -88,7 +88,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
       ]
       // The BOINC subnet is in another region and group, through its Global endpoint (the
       // BOINC stack's network.bicep). Storage refuses the rule until that endpoint exists, so
-      // scripts/provision-boinc.sh goes first.
+      // scripts/boinc/provision-boinc.sh goes first.
       virtualNetworkRules: concat(
         [{ id: subnetId, action: 'Allow' }],
         empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]

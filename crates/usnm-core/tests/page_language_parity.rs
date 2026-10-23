@@ -11,7 +11,7 @@
 //!   languages (Cherokee, Croatian with Slovenian, and the Yiddish and Hebrew
 //!   papers among them), the first two pages of a multilingual title's
 //!   issue, cut to 8,000 characters but for the two longest
-//!   (`scripts/page-language-sample.py`).
+//!   (`scripts/data/page-language-sample.py`).
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};

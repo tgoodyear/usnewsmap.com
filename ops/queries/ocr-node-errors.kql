@@ -1,5 +1,5 @@
 // The on-prem OCR nodes' problems, newest first (#296), from the nodes'
-// workspace usnm-ocr-log-<env> (scripts/logs.sh runs ocr-node-* queries
+// workspace usnm-ocr-log-<env> (scripts/azure/logs.sh runs ocr-node-* queries
 // there). Worker: its WARN and ERROR lines by message and kind, and any
 // line that isn't JSON (a panic, a bad flag), from Syslog local0. System:
 // everything at err and above, systemd's lines about

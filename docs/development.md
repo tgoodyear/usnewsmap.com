@@ -18,10 +18,10 @@ With the API running, `cd web && npm ci && npm run dev` serves the site on `http
 
 ## Against Quickwit
 
-The same fixtures can be served by [Quickwit 0.9.1](https://github.com/quickwit-oss/quickwit/releases/tag/v0.9.1), the pinned version, set up the way production runs it. `scripts/quickwit-fixtures.sh` loads the fixture indexes with a writer node, stops it, and starts a read-only searcher that polls the metastore:
+The same fixtures can be served by [Quickwit 0.9.1](https://github.com/quickwit-oss/quickwit/releases/tag/v0.9.1), the pinned version, set up the way production runs it. `scripts/dev/quickwit-fixtures.sh` loads the fixture indexes with a writer node, stops it, and starts a read-only searcher that polls the metastore:
 
 ```sh
-url=$(QUICKWIT_BIN=/path/to/quickwit scripts/quickwit-fixtures.sh --workdir /tmp/qw)
+url=$(QUICKWIT_BIN=/path/to/quickwit scripts/dev/quickwit-fixtures.sh --workdir /tmp/qw)
 QUICKWIT_URL=$url cargo test -p usnm-search --test quickwit_parity   # Quickwit vs the reference backend
 USNM_BACKEND=quickwit USNM_QUICKWIT_URL=$url cargo run -p usnm-api
 kill "$(cat /tmp/qw/quickwit.pid)"
@@ -35,7 +35,7 @@ Without `QUICKWIT_URL`, the parity tests skip; CI runs them in the `quickwit` jo
 
 ```sh
 repo=$PWD                                                       # run from the repository root
-python3 scripts/fixture-batches.py --out-dir /tmp/usnm-ingest   # archives, batches.json, reference/catalog/
+python3 scripts/dev/fixture-batches.py --out-dir /tmp/usnm-ingest   # archives, batches.json, reference/catalog/
 cd /tmp/usnm-ingest
 cargo run --manifest-path "$repo/Cargo.toml" -p usnm-ingest -- \
   --state-file state.json --curated curated --reference reference \
@@ -85,11 +85,11 @@ Run `npm run format` in `web/` before pushing. It runs Prettier (pinned in `web/
 
 ### Script tests
 
-`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, so a new test file runs in CI without being added to a list in `ci.yml` (the `infra` job's "script unit tests" step). Run it from anywhere in the checkout; `--list` shows what it would run. `python3 -m unittest discover -s scripts` is not a substitute: with no `__init__.py` under `scripts/` it reads only the files directly in `scripts/`, not those in `scripts/boinc/` and the other directories. The runner leaves out the tests that need something the generic job lacks (Pillow, the ops venv, the C++ headers, or a workflow of their own) and the archived scripts under `scripts/archive/`, with the reason for each in its `EXCLUDE` table; those run in steps of their own. Run one file with `python3 -m unittest -v scripts/boinc/test_install.py`.
+`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, so a new test file runs in CI without being added to a list in `ci.yml` (the `infra` job's "script unit tests" step). Run it from anywhere in the checkout; `--list` shows what it would run. `python3 -m unittest discover -s scripts` is not a substitute: with no `__init__.py` under `scripts/` it reads only the files directly in `scripts/`, where no test sits, so it finds none of those in `scripts/boinc/`, `scripts/azure/` and the other directories. The runner leaves out the tests that need something the generic job lacks (Pillow, the ops venv, the C++ headers, or a workflow of their own) and the archived scripts under `scripts/archive/`, with the reason for each in its `EXCLUDE` table; those run in steps of their own. Run one file with `python3 -m unittest -v scripts/boinc/test_install.py`.
 
 ### Data that is not in the tree
 
-Report data (`docs/reports/*/data`, `docs/data`) and the benchmark's page images and raw results (`ocr/bench`) are release assets, not tracked files: `scripts/data-assets.sh --fetch --set report-data` or `--set bench-assets` downloads the set named in `ops/data-assets.json`, checks its sha256 and extracts it in place. The `publish data assets` workflow publishes a changed set from a commit. See [reports/README.md](reports/README.md).
+Report data (`docs/reports/*/data`, `docs/data`) and the benchmark's page images and raw results (`ocr/bench`) are release assets, not tracked files: `scripts/ops/data-assets.sh --fetch --set report-data` or `--set bench-assets` downloads the set named in `ops/data-assets.json`, checks its sha256 and extracts it in place. The `publish data assets` workflow publishes a changed set from a commit. See [reports/README.md](reports/README.md).
 
 ### JSON data files
 
@@ -98,9 +98,9 @@ Each JSON data file in the repository has a spec and a check that CI runs:
 | File                                             | Spec and check                                                                                                                                                                                                                                                           |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `catalog/overrides/*.json`                       | Parsed into `deny_unknown_fields` structs in usnm-ingest, with per-field audit checks and sorted keys (`cargo test -p usnm-ingest`)                                                                                                                                      |
-| `ops/data-assets.json`                           | The release tag and tarball sha256 of each data set `scripts/data-assets.sh` fetches (`report-data`, `bench-assets`); shape and sorted keys checked by `scripts/test_data_assets.py`                                                                                     |
-| `ops/version-snapshots/*.json`                   | `ops/version-snapshots/schema.json`, checked by `scripts/check-version-snapshots.py` (CI job `ops`)                                                                                                                                                                      |
-| `ops/index-history.json`                         | `ops/index-history.schema.json` and sorted keys at every level, checked by `scripts/check-index-history.py` (CI job `ops`); run it on `scripts/reconstruct-index-history.py`'s output before replacing the file                                                          |
+| `ops/data-assets.json`                           | The release tag and tarball sha256 of each data set `scripts/ops/data-assets.sh` fetches (`report-data`, `bench-assets`); shape and sorted keys checked by `scripts/ops/test_data_assets.py`                                                                             |
+| `ops/version-snapshots/*.json`                   | `ops/version-snapshots/schema.json`, checked by `scripts/ops/check-version-snapshots.py` (CI job `ops`)                                                                                                                                                                  |
+| `ops/index-history.json`                         | `ops/index-history.schema.json` and sorted keys at every level, checked by `scripts/ops/check-index-history.py` (CI job `ops`); run it on `scripts/ops/reconstruct-index-history.py`'s output before replacing the file                                                  |
 | `web/src/examples.json`                          | `examples.test.ts` checks every entry has exactly the fields of `Example` (`web/src/examples.ts`) and a `view` of `ViewState` fields (`npm test`); the API's `prewarm::Example` rejects unknown fields (`cargo test -p usnm-api prewarm`)                                |
 | `infra/env/*.json`                               | `infra/env/schema.json`, checked by `scripts/lib/env_settings.py --check` (CI job `infra`): only public settings the schema lists, typed, keys sorted, laid out as `json.dumps(indent=2)` writes it; the schema lists exactly the settings `infra/main.bicepparam` reads |
 | `infra/workbooks/*.json`                         | `scripts/ci/check-workbooks.py` (CI job `infra`): each file `infra/modules/workbooks.bicep` loads parses, has `version` and `items`, and names the module's workspace placeholder instead of a resource id                                                               |
@@ -110,7 +110,7 @@ Each JSON data file in the repository has a spec and a check that CI runs:
 
 ```sh
 python3 -m venv /tmp/ops && /tmp/ops/bin/pip install --require-hashes --no-deps -r scripts/ci/requirements-ops.txt
-/tmp/ops/bin/python scripts/check-version-snapshots.py
-/tmp/ops/bin/python scripts/check-index-history.py
-/tmp/ops/bin/python -m unittest scripts/test_check_version_snapshots.py scripts/test_check_index_history.py
+/tmp/ops/bin/python scripts/ops/check-version-snapshots.py
+/tmp/ops/bin/python scripts/ops/check-index-history.py
+/tmp/ops/bin/python -m unittest scripts/ops/test_check_version_snapshots.py scripts/ops/test_check_index_history.py
 ```

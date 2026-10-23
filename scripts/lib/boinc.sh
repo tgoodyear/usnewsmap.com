@@ -1,5 +1,5 @@
 # shellcheck shell=bash disable=SC2034
-# Shared by scripts/provision-boinc.sh and scripts/build-boinc-images.sh. Sourced from the
+# Shared by scripts/boinc/provision-boinc.sh and scripts/boinc/build-boinc-images.sh. Sourced from the
 # repository root after ENV_NAME and ALLOW_DIRTY are set; needs a die() function.
 #
 # The BOINC server's settings are committed in contrib-compute/infra/boinc/env/<env>.json
@@ -8,7 +8,7 @@
 
 BOINC_DIR=contrib-compute/infra/boinc
 BOINC_SETTINGS="$BOINC_DIR/env/$ENV_NAME.json"
-# The tests (scripts/test_boinc_provision.py) run against fixture settings with stubbed
+# The tests (scripts/boinc/test_boinc_provision.py) run against fixture settings with stubbed
 # Azure calls: USNM_BOINC_SETTINGS_FILE, honoured only with USNM_BOINC_TEST=1.
 if [ -n "${USNM_BOINC_SETTINGS_FILE:-}" ]; then
   [ "${USNM_BOINC_TEST:-}" = 1 ] || { echo "error: USNM_BOINC_SETTINGS_FILE is for the tests" >&2; exit 1; }
@@ -33,7 +33,7 @@ PY
 case "$ENV_NAME" in prod | dev) ;; *) die "--env must be prod or dev (the BOINC server has no experiment environments)" ;; esac
 [ -f "$BOINC_SETTINGS" ] || die "no settings file $BOINC_SETTINGS"
 
-# The settings file and its schema must be committed, as scripts/provision.sh requires of
+# The settings file and its schema must be committed, as scripts/azure/provision.sh requires of
 # infra/env/<env>.json, unless --allow-dirty (dev only).
 boinc_clean_check() {
   local out
@@ -122,7 +122,7 @@ boinc_az_check() {
   [ "$(az account show --subscription "$SUBSCRIPTION" --query id -o tsv 2> /dev/null)" = "$SUBSCRIPTION" ] ||
     die "az cannot see subscription $SUBSCRIPTION (az login --tenant <its tenant> first)"
   baz group show --name "$BOINC_RG" --query name -o none 2> /dev/null ||
-    die "no resource group $BOINC_RG: it comes from the main stack (USNM_BOINC_GROUP true in infra/env/$ENV_NAME.json, then scripts/provision.sh --env $ENV_NAME)"
+    die "no resource group $BOINC_RG: it comes from the main stack (USNM_BOINC_GROUP true in infra/env/$ENV_NAME.json, then scripts/azure/provision.sh --env $ENV_NAME)"
 }
 
 # boinc_output NAME: one output of the BOINC stack, empty if the stack or the output is
@@ -197,7 +197,7 @@ boinc_execution_log() {
   deadline=$(($(date +%s) + wait))
   echo "reading $execution's log from Log Analytics (up to ${wait}s for ingestion)" >&2
   while :; do
-    rows=$(python3 scripts/log_analytics.py --subscription "$SUBSCRIPTION" --workspace "$workspace" --timespan P1D --query \
+    rows=$(python3 scripts/azure/log_analytics.py --subscription "$SUBSCRIPTION" --workspace "$workspace" --timespan P1D --query \
       "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '$execution-' | order by TimeGenerated desc | take 50 | order by TimeGenerated asc | project TimeGenerated, Log_s" \
       | jq -r '.tables[0].rows[] | "\(.[0])  \(.[1])"' 2> /dev/null) || rows=""
     [ -z "$rows" ] || break

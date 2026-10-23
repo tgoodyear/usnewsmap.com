@@ -22,7 +22,7 @@ override, client attachment, or retry of terminal failures.
 The controller uses a single approved execution host with Python 3.9+, Azure
 CLI, `jq`, Bash, an existing Azure login, the checkout's existing environment
 outputs, and the existing hand-off job. Its bridge steps run through
-`scripts/start-boinc-bridge.sh` (the Azure bridge job) or, with `step_command` in
+`scripts/boinc/start-boinc-bridge.sh` (the Azure bridge job) or, with `step_command` in
 the configuration, on the on-prem BOINC host through `usnm-boinc-step`, which is how
 the on-prem server's bridge steps are reached ([boinc-onprem.md](boinc-onprem.md), cutover
 step 5). The server and bridge images

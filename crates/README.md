@@ -102,11 +102,11 @@ The API and ingest tests run against [`fixtures/`](../fixtures/README.md). The Q
 
 ## Regenerating generated files
 
-| Generated file                                                       | How                                                                                                                                                    |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ocr/contract/v1/*.schema.json`                                      | `cargo run -p usnm-ocr-contract --bin usnm-ocr-contract-schema -- --out-dir ocr/contract/v1`; a test fails when the files differ from the types        |
-| `usnm-core/data/*.txt.zst`, `usnm-core/data/page-language-words.txt` | `scripts/build-english-words.py`, `scripts/build-damage-words.py`, `scripts/build-page-language-words.py` ([data/README.md](usnm-core/data/README.md)) |
-| `usnm-core/tests/data/damage-parity.jsonl.zst`                       | `python3 ja-ocr/damage_parity.py`; the test prints the `--rescore` command                                                                             |
-| `usnm-core/tests/data/page-language-parity.jsonl.zst`                | `scripts/page-language-sample.py`                                                                                                                      |
-| `usnm-ocr-survey/tests/golden/`                                      | `python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden` (add `--check` to compare only)                                 |
-| `fixtures/skew-vectors.json`                                         | `UPDATE_SKEW_VECTORS=1 cargo test -p usnm-core --test skew_vectors`                                                                                    |
+| Generated file                                                       | How                                                                                                                                                                   |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ocr/contract/v1/*.schema.json`                                      | `cargo run -p usnm-ocr-contract --bin usnm-ocr-contract-schema -- --out-dir ocr/contract/v1`; a test fails when the files differ from the types                       |
+| `usnm-core/data/*.txt.zst`, `usnm-core/data/page-language-words.txt` | `scripts/data/build-english-words.py`, `scripts/data/build-damage-words.py`, `scripts/data/build-page-language-words.py` ([data/README.md](usnm-core/data/README.md)) |
+| `usnm-core/tests/data/damage-parity.jsonl.zst`                       | `python3 ja-ocr/damage_parity.py`; the test prints the `--rescore` command                                                                                            |
+| `usnm-core/tests/data/page-language-parity.jsonl.zst`                | `scripts/data/page-language-sample.py`                                                                                                                                |
+| `usnm-ocr-survey/tests/golden/`                                      | `python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden` (add `--check` to compare only)                                                |
+| `fixtures/skew-vectors.json`                                         | `UPDATE_SKEW_VECTORS=1 cargo test -p usnm-core --test skew_vectors`                                                                                                   |

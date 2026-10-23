@@ -1,5 +1,5 @@
 //! The fixture indexes with one searched field for both texts (05 §5.5.7,
-//! #283), for scripts/quickwit-fixtures.sh and the parity test:
+//! #283), for scripts/dev/quickwit-fixtures.sh and the parity test:
 //!
 //! - `single_field_fixture --template`: the index template on stdin, with
 //!   the text fields of `TextLayout::Single`, as a release creates the index.

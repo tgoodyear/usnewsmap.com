@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one BOINC bridge step on the on-prem BOINC host (#942), in place of the Azure bridge job
-# that scripts/start-boinc-bridge.sh starts. Same arguments, so the priority controller's
+# that scripts/boinc/start-boinc-bridge.sh starts. Same arguments, so the priority controller's
 # step_command can point here:
 #
 #   onprem-step.sh --env prod --target bridge --step submit --var JOB_ID=<id> --wait-mins 30

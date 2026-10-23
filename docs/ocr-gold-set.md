@@ -249,7 +249,7 @@ The transcriptions of the 60 crops are not written yet, though the 40 Czech, Ser
 - **Not stratified by typeface.** The sample records no typeface (Fraktur or Antiqua, for German). Record it in `notes` when transcribing; if a stratum turns out to hold one typeface only, add pages.
 - **Crop box.** One text region per page, chosen as the survey's `crops.py` does (a line of LoC's ALTO with 4 or more words in a block at least 600 pixels wide, and the region below it, up to 1,600 pixels wide and 6% of the page high), seeded per page. The box is fixed in the manifest.
 
-The survey's `scores.jsonl` is in the `report-data` set, so fetch it first: `scripts/data-assets.sh --fetch --set report-data` ([reports/README.md](reports/README.md), "Data").
+The survey's `scores.jsonl` is in the `report-data` set, so fetch it first: `scripts/ops/data-assets.sh --fetch --set report-data` ([reports/README.md](reports/README.md), "Data").
 
 ```sh
 scripts/ocr-survey/gold.py select --scores docs/reports/2026-10-ocr-engine-survey/data/scores.jsonl \
@@ -266,7 +266,7 @@ The 40 Czech, Serbian, Polish and Russian crops (ten each) were cut on 22 Octobe
 
 The 24 Japanese crops of the [#128](https://github.com/tgoodyear/usnewsmap.com/issues/128) comparison are not in the 60. Reference texts exist for them outside the repository: 23 files, and one more set aside. What their files and logs show about provenance:
 
-- No script, log or note beside them or in the repository records how the refs were made. `ja-ocr/crops.py` says "transcribe each crop into refs/<page_id>.txt" and nothing more; the commit that added it has no message beyond its title.
+- No script, log or note beside them or in the repository records how the refs were made. `ja-ocr/tools/crops.py` says "transcribe each crop into refs/<page_id>.txt" and nothing more; the commit that added it has no message beyond its title.
 - None is identical to any engine's text for the crop (best similarity per file 0.36 to 0.93 against NDLOCR-Lite, the prototype NDLOCR run, or Azure), so they are not copies of one engine's output.
 - The files were written between 10:35:20 and 10:50:46 on 4 October, 20 to 60 seconds apart, some of 1,400 to 1,700 characters, and two in the same second. That pace is not typing by a person. It fits transcription by a program or an AI model reading the images, but nothing on disk says which.
 - Fifteen lines contain the geta mark 〓 for an unreadable character. No engine's output contains it.
@@ -302,7 +302,7 @@ Needs transcription (crop from `sample.csv`, all unverified):
 | `sn83025333_1943-04-24_ed-1_seq-9`  | camp    | ref                                     |
 | `sn84025952_1944-04-20_ed-1_seq-7`  | camp    | ref                                     |
 
-The scorer for these is `scripts/ja-ocr/score.py`, which folds old character forms and also reports bigram F1. Japanese text has no spaces, so `gold.py`'s WER doesn't apply to it; once transcribed, the crops can be added to `crops.jsonl` with `lang` `jpn` and scored by CER.
+The scorer for these is `ja-ocr/tools/score.py`, which folds old character forms and also reports bigram F1. Japanese text has no spaces, so `gold.py`'s WER doesn't apply to it; once transcribed, the crops can be added to `crops.jsonl` with `lang` `jpn` and scored by CER.
 
 ## Crop format
 

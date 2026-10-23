@@ -6,7 +6,7 @@
 // of an English title's pages German or English and French, the English
 // and German title's split between them, the Spanish title's half English.
 // Included with `#[path]` by `crates/usnm-ingest/examples/page_language_fixture.rs`
-// (which loads them into Quickwit for scripts/quickwit-fixtures.sh) and by
+// (which loads them into Quickwit for scripts/dev/quickwit-fixtures.sh) and by
 // the parity test (`crates/usnm-search/tests/quickwit_parity.rs`), so both
 // backends see the same pages.
 

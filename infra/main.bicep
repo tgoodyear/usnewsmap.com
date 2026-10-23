@@ -1,6 +1,6 @@
 // US News Map: lean hosting profile (08 §8.1, ADR-0006). No IaaS.
 //
-// Deployed as the deployment stack usnm-{env} by scripts/bootstrap.sh, with
+// Deployed as the deployment stack usnm-{env} by scripts/azure/bootstrap.sh, with
 // parameters from infra/main.bicepparam. Creates the project
 // resource group and, optionally, the BOINC group, then the platform inside
 // the project group. The ACI Spot alternative is not deployed.
@@ -74,7 +74,7 @@ param scheduledIngestImageTag string = imageTag
 @description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment of the same name may use the CI identity.')
 param githubRepo string = 'tgoodyear/usnewsmap.com'
 
-@description('The same repository as `owner@ownerId/name@repoId` (GitHub\'s immutable-ID OIDC subject format); scripts/bootstrap.sh looks it up.')
+@description('The same repository as `owner@ownerId/name@repoId` (GitHub\'s immutable-ID OIDC subject format); scripts/azure/bootstrap.sh looks it up.')
 param githubRepoIds string = 'tgoodyear@116683/usnewsmap.com@1389862972'
 
 @description('Create the ingest and backfill jobs (needs useAcr: the ingest image is only in the private registry).')
@@ -216,7 +216,7 @@ param searchNfsGiB int = 64
 @description('Retain every batch archive curation downloads, byte for byte, in a `raw` container of this environment\'s own data account (Cold tier), and curate from it instead of LoC when it holds the listed archive. It goes with the environment: turning it off deletes the container. For a set that outlives environments use archiveAccountId. Production keeps none (ADR-0006).')
 param retainRaw bool = false
 
-@description('The archival account (infra/archive/, scripts/archive-store.sh), as a resource id: curation keeps every LoC archive and listing it downloads in its `raw` container and reads archives back from it instead of LoC, through a private endpoint of this environment; the search cluster bench job reads `raw` and writes `sets`. Takes precedence over retainRaw. Empty: not used. Clearing it removes only this environment\'s endpoint and roles, never the account or its data.')
+@description('The archival account (infra/archive/, scripts/azure/archive-store.sh), as a resource id: curation keeps every LoC archive and listing it downloads in its `raw` container and reads archives back from it instead of LoC, through a private endpoint of this environment; the search cluster bench job reads `raw` and writes `sets`. Takes precedence over retainRaw. Empty: not used. Clearing it removes only this environment\'s endpoint and roles, never the account or its data.')
 param archiveAccountId string = ''
 
 @description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
@@ -242,7 +242,7 @@ param alertEmails string = ''
 param budgetStartDate string = ''
 
 
-@description('Comma-separated Entra object ids (people or groups) that may read the search log in the searches container (scripts/searches.sh).')
+@description('Comma-separated Entra object ids (people or groups) that may read the search log in the searches container (scripts/azure/searches.sh).')
 param searchLogReaders string = ''
 
 @description('Deploy Azure AI Document Intelligence for OCR of Japanese pages (#128).')
@@ -310,13 +310,13 @@ param dnsZoneName string = ''
 @description('More TXT values at the zone apex, keyed by zone name (site-verification tokens). They are public, so they live in git.')
 param dnsApexTxtValues object = {}
 
-@description('Managed certificate for api.{dnsZoneName}, recorded by scripts/bootstrap.sh after it issues one.')
+@description('Managed certificate for api.{dnsZoneName}, recorded by scripts/azure/bootstrap.sh after it issues one.')
 param apiCertificateId string = ''
 
-@description('Managed certificate for {dnsZoneName} itself (the site), recorded by scripts/bootstrap.sh.')
+@description('Managed certificate for {dnsZoneName} itself (the site), recorded by scripts/azure/bootstrap.sh.')
 param siteCertificateId string = ''
 
-@description('Managed certificate for www.{dnsZoneName}, recorded by scripts/bootstrap.sh.')
+@description('Managed certificate for www.{dnsZoneName}, recorded by scripts/azure/bootstrap.sh.')
 param wwwCertificateId string = ''
 
 @description('The issue number of the experiment this environment is up for (#275; docs/operations.md, "Dev environment lifecycle"). Tags the project resource group with `experiment` and `started`. scripts/lib/env.sh requires it for dev. Empty: no tags.')
@@ -342,7 +342,7 @@ var pinnedNames = suffix == legacyProdSuffix
 var n = names(env, suffix, pinnedNames)
 // The Quickwit image (ADR-0013, 08 §8.6). An environment listed in
 // quickwit-image.json runs our build of Quickwit from its own registry,
-// pushed there by scripts/build-quickwit.sh; any other runs upstream
+// pushed there by scripts/azure/build-quickwit.sh; any other runs upstream
 // v0.9.1, which CI copies into the registry with its digest unchanged. CI
 // reads the same file for the ingest image's base.
 var quickwitPins = loadJsonContent('quickwit-image.json')
@@ -364,7 +364,7 @@ var customDomains = empty(dnsZoneName)
       { name: 'api.${dnsZoneName}', certificateId: apiCertificateId }
     ]
 
-// The experiment marker is on the project group alone: scripts/dev-status.sh
+// The experiment marker is on the project group alone: scripts/azure/dev-status.sh
 // reads it there, and a new `started` doesn't touch every resource.
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: n.rg
@@ -560,7 +560,7 @@ module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincH
   }
 }
 
-// The workspace comes from the BOINC stack (scripts/provision-boinc.sh), a
+// The workspace comes from the BOINC stack (scripts/boinc/provision-boinc.sh), a
 // later deployment than boincRg: set boincHandoffRunner only once that stack
 // is deployed, or this assignment fails on a missing workspace.
 module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGroup && !boincServerOnPrem && !empty(trim(boincHandoffRunner))) {
@@ -1230,21 +1230,21 @@ output JA_OCR_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaOcrJobName :
 output JA_AUDIT_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaAuditJobName : ''
 // The BOINC hand-off job runs in the main environment.
 output BOINC_HANDOFF_JOB string = boincHandoff ? boincHandoffJob!.outputs.name : ''
-// The OCR pickup job (12 §12.5 Step 8); scripts/start-job.sh --job OCR_SYNC_JOB
+// The OCR pickup job (12 §12.5 Step 8); scripts/azure/start-job.sh --job OCR_SYNC_JOB
 // runs ocr-enqueue and ocr-requeue as executions of it.
 output OCR_SYNC_JOB string = ingestJobs && useAcr ? ingest!.outputs.ocrSyncJobName : ''
-// The Congress fetch job (#229); scripts/start-job.sh --job CONGRESS_JOB.
+// The Congress fetch job (#229); scripts/azure/start-job.sh --job CONGRESS_JOB.
 output CONGRESS_JOB string = ingestJobs && useAcr ? ingest!.outputs.congressJobName : ''
-// The Serial Set fetch job (#229 phase 2); scripts/start-job.sh --job SERIALSET_JOB.
+// The Serial Set fetch job (#229 phase 2); scripts/azure/start-job.sh --job SERIALSET_JOB.
 output SERIALSET_JOB string = ingestJobs && useAcr ? ingest!.outputs.serialSetJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
-// For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).
+// For the GitHub Environment variables CI signs in with (not secrets; scripts/azure/bootstrap.sh writes them).
 output CI_CLIENT_ID string = identities.outputs.ciClientId
 output AZURE_TENANT_ID string = tenant().tenantId
 output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
-// The workspace's customer id, for the Log Analytics query API (scripts/logs.sh).
+// The workspace's customer id, for the Log Analytics query API (scripts/azure/logs.sh).
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceCustomerId
 output LOG_ANALYTICS_QUERY_HOST string = monitoring.outputs.logAnalyticsQueryHost
 output LOG_ANALYTICS_QUERY_HOSTS string = join(monitoring.outputs.logAnalyticsQueryHosts, ',')
@@ -1272,6 +1272,6 @@ output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.ruleId : '
 // ingestion settings (not a credential: local auth is off) to the worker.
 output OCR_NODE_APPINSIGHTS string = ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsConnectionString : ''
 output OCR_NODE_APPINSIGHTS_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsId : ''
-// The nodes' workspace's customer id: scripts/logs.sh runs the ocr-node-*
+// The nodes' workspace's customer id: scripts/azure/logs.sh runs the ocr-node-*
 // queries there.
 output OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.workspaceCustomerId : ''
