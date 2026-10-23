@@ -10,11 +10,11 @@ blob container, `boinc-handoff`, sits between them. Nothing reads `/tank/ocr` ex
 fetcher, and nothing asks LoC for a page again: the scan fetcher (CT 211) stays the only LoC
 fetcher, and volunteers download the page from our project server.
 
-| Who                                 | Runs                                                                                                                                        | Reads                                                                 | Writes                                                                   |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Scan fetcher, CT 211 (Arc identity) | `scripts/ocr-node/push-boinc-scan.sh` (az only)                                                                                             | `/tank/ocr/scans`, `/tank/ocr/manifests`                              | `scans/`, `manifests/`                                                   |
-| Hand-off job, main environment      | `handoff-job.sh`: `export`, later `collect --trust`; `claim` and `release` for [queue-fed work](../boinc-batch-scheduler.md#queue-fed-work) | `scans/`, `manifests/`, `spool/`, `gold/`, `claims/`, the work queues | `dispatch/`, `claims/`, Cosmos lease, ledger, `ocr-out`, the work queues |
-| BOINC bridge job, BOINC environment | `submit-remote`, later `spool-out`                                                                                                          | `dispatch/jobs/<id>/`                                                 | `spool/<id>/`, `gold/trust.json`                                         |
+| Who                                                 | Runs                                                                                                                                        | Reads                                                                 | Writes                                                                   |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Scan fetcher, CT 211 (Arc identity)                 | `scripts/ocr-node/push-boinc-scan.sh` (az only)                                                                                             | `/tank/ocr/scans`, `/tank/ocr/manifests`                              | `scans/`, `manifests/`                                                   |
+| Hand-off job, main environment                      | `handoff-job.sh`: `export`, later `collect --trust`; `claim` and `release` for [queue-fed work](../boinc-batch-scheduler.md#queue-fed-work) | `scans/`, `manifests/`, `spool/`, `gold/`, `claims/`, the work queues | `dispatch/`, `claims/`, Cosmos lease, ledger, `ocr-out`, the work queues |
+| BOINC bridge step, on-prem host (`usnm-boinc-step`) | `submit-remote`, later `spool-out`                                                                                                          | `dispatch/jobs/<id>/`                                                 | `spool/<id>/`, `gold/trust.json`                                         |
 
 The hand-off job runs in the main Container Apps environment because that environment
 already reaches Cosmos and the lake through their private endpoints; neither is opened to
@@ -102,17 +102,18 @@ scripts/boinc/start-boinc-bridge.sh --env prod --target handoff --step export \
   --var ENGINE_IMAGE=sha256:<images.worker's digest> --wait-mins 30
 ```
 
-Then the bridge:
+Then the bridge, on the on-prem host (a `"server": "azure"` environment starts both bridge
+steps with `scripts/boinc/start-boinc-bridge.sh` and the same arguments):
 
 ```sh
-scripts/boinc/start-boinc-bridge.sh --env prod --step submit-remote --var JOB_ID=JOB_ID \
+scripts/boinc/onprem-step.sh --env prod --target bridge --step submit-remote --var JOB_ID=JOB_ID \
   --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff --wait-mins 30
 ```
 
 When the workunit's result is assimilated (the ops pages show it done):
 
 ```sh
-scripts/boinc/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
+scripts/boinc/onprem-step.sh --env prod --target bridge --step spool-out --var JOB_ID=JOB_ID \
   --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff \
   --var HANDOFF_SPOOL=/project/usnmocr/results/0 --wait-mins 15
 ```
@@ -150,16 +151,16 @@ it has none of the queue grants.
 
 Its grants go to the object id in the private setting `USNM_BOINC_HANDOFF_RUNNER`:
 
-| Scope                            | Role                                                       | For                                                       |
-| -------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------- |
-| exchange `boinc-handoff`         | the OCR nodes' writer role (list, read, create; no delete) | the scans, the manifest and the quality wave's page JPEGs |
-| `usnm-boinc-log-<env>` workspace | Log Analytics Reader (`boinc-handoff-logs.bicep`)          | the bridge jobs' logs                                     |
+| Scope                                                            | Role                                                       | For                                                       |
+| ---------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------- |
+| exchange `boinc-handoff`                                         | the OCR nodes' writer role (list, read, create; no delete) | the scans, the manifest and the quality wave's page JPEGs |
+| `usnm-boinc-log-<env>` workspace (only with `"server": "azure"`) | Log Analytics Reader (`boinc-handoff-logs.bicep`)          | the bridge jobs' logs                                     |
 
 Until the hand-off job existed, `export` and `collect` ran here too, with Cosmos, ledger,
 reference and `ocr-out` grants (#514); the job took those over and they are gone.
 
 Set up once, from the operator's machine and the Proxmox host, after the BOINC stack is
-deployed (the workspace grant needs `usnm-boinc-log-<env>` to exist):
+deployed (with `"server": "azure"`, the workspace grant needs `usnm-boinc-log-<env>` to exist):
 
 ```sh
 # On pve-big: the agent, locked down before it connects (no extensions, no
@@ -191,7 +192,8 @@ The grant opens no network path: the exchange account takes the home IP through
 
 A quality wave's runner turns each archived page into the worker's `page.jpg`: grayscale,
 JPEG quality 75, and a JPEG2000 master over 4000 px decoded at half resolution. Decoding
-JPEG2000 is most of its CPU, and its Container Apps job has 4 vCPUs (#850). The scan-fetch
+JPEG2000 is most of its CPU, and its Container Apps job has 4 vCPUs (#850; the wave job is
+removed with the Azure server and does not run on-prem yet). The scan-fetch
 container holds the masters, so `scripts/ocr-node/quality-jpeg-cache.py` does the same
 conversion there and puts each page in the hand-off container as
 `quality-jpeg/l-q75-r1/<blob name>.jpg`. Blob metadata carries the master's sha256, the
