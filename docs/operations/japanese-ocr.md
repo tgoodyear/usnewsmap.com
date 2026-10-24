@@ -164,7 +164,7 @@ It writes `audit/mixed-pages-<version>-<execution>.json` and a CSV per table in 
 
 ## The Japanese OCR on-prem
 
-The Japanese OCR (`ja-ocr/jaocr.py run`, #128) runs on an OCR node instead of the Azure job `caj-usnm-jaocr-<env>` (#917: Azure keeps only the search cluster, the API and the web app). It's the same image, built on the node from a pinned commit (`docker/Dockerfile.ja-ocr`), as the node's Arc machine identity.
+The Japanese OCR (`ja-ocr/jaocr.py run`, #128) runs on an OCR node instead of the Azure job `caj-usnm-jaocr-<env>` (#917, which moves work out of Azure; serving moves on-prem too, under #955 and [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md)). It's the same image, built on the node from a pinned commit (`docker/Dockerfile.ja-ocr`), as the node's Arc machine identity.
 
 1. **Settings.** `USNM_JA_OCR_ONPREM=true` and `USNM_JA_OCR_JOB=false` in `infra/env/<env>.json` (through a pull request), with `USNM_ONPREM_GROUP` set and the node's Arc identity in that group. Provision. That grants the group read on `curated` and `reference` and create-only writes under `curated/ocr-ja/` and to `reference/status/ocr-ja.json`, with no delete (`infra/modules/jaocr-runner.bicep`). It opens the lake to `USNM_OCR_NODE_IPS` and removes the Azure job.
 2. **Install and start**, on the node as root, from a checkout of the scripts:
