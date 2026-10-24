@@ -231,11 +231,14 @@ if [ "$USE_ACR" != true ]; then
 fi
 
 # Names on the app (the site and the API), once the registrar delegates the
-# domain to the zone.
+# domain to the zone. With USNM_DNS_ZONE_HOSTED=false another DNS host holds
+# the records (#944), so there is no delegation to check and no zone to edit.
 DOMAIN=$(aget USNM_DNS_ZONE)
+ZONE_HOSTED=$(aget USNM_DNS_ZONE_HOSTED)
 if [ -n "$DOMAIN" ]; then
   step "Custom domains for $DOMAIN"
-  if ! curl -fsS -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$DOMAIN&type=NS" |
+  if [ "$ZONE_HOSTED" != false ] &&
+    ! curl -fsS -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$DOMAIN&type=NS" |
     grep -q azure-dns; then
     echo "$DOMAIN is not delegated to Azure DNS yet. Set its name servers to:"
     echo "  $(aget NAME_SERVERS)"
@@ -244,7 +247,8 @@ if [ -n "$DOMAIN" ]; then
     RG=$(aget AZURE_RESOURCE_GROUP) APP=$(aget API_APP) CAE=$(aget CONTAINER_ENV_NAME)
     names() { tr '\t' '\n' | grep -Fqx "$1"; }
     # The TXT record that validated the Static Web App's apex.
-    az network dns record-set txt delete -g "$RG" -z "$DOMAIN" -n _dnsauth --yes -o none 2> /dev/null || true
+    [ "$ZONE_HOSTED" = false ] ||
+      az network dns record-set txt delete -g "$RG" -z "$DOMAIN" -n _dnsauth --yes -o none 2> /dev/null || true
     # Each name: add it to the app, bind a managed certificate, and record the
     # certificate so provisioning keeps the binding. www and api validate by
     # their CNAMEs; the apex over HTTP, through its A record.

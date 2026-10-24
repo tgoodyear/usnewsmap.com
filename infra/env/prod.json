@@ -11,6 +11,7 @@
   "USNM_BUDGET_START": "2026-10-01",
   "USNM_COSMOS_FREE_TIER": true,
   "USNM_DNS_ZONE": "usnewsmap.com",
+  "USNM_DNS_ZONE_HOSTED": false,
   "USNM_GITHUB_REPO": "tgoodyear/usnewsmap.com",
   "USNM_INDEX_STORAGE": true,
   "USNM_INDEX_STORAGE_SERVE": true,
