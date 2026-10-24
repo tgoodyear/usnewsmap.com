@@ -48,8 +48,46 @@ const noVersions = {
   versions: [],
 };
 
-/** Answers `/v1/status` with `status` and `/v1/versions` with `versions`. */
-function serve(status: unknown, versions: unknown = noVersions) {
+/** The indexing section, as a pipeline with `runs` reports it. */
+function indexing(i: Record<string, unknown>) {
+  return {
+    available: true,
+    current_version: "fixture-v1",
+    writer: { held: false, holder: null, until: null },
+    release: null,
+    last_published_at: "2026-09-27T00:00:00Z",
+    failed_runs: 0,
+    failed_since_last_publish: 0,
+    runs: [],
+    ...i,
+  };
+}
+
+/** A full rebuild's run in `indexing.runs`. */
+function indexRun(r: Record<string, unknown>) {
+  return {
+    index_version: "fixture-v1",
+    full: true,
+    status: "published",
+    new_index: "pages-base-fixture",
+    indexes: 1,
+    batches: 3,
+    docs: 1872,
+    pages: 1872,
+    started_at: "2026-09-26T00:00:00Z",
+    published_at: "2026-09-27T00:00:00Z",
+    duration_secs: null,
+    previous_version: null,
+    error: null,
+    ...r,
+  };
+}
+
+/** `/v1/meta` for the fixture version: one searched field per text, title languages. */
+const fixtureMeta = { index_version: "fixture-v1", text_layout: 1, language_filter: "title" };
+
+/** Answers `/v1/status` with `status`, `/v1/versions` with `versions` and `/v1/meta` with `meta`. */
+function serve(status: unknown, versions: unknown = noVersions, meta: unknown = fixtureMeta) {
   vi.stubGlobal(
     "fetch",
     vi.fn(
@@ -60,7 +98,9 @@ function serve(status: unknown, versions: unknown = noVersions) {
               ? { schema: 1, updated_at: new Date().toISOString(), apps: [] }
               : url.startsWith("/v1/versions")
                 ? versions
-                : status,
+                : url.startsWith("/v1/meta")
+                  ? meta
+                  : status,
           ),
           {
             headers: { "content-type": "application/json" },
@@ -95,6 +135,7 @@ describe("DatasetsPage", () => {
     const urls = vi.mocked(fetch).mock.calls.map((c) => c[0]);
     expect(urls).toContain("/v1/status");
     expect(urls).toContain("/v1/versions");
+    expect(urls).toContain("/v1/meta");
   });
 
   it("answers what's in the index first and keeps the machinery for later", async () => {
@@ -125,7 +166,7 @@ describe("DatasetsPage", () => {
     // Every count comes from the document.
     expect(
       screen.getByText(
-        /^The site searches 1,872 newspaper pages from 6 newspapers published in 6 places, dated Jan 1, 1895 to Dec 31, 1897\.$/,
+        /^The site covers 1,872 newspaper pages from 6 newspapers published in 6 places, dated Jan 1, 1895 to Dec 31, 1897\.$/,
       ),
     ).toBeTruthy();
     // An older API without the new fields: the page says it doesn't know.
@@ -181,7 +222,7 @@ describe("DatasetsPage", () => {
     serve(doc);
     renderPage();
     await screen.findByRole("heading", { level: 3, name: "American Stories" });
-    expect(screen.getByText(/^The site searches .* with pages from 3 different years\.$/)).toBeTruthy();
+    expect(screen.getByText(/^The site covers .* with pages from 3 different years\.$/)).toBeTruthy();
     // Pages by year, summed by decade.
     const decades = screen.getByRole("table", { name: "Pages by decade" });
     expect(
@@ -200,7 +241,7 @@ describe("DatasetsPage", () => {
         "10,305 Japanese pages in an index of their own; the English and other Latin-script text we read on 5,647 pages in the main search, 647 pages of them where the Library of Congress text was partly readable",
       ),
     ).toBeTruthy();
-    expect(screen.getByText(/^Stopped at 12,768 of 12,811 Japanese pages/)).toBeTruthy();
+    expect(screen.getByText(/^The first pass read 12,768 of 12,811 Japanese pages/)).toBeTruthy();
     expect(screen.getByText(/^5,647 pages of 1 newspaper are searched with the Latin-script text/)).toBeTruthy();
     const reasons = screen.getByRole("table", { name: "Pages we read, by reason" });
     expect(within(reasons).getByText("No text from the Library of Congress")).toBeTruthy();
@@ -291,6 +332,12 @@ describe("DatasetsPage", () => {
     serve(body, versions);
     renderPage();
     const table = await screen.findByRole("table", { name: "Published versions, newest first" });
+    // When the version was published: a staged rebuild's switch comes hours later.
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((h) => h.textContent),
+    ).toEqual(["Version", "Published", "Kind", "Pages", "Change in pages", "What changed"]);
     const rows = within(table).getAllByRole("row").slice(1);
     // The failed run isn't a version anyone searched.
     expect(rows).toHaveLength(2);
@@ -301,7 +348,7 @@ describe("DatasetsPage", () => {
     expect(rows[1]!.textContent).toContain("Update");
     expect(
       screen.getByText(
-        /^The last full rebuild, pages-v3, went live on Oct 8, 2026: 1,300 pages, adding 300 pages\. Added American Stories' text\.$/,
+        /^The last full rebuild, pages-v3, was published on Oct 8, 2026: 1,300 pages, adding 300 pages\. Added American Stories' text\.$/,
       ),
     ).toBeTruthy();
   });
@@ -393,6 +440,222 @@ describe("DatasetsPage", () => {
     // Operator details are collapsed.
     const technical = screen.getByText("Show the pipeline's own numbers and terms").closest("details")!;
     expect(technical.hasAttribute("open")).toBe(false);
+  });
+
+  it("says how American Stories is searched by the served version's text layout", async () => {
+    const doc = {
+      ...body,
+      published: {
+        ...body.published,
+        sources: {
+          american_stories: { searched: true, pages: 1500, only_pages: 40, years: 3 },
+          ja_latin: null,
+          ocr_local: null,
+        },
+      },
+    };
+    const badge =
+      'When a page matched only in American Stories\' text, the result says so with an "American Stories OCR" badge';
+    const match = "a page when its Library of Congress and American Stories texts together have the words";
+    for (const [meta, text] of [
+      // One field for both texts: always searched, and no count of the pages only it matched.
+      [{ ...fixtureMeta, text_layout: 2 }, `Every search reads both texts: it finds ${match}. ${badge}.`],
+      [fixtureMeta, `A search finds ${match}. ${badge}, and the search's page count says how many pages that is.`],
+      // /v1/meta for another version says nothing about this one.
+      [{ ...fixtureMeta, index_version: "fixture-v2", text_layout: 1 }, `A search finds ${match}. ${badge}.`],
+    ] as const) {
+      serve(doc, noVersions, meta);
+      renderPage();
+      expect(await screen.findByText(text)).toBeTruthy();
+      expect(
+        screen.getByText(
+          "Newspaper scans come from Chronicling America. Search combines the Library of Congress text, American Stories' text, and selected replacement OCR described below.",
+        ),
+      ).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it("says what part of the pages has text to search", async () => {
+    const doc = {
+      ...body,
+      published: {
+        ...body.published,
+        indexes: ["pages-base-fixture"],
+        deltas: 0,
+        ja: { indexes: ["pages-ja-fixture"], fold: 2, pages: 50 },
+      },
+      indexing: indexing({
+        runs: [indexRun({ index_version: "fixture-v1", docs: 1800, pages: 1872 })],
+      }),
+    };
+    serve(doc);
+    renderPage();
+    expect(
+      await screen.findByText(
+        /^The site covers 1,872 newspaper pages .*\. A page with no text at all can't come up in a search. The main index has text for 1,800 of them, and the Japanese index for 50\.$/,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/^1,872 pages from 6 newspapers, dated .*, 1,800 of them with text in the main index$/),
+    ).toBeTruthy();
+    // When it was published, not when the site switched to it.
+    expect(screen.getByText(/^This is the version of the search index the site searches now \(/).textContent).toMatch(
+      /\(fixture-v1\), published [A-Z][a-z]{2} \d{1,2} at \d{1,2}:\d\d [AP]M \S+\.$/,
+    );
+    // The Japanese index is in the index set.
+    expect(screen.getByText("Index set:").parentElement!.textContent).toBe(
+      "Index set: base pages-base-fixture; Japanese pages-ja-fixture.",
+    );
+  });
+
+  it("counts languages by page language when the version has it, and by catalog language too", async () => {
+    const doc = {
+      ...body,
+      published: {
+        ...body.published,
+        by_language: {
+          pages_known: true,
+          multilingual_titles: 0,
+          multilingual_pages: 0,
+          rows: [
+            { code: "eng", name: "English", titles: 5, pages: 1500, percent: 80.1 },
+            { code: "haw", name: "Hawaiian", titles: 1, pages: 372, percent: 19.9 },
+          ],
+        },
+      },
+    };
+    const meta = {
+      ...fixtureMeta,
+      language_filter: "page",
+      languages: [
+        { code: "eng", name: "English", titles: 5, pages: 1860 },
+        { code: "haw", name: "Hawaiian", titles: 1, pages: 12 },
+      ],
+    };
+    serve(doc, noVersions, meta);
+    renderPage();
+    const byPage = await screen.findByRole("table", { name: "Published pages by language" });
+    expect(
+      within(byPage)
+        .getAllByRole("row")
+        .map((r) => r.textContent),
+    ).toEqual(["LanguagePages ↓Share of pages", "English1,86099.4%", "Hawaiian120.6%"]);
+    const byCatalog = screen.getByRole("table", { name: "Published pages by catalog language" });
+    expect(within(byCatalog).getByText("372")).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "Pages by catalog language" })).toBeTruthy();
+    const section = screen.getByRole("region", { name: "Languages" });
+    expect(section.textContent).toContain("which is what the search's language filter matches");
+    expect(section.textContent).not.toMatch(/next full rebuild|#283/);
+    cleanup();
+
+    // A version without page languages: catalog languages alone, and no promise of a rebuild.
+    serve(doc);
+    renderPage();
+    await screen.findByRole("table", { name: "Published pages by language" });
+    expect(screen.queryByRole("heading", { level: 3, name: "Pages by catalog language" })).toBeNull();
+    const titles = screen.getByRole("region", { name: "Languages" });
+    expect(titles.textContent).toContain("Pages are counted by the languages the Library of Congress catalogs");
+    expect(titles.textContent).not.toMatch(/next full rebuild|#283/);
+  });
+
+  it("marks the pipeline's version when it isn't the served one, and runs the ingest job didn't report", async () => {
+    const doc = {
+      ...body,
+      activity: {
+        available: true,
+        now: "idle",
+        source: "none",
+        since: null,
+        run_started_at: null,
+        run: null,
+        reported_at: null,
+        done: null,
+        total: null,
+        percent: null,
+        eta: null,
+        paused_until: null,
+        index_version: null,
+        merge: null,
+        last: {
+          outcome: "failed",
+          ended_at: "2026-09-25T15:01:01Z",
+          step: "merging",
+          error: "index holds too many documents",
+          index_version: "fixture-v0",
+        },
+        next_run: null,
+      },
+      indexing: indexing({
+        current_version: "fixture-v0",
+        runs: [
+          indexRun({ index_version: "fixture-v1", published_at: "2026-09-27T00:00:00Z" }),
+          indexRun({ index_version: "fixture-v0", status: "failed", published_at: null, duration_secs: 600 }),
+        ],
+      }),
+    };
+    serve(doc);
+    renderPage();
+    const current = (await screen.findByText("Pipeline's current version")).parentElement!;
+    expect(current.textContent).toBe(
+      "Pipeline's current versionfixture-v0 (not the version the site searches, fixture-v1)",
+    );
+    expect(screen.getByText("Ingest job's last run:").parentElement!.textContent).toMatch(
+      /^Ingest job's last run: failed .* \(fixture-v0\): index holds too many documents$/,
+    );
+    expect(screen.getByText("A later index run:").parentElement!.textContent).toMatch(
+      /^A later index run: published .* \(fixture-v1\), which the ingest job didn't report\./,
+    );
+  });
+
+  it("links Chronicling America at loc.gov and words the fixed text for the current index", async () => {
+    serve(body);
+    renderPage();
+    await screen.findByRole("heading", { level: 2, name: "Places" });
+    const links = screen.getAllByRole("link", { name: "Chronicling America" });
+    expect(links.length).toBeGreaterThanOrEqual(2);
+    for (const a of links) expect(a.getAttribute("href")).toBe("https://www.loc.gov/collections/chronicling-america/");
+    const places = screen.getByRole("region", { name: "Places" });
+    expect(places.textContent).toContain(
+      "Known gaps: a few towns couldn't be placed from the sources we checked. A correction to where a newspaper is placed takes effect at the next full rebuild.",
+    );
+    expect(places.textContent).not.toContain("still shown at the town in their title");
+    // The glossary's OCR entry: who runs it now, and a section that exists.
+    const ocr = screen.getByText("OCR", { selector: "dt" }).parentElement!;
+    expect(ocr.textContent).toContain("New OCR runs through BOINC");
+    expect(ocr.textContent).not.toContain("OCR experiments");
+  });
+
+  it("gives the Japanese pages without usable text as a share of those newspapers' pages", async () => {
+    serve({
+      ...body,
+      published: {
+        ...body.published,
+        by_language: {
+          pages_known: true,
+          multilingual_titles: 1,
+          multilingual_pages: 32_829,
+          rows: [{ code: "jpn", name: "Japanese", titles: 27, pages: 32_829, percent: 0.1 }],
+        },
+      },
+      ocr_ja: {
+        available: true,
+        running: false,
+        targets: { pages: 12_811, issues: 3690 },
+        done: { pages: 12_768, issues: 3680 },
+        percent: 99.6,
+        engine: null,
+        started_at: null,
+        updated_at: new Date(Date.now() - 5 * 86_400_000).toISOString(),
+        eta: null,
+      },
+    });
+    renderPage();
+    expect(
+      await screen.findByText(
+        "The Library of Congress has little or no searchable text for the pages printed in Japanese in its Japanese-language newspapers, mostly those of the World War II incarceration camps: 12,811 of their 32,829 pages. We read those page images ourselves with NDLOCR-Lite, text-recognition software from Japan's National Diet Library.",
+      ),
+    ).toBeTruthy();
   });
 
   it("shows a short error in full and a long one as a closed preview", () => {

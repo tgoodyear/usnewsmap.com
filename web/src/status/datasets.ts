@@ -52,7 +52,15 @@ const FEATURE_LABEL: Record<string, string> = {
   ja_fold: "folding of old Japanese character forms",
   decades: "the index split by decade",
   text_layout: "one searched field for both texts",
+  page_language: "each page's own language, which the language filter matches",
+  congress: "the records of Congress",
 };
+
+/**
+ * Build settings that change how the index is laid out but nothing a reader
+ * would notice: `split_docs`, the pages per split of a full base.
+ */
+const INTERNAL_FEATURES = new Set(["split_docs"]);
 
 const featureLabel = (key: string) => FEATURE_LABEL[key] ?? key;
 
@@ -60,15 +68,18 @@ const on = (v: number | null | undefined) => v !== undefined && v !== null;
 
 /**
  * What a version's build changed from the version before it: features it
- * added or dropped, and feature versions that changed. Empty when either has
- * no build record. An update's `build.features` lists only the indexes it
- * wrote, and it keeps the earlier ones, so only a full rebuild drops one.
+ * added or dropped, and feature versions that changed, leaving out the
+ * internal settings. Empty when either has no build record. An update's
+ * `build.features` lists only the indexes it wrote, and it keeps the
+ * earlier ones, so only a full rebuild drops one.
  */
 export function featureChanges(v: VersionItem, before: VersionItem | undefined): string[] {
   const now = v.build?.features;
   const then = before?.build?.features;
   if (!now || !then) return [];
-  const keys = [...new Set([...Object.keys(now), ...Object.keys(then)])].sort();
+  const keys = [...new Set([...Object.keys(now), ...Object.keys(then)])]
+    .filter((k) => !INTERNAL_FEATURES.has(k))
+    .sort();
   const out: string[] = [];
   for (const k of keys) {
     const a = then[k];
@@ -116,4 +127,18 @@ export function dayDate(iso: string): string {
 export function statesWithPages(s: Status): number | null {
   const rows = s.published.by_state;
   return rows ? rows.filter((r) => r.pages > 0).length : null;
+}
+
+/**
+ * Pages with text in the main index of the version the site searches: the
+ * documents its full rebuild sent (`docs`), which leave out pages with no
+ * text at all and the Japanese pages only the Japanese index has. Null when
+ * the pipeline doesn't list that run, or the version has deltas, whose runs
+ * count only their own documents.
+ */
+export function mainIndexPages(s: Status): number | null {
+  const p = s.published;
+  if (p.indexes.length !== 1 || !s.indexing.available) return null;
+  const run = s.indexing.runs.find((r) => r.index_version === p.index_version && r.status === "published");
+  return run?.full && run.docs > 0 && run.docs <= p.pages ? run.docs : null;
 }

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import type { ByLanguage, LanguagePages, StatePages } from "../api/types";
+import type { ByLanguage, LanguagePages, MetaLanguage, StatePages } from "../api/types";
 import { count, share } from "./format";
 
 /** A column of a sortable table: what it shows and what it sorts by. */
@@ -220,11 +220,73 @@ function languageColumns(pagesKnown: boolean): Column<LanguagePages>[] {
   return cols;
 }
 
-export function LanguagesSection({ data }: { data: ByLanguage }) {
-  const known = data.pages_known;
+const PAGE_LANGUAGE_COLUMNS = (total: number): Column<MetaLanguage>[] => [
+  { key: "name", label: "Language", value: (r) => r.name },
+  {
+    key: "pages",
+    label: "Pages",
+    numeric: true,
+    value: (r) => r.pages ?? 0,
+    cell: (r) => count(r.pages ?? 0),
+  },
+  {
+    key: "percent",
+    label: "Share of pages",
+    numeric: true,
+    value: (r) => r.pages ?? 0,
+    cell: (r) => share(total > 0 ? (100 * (r.pages ?? 0)) / total : 0, r.pages ?? 0),
+  },
+];
+
+/**
+ * Pages by their own language (`/v1/meta` `languages` with `language_filter`
+ * "page"): the counts the search's language filter offers. `total` is every
+ * published page, the share's base.
+ */
+export function PageLanguagesSection({ rows, total }: { rows: MetaLanguage[]; total: number }) {
+  const withPages = rows.filter((r) => (r.pages ?? 0) > 0).length;
   return (
     <section aria-labelledby="by-language" className="status-subsection">
       <h3 id="by-language">Pages by language</h3>
+      {rows.length === 0 ? (
+        <p className="status-empty">No pages are published yet.</p>
+      ) : (
+        <>
+          <p>
+            {withPages === 1
+              ? "1 language has pages in the published version."
+              : `${count(withPages)} languages have pages in the published version.`}{" "}
+            A page in two languages counts in each.
+          </p>
+          <details className="status-table">
+            <summary>Show the table of pages by language</summary>
+            <SortableTable
+              caption="Published pages by language"
+              columns={PAGE_LANGUAGE_COLUMNS(total)}
+              rows={rows}
+              rowKey={(r) => `code:${r.code}`}
+              initial={{ key: "pages", desc: true }}
+            />
+          </details>
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Pages by catalog language (`/v1/status` `published.by_language`): every
+ * page of a newspaper in each language LoC lists for it. `byCatalog` when
+ * the page-language table comes first, so this one says which languages
+ * it counts in its heading.
+ */
+export function LanguagesSection({ data, byCatalog = false }: { data: ByLanguage; byCatalog?: boolean }) {
+  const known = data.pages_known;
+  const id = byCatalog ? "by-catalog-language" : "by-language";
+  const of = byCatalog ? "catalog language" : "language";
+  return (
+    <section aria-labelledby={id} className="status-subsection">
+      <h3 id={id}>Pages by {of}</h3>
       {data.rows.length === 0 ? (
         <p className="status-empty">No pages are published yet.</p>
       ) : (
@@ -244,9 +306,11 @@ export function LanguagesSection({ data }: { data: ByLanguage }) {
             </p>
           )}
           <details className="status-table">
-            <summary>Show the table of {known ? "pages" : "newspapers"} by language</summary>
+            <summary>
+              Show the table of {known ? "pages" : "newspapers"} by {of}
+            </summary>
             <SortableTable
-              caption={known ? "Published pages by language" : "Published newspapers by language"}
+              caption={known ? `Published pages by ${of}` : `Published newspapers by ${of}`}
               columns={languageColumns(known)}
               rows={data.rows}
               rowKey={(r) => (r.code === null ? "none" : `code:${r.code}`)}
