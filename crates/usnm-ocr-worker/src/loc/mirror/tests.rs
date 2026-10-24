@@ -364,3 +364,243 @@ fn reads_the_file_a_page_json_names() {
     );
     assert_eq!(percent_decode("a%2Fb%2fc%zz%2"), "a/b/c%zz%2");
 }
+
+/// A mirror that takes `delay` to answer every request with `body`,
+/// counting how many requests it has open at once.
+async fn slow_mirror(
+    delay: Duration,
+    body: &'static [u8],
+) -> (
+    String,
+    Arc<std::sync::atomic::AtomicUsize>,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::AtomicUsize;
+    let open = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let root = format!("http://{}", listener.local_addr().unwrap());
+    let (o, m) = (Arc::clone(&open), Arc::clone(&most));
+    let app = axum::Router::new().fallback(move || {
+        let (o, m) = (Arc::clone(&o), Arc::clone(&m));
+        async move {
+            let now = o.fetch_add(1, Ordering::SeqCst) + 1;
+            m.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(delay).await;
+            o.fetch_sub(1, Ordering::SeqCst);
+            body.to_vec()
+        }
+    });
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (root, open, most)
+}
+
+fn partner_at(root: String, max_wait: Duration) -> Mirrors {
+    Mirrors::new(MirrorConfig {
+        partners: vec![Partner {
+            awardee: "xx",
+            name: "partner",
+            root,
+            json_names_file: false,
+        }],
+        max_wait,
+        ..cfg()
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_mirror_gets_one_request_at_a_time() {
+    let (root, _, most) = slow_mirror(Duration::from_millis(150), b"jp2 two").await;
+    let m = Arc::new(partner_at(root, Duration::from_secs(5)));
+    let p = page("0010", b"jp2 two");
+    let calls: Vec<_> = (0..4)
+        .map(|_| {
+            let (m, p) = (Arc::clone(&m), p.clone());
+            tokio::spawn(async move { m.jp2("xx_test", &key(2), &p).await.is_some() })
+        })
+        .collect();
+    for c in calls {
+        assert!(c.await.unwrap(), "each waited its turn and got the page");
+    }
+    assert_eq!(most.load(Ordering::SeqCst), 1, "never two at once");
+    assert_eq!(m.status()["partner"].requests, 4);
+}
+
+#[tokio::test]
+async fn a_busy_mirror_is_skipped_and_an_idle_one_asked_again() {
+    let (root, _, most) = slow_mirror(Duration::from_millis(400), b"jp2 two").await;
+    let m = Arc::new(partner_at(root, Duration::from_millis(100)));
+    let p = page("0010", b"jp2 two");
+    let calls: Vec<_> = (0..3)
+        .map(|_| {
+            let (m, p) = (Arc::clone(&m), p.clone());
+            tokio::spawn(async move { m.jp2("xx_test", &key(2), &p).await.is_some() })
+        })
+        .collect();
+    let mut got = 0;
+    for c in calls {
+        got += usize::from(c.await.unwrap());
+    }
+    assert_eq!(got, 1, "the others went on without it");
+    let st = &m.status()["partner"];
+    assert_eq!((st.requests, st.skipped_held), (1, 2));
+    // Nothing was kept for the callers that gave up: once it is idle, the
+    // next page is served.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(m.jp2("xx_test", &key(2), &p).await.is_some());
+    assert_eq!(m.status()["partner"].requests, 2);
+    assert_eq!(most.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_challenge_with_a_503_or_429_holds_for_the_block_hold() {
+    for status in [503, 429] {
+        let s = StandIn::start().await;
+        s.script(&format!("{SEQ2}.json"), Scripted::Challenge(status));
+        let m = with_partner(&s, true);
+        assert!(m
+            .jp2("xx_test", &key(2), &page("0010", b"x"))
+            .await
+            .is_none());
+        let st = &m.status()["partner"];
+        assert!(st.held_secs.is_some_and(|h| h > 500), "{status}: {st:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_redirect_within_the_mirror_is_followed_and_counted() {
+    let s = StandIn::start().await;
+    s.redirect(&format!("{SEQ2}.jp2"), "/files/0010.jp2");
+    s.put("/files/0010.jp2", b"jp2 two".to_vec());
+    let m = with_partner(&s, false);
+    let (scan, hit) = m
+        .jp2("xx_test", &key(2), &page("0010", b"jp2 two"))
+        .await
+        .unwrap();
+    assert_eq!(&scan.bytes[..], b"jp2 two");
+    assert_eq!(hit.url, format!("{}{SEQ2}.jp2", s.root));
+    assert_eq!(m.status()["partner"].requests, 2);
+}
+
+fn cdx_with_lengths(rows: &[(&str, &str, &str)]) -> Vec<u8> {
+    let mut v = vec![serde_json::json!(["timestamp", "original", "length"])];
+    v.extend(rows.iter().map(|(t, o, l)| serde_json::json!([t, o, l])));
+    serde_json::to_vec(&v).unwrap()
+}
+
+#[tokio::test]
+async fn the_largest_capture_is_tried_first_and_a_cut_short_one_passed_over() {
+    let s = StandIn::start().await;
+    let one = format!("{LOC}data/sn1/0001A/1890050301/0010.jp2");
+    // The largest capture is cut short (its bytes aren't the bag's); the
+    // next is whole.
+    s.put(
+        "/cdx/search/cdx",
+        cdx_with_lengths(&[
+            ("20250101000000", one.as_str(), "900"),
+            ("20250301000000", one.as_str(), "800"),
+            ("20250201000000", one.as_str(), "100"),
+        ]),
+    );
+    s.put(&format!("/web/20250101000000id_/{one}"), b"jp2 te".to_vec());
+    s.put(
+        &format!("/web/20250301000000id_/{one}"),
+        b"jp2 ten".to_vec(),
+    );
+    s.put(&format!("/web/20250201000000id_/{one}"), b"j".to_vec());
+    let m = wayback(&s);
+    let (scan, hit) = m
+        .jp2("xx_test", &key(1), &page("0010", b"jp2 ten"))
+        .await
+        .unwrap();
+    assert_eq!(&scan.bytes[..], b"jp2 ten");
+    assert!(hit.url.contains("/web/20250301000000id_/"), "{}", hit.url);
+    let st = &m.status()[WAYBACK];
+    assert_eq!((st.md5_mismatches, st.hits), (1, 1));
+    assert_eq!(
+        s.hits(&format!("20250201000000id_/{one}")),
+        0,
+        "at most two tried"
+    );
+}
+
+#[tokio::test]
+async fn pages_of_an_issue_asked_at_once_share_one_cdx_lookup() {
+    let s = StandIn::start().await;
+    s.put("/cdx/search/cdx", cdx_with_lengths(&[]));
+    let m = Arc::new(wayback(&s));
+    let calls: Vec<_> = (1..=4u16)
+        .map(|q| {
+            let m = Arc::clone(&m);
+            tokio::spawn(async move {
+                m.jp2("xx_test", &key(q), &page(&format!("{:04}", 10 + q), b"x"))
+                    .await
+                    .is_none()
+            })
+        })
+        .collect();
+    for c in calls {
+        assert!(c.await.unwrap());
+    }
+    assert_eq!(s.hits("/cdx/search/cdx"), 1);
+    assert_eq!(m.status()[WAYBACK].misses, 4);
+}
+
+#[tokio::test]
+async fn a_cdx_answer_that_doesnt_read_isnt_kept() {
+    let s = StandIn::start().await;
+    s.put("/cdx/search/cdx", b"Error: not a list".to_vec());
+    let mut c = cfg();
+    c.backoff = Duration::from_millis(50);
+    let m = Mirrors::new(MirrorConfig {
+        wayback: Some(s.root.clone()),
+        ..c
+    })
+    .unwrap();
+    assert!(m
+        .jp2("xx_test", &key(1), &page("0010", b"x"))
+        .await
+        .is_none());
+    assert_eq!(m.status()[WAYBACK].holds, 1);
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(m
+        .jp2("xx_test", &key(1), &page("0010", b"x"))
+        .await
+        .is_none());
+    assert_eq!(
+        s.hits("/cdx/search/cdx"),
+        2,
+        "asked again, not taken as nothing captured"
+    );
+}
+
+#[test]
+fn reads_a_cdx_answer() {
+    let dir = "/storage-services/service/ndnp/xx/batch_xx_test_ver01/data/sn1/0001A/1890050301/";
+    let f = |n: &str| format!("https://tile.loc.gov{dir}{n}");
+    let body = cdx_with_lengths(&[
+        ("20250101000000", &f("0010.jp2"), "5"),
+        (
+            "20250201000000",
+            &f("0010.jp2").replace("https://", "http://"),
+            "9",
+        ),
+        ("20250301000000", &f("sub/0011.jp2"), "9"),
+        ("20250301000000", &f("0012.xml"), "9"),
+        ("x", &f("0013.jp2"), "9"),
+    ]);
+    let got = cdx_files(&body, dir).unwrap();
+    assert_eq!(got.keys().collect::<Vec<_>>(), ["0010.jp2"]);
+    assert_eq!(
+        got["0010.jp2"]
+            .iter()
+            .map(|c| c.ts.as_str())
+            .collect::<Vec<_>>(),
+        ["20250201000000", "20250101000000"],
+        "largest first"
+    );
+    assert_eq!(cdx_files(b"", dir), Some(BTreeMap::new()));
+    assert_eq!(cdx_files(b"[]", dir), Some(BTreeMap::new()));
+    assert_eq!(cdx_files(b"oops", dir), None);
+}
