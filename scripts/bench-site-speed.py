@@ -43,6 +43,7 @@ one cached search; the default of 5 runs sends about 70 requests to the site.
 
 import argparse
 import concurrent.futures
+import functools
 import gzip
 import http.client
 import json
@@ -77,9 +78,7 @@ GLOBALPING_LOCATIONS = [
     ("ZA", {"magic": "south africa"}),
 ]
 GLOBALPING_API = "https://api.globalping.io/v1/measurements"
-# Built once, so loading the trust store isn't in any sample's TLS time.
-TLS_CONTEXT = ssl.create_default_context()
-TLS_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
+
 CACHE_HEADERS = ("cf-cache-status", "x-cache", "x-cache-status", "age")
 
 
@@ -99,6 +98,14 @@ def cache_status(headers):
         if value:
             return f"{name}: {value}" if name != "cf-cache-status" else value
     return ""
+
+
+@functools.lru_cache(maxsize=1)
+def tls_context():
+    """Built once, so loading the trust store isn't in any sample's TLS time."""
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
 
 
 def connect(infos):
@@ -136,10 +143,11 @@ def sample(host, port, path, tls=True, warm=True):
     sock, tcp = connect(infos)
     tls_s = 0.0
     if tls:
+        context = tls_context()
         step = time.perf_counter()
-        sock = TLS_CONTEXT.wrap_socket(sock, server_hostname=host)
+        sock = context.wrap_socket(sock, server_hostname=host)
         tls_s = time.perf_counter() - step
-        conn = http.client.HTTPSConnection(host, port, timeout=TIMEOUT_S, context=TLS_CONTEXT)
+        conn = http.client.HTTPSConnection(host, port, timeout=TIMEOUT_S, context=context)
     else:
         conn = http.client.HTTPConnection(host, port, timeout=TIMEOUT_S)
     conn.sock = sock

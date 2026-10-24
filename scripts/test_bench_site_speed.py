@@ -106,7 +106,8 @@ class BenchSiteSpeed(unittest.TestCase):
         self.assertEqual(bench.warm_cell([{"warm_wait": 0.010}, {"warm_wait": None}, {"warm_wait": 0.030}]), 20.0)
 
     def test_tls_context_is_built_once_with_a_floor(self):
-        self.assertGreaterEqual(bench.TLS_CONTEXT.minimum_version, bench.ssl.TLSVersion.TLSv1_2)
+        self.assertIs(bench.tls_context(), bench.tls_context())
+        self.assertGreaterEqual(bench.tls_context().minimum_version, bench.ssl.TLSVersion.TLSv1_2)
 
     def test_sample_without_warm_makes_one_request(self):
         SEEN.clear()
