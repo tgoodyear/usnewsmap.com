@@ -6,13 +6,14 @@ The scripts are in `scripts/boinc/onprem/`, and the step runner is `scripts/boin
 
 ## What runs on the host
 
-| Unit                               | What                                                                                  | Notes                                                                                                                     |
-| ---------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `usnm-boinc-mysql.service`         | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh`       | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                       |
-| `usnm-boinc-server.service`        | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons        | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                                             |
-| `usnm-boinc-step`                  | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job         | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh`                           |
-| `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job | Root on the host only; `scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
-| `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`        | Public ingress with no inbound port                                                                                       |
+| Unit                               | What                                                                                    | Notes                                                                                                                     |
+| ---------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `usnm-boinc-mysql.service`         | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh`         | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                       |
+| `usnm-boinc-server.service`        | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons          | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                                             |
+| `usnm-boinc-step`                  | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job           | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh`                           |
+| `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job   | Root on the host only; `scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
+| `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release` and `collect`, in place of the Azure hand-off job | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
+| `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`          | Public ingress with no inbound port                                                                                       |
 
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.
@@ -81,8 +82,39 @@ than the images. After each pull, before the server starts:
 6. After it is verified, set `"server": "onprem"` in `contrib-compute/infra/boinc/env/<env>.json` and run `scripts/boinc/provision-boinc.sh`. It deletes the project storage accounts, their private endpoints and the rest of the Azure server (see below).
 
 The bridge steps read and write the hand-off container in the main environment's storage, so
-the on-prem group needs a role there before step 5. The hand-off job itself has no project tree
-and stays in Azure.
+the on-prem group needs a role there before step 5.
+
+## Hand-off steps on-prem
+
+`claim`, `release` and `collect` can run on the host instead of the Azure hand-off job (#967
+phase 3). `usnm-boinc-step --target handoff --step claim|release|collect` runs the bridge
+image's `handoff-job.sh`, the Azure job's own command, from `SERVER_IMAGE`, the image the other
+bridge steps use. It runs as the host's own Arc machine identity, which ADR-0008's Cosmos
+amendment gives the hand-off job's grants. The container mounts only the Arc agent's challenge
+directory, with no project tree, database or Key Vault. It takes `HANDOFF_STEP` and only that
+step's inputs, over ssh or as root.
+
+`/etc/usnm-boinc/handoff.env` holds the Azure job's settings, without its Container Apps
+`AZURE_CLIENT_ID`, plus the Arc endpoints, and nothing else (`usnm-boinc-step` refuses any
+other name):
+
+```sh
+HANDOFF_URL=https://<exchange account>.blob.core.windows.net/boinc-handoff
+COSMOS_ENDPOINT=https://<cosmos account>.documents.azure.com:443/
+CURATED_URL=https://<lake account>.blob.core.windows.net/curated
+REFERENCE_URL=https://<lake account>.blob.core.windows.net/reference
+OUT_URL=https://<exchange account>.blob.core.windows.net/ocr-out
+QUEUE_URL=https://<exchange account>.queue.core.windows.net
+IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+IMDS_ENDPOINT=http://localhost:40342
+```
+
+The values are the job's environment: `az containerapp job show --name usnm-boinc-handoff-caj-<env>
+--resource-group rg-usnm-<env> --query "properties.template.containers[0].env"`. The
+controller then sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
+([boinc-batch-scheduler.md](boinc-batch-scheduler.md#on-prem-claim-and-collect-967)). `export`
+and `texts-export` still run as the Azure job. Once claim and collect have run cleanly here
+for a day, a separate Bicep change retires the job's claim and collect use.
 
 ## Azure after the cutover
 

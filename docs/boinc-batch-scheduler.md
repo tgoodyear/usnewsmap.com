@@ -94,6 +94,17 @@ variable: the bridge image for the first two (usnm-boinc-prod), the hand-off ima
 third (usnm-prod's `USNM_BOINC_HANDOFF_IMAGE`). Add a flag to the service's `ExecStart` only
 once that image is live, with the timer stopped.
 
+### On-prem claim and collect (#967)
+
+By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff claim` and
+`--onprem-handoff collect` (one or both) send them through `step_command` instead, to
+`usnm-boinc-step --target handoff` on the on-prem BOINC host
+([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). `claim` takes its `release`
+with it. `export` and `texts-export` stay in Azure. Like the batch flags, these are runtime
+flags, not configuration, so turning them on or off changes no hash. They need a plan with
+`step_command`, and the host needs `/etc/usnm-boinc/handoff.env`. A dry run prints the
+choice as `onprem_handoff`.
+
 ### Production priority canary
 
 On 19 October 2026, cached English page

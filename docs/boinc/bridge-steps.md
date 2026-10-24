@@ -15,7 +15,9 @@ scripts/boinc/onprem-step.sh --env prod --target bridge --step <step> [--var NAM
 
 `--wait-mins` is required. `scripts/boinc/start-boinc-bridge.sh` starts only the Azure bridge job
 (`contrib-compute/infra/boinc/modules/bridge-job.bicep`) of a `"server": "azure"`
-environment and the hand-off job (`--target handoff`), which stays in Azure:
+environment and the hand-off job (`--target handoff`). The hand-off job's `claim`, `release`
+and `collect` can also run on the on-prem host as `onprem-step.sh --target handoff`
+([boinc-onprem.md](../boinc-onprem.md#hand-off-steps-on-prem)); its other steps stay in Azure:
 
 ```sh
 scripts/boinc/start-boinc-bridge.sh --env <env> --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]

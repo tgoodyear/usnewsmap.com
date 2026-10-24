@@ -14,7 +14,17 @@
 # One step at a time, as the Azure job's start guard allows: a second caller fails while a step
 # holds the lock. --wait-mins N (required) stops the step after N minutes and fails, so the
 # lock is held for exactly the step's run. --what-if prints the settings and runs nothing.
-# --target is bridge or publish; the hand-off job has no project tree and stays in Azure.
+# --target is bridge, publish or handoff.
+#
+# --target handoff --step claim|release|collect runs the hand-off job's command (#967 phase 3),
+# contrib-compute/images/bridge/handoff-job.sh from the same bridge image, in place of the
+# Azure hand-off job (infra/modules/boinc-handoff-job.bicep). Its settings are the job's own,
+# in $CONF/handoff.env: HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL
+# QUEUE_URL, plus the Arc identity endpoints IDENTITY_ENDPOINT and IMDS_ENDPOINT (the host's
+# own Arc machine identity holds the job's grants, boinc-handoff-runner.bicep). It gets
+# HANDOFF_STEP and only the step's own inputs, mounts only the Arc agent's challenge
+# directory: no project tree, no database, no Key Vault. The other hand-off steps (export,
+# texts-export) still run in Azure.
 #
 # --target publish --step publish --image <appver image or sha256:<id>> publishes an app version (#961), as the
 # Azure publish job did: the image's own publish-appver.sh runs with the host's settings and
@@ -36,9 +46,19 @@ SSH_SURYA_SUBMIT_VARS=" SURYA_CAMPAIGN SURYA_MAX "
 # The controller's gold onboarding (#901): issue gold units to untrusted hosts, then admit the
 # ones that pass. Never a threshold, a challenge hash, a target host or a spool.
 SSH_GOLD_ONBOARD_VARS=" GOLD_CAMPAIGN GOLD_LANGUAGE GOLD_PROFILE GOLD_ENGINE_IMAGE GOLD_ENGINE_BASE GOLD_ENGINE_VERSION GOLD_MAX_HOSTS "
+# The hand-off steps take the inputs the controller gives them (batch_scheduler.py's claim,
+# release and collect), over ssh or not.
+HANDOFF_CLAIM_VARS=" HANDOFF_MANIFEST CLAIM_NONCE CLAIM_MAX CLAIM_QUEUES CLAIM_LEASE_HOURS CLAIM_LANGUAGES "
+HANDOFF_RELEASE_VARS=" HANDOFF_DOCS "
+HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID "
+# handoff.env must set these, as the Azure job sets them (its AZURE_CLIENT_ID is Container
+# Apps' identity; the Arc identity needs none).
+HANDOFF_HOST_VARS=" HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL QUEUE_URL IDENTITY_ENDPOINT IMDS_ENDPOINT "
 CONTROL_VARS='^(BASH.*|ENV|SHELLOPTS|BASHOPTS|PS[0-9]|PROMPT_COMMAND|IFS|PATH|CDPATH|GLOBIGNORE|HOME|TMPDIR|LD_.*|PYTHON.*|PERL.*|RUBY.*|NODE_.*|LANG|LC_.*|TZ|HOSTALIASES|SSL_.*|CURL_.*|HTTPS?_PROXY|NO_PROXY|ALL_PROXY|IDENTITY_.*|IMDS_.*|AZURE_.*|MYSQL.*|RCLONE_.*)$'
 
 CONF=${USNM_BOINC_CONF:-/etc/usnm-boinc}
+# Where the step lock and the step's env file go (a scratch directory in the tests).
+RUN_DIR=${USNM_BOINC_STEP_RUN:-/run}
 ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge FROM_SSH=false NARGS=$# APPVER_IMAGE=""
 VARS=()
 while [ $# -gt 0 ]; do
@@ -79,21 +99,41 @@ case $TARGET in
     # A local image ID (sha256:<64 hex>, what boinc-app-release.sh builds and passes), or a reference.
     [[ $APPVER_IMAGE =~ ^sha256:[0-9a-f]{64}$ || $APPVER_IMAGE =~ ^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9/_.-]+(:[A-Za-z0-9_.-]+)?(@sha256:[0-9a-f]{64})?$ ]] ||
       die "--target publish needs --image <appver image>" ;;
-  *) die "--target $TARGET does not run on-prem; only bridge and publish steps do" ;;
+  handoff)
+    [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
+    case $STEP in claim | release | collect) ;; *) die "--target handoff runs claim, release or collect on-prem; $STEP stays in Azure" ;; esac ;;
+  *) die "--target $TARGET does not run on-prem; only bridge, publish and handoff steps do" ;;
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
 
 # The host's own settings, which no --var may replace.
 [ -r "$CONF/server.env" ] && [ -r "$CONF/bridge.env" ] || die "no $CONF/server.env or $CONF/bridge.env"
+SETTINGS=$CONF/bridge.env
+if [ "$TARGET" = handoff ]; then
+  SETTINGS=$CONF/handoff.env
+  [ -r "$SETTINGS" ] || die "no $SETTINGS: the hand-off job's settings, for --target handoff"
+fi
 IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/server.env")
 [ -n "$IMAGE" ] || die "$CONF/server.env names no SERVER_IMAGE"
 BASE=()
-while IFS= read -r line; do
+LINES=()
+# The last line counts even without a newline after it.
+while IFS= read -r line || [ -n "$line" ]; do
   case $line in '' | '#'*) continue ;; esac
-  [[ $line =~ ^([A-Z][A-Z0-9_]{0,63})=(.*)$ ]] || die "bad line in $CONF/bridge.env"
+  [[ $line =~ ^([A-Z][A-Z0-9_]{0,63})=(.*)$ ]] || die "bad line in $SETTINGS"
   BASE+=("${BASH_REMATCH[1]}")
-done < "$CONF/bridge.env"
-seen=" ${BASE[*]} BRIDGE_STEP "
+  LINES+=("$line")
+  if [ "$TARGET" = handoff ]; then
+    [[ $HANDOFF_HOST_VARS == *" ${BASH_REMATCH[1]} "* ]] || die "$SETTINGS sets ${BASH_REMATCH[1]}; it takes only$HANDOFF_HOST_VARS"
+    [ -n "${BASH_REMATCH[2]}" ] || die "$SETTINGS has an empty ${BASH_REMATCH[1]}"
+  fi
+done < "$SETTINGS"
+if [ "$TARGET" = handoff ]; then
+  for v in $HANDOFF_HOST_VARS; do
+    [[ " ${BASE[*]} " == *" $v "* ]] || die "$SETTINGS doesn't set $v"
+  done
+fi
+seen=" ${BASE[*]} BRIDGE_STEP HANDOFF_STEP "
 REUSE=1
 case $STEP in
   surya-stage-crops) SSH_ALLOWED=$SSH_SURYA_CROPS_VARS ;;
@@ -101,6 +141,13 @@ case $STEP in
   gold-onboard | gold-promote) SSH_ALLOWED=$SSH_GOLD_ONBOARD_VARS ;;
   *) SSH_ALLOWED=$SSH_VARS ;;
 esac
+if [ "$TARGET" = handoff ]; then
+  case $STEP in
+    claim) SSH_ALLOWED=$HANDOFF_CLAIM_VARS ;;
+    release) SSH_ALLOWED=$HANDOFF_RELEASE_VARS ;;
+    collect) SSH_ALLOWED=$HANDOFF_COLLECT_VARS ;;
+  esac
+fi
 for v in ${VARS[@]+"${VARS[@]}"}; do
   name=${v%%=*}
   [[ $v == *=* ]] && [[ $name =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || die "--var is NAME=VALUE with an upper-case NAME: $v"
@@ -109,6 +156,8 @@ for v in ${VARS[@]+"${VARS[@]}"}; do
   [[ ! $name =~ $CONTROL_VARS ]] || die "--var $name would steer the shell or an interpreter; not allowed"
   [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || [[ $SSH_ALLOWED == *" $name "* ]] ||
     die "--var $name is not a controller bridge-step input; over ssh $STEP takes only$SSH_ALLOWED"
+  [ "$TARGET" != handoff ] || [[ $SSH_ALLOWED == *" $name "* ]] ||
+    die "--var $name is not a hand-off $STEP input; it takes only$SSH_ALLOWED"
   if [ "$TARGET" = publish ]; then
     [[ $v =~ ^APPVER_REUSE_PROJECT=[01]$ ]] || die "--target publish takes only --var APPVER_REUSE_PROJECT=0 or 1"
     REUSE=${v#*=}
@@ -121,6 +170,10 @@ if $WHAT_IF; then
   if [ "$TARGET" = publish ]; then
     echo "would run $APPVER_IMAGE's publish-appver.sh as $name with $CONF/bridge.env and:"
     echo "  APPVER_REUSE_PROJECT=$REUSE"
+  elif [ "$TARGET" = handoff ]; then
+    echo "would run $IMAGE's handoff-job.sh as $name with $SETTINGS and:"
+    echo "  HANDOFF_STEP=$STEP"
+    for v in ${VARS[@]+"${VARS[@]}"}; do echo "  $v"; done
   else
     echo "would run $IMAGE as $name with $CONF/bridge.env and:"
     echo "  BRIDGE_STEP=$STEP"
@@ -130,24 +183,32 @@ if $WHAT_IF; then
 fi
 
 [ -n "$WAIT_MINS" ] || die "--wait-mins is required on-prem"
-exec 9> /run/usnm-boinc-step.lock
+exec 9> "$RUN_DIR/usnm-boinc-step.lock"
 flock -n 9 || die "another bridge step is running on this host - wait for it to end first"
-envfile=$(mktemp /run/usnm-boinc-step.XXXXXX)
+envfile=$(mktemp "$RUN_DIR/usnm-boinc-step.XXXXXX")
 trap 'rm -f "$envfile"' EXIT
+# The settings as parsed above, one per line, so a file without a final newline can't run its
+# last setting into the step's own.
 if [ "$TARGET" = publish ]; then
-  { cat "$CONF/bridge.env"; echo "APPVER_REUSE_PROJECT=$REUSE"; } > "$envfile"
+  { printf '%s\n' ${LINES[@]+"${LINES[@]}"}; echo "APPVER_REUSE_PROJECT=$REUSE"; } > "$envfile"
+elif [ "$TARGET" = handoff ]; then
+  { printf '%s\n' ${LINES[@]+"${LINES[@]}"}; echo "HANDOFF_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
 else
-  { cat "$CONF/bridge.env"; echo "BRIDGE_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
+  { printf '%s\n' ${LINES[@]+"${LINES[@]}"}; echo "BRIDGE_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
 fi
 
-run=(podman run --rm --name "$name" --network host --add-host usnm-boinc-mysql:127.0.0.1
+run=(podman run --rm --name "$name" --network host
   --log-driver journald --log-opt tag=usnm-boinc-step --env-file "$envfile"
-  -v /srv/usnm-boinc/project:/project
-  -v /srv/usnm-boinc/mysql-tls/ca.pem:/usr/local/share/usnm/mysql-ca.pem:ro
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro)
+# The hand-off steps touch Azure storage, Cosmos and the queues only: no project tree or database.
+[ "$TARGET" = handoff ] || run+=(--add-host usnm-boinc-mysql:127.0.0.1
+  -v /srv/usnm-boinc/project:/project
+  -v /srv/usnm-boinc/mysql-tls/ca.pem:/usr/local/share/usnm/mysql-ca.pem:ro)
 echo "running $STEP as $name for up to $WAIT_MINS minutes" >&2
 rc=0
-if [ "$TARGET" = publish ]; then
+if [ "$TARGET" = handoff ]; then
+  "${run[@]}" --timeout $((WAIT_MINS * 60)) --entrypoint /usr/local/lib/usnm-boinc/handoff-job.sh "$IMAGE" || rc=$?
+elif [ "$TARGET" = publish ]; then
   "${run[@]}" --timeout $((WAIT_MINS * 60)) --entrypoint /usr/local/lib/usnm-boinc/publish-appver.sh "$APPVER_IMAGE" || rc=$?
 else
   "${run[@]}" --timeout $((WAIT_MINS * 60)) "$IMAGE" || rc=$?
