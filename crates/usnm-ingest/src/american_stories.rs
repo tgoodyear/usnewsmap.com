@@ -99,13 +99,9 @@ impl Source {
             .sum()
     }
 
-    /// The texts of one batch's pages: the rows of the batch's titles on the
-    /// days `counts` (the batch's `counts.json`) has pages for. Up to
-    /// [`LOAD_PARTS`] parts are read and decoded at once, each on a blocking
-    /// thread, and merged in path order, so the result is the same as
-    /// reading them one by one.
-    pub async fn load(&self, store: &dyn ObjectStore, counts: &Counts) -> anyhow::Result<Batch> {
-        // The parts in the order a serial read takes them.
+    /// The parts [`Source::load`] reads for a batch's `counts`, in the order
+    /// a serial read takes them.
+    pub fn wanted(&self, counts: &Counts) -> Vec<String> {
         let mut wanted: Vec<String> = Vec::new();
         for (lccn, days) in counts {
             let Some(by_year) = self.parts.get(lccn) else {
@@ -120,6 +116,16 @@ impl Source {
                 wanted.push(path.clone());
             }
         }
+        wanted
+    }
+
+    /// The texts of one batch's pages: the rows of the batch's titles on the
+    /// days `counts` (the batch's `counts.json`) has pages for. Up to
+    /// [`LOAD_PARTS`] parts are read and decoded at once, each on a blocking
+    /// thread, and merged in path order, so the result is the same as
+    /// reading them one by one.
+    pub async fn load(&self, store: &dyn ObjectStore, counts: &Counts) -> anyhow::Result<Batch> {
+        let wanted = self.wanted(counts);
         let counts = Arc::new(counts.clone());
         let mut parts = stream::iter(wanted)
             .map(|path| {

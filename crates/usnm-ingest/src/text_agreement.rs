@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use arrow_array::builder::{
     Date32Builder, Float64Builder, Int16Builder, Int32Builder, StringBuilder,
 };
@@ -449,8 +449,8 @@ pub fn encode_table(rows: &[PageRow]) -> anyhow::Result<Vec<u8>> {
     Ok(w.into_inner()?)
 }
 
-/// Bins of a histogram: [`BINS`] of equal width over `[0, BINS × width)`,
-/// with the last also taking everything above.
+/// Bins of a histogram: [`BINS`] of equal width over `[0, BINS × width]`
+/// (the top edge in the last bin), and an overflow count above it.
 pub const BINS: usize = 100;
 
 /// A fixed-bin histogram, summed across batches.
@@ -458,6 +458,8 @@ pub const BINS: usize = 100;
 pub struct Hist {
     pub width: f64,
     pub counts: Vec<u64>,
+    /// Values above `BINS × width`.
+    pub overflow: u64,
 }
 
 impl Hist {
@@ -465,6 +467,7 @@ impl Hist {
         Self {
             width,
             counts: vec![0; BINS],
+            overflow: 0,
         }
     }
 
@@ -472,7 +475,12 @@ impl Hist {
         let Some(x) = x.filter(|x| x.is_finite()) else {
             return;
         };
-        let bin = ((x.max(0.0) / self.width) as usize).min(BINS - 1);
+        let x = x.max(0.0);
+        if x > BINS as f64 * self.width {
+            self.overflow += 1;
+            return;
+        }
+        let bin = ((x / self.width) as usize).min(BINS - 1);
         self.counts[bin] += 1;
     }
 
@@ -480,13 +488,15 @@ impl Hist {
         for (a, b) in self.counts.iter_mut().zip(&o.counts) {
             *a += b;
         }
+        self.overflow += o.overflow;
     }
 
     pub fn total(&self) -> u64 {
-        self.counts.iter().sum()
+        self.counts.iter().sum::<u64>() + self.overflow
     }
 
-    /// The upper edge of the bin holding the `q` quantile.
+    /// The upper edge of the bin holding the `q` quantile; none for an
+    /// empty histogram or when the quantile is in the overflow.
     pub fn quantile(&self, q: f64) -> Option<f64> {
         let n = self.total();
         if n == 0 {
@@ -525,7 +535,8 @@ pub struct Hists {
 impl Default for Hists {
     fn default() -> Self {
         Self {
-            cer_sym: Hist::new(0.01),
+            // cer_sym is at most 2 (edits over the mean length).
+            cer_sym: Hist::new(0.02),
             dice: Hist::new(0.01),
             cover_loc: Hist::new(0.01),
             cover_as: Hist::new(0.01),
@@ -630,7 +641,7 @@ pub fn summarize(
             let decade = usnm_core::decade::of_year(r.date.year());
             out.cer_sym_by_decade
                 .entry(decade)
-                .or_insert_with(|| Hist::new(0.01))
+                .or_insert_with(|| Hist::new(0.02))
                 .add(Some(g.pair.cer_sym));
             out.local_cer_sym_by_decade
                 .entry(decade)
@@ -696,6 +707,39 @@ async fn score_batch(
         rows.extend(scored);
     }
     Ok((rows, parts))
+}
+
+/// A batch already scored is kept only if it was scored with this metric
+/// version from the American Stories parts the batch would read now; else
+/// the run stops and says which files to delete.
+async fn check_kept(
+    curated: &dyn ObjectStore,
+    source: &american_stories::Source,
+    b: &RunBatch,
+    cut: Option<u64>,
+    body: &[u8],
+) -> anyhow::Result<()> {
+    let (name, v) = (b.batch.as_str(), b.curated.version);
+    let path = summary_path(cut, name, v);
+    let kept: BatchSummary =
+        serde_json::from_slice(body).with_context(|| format!("reading {path}"))?;
+    let mut now = source.wanted(&dedup::load_counts(curated, b).await?);
+    now.sort();
+    let mut then: Vec<String> = kept.as_parts.into_iter().map(|p| p.path).collect();
+    then.sort();
+    if kept.metric_version != agreement::VERSION || now != then {
+        bail!(
+            "{path} was written with metric version {} from {} American Stories parts; \
+             this run has version {} and {} parts for the batch. Delete it and {} to \
+             score the batch again",
+            kept.metric_version,
+            then.len(),
+            agreement::VERSION,
+            now.len(),
+            table_path(cut, name, v)
+        );
+    }
+    Ok(())
 }
 
 /// What a pass did.
@@ -820,6 +864,13 @@ pub async fn run(
     let batches = version_batches(reference, &opts.index_version, &opts.batches).await?;
     let titles = Arc::new(title_languages(reference, &opts.index_version).await?);
     let source = Arc::new(american_stories::Source::list(curated.as_ref()).await?);
+    if source.parts() == 0 {
+        bail!(
+            "the curated store has no finished American Stories parts ({}/): \
+             nothing to compare, and empty tables would be kept as done",
+            american_stories::PAGES
+        );
+    }
     let started = Instant::now();
     let total = batches.len();
     tracing::info!(
@@ -846,7 +897,8 @@ pub async fn run(
             let last_progress = Arc::clone(&last_progress);
             async move {
                 let (name, v) = (b.batch.as_str(), b.curated.version);
-                if out.exists(&summary_path(cut, name, v)).await? {
+                if let Some(body) = out.get(&summary_path(cut, name, v)).await? {
+                    check_kept(curated.as_ref(), &source, b, cut, &body).await?;
                     report.lock().await.skipped += 1;
                     return Ok::<(), anyhow::Error>(());
                 }
@@ -1091,8 +1143,15 @@ mod tests {
         h.add(None);
         assert_eq!(h.total(), 5);
         assert_eq!(h.counts[0], 2);
-        assert_eq!(h.counts[BINS - 1], 1);
+        assert_eq!(h.overflow, 1);
         assert_eq!(h.quantile(0.5), Some(0.03));
+        // The top edge is in range; a quantile in the overflow is none.
+        h.add(Some(1.0));
+        assert_eq!(h.counts[BINS - 1], 1);
+        assert_eq!(h.quantile(0.99), None);
+        let mut only = Hist::new(0.02);
+        only.add(Some(1.333333));
+        assert_eq!(only.quantile(0.5), Some(1.34));
         assert_eq!(Hist::new(0.01).quantile(0.5), None);
     }
 
@@ -1108,7 +1167,117 @@ mod tests {
         let v = sum_summaries("pages-v1", None, &[s.clone(), s]);
         assert_eq!((v.pages, v.loc_ok, v.batches), (4, 2, 2));
         assert_eq!(v.hists.cer_sym.total(), 2);
-        assert_eq!(v.quantiles["cer_sym"][2], Some(0.01));
+        assert_eq!(v.quantiles["cer_sym"][2], Some(0.02));
+    }
+
+    #[tokio::test]
+    async fn refuses_an_empty_source_and_batches_scored_from_other_parts() {
+        use usnm_state::state::Curated;
+        use usnm_store::LocalStore;
+        let (c, r, o) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let curated: Arc<dyn ObjectStore> = Arc::new(LocalStore::new(c.path()));
+        let reference = LocalStore::new(r.path());
+        let out: Arc<dyn ObjectStore> = Arc::new(LocalStore::new(o.path()));
+        let page = row(Some(LOC), TextStatus::Ok);
+        let (doc_id, date) = (page.key.doc_id(), page.key.date);
+        let mut w = usnm_overlay::curated::PartWriter::new();
+        assert!(w.push(page).unwrap().is_none());
+        let part = w.finish_part().unwrap().unwrap();
+        let put = |store: Arc<dyn ObjectStore>, path: &'static str, body: Vec<u8>| async move {
+            store
+                .put(path, body, "application/octet-stream")
+                .await
+                .unwrap();
+        };
+        put(
+            Arc::clone(&curated),
+            "pages/dlc_abc/ver01/part-0.parquet",
+            part,
+        )
+        .await;
+        let day = usnm_core::time::day_number(date);
+        put(
+            Arc::clone(&curated),
+            "pages/dlc_abc/ver01/counts.json",
+            serde_json::to_vec(&serde_json::json!({"sn83045462": {day.to_string(): 1}})).unwrap(),
+        )
+        .await;
+        let batches = vec![RunBatch {
+            batch: "dlc_abc".into(),
+            curated: Curated {
+                version: 1,
+                parts: vec!["pages/dlc_abc/ver01/part-0.parquet".into()],
+                counts: "pages/dlc_abc/ver01/counts.json".into(),
+                pages: 1,
+                ok_pages: 1,
+                lccns: vec!["sn83045462".into()],
+                source_sha256: String::new(),
+                first: String::new(),
+                last: String::new(),
+            },
+        }];
+        reference
+            .put(
+                "pages-v1/batches.json",
+                serde_json::to_vec(&batches).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        reference
+            .put(
+                "pages-v1/titles.json",
+                br#"[{"lccn":"sn83045462","languages":["eng"]}]"#.to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let opts = Options {
+            index_version: "pages-v1".into(),
+            parallel: 1,
+            ..Options::default()
+        };
+        let go = || run(Arc::clone(&curated), &reference, Arc::clone(&out), &opts);
+        // No American Stories text yet: refused, nothing kept.
+        let e = go().await.unwrap_err().to_string();
+        assert!(e.contains("no finished American Stories parts"), "{e}");
+        let as_part = |text: &'static str| {
+            american_stories::encode_part(&[(doc_id.as_str(), "sn83045462", date, text)]).unwrap()
+        };
+        put(
+            Arc::clone(&curated),
+            "american-stories/pages/sn83045462/1890-000.parquet",
+            as_part(AS),
+        )
+        .await;
+        put(
+            Arc::clone(&curated),
+            "american-stories/years/1890.json",
+            b"{}".to_vec(),
+        )
+        .await;
+        let first = go().await.unwrap();
+        assert_eq!((first.scored, first.pages, first.skipped), (1, 1, 0));
+        assert!(first.version_list_written);
+        let again = go().await.unwrap();
+        assert_eq!((again.scored, again.skipped), (0, 1));
+        // A new American Stories part for the batch's title-year: the kept
+        // table no longer matches its inputs.
+        put(
+            Arc::clone(&curated),
+            "american-stories/pages/sn83045462/1890-001.parquet",
+            as_part("another copy"),
+        )
+        .await;
+        let e = go().await.unwrap_err().to_string();
+        assert!(
+            e.contains("from 1 American Stories parts") && e.contains("2 parts"),
+            "{e}"
+        );
     }
 
     #[test]
