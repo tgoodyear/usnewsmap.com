@@ -193,7 +193,12 @@ impl Fetcher {
             if let Some(p) = prev {
                 let since = p.elapsed();
                 if since < self.gap {
-                    tokio::time::sleep(self.gap - since).await;
+                    let mut stop = stop.clone();
+                    tokio::select! {
+                        () = tokio::time::sleep(self.gap - since) => {}
+                        _ = stop.wait_for(|s| *s) => return Err(Fail::Stopped),
+                        () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
+                    }
                 }
             }
             if *stop.borrow() || Instant::now() >= deadline {
