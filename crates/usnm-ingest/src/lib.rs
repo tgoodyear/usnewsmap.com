@@ -30,6 +30,7 @@ pub mod release;
 pub mod sink;
 pub mod source;
 pub mod telemetry;
+pub mod text_agreement;
 pub mod titles;
 pub mod titles_archive;
 pub mod worker;

@@ -55,6 +55,7 @@ enum Command {
     MirrorStore(onprem::MirrorStoreArgs),
     PublishStaged(onprem::PublishStagedArgs),
     OcrDamage(ocr::OcrDamageArgs),
+    OcrAgreement(ocr::OcrAgreementArgs),
     OcrPrefetchManifest(ocr::OcrPrefetchManifestArgs),
     OcrSync(ocr::OcrSyncArgs),
     OcrSeed(ocr::OcrSeedArgs),
@@ -124,6 +125,7 @@ impl Command {
             Command::MirrorStore { .. } => "mirror-store",
             Command::ImportStagedRun { .. } => "import-staged-run",
             Command::OcrDamage { .. } => "ocr-damage",
+            Command::OcrAgreement { .. } => "ocr-agreement",
             Command::OcrPrefetchManifest { .. } => "ocr-prefetch-manifest",
             Command::OcrSync { .. } => "ocr-sync",
             Command::OcrSeed { .. } => "ocr-seed",
@@ -157,6 +159,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::MirrorStore { .. }
         | Command::ImportStagedRun { .. }
         | Command::OcrDamage { .. }
+        | Command::OcrAgreement { .. }
         | Command::OcrPrefetchManifest { .. }
         | Command::OcrSync { .. }
         | Command::OcrSeed { .. }
@@ -234,6 +237,7 @@ async fn command(
         Command::MirrorStore(args) => onprem::mirror_store_command(args).await,
         Command::ArchiveCopy(args) => batches::archive_copy_command(args).await,
         Command::OcrDamage(args) => ocr::ocr_damage_command(cli, start, args).await,
+        Command::OcrAgreement(args) => ocr::ocr_agreement_command(cli, start, args).await,
         Command::OcrPrefetchManifest(args) => ocr::ocr_prefetch_manifest_command(cli, args).await,
         Command::OcrSync(args) => ocr::ocr_sync_command(cli, state, start, args).await,
         Command::OcrSeed(args) => ocr::ocr_seed_command(cli, state, start, args).await,

@@ -1,5 +1,6 @@
 //! The `ocr-*` commands that exchange work with the OCR nodes (12 §12.5): `ocr-damage`,
-//! `ocr-prefetch-manifest`, `ocr-sync`, `ocr-seed`, `ocr-enqueue` and `ocr-requeue`. The OCR
+//! `ocr-prefetch-manifest`, `ocr-sync`, `ocr-seed`, `ocr-enqueue` and `ocr-requeue`; and
+//! `ocr-agreement` (#962), LoC's text against American Stories' with no OCR at all. The OCR
 //! pipeline itself is `usnm_ingest::ocr_local` (the `usnm-ocr-local` crate).
 use anyhow::Context;
 use clap::Args;
@@ -154,6 +155,38 @@ pub(crate) struct OcrDamageArgs {
     parity: Option<String>,
     /// Seconds after the start to stop starting batches; the next run
     /// continues. Keep it under the job's replica timeout.
+    #[arg(long)]
+    max_runtime_secs: Option<u64>,
+    /// Batches scored at once (default: the CPUs).
+    #[arg(long)]
+    parallel: Option<usize>,
+}
+
+/// LoC's text against American Stories' text for every page of an index
+/// version that has both (#962): the pair the `usnm_quality` hat solves
+/// on, word-bag cover, the length ratio, and each reader's damage and
+/// known-word rate. Reads `--curated` and `--reference`, writes tables
+/// under `text-agreement/v<VERSION>/` in `--out` (never in `curated`), one
+/// per batch version, skipping those already written. No image and no LoC
+/// request. Logs counts and doc_ids, never text.
+#[derive(Args)]
+pub(crate) struct OcrAgreementArgs {
+    /// The index version whose batches to score (`{version}/batches.json`).
+    #[arg(long = "version", value_name = "INDEX_VERSION")]
+    index_version: String,
+    /// Where the tables go: a directory or a Blob container URL.
+    #[arg(long, env = "USNM_AGREEMENT_OUT")]
+    out: String,
+    /// Only these batches (`name` or `name_verNN`). The version's list and
+    /// summary are written only by a run over every batch.
+    #[arg(long, value_delimiter = ',')]
+    batches: Vec<String>,
+    /// Score only the pages the damage audit's sampler picks at this
+    /// percentage, into a `sample-<cut>/` directory of their own.
+    #[arg(long)]
+    sample_pct: Option<f64>,
+    /// Seconds after the start to stop starting batches; the next run
+    /// continues.
     #[arg(long)]
     max_runtime_secs: Option<u64>,
     /// Batches scored at once (default: the CPUs).
@@ -342,6 +375,32 @@ pub(crate) async fn ocr_damage_command(
     usnm_ingest::ocr_local::ocr_damage::run(curated, reference.as_ref(), &opts)
         .await
         .map(|()| None)
+}
+
+pub(crate) async fn ocr_agreement_command(
+    cli: &Cli,
+    start: tokio::time::Instant,
+    args: &OcrAgreementArgs,
+) -> anyhow::Result<Option<Published>> {
+    let sample_cut = args
+        .sample_pct
+        .map(usnm_ingest::ocr_local::ocr_damage::sample_cut)
+        .transpose()?;
+    let opts = usnm_ingest::text_agreement::Options {
+        index_version: args.index_version.clone(),
+        batches: args.batches.clone(),
+        sample_cut,
+        deadline: deadline(start, args.max_runtime_secs),
+        parallel: args.parallel.unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        }),
+    };
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let reference = usnm_store::open(&cli.stores.reference)?;
+    let out = usnm_store::open(&args.out)?;
+    usnm_ingest::text_agreement::run(curated, reference.as_ref(), out, &opts)
+        .await
+        .map(|_| None)
 }
 
 pub(crate) async fn ocr_prefetch_manifest_command(
@@ -590,6 +649,49 @@ mod tests {
         assert_eq!(index_version.as_deref(), Some("v1"));
         assert_eq!(batches, ["a", "b_ver02"]);
         assert_eq!(max_runtime_secs, Some(60));
+    }
+
+    #[test]
+    fn ocr_agreement_arguments() {
+        let parse = |args: &[&str]| {
+            let mut all = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "ocr-agreement",
+            ];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all)
+        };
+        assert!(parse(&["--out", "o"]).is_err(), "needs --version");
+        assert!(parse(&["--version", "v1"]).is_err(), "needs --out");
+        let cli = parse(&[
+            "--version",
+            "v1",
+            "--out",
+            "o",
+            "--sample-pct",
+            "1",
+            "--parallel",
+            "5",
+        ])
+        .unwrap();
+        let Command::OcrAgreement(OcrAgreementArgs {
+            index_version,
+            out,
+            sample_pct,
+            parallel,
+            ..
+        }) = cli.command
+        else {
+            panic!("not ocr-agreement");
+        };
+        assert_eq!(index_version, "v1");
+        assert_eq!(out, "o");
+        assert_eq!(sample_pct, Some(1.0));
+        assert_eq!(parallel, Some(5));
     }
 
     #[test]
