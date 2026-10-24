@@ -51,15 +51,43 @@ fn local_etag(m: &std::fs::Metadata) -> String {
 /// Bytes per chunk of a streamed read (`get_stream`).
 const READ_CHUNK: usize = 1024 * 1024;
 
-/// A temp file beside `full`, unique per process, thread and call.
+/// A random token for this process. The pid alone doesn't tell processes
+/// apart: two containers that share a directory both run as PID 1.
+fn process_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(crate::queue::random_token)
+}
+
+/// A temp file's name: the pid, a per-process token and a per-process
+/// sequence number. Starts with a dot, so `list` skips it.
+fn temp_name(token: &str, seq: u64) -> String {
+    format!(".tmp-{}-{token}-{seq}", std::process::id())
+}
+
+/// A temp file beside `full`, unique per process and call.
 fn temp_path(full: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    full.with_file_name(format!(
-        ".tmp-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
+    full.with_file_name(temp_name(
+        process_token(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
     ))
+}
+
+/// Writes `body` to the new file `tmp`. Creation fails if the name is
+/// taken, so a writer never writes into another's temp file; a failed
+/// write removes the file.
+fn write_temp(tmp: &Path, body: &[u8]) -> Result<(), StoreError> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)
+        .map_err(|e| io(tmp, e))?;
+    f.write_all(body).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        io(tmp, e)
+    })
 }
 
 #[async_trait]
@@ -87,13 +115,12 @@ impl ObjectStore for LocalStore {
             let dir = full.parent().expect("validated paths have a parent");
             std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
             // Readers see the old object or the new one, never a partial write.
-            let tmp = dir.join(format!(
-                ".tmp-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            std::fs::write(&tmp, &body).map_err(|e| io(&tmp, e))?;
-            std::fs::rename(&tmp, &full).map_err(|e| io(&full, e))
+            let tmp = temp_path(&full);
+            write_temp(&tmp, &body)?;
+            std::fs::rename(&tmp, &full).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                io(&full, e)
+            })
         })
         .await
         .map_err(|e| StoreError::Io(e.to_string()))?
@@ -112,12 +139,8 @@ impl ObjectStore for LocalStore {
             std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
             // Write a private temp file, then hard-link it into place: the
             // link fails if the object exists, so creation is atomic.
-            let tmp = dir.join(format!(
-                ".tmp-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            std::fs::write(&tmp, &body).map_err(|e| io(&tmp, e))?;
+            let tmp = temp_path(&full);
+            write_temp(&tmp, &body)?;
             let linked = std::fs::hard_link(&tmp, &full);
             let _ = std::fs::remove_file(&tmp);
             match linked {
@@ -171,10 +194,15 @@ impl ObjectStore for LocalStore {
             .await
             .map_err(|e| io(dir, e))?;
         let tmp = temp_path(&full);
+        // Fails if the name is taken, like `write_temp`: never another
+        // writer's file, so never one to remove below.
+        let mut f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .await
+            .map_err(|e| io(&tmp, e))?;
         let written = async {
-            let mut f = tokio::fs::File::create(&tmp)
-                .await
-                .map_err(|e| io(&tmp, e))?;
             let mut n = 0u64;
             while let Some(c) = chunks.recv().await {
                 f.write_all(&c).await.map_err(|e| io(&tmp, e))?;
@@ -193,6 +221,7 @@ impl ObjectStore for LocalStore {
             }
         }
         .await;
+        drop(f);
         let _ = tokio::fs::remove_file(&tmp).await;
         written
     }
@@ -349,6 +378,38 @@ impl ObjectStore for LocalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two processes with the same pid (each container's PID 1) writing at
+    /// the same sequence number get different temp names from their
+    /// tokens; the old `.tmp-<pid>-<thread id>` names were the same.
+    #[test]
+    fn temp_names_differ_between_processes_with_one_pid() {
+        let (a, b) = (crate::queue::random_token(), crate::queue::random_token());
+        assert_ne!(a, b);
+        assert_ne!(temp_name(&a, 0), temp_name(&b, 0));
+        assert_eq!(process_token(), process_token(), "one token per process");
+        let full = Path::new("out/a.bin");
+        let (one, two) = (temp_path(full), temp_path(full));
+        assert_ne!(one, two, "one name per call");
+        assert_eq!(one.parent(), full.parent(), "beside the object");
+        let name = one.file_name().unwrap().to_str().unwrap();
+        assert!(name.contains(process_token()), "{name}");
+        assert!(validate_path(name).is_err(), "`list` skips {name}");
+    }
+
+    /// A writer that picks a taken temp name fails rather than writing
+    /// into another writer's file.
+    #[test]
+    fn temp_files_are_created_exclusively() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join(temp_name("x", 0));
+        write_temp(&tmp, b"mine").unwrap();
+        assert!(matches!(
+            write_temp(&tmp, b"theirs"),
+            Err(StoreError::Io(_))
+        ));
+        assert_eq!(std::fs::read(&tmp).unwrap(), b"mine");
+    }
 
     #[tokio::test]
     async fn conditional_reads_and_deletes() {

@@ -7,12 +7,15 @@
 //!   `/assets/`) get `index.html`, so client-side routes survive a reload.
 //!   The app's own pages (`/`, `/datasets`, `/privacy`, `/credits`) are 200; any other
 //!   such path gets the same shell with a 404, and the app shows a not-found
-//!   page. Missing files are a plain 404. `/privacy` gets its own title,
-//!   canonical link and `og:url` in the shell, since it is indexed.
+//!   page. Missing files are a plain 404, which no cache may keep
+//!   (`no-store`): it can be a gap in a deploy. `/privacy` gets its own
+//!   title, canonical link and `og:url` in the shell, since it is indexed.
 //! - `/status`, the dataset details page's old path, is redirected (301) to
 //!   `/datasets` with its query, so existing links keep working.
 //! - Hashed assets are cached for a year; `index.html` is revalidated on
-//!   every load so a release shows up at once.
+//!   every load so a release shows up at once. The app's pages carry an
+//!   `ETag` for that, as `ServeDir` gives the home page, so an unchanged page
+//!   costs a `304`.
 //! - Search permalinks (`/?q=…`) and `/datasets` carry `X-Robots-Tag: noindex`,
 //!   so crawlers that don't run the app see it too.
 //! - Requests for `www.` + the site's host are redirected to the host itself.
@@ -22,10 +25,11 @@ use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::handler::HandlerWithoutStateExt;
-use axum::http::{header, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use sha2::{Digest, Sha256};
 use tower_http::services::ServeDir;
 
 /// Headers on every response (the site's and the API's). `connect-src`
@@ -201,34 +205,86 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
     } else {
         StatusCode::NOT_FOUND
     };
-    let html = (header::CONTENT_TYPE, "text/html; charset=utf-8".to_owned());
-    // HEAD: the headers GET would send, without sending the body.
-    if req.method() == Method::HEAD {
-        return match tokio::fs::read(&index).await {
-            Ok(body) => (
-                status,
-                [
-                    html,
-                    (
-                        header::CONTENT_LENGTH,
-                        shell_for(path, body).len().to_string(),
-                    ),
-                ],
-            )
-                .into_response(),
-            Err(e) => {
-                tracing::error!(error = %e, path = %index.display(), "site index missing");
-                (StatusCode::NOT_FOUND, "not found").into_response()
-            }
-        };
-    }
-    match tokio::fs::read(&index).await {
-        Ok(body) => (status, [html], shell_for(path, body)).into_response(),
+    let body = match tokio::fs::read(&index).await {
+        Ok(body) => shell_for(path, body),
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
-            (StatusCode::NOT_FOUND, "not found").into_response()
+            return (StatusCode::NOT_FOUND, "not found").into_response();
         }
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    // A page gets a validator; the not-found shell doesn't, since a 404
+    // ignores preconditions (RFC 9110 §13.2.1).
+    if status == StatusCode::OK {
+        let etag = page_etag(&body);
+        if not_modified(req.headers(), &etag) {
+            // The 304 carries what a cache keeps from it, as the 200 would,
+            // `Vary` included: the compression layer adds `Accept-Encoding`
+            // to the 200 but never sees this empty body. (CORS adds its own.)
+            return (
+                StatusCode::NOT_MODIFIED,
+                [
+                    (header::ETAG, etag),
+                    (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+                    (header::VARY, HeaderValue::from_static("accept-encoding")),
+                ],
+            )
+                .into_response();
+        }
+        headers.insert(header::ETAG, etag);
     }
+    // HEAD: the headers GET would send, without sending the body.
+    if req.method() == Method::HEAD {
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from(body.len()));
+        return (status, headers).into_response();
+    }
+    (status, headers, body).into_response()
+}
+
+/// A page's validator, from the bytes it sends, so every replica serving
+/// one build sends the same one. Weak, because the compression layer sends
+/// those bytes in more than one encoding.
+fn page_etag(body: &[u8]) -> HeaderValue {
+    let digest = Sha256::digest(body);
+    let tag = format!(
+        "W/\"{:016x}\"",
+        u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"))
+    );
+    HeaderValue::from_str(&tag).expect("hex is a valid header value")
+}
+
+/// Whether `If-None-Match` names `etag` (or is `*`), compared weakly as
+/// RFC 9110 §13.1.2 asks: `W/"x"` and `"x"` match.
+fn not_modified(headers: &HeaderMap, etag: &HeaderValue) -> bool {
+    let Ok(ours) = etag.to_str() else {
+        return false;
+    };
+    let ours = ours.strip_prefix("W/").unwrap_or(ours);
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.trim() == "*" || entity_tags(v).any(|t| t == ours))
+}
+
+/// The tags in an `If-None-Match` list, each with its quotes and without
+/// `W/`, up to anything malformed. A tag can hold commas (and `*`), so the
+/// list is read tag by tag, not split.
+fn entity_tags(list: &str) -> impl Iterator<Item = &str> {
+    let mut rest = list;
+    std::iter::from_fn(move || {
+        rest = rest.trim_start_matches(|c: char| c == ',' || c.is_ascii_whitespace());
+        let tag = rest.strip_prefix("W/").unwrap_or(rest);
+        // The closing quote, counting the opening one.
+        let end = tag.strip_prefix('"')?.find('"')? + 2;
+        let (opaque, after) = tag.split_at(end);
+        rest = after;
+        Some(opaque)
+    })
 }
 
 async fn cache_control(req: Request, next: Next) -> Response {
@@ -239,6 +295,13 @@ async fn cache_control(req: Request, next: Next) -> Response {
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
+    // A missing file: a cache that kept it (the edge's, for one) could go on
+    // answering 404 for a file the next deploy brings.
+    if resp.status() == StatusCode::NOT_FOUND && !html {
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return resp;
+    }
     // The 404 app shell names this release's assets, like the 200 one.
     if !resp.status().is_success() && !(html && resp.status() == StatusCode::NOT_FOUND) {
         return resp;
@@ -344,6 +407,37 @@ mod tests {
         assert_eq!(hsts, "max-age=300");
         let lower = hsts.to_ascii_lowercase();
         assert!(!lower.contains("includesubdomains") && !lower.contains("preload"));
+    }
+
+    #[test]
+    fn if_none_match_compares_weakly_and_takes_a_list() {
+        let etag = page_etag(b"<!doctype html>");
+        let tag = etag.to_str().unwrap();
+        assert!(tag.starts_with("W/\"") && tag.len() == 2 + 16 + 2, "{tag}");
+        assert_eq!(page_etag(b"<!doctype html>"), etag);
+        assert_ne!(page_etag(b"<!doctype html> "), etag);
+        let strong = tag.trim_start_matches("W/");
+        let matches = |values: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in values {
+                h.append(header::IF_NONE_MATCH, HeaderValue::from_str(v).unwrap());
+            }
+            not_modified(&h, &etag)
+        };
+        assert!(matches(&[tag]));
+        assert!(matches(&[strong]));
+        assert!(matches(&["*"]));
+        assert!(matches(&[&format!("\"other\", {tag}")]));
+        assert!(matches(&[&format!("\"a,b\",W/\"c\" , {strong}")]));
+        assert!(matches(&["\"other\"", tag]));
+        assert!(!matches(&[]));
+        assert!(!matches(&["\"other\""]));
+        assert!(!matches(&["W/\"0000000000000000\""]));
+        // One tag that holds commas and `*`, not a list with `*` in it.
+        assert!(!matches(&["\"old,*,release\""]));
+        // Nothing after a malformed entry counts.
+        assert!(!matches(&[&format!("garbage, {tag}")]));
+        assert!(!matches(&[&format!("\"unclosed, {tag}")]));
     }
 
     #[test]

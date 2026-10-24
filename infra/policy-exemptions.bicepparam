@@ -11,3 +11,4 @@ param serialSetOnPrem = bool(readEnvironmentVariable('USNM_SERIALSET_ONPREM', 'f
 param jaOcrOnPrem = bool(readEnvironmentVariable('USNM_JA_OCR_ONPREM', 'false'))
 param onPremRelease = bool(readEnvironmentVariable('USNM_ONPREM_RELEASE', 'false'))
 param indexStorage = bool(readEnvironmentVariable('USNM_INDEX_STORAGE', 'false'))
+param onPremServing = bool(readEnvironmentVariable('USNM_ONPREM_SERVING', 'false'))

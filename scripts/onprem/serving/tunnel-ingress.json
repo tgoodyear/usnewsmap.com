@@ -1,0 +1,21 @@
+{
+  "config": {
+    "ingress": [
+      {
+        "hostname": "usnewsmap.com",
+        "service": "http://127.0.0.1:8080"
+      },
+      {
+        "hostname": "www.usnewsmap.com",
+        "service": "http://127.0.0.1:8080"
+      },
+      {
+        "hostname": "api.usnewsmap.com",
+        "service": "http://127.0.0.1:8080"
+      },
+      {
+        "service": "http_status:404"
+      }
+    ]
+  }
+}

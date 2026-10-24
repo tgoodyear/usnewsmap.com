@@ -277,10 +277,15 @@ impl SearchBackend for QuickwitBackend {
     /// can't find indexes created later by name in a search. Looking an index
     /// up by id loads it from storage (and then it's polled like the rest), so
     /// each index is looked up before its version is served (S-2, 08 §8.4.1).
+    /// A 404 means the metastore has no such index (`metastore.json`), on
+    /// Blob or a local directory alike.
     async fn prepare(&self, indexes: &IndexSet) -> Result<(), SearchError> {
         for id in indexes.ids() {
             let url = format!("{}/api/v1/indexes/{id}", self.base_url);
             let resp = self.client.get(url).send().await.map_err(map_err)?;
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(SearchError::MissingIndex(id.clone()));
+            }
             if !resp.status().is_success() {
                 return Err(SearchError::Backend(format!(
                     "index `{id}` is not available: quickwit returned {}",
@@ -352,5 +357,21 @@ mod tests {
                 "{status}: {err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_index_the_metastore_lacks_is_missing_and_a_server_error_is_not() {
+        let set = IndexSet::new(vec!["pages-delta-1".into()]);
+        let qw = QuickwitBackend::new(&stub(404).await, Duration::from_secs(5)).unwrap();
+        let err = qw.prepare(&set).await.unwrap_err();
+        assert!(
+            matches!(&err, SearchError::MissingIndex(id) if id == "pages-delta-1"),
+            "{err}"
+        );
+        let qw = QuickwitBackend::new(&stub(500).await, Duration::from_secs(5)).unwrap();
+        let err = qw.prepare(&set).await.unwrap_err();
+        assert!(matches!(err, SearchError::Backend(_)), "{err}");
+        let qw = QuickwitBackend::new(&stub(200).await, Duration::from_secs(5)).unwrap();
+        qw.prepare(&set).await.unwrap();
     }
 }
