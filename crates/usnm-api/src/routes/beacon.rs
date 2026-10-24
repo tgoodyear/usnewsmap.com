@@ -18,7 +18,6 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::error::ApiError;
-use crate::ratelimit::client_ip;
 use crate::AppState;
 
 /// Largest body accepted, in bytes.
@@ -295,7 +294,7 @@ fn forward(
         url: valid
             .path
             .map(|p| format!("https://{}{p}", state.config.site_host)),
-        client_ip: client_ip(headers, peer, state.config.trusted_proxy_hops),
+        client_ip: state.config.client_address().of(headers, peer),
         properties,
     };
     if sink.track(view) {

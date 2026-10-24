@@ -153,6 +153,81 @@ async fn clients_over_their_rate_get_429() {
     );
 }
 
+/// A GET from `peer` (the TCP peer the server sees) with these headers.
+async fn get_from_peer(
+    state: &Arc<AppState>,
+    uri: &str,
+    peer: &str,
+    headers: &[(&str, &str)],
+) -> StatusCode {
+    let mut req = Request::builder().uri(uri);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    let mut req = req.body(Body::empty()).unwrap();
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        peer.parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    app(state.clone()).oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn behind_a_local_cloudflared_clients_are_told_apart_by_cf_connecting_ip() {
+    let mut cfg = config();
+    cfg.trust_cf_connecting_ip = true;
+    cfg.rate_limit = Some(usnm_api::config::RateLimit {
+        per_minute: 1.try_into().unwrap(),
+        burst: 2.try_into().unwrap(),
+    });
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let local = "127.0.0.1:50000";
+    // Every request reaches the API from the proxy on this host, with its
+    // own X-Forwarded-For entry; Cloudflare's header tells clients apart.
+    let a = [
+        ("cf-connecting-ip", "203.0.113.7"),
+        ("x-forwarded-for", "127.0.0.1"),
+    ];
+    for _ in 0..2 {
+        assert_eq!(
+            get_from_peer(&s, "/v1/meta", local, &a).await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        get_from_peer(&s, "/v1/meta", local, &a).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let b = [
+        ("cf-connecting-ip", "203.0.113.8"),
+        ("x-forwarded-for", "127.0.0.1"),
+    ];
+    assert_eq!(
+        get_from_peer(&s, "/v1/meta", local, &b).await,
+        StatusCode::OK
+    );
+    // From anywhere else the header is the client's own claim: the peer's
+    // address counts, so naming a fresh address gets no fresh bucket.
+    let remote = "192.0.2.9:50000";
+    for (i, ip) in ["198.51.100.1", "198.51.100.2"].iter().enumerate() {
+        let status = get_from_peer(&s, "/v1/meta", remote, &[("cf-connecting-ip", ip)]).await;
+        assert_eq!(status, StatusCode::OK, "{i}");
+    }
+    assert_eq!(
+        get_from_peer(
+            &s,
+            "/v1/meta",
+            remote,
+            &[("cf-connecting-ip", "198.51.100.3")]
+        )
+        .await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
 /// A built site: an index, a hashed asset with a precompressed copy, a favicon.
 /// Each test names its own, since tests run in parallel.
 fn site_dir(name: &str) -> PathBuf {
