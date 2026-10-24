@@ -14,7 +14,9 @@
 # postgresql-client, a venv at /opt/usnm-quality-feed/venv from requirements.txt (hashes
 # required), quality_feed.py, the unit usnm-quality-feed.service and
 # /etc/usnm/quality-feed.env, and usnm-quality-agree-load.{service,timer} (enabled once
-# the text writer's certificate and /srv/text-agreement are there). On the host it
+# the text writer's certificate and /srv/text-agreement are there), and
+# usnm-quality-refresh.{service,timer} (the page summary, every 6 hours, as the loader).
+# On the host it
 # installs quality-ship.sh, quality_receive.py,
 # usnm-quality-ship.{service,timer} and /etc/usnm/quality-ship.env. The campaign's page list
 # (/var/lib/usnm-quality-feed/<campaign>/pages.jsonl in the container, from
@@ -59,7 +61,8 @@ stage=/root/usnm-quality-feed-install
 scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
   "$HERE/usnm-quality-ship.timer" "$HERE/../../../onprem/quality/load.py" \
-  "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" "root@$HOST:$stage/"
+  "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" \
+  "$HERE/usnm-quality-refresh.service" "$HERE/usnm-quality-refresh.timer" "root@$HOST:$stage/"
 
 "${SSH[@]}" bash -s -- "$CTID" "$stage" "$CAMPAIGN" "$SCAN_SERVER" "$CHUNK" "$PENDING" "$WORKERS" \
   "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" <<'REMOTE'
@@ -75,6 +78,8 @@ pct push "$ct" "$stage/load.py" /opt/usnm-quality-feed/load.py --perms 755
 pct push "$ct" "$stage/usnm-quality-feed.service" /etc/systemd/system/usnm-quality-feed.service
 pct push "$ct" "$stage/usnm-quality-agree-load.service" /etc/systemd/system/usnm-quality-agree-load.service
 pct push "$ct" "$stage/usnm-quality-agree-load.timer" /etc/systemd/system/usnm-quality-agree-load.timer
+pct push "$ct" "$stage/usnm-quality-refresh.service" /etc/systemd/system/usnm-quality-refresh.service
+pct push "$ct" "$stage/usnm-quality-refresh.timer" /etc/systemd/system/usnm-quality-refresh.timer
 in_ct bash -c '[ -x /opt/usnm-quality-feed/venv/bin/python ] || python3 -m venv /opt/usnm-quality-feed/venv
   /opt/usnm-quality-feed/venv/bin/pip install -q --require-hashes --no-deps --only-binary :all: -r /opt/usnm-quality-feed/requirements.txt'
 printf 'CAMPAIGN=%s\nSCAN_SERVER=%s\nCHUNK_PAGES=%s\nMAX_PENDING=%s\nWORKERS=%s\n' \
@@ -84,6 +89,11 @@ in_ct systemctl daemon-reload
 # --role quality_text_writer, copied into /etc/usnm/quality-text-db/ with a dsn file).
 if in_ct test -s /etc/usnm/quality-text-db/dsn && in_ct test -d /srv/text-agreement; then
   in_ct systemctl enable --now usnm-quality-agree-load.timer
+fi
+# The page summary's refresh, as the loader (its certificate in /etc/usnm/quality-db/).
+if in_ct test -s /etc/usnm/quality-db/dsn; then
+  in_ct systemctl enable usnm-quality-refresh.timer
+  in_ct systemctl start usnm-quality-refresh.timer
 fi
 
 install -d /opt/usnm-quality-feed /etc/usnm
