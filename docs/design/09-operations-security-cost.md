@@ -57,20 +57,21 @@ From #955 Phase 2 the API, the site and the searcher also run in one container o
 3. In Cloudflare, change the client IP filter of each pinned token to the new address: the API token for the zone and the tunnel (ADR-0024), and the Workers token (ADR-0027 decision 7).
 4. Once the serving color's journal shows no new `reload failed` lines, delete `/etc/usnm-serving/hold`.
 
-**Tunnel token lost or leaked.** The `usnm-serving` token is in Key Vault and in one root-only file in the container, `/etc/cloudflared/usnm-serving.env` (ADR-0027 decision 7, under ADR-0024's rules). Rotate it as ADR-0024 says:
+**Tunnel token lost or leaked.** The `usnm-serving` token is in Key Vault and in one root-only file in the container, `/etc/cloudflared/usnm-serving.env` (ADR-0027 decision 7, under ADR-0024's rules). Replace it in ADR-0024's order:
 
-1. Make a new token for the tunnel in Cloudflare, and put it in the Key Vault secret.
-2. On the Proxmox host, run home-infra's `serving-ct.sh --tunnel` with the new token in a root-only file. It rewrites the container's environment file and restarts `cloudflared-usnm-serving`. Delete the token file afterwards.
-3. Revoke the old token only after that, or the restarted connector can't reconnect.
+1. Rotate the tunnel's token in Cloudflare, and put the new one in the Key Vault secret. From then on the old token can't open new connections, but a connector already running on it stays connected until it restarts ([Cloudflare](https://developers.cloudflare.com/tunnel/reference/tunnel-tokens/)).
+2. On the Proxmox host, run home-infra's `serving-ct.sh --tunnel` with the new token in a root-only file. It rewrites the container's environment file and restarts `cloudflared-usnm-serving`, which reconnects with the new token. Delete the token file afterwards.
+3. If the token leaked, also delete all the tunnel's connections, with ADR-0024's API token from the address it's limited to (`DELETE /accounts/<account>/cfd_tunnel/<tunnel>/connections`). That drops any connector still running on the old token. Then check in Cloudflare that the tunnel is healthy again, because `cloudflared-usnm-serving` has to reconnect with the new token.
 
-A revoked or expired token fails closed: the tunnel stops serving, and during Phase 3 the Worker falls back to Azure.
+While no connector is connected, the tunnel serves nothing, and during Phase 3 the Worker falls back to Azure.
 
 **NVMe failure.** The NVMe pool holds the versions the searcher serves and the response cache. The previous version stays on `tank` in a dataset of its own (ADR-0027 decision 5).
 
-1. On the host, mount the `tank` copy read-only at the path its release wrote, and a cache directory on `tank` in place of the NVMe one (home-infra's `serving-ct.sh --mounts`). The cache refills on demand.
+1. On the host, mount the `tank` copy read-only at the path its release wrote, and a cache directory on `tank` in place of the NVMe one (home-infra's `serving-ct.sh --mounts`). If the mounts show as pending, restart the container. The cache refills on demand.
 2. If `current.json` names a newer version than the copy, roll it back to the copy's version first (Rollback index, above). With `USNM_READY_REQUIRES_PUBLISHED_INDEXES` on, `/readyz` fails while the searcher lacks an index `current.json` names. Both origins read the same `current.json`, so during Phase 3 Azure rolls back too.
-3. Point the searcher at the copy: `gen-env.sh --index-dir`, `serving-ct.sh --config`, then `install.sh`, which restarts the searcher. The site serves from the HDDs, more slowly.
-4. With a new drive in, copy the version to it as a release does (`zfs send` and `zfs recv`), and reverse these steps.
+3. Point the searcher at the copy: `gen-env.sh --index-dir`, `serving-ct.sh --config`, then `install.sh`, which restarts the searcher and makes the colors' cache directories. The site serves from the HDDs, more slowly.
+4. Unless the container restarted in step 1, wait until `curl -fsS 127.0.0.1:7280/health/readyz` answers, then redeploy the API with `usnm-serving-update --registry <registry> --redeploy`; a run does nothing while the searcher isn't ready. A running color keeps the cache mount it started with, and the redeploy starts the idle color on the new one.
+5. With a new drive in, copy the version to it as a release does (`zfs send` and `zfs recv`), and reverse these steps, the redeploy included.
 
 If the copy on `tank` is lost too, the index has to be rebuilt, which takes 15 to 20 hours.
 
@@ -241,6 +242,6 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 **DR runbook: serving from Azure again after Phase 4.** This is Phase 4's rollback ([ADR-0027](adr/0027-onprem-serving-behind-cloudflare.md), Phases), for an on-prem outage too long to wait out. It takes hours.
 
 1. Provision the API and searcher apps again.
-2. Publish the index to Azure with `release.sh publish`: about 1.2 TB, about 2.7 hours at 1 Gbps. It sends the copy on `tank`, so it needs pve-big's storage and uplink. Without them, the index is rebuilt first (Search index, above).
+2. Publish the index to Azure with `release.sh --step publish`: about 1.2 TB, about 2.7 hours at 1 Gbps. It sends the copy on `tank`, so it needs pve-big's storage and uplink. Without them, the index is rebuilt first (Search index, above). As built, this step can't restore the version that serves, because `publish-staged` copies a release only while `current.json` still names the release's `previous_version` (`crates/usnm-ingest/src/onprem.rs`). A path that restores it doesn't exist yet (#1061).
 3. Point the Worker at the new app's default `azurecontainerapps.io` name, which needs no certificates.
 4. Bind the custom domains later, as a separate step. Their `asuid` TXT records stay in Cloudflare for it (08 §8.8).
