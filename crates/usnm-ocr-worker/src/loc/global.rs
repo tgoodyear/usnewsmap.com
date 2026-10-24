@@ -178,7 +178,8 @@ impl GlobalPacer {
                     if let Ok(Err(e)) = other {
                         tracing::warn!(path = %self.path.display(), error = %e, "the global LoC pacer's file failed; waiting the slow gap");
                     }
-                    tokio::time::sleep(self.slow).await;
+                    let until = not_before_ms.saturating_sub(now_ms());
+                    tokio::time::sleep(self.slow.max(Duration::from_millis(until))).await;
                     return now_ms();
                 }
             };
