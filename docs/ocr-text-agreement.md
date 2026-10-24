@@ -32,7 +32,7 @@ Everything is a pure function of the two texts and the title's languages, single
 
 - With a third reader (our OCR in `curated/ocr-local`, 19,762 pages today, or a vision-language reading), `hat::solve(3, [(loc, as, cer_sym), (loc, ours, …), (as, ours, …)])` gives each reader's `est_cer` without recomputing the `loc`/`as` pair.
 - With two readers the hat is underdetermined: `d ≈ e_loc + e_as` gives the sum of the two error rates, not either one.
-- On LoC against American Stories, the whole-page `cer_sym` is mostly reading order and coverage, not misreading (below). `local_cer_sym` is the better `d` for this pair. The `usnm_quality` record solves the hat on whole-page `cer_sym` today, so its `loc`/`as` estimates carry the same inflation. Changing the record's `d` would be a new record version, outside this pass.
+- On LoC against American Stories, the whole-page `cer_sym` is mostly reading order and coverage, not misreading (below). `local_cer_sym` is the better `d` for this pair. The unit's own hat (version 1) solves on whole-page `cer_sym`; `collect` re-solves it on `local_cer_sym` for every pair (page hat version 2, [BOINC quality](boinc-quality.md#the-page-hat-version-2-962)).
 
 ## What it can and can't tell
 

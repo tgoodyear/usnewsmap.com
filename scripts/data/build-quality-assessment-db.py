@@ -5,7 +5,11 @@ Joins the full-corpus lexical damage manifest (`manifest.parquet`, 1.92M pages
 across 3,664 titles scored by `usnm-ingest ocr-damage`) with all collected
 BOINC `usnm_quality` and `usnm_qwen` campaign tables (`audit/quality/*/pages.parquet`
 and `crops.parquet`), extracts pairwise `cer_vs_loc` / `wer_vs_loc` / `dice_vs_loc` /
-`word_ratio_vs_loc` from `pairs_json` for 2-reader pages, and writes:
+`word_ratio_vs_loc` from `pairs_json` for 2-reader pages, carries `hat_version`
+(1 for tables written before the page hat's version 2, #962; a page seen in
+several campaigns keeps its version 2 row). Every estimate and aggregate uses one
+page hat version, the newest present: older rows keep their unit's estimate in
+`est_cer_v1` and have their hat columns cleared. Writes:
 
 1. Consolidated Parquet tables (`boinc_reader_rows.parquet`,
    `page_quality_joined.parquet`, `title_quality_summary.parquet`,
@@ -112,8 +116,19 @@ def build_database(
         ("ink_word_coverage", "DOUBLE"),
         ("numeric_share", "DOUBLE"),
         ("short_line_share", "DOUBLE"),
+        ("est_cer_raw", "DOUBLE"),
+        ("hat_determined", "BOOLEAN"),
+        ("hat_version", "BIGINT"),
+        ("est_cer_v1", "DOUBLE"),
+        ("matched", "DOUBLE"),
     ]:
         con.execute(f"ALTER TABLE raw_boinc_pages ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+    # Tables written before the page hat's version 2 (#962) carry the unit's
+    # whole-page hat: version 1, with est_cer as its own v1 value.
+    con.execute(
+        "UPDATE raw_boinc_pages SET hat_version = 1, est_cer_v1 = est_cer "
+        "WHERE hat_version IS NULL"
+    )
     if crop_parts:
         con.execute(f"CREATE TABLE raw_boinc_crops AS {' UNION ALL BY NAME '.join(crop_parts)}")
         for col_name, col_type in [
@@ -185,7 +200,7 @@ def build_database(
                 END AS word_ratio_vs_loc,
                 ROW_NUMBER() OVER (
                     PARTITION BY r.doc_id, r.reader
-                    ORDER BY (plw.loc_words > 1) DESC, r.hat_determined DESC NULLS LAST, r.campaign_priority DESC
+                    ORDER BY r.hat_version DESC, (plw.loc_words > 1) DESC, r.hat_determined DESC NULLS LAST, r.campaign_priority DESC
                 ) AS rn
             FROM raw_boinc_pages r
             JOIN page_loc_words plw USING (campaign, doc_id)
@@ -194,6 +209,19 @@ def build_database(
         FROM ranked
         WHERE rn = 1
         """
+    )
+    # One page hat version in every estimate and aggregate (#962): the newest present.
+    # Rows of an older version keep their non-hat measures and their unit's estimate in
+    # est_cer_v1; their hat columns are cleared, so no mean blends the two hats.
+    hat_version = con.execute("SELECT COALESCE(MAX(hat_version), 1) FROM boinc_reader_rows").fetchone()[0]
+    # Which rows count in the non-hat means (completeness, precision, findability): fixed
+    # before the hat columns are cleared, so it doesn't depend on the version reported.
+    con.execute("ALTER TABLE boinc_reader_rows ADD COLUMN in_reader_means BOOLEAN")
+    con.execute("UPDATE boinc_reader_rows SET in_reader_means = loc_words > 1 OR COALESCE(hat_determined, FALSE)")
+    con.execute(
+        "UPDATE boinc_reader_rows SET est_cer = NULL, est_cer_raw = NULL, hat_determined = NULL, "
+        "hat_residual = NULL, legibility_ceiling = NULL "
+        f"WHERE hat_version <> {int(hat_version)}"
     )
 
     escaped_manifest = str(manifest_parquet).replace("'", "''")
@@ -257,6 +285,7 @@ def build_database(
                 MAX(line_height_px) AS line_height_px,
                 MAX(columns) AS columns,
                 MAX(mean_word_conf) AS mean_word_conf,
+                MAX(hat_version) AS hat_version,
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN words END) AS loc_words,
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN est_cer END) AS loc_est_cer,
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN completeness END) AS loc_completeness,
@@ -507,18 +536,18 @@ def build_database(
             campaign,
             COUNT(DISTINCT doc_id) AS unique_pages,
             COUNT(*) AS reader_rows,
-            SUM(CASE WHEN reader IN ('loc', 'loc-hist') AND COALESCE(hat_determined, FALSE) THEN 1 ELSE 0 END) AS hat_determined_pages,
+            SUM(CASE WHEN reader IN ('loc', 'loc-hist') AND COALESCE(hat_determined, FALSE) AND hat_version = __HAT_VERSION__ THEN 1 ELSE 0 END) AS hat_determined_pages,
             SUM(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN 1 ELSE 0 END) AS valid_loc_text_pages,
-            ROUND(AVG(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN est_cer END), 4) AS mean_loc_est_cer,
-            ROUND(AVG(CASE WHEN reader = 'ours-tesseract' THEN est_cer END), 4) AS mean_ours_est_cer,
-            ROUND(AVG(CASE WHEN reader = 'as' THEN est_cer END), 4) AS mean_as_est_cer,
+            ROUND(AVG(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 AND hat_version = __HAT_VERSION__ THEN est_cer END), 4) AS mean_loc_est_cer,
+            ROUND(AVG(CASE WHEN reader = 'ours-tesseract' AND hat_version = __HAT_VERSION__ THEN est_cer END), 4) AS mean_ours_est_cer,
+            ROUND(AVG(CASE WHEN reader = 'as' AND hat_version = __HAT_VERSION__ THEN est_cer END), 4) AS mean_as_est_cer,
             ROUND(AVG(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN damage_rate END), 4) AS mean_loc_damage_rate,
             ROUND(AVG(CASE WHEN reader = 'ours-tesseract' THEN damage_rate END), 4) AS mean_ours_damage_rate,
             ROUND(AVG(CASE WHEN reader = 'as' THEN damage_rate END), 4) AS mean_as_damage_rate
         FROM raw_boinc_pages
         GROUP BY campaign
         ORDER BY campaign
-        """
+        """.replace("__HAT_VERSION__", str(int(hat_version)))
     )
 
     con.execute(
@@ -528,10 +557,10 @@ def build_database(
             reader,
             COUNT(DISTINCT doc_id) AS pages,
             ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN est_cer END), 4) AS mean_est_cer,
-            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN completeness END), 4) AS mean_completeness,
-            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN precision END), 4) AS mean_precision,
-            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN findable_content END), 4) AS mean_findable_content,
-            ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN findable_places END), 4) AS mean_findable_places,
+            ROUND(AVG(CASE WHEN in_reader_means THEN completeness END), 4) AS mean_completeness,
+            ROUND(AVG(CASE WHEN in_reader_means THEN precision END), 4) AS mean_precision,
+            ROUND(AVG(CASE WHEN in_reader_means THEN findable_content END), 4) AS mean_findable_content,
+            ROUND(AVG(CASE WHEN in_reader_means THEN findable_places END), 4) AS mean_findable_places,
             ROUND(AVG(cer_vs_loc), 4) AS mean_cer_vs_loc,
             ROUND(AVG(dice_vs_loc), 4) AS mean_dice_vs_loc,
             ROUND(AVG(CASE WHEN words > 1 THEN damage_rate END), 4) AS mean_damage_rate,
@@ -571,9 +600,9 @@ def build_database(
                     COUNT(*) AS pages,
                     ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN est_cer END), 4) AS mean_est_cer,
                     ROUND(MEDIAN(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN est_cer END)::DOUBLE, 4) AS median_est_cer,
-                    ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN completeness END), 4) AS mean_completeness,
-                    ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN precision END), 4) AS mean_precision,
-                    ROUND(AVG(CASE WHEN loc_words > 1 OR COALESCE(hat_determined, FALSE) THEN findable_content END), 4) AS mean_findable_content,
+                    ROUND(AVG(CASE WHEN in_reader_means THEN completeness END), 4) AS mean_completeness,
+                    ROUND(AVG(CASE WHEN in_reader_means THEN precision END), 4) AS mean_precision,
+                    ROUND(AVG(CASE WHEN in_reader_means THEN findable_content END), 4) AS mean_findable_content,
                     ROUND(AVG(cer_vs_loc), 4) AS mean_cer_vs_loc,
                     ROUND(AVG(dice_vs_loc), 4) AS mean_dice_vs_loc,
                     SUM(CASE WHEN COALESCE(hat_determined, FALSE) THEN 1 ELSE 0 END) AS pages_hat_determined
@@ -815,6 +844,10 @@ def build_database(
             "SELECT COUNT(*) FROM page_quality_joined WHERE hat_determined"
         ).fetchone()[0],
         "boinc_reader_rows": con.execute("SELECT COUNT(*) FROM boinc_reader_rows").fetchone()[0],
+        "hat_version": int(hat_version),
+        "hat_version_rows": con.execute(
+            f"SELECT COUNT(*) FROM boinc_reader_rows WHERE hat_version = {int(hat_version)}"
+        ).fetchone()[0],
         "titles_total": con.execute("SELECT COUNT(*) FROM title_quality_summary").fetchone()[0],
         "titles_with_boinc": con.execute(
             "SELECT COUNT(*) FROM title_quality_summary WHERE boinc_scored_pages > 0"
@@ -829,6 +862,7 @@ def build_database(
         f"- **Full-corpus damaged manifest pages (`usnm-ingest ocr-damage` v2):** `{stats['manifest_pages']:,}` across `{stats['titles_total']:,}` newspaper titles (`lccn`)",
         f"- **Deduplicated BOINC `usnm_quality` scored pages (Waves 1–7):** `{stats['unique_boinc_pages']:,}` (`{stats['boinc_reader_rows']:,}` reader rows across `{stats['campaigns']}` campaigns; `{stats['titles_with_boinc']:,}` titles sampled)",
         f"- **3+ reader pages with Three-Cornered Hat determined:** `{stats['hat_determined_pages']:,}`",
+        f"- **Page hat version in every estimate:** `{stats['hat_version']}` (`{stats['hat_version_rows']:,}` reader rows; rows of an older version keep only their unit's `est_cer_v1`)",
         "",
         "## Campaign Breakdown",
         "",

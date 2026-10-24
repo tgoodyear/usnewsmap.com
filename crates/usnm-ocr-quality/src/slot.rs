@@ -1238,6 +1238,45 @@ impl QualityCheckpoint {
     }
 }
 
+/// Each reader's text as the unit compares it: from `texts.json`, with
+/// LoC's ALTO text (`alto_text`, called at most once) standing in for an
+/// empty or `none` LoC text. `collect` calls this too, so the server's hat
+/// sees the texts the unit saw. `alto_text` returns none when the ALTO is
+/// not available (a staged `loc.xml` truncated after submission, say);
+/// then, if a LoC reader needs it, the texts the unit read can't be
+/// rebuilt and this returns none. An ALTO that parses to no words is
+/// `Some("")`, the text the unit used.
+pub fn reader_inputs(
+    readers_spec: &[ReaderSpec],
+    texts: &Texts,
+    alto_text: impl FnOnce() -> Option<String>,
+) -> Option<Vec<ReaderInput>> {
+    let mut alto_text = Some(alto_text);
+    let mut alto: Option<Option<String>> = None;
+    readers_spec
+        .iter()
+        .map(|spec| {
+            let mut text = texts
+                .readers
+                .iter()
+                .find(|r| r.name == spec.name)
+                .map(|r| r.text.clone())
+                .unwrap_or_default();
+            if (spec.name == "loc" || spec.name == "loc-hist")
+                && (text.trim().is_empty() || text.trim().eq_ignore_ascii_case("none"))
+            {
+                let got = alto.get_or_insert_with(|| alto_text.take().and_then(|f| f()));
+                text = got.clone()?;
+            }
+            Some(ReaderInput {
+                name: spec.name.clone(),
+                source: spec.source.clone(),
+                text,
+            })
+        })
+        .collect()
+}
+
 fn compute_page_record(
     doc_id: &str,
     readers_spec: &[ReaderSpec],
@@ -1264,28 +1303,8 @@ fn compute_page_record(
     };
     let features_ms = ms(t);
     let t = Instant::now();
-    let alto_text = usnm_alto::text(&alto);
-    let readers: Vec<ReaderInput> = readers_spec
-        .iter()
-        .map(|spec| {
-            let mut text = texts
-                .readers
-                .iter()
-                .find(|r| r.name == spec.name)
-                .map(|r| r.text.clone())
-                .unwrap_or_default();
-            if (spec.name == "loc" || spec.name == "loc-hist")
-                && (text.trim().is_empty() || text.trim().eq_ignore_ascii_case("none"))
-            {
-                text = alto_text.clone();
-            }
-            ReaderInput {
-                name: spec.name.clone(),
-                source: spec.source.clone(),
-                text,
-            }
-        })
-        .collect();
+    let readers = reader_inputs(readers_spec, texts, || Some(usnm_alto::text(&alto)))
+        .context("the ALTO text is always available here")?;
     let function_words: BTreeSet<String> = function_words_list
         .iter()
         .map(|w| crate::consensus::fold(w))
