@@ -16,6 +16,8 @@ usnm-congress.workspace = true
 # and the release's replacement rule.
 usnm-ocr-local.workspace = true
 usnm-ocr-route.workspace = true
+# Text agreement between LoC and American Stories (`ocr-agreement`, #962).
+usnm-ocr-quality.workspace = true
 usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-overlay.workspace = true
 usnm-store.workspace = true
@@ -25,6 +27,7 @@ usnm-telemetry.workspace = true
 usnm-search.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
+arrow-schema.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 bzip2.workspace = true

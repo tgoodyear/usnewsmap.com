@@ -3422,6 +3422,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-array",
+ "arrow-schema",
  "async-trait",
  "axum",
  "bytes",
@@ -3449,6 +3450,7 @@ dependencies = [
  "usnm-core",
  "usnm-ocr-contract",
  "usnm-ocr-local",
+ "usnm-ocr-quality",
  "usnm-ocr-route",
  "usnm-overlay",
  "usnm-search",
