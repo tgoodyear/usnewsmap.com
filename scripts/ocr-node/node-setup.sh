@@ -715,16 +715,41 @@ fi
 step "No direct queue worker"
 # Local OCR runs through BOINC only (#966): the direct queue worker's unit
 # and installers are retired, and this installs neither the unit nor
-# /etc/usnm/ocr-worker.env. A unit left by an earlier install is stopped
-# (in-flight pages get its grace period; anything abandoned reappears on
-# the queue) and disabled, so it can't start again at boot. Its files are
-# left for offboard.sh.
+# /etc/usnm/ocr-worker.env. What an earlier install left is taken out so
+# nothing can start the worker again:
+# - under the maintenance lock that the old nightly update and the reboot
+#   window hold, so neither is half-way through when this runs (it waits
+#   as long as they wait for each other, 30 minutes);
+# - the old nightly update's timer, service and scripts go first, so it
+#   can't restart the worker afterwards;
+# - the worker is stopped (in-flight pages get its grace period; anything
+#   abandoned reappears on the queue) and disabled, and its unit file is
+#   deleted, so neither boot nor an explicit start can run it;
+# - its line in the reboot window's resume list is dropped, keeping the
+#   other units listed there.
+# Its binary and settings files are left for offboard.sh.
+mkdir -p /run/lock
+exec 8> /run/lock/usnm-ocr-maintenance.lock
+flock -w 1800 8 || die "a worker update or the reboot window still holds /run/lock/usnm-ocr-maintenance.lock after 30 minutes; run this again later"
+systemctl disable --now usnm-ocr-update.timer 2> /dev/null || true
+systemctl stop usnm-ocr-update.service 2> /dev/null || true
+rm -f /etc/systemd/system/usnm-ocr-update.timer /etc/systemd/system/usnm-ocr-update.service \
+  /usr/local/sbin/usnm-ocr-update-worker /usr/local/libexec/usnm-ocr/install-worker-node.sh
+rmdir /usr/local/libexec/usnm-ocr 2> /dev/null || true
 if [ "$(systemctl show --property=LoadState --value usnm-ocr-worker.service 2> /dev/null)" = loaded ]; then
   systemctl disable --now usnm-ocr-worker.service
   echo "usnm-ocr-worker.service: disabled and stopped (retired, #966)"
-else
-  echo "usnm-ocr-worker.service: not installed"
 fi
+rm -f /etc/systemd/system/usnm-ocr-worker.service
+systemctl daemon-reload
+echo "usnm-ocr-worker.service: not installed"
+resume_list=/var/lib/usnm-ocr-reboot/resume
+if [ -f "$resume_list" ] && grep -qx 'usnm-ocr-worker.service' "$resume_list"; then
+  sed -i '/^usnm-ocr-worker\.service$/d' "$resume_list"
+  [ -s "$resume_list" ] || rm -f "$resume_list"
+  echo "$resume_list: usnm-ocr-worker.service dropped"
+fi
+exec 8>&-
 
 step "Checking that usnm can get a token"
 # The agent's challenge flow, as usnm: the first request is refused with a

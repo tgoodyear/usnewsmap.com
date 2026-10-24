@@ -56,16 +56,19 @@ done
 [[ $DNF_WAIT =~ ^[0-9]+$ ]] || { echo "error: --dnf-wait: seconds" >&2; usage; }
 [ "$(id -u)" -eq 0 ] || { echo "error: run as root" >&2; exit 1; }
 
-# Stopped before a reboot when running: the OCR worker, and the Serial Set
-# fetch where a node runs it.
+# Stopped before a reboot when running: the Serial Set fetch where a node
+# runs it, and a direct OCR worker an earlier install left. Only the fetch
+# is ever started again: the direct worker is retired (#966), so --resume
+# refuses it and it is never written to the resume list.
 UNITS="usnm-ocr-worker.service usnm-sset.service"
+RESUMABLE="usnm-sset.service"
 RESUME=/var/lib/usnm-ocr-reboot/resume
 
 if [ "$RESUME_MODE" = true ]; then
   [ -s "$RESUME" ] || { log "nothing to start again"; exit 0; }
   failed=false
   while read -r unit; do
-    case " $UNITS " in *" $unit "*) ;; *) warn "warning: $unit isn't one of $UNITS; not started"; continue ;; esac
+    case " $RESUMABLE " in *" $unit "*) ;; *) warn "warning: $unit isn't one of $RESUMABLE; not started"; continue ;; esac
     if [ "$DRY_RUN" = true ]; then
       log "dry run: would start $unit"
     else
@@ -138,6 +141,7 @@ if [ -n "$running" ]; then
   # Only what won't start at boot by itself needs starting again.
   resume=""
   for unit in $running; do
+    case " $RESUMABLE " in *" $unit "*) ;; *) continue ;; esac
     systemctl is-enabled --quiet "$unit" 2> /dev/null || resume="${resume:+$resume }$unit"
   done
   if [ -n "$resume" ]; then
