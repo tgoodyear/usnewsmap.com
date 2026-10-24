@@ -95,6 +95,67 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
         )
 
     @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
+    def test_a_page_in_several_campaigns_keeps_its_hat_v2_row(self):
+        """The v1 row wins every later sort key (LoC words, a determined hat, campaign
+        priority); the v2 row still wins (#962)."""
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quality_root = root / "quality"
+            con = duckdb.connect()
+            doc = "sn83030214-1895-01-01-ed-1-seq-1"
+
+            def page(campaign, version_cols, loc_words, determined, est_cer):
+                cdir = quality_root / campaign
+                cdir.mkdir(parents=True)
+                con.execute(
+                    f"""
+                    COPY (
+                        SELECT
+                            '{doc}'::VARCHAR AS doc_id, 'english'::VARCHAR AS "group",
+                            'eng'::VARCHAR AS language, 'loc'::VARCHAR AS reader,
+                            'loc-alto'::VARCHAR AS source, {loc_words}::BIGINT AS words,
+                            6800::BIGINT AS chars, {determined} AS hat_determined,
+                            0.0::DOUBLE AS hat_residual, 0.8::DOUBLE AS legibility_ceiling,
+                            950::BIGINT AS consensus_words, {est_cer}::DOUBLE AS est_cer,
+                            0.9::DOUBLE AS completeness, 0.9::DOUBLE AS precision,
+                            0.9::DOUBLE AS findable_content, 0.9::DOUBLE AS findable_places,
+                            '{{}}'::VARCHAR AS pairs_json, 3200::BIGINT AS width,
+                            4800::BIGINT AS height, 0.2::DOUBLE AS skew_deg, 5400.0::DOUBLE AS blur,
+                            185.0::DOUBLE AS contrast, 2.1::DOUBLE AS noise,
+                            0.07::DOUBLE AS bleed_through, 0.19::DOUBLE AS ink_density,
+                            12::BIGINT AS blocks, 210::BIGINT AS lines, 1180::BIGINT AS line_words,
+                            34.0::DOUBLE AS line_height_px, 5::BIGINT AS columns,
+                            0.78::DOUBLE AS mean_word_conf, 'cpu'::VARCHAR AS plan_class
+                            {version_cols}
+                    ) TO '{cdir / "pages.parquet"}' (FORMAT PARQUET)
+                    """
+                )
+
+            # v1-wave8 (priority 100), legacy: LoC has words and the hat is determined.
+            page("v1-wave8", "", 1200, "TRUE", 0.30)
+            # A later campaign at default priority, version 2, LoC with one word and an
+            # underdetermined hat.
+            page("v2-later", ", 2::BIGINT AS hat_version, 0.30::DOUBLE AS est_cer_v1, 0.7::DOUBLE AS matched",
+                 1, "FALSE", 0.05)
+            manifest_pq = root / "manifest.parquet"
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (
+                        VALUES ('{doc}', 'sn83030214', '1895-01-01', 1, 1, 'batch_ny_01', 'v1', 'eng', 'reocr', 0.22, 'https://example.org/1')
+                    ) AS t(doc_id, lccn, date, edition, seq, batch, batch_version, lang, decision, damage_rate, item_url)
+                ) TO '{manifest_pq}' (FORMAT PARQUET)
+                """
+            )
+            out_dir = root / "out"
+            mod.build_database(quality_root, manifest_pq, out_dir, None)
+            got = con.execute(
+                f"SELECT campaign, hat_version, est_cer, est_cer_v1 FROM read_parquet('{out_dir / 'boinc_reader_rows.parquet'}')"
+            ).fetchall()
+            self.assertEqual(got, [("v2-later", 2, 0.05, 0.30)])
+
+    @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
     def test_mixed_old_and_new_campaign_schemas_preserve_nulls_for_legacy_measurements(self):
         mod = load_module()
         with tempfile.TemporaryDirectory() as tmp:

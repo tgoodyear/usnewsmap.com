@@ -196,7 +196,7 @@ def build_database(
                 END AS word_ratio_vs_loc,
                 ROW_NUMBER() OVER (
                     PARTITION BY r.doc_id, r.reader
-                    ORDER BY (plw.loc_words > 1) DESC, r.hat_determined DESC NULLS LAST, r.hat_version DESC, r.campaign_priority DESC
+                    ORDER BY r.hat_version DESC, (plw.loc_words > 1) DESC, r.hat_determined DESC NULLS LAST, r.campaign_priority DESC
                 ) AS rn
             FROM raw_boinc_pages r
             JOIN page_loc_words plw USING (campaign, doc_id)
