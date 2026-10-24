@@ -47,7 +47,7 @@ use usnm_ocr_contract::{
     },
     qwen::{self, Crop, Readings},
 };
-use usnm_ocr_quality::{align, crops, hat, report::round6};
+use usnm_ocr_quality::{align, crops, hat, page_hat, report::round6};
 
 /// Our ALTO of the page, when a reader of `texts.json` is marked `alto`.
 pub const OURS_FILE: &str = "ours.xml";
@@ -340,6 +340,22 @@ pub struct PageRow {
     pub total_ms: u64,
     pub plan_class: Option<String>,
     pub with_readings: bool,
+    /// Which hat `est_cer`, `est_cer_raw`, `hat_determined`, `hat_residual`
+    /// and `legibility_ceiling` are: 2 (`usnm_ocr_quality::page_hat`,
+    /// passage-matched) where the page's texts were read, else 1 (the
+    /// unit's whole-page hat). A table without this column is 1.
+    pub hat_version: u32,
+    /// The unit's own (version 1) values, whatever `hat_version` is.
+    pub est_cer_v1: Option<f64>,
+    pub est_cer_raw_v1: Option<f64>,
+    pub hat_determined_v1: Option<bool>,
+    pub hat_residual_v1: Option<f64>,
+    pub legibility_ceiling_v1: Option<f64>,
+    /// Version 2: the mean share of this reader's characters placed in the
+    /// other readers' texts (coverage, not error).
+    pub matched: Option<f64>,
+    /// Version 2: the page's pairs (`page_hat::PairD`) as JSON; empty for 1.
+    pub hat_pairs_json: String,
 }
 
 fn compute_ink_word_coverage(
@@ -429,6 +445,47 @@ pub fn enrich_rows_with_damage(rows: &mut [PageRow], texts: &Texts, loc_fallback
     }
 }
 
+/// Replaces the rows' hat with version 2 (`page_hat`), solved on the
+/// passage-matched disagreement over the page's texts as the unit read
+/// them (`slot::reader_inputs`, with LoC's ALTO text from `alto_text` for an
+/// empty LoC text). The unit's values stay in the `*_v1` columns.
+pub fn apply_hat_v2(
+    rows: &mut [PageRow],
+    readers: &[usnm_ocr_contract::quality::ReaderSpec],
+    texts: &Texts,
+    alto_text: impl FnOnce() -> String,
+) {
+    let inputs = usnm_ocr_quality::slot::reader_inputs(readers, texts, alto_text);
+    let named: Vec<(&str, &str)> = inputs
+        .iter()
+        .map(|r| (r.name.as_str(), r.text.as_str()))
+        .collect();
+    let h = page_hat::solve(&named);
+    let pairs_json = serde_json::to_string(&h.pairs).unwrap_or_default();
+    for row in rows {
+        let Some(x) = h.readers.iter().find(|x| x.name == row.reader) else {
+            continue;
+        };
+        row.hat_version = page_hat::VERSION;
+        row.est_cer = x.est_cer;
+        row.est_cer_raw = x.est_cer_raw;
+        row.matched = x.matched;
+        row.hat_determined = Some(h.determined);
+        row.hat_residual = h.residual;
+        row.legibility_ceiling = h.ceiling_est;
+        row.hat_pairs_json = pairs_json.clone();
+    }
+}
+
+/// LoC's ALTO text, for the unit's empty-text fallback; empty when the
+/// ALTO is missing or does not parse (the unit would not have run).
+fn alto_text_of(bytes: Option<&[u8]>) -> String {
+    bytes
+        .and_then(|b| parse_alto(b, 1000.0, 1000.0).ok())
+        .map(|p| usnm_alto::text(&p))
+        .unwrap_or_default()
+}
+
 /// The rows of `pages.parquet` for one result.
 pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<PageRow> {
     let img = r.page.as_ref().and_then(|p| p.image.as_ref());
@@ -502,6 +559,14 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
                 total_ms: r.timings.total_ms,
                 plan_class: r.host.plan_class.clone(),
                 with_readings,
+                hat_version: 1,
+                est_cer_v1: x.est_cer,
+                est_cer_raw_v1: x.est_cer_raw,
+                hat_determined_v1: r.hat.as_ref().map(|h| h.determined),
+                hat_residual_v1: r.hat.as_ref().and_then(|h| h.residual),
+                legibility_ceiling_v1: r.legibility.as_ref().and_then(|l| l.ceiling_est),
+                matched: None,
+                hat_pairs_json: String::new(),
             }
         })
         .collect()
@@ -586,6 +651,14 @@ pub fn bundle_page_rows(
                 total_ms: pr.timings.total_ms,
                 plan_class: plan_class.clone(),
                 with_readings,
+                hat_version: 1,
+                est_cer_v1: x.est_cer,
+                est_cer_raw_v1: x.est_cer_raw,
+                hat_determined_v1: pr.hat.as_ref().map(|h| h.determined),
+                hat_residual_v1: pr.hat.as_ref().and_then(|h| h.residual),
+                legibility_ceiling_v1: pr.legibility.as_ref().and_then(|l| l.ceiling_est),
+                matched: None,
+                hat_pairs_json: String::new(),
             }
         })
         .collect()
@@ -929,12 +1002,15 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok());
             let mut unit_rows = page_rows(&job, &got.result, readings.is_some());
+            let alto_bytes = read(&unit.join(ALTO_FILE), MAX_ALTO)?;
             if let Some(ref texts) = texts_opt {
                 enrich_rows_with_damage(&mut unit_rows, texts, None);
+                apply_hat_v2(&mut unit_rows, &job.readers, texts, || {
+                    alto_text_of(Some(&alto_bytes))
+                });
             }
             pages.extend(unit_rows);
             let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
-            let alto_bytes = read(&unit.join(ALTO_FILE), MAX_ALTO)?;
             if let Some(crops) = crops_for_page(
                 q,
                 surya_crops,
@@ -1009,6 +1085,9 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 if let Ok(t_bytes) = bp.inputs.texts.extract(&bundle_texts, "texts") {
                     if let Ok(page_texts) = serde_json::from_slice::<Texts>(t_bytes) {
                         enrich_rows_with_damage(&mut unit_rows, &page_texts, None);
+                        apply_hat_v2(&mut unit_rows, &bp.readers, &page_texts, || {
+                            alto_text_of(bp.inputs.alto.extract(&bundle_alto, "alto").ok())
+                        });
                     }
                 }
                 pages.extend(unit_rows);
@@ -1478,5 +1557,49 @@ mod tests {
             "cov_ratio {cov_ratio} != word_ratio_vs_loc {:?}",
             ours_row.word_ratio_vs_loc
         );
+    }
+
+    #[test]
+    fn hat_v2_replaces_the_estimate_and_keeps_the_units() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::quality::work::tests::unit(tmp.path());
+        let l = crate::quality::work::prepare(tmp.path()).unwrap();
+        let c = crate::quality::work::compute(&crate::quality::work::Inputs {
+            job: &job,
+            page: &l.page,
+            alto: &l.alto,
+            texts: &l.texts,
+            places: &l.places,
+        })
+        .unwrap();
+        let mut rows = page_rows(&job, &c.result, false);
+        assert!(rows.iter().all(|r| r.hat_version == 1
+            && r.est_cer == r.est_cer_v1
+            && r.hat_pairs_json.is_empty()));
+        let v1: Vec<Option<f64>> = rows.iter().map(|r| r.est_cer).collect();
+        apply_hat_v2(&mut rows, &job.readers, &l.texts, || {
+            alto_text_of(Some(&l.alto))
+        });
+        for (r, old) in rows.iter().zip(&v1) {
+            assert_eq!(r.hat_version, page_hat::VERSION);
+            assert_eq!(&r.est_cer_v1, old);
+            assert!(r.est_cer.is_some(), "{}", r.reader);
+            assert!(r.matched.is_some(), "{}", r.reader);
+            let pairs: Vec<page_hat::PairD> = serde_json::from_str(&r.hat_pairs_json).unwrap();
+            assert_eq!(pairs.len(), 3);
+        }
+        // The fixture's readers are in one order, so both hats rank them
+        // the same.
+        let order = |f: &dyn Fn(&PageRow) -> f64| {
+            let mut v: Vec<(String, f64)> = rows.iter().map(|r| (r.reader.clone(), f(r))).collect();
+            v.sort_by(|a, b| a.1.total_cmp(&b.1));
+            v.into_iter().map(|x| x.0).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(&|r| r.est_cer.unwrap()),
+            order(&|r| r.est_cer_v1.unwrap())
+        );
+        // The columns are typed in Parquet.
+        assert!(to_parquet(&rows).is_ok());
     }
 }

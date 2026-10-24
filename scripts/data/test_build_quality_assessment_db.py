@@ -81,11 +81,18 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             "short_line_share",
             "fraktur_score",
             "ink_word_coverage",
+            "hat_version",
+            "est_cer_v1",
+            "matched",
         ):
             self.assertTrue(
                 any(f"ADD COLUMN IF NOT EXISTS {col}" in s for s in executed),
                 f"missing ADD COLUMN IF NOT EXISTS {col}",
             )
+        self.assertTrue(
+            any(s.startswith("UPDATE raw_boinc_pages SET hat_version = 1") for s in executed),
+            "tables without hat_version must read as version 1",
+        )
 
     @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
     def test_mixed_old_and_new_campaign_schemas_preserve_nulls_for_legacy_measurements(self):

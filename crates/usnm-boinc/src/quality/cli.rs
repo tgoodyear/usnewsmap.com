@@ -209,6 +209,19 @@ pub enum QualityCommands {
         #[arg(long = "reader")]
         readers: Vec<String>,
     },
+    /// Recompute the page hat, version 1 (whole-page cer_sym) and version 2 (passage-matched),
+    /// from a staging root's texts; one JSON line per page and reader (#962).
+    Rehat {
+        /// The campaign's staging root (holds units/).
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        min_readers: usize,
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+    },
     /// Print a Markdown table of the kept results and the logged pairs.
     Summary {
         #[arg(long)]
@@ -417,6 +430,20 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 crop_seed,
                 k_crops,
                 readers,
+            })?;
+            eprintln!("{s:?}");
+        }
+        QualityCommands::Rehat {
+            root,
+            out,
+            min_readers,
+            threads,
+        } => {
+            let s = x::rehat::run(&x::rehat::Options {
+                root,
+                out,
+                min_readers,
+                threads,
             })?;
             eprintln!("{s:?}");
         }

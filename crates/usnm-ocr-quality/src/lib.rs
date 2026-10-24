@@ -10,6 +10,8 @@
 //!   ratio.
 //! - [`hat`]: the three-cornered hat, each reader's own error rate from the
 //!   pairwise disagreements.
+//! - [`page_hat`]: the page hat, version 2, solved on the passage-matched
+//!   disagreement of [`agreement`] (#962).
 //! - [`consensus`]: the words at least two readers agree on, and each
 //!   reader's completeness and precision against them.
 //! - [`findability`]: the share of the consensus content words and place
@@ -33,6 +35,7 @@ pub mod distance;
 pub mod features;
 pub mod findability;
 pub mod hat;
+pub mod page_hat;
 pub mod qwen_pages;
 pub mod report;
 pub mod router;

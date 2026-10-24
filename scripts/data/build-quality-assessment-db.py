@@ -5,7 +5,9 @@ Joins the full-corpus lexical damage manifest (`manifest.parquet`, 1.92M pages
 across 3,664 titles scored by `usnm-ingest ocr-damage`) with all collected
 BOINC `usnm_quality` and `usnm_qwen` campaign tables (`audit/quality/*/pages.parquet`
 and `crops.parquet`), extracts pairwise `cer_vs_loc` / `wer_vs_loc` / `dice_vs_loc` /
-`word_ratio_vs_loc` from `pairs_json` for 2-reader pages, and writes:
+`word_ratio_vs_loc` from `pairs_json` for 2-reader pages, carries `hat_version`
+(1 for tables written before the page hat's version 2, #962; a page seen in
+several campaigns keeps its version 2 row), and writes:
 
 1. Consolidated Parquet tables (`boinc_reader_rows.parquet`,
    `page_quality_joined.parquet`, `title_quality_summary.parquet`,
@@ -112,8 +114,17 @@ def build_database(
         ("ink_word_coverage", "DOUBLE"),
         ("numeric_share", "DOUBLE"),
         ("short_line_share", "DOUBLE"),
+        ("hat_version", "BIGINT"),
+        ("est_cer_v1", "DOUBLE"),
+        ("matched", "DOUBLE"),
     ]:
         con.execute(f"ALTER TABLE raw_boinc_pages ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+    # Tables written before the page hat's version 2 (#962) carry the unit's
+    # whole-page hat: version 1, with est_cer as its own v1 value.
+    con.execute(
+        "UPDATE raw_boinc_pages SET hat_version = 1, est_cer_v1 = est_cer "
+        "WHERE hat_version IS NULL"
+    )
     if crop_parts:
         con.execute(f"CREATE TABLE raw_boinc_crops AS {' UNION ALL BY NAME '.join(crop_parts)}")
         for col_name, col_type in [
@@ -185,7 +196,7 @@ def build_database(
                 END AS word_ratio_vs_loc,
                 ROW_NUMBER() OVER (
                     PARTITION BY r.doc_id, r.reader
-                    ORDER BY (plw.loc_words > 1) DESC, r.hat_determined DESC NULLS LAST, r.campaign_priority DESC
+                    ORDER BY (plw.loc_words > 1) DESC, r.hat_determined DESC NULLS LAST, r.hat_version DESC, r.campaign_priority DESC
                 ) AS rn
             FROM raw_boinc_pages r
             JOIN page_loc_words plw USING (campaign, doc_id)
