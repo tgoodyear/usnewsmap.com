@@ -38,6 +38,8 @@ pub struct Summary {
     pub pages: usize,
     pub few_readers: usize,
     pub no_texts: usize,
+    /// Pages whose LoC text needs the ALTO's, with no ALTO staged.
+    pub no_alto: usize,
     pub rows: usize,
 }
 
@@ -63,16 +65,17 @@ pub struct Row {
 }
 
 /// One page's rows: the unit's hat as `report::analyse` solves it, and
-/// version 2.
+/// version 2; none when a LoC reader needs the ALTO text and `alto_text`
+/// has none, so the unit's texts can't be rebuilt.
 pub fn page(
     campaign: &str,
     doc_id: &str,
     language: &str,
     readers: &[ReaderSpec],
     texts: &Texts,
-    alto_text: impl FnOnce() -> String,
-) -> Vec<Row> {
-    let inputs = slot::reader_inputs(readers, texts, alto_text);
+    alto_text: impl FnOnce() -> Option<String>,
+) -> Option<Vec<Row>> {
+    let inputs = slot::reader_inputs(readers, texts, alto_text)?;
     let named: Vec<(&str, &str)> = inputs
         .iter()
         .map(|r| (r.name.as_str(), r.text.as_str()))
@@ -89,28 +92,30 @@ pub fn page(
     let one = hat::solve(named.len(), &eqs);
     let two = page_hat::solve(&named);
     let names = named.iter().map(|r| r.0).collect::<Vec<_>>().join(",");
-    named
-        .iter()
-        .enumerate()
-        .map(|(i, (name, text))| Row {
-            campaign: campaign.to_owned(),
-            doc_id: doc_id.to_owned(),
-            reader: (*name).to_owned(),
-            readers: names.clone(),
-            chars: usnm_ocr_quality::text::normalize(text, false)
-                .chars()
-                .count(),
-            est_cer_v1: one.determined.then(|| round6(one.estimates[i])),
-            est_cer_raw_v1: one.determined.then(|| round6(one.raw[i])),
-            residual_v1: one.determined.then(|| round6(one.residual)),
-            est_cer_v2: two.readers[i].est_cer,
-            est_cer_raw_v2: two.readers[i].est_cer_raw,
-            residual_v2: two.residual,
-            matched: two.readers[i].matched,
-            damage_rate: damage(text, language),
-            pairs_v2: two.pairs.clone(),
-        })
-        .collect()
+    Some(
+        named
+            .iter()
+            .enumerate()
+            .map(|(i, (name, text))| Row {
+                campaign: campaign.to_owned(),
+                doc_id: doc_id.to_owned(),
+                reader: (*name).to_owned(),
+                readers: names.clone(),
+                chars: usnm_ocr_quality::text::normalize(text, false)
+                    .chars()
+                    .count(),
+                est_cer_v1: one.determined.then(|| round6(one.estimates[i])),
+                est_cer_raw_v1: one.determined.then(|| round6(one.raw[i])),
+                residual_v1: one.determined.then(|| round6(one.residual)),
+                est_cer_v2: two.readers[i].est_cer,
+                est_cer_raw_v2: two.readers[i].est_cer_raw,
+                residual_v2: two.residual,
+                matched: two.readers[i].matched,
+                damage_rate: damage(text, language),
+                pairs_v2: two.pairs.clone(),
+            })
+            .collect(),
+    )
 }
 
 fn damage(text: &str, language: &str) -> Option<f64> {
@@ -120,14 +125,6 @@ fn damage(text: &str, language: &str) -> Option<f64> {
         .and_then(|f| f.damage_rate)
         .or(usnm_core::damage::score(text, &[marc]).damage_rate)
         .map(round6)
-}
-
-fn alto_text(bytes: Option<&[u8]>) -> String {
-    bytes
-        .filter(|b| !b.is_empty())
-        .and_then(|b| super::parse_alto(b, 1000.0, 1000.0).ok())
-        .map(|p| usnm_alto::text(&p))
-        .unwrap_or_default()
 }
 
 fn unit_rows(
@@ -155,14 +152,17 @@ fn unit_rows(
             return Ok(rows);
         };
         let alto = read(&alto_path, MAX_ALTO).ok();
-        rows.extend(page(
+        match page(
             campaign,
             &job.doc_id,
             &job.language,
             &job.readers,
             &texts,
-            || alto_text(alto.as_deref()),
-        ));
+            || super::collect::alto_text_of(alto.as_deref()),
+        ) {
+            Some(r) => rows.extend(r),
+            None => s.no_alto += 1,
+        }
         return Ok(rows);
     }
     let bundle_texts = read(&texts_path, MAX_BUNDLE_TEXTS).unwrap_or_default();
@@ -183,14 +183,17 @@ fn unit_rows(
             s.no_texts += 1;
             continue;
         };
-        rows.extend(page(
+        match page(
             campaign,
             &bp.doc_id,
             &bp.language,
             &bp.readers,
             &texts,
-            || alto_text(bp.inputs.alto.extract(&bundle_alto, "alto").ok()),
-        ));
+            || super::collect::alto_text_of(bp.inputs.alto.extract(&bundle_alto, "alto").ok()),
+        ) {
+            Some(r) => rows.extend(r),
+            None => s.no_alto += 1,
+        }
     }
     Ok(rows)
 }
@@ -233,6 +236,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                         t.pages += s.pages;
                         t.few_readers += s.few_readers;
                         t.no_texts += s.no_texts;
+                        t.no_alto += s.no_alto;
                         t.rows += rows.len();
                         results.lock().unwrap().push((k, rows));
                     }
@@ -299,12 +303,31 @@ mod tests {
             "eng",
             &[spec("loc"), spec("as"), spec("ours")],
             &texts(&[("loc", "none"), ("as", t), ("ours", t)]),
-            || t.to_owned(),
-        );
+            || Some(t.to_owned()),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].chars, t.chars().count());
         assert_eq!(rows[0].est_cer_v2, Some(0.0));
         assert_eq!(rows[0].est_cer_v1, Some(0.0));
         assert_eq!(rows[0].readers, "loc,as,ours");
+    }
+
+    #[test]
+    fn a_missing_alto_skips_the_page_only_when_loc_needs_it() {
+        let t = "the steamer arrived from havre with forty passengers aboard";
+        let readers = [spec("loc"), spec("as"), spec("ours")];
+        let needs = texts(&[("loc", ""), ("as", t), ("ours", t)]);
+        assert!(page("c", "d", "eng", &readers, &needs, || None).is_none());
+        // Truncated staged ALTO reads as missing, not as an empty text.
+        assert_eq!(super::super::collect::alto_text_of(Some(b"")), None);
+        // An ALTO that parses to no words is the empty text the unit read.
+        assert!(page("c", "d", "eng", &readers, &needs, || Some(String::new())).is_some());
+        // LoC's own text: the ALTO isn't asked for.
+        let has = texts(&[("loc", t), ("as", t), ("ours", t)]);
+        assert!(page("c", "d", "eng", &readers, &has, || -> Option<String> {
+            panic!("not needed")
+        })
+        .is_some());
     }
 }

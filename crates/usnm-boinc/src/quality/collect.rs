@@ -88,6 +88,9 @@ pub struct Summary {
     pub failed: usize,
     pub page_rows: usize,
     pub crop_rows: usize,
+    /// Pages whose rows keep the unit's version 1 hat: the texts were not
+    /// readable, or LoC's text needs the ALTO's and no ALTO is staged.
+    pub hat_v1_kept: usize,
 }
 
 /// One row of `crops.parquet`.
@@ -448,14 +451,18 @@ pub fn enrich_rows_with_damage(rows: &mut [PageRow], texts: &Texts, loc_fallback
 /// Replaces the rows' hat with version 2 (`page_hat`), solved on the
 /// passage-matched disagreement over the page's texts as the unit read
 /// them (`slot::reader_inputs`, with LoC's ALTO text from `alto_text` for an
-/// empty LoC text). The unit's values stay in the `*_v1` columns.
+/// empty LoC text). The unit's values stay in the `*_v1` columns. When a
+/// LoC reader needs the ALTO text and `alto_text` has none, the unit's
+/// texts can't be rebuilt: the rows keep version 1 and this returns false.
 pub fn apply_hat_v2(
     rows: &mut [PageRow],
     readers: &[usnm_ocr_contract::quality::ReaderSpec],
     texts: &Texts,
-    alto_text: impl FnOnce() -> String,
-) {
-    let inputs = usnm_ocr_quality::slot::reader_inputs(readers, texts, alto_text);
+    alto_text: impl FnOnce() -> Option<String>,
+) -> bool {
+    let Some(inputs) = usnm_ocr_quality::slot::reader_inputs(readers, texts, alto_text) else {
+        return false;
+    };
     let named: Vec<(&str, &str)> = inputs
         .iter()
         .map(|r| (r.name.as_str(), r.text.as_str()))
@@ -475,15 +482,16 @@ pub fn apply_hat_v2(
         row.legibility_ceiling = h.ceiling_est;
         row.hat_pairs_json = pairs_json.clone();
     }
+    true
 }
 
-/// LoC's ALTO text, for the unit's empty-text fallback; empty when the
-/// ALTO is missing or does not parse (the unit would not have run).
-fn alto_text_of(bytes: Option<&[u8]>) -> String {
+/// LoC's ALTO text, for the unit's empty-text fallback; none when the ALTO
+/// is missing, empty (truncated after submission) or does not parse.
+pub fn alto_text_of(bytes: Option<&[u8]>) -> Option<String> {
     bytes
+        .filter(|b| !b.is_empty())
         .and_then(|b| parse_alto(b, 1000.0, 1000.0).ok())
         .map(|p| usnm_alto::text(&p))
-        .unwrap_or_default()
 }
 
 /// The rows of `pages.parquet` for one result.
@@ -1003,11 +1011,14 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 .and_then(|b| serde_json::from_slice(&b).ok());
             let mut unit_rows = page_rows(&job, &got.result, readings.is_some());
             let alto_bytes = read(&unit.join(ALTO_FILE), MAX_ALTO)?;
-            if let Some(ref texts) = texts_opt {
+            let v2 = texts_opt.as_ref().is_some_and(|texts| {
                 enrich_rows_with_damage(&mut unit_rows, texts, None);
                 apply_hat_v2(&mut unit_rows, &job.readers, texts, || {
                     alto_text_of(Some(&alto_bytes))
-                });
+                })
+            });
+            if !v2 {
+                summary.hat_v1_kept += 1;
             }
             pages.extend(unit_rows);
             let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
@@ -1082,13 +1093,17 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     got.result.host.plan_class.clone(),
                     readings.is_some(),
                 );
+                let mut v2 = false;
                 if let Ok(t_bytes) = bp.inputs.texts.extract(&bundle_texts, "texts") {
                     if let Ok(page_texts) = serde_json::from_slice::<Texts>(t_bytes) {
                         enrich_rows_with_damage(&mut unit_rows, &page_texts, None);
-                        apply_hat_v2(&mut unit_rows, &bp.readers, &page_texts, || {
+                        v2 = apply_hat_v2(&mut unit_rows, &bp.readers, &page_texts, || {
                             alto_text_of(bp.inputs.alto.extract(&bundle_alto, "alto").ok())
                         });
                     }
+                }
+                if !v2 {
+                    summary.hat_v1_kept += 1;
                 }
                 pages.extend(unit_rows);
                 let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
@@ -1577,9 +1592,19 @@ mod tests {
             && r.est_cer == r.est_cer_v1
             && r.hat_pairs_json.is_empty()));
         let v1: Vec<Option<f64>> = rows.iter().map(|r| r.est_cer).collect();
-        apply_hat_v2(&mut rows, &job.readers, &l.texts, || {
+        // A LoC text that needs the ALTO, with none staged: version 1 stays.
+        let mut needs = l.texts.clone();
+        for r in needs.readers.iter_mut().filter(|r| r.name == "loc") {
+            r.text = "none".into();
+        }
+        let before = rows.clone();
+        assert!(!apply_hat_v2(&mut rows, &job.readers, &needs, || {
+            alto_text_of(Some(b""))
+        }));
+        assert_eq!(rows, before);
+        assert!(apply_hat_v2(&mut rows, &job.readers, &l.texts, || {
             alto_text_of(Some(&l.alto))
-        });
+        }));
         for (r, old) in rows.iter().zip(&v1) {
             assert_eq!(r.hat_version, page_hat::VERSION);
             assert_eq!(&r.est_cer_v1, old);

@@ -1241,14 +1241,18 @@ impl QualityCheckpoint {
 /// Each reader's text as the unit compares it: from `texts.json`, with
 /// LoC's ALTO text (`alto_text`, called at most once) standing in for an
 /// empty or `none` LoC text. `collect` calls this too, so the server's hat
-/// sees the texts the unit saw.
+/// sees the texts the unit saw. `alto_text` returns none when the ALTO is
+/// not available (a staged `loc.xml` truncated after submission, say);
+/// then, if a LoC reader needs it, the texts the unit read can't be
+/// rebuilt and this returns none. An ALTO that parses to no words is
+/// `Some("")`, the text the unit used.
 pub fn reader_inputs(
     readers_spec: &[ReaderSpec],
     texts: &Texts,
-    alto_text: impl FnOnce() -> String,
-) -> Vec<ReaderInput> {
+    alto_text: impl FnOnce() -> Option<String>,
+) -> Option<Vec<ReaderInput>> {
     let mut alto_text = Some(alto_text);
-    let mut alto: Option<String> = None;
+    let mut alto: Option<Option<String>> = None;
     readers_spec
         .iter()
         .map(|spec| {
@@ -1261,16 +1265,14 @@ pub fn reader_inputs(
             if (spec.name == "loc" || spec.name == "loc-hist")
                 && (text.trim().is_empty() || text.trim().eq_ignore_ascii_case("none"))
             {
-                if alto.is_none() {
-                    alto = Some(alto_text.take().map(|f| f()).unwrap_or_default());
-                }
-                text = alto.clone().unwrap_or_default();
+                let got = alto.get_or_insert_with(|| alto_text.take().and_then(|f| f()));
+                text = got.clone()?;
             }
-            ReaderInput {
+            Some(ReaderInput {
                 name: spec.name.clone(),
                 source: spec.source.clone(),
                 text,
-            }
+            })
         })
         .collect()
 }
@@ -1301,7 +1303,8 @@ fn compute_page_record(
     };
     let features_ms = ms(t);
     let t = Instant::now();
-    let readers = reader_inputs(readers_spec, texts, || usnm_alto::text(&alto));
+    let readers = reader_inputs(readers_spec, texts, || Some(usnm_alto::text(&alto)))
+        .context("the ALTO text is always available here")?;
     let function_words: BTreeSet<String> = function_words_list
         .iter()
         .map(|w| crate::consensus::fold(w))
