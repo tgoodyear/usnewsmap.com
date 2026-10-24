@@ -122,9 +122,10 @@ pub struct Options {
     /// The queues to take from, in order. `ocr-bulk` alone by default:
     /// a page someone was shown should not wait for a volunteer.
     pub queues: Vec<String>,
-    /// Most claims to make.
+    /// Most claims to make, across all the queues: filled in `queues` order.
     pub max: usize,
-    /// Most messages to receive, claimed or not.
+    /// Most messages to receive from each queue, claimed or not. Each queue has its
+    /// own budget, so a queue of unusable messages can't use up the next one's (#1057).
     pub max_receives: usize,
     pub lease: Duration,
 }
@@ -136,6 +137,18 @@ pub struct Report {
     /// Messages sent back for the nodes: not usable here.
     pub released: usize,
     /// Messages deleted because their page was answered already.
+    pub stale: usize,
+    /// The same counts for each queue read, in the order read.
+    pub queues: Vec<QueueReport>,
+}
+
+/// What `pull` did on one queue.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct QueueReport {
+    pub queue: String,
+    pub claimed: usize,
+    pub received: usize,
+    pub released: usize,
     pub stale: usize,
 }
 
@@ -182,9 +195,12 @@ fn judge(text: &str, src: &Sources<'_>) -> Verdict {
     Verdict::Use(LedgerRow::from_queued(row))
 }
 
-/// Take up to `opts.max` usable messages off the queues. Bulk queues are
-/// peeked first, so one whose front holds nothing usable is not touched.
-/// Priority queues scan within `max_receives` even past an unusable front.
+/// Take up to `opts.max` usable messages off the queues, in `opts.queues` order:
+/// a later queue fills what the earlier ones left. Bulk queues are peeked
+/// first, so one whose front holds nothing usable is not touched. Priority
+/// queues scan even past an unusable front. Each queue is read for at most
+/// `max_receives` messages of its own, so one queue's unusable messages never
+/// use up another's budget.
 /// Claim files are written to `out`; the caller puts them in the container
 /// before anything else, because the pop receipts exist nowhere else.
 ///
@@ -206,12 +222,15 @@ pub async fn pull(
         "a queue message can be hidden for seven days at most"
     );
     std::fs::create_dir_all(out)?;
-    let mut sent_back = HashSet::new();
     let mut claimed = HashSet::new();
     for queue in &opts.queues {
-        if report.claims.len() >= opts.max || report.received >= opts.max_receives {
+        if report.claims.len() >= opts.max {
             break;
         }
+        report.queues.push(QueueReport {
+            queue: queue.clone(),
+            ..QueueReport::default()
+        });
         match src.queue.peek(queue, PEEK).await {
             Ok(front)
                 if queue != PRIORITY
@@ -224,16 +243,19 @@ pub async fn pull(
             // A queue that can't peek is read anyway.
             Ok(_) | Err(_) => {}
         }
-        while report.claims.len() < opts.max && report.received < opts.max_receives {
+        let mut sent_back = HashSet::new();
+        let mut received = 0;
+        while report.claims.len() < opts.max && received < opts.max_receives {
             let Some(msg) = src.queue.receive(queue, opts.lease).await? else {
                 break;
             };
-            report.received += 1;
+            received += 1;
+            report.tally(Event::Received);
             if sent_back.contains(&msg.text) {
                 // The queue is short enough that we met a copy we sent back. Put it
                 // back again, rather than leave it hidden for the lease, and stop.
                 send_back(src.queue, &msg).await?;
-                report.released += 1;
+                report.tally(Event::Released);
                 break;
             }
             let doc = message::decode(&msg.text).ok().map(|(_, key)| key.doc_id());
@@ -242,7 +264,7 @@ pub async fn pull(
                     // A second delivery of a page this pull already holds: the first claim
                     // covers it, and writing a second would replace the first's pop receipt.
                     src.queue.delete(&msg).await?;
-                    report.stale += 1;
+                    report.tally(Event::Stale);
                 }
                 Verdict::Use(ledger) => {
                     claimed.extend(doc.clone());
@@ -266,20 +288,51 @@ pub async fn pull(
                         &serde_json::to_vec_pretty(&claim)?,
                     )?;
                     report.claims.push(claim);
+                    report.tally(Event::Claimed);
                 }
                 Verdict::Stale => {
                     src.queue.delete(&msg).await?;
-                    report.stale += 1;
+                    report.tally(Event::Stale);
                 }
                 Verdict::Skip(_) => {
                     send_back(src.queue, &msg).await?;
                     sent_back.insert(msg.text.clone());
-                    report.released += 1;
+                    report.tally(Event::Released);
                 }
             }
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Event {
+    Received,
+    Claimed,
+    Released,
+    Stale,
+}
+
+impl Report {
+    /// Count `event` on the queue being read and in the run's totals.
+    fn tally(&mut self, event: Event) {
+        let queue = self.queues.last_mut().expect("a queue is being read");
+        match event {
+            Event::Received => {
+                self.received += 1;
+                queue.received += 1;
+            }
+            Event::Claimed => queue.claimed += 1,
+            Event::Released => {
+                self.released += 1;
+                queue.released += 1;
+            }
+            Event::Stale => {
+                self.stale += 1;
+                queue.stale += 1;
+            }
+        }
+    }
 }
 
 /// Put a message back for other receivers ([`Queue::release`]: a copy goes to

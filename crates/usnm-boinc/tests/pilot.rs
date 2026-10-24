@@ -2030,6 +2030,203 @@ mod queue_feed {
         assert_eq!(visible.dequeue_count, 1);
     }
 
+    /// Queue pages `seqs` of the fixture's title on `queue`, each with a ledger row,
+    /// and list the fetched ones on the fetched-scans list (with the fixture's page).
+    async fn queue_many(
+        f: &Fed,
+        listed: &mut HashSet<Fetched>,
+        queue: &str,
+        reason: Reason,
+        seqs: std::ops::RangeInclusive<u32>,
+        fetched_scan: bool,
+    ) {
+        let mut rows = Vec::new();
+        let mut texts = Vec::new();
+        for seq in seqs {
+            let mut message = f.message.clone();
+            message.page = format!("sn00000001/1900-01-01/ed-1/seq-{seq}");
+            message.reason = reason;
+            let doc_id = format!("sn00000001_1900-01-01_ed-1_seq-{seq}");
+            rows.push(ledger::Queued {
+                doc_id: doc_id.clone(),
+                reason: reason.as_str().into(),
+                ..f.queued.clone()
+            });
+            if fetched_scan {
+                listed.insert(Fetched {
+                    batch: "test_pilot".into(),
+                    doc_id,
+                });
+            }
+            texts.push(message.encode());
+        }
+        ledger::write_queued(
+            f.fx.stores.curated.as_ref(),
+            &rows,
+            f.queued.queued_at,
+            &format!("seed-test-{queue}-{}", rows.len()),
+        )
+        .await
+        .unwrap();
+        for text in texts {
+            f.fx.stores.queue.send(queue, &text).await.unwrap();
+        }
+        f.fx.stores
+            .out
+            .put(
+                &fetched::path("v1", "node3", "20261016T000000Z"),
+                fetched::encode("v1", listed).unwrap(),
+                "application/octet-stream",
+            )
+            .await
+            .unwrap();
+    }
+
+    fn claimed_from(report: &claim::Report, queue: &str) -> usize {
+        report.claims.iter().filter(|c| c.queue == queue).count()
+    }
+
+    fn priority_first(max: usize) -> claim::Options {
+        claim::Options {
+            queues: vec![PRIORITY.into(), BULK.into()],
+            max,
+            max_receives: max * 3,
+            lease: Duration::from_secs(3600),
+        }
+    }
+
+    #[tokio::test]
+    async fn unclaimable_priority_does_not_starve_bulk() {
+        // #1057: 500 user requests whose scans aren't fetched yet, read first, used to
+        // spend the whole receive budget, so bulk was never read.
+        let f = fed(true).await;
+        let mut listed: HashSet<Fetched> = [Fetched {
+            batch: "test_pilot".into(),
+            doc_id: DOC.into(),
+        }]
+        .into();
+        queue_many(&f, &mut listed, PRIORITY, Reason::User, 1000..=1499, false).await;
+        queue_many(&f, &mut listed, BULK, Reason::Bulk, 2..=200, true).await;
+        let report = pull_options(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            None,
+            &priority_first(100),
+        )
+        .await;
+        assert_eq!(report.claims.len(), 100);
+        assert_eq!(claimed_from(&report, BULK), 100);
+        assert_eq!(
+            report.queues,
+            vec![
+                claim::QueueReport {
+                    queue: PRIORITY.into(),
+                    claimed: 0,
+                    received: 300,
+                    released: 300,
+                    stale: 0,
+                },
+                claim::QueueReport {
+                    queue: BULK.into(),
+                    claimed: 100,
+                    received: 100,
+                    released: 0,
+                    stale: 0,
+                },
+            ]
+        );
+        assert_eq!(
+            (report.received, report.released, report.stale),
+            (400, 300, 0)
+        );
+        // Every unclaimable request is still on the queue, none of them hidden.
+        let queue = f.fx.stores.queue.as_ref();
+        assert_eq!(queue.approximate_count(PRIORITY).await.unwrap(), 500);
+        assert_eq!(queue.peek(PRIORITY, 32).await.unwrap().len(), 32);
+    }
+
+    #[tokio::test]
+    async fn claimable_priority_goes_first_and_bulk_fills_the_rest() {
+        let f = fed(true).await;
+        let mut listed: HashSet<Fetched> = [Fetched {
+            batch: "test_pilot".into(),
+            doc_id: DOC.into(),
+        }]
+        .into();
+        // Unfetched requests ahead of fetched ones, as on the live queue.
+        queue_many(&f, &mut listed, PRIORITY, Reason::User, 1000..=1019, false).await;
+        queue_many(&f, &mut listed, PRIORITY, Reason::User, 1100..=1129, true).await;
+        queue_many(&f, &mut listed, BULK, Reason::Bulk, 2..=200, true).await;
+        let report = pull_options(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            None,
+            &priority_first(100),
+        )
+        .await;
+        assert_eq!(report.claims.len(), 100);
+        assert_eq!(claimed_from(&report, PRIORITY), 30);
+        // The fixture's own bulk page was sent first, so it is among the 70.
+        assert_eq!(claimed_from(&report, BULK), 70);
+        assert!(report.claims[..30].iter().all(|c| c.queue == PRIORITY));
+        // The 51st receive meets a copy sent back this run, puts it back, and stops.
+        assert_eq!(
+            (report.queues[0].received, report.queues[0].released),
+            (51, 21)
+        );
+        assert_eq!(report.queues[1].received, 70);
+
+        // Bulk first: priority is read only for what bulk leaves, as in plan queue-feed-7.
+        let g = fed(true).await;
+        let mut listed: HashSet<Fetched> = [Fetched {
+            batch: "test_pilot".into(),
+            doc_id: DOC.into(),
+        }]
+        .into();
+        queue_many(&g, &mut listed, PRIORITY, Reason::User, 1100..=1129, true).await;
+        queue_many(&g, &mut listed, BULK, Reason::Bulk, 2..=200, true).await;
+        let opts = claim::Options {
+            queues: vec![BULK.into(), PRIORITY.into()],
+            ..priority_first(100)
+        };
+        let report = pull_options(&g, &g.fx.tmp.path().join("claims"), None, &opts).await;
+        assert_eq!(claimed_from(&report, BULK), 100);
+        assert_eq!(claimed_from(&report, PRIORITY), 0);
+    }
+
+    #[tokio::test]
+    async fn each_queue_stops_at_its_own_budget() {
+        let f = fed(true).await;
+        let mut listed: HashSet<Fetched> = [Fetched {
+            batch: "test_pilot".into(),
+            doc_id: DOC.into(),
+        }]
+        .into();
+        queue_many(&f, &mut listed, PRIORITY, Reason::User, 1000..=1049, false).await;
+        queue_many(&f, &mut listed, PRIORITY, Reason::User, 1100..=1109, true).await;
+        let report = pull_options(
+            &f,
+            &f.fx.tmp.path().join("claims"),
+            None,
+            &priority_first(5),
+        )
+        .await;
+        // 15 receives on priority, all unfetched; bulk (one usable page) still gets its own 15.
+        assert_eq!(
+            (
+                report.queues[0].received,
+                report.queues[0].released,
+                report.queues[0].claimed
+            ),
+            (15, 15, 0)
+        );
+        assert_eq!(
+            (report.queues[1].received, report.queues[1].claimed),
+            (1, 1)
+        );
+        assert_eq!(report.claims.len(), 1);
+    }
+
     #[tokio::test]
     async fn a_page_outside_the_trusted_languages_is_left_for_the_nodes() {
         // The fixture page is German; trust calibrated for English only must not claim it,
