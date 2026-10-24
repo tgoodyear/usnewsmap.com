@@ -441,6 +441,22 @@ enum Command {
         /// back. Without it, only this process's own gaps apply.
         #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
         loc_global_pacer: Option<PathBuf>,
+        /// Copies of LoC's JP2s to ask before LoC, comma-separated: the
+        /// state partners `nbu`, `pst`, `oru` and `scu` (each for its own
+        /// batches) and `wayback`. Only bytes matching the bag's md5 are
+        /// taken. None by default.
+        #[arg(long, env = "USNM_PREFETCH_MIRRORS", value_delimiter = ',')]
+        mirrors: Vec<String>,
+        /// Between requests to one state partner.
+        #[arg(long, env = "USNM_PREFETCH_PARTNER_GAP_MS", default_value_t = 5000)]
+        partner_gap_ms: u64,
+        /// Between requests to the Wayback Machine.
+        #[arg(long, env = "USNM_PREFETCH_WAYBACK_GAP_MS", default_value_t = 5000)]
+        wayback_gap_ms: u64,
+        /// Only pages of these awardees' batches, comma-separated (the
+        /// batch name's first part, e.g. `nbu`); all by default.
+        #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
+        awardees: Vec<String>,
     },
     /// Chronicling America's bulk OCR archives (ALTO with word confidence),
     /// one at a time, inside the host's global LoC budget (#962).
@@ -997,7 +1013,23 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             storage_own_budget,
             batch_cache,
             loc_global_pacer,
+            mirrors,
+            partner_gap_ms,
+            wayback_gap_ms,
+            awardees,
         } => {
+            let mirrors = {
+                let cfg = usnm_ocr_worker::loc::mirror::MirrorConfig {
+                    partner_gap: Duration::from_millis(partner_gap_ms),
+                    wayback_gap: Duration::from_millis(wayback_gap_ms),
+                    ..usnm_ocr_worker::loc::mirror::MirrorConfig::named(&mirrors)?
+                };
+                if cfg.is_empty() {
+                    None
+                } else {
+                    Some(Arc::new(usnm_ocr_worker::loc::mirror::Mirrors::new(cfg)?))
+                }
+            };
             let loc = Arc::new(LocClient::new(LocConfig {
                 global_pacer: loc_global_pacer,
                 api_gap: Duration::from_millis(api_gap_ms),
@@ -1033,6 +1065,12 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 stop_min_titles,
                 item_cooloff: Duration::from_secs(item_cooloff_secs),
                 item_max_cooloffs,
+                mirrors,
+                awardees: awardees
+                    .into_iter()
+                    .map(|a| a.trim().to_owned())
+                    .filter(|a| !a.is_empty())
+                    .collect(),
             };
             let status = prefetch::run(opts, loc, stop_signal()).await?;
             println!("{}", serde_json::to_string(&status)?);
