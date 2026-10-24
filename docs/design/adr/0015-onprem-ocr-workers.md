@@ -4,6 +4,7 @@
 - **Date:** 2026-10 (node grants moved to an Entra group, and monitoring with the Azure Monitor Agent into the nodes' own workspace, 2026-10-10; scans from a local cache, 2026-10-11)
 - **Extends:** ADR-0008 (private networking) and ADR-0009 (Entra identity only)
 - **Amends:** ADR-0009 §2, with one exception: a client secret for Arc onboarding, on a service principal made for one run (decision 1)
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the serving container has its own Arc identity, with decision 2's lockdown, outside the OCR nodes' group)
 
 ## Context
 

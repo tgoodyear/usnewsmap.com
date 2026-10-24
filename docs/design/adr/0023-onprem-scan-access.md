@@ -3,6 +3,7 @@
 - **Status:** Accepted as direction (2026-10-19, maintainer); design only, nothing implemented. The gateway, Entra app registration and tunnel are unselected alternatives. See [design 16](../../notes/2026-10-19-tank-replacement-and-scan-access.md#166-scan-access-for-the-boinc-bridge-outbound-only-staging-chosen-direction)
 - **Date:** 2026-10
 - **Relates to:** ADR-0008, ADR-0009, ADR-0015, ADR-0018, ADR-0019, ADR-0022
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (decision 2 allows one serving container on pve-big, reachable from the internet only through its own Cloudflare Tunnel)
 
 ## Context
 

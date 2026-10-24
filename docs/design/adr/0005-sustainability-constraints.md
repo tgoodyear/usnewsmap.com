@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (decisions 1 to 5: the ceiling covers Cloudflare and on-prem items, a patching duty for the serving host, the tunnel ingress and zone settings as code, a second Cloudflare member and host operator, and what a whole-origin outage serves)
 
 ## Context
 

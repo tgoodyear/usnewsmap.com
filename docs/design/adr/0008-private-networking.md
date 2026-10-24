@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09
 - **Amends:** ADR-0006, which had deferred all network isolation to the growth profile
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (behind `onPremServing`, the lake's opening to the home IP is permanent while serving is on-prem, and Cosmos allows the home IP with its policy exemption)
 
 ## Context
 
