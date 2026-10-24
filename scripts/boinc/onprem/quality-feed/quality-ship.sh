@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Ships the quality feeder's chunks from pve-laptop to the BOINC server and submits them (#962).
+# Runs on pve-laptop as root (usnm-quality-ship.service, from its timer), over the host trust
+# pve-laptop -> pve (home-infra scripts/host-ssh-trust.sh). No usnm data leaves the LAN.
+#
+#   quality-ship.sh --campaign NAME --engine-image sha256:<worker digest>
+#     [--outbox /var/lib/usnm-quality-feed/outbox] [--server-host pve.tjg.fyi] [--server-ct 230]
+#     [--readers loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract]
+#     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--what-if]
+#
+# For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
+#  1. Stops while the server has more than --max-unsent results ready to send (the public
+#     server_status.php?counts=1), so quality never crowds out OCR's units.
+#  2. Copies the chunk into CT230's <share>/quality/<campaign>/incoming/<chunk>/ (tar over ssh).
+#  3. Runs quality_receive.py there: every file against SHA256SUMS, every page's scan present
+#     (so quality-stage never falls back to tile.loc.gov), then files the scans and texts.
+#  4. usnm-boinc-step quality-stage with QUALITY_SCANS_DIR, then quality-submit.
+#  5. Removes the chunk from the outbox, so the feeder makes the next one.
+# A step that fails leaves the chunk in the outbox for the next run; staging and submitting
+# skip what is already done. The step runner allows one step at a time on the host, so a
+# run that meets the controller's step fails and the timer tries again.
+set -euo pipefail
+usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
+die() { echo "error: $*" >&2; exit 1; }
+log() { echo "quality-ship: $*" >&2; }
+HERE=$(cd "$(dirname "$0")" && pwd)
+
+CAMPAIGN="" ENGINE="" OUTBOX=/var/lib/usnm-quality-feed/outbox SERVER=pve.tjg.fyi CT=230
+READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
+BUNDLE=200 MAX_UNSENT=300 MAX_CHUNKS=1 WHAT_IF=false
+SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
+STATUS_URL="https://boinc.usnewsmap.com/server_status.php?counts=1"
+while [ $# -gt 0 ]; do
+  case $1 in
+    --campaign) CAMPAIGN=${2:-}; shift 2 ;;
+    --engine-image) ENGINE=${2:-}; shift 2 ;;
+    --outbox) OUTBOX=${2:-}; shift 2 ;;
+    --server-host) SERVER=${2:-}; shift 2 ;;
+    --server-ct) CT=${2:-}; shift 2 ;;
+    --readers) READERS=${2:-}; shift 2 ;;
+    --bundle-size) BUNDLE=${2:-}; shift 2 ;;
+    --max-unsent) MAX_UNSENT=${2:-}; shift 2 ;;
+    --max-chunks) MAX_CHUNKS=${2:-}; shift 2 ;;
+    --what-if) WHAT_IF=true; shift ;;
+    -h | --help) usage ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[[ $CAMPAIGN =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--campaign: 1-41 of [a-z0-9-]"
+[[ $ENGINE =~ ^sha256:[0-9a-f]{64}$ ]] || die "--engine-image: sha256:<64 hex>"
+[[ $READERS =~ ^[a-z0-9_,-]+$ ]] || die "--readers: comma-separated reader names"
+[[ $BUNDLE =~ ^[0-9]+$ && $MAX_UNSENT =~ ^[0-9]+$ && $MAX_CHUNKS =~ ^[0-9]+$ && $CT =~ ^[0-9]+$ ]] ||
+  die "--bundle-size, --max-unsent, --max-chunks and --server-ct: numbers"
+[[ $SERVER =~ ^[a-z0-9][a-z0-9.-]*$ ]] || die "--server-host: a host name"
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SERVER")
+in_ct() { "${SSH[@]}" pct exec "$CT" -- "$@"; }
+# One bridge step, waiting its turn: the host runs one step at a time, and the priority
+# controller's steps come every few minutes. Tries for up to 30 minutes.
+run_step() {
+  local i err
+  err=$(mktemp)
+  for i in $(seq 60); do
+    if in_ct "$STEP" --env prod --target bridge "$@" > /dev/null 2> "$err"; then
+      rm -f "$err"
+      return 0
+    fi
+    grep -q 'another bridge step is running' "$err" || { cat "$err" >&2; rm -f "$err"; return 1; }
+    [ "$i" -eq 1 ] && log "the step lock is held; waiting"
+    sleep 30
+  done
+  rm -f "$err"
+  die "the step lock stayed held for 30 minutes"
+}
+
+shipped=0
+for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
+  [ -f "$dir/READY" ] || continue
+  [ "$shipped" -lt "$MAX_CHUNKS" ] || break
+  chunk=$(basename "$dir")
+  unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
+    sed -n 's:.*<results_ready_to_send>\([0-9]*\)</results_ready_to_send>.*:\1:p')
+  [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read the server's unsent count"
+  if [ "$unsent" -gt "$MAX_UNSENT" ]; then
+    log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
+    break
+  fi
+  pages=$(cat "$dir/READY")
+  log "$chunk: $pages pages, server unsent $unsent"
+  if $WHAT_IF; then
+    log "would copy $dir to CT $CT on $SERVER, stage it and submit it"
+    shipped=$((shipped + 1))
+    continue
+  fi
+  inc="$SHARE/quality/$CAMPAIGN/incoming"
+  in_ct mkdir -p "$inc"
+  tar -C "$OUTBOX/$CAMPAIGN" -cf - "$chunk" | in_ct tar -x --no-same-owner -C "$inc"
+  out=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$CAMPAIGN" --chunk "$chunk" \
+    < "$HERE/quality_receive.py")
+  IFS=$'\t' read -r sample langs n <<< "$out"
+  [[ $sample =~ ^/project/quality/$CAMPAIGN/incoming/$chunk/sample.jsonl$ && $langs =~ ^[a-z,]+$ && $n =~ ^[0-9]+$ ]] ||
+    die "$chunk: unexpected receive output: $out"
+  log "$chunk: received $n pages ($langs); staging"
+  run_step --step quality-stage \
+    --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_SAMPLE=$sample" --var "QUALITY_GROUP=$CAMPAIGN" \
+    --var "QUALITY_SCANS_DIR=/project/quality/$CAMPAIGN/scans" --var "QUALITY_READERS=$READERS" \
+    --var "QUALITY_ENGINE_IMAGE=$ENGINE" --var "QUALITY_LANGS=$langs" \
+    --var "QUALITY_BUNDLE_SIZE=$BUNDLE" --var "QUALITY_MAX=$((n + 10))" --wait-mins 45
+  log "$chunk: staged; submitting"
+  run_step --step quality-submit \
+    --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30
+  rm -rf "$dir"
+  log "$chunk: submitted and removed from the outbox"
+  shipped=$((shipped + 1))
+done
+log "shipped $shipped chunk(s)"

@@ -1,0 +1,8 @@
+# The feeder's Python packages in CT215 (Debian 12, CPython 3.11), installed with
+# pip install --require-hashes --no-deps --only-binary :all: -r requirements.txt.
+# Pillow 11.3.0 is the bridge image's (contrib-compute/images/bridge/Containerfile),
+# so page.jpg is made the way the quality runner makes it.
+pillow==11.3.0 \
+    --hash=sha256:106064daa23a745510dabce1d84f29137a37224831d88eb4ce94bb187b1d7e5f
+pyarrow==18.1.0 \
+    --hash=sha256:f266a2c0fc31995a06ebd30bcfdb7f615d7278035ec5b1cd71c48d56daaf30b0

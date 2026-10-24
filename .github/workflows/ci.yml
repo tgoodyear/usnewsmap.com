@@ -110,6 +110,10 @@ jobs:
         env:
           USNM_TEST_PGMQ_REQUIRED: '1'
         run: cargo test -p usnm-store --locked pgmq
+      # The OCR-quality results database (#962) on the same image: schema, roles, the
+      # loader's upserts and the ranking queries.
+      - name: usnm_quality schema and roles
+        run: scripts/onprem/quality/ci-check.sh
 
   # The hosting for the stock BOINC server (ADR-0019): shell scripts, XML
   # templates and Bicep. No Rust: the client and bridge are crates/usnm-boinc, whose changes also run this job.

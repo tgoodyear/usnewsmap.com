@@ -1,0 +1,14 @@
+# The quality shipper on pve-laptop (#962): copies the feeder's READY chunks from CT215's
+# outbox to the BOINC server CT230 on pve over the host trust, then stages and submits them
+# with usnm-boinc-step. Settings in /etc/usnm/quality-ship.env.
+[Unit]
+Description=usnewsmap quality shipper (#962)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm/quality-ship.env
+ExecStart=/opt/usnm-quality-feed/quality-ship.sh --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} \
+  --max-unsent ${MAX_UNSENT} --max-chunks ${MAX_CHUNKS} --bundle-size ${BUNDLE_SIZE}
+TimeoutStartSec=3h
