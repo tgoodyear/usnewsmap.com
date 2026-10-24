@@ -293,6 +293,22 @@ impl LocClient {
         }
     }
 
+    /// The main client follows same-host redirects on its own; each hop it
+    /// followed is another LoC request, so it is charged to the global budget
+    /// after the fact (the next slots move on).
+    fn charged(
+        &self,
+        res: reqwest::Result<reqwest::Response>,
+        asked: &str,
+    ) -> reqwest::Result<reqwest::Response> {
+        if let (Ok(r), Some(g)) = (&res, &self.global) {
+            if r.url().as_str() != asked {
+                g.charge(1);
+            }
+        }
+        res
+    }
+
     fn pacer(&self, server: Server) -> &Pacer {
         match server {
             Server::Api => &self.api,
@@ -394,7 +410,7 @@ impl LocClient {
     /// One paced request for the known-good item, outside the caches.
     async fn probe(&self, server: Server, url: &str) -> Result<(), ProbeFailure> {
         self.pacer(server).wait().await;
-        match self.http.get(url).send().await {
+        match self.charged(self.http.get(url).send().await, url) {
             Ok(resp) if self.cfg.html_is_block && html_page(&resp).is_some() => {
                 self.block_hold(server, resp.status(), "html_challenge", retry_after(&resp));
                 Err(ProbeFailure::Blocked(FetchError::Transient(format!(
@@ -430,6 +446,16 @@ impl LocClient {
                     server = server.name(),
                     "the known-good item failed too"
                 );
+                // A 429 or 403 here is LoC pushing back, as on any request.
+                if matches!(
+                    resp.status(),
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
+                ) {
+                    let d = retry_after(&resp)
+                        .map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff));
+                    self.pacer(server).hold(d);
+                    self.push_back(resp.status(), false, d);
+                }
                 Err(ProbeFailure::Failed(retry_after(&resp).map(|(d, _)| d)))
             }
             Err(e) => {
@@ -511,7 +537,7 @@ impl LocClient {
             pacer.wait().await;
             let wait = self.cfg.backoff * attempt;
             let sent = Instant::now();
-            match self.http.get(url).send().await {
+            match self.charged(self.http.get(url).send().await, url) {
                 Ok(resp) if resp.status().is_success() => {
                     if self.cfg.html_is_block {
                         if let Some(why) = html_page(&resp) {

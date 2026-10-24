@@ -141,18 +141,51 @@ enum Fail {
     Blocked(String),
     /// Try again next run.
     Transient(String),
+    /// Stopped, or the run's time is up, before a request went out.
+    Stopped,
+}
+
+/// The `Retry-After` of a response, capped at an hour.
+fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| usnm_core::retry_after::parse(v, std::time::SystemTime::now()))
+        .map(|d| d.min(Duration::from_secs(3600)))
+}
+
+fn is_html(resp: &reqwest::Response) -> bool {
+    resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("text/html"))
 }
 
 impl Fetcher {
-    /// GET `url`, following redirects by hand, each request paced.
-    async fn open(&self, url: &str) -> Result<reqwest::Response, Fail> {
+    /// GET `url`, following redirects by hand, each request paced. Stops
+    /// before any request once `stop` is set or `deadline` has passed,
+    /// including while waiting for a slot.
+    async fn open(
+        &self,
+        url: &str,
+        stop: &watch::Receiver<bool>,
+        deadline: Instant,
+    ) -> Result<reqwest::Response, Fail> {
         let mut at =
             reqwest::Url::parse(url).map_err(|e| Fail::Transient(format!("{url}: {e}")))?;
         for _ in 0..5 {
             if !allowed(&at) {
                 return Err(Fail::Transient(format!("{at}: not an https loc.gov URL")));
             }
-            self.pacer.wait().await;
+            let mut stop = stop.clone();
+            tokio::select! {
+                () = self.pacer.wait() => {}
+                _ = stop.wait_for(|s| *s) => return Err(Fail::Stopped),
+                () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
+            }
+            if *stop.borrow() || Instant::now() >= deadline {
+                return Err(Fail::Stopped);
+            }
             let resp = self
                 .http
                 .get(at.clone())
@@ -170,40 +203,33 @@ impl Fetcher {
                 at = to;
                 continue;
             }
-            if matches!(
-                status,
-                StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
-            ) {
-                let d = resp
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| usnm_core::retry_after::parse(v, std::time::SystemTime::now()))
-                    .unwrap_or(Duration::from_secs(3600))
-                    .min(Duration::from_secs(3600));
+            // An HTML page is a challenge or block page whatever its status.
+            if is_html(&resp)
+                || matches!(
+                    status,
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
+                )
+            {
+                let d = retry_after(&resp).unwrap_or(Duration::from_secs(3600));
                 self.global.hold(d);
-                self.global
-                    .slow_down(&format!("bulk OCR: HTTP {}", status.as_u16()));
-                return Err(Fail::Blocked(format!("{at}: HTTP {}", status.as_u16())));
+                let why = if is_html(&resp) {
+                    format!("HTTP {} with an HTML page", status.as_u16())
+                } else {
+                    format!("HTTP {}", status.as_u16())
+                };
+                self.global.slow_down(&format!("bulk OCR: {why}"));
+                return Err(Fail::Blocked(format!("{at}: {why}")));
             }
             if !status.is_success() {
                 if status.is_server_error() {
-                    self.pacer.hold(Duration::from_secs(300));
+                    // This run's own pacer, not the host's budget: a 503 is load.
+                    self.pacer.hold(
+                        retry_after(&resp)
+                            .unwrap_or(Duration::ZERO)
+                            .max(Duration::from_secs(300)),
+                    );
                 }
                 return Err(Fail::Transient(format!("{at}: HTTP {}", status.as_u16())));
-            }
-            let html = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.to_ascii_lowercase().contains("text/html"));
-            if html {
-                self.global.hold(Duration::from_secs(3600));
-                self.global
-                    .slow_down("bulk OCR: an HTML page instead of the archive");
-                return Err(Fail::Blocked(format!(
-                    "{at}: an HTML page instead of the archive"
-                )));
             }
             return Ok(resp);
         }
@@ -216,10 +242,11 @@ impl Fetcher {
         a: &Archive,
         out: &Path,
         stop: &watch::Receiver<bool>,
+        deadline: Instant,
     ) -> Result<u64, Fail> {
         let path = out.join(&a.archive_name);
         let part = out.join(format!("{}.part", a.archive_name));
-        let mut resp = self.open(&a.url).await?;
+        let mut resp = self.open(&a.url, stop, deadline).await?;
         if let Some(len) = resp.content_length() {
             if len != a.size {
                 return Err(Fail::Transient(format!(
@@ -236,7 +263,7 @@ impl Fetcher {
         loop {
             if *stop.borrow() {
                 let _ = tokio::fs::remove_file(&part).await;
-                return Err(Fail::Transient("stopped".into()));
+                return Err(Fail::Stopped);
             }
             let chunk = match resp.chunk().await {
                 Ok(Some(c)) => c,
@@ -335,9 +362,14 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
     };
     let list_path = opts.out.join("datasets.json");
     if !list_path.exists() {
-        let mut resp = f.open(&opts.list_url).await.map_err(|e| match e {
-            Fail::Blocked(m) | Fail::Transient(m) => anyhow::anyhow!("the datasets list: {m}"),
-        })?;
+        let far = Instant::now() + Duration::from_secs(24 * 3600);
+        let mut resp = f
+            .open(&opts.list_url, &stop, far)
+            .await
+            .map_err(|e| match e {
+                Fail::Blocked(m) | Fail::Transient(m) => anyhow::anyhow!("the datasets list: {m}"),
+                Fail::Stopped => anyhow::anyhow!("stopped"),
+            })?;
         let mut body = Vec::new();
         while let Some(c) = resp.chunk().await? {
             body.extend_from_slice(&c);
@@ -395,6 +427,9 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
             s.state = "limit".into();
             break;
         }
+        // Downloads restart rather than resume: a partial from an earlier run
+        // goes before the space is counted.
+        let _ = tokio::fs::remove_file(opts.out.join(format!("{}.part", a.archive_name))).await;
         if free_bytes(&opts.out) < a.size.saturating_add(opts.min_free_bytes) {
             s.state = "disk".into();
             result = Err(anyhow::anyhow!(
@@ -406,7 +441,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
             break;
         }
         let t = Instant::now();
-        match f.fetch(a, &opts.out, &stop).await {
+        match f.fetch(a, &opts.out, &stop, deadline).await {
             Ok(n) => {
                 downloading += t.elapsed();
                 s.done += 1;
@@ -414,6 +449,14 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
                 s.bytes_done += n;
                 s.bytes_this_run += n;
                 tracing::info!(archive = %a.archive_name, bytes = n, secs = t.elapsed().as_secs(), "bulk OCR archive fetched");
+            }
+            Err(Fail::Stopped) => {
+                s.state = if *stop.borrow() {
+                    "stopped".into()
+                } else {
+                    "paused".into()
+                };
+                break;
             }
             Err(Fail::Blocked(m)) => {
                 s.state = "blocked".into();
