@@ -216,6 +216,12 @@ pub fn score_page(row: &CuratedRow, as_text: &str, languages: &[&str]) -> PageRo
         loc.words = clamp(g.pair.words_a);
         as_.chars = clamp(g.pair.chars_b);
         as_.words = clamp(g.pair.words_b);
+    } else {
+        for (r, text) in [(&mut loc, loc_text), (&mut as_, as_text)] {
+            let n = usnm_ocr_quality::text::normalize(text, false);
+            r.chars = clamp(n.chars().count());
+            r.words = clamp(usnm_ocr_quality::text::py_split(&n).len());
+        }
     }
     PageRow {
         doc_id: k.doc_id(),
@@ -1038,6 +1044,8 @@ mod tests {
         let r = score_page(&row(Some(&long), TextStatus::Ok), AS, &["eng"]);
         assert_eq!(r.skipped, Some(SKIP_TOO_LONG));
         assert!(r.agreement.is_none());
+        assert_eq!(r.loc.words as usize, MAX_TEXT / 5 + 1);
+        assert!(r.as_.chars > 0);
     }
 
     #[test]
