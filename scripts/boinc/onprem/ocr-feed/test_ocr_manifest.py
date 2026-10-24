@@ -30,6 +30,18 @@ class PendingTest(unittest.TestCase):
                      "at": dt.datetime(2026, 10, 24, 3, tzinfo=UTC)}]
         self.assertEqual(len(m.pending(queued, outcomes, ["user"])), 1)
 
+    def test_later_outcomes_end_a_page_but_an_unroutable_dead_letter_does_not(self):
+        at = dt.datetime(2026, 10, 24, 3, tzinfo=UTC)
+        queued = [q("sn1_1900-01-01_ed-1_seq-1", "user", 1), q("sn1_1900-01-01_ed-1_seq-2", "user", 1),
+                  q("sn1_1900-01-01_ed-1_seq-3", "user", 1)]
+        outcomes = [
+            {"doc_id": "sn1_1900-01-01_ed-1_seq-1", "outcome": "not_sent", "cause": None, "at": at},
+            {"doc_id": "sn1_1900-01-01_ed-1_seq-2", "outcome": "dead_lettered", "cause": "max_dequeues", "at": at},
+            {"doc_id": "sn1_1900-01-01_ed-1_seq-3", "outcome": "dead_lettered", "cause": "unroutable", "at": at},
+        ]
+        got = [x["doc_id"][-5:] for x in m.pending(queued, outcomes, ["user"])]
+        self.assertEqual(got, ["seq-3"])
+
     def test_reasons_not_asked_for_and_bad_ids_are_left_out(self):
         queued = [q("sn1_1900-01-01_ed-1_seq-1", "bulk", 1), q("not a page", "user", 1)]
         self.assertEqual(m.pending(queued, [], ["user"]), [])

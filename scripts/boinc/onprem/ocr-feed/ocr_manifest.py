@@ -132,9 +132,11 @@ def cached_rows(lake, state, kind, days, columns):
     return rows
 
 
-def staged_docs(scan_server):
-    """doc_ids with a full-size scan on the scan server (its index, read as a stream)."""
-    out = set()
+def staged_pairs(scan_server):
+    """(batch, doc_id) of every full-size scan the fetcher has written, with the index line:
+    the scan server's index, read as a stream. The index is fetch history: a buffer scan
+    can have been read and deleted since, so [`available`] checks the ones that matter."""
+    out = {}
     req = urllib.request.Request(f"{scan_server.rstrip('/')}/index/full.jsonl", headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=300) as r:
         for line in io.TextIOWrapper(r, encoding="utf-8"):
@@ -142,9 +144,30 @@ def staged_docs(scan_server):
                 row = json.loads(line)
             except ValueError:
                 continue
-            if row.get("resolution", "full") == "full" and row.get("doc_id"):
-                out.add(row["doc_id"])
+            if row.get("resolution", "full") == "full" and row.get("doc_id") and row.get("batch"):
+                out[(row["batch"], row["doc_id"])] = row
     return out
+
+
+def available(scan_server, row):
+    """Whether the scan an index line names is still on the scan server (a HEAD, keep set
+    then buffer set: the line doesn't say which)."""
+    m = DOC_RE.match(row["doc_id"])
+    if not m:
+        return False
+    ext = "jp2" if row.get("format") == "jp2" else "jpg"
+    rel = f"{row['batch']}/{m['lccn']}/{m['date']}/{int(m['ed'])}/{int(m['seq'])}.{ext}"
+    for s in ("keep", "buffer"):
+        req = urllib.request.Request(f"{scan_server.rstrip('/')}/scans/{s}/{rel}", method="HEAD",
+                                     headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                if r.status == 200:
+                    return True
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+    return False
 
 
 def damage_of(copy, batch, bv, docs):
@@ -158,11 +181,18 @@ def damage_of(copy, batch, bv, docs):
 
 
 def pending(queued, outcomes, reasons):
-    """The newest queue record of each page not finished since, in priority order."""
-    done = {}
+    """The newest queue record of each page still outstanding, in priority order. As
+    usnm-ocr-local's Ledger::outstanding: a page is outstanding with no outcome, with an
+    outcome older than its newest queue record, or when that outcome is a dead letter for
+    `unroutable` (it goes round again); any other later outcome (imported, not_sent, a
+    terminal dead letter) ends it."""
+    latest = {}
     for o in outcomes:
-        if o.get("outcome") in ("imported", "published") and o.get("at"):
-            done[o["doc_id"]] = max(done.get(o["doc_id"], o["at"]), o["at"])
+        if not o.get("at"):
+            continue
+        cur = latest.get(o["doc_id"])
+        if cur is None or o["at"] >= cur["at"]:
+            latest[o["doc_id"]] = o
     last = {}
     for q in queued:
         if q.get("reason") not in reasons or not DOC_RE.match(q.get("doc_id") or ""):
@@ -170,7 +200,13 @@ def pending(queued, outcomes, reasons):
         cur = last.get(q["doc_id"])
         if cur is None or q["queued_at"] > cur["queued_at"]:
             last[q["doc_id"]] = q
-    out = [q for d, q in last.items() if d not in done or done[d] < q["queued_at"]]
+
+    def outstanding(q):
+        o = latest.get(q["doc_id"])
+        return (o is None or o["at"] < q["queued_at"]
+                or (o.get("outcome") == "dead_lettered" and o.get("cause") == "unroutable"))
+
+    out = [q for q in last.values() if outstanding(q)]
     rank = {r: i for i, r in enumerate(reasons)}
     out.sort(key=lambda q: (rank[q["reason"]], q["queued_at"], q["doc_id"]))
     return out
@@ -222,21 +258,35 @@ def cmd_build(a):
     if not reasons or not all(re.match(r"^[a-z]+$", r) for r in reasons):
         sys.exit("--reasons: comma-separated reasons, such as user,bulk")
     last_path = os.path.join(a.state, "last.json")
-    staged = staged_docs(a.scan_server)
+    index = staged_pairs(a.scan_server)
     if os.path.exists(last_path):
         with open(last_path) as f:
             last = json.load(f)
-        on = sum(1 for d in last["docs"] if d in staged)
+        pairs = [tuple(p) for p in last.get("pairs", [])]
+        on = sum(1 for p in pairs if p in index)
+        if not pairs and last.get("docs"):  # written before pairs were kept
+            docs = {d for _, d in index}
+            pairs = last["docs"]
+            on = sum(1 for d in pairs if d in docs)
         age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last["at"])
-        if on < 0.9 * len(last["docs"]) and age < dt.timedelta(days=1):
+        if on < 0.9 * len(pairs) and age < dt.timedelta(days=1):
             log("the last manifest is still being fetched; nothing new", manifest=last["name"],
-                on_server=on, pages=len(last["docs"]))
+                on_server=on, pages=len(pairs))
             return
     lake = Lake(a.curated_url)
     queued = cached_rows(lake, a.state, "queued", a.days,
                          ["doc_id", "batch", "batch_version", "reason", "language", "queued_at"])
-    outcomes = cached_rows(lake, a.state, "outcomes", a.days, ["doc_id", "outcome", "at"])
-    todo = [q for q in pending(queued, outcomes, reasons) if q["doc_id"] not in staged][: a.max_pages]
+    outcomes = cached_rows(lake, a.state, "outcomes", a.days, ["doc_id", "outcome", "cause", "at"])
+    todo, checked = [], 0
+    for q in pending(queued, outcomes, reasons):
+        if len(todo) >= a.max_pages:
+            break
+        row = index.get((q["batch"], q["doc_id"]))
+        if row is not None:
+            checked += 1
+            if available(a.scan_server, row):
+                continue  # on the scan server now
+        todo.append(q)
     by_reason = {}
     for q in todo:
         by_reason[q["reason"]] = by_reason.get(q["reason"], 0) + 1
@@ -262,9 +312,9 @@ def cmd_build(a):
             sys.exit(f"the scan server answered {r.status} for {url}")
     with open(last_path + ".tmp", "w") as f:
         json.dump({"name": name, "at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                   "docs": [r["doc_id"] for r in rows]}, f)
+                   "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
-    log("queued a manifest", manifest=name, pages=len(rows), by_reason=by_reason)
+    log("queued a manifest", manifest=name, pages=len(rows), by_reason=by_reason, rechecked=checked)
 
 
 def main(argv=None):
