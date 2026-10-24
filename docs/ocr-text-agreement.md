@@ -59,7 +59,7 @@ usnm-ingest --curated <curated dir> --reference <reference dir> --state-file <fi
 ```
 
 - `--sample-pct` scores only the pages the damage audit's sampler picks (BLAKE2b of the `doc_id`), into `text-agreement/v1/sample-<cut>/`, so a sample never stands in for the full tables.
-- Each batch version gets `<batch>_verNN.parquet` (one row per page with American Stories' text) and then `<batch>_verNN.summary.json` (fixed-bin histograms, `cer_sym` by decade, and the American Stories parts read, with their sha256). The summary marks the batch done: a rerun skips it, so a stopped run continues where it left off.
+- Each batch version gets `<batch>_verNN.parquet` (one row per page with American Stories' text) and then `<batch>_verNN.summary.json` (fixed-bin histograms with an overflow count, `cer_sym` and `local_cer_sym` by decade, the American Stories parts read with their sha256, and each title's catalog languages). The summary marks the batch done: a rerun skips it, so a stopped run continues where it left off. A rerun keeps a batch only if its summary has this metric version, the American Stories parts the batch would read now and the same title languages. Otherwise the run stops and names the two files to delete, and it does the same for a table found without its summary. A run also refuses a curated store with no finished American Stories parts.
 - After a run over every batch, `versions/<version>.json` lists the tables and `versions/<version>.summary.json` sums the histograms with their quantiles.
 - It writes only to `--out`, never to `curated`. It logs counts and doc_ids, never text.
 
