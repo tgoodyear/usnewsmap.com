@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context};
 use clap::Args;
-use usnm_ingest::release::Published;
+use usnm_ingest::owner_id;
+use usnm_ingest::release::{self, Published};
 use usnm_ingest::state::State;
 
 use crate::Cli;
@@ -35,10 +36,18 @@ pub(crate) struct SeedStateArgs {
 /// (docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"): prune then keeps it as
 /// a newer published run, rollback or not. A failed earlier attempt of
 /// the same name is replaced; another published version of it stops this.
+/// With `--current`, after the promotion, it also makes `ops/current` name
+/// the version ("Index storage cutover").
 #[derive(Args)]
 pub(crate) struct ImportStagedRunArgs {
     #[arg(long)]
     version: String,
+    /// Also record the version as the pipeline state's current one
+    /// (`ops/current`), which a staged release leaves unchanged. Refused
+    /// unless `current.json` already names it and its run is published.
+    /// Takes the writer lock like a release.
+    #[arg(long)]
+    current: bool,
 }
 
 /// Copy objects from one store to another: the lake's `reference` into
@@ -158,15 +167,28 @@ pub(crate) async fn import_staged_run_command(
     state: State,
     args: &ImportStagedRunArgs,
 ) -> anyhow::Result<Option<Published>> {
-    let ImportStagedRunArgs { version } = args;
-    let (run, _) = usnm_ingest::onprem::import_staged_run(
-        &state,
-        usnm_store::open(&cli.stores.reference)?.as_ref(),
-        version,
-    )
-    .await?
-    .with_context(|| format!("no run for {version} in the state or its snapshot"))?;
+    let ImportStagedRunArgs { version, current } = args;
+    let reference = usnm_store::open(&cli.stores.reference)?;
+    let (run, _) = usnm_ingest::onprem::import_staged_run(&state, reference.as_ref(), version)
+        .await?
+        .with_context(|| format!("no run for {version} in the state or its snapshot"))?;
     tracing::info!(version, new_index = %run.new_index, status = ?run.status, "staged run recorded");
+    if *current {
+        // Under the writer lock, so no release publishes between reading
+        // current.json and writing ops/current.
+        let owner = owner_id();
+        let lease = release::lock_writer(&state, &owner).await?;
+        let recorded = usnm_ingest::onprem::record_current(&state, reference.as_ref(), &run).await;
+        let unlocked = release::unlock_writer(&state, &owner, lease).await;
+        let recorded = recorded?;
+        unlocked?;
+        let previous = recorded.previous.as_deref().unwrap_or("");
+        if recorded.changed() {
+            tracing::warn!(version, previous, "ops/current set to the promoted version");
+        } else {
+            tracing::info!(version, "ops/current already names the promoted version");
+        }
+    }
     Ok(None)
 }
 
@@ -187,4 +209,158 @@ pub(crate) async fn mirror_store_command(
     )
     .await?;
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Command;
+    use clap::Parser;
+    use std::sync::Arc;
+    use usnm_ingest::docs::{DocStore, MemoryDocs};
+    use usnm_ingest::state::{IndexRun, RunStatus, OPS};
+    use usnm_store::ObjectStore;
+
+    /// A lake `reference` holding `v2`'s staged run record and a
+    /// `current.json` naming `live`, and a state whose `ops/current` names `v1`.
+    struct Lake {
+        tmp: tempfile::TempDir,
+        docs: Arc<MemoryDocs>,
+        state: State,
+    }
+
+    async fn lake(live: &str) -> Lake {
+        let tmp = tempfile::tempdir().unwrap();
+        let reference = usnm_store::LocalStore::new(tmp.path());
+        let now = chrono::Utc::now();
+        let run = IndexRun {
+            id: "v2".into(),
+            index_version: "v2".into(),
+            full: true,
+            indexes: vec!["base2".into()],
+            new_index: "base2".into(),
+            batch_count: Some(1),
+            batch_list: Some("v2/batches.json".into()),
+            batches: None,
+            status: RunStatus::Published,
+            docs: 5,
+            pages: 5,
+            duplicate_pages: 0,
+            started_at: now,
+            published_at: Some(now),
+            previous_version: Some("v1".into()),
+            last_error: None,
+            failed_at: None,
+            build: None,
+        };
+        reference
+            .put(
+                "v2/index_run.json",
+                serde_json::to_vec(&run).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        reference
+            .put(
+                "current.json",
+                serde_json::to_vec(&serde_json::json!({"index_version": live})).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let docs = Arc::new(MemoryDocs::default());
+        let state = State::new(docs.clone());
+        state.set_current_version("v1").await.unwrap();
+        Lake { tmp, docs, state }
+    }
+
+    impl Lake {
+        async fn import(&self, extra: &[&str]) -> anyhow::Result<Option<Published>> {
+            let reference = self.tmp.path().to_str().unwrap();
+            let mut args = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                reference,
+                "import-staged-run",
+                "--version",
+                "v2",
+            ];
+            args.extend_from_slice(extra);
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Command::ImportStagedRun(a) = &cli.command else {
+                panic!("not import-staged-run");
+            };
+            import_staged_run_command(&cli, self.state.clone(), a).await
+        }
+
+        async fn current(&self) -> Option<String> {
+            self.state.current_version().await.unwrap()
+        }
+
+        /// `ops/current`'s ETag: it changes with every write.
+        async fn current_etag(&self) -> String {
+            self.docs
+                .get(OPS, "current", "current")
+                .await
+                .unwrap()
+                .unwrap()
+                .etag
+        }
+    }
+
+    /// Without `--current` the run is recorded and `ops/current` isn't
+    /// touched, even after the promotion.
+    #[tokio::test]
+    async fn import_alone_leaves_the_current_version() {
+        let l = lake("v2").await;
+        let etag = l.current_etag().await;
+        l.import(&[]).await.unwrap();
+        let (run, _) = l.state.run("v2").await.unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Published);
+        assert_eq!(l.current().await.as_deref(), Some("v1"));
+        assert_eq!(l.current_etag().await, etag);
+    }
+
+    /// With `--current` after the promotion, `ops/current` names the
+    /// version; again, it is left as it is.
+    #[tokio::test]
+    async fn current_records_the_promoted_version() {
+        let l = lake("v2").await;
+        l.import(&["--current"]).await.unwrap();
+        assert_eq!(l.current().await.as_deref(), Some("v2"));
+        let etag = l.current_etag().await;
+        l.import(&["--current"]).await.unwrap();
+        assert_eq!(l.current().await.as_deref(), Some("v2"));
+        assert_eq!(
+            l.current_etag().await,
+            etag,
+            "no write when already current"
+        );
+        // The writer lock is free again.
+        release::lock_writer(&l.state, "next-release")
+            .await
+            .unwrap();
+    }
+
+    /// Before the promotion `--current` is refused: the run is still
+    /// recorded, `ops/current` keeps the serving version.
+    #[tokio::test]
+    async fn current_is_refused_before_the_promotion() {
+        let l = lake("v1").await;
+        let etag = l.current_etag().await;
+        let e = l.import(&["--current"]).await.unwrap_err();
+        assert!(
+            format!("{e:#}").contains("current.json names `v1`, not `v2`"),
+            "{e:#}"
+        );
+        assert!(l.state.run("v2").await.unwrap().is_some());
+        assert_eq!(l.current().await.as_deref(), Some("v1"));
+        assert_eq!(l.current_etag().await, etag);
+        release::lock_writer(&l.state, "next-release")
+            .await
+            .unwrap();
+    }
 }
