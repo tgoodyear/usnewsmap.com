@@ -42,5 +42,5 @@ SELECT lccn, count(*) AS pages,
        sum(has_image_features::int) AS imaged_pages
 FROM quality.page_summary
 GROUP BY lccn
-ORDER BY sum((damage_rate > 0.25)::int) DESC, lccn
+ORDER BY sum((damage_rate > 0.25)::int) DESC NULLS LAST, lccn
 LIMIT :limit;

@@ -89,6 +89,30 @@ class FeedTest(unittest.TestCase):
             self.assertIn("would ask LoC", str(e.exception))
 
 
+    def test_after_submit_frees_copies_once_every_bundle_is_submitted(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp = Path(d, "quality", "v1-test")
+            doc = "sn1_1900-01-01_ed-1_seq-1"
+            inc = camp / "incoming" / "c00001"
+            inc.mkdir(parents=True)
+            (inc / "sample.jsonl").write_text(json.dumps({"doc_id": doc}) + "\n")
+            for rel in (f"scans/{doc}.jpg", f"texts/{doc}.json", f"pages/{doc}/page.jpg", f"pages/{doc}/quality.json",
+                        "units/bundle-00001/page.jpg"):
+                (camp / rel).parent.mkdir(parents=True, exist_ok=True)
+                (camp / rel).write_text("x")
+            args = ["--campaign", "v1-test", "--chunk", "c00001", "--share", d, "--after-submit"]
+            with self.assertRaises(SystemExit):
+                receive.main(args)
+            (camp / "units/bundle-00001/submitted").write_text("wu\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                receive.main(args)
+            self.assertFalse((camp / f"scans/{doc}.jpg").exists())
+            self.assertFalse((camp / f"pages/{doc}/page.jpg").exists())
+            self.assertTrue((camp / f"pages/{doc}/quality.json").exists())
+            self.assertTrue((camp / "units/bundle-00001/page.jpg").exists())
+            self.assertFalse(inc.exists())
+
+
 class LoadTest(unittest.TestCase):
     def test_numbers_from_strings_and_nan(self):
         self.assertEqual(loader.num("0.25"), 0.25)

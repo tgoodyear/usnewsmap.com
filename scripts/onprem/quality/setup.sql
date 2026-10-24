@@ -189,9 +189,12 @@ WITH unit AS (
   WHERE u.outcome = 'ok'
   ORDER BY u.doc_id, c.loaded_at DESC
 ), loc AS (
-  SELECT r.doc_id, r.est_cer, r.completeness
+  -- A unit can name both loc (from its ALTO) and loc-hist (the curated text): one row a
+  -- page, loc-hist first, as the waves have read LoC.
+  SELECT DISTINCT ON (r.doc_id) r.doc_id, r.est_cer, r.completeness
   FROM unit JOIN quality.reader_scores r USING (campaign, doc_id)
   WHERE r.reader IN ('loc', 'loc-hist')
+  ORDER BY r.doc_id, (r.reader = 'loc-hist') DESC
 ), ours AS (
   SELECT r.doc_id, min(r.est_cer) AS best_ours_est_cer
   FROM unit JOIN quality.reader_scores r USING (campaign, doc_id)

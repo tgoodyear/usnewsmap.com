@@ -5,7 +5,7 @@ quality-ship.sh runs it in CT230 as `python3 - --campaign C --chunk c00001` with
 stdin, after it has unpacked the chunk into <share>/quality/<campaign>/incoming/<chunk>/.
 
   quality_receive.py --campaign NAME --chunk NAME [--share /srv/usnm-boinc/project]
-      [--places-from v1-wave9]
+      [--places-from v1-wave9] [--after-submit]
 
 It checks every file against the chunk's SHA256SUMS and that every page in sample.jsonl has
 its scans/<doc_id>.jpg and .xml and texts/<doc_id>.json. quality-stage takes a page whose
@@ -13,6 +13,12 @@ scan is missing from tile.loc.gov, so that check is what keeps the BOINC server 
 asking LoC for a page. It then moves the scans and texts into the campaign's scans/ and
 texts/, copies places.txt from --places-from once, and prints the sample's path inside the
 bridge container (/project/...) and its languages, tab-separated, for the stage step.
+
+--after-submit, once quality-submit has handed every bundle to create_work (each has its
+`submitted` marker), frees the chunk's copies the server no longer needs: the received scans
+and texts, the per-page units' page.jpg, loc.xml and texts.json (their quality.json stays, so
+staging never takes the page again), and incoming/<chunk>. The bundle units keep their files
+(qwen stage cuts crops from them) and submit has copied them into the download tree.
 """
 import argparse
 import hashlib
@@ -32,12 +38,35 @@ def fail(msg):
     sys.exit(f"error: {msg}")
 
 
+def after_submit(camp, inc):
+    units = os.path.join(camp, "units")
+    bundles = [d for d in os.listdir(units) if os.path.isdir(os.path.join(units, d))] if os.path.isdir(units) else []
+    if not bundles or any(not os.path.exists(os.path.join(units, b, "submitted")) for b in bundles):
+        fail("a bundle has no submitted marker; nothing freed")
+    with open(os.path.join(inc, "sample.jsonl")) as f:
+        docs = [json.loads(line)["doc_id"] for line in f]
+    freed = 0
+    for d in docs:
+        if not DOC_RE.match(d):
+            fail(f"not a page id: {d}")
+        paths = [os.path.join(camp, "scans", f"{d}.jpg"), os.path.join(camp, "scans", f"{d}.xml"),
+                 os.path.join(camp, "texts", f"{d}.json"), os.path.join(camp, "texts", f"{d}.ours.xml")]
+        paths += [os.path.join(camp, "pages", d, n) for n in ("page.jpg", "loc.xml", "texts.json")]
+        for p in paths:
+            if os.path.isfile(p):
+                freed += os.path.getsize(p)
+                os.remove(p)
+    shutil.rmtree(inc)
+    print(f"freed {freed} bytes for {len(docs)} pages")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--campaign", required=True)
     ap.add_argument("--chunk", required=True)
     ap.add_argument("--share", default="/srv/usnm-boinc/project")
     ap.add_argument("--places-from", default="v1-wave9")
+    ap.add_argument("--after-submit", action="store_true")
     a = ap.parse_args(argv)
     if not NAME_RE.match(a.campaign) or not NAME_RE.match(a.places_from):
         fail("--campaign and --places-from: 1-41 of [a-z0-9-]")
@@ -45,6 +74,9 @@ def main(argv=None):
         fail("--chunk: c and five digits")
     camp = os.path.join(a.share, "quality", a.campaign)
     inc = os.path.join(camp, "incoming", a.chunk)
+    if a.after_submit:
+        after_submit(camp, inc)
+        return
     if not os.path.isfile(os.path.join(inc, "READY")):
         fail(f"{inc} has no READY")
 
@@ -83,8 +115,9 @@ def main(argv=None):
     if not os.path.exists(places):
         shutil.copyfile(os.path.join(a.share, "quality", a.places_from, "places.txt"), places)
     for root, dirs, files in os.walk(camp):
-        if os.path.relpath(root, camp).split(os.sep)[0] in ("units", "pages"):
-            continue
+        if root == camp:
+            # Staging's own trees: never walked, they only grow.
+            dirs[:] = [d for d in dirs if d not in ("units", "pages")]
         for n in dirs + files:
             os.lchown(os.path.join(root, n), OWNER, OWNER)
     os.lchown(camp, OWNER, OWNER)

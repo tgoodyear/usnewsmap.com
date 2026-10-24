@@ -178,6 +178,7 @@ def cmd_select(a):
         out.sort(key=lambda p: (p["damage_rate"] is None, -(p["damage_rate"] or 0.0), p["doc_id"]))
     if a.count:
         out = out[: a.count]
+    os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     tmp = a.out + ".tmp"
     with open(tmp, "w") as f:
         for p in out:
@@ -340,6 +341,7 @@ def cmd_run(a):
     seq = 1 + max([int(os.path.basename(d)[1:]) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))]
                   + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
     texts = Texts(a.curated)
+    retry = 0
     pos = 0
     while pos < len(todo):
         while len(pending_chunks(camp_dir)) >= a.max_pending:
@@ -379,6 +381,7 @@ def cmd_run(a):
                 except ValueError as e:
                     skipped.append((p["doc_id"], str(e)))
                 except Exception as e:  # a transient read: left for the next run
+                    retry += 1
                     log("page failed; will retry", doc_id=p["doc_id"], error=str(e)[:200])
         ok = [p for p in usable if p["doc_id"] in prepared]
         if ok:
@@ -395,6 +398,11 @@ def cmd_run(a):
             with open(skip_path, "a") as f:
                 f.write("".join(f"{d}\t{why}\n" for d, why in skipped))
             log("skipped", pages=len(skipped))
+    if retry:
+        # Pages in neither done.txt nor skipped.txt: fail, so systemd's Restart=on-failure
+        # runs the list again, which takes only those pages.
+        log("pages left to retry", campaign=a.campaign, pages=retry)
+        sys.exit(1)
     log("done", campaign=a.campaign)
 
 
