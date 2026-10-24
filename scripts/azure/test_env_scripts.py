@@ -1002,12 +1002,13 @@ class StartJobImageTag(Stubbed):
         self.assertEqual(self.body()["containers"][0]["image"], "cr.example:5000/usnewsmap-ingest:abc")
 
     def test_the_tag_is_checked_before_azure(self):
-        for value in ("", "a/b", "a:b", "a@b", "a b", "x" * 129, "$(id)"):
+        for value in ("", "a/b", "a:b", "a@b", "a b", "x" * 129, "$(id)", "-x", "--", ".x", "--wait-mins"):
             r = self.start("--image-tag", value)
             self.assertEqual(r.returncode, 2, repr(value))
             self.assertIn("--image-tag is an image tag", r.stderr)
             self.assertFalse(os.path.exists(self.log))
-        self.assertEqual(self.start("--image-tag", "x" * 128).returncode, 0)
+        for value in ("x" * 128, "_x", "4b7405f1"):
+            self.assertEqual(self.start("--image-tag", value).returncode, 0, repr(value))
 
 
 class TitlesSeed(Stubbed):

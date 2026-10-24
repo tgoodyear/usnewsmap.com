@@ -25,8 +25,9 @@
 # --image-tag TAG runs this one execution's first container from another
 # tag of the same image (registry and repository kept, only the tag
 # replaced), such as a commit's ingest image for a command the job's pinned
-# image doesn't have yet. The job's saved template is unchanged. Without it
-# the execution runs the job's image.
+# image doesn't have yet. TAG is the tag alone (a commit sha), not
+# `usnewsmap-ingest:<sha>`. The job's saved template is unchanged. Without
+# it the execution runs the job's image.
 #
 # It returns once Azure accepts the execution, not when the command is done.
 # --wait-mins N waits up to N minutes for the execution to succeed, printing
@@ -52,8 +53,10 @@ while [ $# -gt 0 ]; do
       WAIT_MINS=$((10#$2)); shift 2 ;;
     --image-tag)
       [ $# -ge 2 ] || usage
-      [[ $2 =~ ^[A-Za-z0-9._-]{1,128}$ ]] ||
-        { echo "error: --image-tag is an image tag: 1 to 128 letters, digits, '.', '_' or '-'" >&2; exit 2; }
+      # An OCI tag: it can't start with '.' or '-', so another option
+      # (`--image-tag --wait-mins`) is never taken for one.
+      [[ $2 =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]] ||
+        { echo "error: --image-tag is an image tag: 1 to 128 letters, digits, '.', '_' or '-', not starting with '.' or '-'" >&2; exit 2; }
       IMAGE_TAG=$2; shift 2 ;;
     --) shift; break ;;
     -h|--help) usage ;;
