@@ -8,15 +8,20 @@
 
 -- 1. OCR priority: pages we haven't OCR'd, worst LoC text first. The estimate is the best
 --    signal a page has: the hat's est_cer for LoC (three readers or more), else LoC's
---    disagreement with American Stories (cer_sym, which counts both texts' errors, so half
---    of it), else the damage score. Pages LoC has no text for are left to the damage audit.
+--    passage-matched disagreement with American Stories (agreement v1's local_cer_sym,
+--    which counts both texts' errors, so half of it; the whole-page cer_sym mostly measures
+--    article order and text one reader lacks, #962), but only where at least half of
+--    LoC's text found a place in American Stories' (matched_loc); a low local rate over
+--    a sliver of the page says nothing about the rest. Else the damage score. Pages LoC
+--    has no text for are left to the damage audit.
 SELECT doc_id, lccn, decade, lang,
-       coalesce(loc_est_cer, loc_as_cer_sym / 2, damage_rate) AS loc_badness,
+       coalesce(loc_est_cer, CASE WHEN loc_as_matched_loc >= 0.5 THEN loc_as_local_cer_sym / 2 END, damage_rate) AS loc_badness,
        CASE WHEN loc_est_cer IS NOT NULL THEN 'hat'
-            WHEN loc_as_cer_sym IS NOT NULL THEN 'loc-vs-as'
+            WHEN loc_as_matched_loc >= 0.5 AND loc_as_local_cer_sym IS NOT NULL THEN 'loc-vs-as'
             ELSE 'damage' END AS basis
 FROM quality.page_summary
-WHERE ocr_runs = 0 AND coalesce(loc_est_cer, loc_as_cer_sym, damage_rate) IS NOT NULL
+WHERE ocr_runs = 0
+  AND coalesce(loc_est_cer, CASE WHEN loc_as_matched_loc >= 0.5 THEN loc_as_local_cer_sym END, damage_rate) IS NOT NULL
 ORDER BY loc_badness DESC, doc_id
 LIMIT :limit;
 

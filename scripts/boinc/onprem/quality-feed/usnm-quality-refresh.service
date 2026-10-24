@@ -1,0 +1,16 @@
+# Rebuilds usnm_quality's stored page summary (#962) as quality_loader, in the batch
+# container CT215, so new results (the text agreement's hourly loads, unit results, OCR
+# runs) reach the ranking queries. Concurrent: readers keep the old copy meanwhile.
+[Unit]
+Description=usnewsmap usnm_quality page summary refresh (#962)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-db/dsn
+
+[Service]
+Type=oneshot
+Environment=LC_ALL=C.UTF-8
+ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/load.py refresh \
+  --dsn "$(cat /etc/usnm/quality-db/dsn)"'
+Nice=10
+TimeoutStartSec=6h
