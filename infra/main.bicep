@@ -481,6 +481,16 @@ module indexStore 'modules/index-storage.bicep' = if (indexStorage) {
   }
 }
 
+// The on-prem release's writer role, kept while the host is set: the stack
+// can't delete it once onPremRelease turns off (modules/release-writer-role.bicep).
+module releaseWriterRole 'modules/release-writer-role.bicep' = if (indexStorage && !empty(trim(onPremReleaseHost))) {
+  scope: rg
+  name: 'release-writer-role'
+  params: {
+    roleLabel: n.releaseWriterRole
+  }
+}
+
 // The on-prem release's grants (#283, #917): its own identity only.
 module onPremReleaseGrant 'modules/onprem-release.bicep' = if (onPremRelease && indexStorage && !empty(trim(onPremReleaseHost))) {
   scope: rg
@@ -490,7 +500,7 @@ module onPremReleaseGrant 'modules/onprem-release.bicep' = if (onPremRelease && 
     indexAccountName: indexStore!.outputs.name
     registryName: registry.outputs.name
     principalId: trim(onPremReleaseHost)
-    roleLabel: n.releaseWriterRole
+    writerRoleName: releaseWriterRole!.outputs.name
   }
 }
 

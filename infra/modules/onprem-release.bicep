@@ -6,9 +6,10 @@
 // only the release writes the serving index.
 //
 // - curated: Storage Blob Data Reader (the release reads every batch);
-// - reference: the release writer role (blob read, write, create; no delete
-//   and no container actions), writes only under pages-v*/ (a version's
-//   snapshot, create-only in the code) and to index-storage-pending.json.
+// - reference: the release writer role (modules/release-writer-role.bicep:
+//   blob read, write, create; no delete and no container actions), writes
+//   only under pages-v*/ (a version's snapshot, create-only in the code) and
+//   to index-storage-pending.json.
 //   Never current.json: promotion stays the operator's step;
 // - the index account's qw-index: the same role, unconditioned (splits,
 //   each index's metastore.json and the metastore's manifest.json);
@@ -20,32 +21,11 @@ param indexAccountName string
 param registryName string
 @description('Object id of the release container\'s Arc machine identity.')
 param principalId string
-@description('The writer role\'s name, before its scope (infra/naming.bicep).')
-param roleLabel string
+@description('Name (a GUID) of the release writer role (modules/release-writer-role.bicep).')
+param writerRoleName string
 var blobs = 'Microsoft.Storage/storageAccounts/blobServices/containers/blobs'
 var blobDataReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var acrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
-
-resource writer 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
-  name: guid(resourceGroup().id, 'usnm-release-writer')
-  properties: {
-    // Role names are unique per tenant: include the subscription and group.
-    roleName: '${roleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
-    description: 'The on-prem release: list, read and create or replace blobs. No delete, no container actions.'
-    type: 'CustomRole'
-    permissions: [
-      {
-        actions: []
-        dataActions: [
-          '${blobs}/read'
-          '${blobs}/write'
-          '${blobs}/add/action'
-        ]
-      }
-    ]
-    assignableScopes: [resourceGroup().id]
-  }
-}
 
 // ABAC (condition version 2.0): writes and creates in reference only to a
 // version's snapshot or the staged pointer.
@@ -114,7 +94,7 @@ resource referenceWrite 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: principalId
     principalType: 'ServicePrincipal'
     // Custom roles are addressed at subscription level wherever they're defined.
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writerRoleName)
     description: 'The on-prem release (#283): reads reference; writes only pages-v*/ and index-storage-pending.json; no delete.'
     conditionVersion: '2.0'
     condition: referenceCondition
@@ -127,7 +107,7 @@ resource indexWrite 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   properties: {
     principalId: principalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writerRoleName)
     description: 'The on-prem release (#283): copies staged indexes into qw-index; no delete.'
   }
 }
