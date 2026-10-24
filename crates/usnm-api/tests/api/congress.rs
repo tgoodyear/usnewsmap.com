@@ -51,7 +51,7 @@ async fn congress_refdata() -> RefData {
     refdata
 }
 
-async fn congress_state() -> Arc<AppState> {
+pub(crate) async fn congress_state() -> Arc<AppState> {
     congress_state_with(config()).await
 }
 

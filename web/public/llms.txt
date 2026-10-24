@@ -23,6 +23,7 @@ Base URL `https://api.usnewsmap.com/v1`. The same routes answer at `https://usne
 - `/v1/titles`: every newspaper in the index, with its `lccn`, title, `place_id`, place, state, first and last year, page count and languages. `/v1/titles/<lccn>` returns one. Before searching, check here that the papers you need are in the collection. A town with no title has no local coverage, however you search.
 - `/v1/days?q=...&place=<id>[,<id>...]`: matching pages per day for 1 to 20 places.
 - `/v1/versions`: every index version that was built, and which one is being served.
+- `/v1/openapi.json`: an OpenAPI 3.1 description of every route above, with each route's parameters and response schemas.
 
 Search parameters, shared by `/v1/aggregate` and `/v1/hits`:
 

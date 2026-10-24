@@ -483,7 +483,7 @@ pub struct HitsPage {
     pub days: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Capabilities {
     pub fuzzy: bool,
     pub max_slop: u8,

@@ -20,7 +20,7 @@ pub struct Cell {
 }
 
 /// Columnar sparse cube: `p[i]` (place index), `b[i]` (bucket index), `h[i]` (hits).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct SparseCube {
     pub p: Vec<u32>,
     pub b: Vec<u32>,

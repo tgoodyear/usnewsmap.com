@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 use usnm_state::state::RunStatus;
@@ -43,7 +44,7 @@ fn reconstructed(run: &usnm_state::summary::RunSummary) -> Option<&'static Value
 
 const NOT_CONFIGURED: &str = "This server is not connected to the pipeline state.";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Versions {
     pub schema: u32,
     pub generated_at: DateTime<Utc>,
@@ -57,7 +58,7 @@ pub struct Versions {
     pub versions: Vec<Version>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Version {
     pub index_version: String,
     /// This server serves it.
@@ -77,6 +78,11 @@ pub struct Version {
     pub build: Option<Value>,
     /// `recorded`, `reconstructed`, or `null` with no build.
     pub build_source: Option<&'static str>,
+}
+
+/// The schema of the document, for `/v1/openapi.json`.
+pub(crate) fn schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<Versions>()
 }
 
 pub fn assemble(

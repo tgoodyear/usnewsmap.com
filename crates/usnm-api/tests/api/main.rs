@@ -7,6 +7,7 @@ mod congress;
 mod days;
 mod hits;
 mod languages;
+mod openapi;
 #[path = "../../../../fixtures/page_language.rs"]
 mod page_language;
 mod page_languages;
