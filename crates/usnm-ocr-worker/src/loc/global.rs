@@ -173,14 +173,14 @@ impl GlobalPacer {
             {
                 Ok(Ok(r)) => r,
                 other => {
-                    // Without the file there is no shared budget: wait the slow
-                    // gap rather than send unpaced.
+                    // Without the file there is no shared budget, and a request sent
+                    // without a slot could break it: wait, then try for a slot again.
+                    // Nothing goes out until the file works.
                     if let Ok(Err(e)) = other {
-                        tracing::warn!(path = %self.path.display(), error = %e, "the global LoC pacer's file failed; waiting the slow gap");
+                        tracing::warn!(path = %self.path.display(), error = %e, "the global LoC pacer's file failed; waiting before trying again");
                     }
-                    let until = not_before_ms.saturating_sub(now_ms());
-                    tokio::time::sleep(self.slow.max(Duration::from_millis(until))).await;
-                    return now_ms();
+                    tokio::time::sleep(self.slow).await;
+                    continue;
                 }
             };
             let wait = at.saturating_sub(now_ms());

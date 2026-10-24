@@ -19,6 +19,11 @@ pub struct Pacer {
     /// The host's budget across every LoC server and process, waited for
     /// after this pacer's own slot (#962).
     global: Option<Arc<GlobalPacer>>,
+    /// With a global budget, one caller at a time goes through both waits,
+    /// so a slot this pacer gave out can't go stale while another caller
+    /// waits for the host's budget (tokio's mutex is fair: callers keep
+    /// their order).
+    admission: tokio::sync::Mutex<()>,
 }
 
 impl Pacer {
@@ -28,6 +33,7 @@ impl Pacer {
             next: Mutex::new(None),
             held: Mutex::new(None),
             global: None,
+            admission: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -55,14 +61,23 @@ impl Pacer {
     /// ahead and stalls the others; this pacer's next slot then counts from
     /// the moment the request actually goes, so both gaps hold.
     pub async fn wait(&self) {
+        let Some(g) = &self.global else {
+            loop {
+                tokio::time::sleep_until(self.reserve()).await;
+                if self.held_until().is_none() {
+                    return;
+                }
+            }
+        };
+        let _one = self.admission.lock().await;
         loop {
             tokio::time::sleep_until(self.reserve()).await;
             if self.held_until().is_some() {
                 continue;
             }
-            if let Some(g) = &self.global {
-                g.admit(0).await;
-                let sent = Instant::now();
+            g.admit(0).await;
+            let sent = Instant::now();
+            {
                 let mut next = self.next.lock().expect("pacer lock");
                 *next = Some(next.map_or(sent + self.gap, |n| n.max(sent + self.gap)));
             }
@@ -112,5 +127,40 @@ mod tests {
         let gap = t0.elapsed() - first;
         // Measured after each wait returns, so a busy test runner can shave a little off.
         assert!(gap >= Duration::from_millis(250), "{gap:?}");
+    }
+
+    /// Concurrent callers behind a held global budget still leave this
+    /// pacer's gap between them once it opens.
+    #[tokio::test]
+    async fn concurrent_callers_keep_the_gap_after_a_global_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = Arc::new(GlobalPacer::with_gaps(
+            dir.path().join("p.json"),
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+        ));
+        let p = Arc::new(Pacer::with_global(
+            Duration::from_millis(200),
+            Some(Arc::clone(&g)),
+        ));
+        let t0 = std::time::Instant::now();
+        g.hold(Duration::from_millis(500));
+        let tasks: Vec<_> = (0..3)
+            .map(|_| {
+                let p = Arc::clone(&p);
+                tokio::spawn(async move {
+                    p.wait().await;
+                    t0.elapsed()
+                })
+            })
+            .collect();
+        let mut at = Vec::new();
+        for t in tasks {
+            at.push(t.await.unwrap());
+        }
+        at.sort();
+        assert!(at[0] >= Duration::from_millis(490), "{at:?}");
+        assert!(at[1] - at[0] >= Duration::from_millis(150), "{at:?}");
+        assert!(at[2] - at[1] >= Duration::from_millis(150), "{at:?}");
     }
 }
