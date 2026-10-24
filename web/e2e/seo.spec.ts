@@ -139,9 +139,19 @@ test("llms.txt is plain text that describes the site and the API", async ({ requ
   expect(body).toMatch(/^# US News Map\n/);
   expect(body).toMatch(/^> /m);
   expect(body).toContain("https://api.usnewsmap.com/v1");
-  for (const route of ["meta", "aggregate", "hits", "places", "coverage", "status"]) {
+  for (const route of ["meta", "aggregate", "hits", "places", "coverage", "status", "openapi.json"]) {
     expect(body).toContain(`/v1/${route}`);
   }
+});
+
+test("the API's OpenAPI document is served on the site's origin too", async ({ request }) => {
+  const res = await request.get("/v1/openapi.json");
+  expect(res.status()).toBe(200);
+  expect(res.headers()["content-type"]).toMatch(/^application\/json/);
+  const doc = await res.json();
+  expect(doc.openapi).toBe("3.1.0");
+  expect(doc.servers.map((s: { url: string }) => s.url)).toContain(SITE);
+  expect(Object.keys(doc.paths)).toContain("/v1/aggregate");
 });
 
 test("sitemap.xml lists the home page and the privacy page", async ({ request }) => {

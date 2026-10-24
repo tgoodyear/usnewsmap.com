@@ -31,7 +31,7 @@ pub fn date_from_ym(ym: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt((ym / 12) as i32, ym % 12 + 1, 1).expect("valid ym")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum BucketUnit {
     Year,

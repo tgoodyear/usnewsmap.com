@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
+use schemars::JsonSchema;
 use serde::Serialize;
 use usnm_core::params::RawParams;
 use usnm_core::time::BucketUnit;
@@ -19,14 +20,23 @@ use crate::{version, AppState};
 /// Most places one request may ask for.
 pub const MAX_PLACES: usize = 20;
 
-#[derive(Serialize)]
+/// The parameters it takes besides the search's ([`usnm_core::params::COMMON_KEYS`]).
+pub(crate) const EXTRA_KEYS: &[&str] = &["place"];
+
+#[derive(Serialize, JsonSchema)]
 struct DaysResponse {
     /// The version the counts come from, so the site can tell them from another snapshot's.
     index_version: String,
     places: Vec<PlaceOut>,
 }
 
-#[derive(Serialize)]
+/// The schema of the response, for `/v1/openapi.json`.
+pub(crate) fn schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<DaysResponse>()
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "DaysPlace")]
 struct PlaceOut {
     id: String,
     /// Day numbers, as `places.first_day` in `/v1/aggregate`, ascending.
@@ -69,7 +79,7 @@ pub async fn days(
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_unknown(&["place"])?;
+    raw.reject_unknown(EXTRA_KEYS)?;
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
     let mut req = rd.search_request(&raw)?;

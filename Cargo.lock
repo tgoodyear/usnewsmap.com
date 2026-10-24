@@ -2472,6 +2472,7 @@ version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",
@@ -3314,6 +3315,7 @@ dependencies = [
  "http-body-util",
  "moka",
  "opentelemetry",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3404,6 +3406,7 @@ dependencies = [
  "form_urlencoded",
  "httpdate",
  "rustc-hash",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3695,6 +3698,7 @@ dependencies = [
  "chrono",
  "futures",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -3714,6 +3718,7 @@ dependencies = [
  "form_urlencoded",
  "httpdate",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.1",

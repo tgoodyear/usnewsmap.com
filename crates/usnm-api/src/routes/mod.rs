@@ -18,6 +18,18 @@ pub(crate) use meta::places_in;
 pub use meta::{meta, places, readyz};
 pub use titles::{title, titles};
 
+/// The response schemas and accepted parameters `/v1/openapi.json` describes.
+pub(crate) mod spec {
+    pub(crate) use super::aggregate::{schema as aggregate, EXTRA_KEYS as AGGREGATE_KEYS};
+    pub(crate) use super::computing_schema as computing;
+    pub(crate) use super::coverage::{schema as coverage, KEYS as COVERAGE_KEYS};
+    pub(crate) use super::days::{schema as days, EXTRA_KEYS as DAYS_KEYS, MAX_PLACES};
+    pub(crate) use super::hits::{schema as hits, EXTRA_KEYS as HITS_KEYS, MAX_LIMIT};
+    pub(crate) use super::meta::{meta_schema as meta, places_schema as places};
+    pub(crate) use super::titles::{title_schema as title, titles_schema as titles};
+    pub(crate) use super::VERSION_KEYS;
+}
+
 use std::future::Future;
 use std::io::Read;
 use std::sync::Arc;
@@ -211,6 +223,9 @@ impl Job {
     }
 }
 
+/// The parameters of the endpoints whose only one is the version.
+pub(crate) const VERSION_KEYS: &[&str] = &["v"];
+
 /// Seconds a client waits before asking again for a response still being computed.
 pub(crate) const COMPUTING_RETRY_SECS: u64 = 2;
 
@@ -241,6 +256,40 @@ fn computing(serving: &str, ahead: Option<usize>) -> Response {
     resp.extensions_mut()
         .insert(ServedVersion(serving.to_owned()));
     resp
+}
+
+/// The schema of [`computing`]'s body, for `/v1/openapi.json`.
+pub(crate) fn computing_schema() -> serde_json::Value {
+    let retry_after = json!({
+        "type": "integer",
+        "const": COMPUTING_RETRY_SECS,
+        "description": "Seconds to wait before sending the same request again, as in `Retry-After`."
+    });
+    json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "description": "The response is being computed.",
+                "properties": {
+                    "status": { "const": "computing" },
+                    "retry_after": retry_after,
+                },
+                "required": ["status", "retry_after"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "description": "The search is waiting for a computation slot behind `ahead` others.",
+                "properties": {
+                    "status": { "const": "queued" },
+                    "ahead": { "type": "integer", "minimum": 0 },
+                    "retry_after": retry_after,
+                },
+                "required": ["status", "ahead", "retry_after"],
+                "additionalProperties": false
+            }
+        ]
+    })
 }
 
 /// Marks a response served from the in-process cache: nothing was computed

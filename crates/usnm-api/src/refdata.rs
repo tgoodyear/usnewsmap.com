@@ -35,7 +35,7 @@ pub const AMERICAN_STORIES_OFF_KEY: &str = "|american_stories=off";
 /// The reference files the API loads from each snapshot.
 const FILES: [&str; 3] = ["places.json", "titles.json", "baselines.json"];
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct Bounds {
     pub from: NaiveDate,
     pub to: NaiveDate,
@@ -105,7 +105,7 @@ pub struct CongressIndexes {
 
 /// One Congress series in a version: `globe`, `serialset`, `annals` or
 /// `register` (`usnm_core::params::CONGRESS_SERIES`).
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct CongressSeries {
     pub series: String,
     pub pages: u64,
@@ -122,7 +122,7 @@ pub const CONGRESS_PLACE: &str = "PC001";
 pub const CONGRESS_PLACE_NAME: &str = "Congress";
 
 /// `current.json`'s `ja`: the index of the Japanese pages we OCR ourselves.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct JaIndexes {
     pub indexes: Vec<String>,
     /// The `usnm_core::ja` fold version the index was built with, which

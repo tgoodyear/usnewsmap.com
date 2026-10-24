@@ -93,6 +93,113 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
     resp
 }
 
+/// The schema of [`meta`]'s body, which it builds as JSON, for
+/// `/v1/openapi.json`. `tests/api/openapi.rs` checks real bodies against it,
+/// every field required and no others allowed, so a field added to one and
+/// not the other fails.
+pub(crate) fn meta_schema(gen: &mut schemars::SchemaGenerator) -> serde_json::Value {
+    let count = json!({ "type": "integer", "minimum": 0 });
+    let limits: serde_json::Map<String, serde_json::Value> = [
+        "max_query_chars",
+        "max_terms",
+        "max_or_branches",
+        "max_slop",
+        "max_fuzzy",
+        "min_prefix_chars",
+        "max_at_least_items",
+        "max_ocr_variants",
+    ]
+    .into_iter()
+    .map(|k| (k.to_owned(), count.clone()))
+    .collect();
+    let object = crate::openapi::closed;
+    let mut body = object(json!({
+        "index_version": { "type": "string", "description": "The version being served: what `v` takes." },
+        "indexes": { "type": "array", "items": { "type": "string" } },
+        "bounds": gen.subschema_for::<crate::refdata::Bounds>(),
+        "published_at": { "type": "string" },
+        "synthetic": { "type": "boolean", "description": "The corpus is the test fixture, not real pages." },
+        "places": count,
+        "titles": count,
+        "pages": count,
+        "ja": {
+            "description": "The Japanese pages we OCR, searched by queries with Japanese words; `null` when the version has none.",
+            "anyOf": [gen.subschema_for::<crate::refdata::JaIndexes>(), { "type": "null" }],
+        },
+        "american_stories": { "type": "boolean", "description": "Searches cover American Stories' text as well as the Library of Congress's OCR." },
+        "text_layout": { "type": "integer", "enum": [1, 2], "description": "A searched field per text (1) or one for both (2)." },
+        "congress": {
+            "description": "The Congress pages, searched with `source=congress` or `all`; `null` unless the version has them and this API searches them.",
+            "anyOf": [
+                object(json!({
+                    "series": { "type": "array", "items": gen.subschema_for::<crate::refdata::CongressSeries>() },
+                    "place": object(json!({
+                        "id": { "type": "string" },
+                        "name": { "type": "string" },
+                        "lat": { "type": "number" },
+                        "lon": { "type": "number" },
+                    })),
+                })),
+                { "type": "null" },
+            ],
+        },
+        "language_filter": { "type": "string", "enum": ["page", "title"], "description": "What `lang` matches: each page's own languages, or its newspaper's." },
+        "languages": {
+            "type": "array",
+            "description": "The codes `lang` takes, most pages first.",
+            "items": object(json!({
+                "code": { "type": "string" },
+                "name": { "type": "string" },
+                "titles": count,
+                "pages": { "type": ["integer", "null"], "minimum": 0 },
+            })),
+        },
+        "browse_pages": { "type": "boolean", "description": "`/v1/hits` lists one newspaper's pages without `q`." },
+        "capabilities": gen.subschema_for::<usnm_search::Capabilities>(),
+        "limits": object(limits.into()),
+    }));
+    body["description"] = "The version being served and what it holds.".into();
+    body
+}
+
+/// The schema of [`places`]' body, a GeoJSON feature collection it builds as
+/// JSON, for `/v1/openapi.json`; checked like [`meta_schema`].
+pub(crate) fn places_schema() -> serde_json::Value {
+    let count = json!({ "type": "integer", "minimum": 0 });
+    let object = crate::openapi::closed;
+    let feature = object(json!({
+        "type": { "const": "Feature" },
+        "id": { "type": "string", "description": "The place id `place` takes, such as `P00001`." },
+        "geometry": object(json!({
+            "type": { "const": "Point" },
+            "coordinates": {
+                "type": "array",
+                "description": "Longitude, latitude.",
+                "items": { "type": "number" },
+                "minItems": 2,
+                "maxItems": 2,
+            },
+        })),
+        "properties": object(json!({
+            "name": { "type": "string" },
+            "state": { "type": "string" },
+            "precision": { "type": "string", "description": "How precisely the place is located: `city`, `county` or `state`." },
+            "titles": count,
+            "languages": { "type": "array", "items": { "type": "string" }, "description": "Catalog codes of its newspapers' languages." },
+            "language_titles": {
+                "type": "object",
+                "description": "Its newspapers listing each language; one in several counts in each.",
+                "additionalProperties": count,
+            },
+        })),
+    }));
+    object(json!({
+        "type": { "const": "FeatureCollection" },
+        "index_version": { "type": "string" },
+        "features": { "type": "array", "items": feature },
+    }))
+}
+
 /// The choices for the site's language filter: each catalog language the
 /// `lang` parameter accepts, with its titles and (when the snapshot records
 /// them) pages, most pages first. A title in several languages counts in each,
@@ -147,7 +254,7 @@ pub(crate) async fn places_in(
     uri: &Uri,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_only(&["v"])?;
+    raw.reject_only(super::VERSION_KEYS)?;
     let job = Job::reference("places", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();

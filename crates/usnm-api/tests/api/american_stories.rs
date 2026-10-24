@@ -126,7 +126,7 @@ async fn hits_say_which_texts_match_and_the_aggregate_counts_american_stories_on
 
 /// A state on a version built with American Stories' text, searching it or
 /// not (`USNM_AMERICAN_STORIES_SEARCH`).
-async fn american_stories_state(search: bool) -> Arc<AppState> {
+pub(crate) async fn american_stories_state(search: bool) -> Arc<AppState> {
     let mut rd = refdata().await;
     rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
     let mut cfg = config();
