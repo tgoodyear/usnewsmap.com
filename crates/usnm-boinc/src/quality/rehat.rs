@@ -56,6 +56,9 @@ pub struct Row {
     pub est_cer_raw_v2: Option<f64>,
     pub residual_v2: Option<f64>,
     pub matched: Option<f64>,
+    /// Damage v2 of the reader's text on its own (`usnm_core::damage`, as
+    /// `collect` scores it): an order-free, single-reader yardstick.
+    pub damage_rate: Option<f64>,
     pub pairs_v2: Vec<page_hat::PairD>,
 }
 
@@ -64,6 +67,7 @@ pub struct Row {
 pub fn page(
     campaign: &str,
     doc_id: &str,
+    language: &str,
     readers: &[ReaderSpec],
     texts: &Texts,
     alto_text: impl FnOnce() -> String,
@@ -103,9 +107,19 @@ pub fn page(
             est_cer_raw_v2: two.readers[i].est_cer_raw,
             residual_v2: two.residual,
             matched: two.readers[i].matched,
+            damage_rate: damage(text, language),
             pairs_v2: two.pairs.clone(),
         })
         .collect()
+}
+
+fn damage(text: &str, language: &str) -> Option<f64> {
+    let marc = usnm_core::lang::iso3_to_marc(language).unwrap_or(language);
+    let iso3 = usnm_core::lang::marc_to_iso3(language).unwrap_or(language);
+    usnm_core::damage::score_forced(text, iso3)
+        .and_then(|f| f.damage_rate)
+        .or(usnm_core::damage::score(text, &[marc]).damage_rate)
+        .map(round6)
 }
 
 fn alto_text(bytes: Option<&[u8]>) -> String {
@@ -141,9 +155,14 @@ fn unit_rows(
             return Ok(rows);
         };
         let alto = read(&alto_path, MAX_ALTO).ok();
-        rows.extend(page(campaign, &job.doc_id, &job.readers, &texts, || {
-            alto_text(alto.as_deref())
-        }));
+        rows.extend(page(
+            campaign,
+            &job.doc_id,
+            &job.language,
+            &job.readers,
+            &texts,
+            || alto_text(alto.as_deref()),
+        ));
         return Ok(rows);
     }
     let bundle_texts = read(&texts_path, MAX_BUNDLE_TEXTS).unwrap_or_default();
@@ -164,9 +183,14 @@ fn unit_rows(
             s.no_texts += 1;
             continue;
         };
-        rows.extend(page(campaign, &bp.doc_id, &bp.readers, &texts, || {
-            alto_text(bp.inputs.alto.extract(&bundle_alto, "alto").ok())
-        }));
+        rows.extend(page(
+            campaign,
+            &bp.doc_id,
+            &bp.language,
+            &bp.readers,
+            &texts,
+            || alto_text(bp.inputs.alto.extract(&bundle_alto, "alto").ok()),
+        ));
     }
     Ok(rows)
 }
@@ -272,6 +296,7 @@ mod tests {
         let rows = page(
             "c",
             "d",
+            "eng",
             &[spec("loc"), spec("as"), spec("ours")],
             &texts(&[("loc", "none"), ("as", t), ("ours", t)]),
             || t.to_owned(),
