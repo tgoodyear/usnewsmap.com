@@ -301,7 +301,8 @@ async fn responses_match_the_documented_schemas() {
             let resp = raw_get(&s, &uri).await;
             check_response(&doc, &uri, &resp);
             seen.insert((template(&uri), resp.status.as_u16()));
-            if resp.status == StatusCode::OK {
+            // Not the document itself, whose schemas name every optional part.
+            if resp.status == StatusCode::OK && template(&uri) != "/v1/openapi.json" {
                 bodies.push_str(&String::from_utf8_lossy(&resp.bytes));
             }
             // Follow a page of hits to the next.
