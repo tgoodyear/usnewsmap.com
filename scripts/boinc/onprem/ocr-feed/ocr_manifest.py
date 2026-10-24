@@ -36,6 +36,8 @@ import xml.etree.ElementTree as ET
 DOC_RE = re.compile(r"^(?P<lccn>[a-z0-9]+)_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)$")
 FORMAT = "usnm-prefetch-manifest/1"
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
+# A page goes into at most this many manifests a week without its scan arriving.
+MAX_TRIES = 3
 
 
 def log(msg, **kv):
@@ -150,19 +152,21 @@ def staged_pairs(scan_server):
 
 
 def available(scan_server, row):
-    """Whether the scan an index line names is still on the scan server (a HEAD, keep set
-    then buffer set: the line doesn't say which)."""
+    """Whether the scan an index line names is still on the scan server: its sidecar
+    (`<scan>.json`, a few hundred bytes) is there, keep set then buffer set, since the line
+    doesn't say which. A read buffer scan's sidecar is renamed `.done` before the scan goes,
+    so a missing sidecar means the scan is gone or going. The scan itself is never read."""
     m = DOC_RE.match(row["doc_id"])
     if not m:
         return False
     ext = "jp2" if row.get("format") == "jp2" else "jpg"
-    rel = f"{row['batch']}/{m['lccn']}/{m['date']}/{int(m['ed'])}/{int(m['seq'])}.{ext}"
+    rel = f"{row['batch']}/{m['lccn']}/{m['date']}/{int(m['ed'])}/{int(m['seq'])}.{ext}.json"
     for s in ("keep", "buffer"):
-        req = urllib.request.Request(f"{scan_server.rstrip('/')}/scans/{s}/{rel}", method="HEAD",
-                                     headers={"User-Agent": USER_AGENT})
+        req = urllib.request.Request(f"{scan_server.rstrip('/')}/scans/{s}/{rel}", headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 if r.status == 200:
+                    r.read(1 << 16)
                     return True
         except urllib.error.HTTPError as e:
             if e.code != 404:
@@ -277,10 +281,22 @@ def cmd_build(a):
     queued = cached_rows(lake, a.state, "queued", a.days,
                          ["doc_id", "batch", "batch_version", "reason", "language", "queued_at"])
     outcomes = cached_rows(lake, a.state, "outcomes", a.days, ["doc_id", "outcome", "cause", "at"])
-    todo, checked = [], 0
+    # Pages already put in MAX_TRIES manifests that still have no scan wait a week, so a
+    # page LoC can't serve doesn't hold the front of every manifest.
+    tries_path = os.path.join(a.state, "tries.json")
+    tries = {}
+    if os.path.exists(tries_path):
+        with open(tries_path) as f:
+            tries = json.load(f)
+    now = dt.datetime.now(dt.timezone.utc)
+    todo, checked, deferred = [], 0, 0
     for q in pending(queued, outcomes, reasons):
         if len(todo) >= a.max_pages:
             break
+        t = tries.get(q["doc_id"])
+        if t and t["n"] >= MAX_TRIES and now - dt.datetime.fromisoformat(t["last"]) < dt.timedelta(days=7):
+            deferred += 1
+            continue
         row = index.get((q["batch"], q["doc_id"]))
         if row is not None:
             checked += 1
@@ -314,7 +330,17 @@ def cmd_build(a):
         json.dump({"name": name, "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                    "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
-    log("queued a manifest", manifest=name, pages=len(rows), by_reason=by_reason, rechecked=checked)
+    stamp = now.isoformat()
+    for r in rows:
+        t = tries.get(r["doc_id"])
+        if t and now - dt.datetime.fromisoformat(t["last"]) >= dt.timedelta(days=7):
+            t = None  # its week is up: a fresh count
+        tries[r["doc_id"]] = {"n": (t["n"] if t else 0) + 1, "last": stamp}
+    with open(tries_path + ".tmp", "w") as f:
+        json.dump(tries, f)
+    os.replace(tries_path + ".tmp", tries_path)
+    log("queued a manifest", manifest=name, pages=len(rows), by_reason=by_reason, rechecked=checked,
+        deferred=deferred)
 
 
 def main(argv=None):
