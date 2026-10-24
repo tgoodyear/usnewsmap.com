@@ -21,6 +21,8 @@ param subnetId string
 param boincSubnetId string = ''
 @description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
 param handoffWriterIds array = []
+@description('Principals given the node writer role on `ocr-out` for the fetched-scans list (#1056): the scan fetcher\'s Arc machine identity, which runs `usnm-ocr-worker publish-fetched` after each fetch. Service principals; empty grants none.')
+param fetchedPublisherIds array = []
 @description('Object id of the on-prem hosts\' Entra group (usnm-onprem-grp-<env>, scripts/ocr-node/group.sh --kind onprem): the node writer role on `boinc-handoff`, as the handoffWriterIds have. Empty grants none.')
 param onPremGroupId string = ''
 @description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296, and the on-prem BOINC host\'s Arc machine identity, #967), all service principals: Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`. Sender, so a page BOINC can\'t use goes back to the queue for the nodes. Nothing on `ocr-deadletter`, and no Update Message.')
@@ -316,6 +318,20 @@ resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (n
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
   }
 }
+
+// The scan fetcher publishes its fetched-scans list to ocr-out (#1056, `ocr-out/fetched/`):
+// the node writer role (list, read, create; no delete) on ocr-out alone, as the nodes have.
+resource fetchedPublishers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for p in fetchedPublisherIds: {
+    scope: output
+    name: guid(output.id, p, 'usnm-ocr-node-writer')
+    properties: {
+      principalId: p
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
+    }
+  }
+]
 
 // BOINC takes pages off the work queues beside the nodes (#296, docs/boinc-batch-scheduler.md):
 // the hand-off job's identity and the on-prem BOINC host's (#967) get the nodes' queue roles,
