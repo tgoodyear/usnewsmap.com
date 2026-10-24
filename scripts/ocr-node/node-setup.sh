@@ -21,7 +21,7 @@
 # rsyslog, and htop, iftop and screen from EPEL; turns on dnf-automatic,
 # which installs every update daily and never reboots, and a weekly reboot
 # window (usnm-ocr-reboot.timer, 04:00 US Eastern on --reboot-day) that
-# reboots only when an update needs it, after stopping the worker;
+# reboots only when an update needs it, after stopping what it runs;
 # creates the `usnm` system user; sets up the engine runtime of ADR-0016
 # (13 §13.3): the engine account `usnmeng` with lingering, subordinate ids
 # and cgroup delegation, its Podman API socket at
@@ -31,17 +31,12 @@
 # agent and, BEFORE it connects, locks it down: no extension but the Azure
 # Monitor Linux Agent (it stops if any other is installed), no guest
 # configuration, no incoming connections;
-# connects; installs the worker's systemd unit (usnm-ocr-worker.service,
-# copied beside this script) disabled, and its settings in
-# /etc/usnm/ocr-worker.env (the exchange account's URLs, the node id and
-# the connection string of the nodes' own Application Insights component,
-# usnm-ocr-appi-<env>, which isn't a secret: with local auth off, ingestion
-# needs an Entra token too) unless install-worker.sh has written them; and
-# checks that `usnm` can get a token from the agent. The unit starts only
-# once scripts/ocr-node/install-worker.sh has put the worker binary in
-# /usr/local/bin. onboard.sh installs the monitoring
+# connects; disables a direct queue worker unit (usnm-ocr-worker.service)
+# left by an earlier install, since local OCR runs through BOINC only
+# (#966) and installs no worker unit or settings; and checks that `usnm`
+# can get a token from the agent. onboard.sh installs the monitoring
 # agent itself, from Azure, after this. Safe to run again, on a connected
-# node too: it applies the lockdown and the unit as they are now.
+# node too: it applies the lockdown as it is now.
 #
 # The node mounts nothing from the hypervisor: the worker reads prefetched scans
 # from the scan server over HTTP (#368, ADR-0015 decision 9). A mount at
@@ -83,12 +78,12 @@ for pair in SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAM
   var=${pair%%:*}
   [ -n "${!var}" ] || { echo "error: missing --${pair#*:}" >&2; usage; }
 done
-# The Arc name is also the worker's --node-id: 1 to 32 letters, digits or
-# hyphens.
-[[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,31}$ ]] || die "--name: 1 to 32 letters, digits or hyphens (the worker's --node-id)"
+# The Arc name: 1 to 32 letters, digits or hyphens.
+[[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,31}$ ]] || die "--name: 1 to 32 letters, digits or hyphens"
 [[ $EXCHANGE =~ ^[a-z0-9]{3,24}$ ]] || die "--exchange-account: a storage account name"
-# Goes into a systemd environment file in double quotes: keys, GUIDs and
-# URLs only, no quotes, backslashes, dollars or spaces.
+# --exchange-account and --app-insights were the retired worker's settings
+# (#966); they are still checked so onboard.sh's call stays valid. Keys,
+# GUIDs and URLs only, no quotes, backslashes, dollars or spaces.
 conn_re='^[A-Za-z0-9=;:/._-]+$'
 [[ -z $CONN || $CONN =~ $conn_re ]] || die "--app-insights doesn't look like an Application Insights connection string"
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
@@ -139,8 +134,7 @@ step "Installing packages"
 # No OCR engine here. EL9's AppStream has only Tesseract 4.1.1 (with 4.1.0
 # language data) and EPEL 9 has no Tesseract at all; the engines the survey
 # compares arrive as pinned container images run with podman.
-# install-worker.sh loads the worker's Tesseract image. This installs what the agents, the worker and
-# the containers need, all from the distribution's own repositories. The
+# This installs what the agents and the containers need, all from the distribution's own repositories. The
 # Azure Monitor Agent reads syslog through rsyslog and needs python3 and
 # which; Microsoft also lists initscripts, which RHEL 10 may not ship. The
 # Connected Machine agent schedules its automatic upgrades with cron.
@@ -550,21 +544,9 @@ step "The engine runtime (ADR-0016)"
 # at /run/usnm-ocr/scratch, owned by usnm: memory used by files on a tmpfs
 # is charged to the cgroup of the process that writes them, so an
 # engine's output counts against its own memory limit and can't fill the
-# disk. scripts/ocr-node/engine-spike.sh checks all of it.
+# disk.
 SOCK=/run/usnm-ocr/podman.sock
 SCRATCH=/run/usnm-ocr/scratch
-unitfile=/etc/systemd/system/usnm-ocr-worker.service
-# A worker unit from before this owned /run/usnm-ocr as its runtime
-# directory and removed it on every stop. It couldn't run an engine
-# anyway; it's stopped here and started again with the new unit below.
-was_active=false
-if grep -qx 'RuntimeDirectory=usnm-ocr' "$unitfile" 2> /dev/null; then
-  if systemctl is-active --quiet usnm-ocr-worker.service; then
-    systemctl stop usnm-ocr-worker.service
-    was_active=true
-    echo "stopped usnm-ocr-worker.service (its old unit owns /run/usnm-ocr)"
-  fi
-fi
 getent group usnmocr > /dev/null || { groupadd --system usnmocr; echo "created group usnmocr"; }
 if id usnmeng > /dev/null 2>&1; then
   echo "usnmeng exists"
@@ -730,77 +712,18 @@ if [ -d "$OCR_DATA_DIR" ] || mountpoint -q "$OCR_DATA_DIR" 2> /dev/null; then
   ! mountpoint -q "$OCR_DATA_DIR" 2> /dev/null || die "$OCR_DATA_DIR is still mounted"
 fi
 
-step "The worker's settings and unit"
-# /etc/usnm/ocr-worker.env holds the worker's settings as environment
-# variables: the exchange account's URLs, the node id, the pages in flight
-# (one per CPU; the worker gives Tesseract one thread per page) and the
-# nodes' Application Insights connection string (--app-insights;
-# onboard.sh passes OCR_NODE_APPINSIGHTS). scripts/ocr-node/install-worker.sh
-# owns it once it has run (it adds the LoC gaps for the number of nodes
-# and the Tesseract image), so this writes it only if install-worker.sh
-# hasn't. Local changes go in /etc/usnm/ocr-worker.local.env, read after
-# it and never touched here (RUST_LOG, say). It is root's, readable by
-# the usnm group: nothing in it is a secret.
-install -d -o root -g root -m 0755 /etc/usnm
-envfile=/etc/usnm/ocr-worker.env
-want_env=$(cat <<ENV
-# Written by scripts/ocr-node/node-setup.sh until install-worker.sh runs;
-# local changes go in /etc/usnm/ocr-worker.local.env.
-USNM_OCR_QUEUE_URL=https://$EXCHANGE.queue.core.windows.net
-USNM_OCR_OUT_URL=https://$EXCHANGE.blob.core.windows.net/ocr-out
-USNM_OCR_NODE_ID=$NAME
-USNM_OCR_CONCURRENCY=$(nproc)
-APPLICATIONINSIGHTS_CONNECTION_STRING="$CONN"
-ENV
-)
-[ -n "$CONN" ] || echo "warning: no --app-insights; the worker will log to the journal only"
-
-# The unit (scripts/ocr-node/usnm-ocr-worker.service, which onboard.sh
-# copies beside this script). ConditionFileIsExecutable keeps it from
-# starting, enabled or not, until the worker binary is installed;
-# install-worker.sh --enable enables it.
-unit_src="$(dirname "$0")/usnm-ocr-worker.service"
-[ -r "$unit_src" ] || die "no $unit_src; onboard.sh copies it beside node-setup.sh"
-want_unit=$(cat "$unit_src")
-changed=false
-# Writes $2 to $1 (owner root, group $3, mode $4) if it differs; a new file
-# is put in place with one rename.
-put_file() {
-  if [ "$(cat "$1" 2> /dev/null)" = "$2" ] && [ "$(stat -c %G:%a "$1")" = "$3:$4" ]; then
-    echo "$1: unchanged"
-    return 0
-  fi
-  local tmp
-  tmp=$(mktemp "$1.XXXXXX")
-  printf '%s\n' "$2" > "$tmp"
-  chown "root:$3" "$tmp"
-  chmod "$4" "$tmp"
-  mv -f "$tmp" "$1"
-  echo "$1: written"
-  changed=true
-}
-if grep -q '^# Written by scripts/ocr-node/install-worker.sh' "$envfile" 2> /dev/null; then
-  echo "$envfile: written by install-worker.sh; left as it is"
+step "No direct queue worker"
+# Local OCR runs through BOINC only (#966): the direct queue worker's unit
+# and installers are retired, and this installs neither the unit nor
+# /etc/usnm/ocr-worker.env. A unit left by an earlier install is stopped
+# (in-flight pages get its grace period; anything abandoned reappears on
+# the queue) and disabled, so it can't start again at boot. Its files are
+# left for offboard.sh.
+if [ "$(systemctl show --property=LoadState --value usnm-ocr-worker.service 2> /dev/null)" = loaded ]; then
+  systemctl disable --now usnm-ocr-worker.service
+  echo "usnm-ocr-worker.service: disabled and stopped (retired, #966)"
 else
-  put_file "$envfile" "$want_env" usnm 640
-fi
-put_file "$unitfile" "$want_unit" root 644
-systemctl daemon-reload
-# A running worker picks the changes up with a restart; its in-flight pages
-# get the grace period and otherwise reappear later.
-if [ "$changed" = true ] && systemctl is-active --quiet usnm-ocr-worker.service; then
-  systemctl restart usnm-ocr-worker.service
-  echo "restarted usnm-ocr-worker.service"
-elif [ "$was_active" = true ]; then
-  systemctl start usnm-ocr-worker.service
-  echo "started usnm-ocr-worker.service again"
-fi
-if [ -x /usr/local/bin/usnm-ocr-worker ]; then
-  echo "usnm-ocr-worker.service: $(systemctl is-enabled usnm-ocr-worker.service 2> /dev/null || true)," \
-    "$(systemctl is-active usnm-ocr-worker.service 2> /dev/null || true)"
-else
-  echo "usnm-ocr-worker.service: waiting for /usr/local/bin/usnm-ocr-worker" \
-    "(scripts/ocr-node/install-worker.sh; $(systemctl is-enabled usnm-ocr-worker.service 2> /dev/null || true))"
+  echo "usnm-ocr-worker.service: not installed"
 fi
 
 step "Checking that usnm can get a token"

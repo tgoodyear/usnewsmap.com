@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Keeps the serving container's API on the image CI rolled out to prod
-# (#955), modelled on scripts/ocr-node/update-worker.sh. install.sh installs
+# (#955), modelled on the retired direct OCR worker's nightly update
+# (update-worker.sh, removed in #966). install.sh installs
 # it as /usr/local/sbin/usnm-serving-update, and usnm-serving-update.timer
 # runs it 2 minutes after the last run ended.
 #
@@ -65,7 +66,7 @@
 # the registry and the attestation and says what it would deploy, and
 # changes nothing.
 set -euo pipefail
-usage() { sed -n '7,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '8,9s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 # Under systemd, a <N> prefix sets a line's syslog priority.
 pri() { if [ -n "${JOURNAL_STREAM:-}" ]; then printf '<%s>%s\n' "$1" "$2"; else printf '%s\n' "$2"; fi; }
 log() { pri 5 "$*"; }

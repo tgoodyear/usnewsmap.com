@@ -111,7 +111,7 @@ Remove that directory manually after inspecting the receipt.
   - **The `boinc_finish_called` contract**: because BOINC's client treats a plain executable exiting `0` without writing `boinc_finish_called` in the slot directory as a premature exit and restarts it up to 100 times before aborting with `ERR_TOO_MANY_EXITS` (`client/app_control.cpp:533-546`), native binaries use `<copy_file/>` on all slot inputs and outputs, update `fraction_done`, and write `boinc_finish_called` containing `0\n` as their final act before exiting `0`.
 - Explicit cohorts of 1-100 pages from one batch, selected from the prefetch
   manifest, or pages the [batch controller](../boinc-batch-scheduler.md#queue-fed-work)
-  claims off `ocr-bulk` as a second consumer beside the on-prem worker. Neither
+  claims off `ocr-bulk`, the queue's only consumer since the direct worker was retired (#966). Neither
   fetches from LoC: a page needs a scan the scan fetcher already cached.
 - Central bridge: native work reservations, BOINC staging and submission,
   validation and publishing. Only it can access Azure through the existing Entra

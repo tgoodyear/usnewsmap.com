@@ -389,10 +389,10 @@ settings are unchanged.
 
 By default the controller works through pages an operator named. With
 `"source": "queue"` it instead takes them off the OCR exchange's Azure Storage
-queues, `ocr-bulk` and optionally `ocr-priority`, as a **second consumer**
-beside the on-prem worker (#296). A page has one place in line whichever pool
-reads it, so the damage order and the user-requested pages are the queues' and
-there is no separate list to keep in step with them.
+queues, `ocr-bulk` and optionally `ocr-priority` (#296). Since the direct
+on-prem worker was retired (#966) it is their only consumer. The damage order
+and the user-requested pages are the queues', and there is no separate list to
+keep in step with them.
 
 ```json
 {
@@ -416,7 +416,6 @@ them ahead of other `usnm_ocr` work in its candidate window (no app uses
 homogeneous redundancy, which would ignore the order). A
 controller that claims `ocr-priority` should set `lease_hours` to cover that
 deadline plus a collect (36 hours), so a lost page returns to the queue sooner.
-The on-prem node reads `ocr-priority` first when it runs.
 
 ```
 ocr-bulk (and ocr-priority) --claim--> claims/<doc_id>.json in boinc-handoff
