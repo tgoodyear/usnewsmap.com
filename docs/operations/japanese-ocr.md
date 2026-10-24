@@ -131,6 +131,18 @@ ja-ocr/tools/start-quality.sh --env prod --command damage-parity --pages 400
 
    The ingest job has a 48-hour replica timeout. `--max-runtime-secs` stops the run from starting new batches (it finishes those it has started), and the next execution continues. `ocr damage progress` lines come once a minute with the pages per second. Batches are scored `--parallel` at a time, by default one per CPU. On one laptop core the scoring runs at about 1,650 pages a second, so the corpus's 23.7 million pages are a few hours of CPU on the job's 4 vCPUs, plus reading the curated parts. The Python audit's 10% sample took 5,725 s. Time the first full run and record it here. On the Consumption profile the job costs about $0.43 an hour, and reading curated parts that have moved to Cool adds about $0.01 per GB read.
 
+**On-prem.** Since 24 October 2026 the pass can run on an on-prem host instead, as that host's own Arc machine identity (pve-laptop CT 215, `usnm-batch`). With `USNM_OCR_DAMAGE_ONPREM` on and `USNM_OCR_DAMAGE_RUNNER` set to that identity's object id, provision grants it a role that can only create new blobs, under `curated/audit/damage/`, with no read, overwrite or delete (`infra/modules/damage-writer.bicep`). It reads curated and reference through the on-prem hosts' group (`USNM_JA_OCR_ONPREM`). Run it detached with the Arc agent's token endpoint and the lake's URLs (the command uses no state, but the binary wants a `--state-file`):
+
+```sh
+systemd-run --unit usnm-ocr-damage --nice 19 \
+  --setenv IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token \
+  --setenv IMDS_ENDPOINT=http://localhost:40342 \
+  /usr/local/bin/usnm-ingest --state-file /var/lib/usnm-ocr-damage/state.json \
+  --curated https://<lake>.blob.core.windows.net/curated \
+  --reference https://<lake>.blob.core.windows.net/reference ocr-damage --version <live version>
+journalctl -u usnm-ocr-damage
+```
+
 **A dev-scale test** (dev holds nothing outside a focused experiment, so this needs the maintainer's approval first). Locally, from the repository root:
 
 ```sh

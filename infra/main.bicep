@@ -285,6 +285,12 @@ param jaOcrReplicas int = 2
 @description('Run the Japanese OCR on-prem (#917): the on-prem hosts\' group (onPremGroupId) gets read on the curated and reference containers and create-only writes under curated/ocr-ja/ (modules/jaocr-runner.bicep), and the data lake opens to the node IPs. Pair it with jaOcrJob false, so the Azure job goes. scripts/ocr-node/ja-ocr-onprem.sh runs it on a node.')
 param jaOcrOnPrem bool = false
 
+@description('Let ocrDamageRunner, an on-prem host\'s own Arc machine identity (pve-laptop CT 215, usnm-batch), write the OCR damage tables (#296, `usnm-ingest ocr-damage`): create new blobs under curated/audit/damage/ only, with no read, overwrite or delete (modules/damage-writer.bicep). The role stays while ocrDamageRunner is set (modules/damage-writer-role.bicep). It reads curated and reference through the on-prem hosts\' group, so pair it with jaOcrOnPrem. Off removes the grant and keeps the role.')
+param ocrDamageOnPrem bool = false
+
+@description('Object id of the OCR damage tables\' writer, an on-prem host\'s own Arc machine identity (usnm-batch-arcs-<env>, with ocrDamageOnPrem), not the on-prem hosts\' group. Settings only, never in the repository.')
+param ocrDamageRunner string = ''
+
 @description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
 param ocrNodes bool = false
 
@@ -530,6 +536,27 @@ module jaOcrRunnerGrant 'modules/jaocr-runner.bicep' = if (jaOcrOnPrem && !empty
     storageName: storage.outputs.name
     principalId: trim(onPremGroupId)
     roleLabel: n.jaocrWriterRole
+  }
+}
+
+// The OCR damage tables' writer role, kept while the writer is set: the stack
+// can't delete it once ocrDamageOnPrem turns off (modules/damage-writer-role.bicep).
+module damageWriterRole 'modules/damage-writer-role.bicep' = if (!empty(trim(ocrDamageRunner))) {
+  scope: rg
+  name: 'damage-writer-role'
+  params: {
+    roleLabel: n.ocrDamageWriterRole
+  }
+}
+
+// The OCR damage tables' writer on-prem (#296): create-only under curated/audit/damage/.
+module damageWriterGrant 'modules/damage-writer.bicep' = if (ocrDamageOnPrem && !empty(trim(ocrDamageRunner))) {
+  scope: rg
+  name: 'damage-writer'
+  params: {
+    storageName: storage.outputs.name
+    principalId: trim(ocrDamageRunner)
+    writerRoleName: damageWriterRole!.outputs.name
   }
 }
 

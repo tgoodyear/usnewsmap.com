@@ -177,6 +177,7 @@ var nameTypes = {
   ingestNotProgressingAlert: 'alert'
   jaocrJob: 'caj'
   jaocrWriterRole: 'role'
+  ocrDamageWriterRole: 'role'
   jaoneJob: 'caj'
   logCapAlert: 'alert'
   ocrAppInsights: 'appi'
@@ -284,6 +285,7 @@ type Names = {
   ingestNotProgressingAlert: string
   jaocrJob: string
   jaocrWriterRole: string
+  ocrDamageWriterRole: string
   jaoneJob: string
   logCapAlert: string
   ocrAppInsights: string
@@ -379,6 +381,7 @@ func names(env string, sfx string, pinned bool) Names => {
   ingestNotProgressingAlert: usnmName('ingest-not-progressing', 'alert', env)
   jaocrJob: pinned ? 'caj-usnm-jaocr-${env}' : usnmName('jaocr', 'caj', env)
   jaocrWriterRole: usnmName('jaocr-writer', 'role', env)
+  ocrDamageWriterRole: usnmName('ocr-damage-writer', 'role', env)
   jaoneJob: pinned ? 'caj-usnm-jaone-${env}' : usnmName('jaone', 'caj', env)
   logCapAlert: usnmName('core-log-cap', 'alert', env)
   ocrAppInsights: usnmName('ocr', 'appi', env)

@@ -273,6 +273,16 @@
       "description": "Let USNM_BOINC_HANDOFF_RUNNER (the scan fetcher, pve-big CT 211) publish its fetched-scans list (#1056): the node writer role on ocr-out (list, read, create; no delete), for usnm-ocr-worker publish-fetched.",
       "type": "boolean"
     },
+    "USNM_OCR_DAMAGE_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_OCR_DAMAGE_RUNNER (an on-prem host's own Arc machine identity, pve-laptop CT 215) write the OCR damage tables (#296, usnm-ingest ocr-damage): create new blobs under curated/audit/damage/ only, with no read, overwrite or delete. It reads curated and reference through the on-prem hosts' group, so pair it with USNM_JA_OCR_ONPREM.",
+      "type": "boolean"
+    },
+    "USNM_OCR_DAMAGE_RUNNER": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The OCR damage tables' writer's object id (an on-prem host's own Arc machine identity, usnm-batch-arcs-<env>), with USNM_OCR_DAMAGE_ONPREM.",
+      "not": {}
+    },
     "USNM_OCR_NODE_GROUP": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The OCR nodes' Entra group's object id.",

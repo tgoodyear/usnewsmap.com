@@ -66,6 +66,7 @@ FROZEN_SEEDS = {
     "usnm-archive-writer",
     "usnm-boinc-ledger-writer",
     "usnm-jaocr-writer",
+    "usnm-ocr-damage-writer",
     "usnm-ocr-node-writer",
     "usnm-release-writer",
     "usnm-scans-reader",
