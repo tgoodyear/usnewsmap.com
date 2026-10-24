@@ -276,6 +276,29 @@ pub(crate) mod tests {
         p
     }
 
+    /// `ocr` with a retry on ETXTBSY. Another test thread can fork while `fake` still has the
+    /// script open for writing, and until that child execs, exec'ing the script fails with
+    /// "Text file busy". A retry a moment later succeeds.
+    #[cfg(unix)]
+    fn ocr_retrying(exe: &Path, img: &Path, j: &Job, dir: &Path) -> anyhow::Result<(Run, Vec<u8>)> {
+        const ETXTBSY: i32 = 26;
+        for _ in 0..20 {
+            match ocr(exe, img, Format::Jp2, j, dir) {
+                Err(e)
+                    if e.chain().any(|c| {
+                        c.downcast_ref::<std::io::Error>()
+                            .and_then(std::io::Error::raw_os_error)
+                            == Some(ETXTBSY)
+                    }) =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50))
+                }
+                other => return other,
+            }
+        }
+        ocr(exe, img, Format::Jp2, j, dir)
+    }
+
     #[cfg(unix)]
     #[test]
     fn records_ok_crash_and_timeout() {
@@ -285,7 +308,7 @@ pub(crate) mod tests {
         std::fs::write(&img, b"x").unwrap();
 
         let ok = fake(tmp.path(), r#"printf 'hello world\n' > "$2.txt""#);
-        let (r, t) = ocr(&ok, &img, Format::Jp2, &j, tmp.path()).unwrap();
+        let (r, t) = ocr_retrying(&ok, &img, &j, tmp.path()).unwrap();
         assert_eq!(r.outcome, Outcome::Ok);
         assert_eq!(t, b"hello world\n");
 
@@ -293,17 +316,17 @@ pub(crate) mod tests {
             tmp.path(),
             "echo 'Floating point exception' >&2; kill -FPE $$",
         );
-        let (r, t) = ocr(&crash, &img, Format::Jp2, &j, tmp.path()).unwrap();
+        let (r, t) = ocr_retrying(&crash, &img, &j, tmp.path()).unwrap();
         assert_eq!(r.outcome, Outcome::Crash136);
         assert!(t.is_empty());
         assert!(r.stderr_tail.unwrap().contains("Floating"));
 
         let rc136 = fake(tmp.path(), "exit 136");
-        let (r, _) = ocr(&rc136, &img, Format::Jp2, &j, tmp.path()).unwrap();
+        let (r, _) = ocr_retrying(&rc136, &img, &j, tmp.path()).unwrap();
         assert_eq!(r.outcome, Outcome::Crash136);
 
         let slow = fake(tmp.path(), "exec sleep 30");
-        let (r, _) = ocr(&slow, &img, Format::Jp2, &j, tmp.path()).unwrap();
+        let (r, _) = ocr_retrying(&slow, &img, &j, tmp.path()).unwrap();
         assert_eq!(r.outcome, Outcome::Timeout);
         assert!(r.engine_ms < 10_000);
     }
