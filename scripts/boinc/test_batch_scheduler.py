@@ -1485,6 +1485,56 @@ class QueueTransportTests(unittest.TestCase):
             self.assertEqual(argv[:2], ["bash", str(batch.REPO / "scripts/boinc/start-boinc-bridge.sh")])
             self.assertIn("handoff", argv)
 
+    def test_onprem_handoff_sends_the_chosen_steps_through_step_command(self):
+        cfg = copy.deepcopy(self.config)
+        cfg["step_command"] = ["ssh", "-o", "BatchMode=yes", "usnm-boinc-step@boinc.example"]
+        launcher = ["bash", str(batch.REPO / "scripts/boinc/start-boinc-bridge.sh")]
+        for choice, onprem in (((), set()), (("claim",), {"claim", "release"}), (("collect",), {"collect"}),
+                               (("claim", "collect"), {"claim", "release", "collect"})):
+            with self.subTest(choice=choice):
+                transport = batch.Transport(cfg, Path("."), onprem_handoff=choice)
+                with patch.object(transport, "run", return_value="") as run:
+                    for step in ("claim", "release", "collect", "export"):
+                        transport.step("handoff", step, JOB_ID="a" * 64)
+                for call, step in zip(run.call_args_list, ("claim", "release", "collect", "export")):
+                    argv = call.args[0]
+                    expected = cfg["step_command"] if step in onprem else launcher
+                    self.assertEqual(argv[:len(expected)], expected)
+                    self.assertEqual(argv[len(expected):len(expected) + 6],
+                                     ["--env", "dev", "--target", "handoff", "--step", step])
+
+    def test_onprem_handoff_needs_step_command_and_known_steps(self):
+        with self.assertRaisesRegex(ValueError, "step_command"):
+            batch.Transport(copy.deepcopy(self.config), Path("."), onprem_handoff=("claim",))
+        cfg = copy.deepcopy(self.config)
+        cfg["step_command"] = ["ssh", "usnm-boinc-step@boinc.example"]
+        with self.assertRaisesRegex(ValueError, "claim and/or collect"):
+            batch.Transport(cfg, Path("."), onprem_handoff=("export",))
+
+    def test_main_onprem_handoff_is_off_by_default_and_checked(self):
+        cfg = config()
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(cfg, f); f.flush()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state]), 0)
+            self.assertEqual(json.loads(out.getvalue())["onprem_handoff"], [])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
+                                             "--onprem-handoff", "claim"]), 1)
+            self.assertIn("step_command", err.getvalue())
+        cfg["step_command"] = ["ssh", "usnm-boinc-step@boinc.example"]
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(cfg, f); f.flush()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
+                                             "--onprem-handoff", "collect", "--onprem-handoff", "claim"]), 0)
+            self.assertEqual(json.loads(out.getvalue())["onprem_handoff"], ["claim", "collect"])
+
     def test_step_command_must_be_literal(self):
         for bad in ([], "ssh host", ["ssh", "host; rm -rf /"], ["ssh", "$(id)"]):
             cfg = config()

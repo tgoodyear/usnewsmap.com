@@ -5,12 +5,23 @@ USNM_BOINC_CONF directory.
 """
 
 import os
+import re
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "onprem-step.sh"
+HANDOFF_SETTINGS = {
+    "HANDOFF_URL": "https://example.blob.core.windows.net/boinc-handoff",
+    "COSMOS_ENDPOINT": "https://example.documents.azure.com:443/",
+    "CURATED_URL": "https://lake.blob.core.windows.net/curated",
+    "REFERENCE_URL": "https://lake.blob.core.windows.net/reference",
+    "OUT_URL": "https://example.blob.core.windows.net/ocr-out",
+    "QUEUE_URL": "https://example.queue.core.windows.net",
+    "IDENTITY_ENDPOINT": "http://localhost:40342/metadata/identity/oauth2/token",
+    "IMDS_ENDPOINT": "http://localhost:40342",
+}
 
 
 class OnpremStep(unittest.TestCase):
@@ -39,7 +50,9 @@ class OnpremStep(unittest.TestCase):
 
     def test_refusals(self):
         cases = [
-            (("--env", "prod", "--target", "handoff", "--step", "collect", "--what-if"), "does not run on-prem"),
+            (("--env", "prod", "--target", "export", "--step", "collect", "--what-if"), "does not run on-prem"),
+            (("--env", "prod", "--target", "handoff", "--step", "export", "--what-if"), "stays in Azure"),
+            (("--env", "prod", "--target", "handoff", "--step", "collect", "--what-if"), "no "),
             (("--env", "prod", "--step", "submit", "--var", "DB_HOST=x", "--what-if"), "set by the host"),
             (("--env", "prod", "--step", "submit", "--var", "BRIDGE_STEP=x", "--what-if"), "set by the host"),
             (("--env", "prod", "--step", "submit", "--var", "BASH_ENV=/tmp/x", "--what-if"), "steer the shell"),
@@ -156,6 +169,76 @@ class OnpremStep(unittest.TestCase):
                 done = self.run_step(ssh=command)
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn("not a controller bridge-step input", done.stderr)
+
+    def write_handoff_env(self, **changes):
+        settings = dict(HANDOFF_SETTINGS, **changes)
+        Path(self.conf.name, "handoff.env").write_text(
+            "".join(f"{k}={v}\n" for k, v in settings.items() if v is not None))
+
+    def test_handoff_runs_the_job_command_with_the_hosts_settings(self):
+        self.write_handoff_env()
+        done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step claim "
+                                 "--var HANDOFF_MANIFEST=pages-v1/manifest.parquet --var CLAIM_NONCE=abcdefgh12 "
+                                 "--var CLAIM_MAX=5 --var CLAIM_QUEUES=ocr-bulk,ocr-priority "
+                                 "--var CLAIM_LEASE_HOURS=36 --var CLAIM_LANGUAGES=eng --wait-mins 30 --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("localhost/usnm-boinc-bridge:abc's handoff-job.sh", done.stdout)
+        self.assertIn("handoff.env", done.stdout)
+        self.assertIn("HANDOFF_STEP=claim", done.stdout)
+        self.assertNotIn("BRIDGE_STEP", done.stdout)
+        for command in ("--env prod --target handoff --step collect --var JOB_IDS=" + "a" * 64 + " --what-if",
+                        "--env prod --target handoff --step collect --var JOB_ID=" + "a" * 64 +
+                        " --var HOST_ID=7 --what-if",
+                        "--env prod --target handoff --step release --var HANDOFF_DOCS=a_b,c_d --what-if"):
+            with self.subTest(command=command):
+                done = self.run_step(ssh=command)
+                self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_handoff_takes_only_its_steps_inputs(self):
+        self.write_handoff_env()
+        for command, message in (
+            ("--env prod --target handoff --step claim --var QUEUE_URL=https://evil --what-if", "set by the host"),
+            ("--env prod --target handoff --step collect --var HANDOFF_URL=https://evil --what-if", "set by the host"),
+            ("--env prod --target handoff --step collect --var HANDOFF_STEP=export --what-if", "set by the host"),
+            ("--env prod --target handoff --step collect --var IDENTITY_ENDPOINT=http://x --what-if", "set by the host"),
+            ("--env prod --target handoff --step collect --var AZURE_CLIENT_ID=x --what-if", "steer the shell"),
+            ("--env prod --target handoff --step collect --var HANDOFF_SPOOL=/project/x --what-if", "takes only"),
+            ("--env prod --target handoff --step claim --var JOB_ID=" + "a" * 64 + " --what-if", "takes only"),
+            ("--env prod --target handoff --step release --var CLAIM_NONCE=abcdefgh12 --what-if", "takes only"),
+            ("--env prod --target handoff --step export --var HANDOFF_PAGES=x --what-if", "stays in Azure"),
+            ("--env prod --target handoff --step texts-export --what-if", "stays in Azure"),
+        ):
+            with self.subTest(command=command):
+                done = self.run_step(ssh=command)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(message, done.stderr)
+        # As root on the host too: a hand-off step never takes another input.
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "collect",
+                             "--var", "KEY_VAULT_NAME=kv2", "--what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("takes only", done.stderr)
+
+    def test_handoff_env_must_hold_exactly_the_jobs_settings(self):
+        for changes, message in (
+            ({"QUEUE_URL": None}, "doesn't set QUEUE_URL"),
+            ({"IMDS_ENDPOINT": None}, "doesn't set IMDS_ENDPOINT"),
+            ({"KEY_VAULT_NAME": "kv"}, "it takes only"),
+            ({"COSMOS_ENDPOINT": ""}, "empty COSMOS_ENDPOINT"),
+        ):
+            with self.subTest(changes=changes):
+                self.write_handoff_env(**changes)
+                done = self.run_step("--env", "prod", "--target", "handoff", "--step", "collect",
+                                     "--var", "JOB_ID=" + "a" * 64, "--what-if")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(message, done.stderr)
+
+    def test_handoff_settings_match_the_azure_job(self):
+        # The Azure job's env, less Container Apps' AZURE_CLIENT_ID, plus the Arc endpoints.
+        bicep = (SCRIPT.parents[2] / "infra/modules/boinc-handoff-job.bicep").read_text()
+        job = set(re.findall(r"\{ name: '([A-Z_]+)', value:", bicep)) - {"AZURE_CLIENT_ID"}
+        script = re.search(r'^HANDOFF_HOST_VARS=" ([A-Z_ ]+) "$', SCRIPT.read_text(), re.M).group(1).split()
+        self.assertEqual(set(script), job | {"IDENTITY_ENDPOINT", "IMDS_ENDPOINT"})
+        self.assertEqual(set(HANDOFF_SETTINGS), set(script))
 
     def test_ssh_arguments_are_split_without_a_shell(self):
         # A value with shell syntax stays one literal argument; nothing is evaluated.

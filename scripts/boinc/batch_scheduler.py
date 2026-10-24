@@ -521,9 +521,15 @@ class ClaimFailed(RuntimeError):
         self.claims = claims
 
 
+# --onprem-handoff choices and the hand-off steps each one moves to the on-prem host. A claim's
+# release goes with it: both take pages off and back onto the work queues.
+ONPREM_HANDOFF = {"claim": ("claim", "release"), "collect": ("collect",)}
+
+
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
-                 batch_submit=False, batch_spool_out=False, batch_collect=False, timings=None):
+                 batch_submit=False, batch_spool_out=False, batch_collect=False,
+                 onprem_handoff=(), timings=None):
         self.config = config
         self.directory = directory
         self.status_url = status_url
@@ -534,6 +540,14 @@ class Transport:
         self.batch_submit = batch_submit
         self.batch_spool_out = batch_spool_out
         self.batch_collect = batch_collect
+        # The hand-off steps that run on the on-prem BOINC host through step_command
+        # (usnm-boinc-step --target handoff, #967 phase 3) instead of the Azure hand-off job:
+        # "claim" (with its release) and/or "collect". Off by default.
+        unknown = set(onprem_handoff) - set(ONPREM_HANDOFF)
+        require(not unknown, "onprem_handoff is claim and/or collect")
+        require(not onprem_handoff or config.get("step_command"),
+                "on-prem hand-off steps need the config's step_command")
+        self.onprem_steps = {step for choice in onprem_handoff for step in ONPREM_HANDOFF[choice]}
         self.timings = timings or Timings()
 
     def run(self, argv, label, timeout=2100, ok=(0,)):
@@ -597,9 +611,11 @@ class Transport:
     def step(self, target, step, **variables):
         # step_command runs the bridge steps somewhere other than the Azure bridge job, such as
         # the on-prem BOINC host's scripts/boinc/onprem-step.sh over ssh (#942), with the same
-        # arguments. Hand-off steps have no project tree and stay on the Azure launcher.
+        # arguments. Hand-off steps stay on the Azure launcher unless chosen with
+        # onprem_handoff (--onprem-handoff), which sends them there too as --target handoff.
         command = ["bash", str(REPO / "scripts/boinc/start-boinc-bridge.sh")]
-        if target == "bridge" and self.config.get("step_command"):
+        onprem = target == "bridge" or (target == "handoff" and step in self.onprem_steps)
+        if onprem and self.config.get("step_command"):
             command = self.config["step_command"]
         argv = command + ["--env", self.config["env"],
                           "--target", target, "--step", step, "--wait-mins", "30"]
@@ -1570,6 +1586,9 @@ def main(argv=None):
                         help="spool out a tick's results in one bridge execution (needs spool-out with HANDOFF_SPOOLS)")
     parser.add_argument("--batch-collect", action="store_true",
                         help="collect a tick's results in one hand-off execution (needs a hand-off image whose collect takes JOB_IDS)")
+    parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
+                        help="run this hand-off step (claim, with its release, or collect) on the on-prem BOINC "
+                             "host through step_command instead of the Azure hand-off job; repeat for both (#967)")
     args = parser.parse_args(argv)
     timings = None
     state = None
@@ -1587,6 +1606,8 @@ def main(argv=None):
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
         surya = config.get("app") == SURYA_APP_NAME
+        require(not args.onprem_handoff or (config.get("step_command") and not surya),
+                "--onprem-handoff needs a hand-off plan with step_command")
         if not args.apply and surya:
             # What-if: the steps a tick would run when the queue is empty, with the largest
             # SURYA_MAX the submit step can get. Nothing is read or run.
@@ -1608,6 +1629,7 @@ def main(argv=None):
                 "draining": args.drain,
                 "allocated_pages": len(config["pages"]),
                 "max_pending": config["max_pending"], "config_sha256": digest(config),
+                "onprem_handoff": sorted(set(args.onprem_handoff)),
             }
             if args.low_watermark is not None or "low_watermark" in config:
                 plan_event["low_watermark"] = (args.low_watermark if args.low_watermark is not None
@@ -1640,7 +1662,8 @@ def main(argv=None):
                 config, args.state_dir,
                 status_url=args.server_status_url, status_file=args.server_status_file,
                 batch_submit=args.batch_submit, batch_spool_out=args.batch_spool_out,
-                batch_collect=args.batch_collect, timings=timings,
+                batch_collect=args.batch_collect, onprem_handoff=tuple(args.onprem_handoff),
+                timings=timings,
             )
             tick_kwargs = {"drain": args.drain}
             if args.low_watermark is not None:
