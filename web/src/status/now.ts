@@ -85,17 +85,19 @@ export interface NowLine {
 const SLOW_DOWN = "because loc.gov asked us to slow down";
 
 /**
- * When the version the site searches was published: its own run's publish
- * time. Without that run, the pipeline's last publish, but only when nothing
- * says it belongs to another version: `last_published_at` is the latest
- * publish of any run, and a new run is marked published just before
- * `ops/current` names it. Last, the version's own `published_at` (versions
- * published before 5 October 2026 carry their run's start there).
+ * When the build of the version the site searches finished: its own run's
+ * `published_at`. Without that run, the pipeline's last publish, but only
+ * when nothing says it belongs to another version: `last_published_at` is
+ * the latest publish of any run, and a new run is marked published just
+ * before `ops/current` names it. Last, the version's own `published_at`
+ * (versions published before 5 October 2026 carry their run's start there).
  *
- * It isn't when the site started searching the version: a staged release
- * (an on-prem full rebuild, #283) is marked published when it is staged,
- * hours before its indexes are copied and the site switches to it, and
- * `current.json` keeps that time. So the page says "published", not "went live".
+ * That time is when the build finished, not when the version was published
+ * or the site started searching it. An ordinary release is marked published
+ * as soon as its build finishes; a staged release (an on-prem full rebuild,
+ * #283) is marked when it is staged, hours before its indexes are copied and
+ * the site switches to it, and `current.json` keeps that time. So the page
+ * says when the build finished.
  */
 export function lastUpdate(s: Status): string {
   const i = s.indexing;
@@ -112,8 +114,8 @@ export function lastUpdate(s: Status): string {
 
 /**
  * A newer version the pipeline has published that the API doesn't serve yet
- * (it checks every few minutes, then warms the version up): when it was
- * published, else null. A version that differs but isn't newer (a pipeline
+ * (it checks every few minutes, then warms the version up): when its build
+ * finished, else null. A version that differs but isn't newer (a pipeline
  * reading older than the API's switch) is not one.
  */
 export function pendingUpdate(s: Status): string | null {
@@ -130,7 +132,7 @@ export function pendingUpdate(s: Status): string | null {
 function pendingNote(s: Status): string | null {
   const at = pendingUpdate(s);
   if (at === null) return null;
-  return `A new update was published on ${localDate(at)}, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.`;
+  return `A new version, whose build finished ${localDate(at)}, is published, and the site switches to it in a few minutes. Until then, the numbers on this page are from the version it still searches.`;
 }
 
 /**
@@ -143,7 +145,10 @@ export function rightNow(s: Status, now: number): NowLine {
   if (!a || !a.available) {
     return {
       text: "What the pipeline is doing right now isn't available on this server.",
-      notes: [...(pending ? [pending] : []), `The site searches the update published ${localDate(lastUpdate(s))}.`],
+      notes: [
+        ...(pending ? [pending] : []),
+        `The site searches the version whose build finished ${localDate(lastUpdate(s))}.`,
+      ],
     };
   }
   const notes: string[] = pending ? [pending] : [];
@@ -224,7 +229,7 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
     case "listing":
       return { text: "Checking the Library of Congress for new batches." };
     case "idle": {
-      let text = `Idle: the version the site searches was published on ${localDate(lastUpdate(s))}.`;
+      let text = `Idle: the site searches the version whose build finished ${localDate(lastUpdate(s))}.`;
       text += a.next_run ? ` The next scheduled run is ${localDate(a.next_run)}.` : " No run is scheduled.";
       return { text };
     }
@@ -357,7 +362,7 @@ export function steps(s: Status, now: number): Step[] {
     key: "live",
     title: "Live",
     explain: "The site searches the last published version of the index. Each update adds the pages step 3 indexed.",
-    detail: `${count(p.pages)} pages from ${count(p.titles)} newspapers, in the version published ${localDate(lastUpdate(s))}`,
+    detail: `${count(p.pages)} pages from ${count(p.titles)} newspapers, in the version whose build finished ${localDate(lastUpdate(s))}`,
     state: doing === "publishing" ? "active" : t?.unpublished_batches === 0 || !t ? "done" : "waiting",
   };
   return [download, titles, index, live];
@@ -366,11 +371,18 @@ export function steps(s: Status, now: number): Step[] {
 /**
  * The headline: the published version's pages, and how many of the
  * downloaded batches are in it. The share counts batches on both sides
- * (the processed batches the version leaves out are `unpublished_batches`)
- * because pages don't compare: the version's pages also hold our OCR of
- * Japanese pages no downloaded batch had, which the release adds, and leave
- * out copies of a page that ships in two batches, so they can come to more
- * than the downloaded pages (`backfill.pages`).
+ * because pages don't compare: the version's pages also hold the Japanese
+ * pages LoC shipped without OCR text, which curation doesn't count
+ * (`backfill.pages`) and the release adds with our OCR, and leave out copies
+ * of a page that ships in two batches, so they can come to more than the
+ * downloaded pages.
+ *
+ * The batches are the version's own (`published.batches`) of those plus the
+ * processed batches it leaves out (`unpublished_batches`). A batch LoC
+ * reissues keeps its curated version while it is downloaded again, so it
+ * stays in one of the two, while `backfill.by_status.curated` leaves it out
+ * until it is processed again. Without the titles pipeline, the version's
+ * batches of the curated ones.
  */
 export function headline(s: Status): {
   text: string;
@@ -388,9 +400,14 @@ export function headline(s: Status): {
       ? ` ${count(duplicates)} of the downloaded pages ${duplicates === 1 ? "is a copy" : "are copies"} of pages in another batch, counted once.`
       : "");
   const text = `In the published version: ${count(p.pages)} pages`;
-  const total = s.backfill.available ? s.backfill.by_status.curated : 0;
   const t = s.titles.pipeline.available ? s.titles.pipeline : null;
-  const done = t && t.unpublished_batches !== null ? total - t.unpublished_batches : p.batches;
+  const done = p.batches;
+  const total =
+    done !== null && t && t.unpublished_batches !== null
+      ? done + t.unpublished_batches
+      : s.backfill.available
+        ? s.backfill.by_status.curated
+        : 0;
   if (total > 0 && done !== null && done >= 0 && done <= total) {
     return {
       text: `${text}, from ${count(done)} of ${count(total)} downloaded batches (${pct(done, total)})`,
@@ -417,7 +434,10 @@ export function pipelineVersionNote(s: Status): string | null {
   return `not the version the site searches, ${served}`;
 }
 
-/** When an index run ended: its publish, else its start plus its duration; null while it runs. */
+/**
+ * When an index run ended: its `published_at` (when its build finished),
+ * else its start plus its duration; null while it runs.
+ */
 function runEnded(r: IndexRun): string | null {
   if (r.published_at) return r.published_at;
   if (r.duration_secs === null) return null;
@@ -425,10 +445,12 @@ function runEnded(r: IndexRun): string | null {
 }
 
 /**
- * The newest index run that ended after the ingest job's last run
- * (`activity.last`), else null. That comes from the ingest job's own
- * report, so a release run elsewhere, such as an on-prem full rebuild
- * (#283), isn't in it, while `indexing.runs` lists every run.
+ * The newest index run that ended after the last reported run
+ * (`activity.last`), else null. `activity.last` is the ingest job's own
+ * report of its last run, or, when the job has none, the newest index run
+ * (`crates/usnm-api/src/status/activity.rs`). A release run elsewhere, such
+ * as an on-prem full rebuild (#283), isn't in the job's report, while
+ * `indexing.runs` lists every run.
  */
 export function laterIndexRun(s: Status): { run: IndexRun; ended_at: string } | null {
   const i = s.indexing;
@@ -534,7 +556,7 @@ export function ocrAudit(s: Status, now: number): AuditLine | null {
     const text =
       `Checked ${count(q.pages_sampled)} pages of ${q.version}, a ${q.sample_pct}% sample of every batch, on ${localDate(q.finished_at)}.` +
       (q.version !== served
-        ? ` The site now searches ${served}, so pages that version added or changed weren't checked.`
+        ? ` The site now searches ${served}, so pages added or changed since then weren't checked.`
         : "");
     // Each share is null when no page of its kind had text: leave its clause out.
     if (a.differs_share === null) return { text };

@@ -52,14 +52,15 @@ export function InTheIndex({ s }: { s: Status }) {
         {main !== null && (
           <>
             {" "}
-            A page with no text at all can&apos;t come up in a search. The main index has text for {count(main)} of them
-            {p.ja ? `, and the Japanese index for ${count(p.ja.pages)}` : ""}.
+            The main index has text for {count(main)} of these pages
+            {p.ja ? `, and the Japanese index for ${count(p.ja.pages)}` : ""}. A page with no text at all can&apos;t
+            come up in a search.
           </>
         )}
       </p>
       <p className="status-meta">
-        This is the version of the search index the site searches now (<code>{p.index_version}</code>), published{" "}
-        {localDate(lastUpdate(s))}.
+        This is the version of the search index the site searches now (<code>{p.index_version}</code>), whose build
+        finished {localDate(lastUpdate(s))}.
       </p>
       {years && years.length > 0 && <Coverage years={years} />}
     </section>
@@ -565,8 +566,8 @@ export function Languages({ s, meta }: { s: Status; meta: Meta | undefined }) {
         <p>
           Pages are counted by their own language, found from the words on each page, which is what the search&apos;s
           language filter matches. A page that mixes two languages counts in each. A page too short or too garbled to
-          tell counts in the languages the Library of Congress catalogs for its newspaper, and so does every page of a
-          newspaper cataloged in a language we have no word list for. {report}
+          tell counts in the languages the Library of Congress catalogs for its newspaper. A page of a newspaper
+          cataloged in a language we have no word list for, such as Japanese, also counts in that language. {report}
         </p>
       ) : (
         <p>
@@ -602,9 +603,9 @@ export function Places({ s }: { s: Status }) {
         earlier values when it changes.
       </p>
       <p>
-        Known gaps: a few towns couldn&apos;t be placed from the sources we checked. A correction to where a newspaper
-        is placed takes effect at the next full rebuild. The checks and their sources are on{" "}
-        <Ext href={issue(235)}>#235</Ext>.
+        Known gaps: a few towns couldn&apos;t be placed from the sources we checked. A correction that moves a newspaper
+        to another town takes effect at the next full rebuild; a corrected point or name for a town takes effect at the
+        next update. The checks and their sources are on <Ext href={issue(235)}>#235</Ext>.
       </p>
       {p.by_state && <StatesSection rows={p.by_state} pages={p.pages} />}
     </section>
@@ -652,7 +653,7 @@ function VersionsTable({ versions, now }: { versions: Versions; now: number }) {
       </p>
       <Table
         caption="Published versions, newest first"
-        head={["Version", "Published", "Kind", "Pages", "Change in pages", "What changed"]}
+        head={["Version", "Built", "Kind", "Pages", "Change in pages", "What changed"]}
         numeric={[3, 4]}
         empty="No version has been published yet."
         rows={list.map(({ v, before }) => {
@@ -676,7 +677,10 @@ function VersionsTable({ versions, now }: { versions: Versions; now: number }) {
   );
 }
 
-/** "The last update, …, was published …": the newest published version and what it added. */
+/**
+ * "The last update, …, was built on …": the newest published version and
+ * what it added. Its `published_at` is when its build finished (`lastUpdate`).
+ */
 export function lastPublished(versions: Versions | undefined): string | null {
   if (!versions?.available) return null;
   const [newest] = publishedVersions(versions.versions);
@@ -693,7 +697,7 @@ export function lastPublished(versions: Versions | undefined): string | null {
           ? `, with ${plural(-change, "page", "pages")} fewer`
           : ", with the same number of pages";
   const features = featureChanges(v, before);
-  return `The last ${kind}, ${v.index_version}, was published on ${dayDate(v.published_at!)}: ${plural(v.pages, "page", "pages")}${added}.${
+  return `The last ${kind}, ${v.index_version}, was built on ${dayDate(v.published_at!)}: ${plural(v.pages, "page", "pages")}${added}.${
     features.length > 0 ? ` ${features.join("; ")}.` : ""
   }`;
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, API_BASE } from "../api/client";
-import type { Backfill, HourBin, Indexing, Status, TitlesPipeline, Versions } from "../api/types";
+import type { Backfill, HourBin, Indexing, RunStatus, Status, TitlesPipeline, Versions } from "../api/types";
 import { TITLES } from "../route";
 import { count, health, relative, span, when } from "./format";
 import { STATE_LABEL, headline, laterIndexRun, pipelineVersionNote, rightNow, steps, localDate } from "./now";
@@ -249,6 +249,18 @@ function Technical({ s, now }: { s: Status; now: number }) {
   );
 }
 
+/**
+ * How an index run ended, before its end time. A published run's time is
+ * when its build finished: a staged release is marked published when it is
+ * staged, hours before the site switches to it.
+ */
+const RUN_ENDED: Record<RunStatus, string> = {
+  published: "build finished",
+  failed: "failed",
+  stopped: "stopped",
+  building: "building",
+};
+
 function ActivityDetails({ s, now }: { s: Status; now: number }) {
   const a = s.activity;
   const later = laterIndexRun(s);
@@ -290,8 +302,8 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
           />
           {a.last && (
             <p>
-              {/* The ingest job's own report: runs elsewhere, such as an on-prem rebuild, aren't in it. */}
-              <strong>Ingest job&apos;s last run:</strong> {a.last.outcome.replace("_", " ")}{" "}
+              {/* The ingest job's own report, or the newest index run when the job has none (activity.rs). */}
+              <strong>Last reported run:</strong> {a.last.outcome.replace("_", " ")}{" "}
               <Time iso={a.last.ended_at} now={now} />
               {a.last.index_version && (
                 <>
@@ -308,8 +320,8 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
           )}
           {later && (
             <p>
-              <strong>A later index run:</strong> {later.run.status} <Time iso={later.ended_at} now={now} /> (
-              <code>{later.run.index_version}</code>), which the ingest job didn&apos;t report. Recent index runs are
+              <strong>A later index run:</strong> {RUN_ENDED[later.run.status]} <Time iso={later.ended_at} now={now} />{" "}
+              (<code>{later.run.index_version}</code>), which the ingest job didn&apos;t report. Recent index runs are
               under Index builds.
             </p>
           )}
@@ -484,7 +496,7 @@ function IndexingSection({ s, now }: { s: Status; now: number }) {
       <Stats
         items={[
           ["Version", <code key="v">{p.index_version}</code>],
-          ["Published", <Time key="p" iso={p.published_at} now={now} />],
+          ["Build finished", <Time key="p" iso={p.published_at} now={now} />],
           ["Pages", count(p.pages)],
           ["Newspapers", count(p.titles)],
           ["Places", count(p.places)],

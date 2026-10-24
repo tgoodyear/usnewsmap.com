@@ -396,6 +396,8 @@ test("the dataset details say what the pipeline is doing right now", async ({ pa
   const iso = (min: number) => new Date(now + min * 60_000).toISOString();
   const doc = {
     ...base,
+    // The version's batches; with the 2,115 it leaves out, 2,997 processed.
+    published: { ...base.published, batches: 882 },
     pipeline: { available: true, read_at: iso(0) },
     activity: {
       available: true,

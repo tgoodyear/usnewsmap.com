@@ -273,10 +273,10 @@ describe("rightNow", () => {
 
   it("idle, with and without a schedule", () => {
     expect(rightNow(status({}), NOW).text).toBe(
-      "Idle: the version the site searches was published on Sep 29 at 10:23 AM EDT. No run is scheduled.",
+      "Idle: the site searches the version whose build finished Sep 29 at 10:23 AM EDT. No run is scheduled.",
     );
     expect(rightNow(status({ next_run: "2026-10-05T03:17:00Z" }), NOW).text).toBe(
-      "Idle: the version the site searches was published on Sep 29 at 10:23 AM EDT. The next scheduled run is Oct 4 at 11:17 PM EDT.",
+      "Idle: the site searches the version whose build finished Sep 29 at 10:23 AM EDT. The next scheduled run is Oct 4 at 11:17 PM EDT.",
     );
   });
 
@@ -320,9 +320,10 @@ describe("rightNow", () => {
   });
 
   it("without the activity section", () => {
-    expect(rightNow(status(null), NOW).text).toBe(
-      "What the pipeline is doing right now isn't available on this server.",
-    );
+    const line = rightNow(status(null), NOW);
+    expect(line.text).toBe("What the pipeline is doing right now isn't available on this server.");
+    // When the version's build finished, not when it was published or went live.
+    expect(line.notes).toEqual(["The site searches the version whose build finished Sep 29 at 10:23 AM EDT."]);
   });
 });
 
@@ -346,7 +347,7 @@ function run(index_version: string, started_at: string, published_at: string): I
 }
 
 describe("a newer version the API doesn't serve yet (#119)", () => {
-  // 4 October 2026: pages-v20261003-1 was published at 00:46, and the API
+  // 4 October 2026: pages-v20261003-1's build finished at 00:46, and the API
   // served pages-v20260929-4 until it had found and warmed up the new one.
   function switching(): Status {
     const s = status({});
@@ -360,20 +361,20 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
     return s;
   }
 
-  it("says when the site's own version was published, not the newer one", () => {
+  it("says when the site's own version's build finished, not the newer one's", () => {
     const s = switching();
     expect(lastUpdate(s)).toBe("2026-09-29T14:23:36Z");
     expect(rightNow(s, NOW).text).toBe(
-      "Idle: the version the site searches was published on Sep 29 at 10:23 AM EDT. No run is scheduled.",
+      "Idle: the site searches the version whose build finished Sep 29 at 10:23 AM EDT. No run is scheduled.",
     );
     expect(steps(s, NOW)[3]!.detail).toBe(
-      "6,557,925 pages from 1,217 newspapers, in the version published Sep 29 at 10:23 AM EDT",
+      "6,557,925 pages from 1,217 newspapers, in the version whose build finished Sep 29 at 10:23 AM EDT",
     );
   });
 
   it("says a new update is on its way and the numbers are the old one's", () => {
     const note =
-      "A new update was published on Oct 3 at 8:46 PM EDT, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.";
+      "A new version, whose build finished Oct 3 at 8:46 PM EDT, is published, and the site switches to it in a few minutes. Until then, the numbers on this page are from the version it still searches.";
     expect(rightNow(switching(), NOW).notes[0]).toBe(note);
     const noActivity = switching();
     noActivity.activity = undefined;
@@ -391,7 +392,7 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
     // Without the served version's run, the new run's time is still not taken.
     s.indexing.runs = s.indexing.runs.filter((r) => r.index_version !== "pages-v20260929-4");
     expect(lastUpdate(s)).toBe("2026-09-29T13:48:53Z");
-    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new version"))).toBe(false);
   });
 
   it("doesn't call an older pipeline reading a new update", () => {
@@ -405,7 +406,7 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
     if (!s.indexing.available) throw new Error("the fixture has the indexing section");
     s.indexing.runs = [run("pages-v20260929-4", "2026-09-29T13:48:53Z", "2026-09-29T14:23:36Z")];
     expect(lastUpdate(s)).toBe("2026-10-04T00:46:12Z");
-    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new version"))).toBe(false);
   });
 
   it("without the served version's run, falls back to the version's own date", () => {
@@ -418,7 +419,7 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
     } as Status["indexing"];
     expect(lastUpdate(status({}))).toBe("2026-09-29T14:23:36Z");
     expect(lastUpdate(s)).toBe("2026-09-29T13:48:53Z");
-    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new version"))).toBe(false);
   });
 });
 
@@ -432,7 +433,9 @@ describe("steps", () => {
     expect(download!.detail).toBe("2,997 of 2,997 batches, 23,794,152 pages");
     expect(titles!.detail).toBe("1,559 of 4,681 newspapers; 1,955 batches wait for their newspapers' details");
     expect(index!.detail).toBe("2,115 batches aren't searchable yet; 160 are ready to index");
-    expect(live!.detail).toBe("6,557,925 pages from 1,217 newspapers, in the version published Sep 29 at 10:23 AM EDT");
+    expect(live!.detail).toBe(
+      "6,557,925 pages from 1,217 newspapers, in the version whose build finished Sep 29 at 10:23 AM EDT",
+    );
   });
 
   it("titles-sync paused", () => {
@@ -578,9 +581,10 @@ describe("headline", () => {
   });
 
   it("keeps the share when the version's pages come to more than the downloaded pages", () => {
-    // 24 October 2026: pages-v20261022-1 counts 10,430 Japanese pages no
-    // batch had, so its pages and copies (23,858,049) are more than the
-    // pages downloaded (23,847,619). Batches still compare.
+    // 24 October 2026: pages-v20261022-1 counts 10,430 Japanese pages LoC
+    // shipped without OCR text, which curation doesn't count, so its pages
+    // and copies (23,858,049) are more than the pages downloaded
+    // (23,847,619). Batches still compare.
     const s = status({}, { total: 3010, by_status: { queued: 0, downloading: 0, curated: 3010, failed: 0 } });
     s.published.pages = 23_766_177;
     s.published.duplicate_pages = 91_872;
@@ -611,9 +615,41 @@ describe("headline", () => {
     });
   });
 
+  it("counts a batch LoC reissued while it is downloaded again (newer_versions_pending)", () => {
+    // 3,010 batches, all in the version, and LoC reissues one: it is queued
+    // again and isn't curated, but it keeps its curated version, so it is
+    // still the version's and isn't one the version leaves out.
+    const s = status(
+      {},
+      {
+        total: 3010,
+        by_status: { queued: 1, downloading: 0, curated: 3009, failed: 0 },
+        newer_versions_pending: 1,
+      },
+    );
+    s.published.batches = 3010;
+    if (!s.titles.pipeline.available) throw new Error("the fixture has the titles pipeline");
+    s.titles.pipeline.unpublished_batches = 0;
+    expect(headline(s)).toMatchObject({
+      text: "In the published version: 6,557,925 pages, from 3,010 of 3,010 downloaded batches (100%)",
+      share: 1,
+      progress: { done: 3010, total: 3010 },
+    });
+    // A reissued batch the version doesn't have yet: one of 3,010 left out,
+    // not two of 3,009.
+    s.published.batches = 3009;
+    s.titles.pipeline.unpublished_batches = 1;
+    expect(headline(s)).toMatchObject({
+      text: "In the published version: 6,557,925 pages, from 3,009 of 3,010 downloaded batches (99%)",
+      share: 3009 / 3010,
+      progress: { done: 3009, total: 3010 },
+    });
+  });
+
   it("without the pipeline state, only the version's pages", () => {
     const s = status({});
     s.backfill = { available: false, reason: "none" };
+    s.titles.pipeline = { available: false, reason: "none" };
     expect(headline(s)).toMatchObject({
       text: "In the published version: 6,557,925 pages",
       share: null,
@@ -642,7 +678,7 @@ describe("pipelineVersionNote", () => {
     ];
     expect(pipelineVersionNote(s)).toBe("not the version the site searches, pages-v20261022-1");
     // And it isn't a new update on its way.
-    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new version"))).toBe(false);
   });
 
   it("says a newer record is on its way to the site", () => {
@@ -776,7 +812,7 @@ describe("ocrAudit of another version", () => {
       },
     });
     expect(ocrAudit(s, NOW)!.text).toBe(
-      "Checked 2,371,337 pages of pages-v20261003-1, a 10% sample of every batch, on Oct 7 at 1:42 AM EDT. The site now searches pages-v20261022-1, so pages that version added or changed weren't checked.",
+      "Checked 2,371,337 pages of pages-v20261003-1, a 10% sample of every batch, on Oct 7 at 1:42 AM EDT. The site now searches pages-v20261022-1, so pages added or changed since then weren't checked.",
     );
   });
 });

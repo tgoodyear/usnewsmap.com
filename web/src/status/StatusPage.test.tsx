@@ -332,12 +332,13 @@ describe("DatasetsPage", () => {
     serve(body, versions);
     renderPage();
     const table = await screen.findByRole("table", { name: "Published versions, newest first" });
-    // When the version was published: a staged rebuild's switch comes hours later.
+    // When the version's build finished: a staged rebuild is marked published
+    // then, and the site switches to it hours later.
     expect(
       within(table)
         .getAllByRole("columnheader")
         .map((h) => h.textContent),
-    ).toEqual(["Version", "Published", "Kind", "Pages", "Change in pages", "What changed"]);
+    ).toEqual(["Version", "Built", "Kind", "Pages", "Change in pages", "What changed"]);
     const rows = within(table).getAllByRole("row").slice(1);
     // The failed run isn't a version anyone searched.
     expect(rows).toHaveLength(2);
@@ -348,7 +349,7 @@ describe("DatasetsPage", () => {
     expect(rows[1]!.textContent).toContain("Update");
     expect(
       screen.getByText(
-        /^The last full rebuild, pages-v3, was published on Oct 8, 2026: 1,300 pages, adding 300 pages\. Added American Stories' text\.$/,
+        /^The last full rebuild, pages-v3, was built on Oct 8, 2026: 1,300 pages, adding 300 pages\. Added American Stories' text\.$/,
       ),
     ).toBeTruthy();
   });
@@ -493,15 +494,15 @@ describe("DatasetsPage", () => {
     renderPage();
     expect(
       await screen.findByText(
-        /^The site covers 1,872 newspaper pages .*\. A page with no text at all can't come up in a search. The main index has text for 1,800 of them, and the Japanese index for 50\.$/,
+        /^The site covers 1,872 newspaper pages .*\. The main index has text for 1,800 of these pages, and the Japanese index for 50\. A page with no text at all can't come up in a search\.$/,
       ),
     ).toBeTruthy();
     expect(
       screen.getByText(/^1,872 pages from 6 newspapers, dated .*, 1,800 of them with text in the main index$/),
     ).toBeTruthy();
-    // When it was published, not when the site switched to it.
+    // When its build finished, not when it was published or the site switched to it.
     expect(screen.getByText(/^This is the version of the search index the site searches now \(/).textContent).toMatch(
-      /\(fixture-v1\), published [A-Z][a-z]{2} \d{1,2} at \d{1,2}:\d\d [AP]M \S+\.$/,
+      /\(fixture-v1\), whose build finished [A-Z][a-z]{2} \d{1,2} at \d{1,2}:\d\d [AP]M \S+\.$/,
     );
     // The Japanese index is in the index set.
     expect(screen.getByText("Index set:").parentElement!.textContent).toBe(
@@ -546,6 +547,10 @@ describe("DatasetsPage", () => {
     expect(screen.getByRole("heading", { level: 3, name: "Pages by catalog language" })).toBeTruthy();
     const section = screen.getByRole("region", { name: "Languages" });
     expect(section.textContent).toContain("which is what the search's language filter matches");
+    // A catalog language with no word list is added to the detected language, not to every catalog language.
+    expect(section.textContent).toContain(
+      "A page too short or too garbled to tell counts in the languages the Library of Congress catalogs for its newspaper. A page of a newspaper cataloged in a language we have no word list for, such as Japanese, also counts in that language.",
+    );
     expect(section.textContent).not.toMatch(/next full rebuild|#283/);
     cleanup();
 
@@ -600,12 +605,17 @@ describe("DatasetsPage", () => {
     expect(current.textContent).toBe(
       "Pipeline's current versionfixture-v0 (not the version the site searches, fixture-v1)",
     );
-    expect(screen.getByText("Ingest job's last run:").parentElement!.textContent).toMatch(
-      /^Ingest job's last run: failed .* \(fixture-v0\): index holds too many documents$/,
+    // activity.last can be the newest index run when the job has no report, so the label names no source.
+    expect(screen.getByText("Last reported run:").parentElement!.textContent).toMatch(
+      /^Last reported run: failed .* \(fixture-v0\): index holds too many documents$/,
     );
+    // A published run's time is when its build finished, which a staged run reaches before the site switches.
     expect(screen.getByText("A later index run:").parentElement!.textContent).toMatch(
-      /^A later index run: published .* \(fixture-v1\), which the ingest job didn't report\./,
+      /^A later index run: build finished .* \(fixture-v1\), which the ingest job didn't report\./,
     );
+    // The served version's own time, under Index builds, is labelled the same way.
+    expect(screen.getByText("Build finished", { selector: "dt" })).toBeTruthy();
+    expect(screen.queryByText("Published", { selector: "dt" })).toBeNull();
   });
 
   it("links Chronicling America at loc.gov and words the fixed text for the current index", async () => {
@@ -617,7 +627,7 @@ describe("DatasetsPage", () => {
     for (const a of links) expect(a.getAttribute("href")).toBe("https://www.loc.gov/collections/chronicling-america/");
     const places = screen.getByRole("region", { name: "Places" });
     expect(places.textContent).toContain(
-      "Known gaps: a few towns couldn't be placed from the sources we checked. A correction to where a newspaper is placed takes effect at the next full rebuild.",
+      "Known gaps: a few towns couldn't be placed from the sources we checked. A correction that moves a newspaper to another town takes effect at the next full rebuild; a corrected point or name for a town takes effect at the next update.",
     );
     expect(places.textContent).not.toContain("still shown at the town in their title");
     // The glossary's OCR entry: who runs it now, and a section that exists.
