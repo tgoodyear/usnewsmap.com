@@ -12,12 +12,22 @@
 // - with indexOpen, the separate index account, whose firewall allows only
 //   the node IPs while an on-prem release copies a staged version into it
 //   (onPremRelease, ADR-0021 amendment of October 2026). Otherwise it stays
-//   private-only, as before.
+//   private-only, as before;
+// - with cosmosOpen, the Cosmos account, whose firewall allows only the
+//   node IPs while the on-prem serving container reads pipeline state
+//   (onPremServing, #955). Otherwise it stays private-only.
 
 import { Names } from 'naming.bicep'
 
 @export()
-func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bool, indexOpen bool) array =>
+func publicAccountIds(
+  subscriptionId string,
+  n Names,
+  ocrNodes bool,
+  lakeOpen bool,
+  indexOpen bool,
+  cosmosOpen bool
+) array =>
   concat(
     ocrNodes
       ? [
@@ -27,11 +37,13 @@ func publicAccountIds(subscriptionId string, n Names, ocrNodes bool, lakeOpen bo
         ]
       : [],
     lakeOpen ? [resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.dataLake)] : [],
-    indexOpen ? [resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.indexAccount)] : []
+    indexOpen ? [resourceId(subscriptionId, n.rg, 'Microsoft.Storage/storageAccounts', n.indexAccount)] : [],
+    cosmosOpen ? [resourceId(subscriptionId, n.rg, 'Microsoft.DocumentDB/databaseAccounts', n.cosmos)] : []
   )
 
-// The data lake opens to the node IPs only for an on-prem runner that writes to it
-// (the Serial Set's, the Japanese OCR's), and only when there are IPs to allow.
+// The data lake opens to the node IPs only for an on-prem host that uses it
+// (the Serial Set's and the Japanese OCR's runners, the release, the serving
+// container), and only when there are IPs to allow.
 @export()
 func lakeOpen(onPremLakeRunner bool, ocrNodeIps string) bool =>
   onPremLakeRunner && !empty(nodeIpList(ocrNodeIps))
@@ -42,6 +54,13 @@ func lakeOpen(onPremLakeRunner bool, ocrNodeIps string) bool =>
 @export()
 func indexOpen(onPremRelease bool, indexStorage bool, ocrNodeIps string) bool =>
   onPremRelease && indexStorage && !empty(nodeIpList(ocrNodeIps))
+
+// The Cosmos account opens to the node IPs only for the on-prem serving
+// container (onPremServing), and only when there are IPs to allow: with
+// public access on and no IP rules, Cosmos would accept every network.
+@export()
+func cosmosOpen(onPremServing bool, ocrNodeIps string) bool =>
+  onPremServing && !empty(nodeIpList(ocrNodeIps))
 
 // USNM_OCR_NODE_IPS as a list: comma separated, blanks dropped.
 @export()

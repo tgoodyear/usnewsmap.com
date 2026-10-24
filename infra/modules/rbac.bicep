@@ -199,3 +199,6 @@ resource newIngestIndexContributor 'Microsoft.Authorization/roleAssignments@2022
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobContributor)
   }
 }
+
+@description('The search log writer role\'s name (a GUID), for other identities that add to the search log.')
+output searchLogRoleName string = searchLogWriter.name
