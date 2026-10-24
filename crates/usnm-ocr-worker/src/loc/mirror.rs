@@ -277,6 +277,11 @@ impl Gate {
             return None;
         }
         tokio::time::sleep_until(at).await;
+        // A hold set while this caller slept (by a request that just
+        // ended) still holds.
+        if self.held_until().is_some() {
+            return None;
+        }
         Some(permit)
     }
 
@@ -296,7 +301,9 @@ struct Host {
 
 /// What one request got.
 enum Tried {
-    Body(Bytes, Duration),
+    /// The body, how long it took, and the URL that sent it (after any
+    /// redirect).
+    Body(Bytes, Duration, String),
     /// 404 or 410: it isn't there.
     Missing,
     /// Not asked: the mirror is held, or busy past the wait.
@@ -445,7 +452,7 @@ impl Mirrors {
                 .get(host, &format!("{base}.json"), MAX_META_BYTES, META_TIMEOUT)
                 .await
             {
-                Tried::Body(body, _) => match partner_file(&body) {
+                Tried::Body(body, _, _) => match partner_file(&body) {
                     Some(file) if Some(file.as_str()) != data_path(&page.url) => {
                         host.counts.seq_drift.fetch_add(1, Ordering::SeqCst);
                         tracing::debug!(
@@ -532,7 +539,7 @@ impl Mirrors {
             .get(host, url.as_str(), MAX_META_BYTES, META_TIMEOUT)
             .await
         {
-            Tried::Body(b, _) => b,
+            Tried::Body(b, _, _) => b,
             // The CDX answers 404 for nothing captured on some prefixes.
             Tried::Missing => return Some(BTreeMap::new()),
             Tried::Skipped | Tried::Failed => return None,
@@ -549,8 +556,8 @@ impl Mirrors {
 
     /// `url`'s body, if it matches the bag's md5, as the page's scan.
     async fn checked(&self, host: &Host, url: &str, page: &BatchPage) -> Checked {
-        let (body, took) = match self.get(host, url, MAX_IMAGE_BYTES, IMAGE_TIMEOUT).await {
-            Tried::Body(b, t) => (b, t),
+        let (body, took, from) = match self.get(host, url, MAX_IMAGE_BYTES, IMAGE_TIMEOUT).await {
+            Tried::Body(b, t, from) => (b, t, from),
             Tried::Missing => {
                 host.counts.misses.fetch_add(1, Ordering::SeqCst);
                 return Checked::No;
@@ -584,7 +591,7 @@ impl Mirrors {
             },
             Hit {
                 source: host.name,
-                url: url.to_owned(),
+                url: from,
             },
         )
     }
@@ -635,7 +642,7 @@ impl Mirrors {
                     return hold(self.cfg.block_hold, &url, why);
                 }
                 return match read_limited(resp, max).await {
-                    Ok(body) => Tried::Body(body, sent.elapsed()),
+                    Ok(body) => Tried::Body(body, sent.elapsed(), url),
                     Err(e) => hold(self.cfg.backoff, &url, e),
                 };
             }

@@ -479,7 +479,12 @@ async fn a_redirect_within_the_mirror_is_followed_and_counted() {
         .await
         .unwrap();
     assert_eq!(&scan.bytes[..], b"jp2 two");
-    assert_eq!(hit.url, format!("{}{SEQ2}.jp2", s.root));
+    assert_eq!(scan.url, page("0010", b"jp2 two").url, "LoC's URL stays");
+    assert_eq!(
+        hit.url,
+        format!("{}/files/0010.jp2", s.root),
+        "the URL that sent the bytes"
+    );
     assert_eq!(m.status()["partner"].requests, 2);
 }
 
@@ -603,4 +608,32 @@ fn reads_a_cdx_answer() {
     assert_eq!(cdx_files(b"", dir), Some(BTreeMap::new()));
     assert_eq!(cdx_files(b"[]", dir), Some(BTreeMap::new()));
     assert_eq!(cdx_files(b"oops", dir), None);
+}
+
+#[tokio::test]
+async fn a_hold_set_while_a_caller_waits_out_the_gap_still_holds() {
+    let s = StandIn::start().await;
+    s.put(&format!("{SEQ2}.jp2"), b"jp2 two".to_vec());
+    let mut c = cfg();
+    c.partner_gap = Duration::from_millis(200);
+    let m = Arc::new(
+        Mirrors::new(MirrorConfig {
+            partners: vec![partner(&s, false)],
+            ..c
+        })
+        .unwrap(),
+    );
+    let p = page("0010", b"jp2 two");
+    // One request goes and ends; the next caller then waits out the gap.
+    assert!(m.jp2("xx_test", &key(2), &p).await.is_some());
+    let waiting = {
+        let (m, p) = (Arc::clone(&m), p.clone());
+        tokio::spawn(async move { m.jp2("xx_test", &key(2), &p).await.is_some() })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // A hold lands while it sleeps (as one from a CDX answer that doesn't
+    // read would, after its request ended).
+    m.partners["xx"].1.gate.hold(Duration::from_secs(30));
+    assert!(!waiting.await.unwrap(), "not sent during the hold");
+    assert_eq!(m.status()["partner"].requests, 1);
 }
