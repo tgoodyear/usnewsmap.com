@@ -105,7 +105,7 @@ fn queries() -> Vec<(&'static str, Node)> {
         ("wildcard *", parse("conve*tion").unwrap()),
         ("wildcards and", parse("railr*ad weath?r -cotton").unwrap()),
         ("wildcard no match", parse("golde?s").unwrap()),
-        // OCR spellings as a term set, and at least N of (#124). The
+        // OCR spellings `OR`ed, and at least N of (#124). The
         // fixtures misread `gold` as `goid` and `golcl`, `silver` as `sllver`
         // and `silvcr`, `fever` as `fevcr`, `standard` as `standarcl`.
         ("ocr spellings", parse("gold~ocr").unwrap()),
@@ -613,6 +613,70 @@ async fn ocr_spellings_find_the_misread_pages() {
             h.snippets
         );
     }
+}
+
+/// `word~ocr` goes to the engine as an `OR` of its spellings, never as a
+/// term set (`text:IN [...]`), whose warm-up reads the field's whole term
+/// dictionary and every posting list of each split (it ran the prod
+/// searchers out of memory). On every layout the `OR` counts what the term
+/// set of the same spellings in the same fields does.
+#[tokio::test]
+async fn ocr_spellings_count_what_a_term_set_does() {
+    if quickwit().is_none() {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    }
+    let url = std::env::var("QUICKWIT_URL").unwrap();
+    let url = url.trim_end_matches('/');
+    let http = reqwest::Client::new();
+    let count = |indexes: String, query: String| {
+        let http = http.clone();
+        async move {
+            let v: serde_json::Value = http
+                .post(format!("{url}/api/v1/{indexes}/search"))
+                .json(&serde_json::json!({"query": query, "max_hits": 0}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["num_hits"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{query}: {v}"))
+        }
+    };
+    let mut matched = 0;
+    for (name, set) in searched_sets() {
+        let fields: &[&str] = match (set.text_layout(), set.american_stories()) {
+            (TextLayout::Single, _) => &[usnm_core::text_layout::FIELD],
+            (TextLayout::Separate, true) => &["text", "text_as"],
+            (TextLayout::Separate, false) => &["text"],
+        };
+        for word in ["gold", "silver", "fever", "standard", "convention"] {
+            let ours =
+                usnm_search::quickwit::query_for(&parse(&format!("{word}~ocr")).unwrap(), &set)
+                    .unwrap();
+            assert!(!ours.contains(":IN ["), "{ours}");
+            let variants = usnm_core::ocr_variants::variants(word).join(" ");
+            let term_set = fields
+                .iter()
+                .map(|f| format!("{f}:IN [{variants}]"))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let got = count(set.ids().join(","), ours).await;
+            assert_eq!(
+                got,
+                count(set.ids().join(","), term_set).await,
+                "{name}: {word}"
+            );
+            matched += usize::from(got > 0);
+        }
+    }
+    assert!(
+        matched >= 9,
+        "only {matched} of the counts matched any page"
+    );
 }
 
 /// `N OF (...)` (#124) runs as an `OR` of `AND`s in the query language.

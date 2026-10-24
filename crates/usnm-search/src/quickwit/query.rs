@@ -150,12 +150,15 @@ fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, Searc
             ));
         }
         Node::Term(t) if t.prefix => format!("{text}:{}*", t.text),
-        // `word~ocr` (#124): the word and its OCR spellings as one term set,
-        // which the engine looks up in the term dictionary like a word.
-        // Members are split at whitespace and not analyzed, so each must be
-        // one index token as it stands. The parser refuses a word that isn't
-        // (`ﷺ` folded by `Analyzer::V1`); this never sends one split into
-        // several members.
+        // `word~ocr` (#124): the word and its OCR spellings, `OR`ed. Never a
+        // term set (`text:IN [...]`): for a field in one, Quickwit 0.9.1
+        // reads the whole term dictionary and every posting list of each
+        // split before searching it, hundreds of MB a split on OCR text,
+        // which ran the prod searchers out of memory. An `OR` reads only
+        // the listed words. Each spelling must be one index token as it
+        // stands, or the engine would analyze it into several. The parser
+        // refuses a word that isn't (`ﷺ` folded by `Analyzer::V1`); this
+        // never sends one.
         Node::Term(t) if t.ocr => {
             let variants = usnm_core::ocr_variants::variants(&t.text);
             if !variants
@@ -166,7 +169,11 @@ fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, Searc
                     "~ocr on a word the index holds as several words".into(),
                 ));
             }
-            format!("{text}:IN [{}]", variants.join(" "))
+            let terms: Vec<String> = variants.iter().map(|v| format!("{text}:{v}")).collect();
+            match terms.as_slice() {
+                [one] => one.clone(),
+                _ => format!("({})", terms.join(" OR ")),
+            }
         }
         // With `?` or `*` in it (#124), an unquoted word is a wildcard query
         // in Quickwit 0.9, matched against the index's words.
@@ -346,14 +353,23 @@ mod tests {
             query_string(&parse("presi?ent").unwrap(), false, true).unwrap(),
             "(text:presi?ent OR text_as:presi?ent)"
         );
-        // A word's OCR spellings are one term set (#124).
+        // A word's OCR spellings are `OR`ed (#124), never a term set.
         assert_eq!(
             query_string(&parse("Gold~ocr").unwrap(), false, false).unwrap(),
-            "text:IN [goid golcl gold]"
+            "(text:goid OR text:golcl OR text:gold)"
         );
         assert_eq!(
             query_string(&parse("gold~ocr").unwrap(), false, true).unwrap(),
-            "(text:IN [goid golcl gold] OR text_as:IN [goid golcl gold])"
+            "((text:goid OR text:golcl OR text:gold) OR (text_as:goid OR text_as:golcl OR text_as:gold))"
+        );
+        assert_eq!(
+            query_string(&parse("bryan -gold~ocr").unwrap(), false, false).unwrap(),
+            "(NOT (text:goid OR text:golcl OR text:gold) AND text:bryan)"
+        );
+        // A word with no other spelling is the word alone.
+        assert_eq!(
+            query_string(&parse("xyz~ocr").unwrap(), false, true).unwrap(),
+            "(text:xyz OR text_as:xyz)"
         );
         // A word that isn't one index token (`ﷺ` or `½` folded by
         // `Analyzer::V1`) is never sent split into several members; the
@@ -399,6 +415,60 @@ mod tests {
              OR ((text:b1 OR text_as:b1) AND (text:c1 OR text_as:c1))) \
              AND (text:gold OR text_as:gold))"
         );
+    }
+
+    /// No request puts a text field in a term set (`text:IN [...]`): for
+    /// one, Quickwit 0.9.1 reads the field's whole term dictionary and
+    /// every posting list of each split before searching it. Term sets
+    /// stay on keyword fields (states, LCCNs, languages, decades, places,
+    /// doc ids), whose dictionaries are small.
+    #[test]
+    fn no_request_has_a_term_set_on_a_text_field() {
+        let q = parse(
+            r#"gold~ocr -silver~ocr 2 OF (fever~ocr bryan "cross of gold") (wheat~ocr OR corn)"#,
+        )
+        .unwrap();
+        let mut f = filters();
+        f.lccns = vec!["sn99000001".into()];
+        let spec = BucketSpec::new(BucketUnit::Year, d("1896-01-01"), d("1896-12-31"));
+        for grams in [false, true] {
+            let sets = [
+                stories(false).with_common_grams(grams),
+                stories(true).with_common_grams(grams),
+                stories(true)
+                    .with_common_grams(grams)
+                    .with_text_layout(TextLayout::Single),
+            ];
+            for set in &sets {
+                let mut requests = vec![
+                    summary_request(&q, &f, set, &spec).unwrap(),
+                    cube_request(&q, &f, set, &spec, &[0, 1]).unwrap(),
+                    place_cube_request(&q, &f, set, &spec, &["P1".into()]).unwrap(),
+                    hits_request(&q, &f, set, &HitsQuery::default()).unwrap(),
+                ];
+                if set.text_layout() == TextLayout::Separate && set.american_stories() {
+                    requests.push(american_stories_only_request(&q, &f, set).unwrap());
+                }
+                for r in requests {
+                    let s = r["query"].as_str().unwrap();
+                    assert!(
+                        s.contains("text:goid") || s.contains("text_all:goid"),
+                        "{s}"
+                    );
+                    for field in [
+                        "text",
+                        "text_as",
+                        "text_all",
+                        "text_cg",
+                        "text_as_cg",
+                        "text_all_cg",
+                    ] {
+                        assert!(!s.contains(&format!("{field}:IN [")), "{s}");
+                    }
+                    assert!(s.contains("lccn:IN [sn99000001]"), "{s}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -544,6 +614,18 @@ mod tests {
             query_for(&parse("gold~1").unwrap(), &single(true)),
             Err(SearchError::Unsupported(_))
         ));
+        // OCR spellings `OR`ed in the one field, never a term set: Quickwit
+        // 0.9.1 reads a term set's field whole on each split (#124).
+        assert_eq!(
+            qs("gold~ocr", true),
+            "(text_all:goid OR text_all:golcl OR text_all:gold)"
+        );
+        assert_eq!(
+            qs("2 OF (gold~ocr bryan silver)", true),
+            "((text_all:bryan AND (text_all:goid OR text_all:golcl OR text_all:gold)) \
+             OR (text_all:bryan AND text_all:silver) \
+             OR ((text_all:goid OR text_all:golcl OR text_all:gold) AND text_all:silver))"
+        );
         // Whether the set says American Stories' text is there or not.
         assert_eq!(
             query_for(
