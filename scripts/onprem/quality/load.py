@@ -9,7 +9,6 @@ table, then INSERT ... ON CONFLICT), so a rerun replaces what it loaded before.
   load.py results --dsn DSN --campaign NAME --engine sha256:... --file F [--file F ...]
   load.py ocr --dsn DSN --curated DIR
   load.py staging --dsn DSN --campaign NAME --docs FILE --image-source S --alto-source S
-  load.py refresh --dsn DSN
 
 damage   every audit/damage/v2/<batch>_verNN.parquet: the page rows (quality.pages) and the
          damage score (quality.damage), under the campaign damage-v2. A page in two batch
@@ -18,7 +17,6 @@ results  quality collect's pages.parquet or the wave runner's collected parts (o
          page and reader): quality.unit_pages and quality.reader_scores.
 ocr      curated ocr-local/pages: one quality.ocr_outputs row per published run.
 staging  which pages a campaign staged, with the image and ALTO they were staged from.
-refresh  rebuilds quality.page_summary.
 
 DSN is a libpq connection string with the client certificate, for example
 "host=usnm-queue.tjg.fyi dbname=usnm_quality user=quality_loader sslmode=verify-full
@@ -282,15 +280,10 @@ def main(argv=None):
     s.add_argument("--image-source", required=True)
     s.add_argument("--alto-source", required=True)
     s.add_argument("--create-campaign", action="store_true")
-    sub.add_parser("refresh")
-    for p in (d, r, o, s, sub.choices["refresh"]):
+    for p in (d, r, o, s):
         p.add_argument("--dsn", required=True)
     a = ap.parse_args(argv)
-    if a.cmd == "refresh":
-        psql(a.dsn, "SELECT quality.refresh_summary();\n")
-        log("page_summary refreshed")
-    else:
-        {"damage": cmd_damage, "results": cmd_results, "ocr": cmd_ocr, "staging": cmd_staging}[a.cmd](a)
+    {"damage": cmd_damage, "results": cmd_results, "ocr": cmd_ocr, "staging": cmd_staging}[a.cmd](a)
 
 
 if __name__ == "__main__":

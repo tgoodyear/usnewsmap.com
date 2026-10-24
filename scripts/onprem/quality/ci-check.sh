@@ -30,7 +30,7 @@ psql_admin -c 'CREATE DATABASE usnm_quality'
 psql_admin -d usnm_quality < "$here/setup.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/setup.sql" > /dev/null 2>&1 # safe to run again
 psql_admin -d usnm_quality < "$here/test_roles.sql" >&2
-# load.py's SQL, as the loader: a campaign, a page, its damage, a unit result, then a refresh.
+# load.py's SQL, as the loader: a campaign, a page, its damage and a unit result.
 {
   echo "SET ROLE quality_loader;"
   python3 - "$here/load.py" <<'PY'
@@ -46,8 +46,7 @@ print(m.campaign_sql("damage-v2", "damage") + m.campaign_sql("v1-ci", "boinc-qua
       + m.upsert_sql("pages", m.PAGE_COLS, ["doc_id"], pages) + m.upsert_sql("damage", m.DAMAGE_COLS, ["doc_id"], damage)
       + m.upsert_sql("unit_pages", m.UNIT_COLS, ["campaign", "doc_id"], units)
       + m.upsert_sql("reader_scores", m.SCORE_COLS, ["campaign", "doc_id", "reader"], scores)
-      + m.upsert_sql("pages", m.PAGE_COLS, ["doc_id"], pages)  # a rerun replaces
-      + "SELECT quality.refresh_summary();")
+      + m.upsert_sql("pages", m.PAGE_COLS, ["doc_id"], pages))  # a rerun replaces
 PY
 } | psql_admin -d usnm_quality > /dev/null
 got=$(psql_admin -d usnm_quality -tA -c "SELECT doc_id, damage_rate, loc_est_cer, has_image_features FROM quality.page_summary")

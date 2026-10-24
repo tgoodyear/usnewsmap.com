@@ -29,20 +29,19 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `ocr_outputs`   | published OCR run of a page    | `curated/ocr-local/pages` (`load.py ocr`)                                    |
 | `staging`       | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from   |
 
-`page_summary` is a materialized view with one row per page that joins them: the damage
+`page_summary` is a view with one row per page that joins them: the damage
 score, the newest unit result's scan features and LoC's `est_cer` there, the best of our
 readers, the newest LoC-against-American-Stories comparison, our OCR runs, and whether the page
-has image features yet. `quality.refresh_summary()` rebuilds it; only the loader may call it.
-A change to the view's definition needs `DROP MATERIALIZED VIEW quality.page_summary` before
-`setup.sql`.
+has image features yet. It's a plain view, not a materialized one: a stored copy of 23.8M
+pages, refreshed, would need about twice its size free on CT231's disk, which the queue shares.
 
 ## Roles
 
-| Role                  | May                                                                                                                           |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `quality_loader`      | Read everything; insert, update and delete every table but `text_compare` and `readers` (insert only); refresh `page_summary` |
-| `quality_text_writer` | Read everything; insert and update `text_compare`; insert `campaigns`                                                         |
-| `quality_reader`      | Read everything                                                                                                               |
+| Role                  | May                                                                                                   |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| `quality_loader`      | Read everything; insert, update and delete every table but `text_compare` and `readers` (insert only) |
+| `quality_text_writer` | Read everything; insert and update `text_compare`; insert `campaigns`                                 |
+| `quality_reader`      | Read everything                                                                                       |
 
 Each logs in only with a certificate whose CN is the role (`queue-ct.sh --issue-client --role
 <name>`), and none has a password. `test_roles.sql` checks every row of this table, and CI runs it
@@ -65,7 +64,6 @@ load.py results --dsn "$DSN" --campaign v1-wave9 --engine sha256:... --file <par
 load.py damage --dsn "$DSN" --curated /srv/curated
 load.py ocr --dsn "$DSN" --curated /srv/curated
 load.py staging --dsn "$DSN" --campaign v1-wave10 --docs done.txt --image-source keep-set:scanserve --alto-source empty
-load.py refresh --dsn "$DSN"
 ```
 
 Where each source comes in:

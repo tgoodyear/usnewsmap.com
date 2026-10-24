@@ -40,13 +40,6 @@ BEGIN
       RAISE EXCEPTION '% % on %: % (expected %)', want.role, want.priv, want.tbl, got, want.expected;
     END IF;
   END LOOP;
-  IF NOT has_function_privilege('quality_loader', 'quality.refresh_summary()', 'EXECUTE') THEN
-    RAISE EXCEPTION 'quality_loader can''t refresh page_summary';
-  END IF;
-  IF has_function_privilege('quality_reader', 'quality.refresh_summary()', 'EXECUTE')
-     OR has_function_privilege('quality_text_writer', 'quality.refresh_summary()', 'EXECUTE') THEN
-    RAISE EXCEPTION 'only quality_loader may refresh page_summary';
-  END IF;
   IF has_database_privilege('quality_reader', 'usnm_quality', 'TEMPORARY') THEN
     RAISE EXCEPTION 'quality_reader may create temporary tables';
   END IF;
@@ -58,8 +51,8 @@ BEGIN
   END IF;
 END $$;
 
--- And through the function: the loader's refresh runs.
-SET ROLE quality_loader;
-SELECT quality.refresh_summary();
+-- And the view reads for the reader.
+SET ROLE quality_reader;
+SELECT count(*) >= 0 AS summary_readable FROM quality.page_summary;
 RESET ROLE;
 SELECT 'roles checked' AS result;

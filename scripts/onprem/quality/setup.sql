@@ -1,7 +1,7 @@
 -- The OCR-quality results database (#962): usnm_quality in the queue container CT231
 -- (home-infra scripts/lab/queue-ct.sh --quality-db), beside usnm_queue and separate from it.
 -- One row per page in quality.pages, every signal about a page in its own table keyed by
--- doc_id, and quality.page_summary joining them, one row a page. Run as postgres in that
+-- doc_id, and the view quality.page_summary joining them, one row a page. Run as postgres in that
 -- container; safe to run again:
 --
 --   psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
@@ -9,7 +9,7 @@
 -- Roles log in only with a client certificate whose CN is the role (ADR-0025); none has a
 -- password. What each may do is its row in README.md, checked by test_roles.sql:
 --   quality_loader       the loaders (load.py): writes pages, damage, campaigns, readers,
---                        unit results, OCR outputs and staging; refreshes page_summary.
+--                        unit results, OCR outputs and staging.
 --   quality_text_writer  the text-only comparisons (LoC against American Stories, #962):
 --                        writes text_compare and its own campaign rows; reads the rest.
 --   quality_reader       dashboards and the OCR ranking queries (rank.sql): reads only.
@@ -180,9 +180,18 @@ CREATE TABLE IF NOT EXISTS quality.staging (
 CREATE INDEX IF NOT EXISTS staging_doc ON quality.staging (doc_id);
 
 -- One row a page, joining every signal: the newest unit result, LoC's own estimate there,
--- the best of our readers, and the newest LoC-against-American-Stories comparison.
--- Kept on a rerun; a change to its definition needs DROP MATERIALIZED VIEW first.
-CREATE MATERIALIZED VIEW IF NOT EXISTS quality.page_summary AS
+-- the best of our readers, and the newest LoC-against-American-Stories comparison. A plain
+-- view, not a materialized one: stored, it would be another copy of all 23.8M pages, and
+-- refreshing it needs twice that free on CT231's disk, which the queue shares.
+DO $$
+BEGIN
+  -- It was a materialized view before 24 October 2026.
+  IF EXISTS (SELECT FROM pg_matviews WHERE schemaname = 'quality' AND matviewname = 'page_summary') THEN
+    DROP MATERIALIZED VIEW quality.page_summary;
+  END IF;
+END $$;
+DROP FUNCTION IF EXISTS quality.refresh_summary();
+CREATE OR REPLACE VIEW quality.page_summary AS
 WITH unit AS (
   SELECT DISTINCT ON (u.doc_id) u.*
   FROM quality.unit_pages u JOIN quality.campaigns c USING (campaign)
@@ -225,13 +234,6 @@ LEFT JOIN loc USING (doc_id)
 LEFT JOIN ours USING (doc_id)
 LEFT JOIN las USING (doc_id)
 LEFT JOIN ocr USING (doc_id);
-CREATE UNIQUE INDEX IF NOT EXISTS page_summary_doc ON quality.page_summary (doc_id);
-
--- REFRESH needs the view's owner; the loader gets this function instead of ownership.
-CREATE OR REPLACE FUNCTION quality.refresh_summary() RETURNS void
-LANGUAGE sql SECURITY DEFINER SET search_path = quality, pg_temp
-AS $$ REFRESH MATERIALIZED VIEW CONCURRENTLY quality.page_summary $$;
-REVOKE ALL ON FUNCTION quality.refresh_summary() FROM PUBLIC;
 
 DO $$
 DECLARE r text;
@@ -256,7 +258,6 @@ GRANT TEMPORARY ON DATABASE usnm_quality TO quality_loader;
 GRANT INSERT, UPDATE, DELETE ON quality.pages, quality.damage, quality.campaigns, quality.unit_pages,
   quality.reader_scores, quality.ocr_outputs, quality.staging TO quality_loader;
 GRANT INSERT ON quality.readers TO quality_loader;
-GRANT EXECUTE ON FUNCTION quality.refresh_summary() TO quality_loader;
 
 -- quality_text_writer: its comparisons and the campaign rows that name them.
 GRANT TEMPORARY ON DATABASE usnm_quality TO quality_text_writer;
