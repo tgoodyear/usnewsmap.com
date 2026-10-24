@@ -15,13 +15,13 @@ Measured on 24 October 2026 from CT 230's database and spool (read-only): 975 su
 `usnm_ocr` results over 14 days, each BOINC `elapsed_time` set against the worker's own
 Tesseract time (`elapsed_ms` in its `result.json`).
 
-| Host | CPU | Results | Median elapsed (s) | Median Tesseract (s) | Median overhead (s) | Overhead share |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | Apple M1, 8 threads | 373 | 66.8 | 54.5 | 9.5 | 15% |
-| 2 | i7-7700K, 12 threads | 371 | 281.7 | 272.8 | 11.9 | 4% |
-| 10 | i7-7700K, 2 threads | 149 | 117.7 | 102.8 | 13.2 | 13% |
-| 9 | i7-1185G7, 6 threads | 82 | 50.4 | 40.8 | 9.5 | 18% |
-| All | | 975 | 87.1 | 75.8 | 10.8 | 7% |
+| Host | CPU                  | Results | Median elapsed (s) | Median Tesseract (s) | Median overhead (s) | Overhead share |
+| ---- | -------------------- | ------: | -----------------: | -------------------: | ------------------: | -------------: |
+| 1    | Apple M1, 8 threads  |     373 |               66.8 |                 54.5 |                 9.5 |            15% |
+| 2    | i7-7700K, 12 threads |     371 |              281.7 |                272.8 |                11.9 |             4% |
+| 10   | i7-7700K, 2 threads  |     149 |              117.7 |                102.8 |                13.2 |            13% |
+| 9    | i7-1185G7, 6 threads |      82 |               50.4 |                 40.8 |                 9.5 |            18% |
+| All  |                      |     975 |               87.1 |                 75.8 |                10.8 |             7% |
 
 In-task overhead is a nearly fixed 9.5–13 s a task. That leaves out what happens outside the
 task (scheduler, transfers, report, validation, assimilation and one hand-off record per
@@ -37,13 +37,13 @@ and its workunit is named `usnm_ocrb_<bundle id>`, which `^usnm_[0-9a-f]{64}$` (
 page) never matches. The bundle id is the sha256 of the bundle version and the member job ids
 in order (`usnm_ocr_contract::boinc::bundle`).
 
-| | File | What it holds |
-| --- | --- | --- |
-| In (`usnm_ocr_bundle_in`) | `pages` | the scans, back to back |
-| | `ocr_bundle.json` | each page's unchanged `Job` and its scan's offset in `pages` |
-| Out (`usnm_ocr_bundle_out`) | `results.json` | one entry per page: `ok` with the page's standard `ResultManifest` and the offsets of its text and ALTO, or `error` with the reason |
-| | `texts` | the pages' texts, back to back (16 MiB limit) |
-| | `layouts` | the pages' ALTO files, back to back (256 MiB limit) |
+|                             | File              | What it holds                                                                                                                       |
+| --------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| In (`usnm_ocr_bundle_in`)   | `pages`           | the scans, back to back                                                                                                             |
+|                             | `ocr_bundle.json` | each page's unchanged `Job` and its scan's offset in `pages`                                                                        |
+| Out (`usnm_ocr_bundle_out`) | `results.json`    | one entry per page: `ok` with the page's standard `ResultManifest` and the offsets of its text and ALTO, or `error` with the reason |
+|                             | `texts`           | the pages' texts, back to back (16 MiB limit)                                                                                       |
+|                             | `layouts`         | the pages' ALTO files, back to back (256 MiB limit)                                                                                 |
 
 A bundle holds 2 to 32 pages with one worker image, engine version, page deadline and queue.
 Its scans total at most 512 MiB.
@@ -151,6 +151,7 @@ Eastern.
    `usnm_ocrb_` workunits, that a host picks one up, that `fraction_done` advances page by
    page in its BOINC Manager, and that the result spools, splits, collects and publishes each
    page. Then resume the timer.
+
 6. **Watch.** Pages per hour, `collection_held`, and requeued pages (the server's records with
    `unbundled`, and `requeued` markers under `spool/`). To roll back, start a plan without
    `pages_per_unit`. Bundles already in flight finish and collect under the new images.
