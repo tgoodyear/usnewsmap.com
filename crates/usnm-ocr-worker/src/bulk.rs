@@ -134,6 +134,11 @@ struct Fetcher {
     http: reqwest::Client,
     pacer: Pacer,
     global: Arc<GlobalPacer>,
+    /// The minimum between any two requests (archive starts, redirect hops, the list).
+    gap: Duration,
+    /// When the last request went: checked again before each send and logged, so the
+    /// journal shows every request's spacing.
+    last_sent: std::sync::Mutex<Option<Instant>>,
 }
 
 enum Fail {
@@ -183,9 +188,26 @@ impl Fetcher {
                 _ = stop.wait_for(|s| *s) => return Err(Fail::Stopped),
                 () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
             }
+            // Belt and braces over the pacer: never two requests closer than the gap.
+            let prev = *self.last_sent.lock().expect("last_sent lock");
+            if let Some(p) = prev {
+                let since = p.elapsed();
+                if since < self.gap {
+                    let mut stop = stop.clone();
+                    tokio::select! {
+                        () = tokio::time::sleep(self.gap - since) => {}
+                        _ = stop.wait_for(|s| *s) => return Err(Fail::Stopped),
+                        () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
+                    }
+                }
+            }
             if *stop.borrow() || Instant::now() >= deadline {
                 return Err(Fail::Stopped);
             }
+            let now = Instant::now();
+            let since = prev.map(|p| (now - p).as_secs_f64());
+            *self.last_sent.lock().expect("last_sent lock") = Some(now);
+            tracing::info!(url = %at, since_last_request_secs = since, "bulk OCR request");
             let resp = self
                 .http
                 .get(at.clone())
@@ -359,6 +381,8 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
             .build()?,
         pacer: Pacer::with_global(opts.gap, Some(Arc::clone(&global))),
         global: Arc::clone(&global),
+        gap: opts.gap,
+        last_sent: std::sync::Mutex::new(None),
     };
     let list_path = opts.out.join("datasets.json");
     if !list_path.exists() {
