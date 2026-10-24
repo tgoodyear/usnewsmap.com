@@ -72,6 +72,8 @@ impl From<SearchError> for ApiError {
             SearchError::Timeout => Self::Timeout,
             SearchError::Backend(msg) => Self::Backend(msg),
             SearchError::Rejected(msg) => Self::BackendRejected(msg),
+            // Only a version's load looks indexes up, so a search never sees it.
+            e @ SearchError::MissingIndex(_) => Self::Backend(e.to_string()),
         }
     }
 }

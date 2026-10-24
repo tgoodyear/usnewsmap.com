@@ -993,9 +993,11 @@ async fn prepare_accepts_published_indexes_and_refuses_missing_ones() {
         "pages-base-fixture".into(),
         "pages-delta-missing".into(),
     ]);
+    // Quickwit's metastore answers 404 for it: the API's readiness check
+    // (USNM_READY_REQUIRES_PUBLISHED_INDEXES) relies on telling it apart.
     assert!(matches!(
         qw.prepare(&missing).await,
-        Err(SearchError::Backend(_))
+        Err(SearchError::MissingIndex(id)) if id == "pages-delta-missing"
     ));
 }
 

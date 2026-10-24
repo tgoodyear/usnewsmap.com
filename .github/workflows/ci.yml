@@ -878,10 +878,14 @@ jobs:
         environment: ${{ fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
     environment: ${{ matrix.environment }}
     runs-on: ubuntu-latest
-    # id-token: the Azure sign-in below uses OIDC, so no secret is stored.
+    # id-token: the Azure sign-in below uses OIDC, so no secret is stored;
+    # the API image's attestation step needs it too, for its Sigstore
+    # signing certificate. attestations: that attestation is stored on the
+    # repository.
     permissions:
       contents: read
       id-token: write
+      attestations: write
     concurrency:
       group: deploy-${{ matrix.environment }}
       cancel-in-progress: false
@@ -925,6 +929,7 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
       - if: steps.head.outputs.current == 'true'
+        id: api
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -970,3 +975,15 @@ jobs:
         if: steps.head.outputs.current == 'true' && env.APP != ''
         continue-on-error: true
         run: scripts/ci/indexnow.sh
+      # A build provenance attestation for the API image, for an origin that
+      # checks it before it runs the image (#955), as the OCR nodes check the
+      # worker's (scripts/ocr-node/update-worker.sh). Its subject is the
+      # digest the push returned, the one `usnewsmap-api:<sha>` names. Last,
+      # so a failure here doesn't hold back the rollout or IndexNow, but
+      # still fails the deployment.
+      - name: Attest the API image
+        if: steps.head.outputs.current == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.ACR }}/usnewsmap-api
+          subject-digest: ${{ steps.api.outputs.digest }}

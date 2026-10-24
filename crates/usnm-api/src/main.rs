@@ -213,7 +213,7 @@ async fn initial_snapshot(loader: &Loader) -> Result<usnm_api::Snapshot, String>
                 delay = (delay * 2).min(std::time::Duration::from_secs(15));
                 attempt += 1;
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.to_string()),
         }
     }
 }

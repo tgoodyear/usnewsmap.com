@@ -100,6 +100,13 @@ pub struct Config {
     /// warm-up reaches it. Where no other replica serves meanwhile (an app
     /// that scales to zero), a short cap lets the first visitor in sooner.
     pub ready_cap: Duration,
+    /// Whether `/readyz` also fails while the published version names an
+    /// index the search engine doesn't have, as the last reload found
+    /// (`USNM_READY_REQUIRES_PUBLISHED_INDEXES`). The replica keeps serving
+    /// the version it has either way. Off by default: where a failing
+    /// readiness probe takes a replica out of traffic (Container Apps), it
+    /// would turn serving the previous version into an outage.
+    pub ready_requires_published_indexes: bool,
     pub refresh_interval: Duration,
     pub cache_bytes: u64,
     /// Cube cell budget; above it buckets are coarsened (ADR-0003).
@@ -280,6 +287,7 @@ impl Config {
                 "USNM_READY_CAP_SECS",
                 prewarm_startup_budget + Duration::from_secs(READY_CAP_MARGIN_SECS),
             )?,
+            ready_requires_published_indexes: flag("USNM_READY_REQUIRES_PUBLISHED_INDEXES", false)?,
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
             cache_bytes: num("USNM_CACHE_MB", 256)? * 1024 * 1024,
             max_cells: usnm_core::cube::MAX_CELLS,
@@ -376,6 +384,12 @@ mod tests {
             cf.client_address(),
             crate::ratelimit::ClientAddress::CloudflareViaLoopback
         );
+        assert!(!c.ready_requires_published_indexes);
+        let requires = Config::from_lookup(|k| {
+            (k == "USNM_READY_REQUIRES_PUBLISHED_INDEXES").then(|| "true".into())
+        })
+        .unwrap();
+        assert!(requires.ready_requires_published_indexes);
         let browse = |v: &str| {
             let v = v.to_owned();
             Config::from_lookup(move |k| (k == "USNM_BROWSE_PAGES").then(|| v.clone()))

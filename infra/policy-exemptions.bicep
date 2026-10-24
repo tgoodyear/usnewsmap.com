@@ -16,7 +16,7 @@ targetScope = 'resourceGroup'
 
 import { guardrailPolicyNames } from 'guardrails.bicep'
 import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
-import { indexOpen, lakeOpen, publicAccountIds } from 'public-accounts.bicep'
+import { cosmosOpen, indexOpen, lakeOpen, publicAccountIds } from 'public-accounts.bicep'
 
 @description('As in main.bicep.')
 param environmentName string
@@ -32,6 +32,8 @@ param jaOcrOnPrem bool = false
 param onPremRelease bool = false
 @description('As in main.bicep.')
 param indexStorage bool = false
+@description('The on-prem serving container uses the lake and Cosmos (main.bicep onPremServing, #955): both open to the node IPs.')
+param onPremServing bool = false
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)
@@ -53,8 +55,9 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
           subscription().subscriptionId,
           n,
           ocrNodes,
-          lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease, ocrNodeIps),
-          indexOpen(onPremRelease, indexStorage, ocrNodeIps)
+          lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing, ocrNodeIps),
+          indexOpen(onPremRelease, indexStorage, ocrNodeIps),
+          cosmosOpen(onPremServing, ocrNodeIps)
         )
       }
     }
