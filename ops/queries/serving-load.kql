@@ -1,0 +1,43 @@
+// Serving load: requests the API serves, by day and by route, with peak rates.
+// From the requests usnm-api exports to Application Insights (AppRequests,
+// health probes excluded). One row per value: Dimension says which breakdown
+// it belongs to; days are UTC days (the Workers Free quota resets at 00:00 UTC),
+// newest first, routes by requests. For a day, PeakRps is its busiest second and
+// PeakPerMin its busiest minute, SiteRequests the web app's own files (HTML and
+// hashed assets, which a CDN cache would answer) and ApiRequests the rest.
+// Paths and query strings are never recorded (09 §9.4.2). Response sizes
+// aren't recorded either: take bytes from the Container Apps metric TxBytes
+// (az monitor metrics list --metric TxBytes --interval P1D).
+// This is the load a replacement origin must carry; traffic.kql is who visits.
+let requests = AppRequests
+    | where AppRoleName == "usnm-api";
+let peakSecond = requests
+    | summarize Requests = sum(ItemCount) by Second = bin(TimeGenerated, 1s)
+    | summarize PeakRps = max(Requests) by Day = startofday(Second);
+let peakMinute = requests
+    | summarize Requests = sum(ItemCount) by Minute = bin(TimeGenerated, 1m)
+    | summarize PeakPerMin = max(Requests) by Day = startofday(Minute);
+union
+    (requests
+        | summarize
+            Requests = sum(ItemCount),
+            SiteRequests = sumif(ItemCount, Name has "(site)"),
+            Server5xx = sumif(ItemCount, toint(ResultCode) >= 500),
+            P95ms = round(percentile(DurationMs, 95), 1)
+            by Day = startofday(TimeGenerated)
+        | join kind=leftouter peakSecond on Day
+        | join kind=leftouter peakMinute on Day
+        | project Dimension = "day", Order = 1, Value = format_datetime(Day, "yyyy-MM-dd"),
+            Requests, SiteRequests, ApiRequests = Requests - SiteRequests, PeakRps, PeakPerMin,
+            Server5xx, P95ms, Rank = datetime_diff("day", Day, datetime(2000-01-01))),
+    (requests
+        | summarize
+            Requests = sum(ItemCount),
+            SiteRequests = sumif(ItemCount, Name has "(site)"),
+            Server5xx = sumif(ItemCount, toint(ResultCode) >= 500),
+            P95ms = round(percentile(DurationMs, 95), 1)
+            by Value = Name
+        | project Dimension = "route", Order = 2, Value, Requests, SiteRequests, ApiRequests = Requests - SiteRequests,
+            PeakRps = long(null), PeakPerMin = long(null), Server5xx, P95ms, Rank = Requests)
+| order by Order asc, Rank desc
+| project Dimension, Value, Requests, SiteRequests, ApiRequests, PeakRps, PeakPerMin, Server5xx, P95ms
