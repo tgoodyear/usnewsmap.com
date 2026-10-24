@@ -577,9 +577,12 @@ jobs:
             dist/usnm-ocr-tesseract.image-id
           if-no-files-found: error
 
-  # On main: a GitHub release of the worker and its Tesseract image, with a
-  # build provenance attestation, which scripts/ocr-node/install-worker.sh
-  # checks with `gh attestation verify` before it installs anything.
+  # On main: a GitHub release of the worker binary, the LAN dashboard and
+  # the Tesseract image, with a build provenance attestation, which hosts
+  # check with `gh attestation verify` before they install anything. No node
+  # runs the binary as a queue worker (#966: local OCR runs through BOINC
+  # only); the scan archive host (scripts/ocr-node/install-archive-host.sh),
+  # the scan fetcher and the dashboard install from it.
   ocr-worker-release:
     name: ocr worker release
     needs: [changes, rust, ocr-worker-el9, ocr-worker-check]
@@ -685,14 +688,13 @@ jobs:
       - name: The Rust scorer's golden files match gold.py (#457)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
-      - name: The OCR nodes' nightly update picks the right release (#471)
+      - name: The OCR node scripts pass their image tests and shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
           python3 -m pip install --quiet --break-system-packages pillow==11.3.0
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_cache.py
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
-          shellcheck -x -S warning scripts/ocr-node/update-worker.sh scripts/ocr-node/install-worker-node.sh \
-            scripts/ocr-node/install-worker.sh scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
+          shellcheck -x -S warning scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
             scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
             scripts/ocr-node/install-archive-host.sh
       - name: The BOINC scripts pass shellcheck
@@ -976,8 +978,8 @@ jobs:
         continue-on-error: true
         run: scripts/ci/indexnow.sh
       # A build provenance attestation for the API image, for an origin that
-      # checks it before it runs the image (#955), as the OCR nodes check the
-      # worker's (scripts/ocr-node/update-worker.sh). Its subject is the
+      # checks it before it runs the image (#955), as hosts check the OCR
+      # worker release's. Its subject is the
       # digest the push returned, the one `usnewsmap-api:<sha>` names. Last,
       # so a failure here doesn't hold back the rollout or IndexNow, but
       # still fails the deployment.

@@ -65,8 +65,7 @@ struct EngineArgs {
     tesseract_bin: PathBuf,
     /// Run Tesseract from this container image with podman, one container
     /// per page: `sha256:<image id>` or `<name>@sha256:<digest>`, never a
-    /// tag. `scripts/ocr-node/install-worker.sh` loads the release's image
-    /// and sets it.
+    /// tag.
     #[arg(long, env = "USNM_OCR_TESSERACT_IMAGE")]
     tesseract_image: Option<String>,
     /// The podman binary, for --tesseract-image.

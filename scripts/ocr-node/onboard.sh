@@ -20,14 +20,13 @@
 #   2. unless the node is already connected, creates a throwaway app
 #      registration and service principal with a 2-hour secret and only
 #      Azure Connected Machine Onboarding on the environment's group;
-#   3. copies scripts/ocr-node/node-setup.sh, the worker's unit,
-#      usnm-ocr-worker.service, and reboot-if-needed.sh (the weekly reboot
-#      window's script) to the node and runs node-setup.sh with
-#      sudo, sending the tenant, app id and secret on its stdin (never on a
-#      command line, never on the node's disk); and the exchange account
-#      and the nodes' Application Insights connection string
-#      (OCR_NODE_APPINSIGHTS) as arguments (not secrets) for the worker's
-#      unit, and --reboot-day, the node's day for its weekly reboot window
+#   3. copies scripts/ocr-node/node-setup.sh and reboot-if-needed.sh (the
+#      weekly reboot window's script) to the node and runs node-setup.sh
+#      with sudo, sending the tenant, app id and secret on its stdin (never
+#      on a command line, never on the node's disk); and the exchange
+#      account and the nodes' Application Insights connection string
+#      (OCR_NODE_APPINSIGHTS) as arguments (not secrets), and --reboot-day,
+#      the node's day for its weekly reboot window
 #      (a new node needs one no other node has; without it, a node keeps
 #      the day it has);
 #   4. deletes the role assignment, the service principal and the app
@@ -313,7 +312,7 @@ elif [ "$DRY_RUN" = true ]; then
 fi
 if [ "$DRY_RUN" = true ]; then
   echo "RHEL hosts must be registered and have OS repositories enabled before onboarding"
-  echo "would copy scripts/ocr-node/node-setup.sh, usnm-ocr-worker.service and reboot-if-needed.sh to $HOST and run:"
+  echo "would copy scripts/ocr-node/node-setup.sh and reboot-if-needed.sh to $HOST and run:"
   echo "  sudo bash node-setup.sh $SETUP_ARGS < (tenant, app id and secret)"
 else
   if [ "$connected" != Connected ]; then
@@ -349,8 +348,6 @@ else
     die "can't reach $HOST over ssh"
   # shellcheck disable=SC2029 # $remote is meant to expand here
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/node-setup.sh" < scripts/ocr-node/node-setup.sh
-  # shellcheck disable=SC2029
-  ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker.service" < scripts/ocr-node/usnm-ocr-worker.service
   # shellcheck disable=SC2029
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/reboot-if-needed.sh" < scripts/ocr-node/reboot-if-needed.sh
   # Only the application's temporary Azure onboarding credential is sent.
@@ -634,5 +631,4 @@ echo "A token the node fetched for storage before it joined the group lacks the 
 echo "until it expires (up to about 24 hours for a managed identity; ADR-0015)."
 echo "Its heartbeat and counters reach the nodes' workspace within about 10 minutes:"
 echo "  scripts/azure/logs.sh --env $ENV_NAME --query-name ocr-node-health"
-echo "The worker starts once its binary is installed on the node, as root:"
-echo "  install -m 0755 usnm-ocr-worker /usr/local/bin/ && systemctl enable --now usnm-ocr-worker"
+echo "No direct queue worker is installed: local OCR runs through BOINC only (#966; docs/boinc/README.md)."

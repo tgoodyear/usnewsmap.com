@@ -6,8 +6,7 @@
 //! - `GET /journal?from=<offset>`: the journal's lines from a byte offset,
 //!   at most 1 MiB and whole lines only. Each line is a [`Completion`].
 //!
-//! Only `--status-allow` addresses are answered; the node's nftables rule
-//! (`install-worker-node.sh`) says the same. Nothing here holds page text:
+//! Only `--status-allow` addresses are answered. Nothing here holds page text:
 //! a page is its doc_id, with its language, queue, engine tag, times,
 //! outcome and scan source.
 

@@ -6,8 +6,8 @@
 #
 # --kind ocr-nodes (the default, #296, ADR-0015): usnm-ocr-nodes-grp-<env>,
 # saved in USNM_OCR_NODE_GROUP. Its members are the OCR nodes' Arc machine
-# identities and get the node roles on the exchange account; install-worker.sh
-# paces LoC requests by its member count, so only OCR nodes belong in it.
+# identities and get the node roles on the exchange account, so only OCR
+# nodes belong in it.
 # onboard.sh adds each node, offboard.sh removes it.
 # --kind onprem: usnm-onprem-grp-<env>, saved in USNM_ONPREM_GROUP. Its members
 # are every on-prem host's Arc machine identity (the OCR nodes, the scan-fetch
