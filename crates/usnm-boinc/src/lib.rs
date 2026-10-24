@@ -28,6 +28,7 @@ use usnm_state::state::State;
 use usnm_store::ObjectStore;
 
 pub mod assess;
+pub mod bundle;
 pub mod claim;
 pub mod cli;
 pub mod gold;
@@ -224,6 +225,14 @@ pub struct Record {
     /// An explicit cohort has none, and `queued` makes its row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger: Option<LedgerRow>,
+    /// The OCR bundle (#1059) this page was submitted in, on the BOINC server's copy of the
+    /// record only: its workunit is the bundle's, `usnm_ocrb_<bundle>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<String>,
+    /// The bundle this page failed in and was taken out of, to be submitted alone. Such a page
+    /// never goes into another bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unbundled: Option<String>,
 }
 /// A native ledger row as a claim carries it (`ledger::Queued` with its
 /// times as RFC 3339 text).
@@ -284,6 +293,13 @@ impl Record {
             queued_at: DateTime::parse_from_rfc3339(&self.job.message.queued_at)?
                 .with_timezone(&Utc),
         })
+    }
+    /// The BOINC workunit this page runs in: its own, or its bundle's.
+    pub fn workunit(&self) -> String {
+        match &self.bundle {
+            Some(bundle) => usnm_ocr_contract::boinc::bundle::workunit(bundle),
+            None => self.job.workunit(),
+        }
     }
     pub fn paths(&self) -> anyhow::Result<(String, String)> {
         let key = self.job.message.key()?;
@@ -550,6 +566,8 @@ pub async fn export(
                 stamp: now.format("%Y%m%dT%H%M%S%6fZ").to_string(),
                 error: None,
                 ledger: ledger_row,
+                bundle: None,
+                unbundled: None,
             };
             save(&opts.root, &record)?;
             record

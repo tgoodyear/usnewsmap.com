@@ -60,8 +60,12 @@ SURYA_REQUIRED = {"campaign", "quality_campaign", "engine_image", "engine_llama"
 OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
     "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
-    "gold_onboarding",
+    "gold_onboarding", "pages_per_unit", "bundle_app_version",
 }
+# OCR bundles (#1059): at most this many pages of one queue in one usnm_ocr workunit
+# (crates/usnm-ocr-contract/src/boinc.rs, bundle::MAX_PAGES), 1 (a page alone) by default.
+MAX_PAGES_PER_UNIT = 32
+QUEUE_OF_REASON = {"user": "ocr-priority", "bulk": "ocr-bulk"}
 # Gold onboarding (#901): each tick, when due, the controller runs the bridge's gold-onboard
 # step (a gold unit for every untrusted host without one outstanding) and gold-promote (admit
 # the hosts whose complete native evidence passes the scope's existing calibration), so a new
@@ -376,6 +380,17 @@ def load_config(path):
     _validate_commands(config, ("push_command", "step_command"))
     if "gold_onboarding" in config:
         _validate_gold_onboarding(config["gold_onboarding"])
+    if "pages_per_unit" in config:
+        units = config["pages_per_unit"]
+        require(isinstance(units, dict) and units and set(units) <= set(QUEUES) and
+                all(type(n) is int and 1 <= n <= MAX_PAGES_PER_UNIT for n in units.values()),
+                f"pages_per_unit maps ocr-bulk and/or ocr-priority to 1 to {MAX_PAGES_PER_UNIT}")
+    if "bundle_app_version" in config:
+        require(type(config["bundle_app_version"]) is int and
+                1 <= config["bundle_app_version"] <= 999999999, "invalid bundle_app_version")
+    require(max(config.get("pages_per_unit", {}).values(), default=1) == 1 or
+            "bundle_app_version" in config,
+            "bundles need bundle_app_version, the usnm_ocr version_num whose worker reads them")
     if queue:
         # BOINC is a second consumer of the work queues, beside the on-prem nodes
         # (docs/boinc-batch-scheduler.md#queue-fed-work). The page list is whatever it claims.
@@ -763,10 +778,21 @@ class Transport:
         self.step("handoff", "collect", JOB_ID=job_id)
 
     @timed("submit")
-    def submit_batch(self, job_ids):
+    def submit_batch(self, job_ids, units=None):
         """Submit these jobs: one bridge execution for all of them when batch_submit is on.
-        The bridge stops at the first failure, as one execution per job would have."""
+        The bridge stops at the first failure, as one execution per job would have. With
+        `units` (lists of job ids, from units_of) holding a group of more than one, each group
+        is one OCR bundle workunit (#1059): JOB_UNITS, one execution per unit, or one for all of
+        them when batch_submit is on."""
         if not job_ids:
+            return
+        if units and any(len(unit) > 1 for unit in units):
+            url = f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff"
+            groups = [units] if self.batch_submit else [[unit] for unit in units]
+            for group in groups:
+                self.step("bridge", "submit-remote",
+                          JOB_UNITS=",".join("+".join(unit) for unit in group),
+                          BUNDLE_APP_VERSION=self.config["bundle_app_version"], HANDOFF_URL=url)
             return
         if not self.batch_submit:
             for job_id in job_ids:
@@ -835,6 +861,21 @@ class Transport:
         except OSError as error:
             raise RuntimeError("server status fetch failed; inspect the endpoint privately") from error
         return parse_server_status(raw)
+
+
+def units_of(config, records):
+    """Split the records to submit into workunits (#1059): by queue, in their order, into groups
+    of at most that queue's pages_per_unit (1, a page alone, by default)."""
+    sizes = config.get("pages_per_unit", {})
+    queues = {}
+    for record in records:
+        queue = QUEUE_OF_REASON.get(record["job"]["message"].get("reason"), "ocr-bulk")
+        queues.setdefault(queue, []).append(record["job"]["id"])
+    units = []
+    for queue in QUEUES:
+        ids, size = queues.get(queue, []), sizes.get(queue, 1)
+        units += [ids[i:i + size] for i in range(0, len(ids), size)]
+    return units
 
 
 def owned_records(config, records):
@@ -1431,7 +1472,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
                         "SQL/journal mismatch; reconcile existing work before any automatic submission")
                 to_submit.append(job_id)
         if hasattr(transport, "submit_batch"):
-            transport.submit_batch(to_submit)
+            if max(config.get("pages_per_unit", {}).values(), default=1) > 1:
+                by_id = {record["job"]["id"]: record for record in owned.values()}
+                transport.submit_batch(to_submit, units_of(config, [by_id[j] for j in to_submit]))
+            else:
+                transport.submit_batch(to_submit)
         else:
             for job_id in to_submit:
                 transport.submit(job_id)

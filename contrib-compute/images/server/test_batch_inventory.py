@@ -132,6 +132,53 @@ class InventoryTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("USNM_WORK_VOLUME_MYSQL_PORT"),
                      "set USNM_WORK_VOLUME_MYSQL_PORT for the isolated MySQL fixture")
 class InventorySQLTests(unittest.TestCase):
+    def bundle(self, bundle, pages, stage="submitted"):
+        for page in pages:
+            directory = self.root / "jobs" / page
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "record.json").write_text(json.dumps({
+                "job": {"id": page}, "stage": stage, "bundle": bundle,
+            }))
+
+    def test_a_bundle_workunit_counts_as_its_pages_and_spools_for_each(self):
+        bundle, pages = "c" * 64, ["d" * 64, "e" * 64]
+        self.bundle(bundle, pages)
+        result = inventory.inventory(self.root, self.results, [3, 2], "b" * 32,
+                                     [self.job], [self.job], [bundle], [bundle])
+        self.assertEqual(result["pending_jobs"], [self.job] + pages)
+        self.assertEqual(result["existing_jobs"], [self.job] + pages)
+        # Partial bundle outputs give no spool; complete ones give every page the bundle's.
+        (self.spool / f"usnm_ocrb_{bundle}__file_results.json").write_text("{}")
+        payload = inventory.inventory(self.root, self.results, [3, 2], "b" * 32, (), None,
+                                      (), [bundle])
+        self.assertTrue(all(payload["jobs"][p]["spool"] is None for p in pages))
+        self.assertEqual(payload["pending_jobs"], [])
+        self.assertEqual(payload["existing_jobs"], pages)
+        for name in ("texts", "layouts"):
+            (self.spool / f"usnm_ocrb_{bundle}__file_{name}").write_text("x")
+        payload = inventory.inventory(self.root, self.results, [3, 2], "b" * 32, (), None,
+                                      (), [bundle])
+        self.assertEqual({payload["jobs"][p]["spool"] for p in pages}, {str(self.spool)})
+        self.assertIsNone(payload["jobs"][self.job]["spool"])
+
+    def test_a_page_requeued_from_its_bundle_leaves_it(self):
+        bundle, pages = "c" * 64, ["d" * 64, "e" * 64]
+        self.bundle(bundle, pages)
+        # The second page went back to reserved, out of the bundle (spool-out's requeue).
+        (self.root / "jobs" / pages[1] / "record.json").write_text(json.dumps({
+            "job": {"id": pages[1]}, "stage": "reserved", "unbundled": bundle,
+        }))
+        (self.spool / f"usnm_ocrb_{bundle}_error").write_text("")
+        payload = inventory.inventory(self.root, self.results, [3, 2], "b" * 32, (), None,
+                                      (), [bundle])
+        self.assertEqual(payload["existing_jobs"], pages[:1])
+        self.assertEqual(payload["jobs"][pages[0]]["spool"], str(self.spool))
+        self.assertIsNone(payload["jobs"][pages[1]]["spool"])
+        # The same page in a single-page workunit and a bundle is refused.
+        with self.assertRaises(ValueError):
+            inventory.inventory(self.root, self.results, [3, 2], "b" * 32, [], [pages[0]],
+                                [], [bundle])
+
     def test_counts_all_unassimilated_work_and_recent_rpc_hosts(self):
         result = subprocess.run(
             ["mysql", "--no-defaults", "--protocol=TCP", "--host=127.0.0.1",
@@ -141,13 +188,14 @@ class InventorySQLTests(unittest.TestCase):
 CREATE TEMPORARY TABLE workunit (assimilate_state INTEGER NOT NULL, name VARCHAR(254));
 CREATE TEMPORARY TABLE host (rpc_time DOUBLE NOT NULL);
 INSERT INTO workunit VALUES (0,'other-app'),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
- (2,'done'),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),(9,'unknown');
+ (2,'done'),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),(9,'unknown'),
+ (0,'usnm_ocrb_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'),(0,'usnm_ocrb_short');
 INSERT INTO host VALUES (0),(UNIX_TIMESTAMP()-90000),(UNIX_TIMESTAMP()),(UNIX_TIMESTAMP()-1);
 """ + inventory.QUERY + ";",
             text=True, capture_output=True, check=True,
         )
         self.assertEqual(result.stdout.strip(),
-                         "3\t2\nusnm_" + "a" * 64 + "\t1\nusnm_" + "b" * 64 + "\t2")
+                         "5\t2\nusnm_" + "a" * 64 + "\t1\nusnm_" + "b" * 64 + "\t2\nusnm_ocrb_" + "c" * 64 + "\t0")
 
 
 if __name__ == "__main__":

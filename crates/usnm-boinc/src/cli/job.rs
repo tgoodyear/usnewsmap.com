@@ -164,6 +164,38 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Args)]
+pub struct SubmitBundleArgs {
+    #[arg(long)]
+    root: PathBuf,
+    #[arg(long)]
+    project: PathBuf,
+    /// A reserved page, in bundle order; 1 to 32. Pages taken out of an earlier bundle, and
+    /// a page left alone, go as single-page units.
+    #[arg(long = "job", required = true)]
+    jobs: Vec<String>,
+    /// The `usnm_ocr` app version whose worker reads bundles (`--app_version_num`).
+    #[arg(long)]
+    app_version_num: Option<u32>,
+}
+
+pub async fn submit_bundle(args: SubmitBundleArgs) -> anyhow::Result<()> {
+    let SubmitBundleArgs {
+        root,
+        project,
+        jobs,
+        app_version_num,
+    } = args;
+    let out = crate::bundle::submit::submit(&root, &project, &jobs, app_version_num).await?;
+    if let Some(bundle) = out.bundle {
+        println!("bundle {bundle}");
+    }
+    for id in out.alone {
+        println!("alone {id}");
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum Found {
     Present,
@@ -248,7 +280,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     for r in records(&root)? {
         println!(
             "{}",
-            serde_json::json!({"job":r.job.id,"workunit":r.job.workunit(),"page":r.job.message.page,"stage":r.stage,"error":r.error})
+            serde_json::json!({"job":r.job.id,"workunit":r.workunit(),"page":r.job.message.page,"stage":r.stage,"error":r.error})
         );
     }
     Ok(())

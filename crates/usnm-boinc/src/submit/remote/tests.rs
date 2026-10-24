@@ -79,6 +79,8 @@ impl Fixture {
                 stamp: "test".into(),
                 error: None,
                 ledger: None,
+                bundle: None,
+                unbundled: None,
             },
         )
         .unwrap();

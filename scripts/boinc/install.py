@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 
 
 TEMPLATES = {
-    "usnm_ocr": ["usnm_ocr_in", "usnm_ocr_out"],
+    "usnm_ocr": ["usnm_ocr_in", "usnm_ocr_out", "usnm_ocr_bundle_in", "usnm_ocr_bundle_out"],
     # The JP2 against IIIF JPEG assessment (#456): same worker image, same job.toml.
     "usnm_assess": ["usnm_assess_in", "usnm_assess_crash_in", "usnm_assess_out"],
     # The gold check (#462): same worker image. `usnm-boinc gold submit` writes the input

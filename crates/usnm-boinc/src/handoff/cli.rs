@@ -43,9 +43,14 @@ pub enum HandoffCommands {
         job: String,
     },
     /// Server side: write a job's spool files, its host id and trust.json to the container.
+    /// With --root (the server's hand-off root), a page submitted in an OCR bundle gets its
+    /// share of the bundle's result, or is requeued alone if it failed there (prints
+    /// `requeued`).
     PutSpool {
         #[arg(long)]
         to_url: String,
+        #[arg(long)]
+        root: Option<PathBuf>,
         #[arg(long)]
         spool: PathBuf,
         #[arg(long)]
@@ -55,8 +60,15 @@ pub enum HandoffCommands {
         #[arg(long)]
         trust: Option<PathBuf>,
     },
+    /// Server side: print the BOINC workunit a job runs in (its own, or its OCR bundle's).
+    Workunit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        job: String,
+    },
     /// Hand-off job side: copy a job's spool and trust.json (when there) down; prints the
-    /// host id, or `unknown`.
+    /// host id, `unknown`, or `requeued` (the page went back to BOINC alone).
     GetSpool {
         #[arg(long)]
         from_url: String,
@@ -103,14 +115,32 @@ pub async fn run(command: HandoffCommands) -> anyhow::Result<()> {
         },
         HandoffCommands::PutSpool {
             to_url,
+            root,
             spool,
             job,
             host_id,
             trust,
         } => {
             let store = usnm_store::open(&to_url)?;
-            let n = x::put_spool(store.as_ref(), &spool, &job, host_id, trust.as_deref()).await?;
-            eprintln!("{n} spool files written for {job}");
+            match x::put_spool(
+                store.as_ref(),
+                root.as_deref(),
+                &spool,
+                &job,
+                host_id,
+                trust.as_deref(),
+            )
+            .await?
+            {
+                x::Spooled::Files(n) => eprintln!("{n} spool files written for {job}"),
+                x::Spooled::Requeued(why) => {
+                    eprintln!("{job} failed in its bundle ({why}); requeued to go alone");
+                    println!("requeued");
+                }
+            }
+        }
+        HandoffCommands::Workunit { root, job } => {
+            println!("{}", crate::bundle::submit::workunit(&root, &job)?);
         }
         HandoffCommands::GetSpool {
             from_url,
@@ -119,7 +149,13 @@ pub async fn run(command: HandoffCommands) -> anyhow::Result<()> {
             trust_out,
         } => {
             let store = usnm_store::open(&from_url)?;
-            let host = x::get_spool(store.as_ref(), &job, &spool).await?;
+            let host = match x::get_spool(store.as_ref(), &job, &spool).await? {
+                x::Spool::Requeued => {
+                    println!("requeued");
+                    return Ok(());
+                }
+                x::Spool::Files(host) => host,
+            };
             if !x::get_trust(store.as_ref(), &trust_out).await? {
                 eprintln!("no gold/trust.json in the hand-off container");
             }

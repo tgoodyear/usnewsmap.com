@@ -57,6 +57,7 @@ Every platform has a single onboarding script that validates prerequisites, conf
 
 To amortize BOINC scheduler/upload overhead and keep `llama-server` model weights warm in RAM/VRAM, workunits support multi-page bundles with atomic slot-level checkpointing:
 
+- **`usnm_ocr` (container CPU)**: one page per workunit by default. A plan can bundle up to 32 pages of one queue (10 for bulk, priority pages alone; [boinc-ocr-bundles.md](boinc-ocr-bundles.md)). After each page, its outputs and `ocr_checkpoint.json` are saved in the slot directory and `fraction_done` is updated, so a restarted task resumes at the next page. A page that fails is returned as failed and requeued alone; the rest of the bundle still counts.
 - **`usnm_quality` (native CPU)**: bundles **32–50 pages per workunit** (~1–2 minutes of CPU work, ~45–70 MiB download). Each completed page is atomically checkpointed to `quality_checkpoint.json` in the slot directory with `fraction_done` updated after every page; if BOINC suspends or restarts the client, execution resumes at the next uncompleted page.
 - **`usnm_qwen` (native Metal / CUDA GPU or CPU)**: bundles **3–4 pages per workunit** on CPU (`2B Q8_0`, `k_crops = 6`, 18–24 crops/WU) and **15–20 pages per workunit** on GPU (`8B Q4_K_M` or `2B Q8_0`, 90–120 crops/WU), amortizing the 2–5 s GGUF model load across the bundle. Each completed crop is atomically checkpointed to `qwen_checkpoint.json` with `fraction_done` updated after every crop.
 

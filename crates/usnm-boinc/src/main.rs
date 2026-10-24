@@ -31,6 +31,8 @@ enum Commands {
     PrepareDownload(job::PrepareDownloadArgs),
     /// Stage and submit one reserved job with stock create_work.
     Submit(job::SubmitArgs),
+    /// Submit several reserved pages as one OCR bundle workunit (#1059).
+    SubmitBundle(job::SubmitBundleArgs),
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile(job::ReconcileArgs),
     /// Read stock batch_collect_assimilator's spool and publish native ALTO/Parquet.
@@ -74,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Work(args) => job::work(args).await,
         Commands::PrepareDownload(args) => job::prepare_download(args),
         Commands::Submit(args) => job::submit(args).await,
+        Commands::SubmitBundle(args) => job::submit_bundle(args).await,
         Commands::Reconcile(args) => job::reconcile(args),
         Commands::Collect(args) => job::collect(args).await,
         Commands::GoldStage(args) => gold::cli::gold_stage(args).await,

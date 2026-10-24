@@ -132,11 +132,20 @@
 #                               already past reserved is left. LoC is never asked.
 #                               JOB_IDS=<id>[,<id>...] (up to 100) does a tick's jobs in one
 #                               execution, stopping at the first failure (#932).
+#                               JOB_UNITS=<id>[+<id>...][,...] (up to 100 ids, up to 32 a unit)
+#                               submits each +-joined group as one OCR bundle workunit (#1059,
+#                               docs/boinc-ocr-bundles.md), pinned to BUNDLE_APP_VERSION (the
+#                               usnm_ocr version_num whose worker reads bundles; required). A
+#                               group of one, and a page taken out of an earlier bundle, go alone.
 #   BRIDGE_STEP=spool-out       JOB_ID HANDOFF_SPOOL=<assimilator results directory under
 #                               $PROJ/results>; writes the job's spool files and the canonical
 #                               result's host id to spool/<id>/, and $SHARE_DIR/gold/trust.json
 #                               (when there) to gold/trust.json. HANDOFF_SPOOLS=<id>=<spool>[,...]
 #                               (up to 100) does a tick's results in one execution (#932).
+#                               A page submitted in an OCR bundle gets its share of the bundle's
+#                               result under the single-page names, or, if it failed there, goes
+#                               back to reserved (to be submitted alone) with a spool/<id>/requeued
+#                               marker (#1059).
 #
 # Registering the apps after init (docs/boinc/bridge-steps.md#register-the-apps):
 #   BRIDGE_STEP=register-apps   copies this image's project.xml into the project and runs
@@ -173,7 +182,7 @@ runtime_password() {
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   kv_get mysql-runtime-password "$SECRETS/db-runtime"
 }
-if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
+if [ "$step" = submit-remote ] && { [ -n "${JOB_IDS:-}" ] || [ -n "${JOB_UNITS:-}" ]; }; then
   fetch_secrets
   render_config
   export BRIDGE_SECRETS_READY=1
@@ -188,6 +197,37 @@ if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
   for id in "${batch_ids[@]}"; do
     log "submit-remote $id"
     JOB_ID=$id JOB_IDS="" "${BASH_SOURCE[0]}" || fail "submit-remote stopped at $id; the jobs after it were not submitted"
+  done
+  exit 0
+fi
+# OCR bundles (#1059): each +-joined group of JOB_UNITS is one workunit. Every page is pulled
+# from the container as for a single page; the reserved ones are submitted together.
+if [ "$step" = submit-remote ] && [ -n "${JOB_UNITS:-}" ]; then
+  [ -z "${JOB_ID:-}" ] && [ -z "${JOB_IDS:-}" ] || fail "set one of JOB_ID, JOB_IDS or JOB_UNITS"
+  unit_re='[0-9a-f]{64}(\+[0-9a-f]{64}){0,31}'
+  [[ $JOB_UNITS =~ ^$unit_re(,$unit_re)*$ ]] || fail "JOB_UNITS is <id>[+<id>...][,...], up to 32 ids a unit"
+  [ "$(tr ',+' '\n\n' <<< "$JOB_UNITS" | wc -l)" -le 100 ] || fail "JOB_UNITS holds at most 100 ids"
+  [[ ${BUNDLE_APP_VERSION:-} =~ ^[1-9][0-9]{0,8}$ ]] || fail "BUNDLE_APP_VERSION is the usnm_ocr version_num whose worker reads bundles"
+  [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
+    fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+  : "${HANDOFF_DIR:?}"
+  for template in usnm_ocr_bundle_in usnm_ocr_bundle_out; do
+    cp "$TEMPLATES/$template" "$PROJ/templates/$template"
+    chmod 0664 "$PROJ/templates/$template"
+  done
+  IFS=, read -r -a units <<< "$JOB_UNITS"
+  for unit in "${units[@]}"; do
+    IFS=+ read -r -a members <<< "$unit"
+    job_args=()
+    for id in "${members[@]}"; do
+      state=$(usnm-boinc handoff pull --from-url "$HANDOFF_URL" --root "$HANDOFF_DIR" --job "$id") ||
+        fail "pull stopped at $id; the units after it were not submitted"
+      if [ "$state" = reserved ]; then job_args+=(--job "$id"); else log "job $id is already $state on the server"; fi
+    done
+    [ "${#job_args[@]}" -gt 0 ] || continue
+    log "submit-remote unit of $((${#job_args[@]} / 2))"
+    usnm-boinc submit-bundle --root "$HANDOFF_DIR" --project "$PROJ" --app-version-num "$BUNDLE_APP_VERSION" \
+      "${job_args[@]}" || fail "submit-remote stopped at unit $unit; the units after it were not submitted"
   done
   exit 0
 fi
@@ -488,18 +528,21 @@ if [ "$step" = spool-out ]; then
   trap 'rm -f "$mycnf"' EXIT
   runtime_password
   (umask 077; { echo '[client]'; echo "host=$DB_HOST"; echo "user=$DB_RUNTIME_USER"; echo "password=$(cat "$SECRETS/db-runtime")"; } > "$mycnf")
-  # The canonical result's host (BOINC's result.hostid); JOB_ID is [A-Za-z0-9_-] (above).
+  # The workunit the job ran in: its own, or its OCR bundle's (#1059).
+  wu=$(usnm-boinc handoff workunit --root "$HANDOFF_DIR" --job "$JOB_ID")
+  [[ "$wu" =~ ^usnm_(ocrb_)?[0-9a-f]{64}$ ]] || fail "unexpected workunit name for $JOB_ID"
+  # The canonical result's host (BOINC's result.hostid); $wu is checked just above.
   # UNVERIFIED against a live database.
   if host=$(mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
       --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
-      -e "SELECT r.hostid FROM workunit w JOIN result r ON r.id = w.canonical_resultid WHERE w.name = 'usnm_$JOB_ID'"); then
-    if [[ "$host" =~ ^[0-9]+$ ]]; then host_args=(--host-id "$host"); else log "no canonical result host for usnm_$JOB_ID yet"; fi
+      -e "SELECT r.hostid FROM workunit w JOIN result r ON r.id = w.canonical_resultid WHERE w.name = '$wu'"); then
+    if [[ "$host" =~ ^[0-9]+$ ]]; then host_args=(--host-id "$host"); else log "no canonical result host for $wu yet"; fi
   else
     log "could not read the canonical result's host id; the node must find it another way"
   fi
   trust_args=()
   [ -f "$SHARE_DIR/gold/trust.json" ] && trust_args=(--trust "$SHARE_DIR/gold/trust.json")
-  usnm-boinc handoff put-spool --to-url "$HANDOFF_URL" --spool "$spool" --job "$JOB_ID" \
+  usnm-boinc handoff put-spool --to-url "$HANDOFF_URL" --root "$HANDOFF_DIR" --spool "$spool" --job "$JOB_ID" \
     ${host_args[@]+"${host_args[@]}"} ${trust_args[@]+"${trust_args[@]}"}
   exit 0
 fi

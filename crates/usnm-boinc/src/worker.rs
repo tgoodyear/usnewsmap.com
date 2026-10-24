@@ -28,6 +28,12 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     if work.join(crate::ndlocr::JOB_FILE).exists() {
         return crate::ndlocr::work(&work).await;
     }
+    if work
+        .join(usnm_ocr_contract::boinc::bundle::JOB_FILE)
+        .exists()
+    {
+        return crate::bundle::work::run(&work).await;
+    }
     for name in ["result.json", "text.txt", "layout.xml", "fraction_done"] {
         let p = work.join(name);
         if p.exists() {
@@ -42,45 +48,11 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         "input scan checksum mismatch"
     );
     check_models(&job.engine)?;
-    let engine = Tesseract::detect(TesseractOptions {
-        runner: Runner::Host("tesseract".into()),
-        psm: job.engine.psm,
-        dpi: job.engine.dpi.into(),
-        threads: 1,
-        timeout: Duration::from_secs(job.engine.timeout_secs.into()),
-    })
-    .await?;
-    ensure!(
-        engine.version() == job.engine.version
-            && engine::route(&job.message.language, engine.installed())
-                == Some(engine::EngineRoute {
-                    kind: job.engine.kind,
-                    profile: job.engine.profile.clone()
-                }),
-        "engine version/route differs from job"
-    );
-    let started = Instant::now();
-    let scratch = tempfile::tempdir()?;
-    let output = engine
-        .ocr(&work.join("page"), &job.message.language, scratch.path())
-        .await?;
-    ensure!(
-        output.text.len() <= boinc::MAX_TEXT && output.alto.len() <= boinc::MAX_ALTO,
-        "result over limit"
-    );
-    usnm_alto::check(&output.alto, &usnm_alto::Limits::default())?;
-    let result = ResultManifest {
-        v: boinc::VERSION,
-        job_id: job.id,
-        scan_sha256: job.scan.sha256,
-        engine: job.engine,
-        text_sha256: boinc::sha256(output.text.as_bytes()),
-        alto_sha256: boinc::sha256(&output.alto),
-        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        completed_at: chrono::Utc::now().to_rfc3339(),
-    };
-    atomic(&work.join("text.txt"), output.text.as_bytes())?;
-    atomic(&work.join("layout.xml"), &output.alto)?;
+    let engine = tesseract(&job.engine).await?;
+    check_route(&engine, &job)?;
+    let (result, text, alto) = ocr_page(&engine, &job, &work.join("page")).await?;
+    atomic(&work.join("text.txt"), text.as_bytes())?;
+    atomic(&work.join("layout.xml"), &alto)?;
     atomic(
         &work.join("result.json"),
         &serde_json::to_vec_pretty(&result)?,
@@ -94,6 +66,64 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The image's Tesseract, set up for `spec` (one thread, the page deadline).
+pub(crate) async fn tesseract(
+    spec: &usnm_ocr_contract::boinc::Engine,
+) -> anyhow::Result<Tesseract> {
+    Tesseract::detect(TesseractOptions {
+        runner: Runner::Host("tesseract".into()),
+        psm: spec.psm,
+        dpi: spec.dpi.into(),
+        threads: 1,
+        timeout: Duration::from_secs(spec.timeout_secs.into()),
+    })
+    .await
+}
+
+/// The installed engine is the job's version and routes its language to its profile.
+pub(crate) fn check_route(engine: &Tesseract, job: &Job) -> anyhow::Result<()> {
+    ensure!(
+        engine.version() == job.engine.version
+            && engine::route(&job.message.language, engine.installed())
+                == Some(engine::EngineRoute {
+                    kind: job.engine.kind,
+                    profile: job.engine.profile.clone()
+                }),
+        "engine version/route differs from job"
+    );
+    Ok(())
+}
+
+/// Reads one page's scan at `image` and checks the output: the result manifest, the text and
+/// the ALTO, as a single-page unit returns them.
+pub(crate) async fn ocr_page(
+    engine: &dyn Engine,
+    job: &Job,
+    image: &Path,
+) -> anyhow::Result<(ResultManifest, String, Vec<u8>)> {
+    let started = Instant::now();
+    let scratch = tempfile::tempdir()?;
+    let output = engine
+        .ocr(image, &job.message.language, scratch.path())
+        .await?;
+    ensure!(
+        output.text.len() <= boinc::MAX_TEXT && output.alto.len() <= boinc::MAX_ALTO,
+        "result over limit"
+    );
+    usnm_alto::check(&output.alto, &usnm_alto::Limits::default())?;
+    let result = ResultManifest {
+        v: boinc::VERSION,
+        job_id: job.id.clone(),
+        scan_sha256: job.scan.sha256.clone(),
+        engine: job.engine.clone(),
+        text_sha256: boinc::sha256(output.text.as_bytes()),
+        alto_sha256: boinc::sha256(&output.alto),
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        completed_at: chrono::Utc::now().to_rfc3339(),
+    };
+    Ok((result, output.text, output.alto))
 }
 
 /// Checks the installed models of `engine.profile` against the lock and
