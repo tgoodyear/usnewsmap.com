@@ -142,11 +142,17 @@ config, the controller does this itself:
 
 ```json
 "gold_onboarding": [
-  {"campaign": "v1-tess550", "language": "eng", "profile": "eng",
-   "engine_base": "<the worker's TESSERACT_IMAGE, pinned by digest>",
+  {"campaign": "current247c-amd64-calibration-20261017", "language": "eng", "profile": "eng",
+   "engine_base": "sha256:<the worker's TESSERACT_IMAGE digest>",
    "interval_minutes": 60, "max_hosts": 10}
 ]
 ```
+
+`campaign` must be the scope's calibrated challenge: its `prepared.json` has the
+`manifest_sha256` that `gold/trust.json` records for the scope (for eng/eng with worker
+247c, `current247c-amd64-calibration-20261017`, manifest `d8cd7279…`), or `gold-promote`
+refuses it. `engine_base` is a bare `sha256:` digest, as the gold reports record it, or
+`name@sha256:`.
 
 When a scope is due, the tick runs two bridge steps before it collects:
 

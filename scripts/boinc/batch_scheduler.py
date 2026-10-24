@@ -314,7 +314,9 @@ def _validate_gold_onboarding(entries):
                 "invalid gold_onboarding fields")
         for key, pattern in (("campaign", r"[a-z0-9][a-z0-9-]{0,40}"), ("language", r"[a-z]{3}"),
                              ("profile", r"[A-Za-z0-9_+-]{1,64}"),
-                             ("engine_base", r"[A-Za-z0-9._/:-]{1,180}@sha256:[0-9a-f]{64}"),
+                             # The worker's TESSERACT_IMAGE as the gold reports record it: a bare
+                             # digest (what calibration and bridge-job use) or name@digest.
+                             ("engine_base", r"(?:[A-Za-z0-9._/:-]{1,180}@)?sha256:[0-9a-f]{64}"),
                              ("engine_version", r"[0-9]{1,3}(\.[0-9]{1,3}){1,3}")):
             if key in entry:
                 require(isinstance(entry[key], str) and re.fullmatch(pattern, entry[key]),

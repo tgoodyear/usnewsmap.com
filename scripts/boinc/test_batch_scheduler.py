@@ -763,10 +763,15 @@ class GoldOnboardingTests(unittest.TestCase):
             loaded = batch.load_config(path)
             # Turning gold onboarding on is not an allocation change.
             self.assertEqual(batch.digest(loaded), before)
+            # The bare digest the gold reports and bridge-job use is accepted too.
+            path.write_text(json.dumps({**plain, "gold_onboarding": [{**GOLD, "engine_base": "sha256:" + "e" * 64}]}))
+            self.assertEqual(batch.load_config(path)["gold_onboarding"][0]["engine_base"], "sha256:" + "e" * 64)
             for bad in (
                 [], {}, [dict(GOLD)] * 2, [dict(GOLD)] * 5,
                 [{**GOLD, "campaign": "../x"}], [{**GOLD, "language": "en"}],
                 [{**GOLD, "engine_base": "docker.io/tesseract:latest"}],
+                [{**GOLD, "engine_base": "sha256:" + "c" * 63}],
+                [{**GOLD, "engine_base": "sha256:" + "C" * 64}],
                 [{**GOLD, "engine_version": "5.5.0;x"}],
                 [{**GOLD, "interval_minutes": 5}], [{**GOLD, "max_hosts": 0}],
                 [{**GOLD, "max_hosts": True}],
