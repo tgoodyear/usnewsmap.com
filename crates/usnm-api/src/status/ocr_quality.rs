@@ -1,11 +1,12 @@
 //! Progress and summary of the OCR quality audit (`jaocr.py quality`,
-//! docs/operations.md "OCR quality audit"): it samples the curated pages,
+//! docs/operations/japanese-ocr.md "OCR quality audit"): it samples the curated pages,
 //! detects each page's language and scores its OCR, and writes its progress,
 //! then a summary, to `status/ocr-quality.json` in the reference store.
 
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use usnm_store::ObjectStore;
 
@@ -16,13 +17,15 @@ pub const PATH: &str = "status/ocr-quality.json";
 /// longer than this, a run without `finished_at` has stopped.
 const RUNNING_WITHIN: i64 = 15;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "OcrQualityBatches")]
 pub struct Batches {
     pub done: u64,
     pub total: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "OcrQualityAgreement")]
 pub struct Agreement {
     /// Pages with text whose detected language isn't their title's first
     /// catalog language. Null (like the others) when no sampled page has text.
@@ -34,7 +37,8 @@ pub struct Agreement {
     pub und_share: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "OcrQualityLanguage")]
 pub struct Language {
     pub language: String,
     pub pages: u64,
@@ -44,7 +48,8 @@ pub struct Language {
     pub damaged_share: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "OcrQualitySummary")]
 pub struct Summary {
     pub agreement: Agreement,
     pub languages: Vec<Language>,
@@ -67,7 +72,7 @@ pub struct Progress {
 }
 
 /// The status section.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct OcrQuality {
     /// Unfinished and reported recently.
     pub running: bool,

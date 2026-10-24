@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use arrow_array::{Array, Date32Array, LargeStringArray, StringArray};
+use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Datelike;
 use futures::stream::{self, StreamExt};
@@ -33,6 +34,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use usnm_core::text::normalize_ocr;
 use usnm_core::time::{date_from_day, day_number};
+use usnm_state::state::RunBatch;
 use usnm_store::ObjectStore;
 
 use crate::curated::from_unix_days;
@@ -375,6 +377,33 @@ impl Record {
             "docs": self.docs,
             "only_american_stories": self.only,
         })
+    }
+}
+
+/// American Stories' texts for the local OCR seeder's `skip_american_stories`
+/// (`usnm_ocr_local::seed::AmericanStories`): a title's pages in one batch,
+/// read as a release reads them. The listing of finished years is read on
+/// first use and kept for the run.
+#[derive(Debug, Default)]
+pub struct SeedTexts {
+    source: tokio::sync::OnceCell<Source>,
+}
+
+#[async_trait]
+impl usnm_ocr_local::seed::AmericanStories for SeedTexts {
+    async fn texts(
+        &self,
+        curated: &dyn ObjectStore,
+        batch: &RunBatch,
+        lccn: &str,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        let source = self
+            .source
+            .get_or_try_init(|| Source::list(curated))
+            .await?;
+        let mut counts = crate::dedup::load_counts(curated, batch).await?;
+        counts.retain(|l, _| l == lccn);
+        Ok(source.load(curated, &counts).await?.texts)
     }
 }
 

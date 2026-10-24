@@ -1,6 +1,12 @@
 # BOINC cross-host start guard
 
-`scripts/start-boinc-bridge.sh` takes an infinite Azure blob lease around the
+Since 21 October 2026 prod's bridge steps run on the on-prem host through
+`scripts/boinc/onprem-step.sh`, which allows one step at a time with a host-local
+lock rather than this lease ([boinc-onprem.md](boinc-onprem.md)). The guard below
+covers the hand-off job, which stays in Azure, and the bridge job of a server with
+`"server": "azure"`.
+
+`scripts/boinc/start-boinc-bridge.sh` takes an infinite Azure blob lease around the
 execution check, shared-template update, start and settings read-back. Both
 `--target bridge` and `--target handoff` use the helper in
 `scripts/lib/boinc-start-guard.sh`. A second cooperating launcher for the

@@ -192,7 +192,7 @@ mod tests {
     use super::*;
 
     /// `/metrics` from Quickwit 0.9.1 serving the fixture indexes
-    /// (`scripts/quickwit-fixtures.sh`) after two searches over both
+    /// (`scripts/dev/quickwit-fixtures.sh`) after two searches over both
     /// indexes, trimmed to the cache, thread pool and runtime metrics and
     /// two others.
     const QUICKWIT_091: &str = include_str!("../tests/data/quickwit-0.9.1-metrics.txt");

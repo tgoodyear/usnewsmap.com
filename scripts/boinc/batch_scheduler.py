@@ -596,7 +596,7 @@ class Transport:
         # step_command runs the bridge steps somewhere other than the Azure bridge job, such as
         # the on-prem BOINC host's scripts/boinc/onprem-step.sh over ssh (#942), with the same
         # arguments. Hand-off steps have no project tree and stay on the Azure launcher.
-        command = ["bash", str(REPO / "scripts/start-boinc-bridge.sh")]
+        command = ["bash", str(REPO / "scripts/boinc/start-boinc-bridge.sh")]
         if target == "bridge" and self.config.get("step_command"):
             command = self.config["step_command"]
         argv = command + ["--env", self.config["env"],

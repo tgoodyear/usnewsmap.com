@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use usnm_ocr_contract::boinc;
 use usnm_store::ObjectStore;
 
+pub mod cli;
+
 /// Where the dispatch root lives in the container.
 pub const DISPATCH: &str = "dispatch";
 /// The largest object `get` copies (a scan at its limit).

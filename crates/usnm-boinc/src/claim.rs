@@ -42,6 +42,8 @@ use usnm_store::{
     ObjectStore,
 };
 
+pub mod cli;
+
 /// How long a claimed message stays hidden: the workunits' `delay_bound`
 /// (three days) and a day to collect. Azure's longest hide is seven days.
 pub const LEASE: Duration = Duration::from_secs(4 * 24 * 3600);

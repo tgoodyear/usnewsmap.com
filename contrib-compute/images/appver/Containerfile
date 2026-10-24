@@ -1,5 +1,5 @@
 # A signed BOINC app version, baked on the server image for the publish job
-# (infra/boinc/main.bicep, publishJob; docs/app-release.md). scripts/boinc-app-release.sh builds
+# (infra/boinc/main.bicep, publishJob; docs/app-release.md). scripts/boinc/boinc-app-release.sh builds
 # it in ACR Tasks from a context it assembles:
 #
 #   src/                 installer, ocr/boinc/ and project.xml at the committed HEAD

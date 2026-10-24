@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/usnm-alto",
     "crates/usnm-boinc",
+    "crates/usnm-congress",
     "crates/usnm-core",
     "crates/usnm-search",
     "crates/usnm-store",
@@ -11,6 +12,7 @@ members = [
     "crates/usnm-ocr-adapter",
     "crates/usnm-ocr-contract",
     "crates/usnm-ocr-dash",
+    "crates/usnm-ocr-local",
     "crates/usnm-ocr-quality",
     "crates/usnm-ocr-route",
     "crates/usnm-ocr-survey",
@@ -30,8 +32,10 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 
 [workspace.dependencies]
 usnm-alto = { path = "crates/usnm-alto" }
+usnm-congress = { path = "crates/usnm-congress" }
 usnm-core = { path = "crates/usnm-core" }
 usnm-ocr-contract = { path = "crates/usnm-ocr-contract", default-features = false }
+usnm-ocr-local = { path = "crates/usnm-ocr-local" }
 usnm-ocr-route = { path = "crates/usnm-ocr-route" }
 usnm-ocr-quality = { path = "crates/usnm-ocr-quality" }
 usnm-ocr-survey = { path = "crates/usnm-ocr-survey" }
@@ -94,7 +98,7 @@ toml = "1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 # The OCR work queues in PostgreSQL + pgmq (#967): TLS through rustls with ring, as reqwest uses.
 tokio-postgres = { version = "0.7", default-features = false, features = ["runtime", "with-serde_json-1"] }
-tokio-postgres-rustls = "0.13"
+tokio-postgres-rustls = "0.14"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["compression-gzip", "cors", "fs", "set-header", "timeout", "trace"] }
 tracing = "0.1"

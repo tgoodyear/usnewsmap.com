@@ -2,7 +2,7 @@
 // Configuration store for every environment in the subscription, each
 // environment's private settings under its own label. It sits outside every
 // environment's stack, in its own stack `usnm-config` and group
-// `usnm-config-rg`, deployed with scripts/settings-store.sh (which
+// `usnm-config-rg`, deployed with scripts/azure/settings-store.sh (which
 // scripts/lib/env.sh's provision runs when the store is missing), so no
 // environment's provision or teardown can delete it.
 //
@@ -23,7 +23,7 @@ param location string = 'eastus2'
 @description('The store\'s name: stable per subscription.')
 param name string = 'usnm-config-appcs-${take(uniqueString(subscription().id, 'usnm-config'), 6)}'
 
-@description('Entra object ids (people or groups), comma separated, given App Configuration Data Owner on the store besides the account deploying the stack: every operator who provisions an environment, so each keeps reading the private settings whoever deploys it. scripts/settings-store.sh keeps the stack\'s value when it isn\'t given.')
+@description('Entra object ids (people or groups), comma separated, given App Configuration Data Owner on the store besides the account deploying the stack: every operator who provisions an environment, so each keeps reading the private settings whoever deploys it. scripts/azure/settings-store.sh keeps the stack\'s value when it isn\'t given.')
 param admins string = ''
 
 var tags = {

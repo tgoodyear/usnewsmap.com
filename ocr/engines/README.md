@@ -21,6 +21,17 @@ An in-progress final attempt can extend the total to 1500 seconds per model.
 Exhausted retries or checksum mismatches fail the build without alternate
 endpoints or unverified models.
 
+There are three `models.lock` files, and each stays with what it pins.
+`tesseract/models.lock` is embedded by `usnm-ocr-worker` and read by the
+Tesseract image build. `ndlocr-lite/models.lock` is embedded by
+`usnm-ocr-adapter` and read by the NDLOCR-Lite image build; it also holds the
+commit that engine is pinned at. `scripts/ocr-survey/models.lock` records the
+files the engine survey ran (Tesseract, docTR, NDNP and Surya models among
+them) and feeds only the survey's own images, through `fetch-models.sh`; it
+repeats the Tesseract entries and Surya's weights as they were run. The pins an
+engine needs in more than one place are checked by
+`scripts/ci/check-engine-pins.py`.
+
 ## Credits data shape
 
 - `production_licenses`: array of licence identifier strings approved by the

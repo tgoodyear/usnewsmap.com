@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # The guard-rail policy stack, shared by scripts/lib/env.sh (every
-# environment) and scripts/archive-store.sh (the archival account). Source it
+# environment) and scripts/azure/archive-store.sh (the archival account). Source it
 # with the repository root as the working directory. Needs az signed in to
 # the subscription, and a die() function.
 

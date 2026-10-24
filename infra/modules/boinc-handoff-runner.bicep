@@ -1,6 +1,6 @@
 // The BOINC hand-off's access (#469): `usnm-boinc export` and `usnm-boinc
 // collect` run as the hand-off job's identity (boinc-handoff-job.bicep,
-// docs/boinc.md#one-page-from-the-scan-cache). Only what those two commands
+// docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache). Only what those two commands
 // touch:
 // - Cosmos: Built-in Data Contributor on the `ops` container alone, for the
 //   `ocr-sync` lease export takes and the published version it reads

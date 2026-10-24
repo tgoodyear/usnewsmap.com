@@ -1,0 +1,39 @@
+[package]
+name = "usnm-ocr-local"
+version = "0.1.0"
+description = "US News Map's own OCR of pages LoC read badly, cloud side: the damage tables, the seeder, ocr-sync's pickup from the on-prem nodes, the ledger and the release's replacement rule"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# The damage metric (12 §12.5 Step 6): the damage tables score pages with it.
+usnm-core = { workspace = true, features = ["damage"] }
+usnm-alto.workspace = true
+usnm-ocr-contract = { workspace = true, default-features = true }
+usnm-overlay.workspace = true
+usnm-state.workspace = true
+usnm-store.workspace = true
+anyhow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+blake2.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+futures.workspace = true
+opentelemetry.workspace = true
+parquet.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

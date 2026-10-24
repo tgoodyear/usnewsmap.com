@@ -4,7 +4,7 @@ The [transcription post-training pilot](notes/2026-10-16-boinc-transcription.md)
 for held-out public-gold inference. Its references stay on the server; central
 training is separate from volunteer work.
 
-Issues: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559). Two apps estimate, for every page and without anyone transcribing it, how accurate and how complete each text we hold of it is, how much a careful reader could recover, and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (Apple Silicon Metal and NVIDIA CUDA GPUs, with a multi-thread CPU fallback) adds a vision-language reading of a sample of crops, as one more reader. Both apps support **dual native and container distribution**: native platform executables across Linux (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`), macOS (`arm64-apple-darwin`, `x86_64-apple-darwin`) and Windows (`windows_x86_64`) that require no container runtime on volunteer hosts, alongside the container app versions (`docker`, `docker_mt_2b`, `docker_nvidia_cuda_8b`). The other apps are described in [boinc.md](boinc.md), [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md) and [boinc-surya.md](boinc-surya.md).
+Issues: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559). Two apps estimate, for every page and without anyone transcribing it, how accurate and how complete each text we hold of it is, how much a careful reader could recover, and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (Apple Silicon Metal and NVIDIA CUDA GPUs, with a multi-thread CPU fallback) adds a vision-language reading of a sample of crops, as one more reader. Both apps support **dual native and container distribution**: native platform executables across Linux (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`), macOS (`arm64-apple-darwin`, `x86_64-apple-darwin`) and Windows (`windows_x86_64`) that require no container runtime on volunteer hosts, alongside the container app versions (`docker`, `docker_mt_2b`, `docker_nvidia_cuda_8b`). The other apps are described in [boinc/README.md](boinc/README.md), [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md) and [boinc-surya.md](boinc-surya.md).
 
 Status: implemented in code and tested locally; new split-payload releases remain UNVERIFIED on the live BOINC server and volunteer hosts. Disk metadata observations below are distinguished from conservative limits and live acceptance.
 
@@ -81,7 +81,7 @@ The workflow runs the cross-platform golden determinism test on every target and
    - Instead of baking multi-gigabyte weights into every native app version update, GGUF model and multimodal projector files (`Qwen3VL-8B-Instruct-Q4_K_M.gguf` 4.68 GiB + `mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf` 0.70 GiB for 8B; `Qwen3-VL-2B-Instruct-Q8_0.gguf` 1.71 GiB + `mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf` 0.41 GiB for 2B) are staged in the project's `download/` hierarchy as `usnm_qwen_model_<sha256>` alongside Apache-2.0 `LICENSE` and `NOTICE`. Their input templates (`ocr/boinc/usnm_qwen_8b_in`, `ocr/boinc/usnm_qwen_2b_in`) mark every weight file with **both `<sticky/>` and `<no_delete/>`**:
      - `<sticky/>` (`client/client_types.cpp:387, 652-668`, `sched/sched_send.cpp:76-118`) instructs the volunteer's BOINC client to retain the downloaded model file across workunits and merge existing file metadata (`cs_scheduler.cpp:878`) so each host downloads its model set only once.
      - `<no_delete/>` (`sched/file_deleter.cpp:22, 160-171`) instructs the server's `file_deleter` daemon never to unlink the shared model files from `download/` when the first workunit referencing them is assimilated and purged.
-   - Serving sticky models from the server Container App's Azure Files share incurs Azure internet egress after the first 100 GB/month free tier (~$0.087/GB in North America: ~$0.50 per new 8B volunteer and ~$0.20 per new 2B volunteer).
+   - Serving sticky models from the Azure server's Container App and Azure Files share incurred Azure internet egress after the first 100 GB/month free tier (~$0.087/GB in North America: ~$0.50 per new 8B volunteer and ~$0.20 per new 2B volunteer). The on-prem server (prod since 21 October 2026) serves them from the host's project tree, outside Azure.
 2. **Container image (`ocr/boinc/qwen/Containerfile`, `ocr/boinc/qwen/weights.lock`, `ocr/boinc/qwen/NOTICE`)**:
    - Built on `ghcr.io/ggml-org/llama.cpp:server-cuda` at digest `sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea` (llama.cpp build 11610, `0.6.0-dev`), with no Python stack. **Separate payloads**: `QWEN_MODEL=2b` (the build default) includes only the 2B Q8_0 model and projector; `QWEN_MODEL=8b` includes only the 8B Q4_K_M model and projector. Both retain the pinned CUDA base (including CPU backends), immutable Hugging Face revisions, SHA-256 checks, full `weights.lock` identity, Apache-2.0 `LICENSE` and `NOTICE`. A full lock identifies the allowed artifacts, not a claim that every model in it is installed. `USNM_QWEN_MODEL` and the image's model label identify the actual payload. CPU execution cannot pick 8B; the 8B image refuses an insufficient or missing GPU instead of silently falling back. Smaller NVIDIA GPUs can use the native 2B class.
    - `.github/workflows/boinc-qwen.yml` builds and checks both payloads separately. Only a manually authorized run on `main` publishes `ghcr.io/tgoodyear/usnm-boinc-worker:qwen-2b-<commit>` and `:qwen-8b-<commit>`. Each gets a **different digest** in the step summary. Releases continue to use anonymous digest-pinned pulls and signed wrapper, Dockerfile and job files; the release preflight now checks anonymous config metadata against the plan class's model, pinned base and weights identity and compressed-size envelope.
@@ -131,18 +131,18 @@ requirements. Use the cohort operator, not a server restart, to change those win
 
 `scripts/boinc/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
 
-Register the apps and platforms on the server (`scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15`), then release the container or native versions with `scripts/boinc-app-release.sh` (see [contrib-compute/docs/app-release.md](../contrib-compute/docs/app-release.md)):
+Register the apps and platforms on the server (`scripts/boinc/onprem-step.sh --env prod --target bridge --step register-apps --wait-mins 15` on the on-prem host), then release the container or native versions with `scripts/boinc/boinc-app-release.sh` (see [contrib-compute/docs/app-release.md](../contrib-compute/docs/app-release.md)). Prod's server is on-prem, so add `--onprem-host HOST --onprem-ct ID` to each release command below:
 
 ```sh
 # Container versions:
-scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host <host>
-scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host <host>
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-2b-digest> --signing-host <host>
-scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-8b-digest> --signing-host <host>
 
 # Native usnm_quality binary (from .github/workflows/boinc-quality-native.yml artifacts):
-scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
   --platform arm64-apple-darwin --binary /path/to/usnm_quality_1.1_arm64-apple-darwin \
   --binary-sha256 <sha256> --signing-host <host>
 ```
@@ -346,17 +346,19 @@ usnm-boinc qwen local-unit --image page.jpg --alto loc.xml --dir q --engine-llam
 
 On the server (`contrib-compute/images/server/bridge-job.sh`) and the hand-off job in the main Container Apps environment (`contrib-compute/images/bridge/handoff-job.sh`), a quality campaign lives under `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>` and a Qwen campaign under `$SHARE_DIR/qwen/<QWEN_CAMPAIGN>` (each campaign name is 1 to 41 characters of `[a-z0-9-]`). UNVERIFIED against a live server.
 
+Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scripts/boinc/start-boinc-bridge.sh --env prod --step <step>` below there as `scripts/boinc/onprem-step.sh --env prod --target bridge --step <step>`, with the same `--var` and `--wait-mins` arguments (`--wait-mins` is required). The `--target handoff` command stays with `start-boinc-bridge.sh`, because the hand-off job is still in Azure ([boinc-onprem.md](boinc-onprem.md)).
+
 1. **Export page texts (`handoff-job.sh`, `HANDOFF_STEP=texts-export`).** The hand-off job reaches `CURATED_URL` and `OUT_URL` privately in the main environment, runs `usnm-boinc quality texts-export` for `HANDOFF_PAGES` (comma-separated doc ids) or `HANDOFF_SAMPLE` (a sample file under `quality-samples/` in `HANDOFF_URL`), and uploads `<doc_id>.json` (and `<doc_id>.ours.xml` when present) to `HANDOFF_URL` under `texts/`:
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --target handoff --step texts-export \
+   scripts/boinc/start-boinc-bridge.sh --env prod --target handoff --step texts-export \
      --var HANDOFF_SAMPLE=v1.jsonl --wait-mins 30
    ```
 
 2. **Stage quality units (`bridge-job.sh`, `BRIDGE_STEP=quality-stage`).** When `HANDOFF_URL` is set, pulls `texts/` into `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>/texts` and, if `QUALITY_SAMPLE` is a relative sample filename, pulls `quality-samples/` into `<campaign>/samples/`; when `QUALITY_LANGS` is set (comma-separated ISO 639-3 codes), writes `<campaign>/function-words` with `usnm-boinc quality function-words`. Runs `usnm-boinc quality stage` for `QUALITY_PAGES` (`group:lang:doc_id:batch[+batch...],...`) or `QUALITY_SAMPLE` (default `<campaign>/sample.jsonl`, with `QUALITY_GROUP` default `sample`), `QUALITY_READERS` (default `loc,as,ours-tesseract`), `QUALITY_PLACES` (default `<campaign>/places.txt`), `QUALITY_ENGINE_IMAGE` (`sha256:<worker-digest>`), `QUALITY_MAX` (default 100), and `QUALITY_BUNDLE_SIZE` (default `300`, up to `500` pages per bundle; at ~1.2–2.0s/page a 300–500 page bundle runs for **10–15 minutes (`0.17–0.25 hours`)** with per-page checkpointing and packs `5,000` pages into `10–17` bundled workunits), reading scans from `SCAN_ARCHIVE_URL` (`--scan-archive`) first and then `tile.loc.gov` through the batch (`--batch-cache`):
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step quality-stage \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step quality-stage \
      --var QUALITY_CAMPAIGN=v1-wave5 \
      --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff \
      --var QUALITY_SAMPLE=v1-wave5.jsonl --var QUALITY_GROUP=v1-wave5 \
@@ -368,7 +370,7 @@ On the server (`contrib-compute/images/server/bridge-job.sh`) and the hand-off j
 3. **Stage Qwen units (`bridge-job.sh`, `BRIDGE_STEP=qwen-stage`).** Cuts the deterministic crops from the staged `usnm_quality` units in `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>` into `$SHARE_DIR/qwen/<QWEN_CAMPAIGN>` without fetching from LoC again:
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step qwen-stage \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step qwen-stage \
      --var QUALITY_CAMPAIGN=v1-probe --var QWEN_CAMPAIGN=v1-probe \
      --var QWEN_ENGINE_IMAGE=sha256:<qwen-digest> \
      --var QWEN_ENGINE_LLAMA=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea \
@@ -379,33 +381,33 @@ On the server (`contrib-compute/images/server/bridge-job.sh`) and the hand-off j
 4. **Submit both apps' workunits (`bridge-job.sh`, `BRIDGE_STEP=quality-submit` and `BRIDGE_STEP=qwen-submit`).** Hands the staged units to `create_work` with two results per workunit (`QUALITY_MAX` default 500, `QWEN_MAX` default 20) and invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` reflects the new queue immediately (live uncached counts are also always available at `https://boinc.usnewsmap.com/server_status.php?counts=1`):
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step quality-submit \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step quality-submit \
      --var QUALITY_CAMPAIGN=v1-probe --var QUALITY_MAX=500 --wait-mins 15
-   scripts/start-boinc-bridge.sh --env prod --step qwen-submit \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step qwen-submit \
      --var QWEN_CAMPAIGN=v1-probe --var QWEN_MAX=20 --wait-mins 15
    ```
 
 5. **Inspect validator summaries (`bridge-job.sh`, `BRIDGE_STEP=quality-summary` and `BRIDGE_STEP=qwen-summary`).** Reads `<project>/quality/{seen,pairs.jsonl}` and `<project>/qwen/{seen,pairs.jsonl}` and writes `<campaign>/summary.md`:
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step quality-summary --var QUALITY_CAMPAIGN=v1-probe
-   scripts/start-boinc-bridge.sh --env prod --step qwen-summary --var QWEN_CAMPAIGN=v1-probe
+   scripts/boinc/start-boinc-bridge.sh --env prod --step quality-summary --var QUALITY_CAMPAIGN=v1-probe
+   scripts/boinc/start-boinc-bridge.sh --env prod --step qwen-summary --var QWEN_CAMPAIGN=v1-probe
    ```
 
 6. **Collect canonical results (`bridge-job.sh`, `BRIDGE_STEP=quality-collect`).** Joins the assimilated `usnm_quality` (`QUALITY_SPOOL`), optional `usnm_qwen` (`QWEN_CAMPAIGN` and `QWEN_SPOOL`) and optional `usnm_surya` crop (`SURYA_CAMPAIGN` and `SURYA_SPOOL`, #968) results into `<campaign>/out/{pages.parquet,crops.parquet,summary.md}`, or uploads them to `QUALITY_CURATED_URL` under `audit/quality/<QUALITY_CAMPAIGN>/`:
 
    ```sh
-   scripts/start-boinc-bridge.sh --env prod --step quality-collect \
+   scripts/boinc/start-boinc-bridge.sh --env prod --step quality-collect \
      --var QUALITY_CAMPAIGN=v1-probe --var QUALITY_SPOOL=/project/usnmocr/results/0 \
      --var QWEN_CAMPAIGN=v1-probe --var QWEN_SPOOL=/project/usnmocr/results/0 --wait-mins 15
    ```
 
-7. **Monitor or manage multi-shard campaigns (`scripts/boinc-quality-campaign.py`).** For 5,000–10,000+ workunit campaigns sharded across parallel Container Apps executions (`v1-wave5`, `v1-wave6`), use the campaign CLI to split non-overlapping manifests into shard archives, inspect live shard + server queue progress, and restore the bridge job specification after completion:
+7. **Monitor or manage multi-shard campaigns (`scripts/boinc/boinc-quality-campaign.py`).** For 5,000–10,000+ workunit campaigns sharded across parallel Container Apps executions (`v1-wave5`, `v1-wave6`), use the campaign CLI to split non-overlapping manifests into shard archives, inspect live shard + server queue progress, and restore the bridge job specification after completion. The CLI drives the Azure bridge job and the quality wave job, which `"server": "onprem"` removes, and the quality wave does not run on-prem yet ([boinc-onprem.md](boinc-onprem.md)), so this applies to a server with `"server": "azure"`:
 
    ```sh
-   python3 scripts/boinc-quality-campaign.py prepare --campaign v1-wave6 --manifest sample.jsonl --out-dir /tmp/wave6 --count 10000 --shards 20
-   python3 scripts/boinc-quality-campaign.py status --campaign v1-wave6 --shards 20
-   python3 scripts/boinc-quality-campaign.py restore --env prod
+   python3 scripts/boinc/boinc-quality-campaign.py prepare --campaign v1-wave6 --manifest sample.jsonl --out-dir /tmp/wave6 --count 10000 --shards 20
+   python3 scripts/boinc/boinc-quality-campaign.py status --campaign v1-wave6 --shards 20
+   python3 scripts/boinc/boinc-quality-campaign.py restore --env prod
    ```
 
 ## Calibration

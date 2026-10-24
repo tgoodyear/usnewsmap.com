@@ -16,7 +16,7 @@
     },
     "AZURE_LOCATION": {
       "x-usnm-visibility": "local",
-      "description": "Local: in the environment's local settings file. The region, which scripts/bootstrap.sh sets (see its --move).",
+      "description": "Local: in the environment's local settings file. The region, which scripts/azure/bootstrap.sh sets (see its --move).",
       "not": {}
     },
     "USNM_ALERT_EMAILS": {
@@ -135,7 +135,7 @@
     },
     "USNM_EXPERIMENT": {
       "x-usnm-visibility": "local",
-      "description": "Local: in the environment's local settings file. dev's current experiment (an issue number), which scripts/stand-up.sh sets and scripts/teardown.sh clears.",
+      "description": "Local: in the environment's local settings file. dev's current experiment (an issue number), which scripts/azure/stand-up.sh sets and scripts/azure/teardown.sh clears.",
       "not": {}
     },
     "USNM_EXPERIMENT_STARTED": {
@@ -154,7 +154,7 @@
     },
     "USNM_IMAGE_TAG": {
       "x-usnm-visibility": "local",
-      "description": "Local: in the environment's local settings file. The image tag dev runs, which scripts/stand-up.sh sets to the commit it builds; elsewhere the default (main).",
+      "description": "Local: in the environment's local settings file. The image tag dev runs, which scripts/azure/stand-up.sh sets to the commit it builds; elsewhere the default (main).",
       "not": {}
     },
     "USNM_INDEX_STORAGE": {
@@ -454,7 +454,7 @@
     },
     "USNM_WRITER_INGEST": {
       "x-usnm-visibility": "public",
-      "description": "The Quickwit writer's ingest API: v2 (Quickwit's default, at least once) or v1 (each accepted page once; the release restarts the writer for its final merges). docs/operations.md, \"Duplicate-safe ingest\" (#283).",
+      "description": "The Quickwit writer's ingest API: v2 (Quickwit's default, at least once) or v1 (each accepted page once; the release restarts the writer for its final merges). docs/operations/rebuild-and-index-storage.md, \"Duplicate-safe ingest\" (#283).",
       "type": "string",
       "pattern": "^v[12]$"
     },

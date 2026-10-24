@@ -33,8 +33,9 @@ use crate::catalog::{Catalog, Place, Title};
 use crate::source::hex;
 
 /// Where the OCR job writes its parts in the curated store (a directory:
-/// stores list it without the trailing slash).
-pub const PREFIX: &str = "ocr-ja/pages";
+/// stores list it without the trailing slash). The path lives with the
+/// schema in `usnm-overlay`, for the local OCR seeder, which skips these titles.
+pub const PREFIX: &str = usnm_overlay::JA_PREFIX;
 
 /// The Japanese pages' index mapping.
 pub const JA_TEMPLATE: &str = include_str!("../../../infra/quickwit/pages-ja-index.yaml");

@@ -1,4 +1,4 @@
-// Retained batch archives (`retainRaw`, docs/operations.md "Archival
+// Retained batch archives (`retainRaw`, docs/operations/environments-and-deploys.md "Archival
 // storage"): the `raw` container, which curation writes each archive it
 // downloads to (Blob access tier Cold, set per blob as it is written) and
 // reads it back from instead of LoC. For benchmark sets in a dev environment;

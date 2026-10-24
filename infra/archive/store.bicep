@@ -50,7 +50,7 @@ resource raw 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-
   properties: { publicAccess: 'None' }
 }
 
-// Packaged sample sets, immutable once written (docs/operations.md, "Sample sets").
+// Packaged sample sets, immutable once written (docs/operations/environments-and-deploys.md, "Sample sets").
 resource sets 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobService
   name: 'sets'
@@ -83,14 +83,14 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
 }
 
 // Nobody deletes the account by accident. A lock on a private endpoint's
-// target can block removing the endpoint, so scripts/archive-store.sh lifts
-// it for that and puts it back (docs/operations.md, "Archival storage").
+// target can block removing the endpoint, so scripts/azure/archive-store.sh lifts
+// it for that and puts it back (docs/operations/environments-and-deploys.md, "Archival storage").
 resource lock 'Microsoft.Authorization/locks@2020-05-01' = {
   scope: account
   name: 'usnm-archive-keep'
   properties: {
     level: 'CanNotDelete'
-    notes: 'The archival account outlives every environment. scripts/archive-store.sh lifts this to remove an environment\'s private endpoint.'
+    notes: 'The archival account outlives every environment. scripts/azure/archive-store.sh lifts this to remove an environment\'s private endpoint.'
   }
 }
 
@@ -108,7 +108,7 @@ resource diagnosticsExemption 'Microsoft.Authorization/policyExemptions@2022-07-
     policyAssignmentId: diagnosticsAssignmentId
     exemptionCategory: 'Waiver'
     displayName: 'Archival account: no diagnostic settings'
-    description: 'No Log Analytics workspace outlives the environments, and this account outlives them all, so its resource logs have nowhere to go. Remove when a long-lived workspace exists and the account sends blob writes and deletes to it (docs/operations.md, "Archival storage").'
+    description: 'No Log Analytics workspace outlives the environments, and this account outlives them all, so its resource logs have nowhere to go. Remove when a long-lived workspace exists and the account sends blob writes and deletes to it (docs/operations/environments-and-deploys.md, "Archival storage").'
   }
 }
 

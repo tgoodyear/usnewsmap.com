@@ -13,6 +13,7 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Duration, Utc};
+use schemars::JsonSchema;
 use serde::Serialize;
 use usnm_state::state::{MergeProgress, Outcome, RunStatus, Step};
 use usnm_state::summary::{RunSummary, Summary};
@@ -37,7 +38,7 @@ pub struct TitlesCache {
 }
 
 /// What is happening now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Now {
     /// Reading LoC's batch list.
@@ -70,7 +71,7 @@ impl From<Step> for Now {
 }
 
 /// How the last execution ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LastOutcome {
     Published,
@@ -94,7 +95,7 @@ impl From<Outcome> for LastOutcome {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct LastRun {
     pub outcome: LastOutcome,
     /// When it ended. For `stopped`, its last report. For a failed index run
@@ -109,7 +110,7 @@ pub struct LastRun {
     pub index_version: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Merge {
     /// `settle` (merging while open) or `finalize` (closed, last merges).
     pub step: String,
@@ -129,7 +130,7 @@ impl From<&MergeProgress> for Merge {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Activity {
     pub now: Now,
     /// `job`: the ingest execution reports it; `inferred`: worked out from

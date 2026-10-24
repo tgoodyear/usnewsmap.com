@@ -8,6 +8,7 @@ use axum::extract::{OriginalUri, State};
 use axum::http::Uri;
 use axum::response::Response;
 use chrono::NaiveDate;
+use schemars::JsonSchema;
 use serde::Serialize;
 use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{ParamError, RawParams};
@@ -17,7 +18,7 @@ use super::{cached, Ctx, Job};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct CoverageResponse {
     index_version: String,
     bucket: BucketUnit,
@@ -28,6 +29,14 @@ struct CoverageResponse {
     /// Sparse cube of pages published: (place index, bucket index, pages).
     pages: SparseCube,
 }
+
+/// The schema of the response, for `/v1/openapi.json`.
+pub(crate) fn schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<CoverageResponse>()
+}
+
+/// The parameters it takes.
+pub(crate) const KEYS: &[&str] = &["from", "to", "bucket", "state", "lang", "v"];
 
 fn bad(name: &str, reason: &str) -> ApiError {
     ApiError::Params(ParamError::Invalid {
@@ -50,7 +59,7 @@ pub(crate) async fn coverage_in(
     uri: &Uri,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_only(&["from", "to", "bucket", "state", "lang", "v"])?;
+    raw.reject_only(KEYS)?;
     let job = Job::reference("coverage", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();

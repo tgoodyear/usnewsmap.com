@@ -13,3 +13,20 @@ __pycache__/
 .boinc-acceptance-*
 .boinc-provision-*
 .boinc-work-*
+
+# Data assets live in GitHub releases and are fetched in place by scripts/ops/data-assets.sh
+# (ops/data-assets.json, docs/reports/README.md); the sets are these kinds of files.
+docs/reports/**/*.csv
+docs/reports/**/*.json
+docs/reports/**/*.jsonl
+docs/reports/**/*.parquet
+docs/reports/**/*.txt
+docs/reports/**/*.gz
+docs/reports/**/*.pdf
+docs/reports/**/*.tar
+docs/data/*
+ocr/bench/**/*.jpg
+ocr/bench/**/*.jpeg
+ocr/bench/**/*.png
+ocr/bench/**/*.tar.gz
+ocr/bench/**/*.tgz

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the Quickwit binary of an environment's pinned image
 # (infra/quickwit-image.json) on an on-prem host, for an on-prem release
-# (docs/operations.md, "Full rebuild on-prem"). Run as a member of the himds
+# (docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"). Run as a member of the himds
 # group on an Arc machine with AcrPull on the environment's registry; needs
 # curl, jq and skopeo.
 #

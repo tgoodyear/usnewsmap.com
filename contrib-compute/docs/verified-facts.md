@@ -1,6 +1,6 @@
 # BOINC and Azure facts, checked against sources
 
-These are the facts the hosting design for the stock BOINC server depends on. The client side, the bridge and the contracts are in PR #441 (`docs/boinc.md`) and are not repeated here.
+These are the facts the hosting design for the stock BOINC server depends on. The client side, the bridge and the contracts are in PR #441 (`docs/boinc/README.md`) and are not repeated here.
 
 Every fact here has a source and a fetch date. All sources were read on 2026-10-13 (US Eastern).
 A fact marked UNVERIFIED was not confirmed from a source and must be tested before design

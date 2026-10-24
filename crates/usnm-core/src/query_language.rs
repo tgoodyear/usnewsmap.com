@@ -25,7 +25,7 @@
 //! The English words are at least as frequent in English as in each other
 //! Latin-script language of the corpus, by wordfreq, folded as the index
 //! folds a page; the shared words are English words another such language
-//! uses up to 10 times as often (`scripts/build-english-words.py` builds
+//! uses up to 10 times as often (`scripts/data/build-english-words.py` builds
 //! both). So a search the rule calls English finds mostly English pages,
 //! and a word German, Spanish, French or Italian pages use as much
 //! ("november", "influenza") leaves the baseline at every page. The rule

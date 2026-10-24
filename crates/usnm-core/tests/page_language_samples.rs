@@ -1,7 +1,7 @@
 //! The page-language detector on text of known language (05 §5.5.8, #289):
 //! `fixtures/page-language/samples.jsonl`, Wikipedia articles and Wikisource
 //! texts in each catalog language with a word list, about 300 words each
-//! (`scripts/page-language-samples.py`; `fixtures/page-language/README.md`).
+//! (`scripts/data/page-language-samples.py`; `fixtures/page-language/README.md`).
 //! The parity test checks the port against Python; this checks both against
 //! the language a text is actually in.
 //!

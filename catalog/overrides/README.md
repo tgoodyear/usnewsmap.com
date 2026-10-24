@@ -77,7 +77,7 @@ own place. For a title naming two cities ("Fort Worth-Dallas"), alias it
 to the first. `history` items can hold `to`.
 
 The gazetteer `geocode` uses is `../gazetteer/us-places.csv`, built by
-`scripts/build-gazetteer.py` from the Census Bureau's national places
+`scripts/data/build-gazetteer.py` from the Census Bureau's national places
 file (public domain).
 
 Spellings that key alike ("St. Paul" and "Saint Paul") and "X City" next

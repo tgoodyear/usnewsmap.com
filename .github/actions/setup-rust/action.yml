@@ -1,0 +1,23 @@
+name: setup-rust
+description: >-
+  The stable Rust toolchain and the Cargo build cache, as the Rust jobs of .github/workflows/ci.yml
+  set them up. A job that calls this runs after its checkout.
+inputs:
+  components:
+    description: Comma-separated rustup components to install with the toolchain, for example "rustfmt, clippy"
+    required: false
+    default: ""
+  cache-key:
+    description: An extra key for the build cache, for a job whose target directory the others' can't reuse (the EL9 container)
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      with:
+        toolchain: stable
+        components: ${{ inputs.components }}
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        key: ${{ inputs.cache-key }}

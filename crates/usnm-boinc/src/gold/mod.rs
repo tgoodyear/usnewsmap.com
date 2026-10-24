@@ -1,7 +1,7 @@
 //! The volunteer gold check (#457): score this host's engine on the public gold bundle and report
 //! the scores with the bundle version, so results from different hosts and engine builds compare.
 //!
-//! Two steps, because the BOINC job container has no network (docs/boinc.md):
+//! Two steps, because the BOINC job container has no network (docs/boinc/gold-check.md):
 //! - `gold-stage` (network): verifies the bundle and downloads the original files it refers to
 //!   (the BLN600 zip, Library of Congress page images) into a cache, checking each sha256.
 //! - `gold-run` (offline): verifies the bundle again, checks the cache, cuts the crops locally,
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use usnm_ocr_survey::{bundle, score};
 use usnm_ocr_worker::engine::{self, Engine, Runner, Tesseract, TesseractOptions};
 
+pub mod cli;
 pub mod collect;
 pub mod job;
 pub mod mirror;
