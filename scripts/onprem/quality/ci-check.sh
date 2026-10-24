@@ -61,7 +61,18 @@ rows = m.agreement_rows([{"doc_id": "sn1_1900-01-01_ed-1_seq-1", "batch": "b", "
 print(m.upsert_sql("campaigns", ["campaign", "source", "notes"], ["campaign"], [("text-agreement-v1", "text-compare", "ci")], update=False)
       + m.upsert_sql("text_compare", m.AGREE_COLS, ["campaign", "doc_id", "reader_a", "reader_b"], rows))
 PY
-  echo "RESET ROLE; SET ROLE quality_loader; SELECT quality.refresh_summary();"
+  # v1-wave6 is excluded from the start: its estimate for the page must not count, even
+  # though its unit is the newer one.
+  echo "RESET ROLE; SET ROLE quality_loader;"
+  python3 - "$here/load.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("load", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+units, scores = m.result_rows([{"doc_id": "sn1_1900-01-01_ed-1_seq-1", "reader": "loc-hist", "est_cer": "0.9", "outcome": "ok",
+                                "job_id": "k", "blocks": 3, "pairs_json": None}], "v1-wave6")
+print(m.campaign_sql("v1-wave6", "boinc-quality") + m.upsert_sql("unit_pages", m.UNIT_COLS, ["campaign", "doc_id"], units)
+      + m.upsert_sql("reader_scores", m.SCORE_COLS, ["campaign", "doc_id", "reader"], scores))
+PY
+  echo "SELECT quality.refresh_summary();"
 } | psql_admin -d usnm_quality > /dev/null
 got=$(psql_admin -d usnm_quality -tA -c "SELECT doc_id, damage_rate, loc_est_cer, has_image_features, loc_as_local_cer_sym FROM quality.page_summary")
 [ "$got" = "sn1_1900-01-01_ed-1_seq-1|0.4|0.3|t|0.08" ] || die "page_summary after the load: $got"

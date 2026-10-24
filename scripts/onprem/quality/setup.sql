@@ -159,14 +159,16 @@ WHERE u.campaign = r.campaign AND u.doc_id = r.doc_id AND u.hat_version = 1
 -- Campaigns whose hat estimates are wrong and stay out of ranking until fixed; their scan
 -- features still count. v1-wave6 staged loc-hist as the literal "bulk" on 2,256 pages
 -- (#962, 24 October 2026), so every estimate of its hat is off.
+-- Keyed by name only, not a foreign key, so an exclusion can stand before its campaign is
+-- loaded.
 CREATE TABLE IF NOT EXISTS quality.excluded_estimates (
-  campaign text PRIMARY KEY REFERENCES quality.campaigns,
+  campaign text PRIMARY KEY,
   why      text NOT NULL,
   since    date NOT NULL DEFAULT current_date
 );
+ALTER TABLE quality.excluded_estimates DROP CONSTRAINT IF EXISTS excluded_estimates_campaign_fkey;
 INSERT INTO quality.excluded_estimates (campaign, why)
-SELECT 'v1-wave6', 'loc-hist staged as the literal "bulk" on 2,256 three-reader pages'
-WHERE EXISTS (SELECT FROM quality.campaigns WHERE campaign = 'v1-wave6')
+VALUES ('v1-wave6', 'loc-hist staged as the literal "bulk" on 2,256 three-reader pages')
 ON CONFLICT (campaign) DO NOTHING;
 
 -- A text-only comparison of two readers of a page (no image): LoC against American Stories
@@ -256,23 +258,32 @@ BEGIN
 END $$;
 CREATE OR REPLACE VIEW quality.page_signals AS
 WITH unit AS (
-  -- A page in several campaigns: its hat version 2 row first, then the newest.
-  SELECT DISTINCT ON (u.doc_id) u.*, (x.campaign IS NOT NULL) AS estimates_excluded
+  -- The scan's features: a page in several campaigns takes its hat version 2 row
+  -- first, then the newest.
+  SELECT DISTINCT ON (u.doc_id) u.*
   FROM quality.unit_pages u JOIN quality.campaigns c USING (campaign)
-  LEFT JOIN quality.excluded_estimates x USING (campaign)
   WHERE u.outcome = 'ok'
+  ORDER BY u.doc_id, u.hat_version DESC, c.loaded_at DESC
+), hat AS (
+  -- The hat's estimates, chosen the same way among campaigns not excluded, so one bad
+  -- campaign doesn't hide another's good estimates of the page.
+  SELECT DISTINCT ON (u.doc_id) u.campaign, u.doc_id, u.hat_version, u.hat_determined,
+         u.legibility_ceiling
+  FROM quality.unit_pages u JOIN quality.campaigns c USING (campaign)
+  WHERE u.outcome = 'ok'
+    AND NOT EXISTS (SELECT FROM quality.excluded_estimates x WHERE x.campaign = u.campaign)
   ORDER BY u.doc_id, u.hat_version DESC, c.loaded_at DESC
 ), loc AS (
   -- A unit can name both loc (from its ALTO) and loc-hist (the curated text): one row a
   -- page, loc-hist first, as the waves have read LoC.
   SELECT DISTINCT ON (r.doc_id) r.doc_id, r.est_cer, r.est_cer_v1, r.completeness, r.matched
-  FROM unit JOIN quality.reader_scores r USING (campaign, doc_id)
-  WHERE r.reader IN ('loc', 'loc-hist') AND NOT unit.estimates_excluded
+  FROM hat JOIN quality.reader_scores r USING (campaign, doc_id)
+  WHERE r.reader IN ('loc', 'loc-hist')
   ORDER BY r.doc_id, (r.reader = 'loc-hist') DESC
 ), ours AS (
   SELECT r.doc_id, min(r.est_cer) AS best_ours_est_cer
-  FROM unit JOIN quality.reader_scores r USING (campaign, doc_id)
-  WHERE r.reader LIKE 'ours-%' AND NOT unit.estimates_excluded
+  FROM hat JOIN quality.reader_scores r USING (campaign, doc_id)
+  WHERE r.reader LIKE 'ours-%'
   GROUP BY r.doc_id
 ), las AS (
   SELECT DISTINCT ON (t.doc_id) t.doc_id, t.cer_sym, t.local_cer_sym, t.matched_a, t.dice
@@ -286,8 +297,8 @@ SELECT p.doc_id, p.batch, p.batch_version, p.lccn, p.date, p.decade, p.lang,
        d.damage_rate, d.garbage_share, d.function_share, d.words AS loc_words, d.decision,
        unit.campaign AS unit_campaign, unit.readers AS unit_readers,
        unit.skew_deg, unit.blur, unit.contrast, unit.noise, unit.bleed_through, unit.ink_density,
-       unit.mean_word_conf, unit.hat_determined, unit.legibility_ceiling,
-       unit.hat_version, unit.estimates_excluded,
+       unit.mean_word_conf, hat.hat_determined, hat.legibility_ceiling,
+       hat.hat_version, (unit.doc_id IS NOT NULL AND hat.doc_id IS NULL) AS estimates_excluded,
        loc.est_cer AS loc_est_cer, loc.est_cer_v1 AS loc_est_cer_v1, loc.matched AS loc_matched,
        loc.completeness AS loc_completeness,
        ours.best_ours_est_cer,
@@ -298,6 +309,7 @@ SELECT p.doc_id, p.batch, p.batch_version, p.lccn, p.date, p.decade, p.lang,
 FROM quality.pages p
 LEFT JOIN quality.damage d USING (doc_id)
 LEFT JOIN unit USING (doc_id)
+LEFT JOIN hat USING (doc_id)
 LEFT JOIN loc USING (doc_id)
 LEFT JOIN ours USING (doc_id)
 LEFT JOIN las USING (doc_id)
