@@ -3,7 +3,7 @@
 //! on its server record, before stock `create_work` runs; an uncertain submission is reconciled
 //! for the whole bundle (`crate::submit::reconcile`).
 use crate::{atomic, atomic_download, dir, load, read, save, Lock, Stage};
-use anyhow::ensure;
+use anyhow::{ensure, Context};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use usnm_ocr_contract::boinc::{
@@ -30,7 +30,7 @@ pub struct Submitted {
 
 /// Stock `create_work`'s arguments for `bundle`; `app_version` pins the worker version that
 /// reads bundles (`--app_version_num`), so an older one never gets one.
-pub fn create_work_args(bundle: &Bundle, app_version: Option<u32>) -> Vec<String> {
+pub fn create_work_args(bundle: &Bundle, app_version: u32) -> Vec<String> {
     let n = bundle.pages.len() as f64;
     let (delay_bound, priority) = crate::submit::schedule(bundle.pages[0].job.message.reason);
     // The scans, each page's saved outputs and the assembled outputs, with room to spare.
@@ -70,9 +70,7 @@ pub fn create_work_args(bundle: &Bundle, app_version: Option<u32>) -> Vec<String
     .into_iter()
     .map(str::to_owned)
     .collect();
-    if let Some(v) = app_version {
-        args.extend(["--app_version_num".into(), v.to_string()]);
-    }
+    args.extend(["--app_version_num".into(), app_version.to_string()]);
     // Template file 0 opens as `pages`, file 1 as `ocr_bundle.json`.
     args.push(super::physical(&bundle.id, PAGES_FILE));
     args.push(super::physical(&bundle.id, JOB_FILE));
@@ -118,6 +116,10 @@ pub async fn submit(
     if together.is_empty() {
         return Ok(out);
     }
+    // An unpinned bundle could go to an older worker that can't read it.
+    let app_version = app_version.filter(|v| *v > 0).context(
+        "a bundle needs --app-version-num, the usnm_ocr version whose worker reads bundles",
+    )?;
     out.bundle = Some(submit_bundle(root, project, &together, app_version).await?);
     Ok(out)
 }
@@ -126,7 +128,7 @@ async fn submit_bundle(
     root: &Path,
     project: &Path,
     ids: &[String],
-    app_version: Option<u32>,
+    app_version: u32,
 ) -> anyhow::Result<String> {
     let _lock = Lock::take(root)?;
     let project = project.canonicalize()?;
@@ -359,13 +361,17 @@ pub(crate) mod tests {
         let mut r = load(&s.root, &ids[0]).unwrap();
         r.unbundled = Some("b".repeat(64));
         save(&s.root, &r).unwrap();
-        let out = submit(&s.root, &s.project, &ids, None).await.unwrap();
+        // Without a pinned version nothing is bundled, and nothing is submitted.
+        assert!(submit(&s.root, &s.project, &ids[1..], None).await.is_err());
+        assert!(s.calls().is_empty());
+        let out = submit(&s.root, &s.project, &ids, Some(106)).await.unwrap();
         assert_eq!(out.alone, vec![ids[0].clone()]);
         assert!(out.bundle.is_some());
         let calls = s.calls();
         assert_eq!(calls.len(), 2);
         assert!(calls[0].contains(&format!("--wu_name usnm_{}", ids[0])));
-        assert!(!calls[1].contains("--app_version_num"));
+        assert!(!calls[0].contains("--app_version_num"));
+        assert!(calls[1].contains("--app_version_num 106"));
         // One page alone is a single-page unit.
         let (s, ids) = Server::new(&[4]);
         let out = submit(&s.root, &s.project, &ids, Some(106)).await.unwrap();
@@ -377,7 +383,7 @@ pub(crate) mod tests {
     async fn an_uncertain_bundle_is_reconciled_as_a_whole() {
         let (s, ids) = Server::new(&[1, 2]);
         s.tool(true);
-        assert!(submit(&s.root, &s.project, &ids, None).await.is_err());
+        assert!(submit(&s.root, &s.project, &ids, Some(106)).await.is_err());
         for id in &ids {
             let r = load(&s.root, id).unwrap();
             assert_eq!(r.stage, Stage::Submitting);
@@ -390,22 +396,30 @@ pub(crate) mod tests {
             assert_eq!((r.stage, r.bundle), (Stage::Reserved, None));
         }
         s.tool(false);
-        let out = submit(&s.root, &s.project, &ids, None).await.unwrap();
+        let out = submit(&s.root, &s.project, &ids, Some(106)).await.unwrap();
         // Present: every member is submitted.
         let (s2, ids2) = Server::new(&[3, 4]);
         s2.tool(true);
-        assert!(submit(&s2.root, &s2.project, &ids2, None).await.is_err());
+        assert!(submit(&s2.root, &s2.project, &ids2, Some(106))
+            .await
+            .is_err());
+        // Interrupted half way through marking them submitted: present finishes the rest.
+        let mut first = load(&s2.root, &ids2[0]).unwrap();
+        first.stage = Stage::Submitted;
+        save(&s2.root, &first).unwrap();
         crate::submit::reconcile(&s2.root, &ids2[1], true).unwrap();
         for id in &ids2 {
             assert_eq!(load(&s2.root, id).unwrap().stage, Stage::Submitted);
         }
+        // Once all are submitted there is nothing left to reconcile.
+        assert!(crate::submit::reconcile(&s2.root, &ids2[0], true).is_err());
         assert!(out.bundle.is_some());
     }
 
     #[test]
     fn work_is_scaled_to_the_bundle() {
         let bundle = Bundle::new(vec![job(1), job(2)]).unwrap();
-        let args = create_work_args(&bundle, None);
+        let args = create_work_args(&bundle, 106);
         let at = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
         assert_eq!(at("--rsc_fpops_est"), "2e12");
         assert_eq!(at("--rsc_fpops_bound"), "2e14");

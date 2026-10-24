@@ -469,7 +469,14 @@ pub mod bundle {
             };
             if entry.outcome == Outcome::Error {
                 let mut why = entry.error.clone().unwrap_or_else(|| "error".into());
-                why.truncate(MAX_ERROR);
+                // Volunteer text: cut at a character boundary, never inside one.
+                if why.len() > MAX_ERROR {
+                    let mut end = MAX_ERROR;
+                    while !why.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    why.truncate(end);
+                }
                 return Ok(PageOutput::Failed(why));
             }
             let checked = || -> anyhow::Result<(ResultManifest, Vec<u8>, Vec<u8>)> {
@@ -603,6 +610,13 @@ pub mod bundle {
             assert_eq!(
                 results.page(&b, j2, b"one", b"<a/>").unwrap(),
                 PageOutput::Failed("tesseract failed".into())
+            );
+            // A long volunteer error with a multi-byte character at the cut is cut before it.
+            let mut long = results.clone();
+            long.pages[1].error = Some(format!("{}é and more", "x".repeat(MAX_ERROR - 1)));
+            assert_eq!(
+                long.page(&b, j2, b"one", b"<a/>").unwrap(),
+                PageOutput::Failed("x".repeat(MAX_ERROR - 1))
             );
             // Bytes that don't match the manifest fail that page only.
             assert!(matches!(

@@ -60,7 +60,13 @@ pub fn split(root: &Path, spool: &Path, id: &str) -> anyhow::Result<PageOutput> 
         ))
     })();
     match parsed {
-        Ok((results, texts, layouts)) => results.page(&bundle, &record.job, &texts, &layouts),
+        // A result for another bundle, another version or too many pages fails every page
+        // alone (and so requeues it), as an unreadable one does: the bundle won't get better.
+        Ok((results, texts, layouts)) => Ok(results
+            .page(&bundle, &record.job, &texts, &layouts)
+            .unwrap_or_else(|e| {
+                PageOutput::Failed(format!("the bundle's result is rejected: {e:#}"))
+            })),
         Err(e) => Ok(PageOutput::Failed(format!(
             "the bundle's result is unreadable: {e:#}"
         ))),
@@ -127,7 +133,7 @@ mod tests {
     #[tokio::test]
     async fn each_page_gets_its_own_checked_outputs_and_a_failed_one_goes_back_alone() {
         let (s, ids) = Server::new(&[1, 2, 3]);
-        let bundle_id = submit(&s.root, &s.project, &ids, None)
+        let bundle_id = submit(&s.root, &s.project, &ids, Some(106))
             .await
             .unwrap()
             .bundle
@@ -149,7 +155,9 @@ mod tests {
             (Stage::Reserved, None, Some(bundle_id.as_str()))
         );
         // It goes alone next time, and the other pages are untouched.
-        let again = submit(&s.root, &s.project, &ids[1..2], None).await.unwrap();
+        let again = submit(&s.root, &s.project, &ids[1..2], Some(106))
+            .await
+            .unwrap();
         assert_eq!(again.alone, vec![ids[1].clone()]);
         assert_eq!(load(&s.root, &ids[2]).unwrap().stage, Stage::Submitted);
         // A page that isn't bundled any more has no share of the bundle.
@@ -159,7 +167,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_or_tampered_bundle_requeues_its_pages() {
         let (s, ids) = Server::new(&[1, 2]);
-        let bundle_id = submit(&s.root, &s.project, &ids, None)
+        let bundle_id = submit(&s.root, &s.project, &ids, Some(106))
             .await
             .unwrap()
             .bundle
@@ -181,6 +189,18 @@ mod tests {
             split(&s.root, &spool, &ids[1]).unwrap(),
             PageOutput::Ok { .. }
         ));
+        // A result for another bundle fails every page, rather than holding them.
+        let [r, ..] = spool_names(&bundle_id);
+        let good = std::fs::read(spool.join(&r)).unwrap();
+        let mut results: Results = serde_json::from_slice(&good).unwrap();
+        results.bundle_id = "0".repeat(64);
+        std::fs::write(spool.join(&r), serde_json::to_vec(&results).unwrap()).unwrap();
+        for id in &ids {
+            assert!(
+                matches!(split(&s.root, &spool, id).unwrap(), PageOutput::Failed(w) if w.contains("rejected"))
+            );
+        }
+        std::fs::write(spool.join(&r), good).unwrap();
         // A terminal BOINC failure fails every page.
         std::fs::write(spool.join(e), b"").unwrap();
         for id in &ids {
@@ -195,7 +215,7 @@ mod tests {
     async fn spool_out_writes_a_single_page_spool_or_the_requeued_marker() {
         use crate::handoff::{get_spool, put_spool, Spool, Spooled};
         let (s, ids) = Server::new(&[1, 2]);
-        let bundle_id = submit(&s.root, &s.project, &ids, None)
+        let bundle_id = submit(&s.root, &s.project, &ids, Some(106))
             .await
             .unwrap()
             .bundle

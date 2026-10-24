@@ -128,10 +128,6 @@ class InventoryTests(unittest.TestCase):
         self.assertNotIn("UPDATE", inventory.QUERY)
         self.assertIn("rpc_time > UNIX_TIMESTAMP() - 86400", inventory.QUERY)
 
-
-@unittest.skipUnless(os.environ.get("USNM_WORK_VOLUME_MYSQL_PORT"),
-                     "set USNM_WORK_VOLUME_MYSQL_PORT for the isolated MySQL fixture")
-class InventorySQLTests(unittest.TestCase):
     def bundle(self, bundle, pages, stage="submitted"):
         for page in pages:
             directory = self.root / "jobs" / page
@@ -179,6 +175,10 @@ class InventorySQLTests(unittest.TestCase):
             inventory.inventory(self.root, self.results, [3, 2], "b" * 32, [], [pages[0]],
                                 [], [bundle])
 
+
+@unittest.skipUnless(os.environ.get("USNM_WORK_VOLUME_MYSQL_PORT"),
+                     "set USNM_WORK_VOLUME_MYSQL_PORT for the isolated MySQL fixture")
+class InventorySQLTests(unittest.TestCase):
     def test_counts_all_unassimilated_work_and_recent_rpc_hosts(self):
         result = subprocess.run(
             ["mysql", "--no-defaults", "--protocol=TCP", "--host=127.0.0.1",

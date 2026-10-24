@@ -21,6 +21,19 @@ const FRACTION_FILE: &str = "fraction_done";
 const DONE_DIR: &str = "ocr_done";
 const OUTPUTS: [&str; 4] = [RESULTS_FILE, TEXTS_FILE, LAYOUTS_FILE, FRACTION_FILE];
 
+/// Writes `fraction_done` readable by the BOINC wrapper (0644) from the moment it appears: the
+/// container's user need not be the host's BOINC user.
+fn progress(work: &Path, fraction: &str) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(std::fs::Permissions::from_mode(0o644))
+    };
+    #[cfg(not(unix))]
+    let mode = None;
+    crate::atomic_with_permissions(&work.join(FRACTION_FILE), fraction.as_bytes(), mode)
+}
+
 pub fn load(work: &Path) -> anyhow::Result<Bundle> {
     let bundle: Bundle = serde_json::from_slice(&read(&work.join(JOB_FILE), MAX_JSON)?)?;
     bundle.validate()?;
@@ -210,10 +223,7 @@ pub(crate) async fn run_with(
         cp.pages.push(entry);
         cp.save(work)?;
         let fraction = cp.pages.len() as f64 / total as f64;
-        atomic(
-            &work.join(FRACTION_FILE),
-            format!("{fraction:.6}\n").as_bytes(),
-        )?;
+        progress(work, &format!("{fraction:.6}\n"))?;
     }
     // Assemble the outputs from the finished pages, in order.
     let (mut texts, mut layouts) = (Vec::new(), Vec::new());
@@ -238,7 +248,7 @@ pub(crate) async fn run_with(
         &work.join(RESULTS_FILE),
         &serde_json::to_vec_pretty(&results).context("results.json")?,
     )?;
-    atomic(&work.join(FRACTION_FILE), b"1.0\n")?;
+    progress(work, "1.0\n")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -381,6 +391,19 @@ pub(crate) mod tests {
         }
         cp.save(work).unwrap();
         cp
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn progress_is_readable_by_the_wrapper_from_the_first_page() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        progress(tmp.path(), "0.5\n").unwrap();
+        let mode = std::fs::metadata(tmp.path().join(FRACTION_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o644);
     }
 
     #[tokio::test]

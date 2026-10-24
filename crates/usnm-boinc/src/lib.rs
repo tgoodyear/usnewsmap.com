@@ -137,7 +137,7 @@ pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn atomic_with_permissions(
+pub(crate) fn atomic_with_permissions(
     path: &Path,
     bytes: &[u8],
     permissions: Option<std::fs::Permissions>,

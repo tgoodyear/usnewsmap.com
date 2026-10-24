@@ -174,7 +174,8 @@ pub struct SubmitBundleArgs {
     /// a page left alone, go as single-page units.
     #[arg(long = "job", required = true)]
     jobs: Vec<String>,
-    /// The `usnm_ocr` app version whose worker reads bundles (`--app_version_num`).
+    /// The `usnm_ocr` app version whose worker reads bundles (`--app_version_num`); required
+    /// to submit a bundle, so an older worker never gets one.
     #[arg(long)]
     app_version_num: Option<u32>,
 }

@@ -154,6 +154,14 @@ pub fn reconcile(root: &Path, id: &str, present: bool) -> anyhow::Result<()> {
             .collect(),
         None => vec![record],
     };
+    let bundled = members.len() > 1 || members.first().is_some_and(|r| r.bundle.is_some());
+    // A bundle interrupted while its members were being marked submitted has some of each:
+    // confirming it present finishes the job, so it may be retried safely.
+    members.retain(|r| !(bundled && present && r.stage == Stage::Submitted));
+    ensure!(
+        !members.is_empty(),
+        "only uncertain submissions or server-recovered terminal jobs can be reconciled"
+    );
     for record in &members {
         ensure!(
             record.stage == Stage::Submitting || (record.stage == Stage::Failed && present),
