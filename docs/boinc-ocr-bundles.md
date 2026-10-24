@@ -135,11 +135,13 @@ Eastern.
      previous tick's.
    - The bundle templates go into `<project>/templates/` on the first `JOB_UNITS` submission
      (`submit-remote` copies them).
-4. **Hand-off image.** Update `USNM_BOINC_HANDOFF_IMAGE` to the new bridge image, so `collect`
-   understands `get-spool`'s `requeued`. Do this before any bundle can fail.
+4. **Hand-off image.** `collect` must understand `get-spool`'s `requeued` before any bundle can
+   fail. With `--onprem-handoff collect` (#967), collect runs from CT 230's `SERVER_IMAGE`, so
+   step 3 covers it. Otherwise, update `USNM_BOINC_HANDOFF_IMAGE` to the new bridge image.
 5. **Canary plan.** Start a new plan on CT 211, `queue-feed-<n+1>`, once the old plan has
    drained or is left to drain under its own state. Only the plan name, image and the fields
    below change; keep everything else as in the live config:
+
    - `image`: the new worker image digest from step 1;
    - `pages_per_unit`: `{"ocr-bulk": 10, "ocr-priority": 1}`;
    - `bundle_app_version`: the version from step 2;

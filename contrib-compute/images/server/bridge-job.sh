@@ -206,7 +206,7 @@ if [ "$step" = submit-remote ] && [ -n "${JOB_UNITS:-}" ]; then
   [ -z "${JOB_ID:-}" ] && [ -z "${JOB_IDS:-}" ] || fail "set one of JOB_ID, JOB_IDS or JOB_UNITS"
   unit_re='[0-9a-f]{64}(\+[0-9a-f]{64}){0,31}'
   [[ $JOB_UNITS =~ ^$unit_re(,$unit_re)*$ ]] || fail "JOB_UNITS is <id>[+<id>...][,...], up to 32 ids a unit"
-  [ "$(tr ',+' '\n\n' <<< "$JOB_UNITS" | wc -l)" -le 100 ] || fail "JOB_UNITS holds at most 100 ids"
+  [ "$(tr ',+' '\n' <<< "$JOB_UNITS" | wc -l)" -le 100 ] || fail "JOB_UNITS holds at most 100 ids"
   [[ ${BUNDLE_APP_VERSION:-} =~ ^[1-9][0-9]{0,8}$ ]] || fail "BUNDLE_APP_VERSION is the usnm_ocr version_num whose worker reads bundles"
   [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
     fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
