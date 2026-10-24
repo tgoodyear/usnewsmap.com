@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09
 - **Supersedes:** the $500/month ceiling originally set in ADR-0005
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the availability trade-off: the 99.0% target's SLI comes from the availability test and the count of fallback answers, since one host doesn't restart in seconds)
 
 ## Context
 

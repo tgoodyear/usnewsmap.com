@@ -3,6 +3,7 @@
 - **Status:** Proposed (needs the maintainer's decisions D1 to D6 in [design 15](../../notes/2026-10-18-onprem-cold-storage.md#158-decisions-for-the-maintainer))
 - **Date:** 2026-10
 - **Relates to:** ADR-0023 (scan access), ADR-0002 (lake as system of record), ADR-0008, ADR-0009, ADR-0015, ADR-0018, ADR-0021
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (its title and decision 1 no longer hold for serving; decision 4 also covers the serving index on NVMe, and decision 5 the search log's daily copy on `tank`)
 
 ## Context
 
