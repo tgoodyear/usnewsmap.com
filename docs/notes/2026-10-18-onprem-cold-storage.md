@@ -1,8 +1,10 @@
 # 15. Moving cold storage on-prem
 
-**Status:** Plan (read-only inventory and design; nothing has been moved, deleted or reconfigured) · **Date:** 18 October 2026 · **Decision record:** [ADR-0022](../design/adr/0022-onprem-cold-storage.md) · **Raw numbers:** [`docs/data/azure-storage-inventory-2026-10-18.json`](../data/azure-storage-inventory-2026-10-18.json)
+**Status:** Plan (read-only inventory and design; nothing has been moved, deleted or reconfigured) · **Date:** 18 October 2026 · **Decision record:** [ADR-0022](../design/adr/0022-onprem-cold-storage.md) · **Raw numbers:** [`docs/data/azure-storage-inventory-2026-10-18.json`](../data/azure-storage-inventory-2026-10-18.json) · **Superseded in part:** [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) moves the live index and public serving on-prem
 
 The maintainer's goal is to serve as much as is sensible from the on-prem host `pve-big`, and to move storage off Azure on the way. Decisions already made: Phase 1 is **cold data only**; the live Quickwit index (`usnmqwstprodffapzy`, about 1.26 TB) and the public API stay in Azure; the uplink is 1 Gbps symmetric; on-prem redundancy is a ZFS mirror only.
+
+On 22 October 2026 the maintainer decided that serving moves on-prem once `pve-big` has an NVMe drive and a UPS (#955), and [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md), accepted on 24 October, sets out how. The keep-in-Azure rows below for the live index and public serving record the plan as it stood on 18 October. ADR-0027 decision 13 lists what stays in Azure after its Phase 4.
 
 ## 15.1 How the numbers were taken
 

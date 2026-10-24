@@ -98,10 +98,13 @@ Nothing here logs a client address or a query string (09 §9.4.2):
 
 The journal keeps 30 days.
 
+## Searcher restarts
+
+An upgrade or a new index version restarts the only searcher, so it is a short outage with cold caches. Do it at a scheduled off-peak time (ADR-0027 settled decision 8). While the searcher restarts, the API serves cached searches and answers the rest with its own 503, which the fallback Worker passes through. `install.sh` restarts the searcher only when its config, environment, binary or unit changed. The steps are in [09 §9.3.1](../../../docs/design/09-operations-security-cost.md#931-on-prem-serving).
+
 ## Open items for Phase 2
 
-- **How a new index version reaches the running container.** The searcher reads one `file://` metastore, and each release writes its own under its run directory. So a new version needs a new `--index-dir`, a new `searcher.yaml` and a searcher restart, which with one searcher is a short outage with cold caches. The choice is between a mount per version, added ahead of the switch, and one mount whose contents the host swaps.
-- **Searcher upgrades.** An upgrade restarts the only searcher, so it is an outage too. `install.sh` restarts it only when its config, binary or unit changed.
+- **How a new index version reaches the running container.** It is decided after a Phase 2 test (ADR-0027 settled decision 6). The searcher reads one `file://` metastore, and each release writes its own under its run directory. So a new version needs a new `--index-dir`, a new `searcher.yaml` and a searcher restart. The test tries both ways: a mount per version, added ahead of the switch, and one mount whose contents the host swaps. It shows whether Proxmox can add a bind mount to the running container, and how ZFS datasets mounted under one bind mount show inside it.
 - **Settings from the Phase 0 API PRs.** `api.env` sets `USNM_TRUST_CF_CONNECTING_IP=true`, so the API takes the visitor's address from `CF-Connecting-IP` when the peer is loopback. It also sets `USNM_READY_REQUIRES_PUBLISHED_INDEXES=true`, so `/readyz` fails while the searcher lacks an index `current.json` names. An image from before those PRs ignores both. It then keys rate limits on the loopback peer (`USNM_TRUSTED_PROXY_HOPS=0`), so all visitors share one bucket.
 - **The API image's attestation** (a Phase 0 code PR). Until CI attests the image, `update-api.sh` deploys nothing. Each new image waits 3 hours for its attestation and is then rejected.
 - **One response cache for both colors.** The API's local store names its temporary files from the process id (with a thread id or a per-process counter), and both colors run the API as process 1, so each color has its own cache directory. Temporary names unique across processes in `usnm-store` would let them share one again.
