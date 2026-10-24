@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
     *) die "unknown option $1" ;;
   esac
 done
-[[ -z $FLAGS || $FLAGS =~ ^[a-z_]+(,[a-z_]+)*$ ]] || die "--unless-changed takes flag names, comma-separated"
+[[ -z $FLAGS || $FLAGS =~ ^[a-z][a-z0-9_]*(,[a-z][a-z0-9_]*)*$ ]] || die "--unless-changed takes flag names, comma-separated"
 head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
 if [ "$head" = "$GITHUB_SHA" ]; then
   echo "current=true" >> "$GITHUB_OUTPUT"

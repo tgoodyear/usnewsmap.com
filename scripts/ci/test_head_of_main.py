@@ -120,11 +120,17 @@ class HeadOfMain(unittest.TestCase):
     def test_flag_names_are_checked(self):
         env = dict(os.environ, PATH=self.path, FAKE_MAIN=self.base, GITHUB_SHA=self.base,
                    GITHUB_REPOSITORY="o/r", GITHUB_OUTPUT=os.devnull)
-        for flags in ["image;rm", "image,", "Image"]:
+        for flags in ["image;rm", "image,", "Image", "2e"]:
             with self.subTest(flags=flags):
                 result = subprocess.run(["scripts/ci/head-of-main.sh", "--unless-changed", flags],
                                         cwd=self.repo, env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
+        # Every name changes.sh writes is accepted (`e2e` has a digit).
+        for flags in ["e2e", "image,ocr_worker,e2e"]:
+            with self.subTest(flags=flags):
+                result = subprocess.run(["scripts/ci/head-of-main.sh", "--unless-changed", flags],
+                                        cwd=self.repo, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
