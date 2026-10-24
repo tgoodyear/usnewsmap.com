@@ -156,6 +156,72 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             self.assertEqual(got, [("v2-later", 2, 0.05, 0.30)])
 
     @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
+    def test_estimates_and_means_use_one_hat_version(self):
+        """A v1-only page next to a v2 page: its hat columns are cleared, its unit's
+        estimate stays in est_cer_v1, and the means are v2's alone (#962)."""
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quality_root = root / "quality"
+            con = duckdb.connect()
+            docs = ["sn83030214-1895-01-01-ed-1-seq-1", "sn83030214-1895-01-02-ed-1-seq-1"]
+            for campaign, doc, version_cols, est in (
+                ("v1-wave8", docs[0], "", 0.40),
+                ("v2-later", docs[1], ", 2::BIGINT AS hat_version, 0.30::DOUBLE AS est_cer_v1", 0.05),
+            ):
+                cdir = quality_root / campaign
+                cdir.mkdir(parents=True)
+                con.execute(
+                    f"""
+                    COPY (
+                        SELECT
+                            '{doc}'::VARCHAR AS doc_id, 'english'::VARCHAR AS "group",
+                            'eng'::VARCHAR AS language, 'loc'::VARCHAR AS reader,
+                            'loc-alto'::VARCHAR AS source, 1200::BIGINT AS words,
+                            6800::BIGINT AS chars, TRUE AS hat_determined,
+                            0.0::DOUBLE AS hat_residual, 0.8::DOUBLE AS legibility_ceiling,
+                            950::BIGINT AS consensus_words, {est}::DOUBLE AS est_cer,
+                            0.9::DOUBLE AS completeness, 0.9::DOUBLE AS precision,
+                            0.9::DOUBLE AS findable_content, 0.9::DOUBLE AS findable_places,
+                            '{{}}'::VARCHAR AS pairs_json, 3200::BIGINT AS width,
+                            4800::BIGINT AS height, 0.2::DOUBLE AS skew_deg, 5400.0::DOUBLE AS blur,
+                            185.0::DOUBLE AS contrast, 2.1::DOUBLE AS noise,
+                            0.07::DOUBLE AS bleed_through, 0.19::DOUBLE AS ink_density,
+                            12::BIGINT AS blocks, 210::BIGINT AS lines, 1180::BIGINT AS line_words,
+                            34.0::DOUBLE AS line_height_px, 5::BIGINT AS columns,
+                            0.78::DOUBLE AS mean_word_conf, 'cpu'::VARCHAR AS plan_class
+                            {version_cols}
+                    ) TO '{cdir / "pages.parquet"}' (FORMAT PARQUET)
+                    """
+                )
+            manifest_pq = root / "manifest.parquet"
+            con.execute(
+                f"""
+                COPY (
+                    SELECT * FROM (
+                        VALUES ('{docs[0]}', 'sn83030214', '1895-01-01', 1, 1, 'batch_ny_01', 'v1', 'eng', 'reocr', 0.22, 'https://example.org/1'),
+                               ('{docs[1]}', 'sn83030214', '1895-01-02', 1, 1, 'batch_ny_01', 'v1', 'eng', 'reocr', 0.22, 'https://example.org/2')
+                    ) AS t(doc_id, lccn, date, edition, seq, batch, batch_version, lang, decision, damage_rate, item_url)
+                ) TO '{manifest_pq}' (FORMAT PARQUET)
+                """
+            )
+            out_dir = root / "out"
+            stats = mod.build_database(quality_root, manifest_pq, out_dir, None)
+            self.assertEqual(stats["hat_version"], 2)
+            rows = con.execute(
+                f"SELECT doc_id, hat_version, est_cer, est_cer_v1, hat_determined FROM read_parquet('{out_dir / 'boinc_reader_rows.parquet'}') ORDER BY doc_id"
+            ).fetchall()
+            self.assertEqual(rows, [(docs[0], 1, None, 0.40, None), (docs[1], 2, 0.05, 0.30, True)])
+            pages = con.execute(
+                f"SELECT doc_id, hat_version, loc_est_cer FROM read_parquet('{out_dir / 'page_quality_joined.parquet'}') ORDER BY doc_id"
+            ).fetchall()
+            self.assertEqual(pages, [(docs[0], 1, None), (docs[1], 2, 0.05)])
+            mean = con.execute(
+                f"SELECT mean_loc_est_cer FROM read_parquet('{out_dir / 'title_quality_summary.parquet'}') WHERE lccn = 'sn83030214'"
+            ).fetchall()
+            self.assertEqual(mean, [(0.05,)])
+
+    @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
     def test_mixed_old_and_new_campaign_schemas_preserve_nulls_for_legacy_measurements(self):
         mod = load_module()
         with tempfile.TemporaryDirectory() as tmp:

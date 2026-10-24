@@ -7,7 +7,9 @@ BOINC `usnm_quality` and `usnm_qwen` campaign tables (`audit/quality/*/pages.par
 and `crops.parquet`), extracts pairwise `cer_vs_loc` / `wer_vs_loc` / `dice_vs_loc` /
 `word_ratio_vs_loc` from `pairs_json` for 2-reader pages, carries `hat_version`
 (1 for tables written before the page hat's version 2, #962; a page seen in
-several campaigns keeps its version 2 row), and writes:
+several campaigns keeps its version 2 row). Every estimate and aggregate uses one
+page hat version, the newest present: older rows keep their unit's estimate in
+`est_cer_v1` and have their hat columns cleared. Writes:
 
 1. Consolidated Parquet tables (`boinc_reader_rows.parquet`,
    `page_quality_joined.parquet`, `title_quality_summary.parquet`,
@@ -114,6 +116,8 @@ def build_database(
         ("ink_word_coverage", "DOUBLE"),
         ("numeric_share", "DOUBLE"),
         ("short_line_share", "DOUBLE"),
+        ("est_cer_raw", "DOUBLE"),
+        ("hat_determined", "BOOLEAN"),
         ("hat_version", "BIGINT"),
         ("est_cer_v1", "DOUBLE"),
         ("matched", "DOUBLE"),
@@ -206,6 +210,15 @@ def build_database(
         WHERE rn = 1
         """
     )
+    # One page hat version in every estimate and aggregate (#962): the newest present.
+    # Rows of an older version keep their non-hat measures and their unit's estimate in
+    # est_cer_v1; their hat columns are cleared, so no mean blends the two hats.
+    hat_version = con.execute("SELECT COALESCE(MAX(hat_version), 1) FROM boinc_reader_rows").fetchone()[0]
+    con.execute(
+        "UPDATE boinc_reader_rows SET est_cer = NULL, est_cer_raw = NULL, hat_determined = NULL, "
+        "hat_residual = NULL, legibility_ceiling = NULL "
+        f"WHERE hat_version <> {int(hat_version)}"
+    )
 
     escaped_manifest = str(manifest_parquet).replace("'", "''")
     con.execute(
@@ -268,6 +281,7 @@ def build_database(
                 MAX(line_height_px) AS line_height_px,
                 MAX(columns) AS columns,
                 MAX(mean_word_conf) AS mean_word_conf,
+                MAX(hat_version) AS hat_version,
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN words END) AS loc_words,
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN est_cer END) AS loc_est_cer,
                 MAX(CASE WHEN reader IN ('loc', 'loc-hist') AND words > 1 THEN completeness END) AS loc_completeness,
@@ -826,6 +840,10 @@ def build_database(
             "SELECT COUNT(*) FROM page_quality_joined WHERE hat_determined"
         ).fetchone()[0],
         "boinc_reader_rows": con.execute("SELECT COUNT(*) FROM boinc_reader_rows").fetchone()[0],
+        "hat_version": int(hat_version),
+        "hat_version_rows": con.execute(
+            f"SELECT COUNT(*) FROM boinc_reader_rows WHERE hat_version = {int(hat_version)}"
+        ).fetchone()[0],
         "titles_total": con.execute("SELECT COUNT(*) FROM title_quality_summary").fetchone()[0],
         "titles_with_boinc": con.execute(
             "SELECT COUNT(*) FROM title_quality_summary WHERE boinc_scored_pages > 0"
@@ -840,6 +858,7 @@ def build_database(
         f"- **Full-corpus damaged manifest pages (`usnm-ingest ocr-damage` v2):** `{stats['manifest_pages']:,}` across `{stats['titles_total']:,}` newspaper titles (`lccn`)",
         f"- **Deduplicated BOINC `usnm_quality` scored pages (Waves 1–7):** `{stats['unique_boinc_pages']:,}` (`{stats['boinc_reader_rows']:,}` reader rows across `{stats['campaigns']}` campaigns; `{stats['titles_with_boinc']:,}` titles sampled)",
         f"- **3+ reader pages with Three-Cornered Hat determined:** `{stats['hat_determined_pages']:,}`",
+        f"- **Page hat version in every estimate:** `{stats['hat_version']}` (`{stats['hat_version_rows']:,}` reader rows; rows of an older version keep only their unit's `est_cer_v1`)",
         "",
         "## Campaign Breakdown",
         "",
