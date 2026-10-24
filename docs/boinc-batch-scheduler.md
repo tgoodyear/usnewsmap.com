@@ -472,13 +472,18 @@ the variable and claims every language.
 A page whose ledger row is already answered is **deleted** from the queue. Any
 other message it can't use is **sent back** (a copy is sent, then the original is
 deleted), so it starts again at a dequeue count of zero for the node to read.
+The queues are read in `claim_queues` order, and `CLAIM_MAX` is one limit
+across them: the first queue fills what it can and the next fills the rest.
 Bulk queues are peeked first, and one whose front holds nothing usable isn't
-touched. Priority queues instead scan within the existing `--max-receives`
-budget (three times the claim limit by default), sending unusable messages back.
-This lets later cached, trusted pages progress across ticks when the front
-contains only uncached or untrusted pages. A repeated sent-back message stops
-that queue's scan; the receive budget is shared across queues. No eligibility
-check is relaxed, and an unusable message is never deliberately left hidden.
+touched. Priority queues instead scan past an unusable front, sending unusable
+messages back. This lets later cached, trusted pages progress across ticks when
+the front contains only uncached or untrusted pages. Each queue has its own
+receive budget (`--max-receives`, three times the claim limit by default), so
+unusable messages on one queue can't use up the next queue's reads (#1057). A
+tick therefore receives at most the budget times the number of queues. A
+repeated sent-back message stops that queue's scan. No eligibility check is
+relaxed, and an unusable message is never deliberately left hidden. The step's
+log gives the claimed, sent-back and deleted counts for each queue.
 
 Each usable message becomes `claims/<doc_id>.json`, holding the message text, its
 pop receipt, the lease end and the ledger row. The files go up **before** the

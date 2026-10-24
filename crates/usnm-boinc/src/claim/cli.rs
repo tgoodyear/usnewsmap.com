@@ -29,12 +29,14 @@ pub enum ClaimCommands {
         /// The prefetch manifest version the cohort uses (the fetched list is per version).
         #[arg(long)]
         manifest_version: String,
-        /// A queue to take from; repeat for more, in order. Default: ocr-bulk only.
+        /// A queue to take from; repeat for more, in order: the first fills the claims it
+        /// can, the next fills the rest. Default: ocr-bulk only.
         #[arg(long = "queue", default_value = "ocr-bulk")]
         queues: Vec<String>,
         #[arg(long, default_value_t = 10)]
         max: usize,
-        /// Most messages received, usable or not (default: three times --max).
+        /// Most messages received from each queue, usable or not (default: three times
+        /// --max). Each queue has its own budget (#1057).
         #[arg(long)]
         max_receives: Option<usize>,
         /// Hours a claimed message stays hidden.
@@ -196,6 +198,12 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 report.stale,
                 report.received
             );
+            for q in &report.queues {
+                eprintln!(
+                    "  {}: claimed {}, sent back {}, deleted {} answered, of {} received",
+                    q.queue, q.claimed, q.released, q.stale, q.received
+                );
+            }
             // The summary says what was taken even when the run then failed.
             pulled?;
             unlocked?;
