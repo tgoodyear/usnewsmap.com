@@ -141,6 +141,9 @@ param boincControllerOnPrem bool = false
 @description('The BOINC server runs on-prem (#942): its Azure stack keeps no Log Analytics workspace, so the scan fetcher gets no reader grant there (modules/boinc-handoff-logs.bicep). Set with "server": "onprem" in contrib-compute/infra/boinc/env/<env>.json.')
 param boincServerOnPrem bool = false
 
+@description('Let boincHandoffRunner, the scan fetcher (pve-big CT 211), publish its fetched-scans list (#1056): the node writer role on ocr-out (list, read, create; no delete), for `usnm-ocr-worker publish-fetched`. Needs ocrNodes and boincHandoffRunner. Off removes the grant.')
+param scanFetchPublishFetched bool = false
+
 @description('Let boincOnPremHost run `usnm-boinc claim` and `collect` on-prem (#967 phase 3): it gets the hand-off job\'s grants, Cosmos `ops`, the ledger writer on curated, reader on reference and the node writer role on ocr-out (modules/boinc-handoff-runner.bicep), and Message Processor and Sender on ocr-priority and ocr-bulk (modules/ocr-exchange.bicep). Needs ocrNodes and, for the Cosmos steps, cosmosOnPremAccess. Off removes the grants.')
 param boincHandoffOnPrem bool = false
 
@@ -656,6 +659,10 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
       boincHandoff ? [boincHandoffJob!.outputs.principalId] : [],
       boincOnPrem ? [trim(boincOnPremHost)] : []
     )
+    // The scan fetcher publishes the fetched-scans list that claim reads (#1056).
+    fetchedPublisherIds: scanFetchPublishFetched && !empty(trim(boincHandoffRunner))
+      ? [trim(boincHandoffRunner)]
+      : []
     nodeGroupId: trim(ocrNodeGroupId)
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     nodeWriterRoleLabel: n.ocrNodeWriterRole

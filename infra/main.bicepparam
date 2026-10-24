@@ -45,6 +45,7 @@ param boincHandoffRunner = readEnvironmentVariable('USNM_BOINC_HANDOFF_RUNNER', 
 param boincControllerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_CONTROLLER_ONPREM', 'false'))
 param boincServerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_SERVER_ONPREM', 'false'))
 param boincHandoffOnPrem = bool(readEnvironmentVariable('USNM_BOINC_HANDOFF_ONPREM', 'false'))
+param scanFetchPublishFetched = bool(readEnvironmentVariable('USNM_SCAN_FETCH_PUBLISH_FETCHED', 'false'))
 param boincOnPremHost = readEnvironmentVariable('USNM_BOINC_ONPREM_HOST', '')
 param boincHandoffImage = readEnvironmentVariable('USNM_BOINC_HANDOFF_IMAGE', '')
 param jaLatin = bool(readEnvironmentVariable('USNM_JA_LATIN', 'false'))
