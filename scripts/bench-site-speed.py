@@ -77,6 +77,9 @@ GLOBALPING_LOCATIONS = [
     ("ZA", {"magic": "south africa"}),
 ]
 GLOBALPING_API = "https://api.globalping.io/v1/measurements"
+# Built once, so loading the trust store isn't in any sample's TLS time.
+TLS_CONTEXT = ssl.create_default_context()
+TLS_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
 CACHE_HEADERS = ("cf-cache-status", "x-cache", "x-cache-status", "age")
 
 
@@ -122,9 +125,11 @@ def sample(host, port, path, tls=True, warm=True):
     Times are seconds from the start of each step. The body is read as sent
     (compressed when the server compresses it); `bytes` is what crossed the wire.
     The connect time is the address that answered; an address tried first and
-    refused isn't in it.
+    refused isn't in it. `warm_wait` is None when the server closes the
+    connection after the first response.
     """
-    headers = {"Host": host, "User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "gzip", "DNT": "1"}
+    # No Host header here: http.client sets it from the connection's host and port.
+    headers = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "gzip", "DNT": "1"}
     started = time.perf_counter()
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     dns = time.perf_counter() - started
@@ -132,11 +137,9 @@ def sample(host, port, path, tls=True, warm=True):
     tls_s = 0.0
     if tls:
         step = time.perf_counter()
-        context = ssl.create_default_context()
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        sock = context.wrap_socket(sock, server_hostname=host)
+        sock = TLS_CONTEXT.wrap_socket(sock, server_hostname=host)
         tls_s = time.perf_counter() - step
-        conn = http.client.HTTPSConnection(host, port, timeout=TIMEOUT_S)
+        conn = http.client.HTTPSConnection(host, port, timeout=TIMEOUT_S, context=TLS_CONTEXT)
     else:
         conn = http.client.HTTPConnection(host, port, timeout=TIMEOUT_S)
     conn.sock = sock
@@ -160,6 +163,11 @@ def sample(host, port, path, tls=True, warm=True):
                     encoding=resp.getheader("content-encoding") or "",
                     body=(gzip.decompress(body) if resp.getheader("content-encoding") == "gzip" else body) if path == "/" else b"",
                 )
+                if resp.will_close:
+                    # The server ends the connection (HTTP/1.0 or Connection: close): http.client would
+                    # reconnect for the next request, and that wouldn't be a warm one.
+                    out["warm_wait"] = None
+                    break
             else:
                 out["warm_wait"] = wait
         return out
@@ -200,6 +208,12 @@ def p95(values):
     return values[min(len(values) - 1, int(round(0.95 * (len(values) - 1))))] if values else float("nan")
 
 
+def warm_cell(rows):
+    """The median warm wait in ms, or "-" when no run had a reusable connection."""
+    warm = [r["warm_wait"] for r in rows if r.get("warm_wait") is not None]
+    return ms(med(warm)) if warm else "-"
+
+
 def run_direct(base, runs):
     parts = urllib.parse.urlsplit(base)
     host = parts.hostname
@@ -227,7 +241,7 @@ def run_direct(base, runs):
             f"{ms(med([r['dns'] for r in rows])):>6} {ms(med([r['tcp'] for r in rows])):>6} "
             f"{ms(med([r['tls'] for r in rows])):>6} {ms(med([r['wait'] for r in rows])):>6} "
             f"{ms(med(ttfb)):>6} {ms(med([r['dl'] for r in rows])):>6} "
-            f"{ms(med([r['warm_wait'] for r in rows])):>6} {ms(p95(ttfb)):>9}  {last['cache']}"
+            f"{warm_cell(rows):>6} {ms(p95(ttfb)):>9}  {last['cache']}"
         )
         results.append(
             {
@@ -238,7 +252,10 @@ def run_direct(base, runs):
                 "cache": last["cache"],
                 "cache_control": last["cache_control"],
                 "encoding": last["encoding"],
-                "runs": [{k: ms(v) for k, v in r.items() if k in ("dns", "tcp", "tls", "wait", "dl", "warm_wait")} for r in rows],
+                "runs": [
+                    {k: ms(v) for k, v in r.items() if k in ("dns", "tcp", "tls", "wait", "dl", "warm_wait") and v is not None}
+                    for r in rows
+                ],
             }
         )
     assets = [r for r in results if r["name"].startswith("asset:")]

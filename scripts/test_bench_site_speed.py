@@ -19,6 +19,7 @@ spec.loader.exec_module(bench)
 HTML = b'<html><head><link rel="stylesheet" href="/assets/index-AAA.css"></head><body><script src="/assets/index-BBB.js"></script></body></html>'
 SEEN = []
 DNT = []
+HOSTS = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -27,6 +28,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         SEEN.append(self.path)
         DNT.append(self.headers.get("DNT"))
+        HOSTS.append(self.headers.get("Host"))
         if self.path == "/":
             body = gzip.compress(HTML)
             headers = {"Content-Type": "text/html", "Content-Encoding": "gzip", "CF-Cache-Status": "DYNAMIC"}
@@ -37,6 +39,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         for k, v in headers.items():
             self.send_header(k, v)
+        if self.path == "/close":
+            self.send_header("Connection", "close")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -85,6 +89,24 @@ class BenchSiteSpeed(unittest.TestCase):
         DNT.clear()
         bench.sample("127.0.0.1", self.server.server_address[1], "/v1/meta", tls=False)
         self.assertEqual(DNT, ["1", "1"])
+
+    def test_sample_keeps_the_port_in_the_host_header(self):
+        HOSTS.clear()
+        bench.sample("127.0.0.1", self.server.server_address[1], "/", tls=False)
+        self.assertEqual(HOSTS, [f"127.0.0.1:{self.server.server_address[1]}"] * 2)
+
+    def test_sample_has_no_warm_time_when_the_server_closes_the_connection(self):
+        SEEN.clear()
+        s = bench.sample("127.0.0.1", self.server.server_address[1], "/close", tls=False)
+        self.assertIsNone(s["warm_wait"])
+        self.assertEqual(SEEN, ["/close"])
+        self.assertEqual(bench.warm_cell([s]), "-")
+
+    def test_warm_cell_is_the_median_of_the_runs_that_had_one(self):
+        self.assertEqual(bench.warm_cell([{"warm_wait": 0.010}, {"warm_wait": None}, {"warm_wait": 0.030}]), 20.0)
+
+    def test_tls_context_is_built_once_with_a_floor(self):
+        self.assertGreaterEqual(bench.TLS_CONTEXT.minimum_version, bench.ssl.TLSVersion.TLSv1_2)
 
     def test_sample_without_warm_makes_one_request(self):
         SEEN.clear()
