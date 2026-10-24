@@ -898,14 +898,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      # Only the commit main points at publishes: a slower run for an older
-      # commit must not replace newer images.
+      # A slower run for an older commit must not replace newer images: only
+      # the commit main points at publishes, or an older one when none of
+      # main's newer commits change the images (their runs publish nothing).
       - name: Is this still the head of main?
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/ci/head-of-main.sh
+        run: scripts/ci/head-of-main.sh --unless-changed image
       - if: steps.head.outputs.current == 'true'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
