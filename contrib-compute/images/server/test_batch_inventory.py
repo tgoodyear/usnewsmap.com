@@ -142,6 +142,7 @@ class InventoryTests(unittest.TestCase):
         result = inventory.inventory(self.root, self.results, [3, 2], "b" * 32,
                                      [self.job], [self.job], [bundle], [bundle])
         self.assertEqual(result["pending_jobs"], [self.job] + pages)
+        self.assertEqual(result["pending_ocr_workunits"], 2)
         self.assertEqual(result["existing_jobs"], [self.job] + pages)
         # Partial bundle outputs give no spool; complete ones give every page the bundle's.
         (self.spool / f"usnm_ocrb_{bundle}__file_results.json").write_text("{}")

@@ -1688,6 +1688,35 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
             lambda: self.saved.append(copy.deepcopy(self.state)), NOW, **kwargs,
         )
 
+    def test_bundled_pages_count_as_pages_for_ocr_and_as_workunits_globally(self):
+        # #1059: four 10-page bundles and 20 other-app workunits are 24 workunits on the
+        # server (under a global cap of 30) and 40 OCR pages in flight.
+        self.fake.other = 20
+        self.fake.extra_pending = {f"{n:064x}" for n in range(1000, 1040)}
+        base = self.fake.inventory
+
+        def inventory():
+            snap = base()
+            snap["pending_workunits"] = 24
+            snap["pending_ocr_workunits"] = 4
+            return snap
+
+        self.fake.inventory = inventory
+        xml = status_xml(ocr_unsent=4, qwen_unsent=20, quality_unsent=0,
+                         quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=1, high_watermark=100, max_global_pending=30,
+                          server_status=xml)
+        self.assertEqual(event["global_pending"], 24)
+        self.assertEqual(event["other_app_pending"], 20)
+        self.assertEqual(event["cohort_pending"], 40)
+        self.assertNotEqual(event["backpressure_reason"], "global_safety_cap")
+        # An inventory from before bundles (no pending_ocr_workunits) counts as before.
+        self.fake.inventory = base
+        self.fake.extra_pending = set()
+        self.assertEqual(batch.ocr_workunit_counts({}, {"a", "b"}), (2, 0))
+        with self.assertRaises(ValueError):
+            batch.ocr_workunit_counts({"pending_ocr_workunits": 3}, {"a", "b"})
+
     def test_456_unsent_qwen_tasks_do_not_block_ocr_refill_below_low_watermark(self):
         # Reproduce the 2026-10-17 live starvation state: 456 unsent usnm_qwen tasks (plus
         # quality/training) in aggregate pending_workunits, while usnm_ocr has 0 unsent / 0 in_progress.

@@ -141,6 +141,8 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         "created_at": int(time.time()),
         "pending_workunits": counts[0],
         "pending_jobs": pending,
+        # Pending OCR workunits, single-page and bundles: pending_jobs counts pages (#1059).
+        "pending_ocr_workunits": len(pending_ids) + sum(bool(members.get(b)) for b in pending_bundles),
         "existing_jobs": existing,
         "active_hosts": counts[1],
         "jobs": jobs,

@@ -863,6 +863,15 @@ class Transport:
         return parse_server_status(raw)
 
 
+def ocr_workunit_counts(snapshot, pending_jobs):
+    """(pending OCR workunits, pages beyond one per workunit). An inventory that predates
+    bundles has no pending_ocr_workunits: every pending page is its own workunit."""
+    workunits = snapshot.get("pending_ocr_workunits", len(pending_jobs))
+    require(type(workunits) is int and 0 <= workunits <= len(pending_jobs) and
+            (workunits > 0 or not pending_jobs), "invalid pending OCR workunit count")
+    return workunits, len(pending_jobs) - workunits
+
+
 def units_of(config, records):
     """Split the records to submit into workunits (#1059): by queue, in their order, into groups
     of at most that queue's pages_per_unit (1, a page alone, by default)."""
@@ -1340,7 +1349,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
                                      high_watermark=high_watermark,
                                      max_global_pending=max_global_pending)["max_global_pending"]
             uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs)
-            room = cap - (max(snapshot["pending_workunits"], len(pending_jobs))
+            room = cap - (max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
                           + uncollected + len(missing))
         except (ValueError, KeyError, TypeError, OSError, RuntimeError):
             room = 0
@@ -1386,7 +1395,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     target = high_target
 
     uncollected_not_pending, missing = retained_backlog(config, records, owned, selected, pending_jobs)
-    global_in_flight = max(snapshot["pending_workunits"], len(pending_jobs))
+    # Workunits for the global cap and other apps' share; pages for OCR admission. They differ
+    # only with OCR bundles (#1059), whose pages share one workunit.
+    ocr_workunits, bundled_pages = ocr_workunit_counts(snapshot, pending_jobs)
+    global_in_flight = max(snapshot["pending_workunits"], ocr_workunits)
     has_ocr_attribution = status is not None and ocr_app in status["apps"]
     if has_ocr_attribution:
         app_counts = status["apps"][ocr_app]
@@ -1396,7 +1408,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         other_status_results = sum(
             item["runnable"] for name, item in status["apps"].items() if name != ocr_app
         )
-        ocr_in_flight = min(global_in_flight, max(len(pending_jobs), ocr_status_results))
+        ocr_in_flight = min(global_in_flight, max(ocr_workunits, ocr_status_results))
     else:
         ocr_unsent = global_in_flight
         ocr_in_progress = 0
@@ -1408,9 +1420,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         ocr_in_flight = global_in_flight
 
     other_pending = max(0, global_in_flight - ocr_in_flight)
+    ocr_in_flight += bundled_pages
     cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
     global_pending = global_in_flight + uncollected_not_pending + len(missing)
-    cohort_pending_results = max(len(pending_jobs), ocr_status_results) + uncollected_not_pending + len(missing)
+    cohort_pending_results = (max(ocr_workunits, ocr_status_results) + bundled_pages
+                              + uncollected_not_pending + len(missing))
     other_app_pending_results = other_status_results
     global_pending_results = cohort_pending_results + other_app_pending_results
     pending = cohort_pending if cohort_mode else global_pending
