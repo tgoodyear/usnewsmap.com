@@ -23,7 +23,7 @@
 // the REST API.
 //
 // The same account can hold a second share, `qw-search` (`searchGiB`), for
-// the search cluster experiment's `nfs` mode (#251; docs/operations.md,
+// the search cluster experiment's `nfs` mode (#251; docs/operations/environments-and-deploys.md,
 // "Local-disk test"): an index copied onto it and served to a searcher as
 // `file://`. The account, its private endpoint and its DNS zone are shared;
 // either share can be on without the other.

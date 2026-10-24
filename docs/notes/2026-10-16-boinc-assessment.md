@@ -1,6 +1,6 @@
 # JP2 against IIIF JPEG on BOINC
 
-Issue: [#456](https://github.com/tgoodyear/usnewsmap.com/issues/456). Background: the [#435 report](../reports/2026-10-jp2-vs-jpeg-ocr/report.md), which compared the two formats on 80 pages that were not a random sample. This page covers the second BOINC app, `usnm_assess`, which runs the same comparison on a stratified random sample of the corpus on volunteer hosts, and the server steps around it. The OCR pilot (`usnm_ocr`) is described in [boinc.md](../boinc.md); the server hosting is in [contrib-compute/docs](../../contrib-compute/docs/design.md).
+Issue: [#456](https://github.com/tgoodyear/usnewsmap.com/issues/456). Background: the [#435 report](../reports/2026-10-jp2-vs-jpeg-ocr/report.md), which compared the two formats on 80 pages that were not a random sample. This page covers the second BOINC app, `usnm_assess`, which runs the same comparison on a stratified random sample of the corpus on volunteer hosts, and the server steps around it. The OCR pilot (`usnm_ocr`) is described in [boinc/README.md](../boinc/README.md); the server hosting is in [contrib-compute/docs](../../contrib-compute/docs/design.md).
 
 Status: written and unit-tested. No assessment campaign has run; the production server
 deployment is recorded in #470.
@@ -85,7 +85,7 @@ usnm-boinc assess sample --manifest manifest.parquet --seed 456 \
   --out-ocr sample-ocr.jsonl --out-crash sample-crash.jsonl
 # Copy both to <share>/assess/<campaign>/ on the project share.
 
-# Bridge job runs (docs/boinc.md#start-a-bridge-step), repeated until stage reports nothing left (each run is bounded).
+# Bridge job runs (docs/boinc/bridge-steps.md#start-a-bridge-step), repeated until stage reports nothing left (each run is bounded).
 scripts/start-boinc-bridge.sh --env prod --step assess-stage --var ASSESS_MODE=crash --var ASSESS_CAMPAIGN=tess550 \
   --var ASSESS_ENGINE_IMAGE=sha256:... --var ASSESS_ENGINE_BASE=sha256:...
 scripts/start-boinc-bridge.sh --env prod --step assess-submit --var ASSESS_MODE=crash --var ASSESS_CAMPAIGN=tess550

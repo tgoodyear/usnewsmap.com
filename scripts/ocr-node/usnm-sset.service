@@ -5,7 +5,7 @@
 # good, then writes /var/lib/usnm-sset/done and stops; with that marker it
 # no longer starts. To run the fetch again (new volumes on GovInfo):
 # `sudo rm /var/lib/usnm-sset/done && sudo systemctl start usnm-sset`
-# (docs/operations.md, "The Serial Set on-prem").
+# (docs/operations/congress-pages.md, "The Serial Set on-prem").
 #
 # Settings in /etc/usnm/sset.env (never committed):
 #   USNM_CURATED_URL   the lake's curated container URL, or a directory

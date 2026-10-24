@@ -17,7 +17,7 @@
 //!
 //! With the cargo feature `damage`, [`wordlist`] returns a list's words,
 //! embedded from `data/damage-words/*.txt.zst`, which `build.rs`
-//! decompresses (`scripts/build-damage-words.py` exports them from wordfreq
+//! decompresses (`scripts/data/build-damage-words.py` exports them from wordfreq
 //! 3.1.1; `data/README.md` has their sources and licences).
 
 /// One language in the three code systems.

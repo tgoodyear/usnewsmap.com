@@ -1,4 +1,4 @@
-# The usnm_surya worker image (#516, #842): Surya 2 (surya-ocr 0.22.1) on llama.cpp's server, and
+# The usnm_surya worker image (#516, #842): Surya 2 (surya-ocr) on llama.cpp's server, and
 # usnm-boinc, which runs one BOINC unit (docs/boinc-surya.md).
 #   - LLAMA_VARIANT=cuda (default): llama.cpp's CUDA server image loads its CUDA backend when the
 #     container sees an NVIDIA GPU and falls back to its CPU backends otherwise (GGML_BACKEND_DL,
@@ -10,12 +10,19 @@
 # image carries Datalab's licence beside them, and NOTICE. torch is the CPU build: it only runs
 # Surya's layout fallback, while the OCR model runs in llama-server.
 #
+# The pins (surya-ocr's version, the two llama.cpp image digests, the weights digest) are written once,
+# in engine.lock, and arrive here as the build arguments SURYA_VERSION, LLAMA_DIGEST,
+# LLAMA_VULKAN_DIGEST and SURYA_WEIGHTS. They have no defaults on purpose: a build without them fails
+# (BuildKit may warn that the FROM lines have no default to check), where a copy of a pin kept here
+# would drift from the lock. scripts/ci/check-engine-pins.py checks that none comes back.
+#
 # Build from the repository root:
-#   docker build -f ocr/boinc/surya/Containerfile -t usnm-boinc-surya .
-#   docker build -f ocr/boinc/surya/Containerfile --build-arg LLAMA_VARIANT=vulkan -t usnm-boinc-surya-vulkan .
+#   pins=$(sed -n 's/^[A-Z][A-Z_]*=/--build-arg &/p' ocr/boinc/surya/engine.lock)
+#   docker build -f ocr/boinc/surya/Containerfile $pins -t usnm-boinc-surya .
+#   docker build -f ocr/boinc/surya/Containerfile $pins --build-arg LLAMA_VARIANT=vulkan -t usnm-boinc-surya-vulkan .
 ARG LLAMA_VARIANT=cuda
-ARG LLAMA_DIGEST=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea
-ARG LLAMA_VULKAN_DIGEST=sha256:d64043576ad8fb29170563c769a997dbc1b9928f0d4a127fb9e4a9706ccb475b
+ARG LLAMA_DIGEST
+ARG LLAMA_VULKAN_DIGEST
 
 FROM rust:1-bookworm AS build
 ARG BUILD_JOBS=2
@@ -46,6 +53,7 @@ RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-venv \
       libgl1 libglib2.0-0 procps \
  && rm -rf /var/lib/apt/lists/*
+ARG SURYA_VERSION
 RUN python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
       torch==2.12.1+cpu torchvision==0.27.1+cpu \
@@ -57,9 +65,9 @@ RUN python3 -m venv /opt/venv \
         "platformdirs<5,>=4.3.6" "pydantic-settings<3,>=2.1.0" "pydantic<3,>=2.5.3" \
         "pypdfium2<6,>=5.10.1" "python-dotenv<2,>=1.0.0" "requests<3,>=2.28.0" \
         "transformers>=5.12.1" \
-      && /opt/venv/bin/pip install --no-cache-dir --no-deps surya-ocr==0.22.1; \
+      && /opt/venv/bin/pip install --no-cache-dir --no-deps surya-ocr=="$SURYA_VERSION"; \
     else \
-      /opt/venv/bin/pip install --no-cache-dir surya-ocr==0.22.1; \
+      /opt/venv/bin/pip install --no-cache-dir surya-ocr=="$SURYA_VERSION"; \
     fi \
  && mkdir -p /opt/surya && /opt/venv/bin/pip freeze > /opt/surya/pip-freeze.txt
 COPY --from=weights /models/ /opt/surya/models/
@@ -67,7 +75,7 @@ COPY --from=weights /weights.digest /opt/surya/weights.digest
 COPY ocr/boinc/surya/weights.lock ocr/boinc/surya/NOTICE ocr/boinc/surya/run.py /opt/surya/
 COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
 # USNM_SURYA_WEIGHTS must equal /opt/surya/weights.digest; the build fails otherwise.
-ARG SURYA_WEIGHTS=sha256:557aca6f56e5844007dbb04fe69a638f40e8d55823e89de07a1d4906c291b701
+ARG SURYA_WEIGHTS
 RUN test "$(cat /opt/surya/weights.digest)" = "$SURYA_WEIGHTS"
 ENV PATH=/opt/venv/bin:/app:$PATH LLAMA_CPP_BINARY=/app/llama-server \
     SURYA_GGUF_LOCAL_MODEL_PATH=/opt/surya/models/surya-2.gguf \
@@ -77,7 +85,7 @@ ENV PATH=/opt/venv/bin:/app:$PATH LLAMA_CPP_BINARY=/app/llama-server \
     FAST_ORDER_MODEL_CHECKPOINT=/opt/surya/models/layout2/order \
     TORCH_DEVICE=cpu \
     HF_HUB_OFFLINE=1 DISABLE_TQDM=true PYTHONDONTWRITEBYTECODE=1 HOME=/tmp \
-    USNM_SURYA_VERSION=0.22.1 USNM_SURYA_WEIGHTS=${SURYA_WEIGHTS}
+    USNM_SURYA_VERSION=${SURYA_VERSION} USNM_SURYA_WEIGHTS=${SURYA_WEIGHTS}
 # The CUDA base asks the NVIDIA Container Toolkit's legacy hook (Docker) to refuse drivers older
 # than CUDA 12.8. CUDA 12's minor version compatibility runs this build on any CUDA 12 driver, so
 # the check is off; the plan class asks for CUDA 12.0 and the diagnostics record the driver.

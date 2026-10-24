@@ -35,7 +35,7 @@ Bulk bytes stay in Blob, Azure Files, ZFS or the existing package registry.
 MySQL and Cosmos are not file inventories. A successful process exit is not
 evidence of validation, import or inclusion in a released search index.
 
-BOINC project downloads are Azure-hosted, but container images come from GHCR.
+BOINC project downloads are served from the on-prem BOINC host (they were Azure-hosted until 21 October 2026), and container images come from GHCR.
 Legacy gold inputs may still reference upstream sources. Mirror readiness must
 be established for each artifact and campaign, not inferred from a deployment.
 
@@ -194,9 +194,9 @@ The catalog and observer use Python's standard library. Evidence ingestion and
 query serving are separate commands:
 
 ```bash
-python3 scripts/data_catalog.py --db catalog.sqlite ingest --batch evidence.jsonl
-python3 scripts/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
-python3 scripts/data_catalog.py --db catalog.sqlite serve --host 127.0.0.1 --port 8764
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest --batch evidence.jsonl
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite serve --host 127.0.0.1 --port 8764
 ```
 
 Retain the imported evidence files: rebuilding means replaying them into a new
@@ -251,10 +251,10 @@ Copy completed `*.json` captures through the administrative path, retaining the
 originals. Import each with a new evidence filename and stable batch/source IDs:
 
 ```bash
-python3 scripts/data_catalog.py --db catalog.sqlite ingest-worker \
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-worker \
   --input capture.json --evidence-out run-001.jsonl \
   --batch-id run-001 --source worker-node3
-python3 scripts/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
 ```
 
 The adapter accepts captures up to 64 KiB; larger captures fail explicitly even
@@ -277,7 +277,7 @@ because the control plane is online.
 
 ## Live worker evidence transport
 
-`scripts/worker_evidence_sync.py` adds an administrative, bounded transport for
+`scripts/corpus/worker_evidence_sync.py` adds an administrative, bounded transport for
 the existing opt-in captures. It does not read queues, upload OCR output or grant
 acceptance. A restricted SSH key on the catalog host may run only the root-owned
 exporter on the worker:
@@ -345,17 +345,17 @@ release decisions (`accepted`, `rejected`, `revoked`, `unchanged_baseline`) and
 public `/v1/hits` verification receipts as independent evidence batches:
 
 ```bash
-python3 scripts/data_catalog.py --db catalog.sqlite ingest-import \
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-import \
   --input import.json --evidence-out import-001.jsonl \
   --batch-id import-001 --source ocr-sync-import
-python3 scripts/data_catalog.py --db catalog.sqlite ingest-release \
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-release \
   --input release-decisions.json --evidence-out release-001.jsonl \
   --batch-id release-001 --source release-builder
-python3 scripts/data_catalog.py --db catalog.sqlite ingest-search \
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-search \
   --input hits.json --evidence-out search-001.jsonl \
   --batch-id search-001 --source public-hits-check \
   --page-id loc:<doc_id> --verified-at 2026-10-18T12:00:00Z --run-id <run_id>
-python3 scripts/data_catalog.py --db catalog.sqlite trace --page-id loc:<doc_id>
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite trace --page-id loc:<doc_id>
 ```
 
 `trace` (and `GET /trace?page_id=loc%3A<doc_id>`) reconciles a page across

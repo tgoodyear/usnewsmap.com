@@ -1,9 +1,11 @@
 # Local BOINC download host
 
-BOINC's scheduler, application, database and result handling stay in Azure.
-Bulk downloads and suitable background processing should run locally to reduce
-spend above the subscription's verified $150 monthly credit. Issue #783 tracks
-the migration; production changes are coordinated in #529.
+BOINC's scheduler, application, database and result handling ran in Azure when
+this page was written; they moved to an on-prem host on 21 October 2026
+([boinc-onprem.md](boinc-onprem.md)). Bulk downloads and suitable background
+processing should run locally to reduce spend above the subscription's verified
+$150 monthly credit. Issue #783 tracks the migration; production changes are
+coordinated in #529.
 
 ## Read-only download origin
 

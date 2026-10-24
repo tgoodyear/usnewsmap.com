@@ -53,6 +53,6 @@ details. The <a href="apps.php">applications page</a> lists published applicatio
 and platforms; publication alone does not establish end-to-end acceptance.</p>
 
 <p>Source code and design notes:
-<a href="https://github.com/tgoodyear/usnewsmap.com/blob/main/docs/boinc.md">docs/boinc.md</a>.</p>
+<a href="https://github.com/tgoodyear/usnewsmap.com/blob/main/docs/boinc/README.md">docs/boinc/README.md</a>.</p>
 HTML;
 page_tail();

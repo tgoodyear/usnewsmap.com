@@ -3,7 +3,7 @@
 // It runs the server image's `entrypoint.sh --ensure-secrets` with its own identity (Key Vault
 // Secrets Officer), creates each secret only if it is absent, and stops on a failed lookup
 // instead of reading it as absence. Values are generated in the container's tmpfs and never
-// printed. scripts/provision-boinc.sh starts it after each deployment; a rerun changes nothing.
+// printed. scripts/boinc/provision-boinc.sh starts it after each deployment; a rerun changes nothing.
 param jobName string
 param location string
 param environmentId string

@@ -405,12 +405,12 @@ class BuildInputs(unittest.TestCase):
         return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
     def test_dashboard_renderer_and_markdown_change_runs_only_the_dashboard_checks(self):
-        # The change #734 makes: html.rs and docs/operations.md.
-        on = self.select("crates/usnm-ocr-dash/src/html.rs", "docs/operations.md")
+        # The change #734 makes: html.rs and docs/operations/onprem-ocr.md.
+        on = self.select("crates/usnm-ocr-dash/src/html.rs", "docs/operations/onprem-ocr.md")
         self.assertEqual(on, {"rust", "ocr_dash", "ocr_dashboard", "markdown", "code"})
 
     def test_docs_only_change_runs_only_the_markdown_check(self):
-        self.assertEqual(self.select("docs/operations.md", "README.md"), {"markdown"})
+        self.assertEqual(self.select("docs/operations/onprem-ocr.md", "README.md"), {"markdown"})
 
     def test_boinc_only_change_runs_the_boinc_images_but_no_dashboard_or_worker_release(self):
         on = self.select("crates/usnm-boinc/src/lib.rs")
@@ -431,6 +431,16 @@ class BuildInputs(unittest.TestCase):
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
 
+    def test_the_crates_split_out_of_ingest_run_what_ingest_runs(self):
+        # The Congress fetches and the local OCR pipeline are crates of their own that usnm-ingest
+        # links: the ingest image, the Quickwit job and the BOINC client rebuild for them; the
+        # web end-to-end job, the worker and the dashboard don't.
+        for path in ["crates/usnm-congress/src/lib.rs", "crates/usnm-ocr-local/src/lib.rs"]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertGreaterEqual(on, {"rust", "quickwit", "image"} | BOINC_IMAGES)
+                self.assertFalse(on & (DASHBOARD | NATIVE | {"ocr_worker", "e2e"}), on)
+
     def test_a_file_a_crate_embeds_counts_for_what_links_the_crate(self):
         # usnm-ingest embeds the catalog; the BOINC client links usnm-ingest, the worker doesn't.
         on = self.select("catalog/overrides/places.json")
@@ -444,6 +454,11 @@ class BuildInputs(unittest.TestCase):
         self.assertGreaterEqual(on, BOINC_IMAGES)
         # usnm-boinc embeds the Qwen benchmark input, which no workflow's paths listed before #739.
         on = self.select("ocr/boinc/usnm_qwen_benchmark_in")
+        self.assertGreaterEqual(on, BOINC_IMAGES)
+        self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
+        # usnm-boinc embeds the Surya image's pins (the default of `surya stage --engine-surya`),
+        # so it rebuilds every image that links it; the rest of ocr/boinc/surya/ is the Surya image's alone.
+        on = self.select("ocr/boinc/surya/engine.lock")
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
 
@@ -460,6 +475,21 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 on = self.select(path)
                 self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}), {image}, on)
+
+    def test_scripts_grouped_by_purpose_still_select_their_jobs(self):
+        # The loose scripts moved under scripts/azure, boinc, data, dev and ops; the paths in
+        # changes.sh follow them.
+        for path, jobs in [
+            ("scripts/ops/check-version-snapshots.py", {"ops"}),
+            ("scripts/ops/test_check_index_history.py", {"ops"}),
+            ("scripts/azure/test_date_spans.py", {"ops"}),
+            ("scripts/dev/quickwit-fixtures.sh", {"quickwit", "rust", "e2e"}),
+            ("scripts/data/build-page-language-words.py", {"image", "page_language"}),
+            ("scripts/data/page-language-samples.py", {"page_language"}),
+            ("scripts/boinc/boinc-app-release.sh", {"contrib"}),
+        ]:
+            with self.subTest(path=path):
+                self.assertGreaterEqual(self.select(path), jobs)
 
     def test_the_tesseract_image_runs_the_worker_image_and_release_only(self):
         on = self.select("ocr/engines/tesseract/Containerfile")
@@ -495,6 +525,26 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 on = self.select(path)
                 self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | NATIVE | {"ocr_worker"}), {job}, on)
+
+    def test_a_shared_ci_action_runs_the_ci_jobs_that_call_it(self):
+        # An action ci.yml calls holds steps of its jobs, so an edit to it must run them, as an
+        # edit to the same steps in ci.yml would (the flags each job's `if:` reads).
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        called = {}
+        for job in re.findall(r"(?m)^  ([a-z0-9_-]+):$", ci.split("\njobs:\n", 1)[1]):
+            text = job_text(ci, job)
+            flags = set(re.findall(r"needs\.changes\.outputs\.(\w+)", text))
+            for action in re.findall(r"uses: \./\.github/actions/([\w-]+)", text):
+                called.setdefault(action, set()).update(flags)
+        self.assertGreaterEqual(len(called), 3)
+        for action, flags in sorted(called.items()):
+            # The markdown flag comes from the changed files alone, and the web job, which
+            # runs the same check, is forced with it.
+            expected = flags - {"markdown"}
+            with self.subTest(action=action):
+                self.assertTrue((ROOT / ".github/actions" / action / "action.yml").is_file())
+                self.assertTrue(expected)
+                self.assertGreaterEqual(self.select(f".github/actions/{action}/action.yml"), expected)
 
     def test_the_native_apps_run_for_the_crates_they_build_and_no_others(self):
         # #744: usnm-core and usnm-overlay are built by both apps and were on no path list.

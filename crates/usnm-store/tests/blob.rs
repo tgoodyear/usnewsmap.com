@@ -242,6 +242,8 @@ type Committed = (Vec<u8>, Option<String>, Option<String>);
 struct Blocks {
     staged: HashMap<(String, String), Vec<u8>>,
     committed: HashMap<String, Committed>,
+    /// Put Block requests answered.
+    puts: usize,
 }
 
 type SharedBlocks = Arc<Mutex<Blocks>>;
@@ -261,6 +263,7 @@ async fn put_block_or_list(
         Some("block") => {
             let id = q.get("blockid").unwrap().clone();
             b.staged.insert((p, id), body.to_vec());
+            b.puts += 1;
             StatusCode::CREATED.into_response()
         }
         Some("blocklist") => {
@@ -292,11 +295,46 @@ async fn put_block_or_list(
     }
 }
 
+/// Get Block List (`all`): the uncommitted blocks, none committed; 404
+/// when there are none.
+async fn get_block_list(
+    State(b): State<SharedBlocks>,
+    Path(p): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    h: HeaderMap,
+) -> Response {
+    if !authorized(&h) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    assert_eq!(q.get("comp").map(String::as_str), Some("blocklist"));
+    assert_eq!(q.get("blocklisttype").map(String::as_str), Some("all"));
+    let b = b.lock().unwrap();
+    let blocks: String = b
+        .staged
+        .iter()
+        .filter(|((path, _), _)| *path == p)
+        .map(|((_, id), body)| {
+            format!(
+                "<Block><Name>{id}</Name><Size>{}</Size></Block>",
+                body.len()
+            )
+        })
+        .collect();
+    if blocks.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><BlockList><CommittedBlocks />\
+         <UncommittedBlocks>{blocks}</UncommittedBlocks></BlockList>"
+    )
+    .into_response()
+}
+
 async fn serve_blocks() -> (String, SharedBlocks) {
     let blocks: SharedBlocks = Arc::default();
     let app = Router::new()
         .route("/c/big/object", get(chunked))
-        .route("/c/{*p}", axum::routing::put(put_block_or_list))
+        .route("/c/{*p}", get(get_block_list).put(put_block_or_list))
         // 8 MiB blocks, past axum's 2 MB default.
         .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(blocks.clone());
@@ -396,4 +434,68 @@ async fn streamed_uploads_commit_blocks_in_their_tier() {
         n += c.unwrap().len() as u64;
     }
     assert!(n > usnm_store::MAX_OBJECT_BYTES);
+}
+
+/// An upload that stopped before its commit left its blocks staged: the
+/// next upload of the same bytes sends none of them again, and one of other
+/// bytes sends its own.
+#[tokio::test]
+async fn an_interrupted_upload_resumes_from_its_staged_blocks() {
+    let (base, blocks) = serve_blocks().await;
+    let cred = Arc::new(Credential::new(StaticToken("secret-token".into())));
+    let store = BlobStore::new(&format!("{base}/c"), cred).unwrap();
+    let data: Vec<u8> = (0..(usnm_store::blob::BLOCK_BYTES * 2 + 777))
+        .map(|i| (i % 249) as u8)
+        .collect();
+    let send = |data: Vec<u8>, commit: bool| {
+        let store = &store;
+        async move {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let (done, committed) = tokio::sync::oneshot::channel();
+            let feed = async move {
+                for c in data.chunks(3_000_017) {
+                    tx.send(bytes::Bytes::copy_from_slice(c)).await.unwrap();
+                }
+                drop(tx);
+                done.send(commit).unwrap();
+            };
+            let (put, ()) = tokio::join!(
+                store.put_stream(
+                    "qw/i/s.split",
+                    "application/octet-stream",
+                    None,
+                    rx,
+                    committed
+                ),
+                feed
+            );
+            put
+        }
+    };
+    assert!(send(data.clone(), false).await.is_err(), "abandoned");
+    assert_eq!(blocks.lock().unwrap().puts, 3);
+    assert!(!blocks
+        .lock()
+        .unwrap()
+        .committed
+        .contains_key("qw/i/s.split"));
+
+    assert_eq!(send(data.clone(), true).await.unwrap(), data.len() as u64);
+    {
+        let b = blocks.lock().unwrap();
+        assert_eq!(b.puts, 3, "every block was staged already");
+        assert_eq!(b.committed["qw/i/s.split"].0, data);
+    }
+
+    // Other bytes at the same path: their own blocks, not the staged ones.
+    let mut changed = data.clone();
+    changed[usnm_store::blob::BLOCK_BYTES + 5] ^= 1;
+    blocks.lock().unwrap().committed.clear();
+    assert_eq!(
+        send(changed.clone(), true).await.unwrap(),
+        data.len() as u64
+    );
+    let b = blocks.lock().unwrap();
+    assert_eq!(b.puts, 4, "only the changed block was sent");
+    assert_eq!(b.committed["qw/i/s.split"].0, changed);
 }

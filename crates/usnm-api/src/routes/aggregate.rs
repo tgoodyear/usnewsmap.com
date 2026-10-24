@@ -8,6 +8,7 @@ use std::time::Instant;
 use axum::extract::{OriginalUri, State};
 use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
+use schemars::JsonSchema;
 use serde::Serialize;
 use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{RawParams, SearchRequest};
@@ -22,7 +23,7 @@ use crate::error::ApiError;
 use crate::searchlog::{self, Admission, SearchLog};
 use crate::{version, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct AggregateResponse {
     index_version: String,
     synthetic: bool,
@@ -42,13 +43,18 @@ struct AggregateResponse {
     timing_ms: Timing,
 }
 
-#[derive(Serialize)]
+/// The schema of the response, for `/v1/openapi.json`.
+pub(crate) fn schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<AggregateResponse>()
+}
+
+#[derive(Serialize, JsonSchema)]
 struct QueryEcho {
     canonical: String,
     ast: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct BucketEcho {
     unit: BucketUnit,
     from: String,
@@ -56,10 +62,14 @@ struct BucketEcho {
     count: usize,
 }
 
+/// The parameters it takes besides the search's ([`usnm_core::params::COMMON_KEYS`]).
+pub(crate) const EXTRA_KEYS: &[&str] = &["format"];
+
 /// Most newspapers listed in `papers`; `total.papers` counts them all.
 pub const MAX_PAPERS_LISTED: usize = 500;
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "AggregateTotals")]
 struct Totals {
     hits: u64,
     places: usize,
@@ -84,7 +94,8 @@ struct Totals {
     american_stories_only: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "AggregateSeries")]
 struct Series {
     hits: Vec<u64>,
     /// Pages published per bucket; `null` when `lccn` or `front` filters are set,
@@ -93,7 +104,8 @@ struct Series {
     baseline: Option<Vec<u64>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "AggregatePlaces")]
 struct Places {
     id: Vec<String>,
     hits: Vec<u64>,
@@ -103,7 +115,8 @@ struct Places {
 
 /// Matching pages per newspaper, most first (ties by LCCN), at most
 /// [`MAX_PAPERS_LISTED`]; name and place from the catalog (#121).
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "AggregatePapers")]
 struct Papers {
     lccn: Vec<String>,
     hits: Vec<u64>,
@@ -116,7 +129,8 @@ struct Papers {
 /// more than `total.hits` (#121). On a version with page languages (05
 /// §5.5.8), per page language instead, a page in two languages counting in
 /// each, and `by` says so.
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "AggregateLanguages")]
 struct Languages {
     code: Vec<String>,
     hits: Vec<u64>,
@@ -129,7 +143,8 @@ struct Languages {
 /// any of `languages`, or every page when it's empty, and why. The hits are
 /// never filtered by it: without `lang` they count every matching page,
 /// including the few in titles catalogued in other languages.
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "Baseline")]
 struct BaselineOut {
     languages: Vec<String>,
     /// `filter` (the `lang` parameter), `query_language` (the query's words
@@ -138,7 +153,8 @@ struct BaselineOut {
     why: &'static str,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "Cube")]
 struct CubeOut {
     #[serde(flatten)]
     cells: SparseCube,
@@ -146,7 +162,7 @@ struct CubeOut {
     baseline_ref: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct Timing {
     backend: u128,
     total: u128,
@@ -186,7 +202,7 @@ pub(crate) async fn aggregate_in(
     log: Option<(&SearchLog, Admission)>,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_unknown(&["format"])?;
+    raw.reject_unknown(EXTRA_KEYS)?;
     if raw.get("format").is_some_and(|f| f != "json") {
         return Err(ApiError::Unsupported("format other than json".into()));
     }

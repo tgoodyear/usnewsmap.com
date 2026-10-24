@@ -2,7 +2,7 @@
  "$schema": "http://json-schema.org/draft-07/schema#",
  "$id": "https://github.com/tgoodyear/usnewsmap.com/ops/index-history.schema.json",
  "title": "Reconstructed index build records",
- "description": "ops/index-history.json: what built each index version released before releases recorded it (#161), by version, as scripts/reconstruct-index-history.py writes it. The API serves an entry as the version's build in /v1/versions (crates/usnm-api/src/versions.rs). Checked in CI by scripts/check-index-history.py, which also checks what a schema can't (keys sorted, the image pushed before the run started).",
+ "description": "ops/index-history.json: what built each index version released before releases recorded it (#161), by version, as scripts/ops/reconstruct-index-history.py writes it. The API serves an entry as the version's build in /v1/versions (crates/usnm-api/src/versions.rs). Checked in CI by scripts/ops/check-index-history.py, which also checks what a schema can't (keys sorted, the image pushed before the run started).",
  "type": "object",
  "minProperties": 1,
  "propertyNames": {"pattern": "^pages-v\\d{8}-\\d+$"},
