@@ -1,0 +1,19 @@
+# Prefetch manifests for OCR's queued pages (#1055, #962), in the batch container CT215:
+# ocr_manifest.py build finds the pages queued for OCR (users' first) that have no outcome
+# and no scan on pve-big's scan server, and PUTs them through the scan server as
+# queue-ocr-<stamp>, which the scan fetcher takes before the quality pass. Settings in
+# /etc/usnm/ocr-manifest.env (SCAN_SERVER, MAX_PAGES, REASONS).
+[Unit]
+Description=usnewsmap OCR prefetch manifests (#1055)
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/curated
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm/ocr-manifest.env
+ExecStart=/opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/ocr_manifest.py build \
+  --state /var/lib/usnm-ocr-manifest --scan-server ${SCAN_SERVER} --max-pages ${MAX_PAGES} \
+  --reasons ${REASONS}
+Nice=10
+TimeoutStartSec=1h

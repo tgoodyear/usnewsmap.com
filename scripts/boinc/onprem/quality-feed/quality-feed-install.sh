@@ -15,7 +15,8 @@
 # required), quality_feed.py, the unit usnm-quality-feed.service and
 # /etc/usnm/quality-feed.env, and usnm-quality-agree-load.{service,timer} (enabled once
 # the text writer's certificate and /srv/text-agreement are there), and
-# usnm-quality-refresh.{service,timer} (the page summary, every 6 hours, as the loader).
+# usnm-quality-refresh.{service,timer} (the page summary, every 6 hours, as the loader), and
+# usnm-ocr-manifest.{service,timer} (OCR's prefetch manifests, hourly, #1055).
 # On the host it
 # installs quality-ship.sh, quality_receive.py,
 # usnm-quality-ship.{service,timer} and /etc/usnm/quality-ship.env. The campaign's page list
@@ -62,7 +63,9 @@ scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
   "$HERE/usnm-quality-ship.timer" "$HERE/../../../onprem/quality/load.py" \
   "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" \
-  "$HERE/usnm-quality-refresh.service" "$HERE/usnm-quality-refresh.timer" "root@$HOST:$stage/"
+  "$HERE/usnm-quality-refresh.service" "$HERE/usnm-quality-refresh.timer" \
+  "$HERE/../ocr-feed/ocr_manifest.py" "$HERE/../ocr-feed/usnm-ocr-manifest.service" \
+  "$HERE/../ocr-feed/usnm-ocr-manifest.timer" "root@$HOST:$stage/"
 
 "${SSH[@]}" bash -s -- "$CTID" "$stage" "$CAMPAIGN" "$SCAN_SERVER" "$CHUNK" "$PENDING" "$WORKERS" \
   "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" <<'REMOTE'
@@ -75,6 +78,9 @@ in_ct install -d /opt/usnm-quality-feed /etc/usnm /var/lib/usnm-quality-feed
 pct push "$ct" "$stage/requirements.txt" /opt/usnm-quality-feed/requirements.txt
 pct push "$ct" "$stage/quality_feed.py" /opt/usnm-quality-feed/quality_feed.py --perms 755
 pct push "$ct" "$stage/load.py" /opt/usnm-quality-feed/load.py --perms 755
+pct push "$ct" "$stage/ocr_manifest.py" /opt/usnm-quality-feed/ocr_manifest.py --perms 755
+pct push "$ct" "$stage/usnm-ocr-manifest.service" /etc/systemd/system/usnm-ocr-manifest.service
+pct push "$ct" "$stage/usnm-ocr-manifest.timer" /etc/systemd/system/usnm-ocr-manifest.timer
 pct push "$ct" "$stage/usnm-quality-feed.service" /etc/systemd/system/usnm-quality-feed.service
 pct push "$ct" "$stage/usnm-quality-agree-load.service" /etc/systemd/system/usnm-quality-agree-load.service
 pct push "$ct" "$stage/usnm-quality-agree-load.timer" /etc/systemd/system/usnm-quality-agree-load.timer
@@ -84,12 +90,16 @@ in_ct bash -c '[ -x /opt/usnm-quality-feed/venv/bin/python ] || python3 -m venv 
   /opt/usnm-quality-feed/venv/bin/pip install -q --require-hashes --no-deps --only-binary :all: -r /opt/usnm-quality-feed/requirements.txt'
 printf 'CAMPAIGN=%s\nSCAN_SERVER=%s\nCHUNK_PAGES=%s\nMAX_PENDING=%s\nWORKERS=%s\n' \
   "$campaign" "$scan" "$chunk" "$pending" "$workers" | in_ct sh -c 'cat > /etc/usnm/quality-feed.env'
+printf 'SCAN_SERVER=%s\nMAX_PAGES=1000\nREASONS=user,bulk\n' "$scan" | in_ct sh -c 'cat > /etc/usnm/ocr-manifest.env'
 in_ct systemctl daemon-reload
 # The text agreement's loader, once its certificate is there (queue-ct.sh --issue-client
 # --role quality_text_writer, copied into /etc/usnm/quality-text-db/ with a dsn file).
 if in_ct test -s /etc/usnm/quality-text-db/dsn && in_ct test -d /srv/text-agreement; then
   in_ct systemctl enable --now usnm-quality-agree-load.timer
 fi
+# OCR's prefetch manifests, hourly (#1055).
+in_ct systemctl enable usnm-ocr-manifest.timer
+in_ct systemctl start usnm-ocr-manifest.timer
 # The page summary's refresh, as the loader (its certificate in /etc/usnm/quality-db/).
 if in_ct test -s /etc/usnm/quality-db/dsn; then
   in_ct systemctl enable usnm-quality-refresh.timer

@@ -1,0 +1,9 @@
+[Unit]
+Description=usnewsmap OCR prefetch manifests, hourly (#1055)
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=1h
+
+[Install]
+WantedBy=timers.target

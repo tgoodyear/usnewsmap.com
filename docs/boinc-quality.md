@@ -459,6 +459,17 @@ scripts/boinc/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
   --engine-image sha256:<worker digest> --enable
 ```
 
+### OCR's prefetch manifests (#1055)
+
+The scan fetcher (home-infra `usnm-loc-fetch`) takes OCR's manifests before the quality
+pass's, all inside the host's 45-a-minute LoC budget. `scripts/boinc/onprem/ocr-feed/ocr_manifest.py`
+makes OCR's in CT215, hourly (`usnm-ocr-manifest.timer`): the pages queued for OCR
+(curated `ocr-local/queued/`, read live with the container's Arc identity) that have no
+outcome since (`ocr-local/outcomes/`) and no scan on pve-big's scan server, users' requests
+first, at most 1,000 a manifest, PUT through the scan server as
+`/manifests/queue-ocr-<stamp>/manifest.parquet`. It makes the next one only once the last
+is mostly fetched (90% on the scan server) or a day old.
+
 ## Calibration
 
 `usnm-boinc quality calibrate` runs the three-cornered hat per gold crop over `--crops <crops.jsonl>` (gold crops with human transcriptions), two or more `--hyp ENGINE=FILE.jsonl` OCR hypothesis files, and optional `--readings <readings.jsonl>` vision-language readings, and writes `calibration.csv`, `calibration.md` and `by-crop.csv` to `--out`: per reader, true CER, estimated CER, bias, MAE, Pearson and Spearman, both without (`three-ocr`) and with (`three-ocr+vlm`) the vision-language reader. UNVERIFIED on the full multi-engine gold crop campaign.
