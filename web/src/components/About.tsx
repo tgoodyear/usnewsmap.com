@@ -106,7 +106,8 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
         </p>
         <p>
           The newspaper text comes from optical character recognition, so scanning errors mean some pages are missed and
-          some matches are wrong. Each result links to the full page image at the Library of Congress.
+          some matches are wrong. Fractions are one example: ½ often comes out as 1/2, so to find 61½, also search for
+          61 1/2 or 611/2. Each result links to the full page image at the Library of Congress.
         </p>
         <p>
           US News Map is maintained by{" "}
