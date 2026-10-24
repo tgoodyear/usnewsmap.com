@@ -284,6 +284,10 @@ async fn serves_the_site_alongside_the_api() {
     assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache");
     assert!(header_str(&h, header::CONTENT_SECURITY_POLICY).contains("connect-src 'self'"));
     assert_eq!(header_str(&h, header::X_CONTENT_TYPE_OPTIONS), "nosniff");
+    assert_eq!(
+        header_str(&h, header::STRICT_TRANSPORT_SECURITY),
+        "max-age=300"
+    );
 
     // The app's pages get the shell too, so a reload keeps working. The file
     // itself is served with or without a trailing slash (web/src/route.ts).
@@ -469,8 +473,12 @@ async fn serves_the_site_alongside_the_api() {
     }
 
     // The API is unchanged, and its unknown paths stay problem details.
-    let (status, _, body) = get(&s, "/v1/meta").await;
+    let (status, h, body) = get(&s, "/v1/meta").await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_str(&h, header::STRICT_TRANSPORT_SECURITY),
+        "max-age=300"
+    );
     assert!(body["index_version"].is_string());
     let (status, h, _) = get(&s, "/v1/nope").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -676,6 +684,10 @@ async fn www_redirects_to_the_apex() {
             "nosniff"
         );
         assert!(header_str(resp.headers(), header::CONTENT_SECURITY_POLICY).contains("default-src"));
+        assert_eq!(
+            header_str(resp.headers(), header::STRICT_TRANSPORT_SECURITY),
+            "max-age=300"
+        );
     }
     // HTTP/2 puts the host in the URI.
     let resp = get_site(&s, "https://www.usnewsmap.com/status?x=1", None).await;
