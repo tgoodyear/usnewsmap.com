@@ -1,7 +1,7 @@
 # OCR bundles: several pages in one `usnm_ocr` workunit
 
-Issue [#1059](https://github.com/tgoodyear/usnewsmap.com/issues/1059). Until now, `usnm_ocr`
-sent one page per workunit, so every page paid for its own container start, scheduler request,
+Issue [#1059](https://github.com/tgoodyear/usnewsmap.com/issues/1059). Without bundles, `usnm_ocr`
+sends one page per workunit, so every page pays for its own container start, scheduler request,
 download, upload, report, validation and assimilation. A bundle puts up to 32 pages of one
 queue into one workunit. Only the BOINC unit is shared: each page keeps its claim, export,
 ledger reservation, dispatch record, hand-off spool, trust and gold check, and publication.
@@ -9,7 +9,7 @@ ledger reservation, dispatch record, hand-off spool, trust and gold check, and p
 Bundling is off until a controller plan sets `pages_per_unit`. Without it, the controller,
 bridge and worker take the same single-page path as before.
 
-## Why: the measurement
+## Measurement
 
 Measured on 24 October 2026 from CT 230's database and spool (read-only): 975 successful
 `usnm_ocr` results over 14 days, each BOINC `elapsed_time` set against the worker's own
@@ -23,7 +23,7 @@ Tesseract time (`elapsed_ms` in its `result.json`).
 | 9 | i7-1185G7, 6 threads | 82 | 50.4 | 40.8 | 9.5 | 18% |
 | All | | 975 | 87.1 | 75.8 | 10.8 | 7% |
 
-In-task overhead is a nearly fixed 10–13 s a task. That leaves out what happens outside the
+In-task overhead is a nearly fixed 9.5–13 s a task. That leaves out what happens outside the
 task (scheduler, transfers, report, validation, assimilation and one hand-off record per
 workunit). The chosen sizes are 10 pages a unit for `ocr-bulk` and 1 for `ocr-priority`, so
 priority latency is unchanged. A bulk bundle runs about 9–10 minutes on hosts 1 and 9 and
@@ -113,7 +113,7 @@ makes a new plan, with fresh state.
 Claim each production step on #529 first, and release the claim afterwards. Times are US
 Eastern.
 
-1. **Merge and build.** After this PR merges (note that crate changes roll the prod API), build
+1. **Merge and build.** After this PR merges (crate changes roll the prod API), build
    the worker image from `ocr/boinc/Containerfile` and the bridge image from
    `contrib-compute/images/bridge/Containerfile` at the merge commit. Record the worker
    image's full digest.
