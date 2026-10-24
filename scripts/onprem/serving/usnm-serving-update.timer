@@ -1,0 +1,17 @@
+# Starts usnm-serving-update.service 2 minutes after the last run ends
+# (#955). A run that finds the image it serves asks the registry only, not
+# GitHub. Once CI attests a new prod image, the next run (within about 2
+# minutes, while the image is under 30 minutes old) pulls it and starts it
+# on the idle color, which serves once it's ready, at most 800 s later
+# (the API's 420 s to load a version and 360 s readiness cap). install.sh
+# enables it.
+[Unit]
+Description=usnewsmap API: check for a new prod image every 2 minutes (#955)
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=10s
+
+[Install]
+WantedBy=timers.target

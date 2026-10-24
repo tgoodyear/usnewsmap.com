@@ -1,0 +1,32 @@
+# The Quickwit searcher in the serving container (#955): the pinned binary
+# from the environment's registry (scripts/onprem/install-quickwit.sh), with
+# the searcher and metastore roles, on loopback :7280 (gRPC :7281). It reads
+# the index through a read-only file:// metastore that it polls, as the
+# fixtures searcher in CI does. Its config and environment come from
+# gen-env.sh; install.sh installs this unit as
+# /etc/systemd/system/usnm-searcher.service.
+[Unit]
+Description=usnewsmap Quickwit searcher, loopback :7280 (#955)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm-serving/searcher.yaml
+
+[Service]
+User=usnm-qw
+Group=usnm-qw
+EnvironmentFile=/etc/usnm-serving/searcher.env
+ExecStart=/srv/usnm-serving/bin/quickwit run --config /etc/usnm-serving/searcher.yaml
+# The split cache and other local state; the index itself is read-only.
+StateDirectory=usnm-searcher
+StateDirectoryMode=0750
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+LimitNOFILE=1048576
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
