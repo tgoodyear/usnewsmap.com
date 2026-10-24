@@ -49,3 +49,19 @@ The Serial Set fetch (`usnm-ingest congress-serialset`) runs on an OCR node at h
 Turning `USNM_SERIALSET_ONPREM` off closes the lake, removes the grant and drops the exemption at the next provision. Turn it off once the fetch is done. Monthly updates can run the same way, or as the Azure job.
 
 Three other options were considered and not chosen: a VPN gateway into the VNet (a new paid resource); running the job in Azure (the compute this avoids); staging the output in the exchange account, which the node can already reach, and copying it into the lake from Azure (a copy job is Azure compute again, and the copy step is new code).
+
+## Amendment, October 2026: Cosmos for the on-prem BOINC host (#967)
+
+The BOINC server and its controller run on-prem (#942), and the hand-off's `claim` and `collect` steps move there too (#967 phase 3), which retires the Azure hand-off job. `claim pull` needs Cosmos: it takes the `ops` lock and reads the published version. `collect` needs no Cosmos: it writes the ledger in `curated` and pages in `ocr-out`, through the lake and the exchange account, which already allow the node IPs. So the maintainer chose to open Cosmos to the home IP rather than wait for its data to move on-prem with serving (#955). PR #1044 has two separate switches:
+
+- `USNM_COSMOS_ONPREM_ACCESS` opens Cosmos's firewall only.
+- `USNM_BOINC_HANDOFF_ONPREM` grants the roles, and needs `USNM_OCR_NODES` on and `USNM_BOINC_ONPREM_HOST` set.
+
+With both on:
+
+- **Cosmos allows public network access from the node IPs only.** `publicNetworkAccess: Enabled`, `networkAclBypass: None`, and one `ipRules` entry per address in `USNM_OCR_NODE_IPS`, with no `0.0.0.0` rule, which would admit every Azure network. With no node IPs, it stays closed. The private endpoint stays, and Azure callers keep using it: private endpoint traffic isn't filtered by the IP rules.
+- **Entra only.** `disableLocalAuth: true` and `disableKeyBasedMetadataWriteAccess` stay, so a request from that IP still needs an Entra token with a data-plane role.
+- **One identity.** Only the BOINC host's own Arc machine identity (`USNM_BOINC_ONPREM_HOST`, a private setting) gets roles, the hand-off job's existing ones: Cosmos Built-in Data Contributor on `ops` alone, the ledger writer on `curated` (`ocr-local/` only), reader on `reference`, the node writer role on `ocr-out`, and Message Processor and Sender on the two work queues. It isn't granted to the whole on-prem group.
+- **The policy exempts Cosmos by resource id** while it's open (`publicAccountIds`), as it does the lake for the Serial Set runner.
+
+Turning `USNM_COSMOS_ONPREM_ACCESS` off closes Cosmos again at the next provision. When Cosmos's data moves on-prem with serving (#955), this goes away.
