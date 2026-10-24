@@ -29,19 +29,22 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `ocr_outputs`   | published OCR run of a page    | `curated/ocr-local/pages` (`load.py ocr`)                                    |
 | `staging`       | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from   |
 
-`page_summary` is a view with one row per page that joins them: the damage
-score, the newest unit result's scan features and LoC's `est_cer` there, the best of our
-readers, the newest LoC-against-American-Stories comparison, our OCR runs, and whether the page
-has image features yet. It's a plain view, not a materialized one: a stored copy of 23.8M
-pages, refreshed, would need about twice its size free on CT231's disk, which the queue shares.
+`page_signals` is a view with one row per page that joins them: the damage score, the newest
+unit result's scan features and LoC's `est_cer` there, the best of our readers, the newest
+LoC-against-American-Stories comparison (its whole-page `cer_sym`, and agreement v1's
+`local_cer_sym` and `matched_loc`), our OCR runs, and whether the page has image features
+yet. `page_summary` is its stored copy, which the ranking queries read;
+`quality.refresh_summary()` rebuilds it (plainly the first time, then concurrently), and only
+the loader may call it. CT231's disk grew to 96 GiB for it (24 October 2026). A change to
+`page_signals`' columns needs `DROP MATERIALIZED VIEW quality.page_summary` before `setup.sql`.
 
 ## Roles
 
-| Role                  | May                                                                                                   |
-| --------------------- | ----------------------------------------------------------------------------------------------------- |
-| `quality_loader`      | Read everything; insert, update and delete every table but `text_compare` and `readers` (insert only) |
-| `quality_text_writer` | Read everything; insert and update `text_compare`; insert `campaigns`                                 |
-| `quality_reader`      | Read everything                                                                                       |
+| Role                  | May                                                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `quality_loader`      | Read everything; insert, update and delete every table but `text_compare` and `readers` (insert only); refresh `page_summary` |
+| `quality_text_writer` | Read everything; insert and update `text_compare`; insert `campaigns`                                                         |
+| `quality_reader`      | Read everything                                                                                                               |
 
 Each logs in only with a certificate whose CN is the role (`queue-ct.sh --issue-client --role
 <name>`), and none has a password. `test_roles.sql` checks every row of this table, and CI runs it
@@ -71,8 +74,12 @@ Where each source comes in:
 - **`usnm_quality` units:** `quality-collect` (or the runner's own collection) writes Parquet on
   the share; `quality-results-pull.sh` and `load.py results` load it.
 - **Damage summaries:** `load.py damage` reads the per-batch damage files from the curated copy.
-- **The text-only American Stories comparison:** its job writes `text_compare` rows as
-  `quality_text_writer`, `reader_a` `loc-hist`, `reader_b` `as`, under a campaign of its own.
+- **The text-only American Stories comparison:** `usnm-ingest ocr-agreement` (#1062) writes
+  one Parquet file per batch version under `text-agreement/v1/`. `load.py agreement`, as
+  `quality_text_writer`, loads each finished one (its `.summary.json` is there) into
+  `text_compare` as `loc-hist` against `as`, campaign `text-agreement-v1`.
+  `usnm-quality-agree-load.timer` runs it hourly in CT215, which mounts that tree read-only
+  at `/srv/text-agreement`.
 - **OCR readers:** `load.py ocr` records each published `ocr-local` run; their scores against
   the other readers arrive with the next quality unit of the page.
 

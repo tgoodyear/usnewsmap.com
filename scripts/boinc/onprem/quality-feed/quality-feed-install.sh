@@ -13,7 +13,9 @@
 # and the outbox in the container). In the container it installs python3-venv and
 # postgresql-client, a venv at /opt/usnm-quality-feed/venv from requirements.txt (hashes
 # required), quality_feed.py, the unit usnm-quality-feed.service and
-# /etc/usnm/quality-feed.env. On the host it installs quality-ship.sh, quality_receive.py,
+# /etc/usnm/quality-feed.env, and usnm-quality-agree-load.{service,timer} (enabled once
+# the text writer's certificate and /srv/text-agreement are there). On the host it
+# installs quality-ship.sh, quality_receive.py,
 # usnm-quality-ship.{service,timer} and /etc/usnm/quality-ship.env. The campaign's page list
 # (/var/lib/usnm-quality-feed/<campaign>/pages.jsonl in the container, from
 # quality_feed.py select) must be there before --enable starts the feeder and the timer.
@@ -56,7 +58,8 @@ stage=/root/usnm-quality-feed-install
 "${SSH[@]}" "rm -rf $stage && install -d -m 700 $stage"
 scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
-  "$HERE/usnm-quality-ship.timer" "$HERE/../../../onprem/quality/load.py" "root@$HOST:$stage/"
+  "$HERE/usnm-quality-ship.timer" "$HERE/../../../onprem/quality/load.py" \
+  "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" "root@$HOST:$stage/"
 
 "${SSH[@]}" bash -s -- "$CTID" "$stage" "$CAMPAIGN" "$SCAN_SERVER" "$CHUNK" "$PENDING" "$WORKERS" \
   "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" <<'REMOTE'
@@ -70,11 +73,18 @@ pct push "$ct" "$stage/requirements.txt" /opt/usnm-quality-feed/requirements.txt
 pct push "$ct" "$stage/quality_feed.py" /opt/usnm-quality-feed/quality_feed.py --perms 755
 pct push "$ct" "$stage/load.py" /opt/usnm-quality-feed/load.py --perms 755
 pct push "$ct" "$stage/usnm-quality-feed.service" /etc/systemd/system/usnm-quality-feed.service
+pct push "$ct" "$stage/usnm-quality-agree-load.service" /etc/systemd/system/usnm-quality-agree-load.service
+pct push "$ct" "$stage/usnm-quality-agree-load.timer" /etc/systemd/system/usnm-quality-agree-load.timer
 in_ct bash -c '[ -x /opt/usnm-quality-feed/venv/bin/python ] || python3 -m venv /opt/usnm-quality-feed/venv
   /opt/usnm-quality-feed/venv/bin/pip install -q --require-hashes --no-deps --only-binary :all: -r /opt/usnm-quality-feed/requirements.txt'
 printf 'CAMPAIGN=%s\nSCAN_SERVER=%s\nCHUNK_PAGES=%s\nMAX_PENDING=%s\nWORKERS=%s\n' \
   "$campaign" "$scan" "$chunk" "$pending" "$workers" | in_ct sh -c 'cat > /etc/usnm/quality-feed.env'
 in_ct systemctl daemon-reload
+# The text agreement's loader, once its certificate is there (queue-ct.sh --issue-client
+# --role quality_text_writer, copied into /etc/usnm/quality-text-db/ with a dsn file).
+if in_ct test -s /etc/usnm/quality-text-db/dsn && in_ct test -d /srv/text-agreement; then
+  in_ct systemctl enable --now usnm-quality-agree-load.timer
+fi
 
 install -d /opt/usnm-quality-feed /etc/usnm
 install -m 0755 "$stage/quality-ship.sh" /opt/usnm-quality-feed/quality-ship.sh

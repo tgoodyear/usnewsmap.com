@@ -32,7 +32,8 @@ BEGIN
       ('quality_reader', 'quality.pages', 'INSERT', false),
       ('quality_reader', 'quality.text_compare', 'INSERT', false),
       ('quality_reader', 'quality.campaigns', 'INSERT', false),
-      ('quality_reader', 'quality.reader_scores', 'UPDATE', false)
+      ('quality_reader', 'quality.reader_scores', 'UPDATE', false),
+      ('quality_reader', 'quality.page_signals', 'SELECT', true)
     ) AS t(role, tbl, priv, expected)
   LOOP
     got := has_table_privilege(want.role, want.tbl, want.priv);
@@ -40,6 +41,13 @@ BEGIN
       RAISE EXCEPTION '% % on %: % (expected %)', want.role, want.priv, want.tbl, got, want.expected;
     END IF;
   END LOOP;
+  IF NOT has_function_privilege('quality_loader', 'quality.refresh_summary()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'quality_loader can''t refresh page_summary';
+  END IF;
+  IF has_function_privilege('quality_reader', 'quality.refresh_summary()', 'EXECUTE')
+     OR has_function_privilege('quality_text_writer', 'quality.refresh_summary()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'only quality_loader may refresh page_summary';
+  END IF;
   IF has_database_privilege('quality_reader', 'usnm_quality', 'TEMPORARY') THEN
     RAISE EXCEPTION 'quality_reader may create temporary tables';
   END IF;
@@ -51,7 +59,12 @@ BEGIN
   END IF;
 END $$;
 
--- And the view reads for the reader.
+-- The loader's refresh runs, twice (the first fill, then a concurrent one), and the
+-- reader reads the copy.
+SET ROLE quality_loader;
+SELECT quality.refresh_summary();
+SELECT quality.refresh_summary();
+RESET ROLE;
 SET ROLE quality_reader;
 SELECT count(*) >= 0 AS summary_readable FROM quality.page_summary;
 RESET ROLE;

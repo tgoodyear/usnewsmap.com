@@ -9,6 +9,8 @@ table, then INSERT ... ON CONFLICT), so a rerun replaces what it loaded before.
   load.py results --dsn DSN --campaign NAME --engine sha256:... --file F [--file F ...]
   load.py ocr --dsn DSN --curated DIR
   load.py staging --dsn DSN --campaign NAME --docs FILE --image-source S --alto-source S
+  load.py agreement --dsn DSN --dir DIR [--campaign text-agreement-v1] [--state FILE]
+  load.py refresh --dsn DSN
 
 damage   every audit/damage/v2/<batch>_verNN.parquet: the page rows (quality.pages) and the
          damage score (quality.damage), under the campaign damage-v2. A page in two batch
@@ -17,6 +19,12 @@ results  quality collect's pages.parquet or the wave runner's collected parts (o
          page and reader): quality.unit_pages and quality.reader_scores.
 ocr      curated ocr-local/pages: one quality.ocr_outputs row per published run.
 staging  which pages a campaign staged, with the image and ALTO they were staged from.
+agreement  the text agreement of LoC against American Stories (usnm-ingest ocr-agreement,
+         #1062): every finished <batch>_verNN.parquet under DIR (its .summary.json is
+         there) into quality.text_compare as loc-hist against as. Run as
+         quality_text_writer. --state lists the files loaded (name, size, mtime), so a
+         rerun loads only new or rewritten batches.
+refresh  rebuilds quality.page_summary (quality_loader only).
 
 DSN is a libpq connection string with the client certificate, for example
 "host=usnm-queue.tjg.fyi dbname=usnm_quality user=quality_loader sslmode=verify-full
@@ -54,6 +62,12 @@ DAMAGE_COLS = [
 ]
 OCR_COLS = ["doc_id", "reader", "engine", "source", "ocred_at", "text_chars", "damage_rate"]
 STAGING_COLS = ["campaign", "doc_id", "image_source", "alto_source"]
+AGREE_COLS = [
+    "campaign", "doc_id", "reader_a", "reader_b", "batch", "batch_version", "metric_version",
+    "cer_a", "cer_b", "cer_sym", "wer_a", "wer_b", "dice", "chars_a", "chars_b", "words_a", "words_b",
+    "local_cer_sym", "local_cer_a", "local_cer_b", "matched_a", "matched_b", "cover_a", "cover_b",
+    "len_ratio", "known_rate_a", "known_rate_b", "damage_rate_a", "damage_rate_b", "skipped",
+]
 
 
 def num(v):
@@ -261,6 +275,67 @@ def cmd_staging(a):
     log("staging loaded", campaign=a.campaign, pages=len(rows))
 
 
+def agreement_rows(table, campaign):
+    """text_compare rows (loc-hist against as) from one agreement v1 file; a page once."""
+    rows = {}
+    for x in table:
+        d = x.get("doc_id")
+        if not DOC_RE.match(d or ""):
+            continue
+        rows[d] = (
+            campaign, d, "loc-hist", "as", x.get("batch"), integer(x.get("batch_version")),
+            integer(x.get("metric_version")),
+            num(x.get("cer_loc")), num(x.get("cer_as")), num(x.get("cer_sym")), num(x.get("wer_loc")),
+            num(x.get("wer_as")), num(x.get("dice")), integer(x.get("loc_chars")), integer(x.get("as_chars")),
+            integer(x.get("loc_words")), integer(x.get("as_words")),
+            num(x.get("local_cer_sym")), num(x.get("local_cer_loc")), num(x.get("local_cer_as")),
+            num(x.get("matched_loc")), num(x.get("matched_as")), num(x.get("cover_loc")), num(x.get("cover_as")),
+            num(x.get("len_ratio")), num(x.get("loc_known_rate")), num(x.get("as_known_rate")),
+            num(x.get("loc_damage_rate")), num(x.get("as_damage_rate")), x.get("skipped"),
+        )
+    return list(rows.values())
+
+
+def cmd_agreement(a):
+    import pyarrow.parquet as pq
+
+    if not CAMPAIGN_RE.match(a.campaign):
+        sys.exit("--campaign: a campaign name")
+    state = {}
+    if a.state and os.path.exists(a.state):
+        with open(a.state) as f:
+            for line in f:
+                name, sig = line.rstrip("\n").split("\t", 1)
+                state[name] = sig
+    files = sorted(glob.glob(os.path.join(a.dir, "*_ver[0-9][0-9].parquet")))
+    # A campaign row of its own; the writer may add one but never change it.
+    psql(a.dsn, upsert_sql("campaigns", ["campaign", "source", "notes"], ["campaign"],
+                           [(a.campaign, "text-compare", "usnm-ingest ocr-agreement v1, LoC against American Stories")],
+                           update=False))
+    loaded = rows_n = 0
+    for fp in files:
+        name = os.path.basename(fp)
+        if not os.path.exists(fp[: -len(".parquet")] + ".summary.json"):
+            continue  # the batch is still being written
+        st = os.stat(fp)
+        sig = f"{st.st_size}:{int(st.st_mtime)}"
+        if state.get(name) == sig:
+            continue
+        rows = agreement_rows(pq.read_table(fp).to_pylist(), a.campaign)
+        psql(a.dsn, upsert_sql("text_compare", AGREE_COLS, ["campaign", "doc_id", "reader_a", "reader_b"], rows))
+        loaded += 1
+        rows_n += len(rows)
+        state[name] = sig
+        if a.state:
+            tmp = a.state + ".tmp"
+            with open(tmp, "w") as f:
+                f.write("".join(f"{k}\t{v}\n" for k, v in sorted(state.items())))
+            os.replace(tmp, a.state)
+        if a.limit and loaded >= a.limit:
+            break
+    log("agreement loaded", campaign=a.campaign, files=loaded, rows=rows_n, known=len(state))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -280,10 +355,21 @@ def main(argv=None):
     s.add_argument("--image-source", required=True)
     s.add_argument("--alto-source", required=True)
     s.add_argument("--create-campaign", action="store_true")
-    for p in (d, r, o, s):
+    g = sub.add_parser("agreement")
+    g.add_argument("--dir", required=True)
+    g.add_argument("--campaign", default="text-agreement-v1")
+    g.add_argument("--state")
+    g.add_argument("--limit", type=int, default=0)
+    f = sub.add_parser("refresh")
+    for p in (d, r, o, s, g, f):
         p.add_argument("--dsn", required=True)
     a = ap.parse_args(argv)
-    {"damage": cmd_damage, "results": cmd_results, "ocr": cmd_ocr, "staging": cmd_staging}[a.cmd](a)
+    if a.cmd == "refresh":
+        psql(a.dsn, "SELECT quality.refresh_summary();\n")
+        log("page_summary refreshed")
+        return
+    {"damage": cmd_damage, "results": cmd_results, "ocr": cmd_ocr, "staging": cmd_staging,
+     "agreement": cmd_agreement}[a.cmd](a)
 
 
 if __name__ == "__main__":

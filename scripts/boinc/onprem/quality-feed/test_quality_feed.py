@@ -140,6 +140,17 @@ class LoadTest(unittest.TestCase):
         self.assertEqual([s[2] for s in scores], ["loc-hist", "as"])
         self.assertEqual(scores[0][loader.SCORE_COLS.index("est_cer")], 0.2)
 
+    def test_agreement_rows_map_loc_and_as_to_a_and_b(self):
+        x = {"doc_id": "sn1_1900-01-01_ed-1_seq-1", "batch": "b", "batch_version": 1, "metric_version": 1,
+             "cer_loc": 0.7, "cer_as": 0.6, "local_cer_sym": 0.05, "matched_loc": 0.9, "matched_as": 0.99,
+             "loc_words": 100, "as_words": 90}
+        rows = loader.agreement_rows([x, dict(x, local_cer_sym=0.06), {"doc_id": "bad"}], "text-agreement-v1")
+        self.assertEqual(len(rows), 1)
+        r = dict(zip(loader.AGREE_COLS, rows[0]))
+        self.assertEqual((r["reader_a"], r["reader_b"]), ("loc-hist", "as"))
+        self.assertEqual((r["cer_a"], r["cer_b"], r["local_cer_sym"]), (0.7, 0.6, 0.06))
+        self.assertEqual((r["matched_a"], r["words_b"]), (0.9, 90))
+
     def test_damage_keeps_one_row_a_page(self):
         import datetime
 
