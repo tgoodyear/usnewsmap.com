@@ -153,7 +153,8 @@ fn epoch_ms() -> u64 {
 /// The previous run's last request, as an `Instant`, if its stamp is readable and recent.
 fn last_from_stamp(stamp: &Path) -> Option<Instant> {
     let ms: u64 = std::fs::read_to_string(stamp).ok()?.trim().parse().ok()?;
-    let ago = Duration::from_millis(epoch_ms().checked_sub(ms)?);
+    // A stamp from the future (the clock moved back) counts as now: a full gap.
+    let ago = Duration::from_millis(epoch_ms().saturating_sub(ms));
     Instant::now().checked_sub(ago)
 }
 
@@ -391,6 +392,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
             slowed.why
         );
     }
+    let last = last_from_stamp(&opts.out.join(".last-request"));
     let f = Fetcher {
         http: reqwest::Client::builder()
             .user_agent(USER_AGENT)
@@ -401,9 +403,14 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         pacer: Pacer::with_global(opts.gap, Some(Arc::clone(&global))),
         global: Arc::clone(&global),
         gap: opts.gap,
-        last_sent: std::sync::Mutex::new(last_from_stamp(&opts.out.join(".last-request"))),
+        last_sent: std::sync::Mutex::new(last),
         stamp: opts.out.join(".last-request"),
     };
+    // The previous run's remainder of the gap goes on the pacer first, so the first request
+    // waits it out before it takes a slot in the host's budget.
+    if let Some(left) = last.and_then(|l| opts.gap.checked_sub(l.elapsed())) {
+        f.pacer.hold(left);
+    }
     let list_path = opts.out.join("datasets.json");
     if !list_path.exists() {
         let far = Instant::now() + Duration::from_secs(24 * 3600);
@@ -568,6 +575,11 @@ mod tests {
         assert!(
             ago >= Duration::from_secs(29) && ago <= Duration::from_secs(31),
             "{ago:?}"
+        );
+        std::fs::write(&stamp, (epoch_ms() + 600_000).to_string()).unwrap();
+        assert!(
+            last_from_stamp(&stamp).unwrap().elapsed() < Duration::from_secs(1),
+            "the future is now"
         );
         std::fs::write(&stamp, "garbage").unwrap();
         assert!(last_from_stamp(&stamp).is_none());
