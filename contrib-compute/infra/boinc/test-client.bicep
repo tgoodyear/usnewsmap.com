@@ -1,5 +1,5 @@
 // Ephemeral BOINC volunteer test client VM (#484), deployed into its own resource group
-// usnm-boinc-test-rg-<env> by scripts/boinc-test-client.sh and removed by deleting that group.
+// usnm-boinc-test-rg-<env> by scripts/boinc/boinc-test-client.sh and removed by deleting that group.
 //
 // Outbound-only: the NSG denies all inbound traffic. Cloud-init installs Docker, the NVIDIA
 // driver and container toolkit when a GPU is present, and boinc-client (>= 8.2.13 from the

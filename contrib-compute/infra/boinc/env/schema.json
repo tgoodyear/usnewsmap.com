@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "The BOINC server's committed settings, contrib-compute/infra/boinc/env/<env>.json",
-  "description": "Public settings that scripts/provision-boinc.sh deploys as the stack usnm-boinc-<env> into usnm-boinc-rg-<env>, and scripts/build-boinc-images.sh updates with the images it builds. Nothing secret belongs here: the secrets are made in Azure (contrib-compute/infra/boinc/modules/keyvault.bicep). Keys sorted. provision-boinc.sh checks the same rules with jq.",
+  "description": "Public settings that scripts/boinc/provision-boinc.sh deploys as the stack usnm-boinc-<env> into usnm-boinc-rg-<env>, and scripts/boinc/build-boinc-images.sh updates with the images it builds. Nothing secret belongs here: the secrets are made in Azure (contrib-compute/infra/boinc/modules/keyvault.bicep). Keys sorted. provision-boinc.sh checks the same rules with jq.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -29,7 +29,7 @@
     },
     "goldBundle": {
       "type": "boolean",
-      "description": "Deploy the gold bundle job, which builds the gold bundle v1 from its publishers onto the share inside the VNet (docs/boinc.md#build-the-gold-bundle): main.bicep's goldBundle parameter."
+      "description": "Deploy the gold bundle job, which builds the gold bundle v1 from its publishers onto the share inside the VNet (docs/boinc/gold-check.md#build-the-gold-bundle): main.bicep's goldBundle parameter."
     },
     "images": {
       "type": "object",
@@ -40,7 +40,7 @@
         "server",
         "worker"
       ],
-      "description": "Images by registry digest, or empty before the first build. server and bridge are in the app's shared registry (infra/names/<env>.json) and come from scripts/build-boinc-images.sh; with server empty, the stack deploys only the base resources. worker is the public GHCR package that volunteers pull (ADR-0019, addendum), from .github/workflows/boinc-worker.yml. appver is the last published app version (images/appver, usnm-boinc-appver), written by scripts/boinc-app-release.sh; when set, the stack keeps the publish job on it.",
+      "description": "Images by registry digest, or empty before the first build. server and bridge are in the app's shared registry (infra/names/<env>.json) and come from scripts/boinc/build-boinc-images.sh; with server empty, the stack deploys only the base resources. worker is the public GHCR package that volunteers pull (ADR-0019, addendum), from .github/workflows/boinc-worker.yml. appver is the last published app version (images/appver, usnm-boinc-appver), written by scripts/boinc/boinc-app-release.sh; when set, the stack keeps the publish job on it.",
       "properties": {
         "appver": {
           "type": "string",
@@ -111,7 +111,7 @@
         "provisioned",
         "provisioned-final"
       ],
-      "description": "The project share's billing (#917): standard (pay-as-you-go StorageV2), copy (the provisioned v2 SSD share also mounted at /project-v2 to fill it), provisioned (/project is the provisioned share; the old account kept for rollback), provisioned-final (the old account removed). main.bicep's projectShare parameter; docs/boinc.md, \"Moving the project share\"."
+      "description": "The project share's billing (#917): standard (pay-as-you-go StorageV2), copy (the provisioned v2 SSD share also mounted at /project-v2 to fill it), provisioned (/project is the provisioned share; the old account kept for rollback), provisioned-final (the old account removed). main.bicep's projectShare parameter; docs/boinc/server-and-apps.md, \"Moving the project share\"."
     },
     "projectUrl": {
       "type": "string",
@@ -128,7 +128,7 @@
         "script",
         "sha256"
       ],
-      "description": "Deploy the usnm_quality wave job (usnm-boinc-quality-caj-<env>): it downloads the runner with the BOINC identity, refuses it unless its sha256 matches, and runs its eight shards. scripts/boinc-quality-campaign.py launch-corpus uploads scripts/boinc/quality_corpus_runner.py as quality/<campaign>/run_wave9-<first 12 of its sha256>.py and prints this setting when the job pins another. Absent: no job. main.bicep's qualityWaveScript and qualityWaveScriptSha256.",
+      "description": "Deploy the usnm_quality wave job (usnm-boinc-quality-caj-<env>): it downloads the runner with the BOINC identity, refuses it unless its sha256 matches, and runs its eight shards. scripts/boinc/boinc-quality-campaign.py launch-corpus uploads scripts/boinc/quality_corpus_runner.py as quality/<campaign>/run_wave9-<first 12 of its sha256>.py and prints this setting when the job pins another. Absent: no job. main.bicep's qualityWaveScript and qualityWaveScriptSha256.",
       "properties": {
         "script": {
           "type": "string",

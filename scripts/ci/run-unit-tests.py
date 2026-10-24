@@ -2,11 +2,12 @@
 """Run every scripts/**/test_*.py unit test, so a new test file runs in CI with no list to edit.
 
 `python3 -m unittest discover -s scripts` reads only scripts/ itself: there is no __init__.py
-under scripts/, and discovery does not enter directories that are not packages (it found 16 of
-the 70 files). So this globs the files and runs each in its own `python3 -m unittest` process
-from the repository root, as CI always ran them, which keeps one file's imports and patches out
-of the next. Exits non-zero if any file fails or collects no tests. `--list` prints what would
-run and what is left out. A file left out here must run in a CI step of its own.
+under scripts/, and discovery does not enter directories that are not packages (every test now
+sits in a subdirectory, so it finds none). So this globs the files and runs each in its own
+`python3 -m unittest` process from the repository root, as CI always ran them, which keeps one
+file's imports and patches out of the next. Exits non-zero if any file fails or collects no
+tests. `--list` prints what would run and what is left out. A file left out here must run in a CI
+step of its own.
 """
 import argparse
 import re
@@ -22,8 +23,8 @@ EXCLUDE = {
     "scripts/ocr-survey": "needs Pillow; ci.yml's OCR gold set step runs it (test_transcription imports by directory)",
     "scripts/ocr-node/test_quality_jpeg_cache.py": "needs Pillow; ci.yml's OCR nodes step installs it",
     "scripts/ocr-node/test_quality_jpeg_list.py": "needs Pillow; ci.yml's OCR nodes step installs it",
-    "scripts/test_check_index_history.py": "needs fastjsonschema; ci.yml's ops job runs it in its hash-pinned venv",
-    "scripts/test_check_version_snapshots.py": "needs fastjsonschema; ci.yml's ops job runs it in its hash-pinned venv",
+    "scripts/ops/test_check_index_history.py": "needs fastjsonschema; ci.yml's ops job runs it in its hash-pinned venv",
+    "scripts/ops/test_check_version_snapshots.py": "needs fastjsonschema; ci.yml's ops job runs it in its hash-pinned venv",
     "scripts/boinc/test_patch_server_gold_routing.py": "compiles C++ against nlohmann-json3-dev; ci.yml's contrib job installs it",
 }
 

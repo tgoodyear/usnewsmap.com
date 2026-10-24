@@ -1,5 +1,5 @@
 name: ci
-# scripts/bootstrap.sh finds the run it dispatched by its correlation id.
+# scripts/azure/bootstrap.sh finds the run it dispatched by its correlation id.
 run-name: ${{ inputs.correlation != '' && format('ci ({0})', inputs.correlation) || github.event_name == 'pull_request' && github.event.pull_request.title || github.event_name == 'push' && github.event.head_commit.message || 'ci' }}
 
 on:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       correlation:
-        description: "Identifies this run (set by scripts/bootstrap.sh)"
+        description: "Identifies this run (set by scripts/azure/bootstrap.sh)"
         required: false
         default: ""
       scope:
@@ -26,6 +26,9 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # What each job checks, when it runs, how long it takes and which ones a pull request
+  # needs green: docs/development.md, "What CI runs".
+  #
   # What a change touches (scripts/ci/changes.sh): jobs it can't affect are
   # skipped, so an infra-only fix doesn't wait on Rust, web and image builds.
   changes:
@@ -69,11 +72,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -100,10 +101,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
       - name: Start the queue fixture
         run: |
           location=$(scripts/onprem/queue/ci-fixture.sh --workdir "$RUNNER_TEMP/queue")
@@ -293,14 +291,11 @@ jobs:
           [ -z "$bad" ] || { echo "::error::base image without a digest:"; echo "$bad"; exit 1; }
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # The base (BOINC from source) is the slow layer: cached across runs.
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: contrib-compute/images/base/Containerfile
-          tags: usnm-boinc-base:check
-          load: true
-          cache-from: type=gha,scope=boinc-base
-          cache-to: type=gha,scope=boinc-base,mode=max
+          tag: usnm-boinc-base:check
+          cache-scope: boinc-base
       - name: The server image builds on the base
         run: |
           docker buildx build --builder default --load -t usnm-boinc-server:check \
@@ -325,7 +320,7 @@ jobs:
             -f contrib-compute/images/bridge/Containerfile --build-arg SERVER_IMAGE=usnm-boinc-server:check \
             --build-arg BIN_IMAGE=usnm-boinc-bridge-bin:check .
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
-          # The gold-bundle step's tools (docs/boinc.md#build-the-gold-bundle).
+          # The gold-bundle step's tools (docs/boinc/gold-check.md#build-the-gold-bundle).
           docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
             bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"11.3.0\", PIL.__version__" &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/gold.py --help > /dev/null &&
@@ -345,10 +340,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
       - run: cargo test -p usnm-core --test page_language_samples --locked -- --ignored
 
   quickwit:
@@ -367,14 +359,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
       - name: Install Quickwit
         run: scripts/ci/install-quickwit.sh
       - name: Load fixtures, serve them from a read-only searcher
-        run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
+        run: echo "QUICKWIT_URL=$(scripts/dev/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
       - run: cargo test -p usnm-search --test quickwit_parity --locked
       # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it,
       # with the environment the official Quickwit image sets (the ingest image
@@ -413,14 +402,14 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ops"
           "$RUNNER_TEMP/ops/bin/pip" install --require-hashes --no-deps -r scripts/ci/requirements-ops.txt
       - name: Every snapshot matches ops/version-snapshots/schema.json
-        run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-version-snapshots.py'
+        run: '"$RUNNER_TEMP/ops/bin/python" scripts/ops/check-version-snapshots.py'
       - name: ops/index-history.json matches ops/index-history.schema.json, keys sorted
-        run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-index-history.py'
+        run: '"$RUNNER_TEMP/ops/bin/python" scripts/ops/check-index-history.py'
       - name: The checkers' and searches.sh date-span tests pass
         run: >-
           "$RUNNER_TEMP/ops/bin/python" -m unittest -v
-          scripts/test_check_version_snapshots.py scripts/test_check_index_history.py
-          scripts/test_date_spans.py
+          scripts/ops/test_check_version_snapshots.py scripts/ops/test_check_index_history.py
+          scripts/azure/test_date_spans.py
 
   image:
     name: container image builds
@@ -442,24 +431,18 @@ jobs:
           buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: docker/Dockerfile.api
-          tags: usnewsmap-api:check
-          load: true
-          cache-from: type=gha,scope=api
-          cache-to: type=gha,scope=api,mode=max
+          tag: usnewsmap-api:check
+          cache-scope: api
       - name: The API image serves the API and the site
         run: scripts/ci/check-api-image.sh --image usnewsmap-api:check
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: docker/Dockerfile.ingest
-          tags: usnm-ingest-check
-          load: true
-          cache-from: type=gha,scope=ingest
-          cache-to: type=gha,scope=ingest,mode=max
+          tag: usnm-ingest-check
+          cache-scope: ingest
       - name: The ingest image runs
         run: scripts/ci/check-ingest-image.sh --image usnm-ingest-check
       # PR builds have no registry, so docker/Dockerfile.ingest's default base is
@@ -469,14 +452,11 @@ jobs:
           want=$(jq -r '.upstream | "\(.image):\(.tag)@\(.digest)"' infra/quickwit-image.json)
           grep -qxF "ARG QUICKWIT_IMAGE=$want" docker/Dockerfile.ingest ||
             { echo "::error::docker/Dockerfile.ingest's QUICKWIT_IMAGE default isn't $want"; exit 1; }
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: docker/Dockerfile.ja-ocr
-          tags: usnm-ja-ocr-check
-          load: true
-          cache-from: type=gha,scope=ja-ocr
-          cache-to: type=gha,scope=ja-ocr,mode=max
+          tag: usnm-ja-ocr-check
+          cache-scope: ja-ocr
       # The whole checkout, read-only: test_page_language_parity.py checks
       # the Rust port's word list and parity fixture against this Python.
       - name: The Japanese OCR job's tests pass
@@ -506,12 +486,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: el9
+          cache-key: el9
       # --version prints the commit (USNM_GIT_SHA at build time).
       # The LAN dashboard (usnm-ocrdash, 12 §12.2.5) ships in the same
       # release; its container on pve-big is Debian 12 (glibc 2.36).
@@ -686,6 +663,12 @@ jobs:
         run: scripts/ci/no-shared-keys.sh
       - name: Scripts and CLIs take named arguments, not positional ones (#277)
         run: scripts/ci/no-positional-args.py
+      # The Surya image's pins live in ocr/boinc/surya/engine.lock and the NDLOCR-Lite commit in its
+      # models.lock; this checks the places that can't read them (the Containerfiles, the adapter's
+      # COMMIT, the engine catalog). Its unit test runs with the others below.
+      - name: Engine pins written in more than one place agree
+        if: needs.changes.outputs.infra == 'true'
+        run: scripts/ci/check-engine-pins.py
       # Every scripts/**/test_*.py (changes.sh, the corpus catalog, model downloads, the
       # environment and BOINC scripts against stub tools, the checkers, ...). A new test file
       # runs without being listed here. The files it leaves out (Pillow, the ops venv, their own
@@ -715,7 +698,7 @@ jobs:
       - name: The BOINC scripts pass shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
-          shellcheck -x -S warning scripts/start-boinc-bridge.sh scripts/provision-boinc.sh scripts/boinc-app-release.sh
+          shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
       - name: Each environment's committed settings match infra/env/schema.json
@@ -770,11 +753,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-node-web
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run lint
@@ -798,11 +777,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-node-web
       - run: npm ci
       - run: npm run format:check
 
@@ -815,15 +790,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-node-web
       # The API's build overlaps the site's; start-api-fixtures.sh runs cargo
       # build again, which waits for this one and fails the same way if it did.
       - name: Build the API in the background
@@ -877,7 +845,7 @@ jobs:
           ENVS: ${{ vars.USNM_DEPLOY_ENVIRONMENTS || '[]' }}
         run: |
           envs=$(jq -r '.[]' <<< "$ENVS")
-          msg="This merge changes the Azure stack or an environment's settings (infra/), which a deploy doesn't apply. Run scripts/provision.sh for each environment: ${envs//$'\n'/, }."
+          msg="This merge changes the Azure stack or an environment's settings (infra/), which a deploy doesn't apply. Run scripts/azure/provision.sh for each environment: ${envs//$'\n'/, }."
           echo "::warning title=Stack change not deployed::$msg"
           {
             echo "### Stack change not deployed"
@@ -885,7 +853,7 @@ jobs:
             echo "This merge changes \`infra/\` beyond what a deploy applies. From an up-to-date \`main\`, run:"
             echo
             echo '```sh'
-            for e in $envs; do echo "scripts/provision.sh --env $e"; done
+            for e in $envs; do echo "scripts/azure/provision.sh --env $e"; done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -895,7 +863,7 @@ jobs:
     # environment's private registry (08 §8.6) and roll its API onto this
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
-    # Environment holds its own variables, written by scripts/bootstrap.sh.
+    # Environment holds its own variables, written by scripts/azure/bootstrap.sh.
     needs: [changes, rust, queue, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.

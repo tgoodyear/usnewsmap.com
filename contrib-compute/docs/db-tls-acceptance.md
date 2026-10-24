@@ -493,7 +493,7 @@ must be filled with null by a name-based union across campaign queries as well.
 The compatibility change and regression belong to the assessment-database owner
 in PR #777, not this reconciliation. Before collector rollout, require a merged
 fix for both page and crop campaign unions in
-`scripts/build-quality-assessment-db.py` and a passing regression consolidating
+`scripts/data/build-quality-assessment-db.py` and a passing regression consolidating
 old and new campaign files, with the older campaign's new measurements null.
 Record the merged commit and test evidence in the #464/#529 rollout receipt.
 Image builds may proceed, but neither the collector nor TLS activation may be

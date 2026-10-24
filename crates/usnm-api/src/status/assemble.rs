@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Duration, DurationRound, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use usnm_core::ids::PageKey;
 use usnm_core::names;
@@ -23,7 +24,8 @@ const MAX_LISTED: usize = 100;
 const MAX_RUNS: usize = 20;
 
 /// A section that needs the pipeline state: its data, or why there is none.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "{T}Section")]
 pub struct Section<T> {
     pub available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,7 +53,7 @@ impl<T> Section<T> {
 }
 
 /// The version the API is serving, from its reference data (always available).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Published {
     pub index_version: String,
     pub published_at: String,
@@ -84,7 +86,7 @@ pub struct Published {
 }
 
 /// One year's published pages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct YearPages {
     pub year: i32,
     pub pages: u64,
@@ -92,7 +94,7 @@ pub struct YearPages {
 
 /// The texts the version searches besides LoC's own OCR, each `None` when
 /// the version has none of it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct Sources {
     /// Attribution frozen with the serving version; absent on old releases.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,7 +112,7 @@ pub struct Sources {
 }
 
 /// American Stories' text in the version.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct AmericanStories {
     /// Searches cover it (`USNM_AMERICAN_STORIES_SEARCH` leaves it on, or
     /// the version shares one field with LoC's text).
@@ -126,7 +128,7 @@ pub struct AmericanStories {
 }
 
 /// Pages whose main-index document holds our OCR's Latin-script text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct JaLatinPages {
     pub pages: u64,
     /// Exact engine keys from the serving version, not the current OCR job.
@@ -138,13 +140,13 @@ pub struct JaLatinPages {
     pub by_title: Vec<TitleOcrPages>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ReasonPages {
     pub reason: String,
     pub pages: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TitleOcrPages {
     pub lccn: String,
     /// The catalog's name; the LCCN when the catalog lacks it.
@@ -154,14 +156,14 @@ pub struct TitleOcrPages {
 
 /// Pages whose main-index document holds our own OCR's text in place of
 /// LoC's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OcrLocalSummary {
     pub pages: u64,
     /// By engine, most pages first.
     pub by_engine: Vec<EnginePages>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EnginePages {
     /// `ocr_source`, e.g. `usnm-tesseract`.
     pub source: String,
@@ -171,7 +173,7 @@ pub struct EnginePages {
 }
 
 /// One state's (or territory's) share of the published pages.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct StatePages {
     /// The places' postal code, e.g. `IL`.
     pub state: String,
@@ -187,7 +189,7 @@ pub struct StatePages {
 /// Pages by language. A title that lists several languages counts in each
 /// one's row (as a search filtered to any of them finds its pages), so the
 /// rows add up to more than the version's pages when there are such titles.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct ByLanguage {
     /// The snapshot records pages per title. Older snapshots don't: then
     /// only the newspaper counts are known.
@@ -199,7 +201,7 @@ pub struct ByLanguage {
     pub rows: Vec<LanguagePages>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct LanguagePages {
     /// The catalog's code (MARC, e.g. `eng`, or LoC's own name for a language
     /// without one); `None` for titles that list no language.
@@ -433,7 +435,7 @@ pub fn sources(rd: &RefData) -> Sources {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
 pub struct ByStatus {
     pub queued: u64,
     pub downloading: u64,
@@ -441,14 +443,14 @@ pub struct ByStatus {
     pub failed: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct HourBin {
     pub start: DateTime<Utc>,
     pub batches: u64,
     pub pages: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Throughput {
     /// Batches curated per hour, oldest first, ending with the current hour.
     pub hours: Vec<HourBin>,
@@ -461,7 +463,7 @@ pub struct Throughput {
     pub eta: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct LocPacer {
     /// The next free bulk-download slot, shared by every worker.
     pub next_slot: Option<DateTime<Utc>>,
@@ -470,7 +472,7 @@ pub struct LocPacer {
     pub throttled: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct InProgress {
     pub batch: String,
     pub version: u16,
@@ -484,7 +486,7 @@ pub struct InProgress {
     pub attempts: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Recent {
     pub batch: String,
     pub version: u16,
@@ -492,7 +494,7 @@ pub struct Recent {
     pub curated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Failed {
     pub batch: String,
     pub version: u16,
@@ -502,7 +504,7 @@ pub struct Failed {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Backfill {
     /// Batches listed by LoC and recorded by the pipeline.
     pub total: u64,
@@ -530,7 +532,7 @@ pub struct Backfill {
     pub listed_limit: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Writer {
     /// A release holds the single-writer lock.
     pub held: bool,
@@ -538,7 +540,7 @@ pub struct Writer {
     pub until: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ReleaseProgress {
     pub index_version: String,
     pub docs_sent: u64,
@@ -552,7 +554,7 @@ pub struct ReleaseProgress {
 /// building, published and failed; a release that was stopped (a job stopped
 /// by hand, a replica killed) never records an end, so a run left `building`
 /// that isn't the one holding the writer is shown as stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
     Building,
@@ -561,7 +563,7 @@ pub enum RunState {
     Stopped,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Run {
     pub index_version: String,
     pub full: bool,
@@ -579,7 +581,7 @@ pub struct Run {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Indexing {
     /// The published version as the pipeline recorded it (`ops/current`).
     pub current_version: Option<String>,
@@ -596,13 +598,13 @@ pub struct Indexing {
     pub runs: Vec<Run>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Catalog {
     pub titles: usize,
     pub places: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TitlesPipeline {
     /// Titles with pages in curated batches.
     pub curated_titles: usize,
@@ -619,7 +621,8 @@ pub struct TitlesPipeline {
     pub recurated_awaiting_full: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "StatusTitles")]
 pub struct Titles {
     /// `catalog/titles.json` and `places.json` (maintained by titles-sync and geocode).
     pub catalog: Section<Catalog>,

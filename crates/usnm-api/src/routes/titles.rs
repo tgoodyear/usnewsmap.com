@@ -8,6 +8,7 @@ use axum::extract::{OriginalUri, Path, State};
 use axum::http::Uri;
 use axum::response::Response;
 use chrono::NaiveDate;
+use schemars::JsonSchema;
 use serde::Serialize;
 use usnm_core::params::RawParams;
 
@@ -16,13 +17,13 @@ use crate::error::ApiError;
 use crate::refdata::{RefData, Title};
 use crate::{version, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct TitlesResponse {
     index_version: String,
     titles: Vec<TitleOut>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct TitleResponse {
     index_version: String,
     #[serde(flatten)]
@@ -30,8 +31,19 @@ struct TitleResponse {
     links: Links,
 }
 
+/// The schema of `/v1/titles`' response, for `/v1/openapi.json`.
+pub(crate) fn titles_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<TitlesResponse>()
+}
+
+/// The schema of `/v1/titles/{lccn}`'s response, for `/v1/openapi.json`.
+pub(crate) fn title_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<TitleResponse>()
+}
+
 /// One newspaper: its catalog record joined with its place and its pages.
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "Title")]
 struct TitleOut {
     lccn: String,
     title: String,
@@ -51,7 +63,8 @@ struct TitleOut {
     languages: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "TitleLinks")]
 struct Links {
     /// The newspaper's page at the Library of Congress, where its issues can
     /// be browsed by date.
@@ -89,7 +102,7 @@ pub async fn titles(
 
 async fn titles_in(state: &Arc<AppState>, ctx: Ctx, uri: &Uri) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_only(&["v"])?;
+    raw.reject_only(super::VERSION_KEYS)?;
     let job = Job::reference("titles", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();
@@ -129,7 +142,7 @@ pub async fn title(
         return Err(ApiError::NotFound(format!("unknown title `{lccn}`")));
     }
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_only(&["v"])?;
+    raw.reject_only(super::VERSION_KEYS)?;
     let job = Job::reference("titles", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();

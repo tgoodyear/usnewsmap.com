@@ -1,5 +1,5 @@
 // Parameters for infra/main.bicep, from the environment's settings
-// (.azure/<env>/.env). scripts/bootstrap.sh exports the settings that have
+// (.azure/<env>/.env). scripts/azure/bootstrap.sh exports the settings that have
 // a value before it deploys the stack; the rest take the defaults here.
 using './main.bicep'
 

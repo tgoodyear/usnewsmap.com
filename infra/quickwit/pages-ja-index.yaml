@@ -63,7 +63,7 @@ indexing_settings:
   # the 60,000-page splits before it, or the 100,000-page splits before
   # the pairs (about 2.6 GB, at most 4.6 GB; 08 §8.4). A full base can be
   # given a larger target (the release's --split-docs, which rewrites this
-  # value and needs the E4 profile; docs/operations.md). The Japanese
+  # value and needs the E4 profile; docs/operations/rebuild-and-index-storage.md). The Japanese
   # pages' index (pages-ja-index.yaml) keeps the same settings: the
   # release checks every index of a version against the target it was
   # created with (crates/usnm-ingest/src/merges.rs).

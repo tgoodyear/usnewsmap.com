@@ -207,7 +207,7 @@ solely for validator logging; no job, engine or output metadata was rewritten.
 
 [All evidence](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/) includes both
 100-row output files, both scorer rules/reports, timing/power traces, comparison summary,
-SHA-256 inventory and `raw-native-results.tar.gz`. The archive preserves byte-exact native
+SHA-256 inventory and `raw-native-results.tar.gz` (the archive is in the `bench-assets` set: `scripts/ops/data-assets.sh --fetch --set bench-assets`). The archive preserves byte-exact native
 outputs, server logs, staged job metadata, validator-name copies, build receipts and the
 separately labelled discarded Vulkan attempt. For offline replay, extract it into a new local
 project directory, then run `usnm-boinc qwen compare --files READINGS RESULT DIAG --files2

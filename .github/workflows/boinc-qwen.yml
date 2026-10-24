@@ -32,6 +32,7 @@ on:
       - "catalog/**"
       - "fixtures/ocr-gold/bundle-v1.lock.json"
       - "infra/quickwit/**"
+      - "ocr/boinc/surya/engine.lock"
       - "ocr/boinc/usnm_qwen_benchmark_in"
       - "ocr/engines/engines.toml"
       - "ocr/engines/ndlocr-lite/models.lock"

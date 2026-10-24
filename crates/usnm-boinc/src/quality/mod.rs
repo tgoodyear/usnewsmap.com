@@ -24,6 +24,7 @@ pub use usnm_ocr_quality::slot::{
 };
 
 pub mod calibrate;
+pub mod cli;
 pub mod collect;
 pub mod estimate;
 pub mod sample;

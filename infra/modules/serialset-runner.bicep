@@ -15,7 +15,7 @@
 //   condition can't say so again: Azure refuses a condition that names an
 //   action the role doesn't grant, InvalidRoleAssignmentCondition.)
 // Nothing on the other containers, and nothing on Cosmos: the runner holds
-// its lock in a local state file (docs/operations.md, "The Serial Set
+// its lock in a local state file (docs/operations/congress-pages.md, "The Serial Set
 // on-prem").
 
 param storageName string

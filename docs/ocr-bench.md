@@ -8,6 +8,8 @@ the same files ([#738](https://github.com/tgoodyear/usnewsmap.com/issues/738)).
 
 Candidate licensing, model-availability and bounded local CPU findings are recorded in [the 2026-10-18 feasibility note](notes/2026-10-18-ocr-bench-candidate-feasibility.md).
 
+The pilot's page images (`ocr/bench/serialset-pilot/images/`) and the raw native result archives under `ocr/bench/results/` are not tracked: they are the `bench-assets` set of `scripts/ops/data-assets.sh`, fetched with `scripts/ops/data-assets.sh --fetch --set bench-assets` and published by the `publish data assets` workflow ([reports/README.md](reports/README.md), "Data"). `SHA256SUMS` and `inputs.sha256` stay in the tree and pin the bytes.
+
 ## Fetch a release
 
 ```sh

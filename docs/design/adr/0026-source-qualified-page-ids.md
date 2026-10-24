@@ -12,7 +12,7 @@
 
 - Congress pages: `SERIALSET-00033_00_00-009-0042-0000_p1` (GovInfo Serial Set),
   `unt-{metadc}_p{seq}` (UNT) and `lcg-{series}-{volume}_p{seq}` (Congress.gov)
-  (`crates/usnm-ingest/src/congress.rs`).
+  (`crates/usnm-congress/src/lib.rs`).
 - OCR benchmark samples, such as `overproof-1`, which Surya staging copies into `Job.doc_id`
   (`crates/usnm-boinc/src/surya/stage.rs`), and Qwen's `benchmark-{sha256}`.
 - Gold bundle crops, such as `pub-bln600-063`, each with its upstream dataset in `source`
@@ -32,7 +32,7 @@ not current defects, and mixing sources would break them:
   collide.
 
 `docs/design/14-corpus-data-flow.md` already proposes `loc:<doc_id>`, and only
-`scripts/data_catalog.py` checks for it.
+`scripts/corpus/data_catalog.py` checks for it.
 
 ## Decision
 
@@ -66,7 +66,7 @@ not current defects, and mixing sources would break them:
 
    A store whose bare ids aren't LoC keeps its stored values too, but nothing passes its bare
    ids to `PageId` directly. The Congress index holds GovInfo, UNT and Congress.gov pages
-   together (`crates/usnm-ingest/src/congress.rs`), so its read adapter resolves each
+   together (`crates/usnm-congress/src/lib.rs`), so its read adapter resolves each
    document's source from that row's `series` and its id's prefix (`SERIALSET-`, `unt-`, `lcg-`) and qualifies the id before building a
    `PageId`.
 

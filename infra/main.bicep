@@ -1,6 +1,6 @@
 // US News Map: lean hosting profile (08 §8.1, ADR-0006). No IaaS.
 //
-// Deployed as the deployment stack usnm-{env} by scripts/bootstrap.sh, with
+// Deployed as the deployment stack usnm-{env} by scripts/azure/bootstrap.sh, with
 // parameters from infra/main.bicepparam. Creates the project
 // resource group and, optionally, the BOINC group, then the platform inside
 // the project group. The ACI Spot alternative is not deployed.
@@ -44,13 +44,13 @@ param computeConcurrency int = 2
 @allowed(['fixtures', 'quickwit'])
 param searchBackend string = 'fixtures'
 
-@description('Run the Quickwit searcher as its own Container App, usnm-search-ca-{env}, with internal ingress, instead of a sidecar in each API replica (#267): a new API image, and so a site change, then doesn\'t restart it. Needs searchBackend quickwit. Off (the default) keeps the sidecar; roll back with searcherAppRetain first to keep the searcher app until the API sidecar is ready (docs/operations.md, "Searcher app").')
+@description('Run the Quickwit searcher as its own Container App, usnm-search-ca-{env}, with internal ingress, instead of a sidecar in each API replica (#267): a new API image, and so a site change, then doesn\'t restart it. Needs searchBackend quickwit. Off (the default) keeps the sidecar; roll back with searcherAppRetain first to keep the searcher app until the API sidecar is ready (docs/operations/search-serving.md, "Searcher app").')
 param searcherApp bool = false
 
-@description('Keep the searcher app and its Blob reader role during rollback to the API sidecar (#362), without routing the API to it. Clear only after the sidecar revision is ready and serving (docs/operations.md, "Searcher app").')
+@description('Keep the searcher app and its Blob reader role during rollback to the API sidecar (#362), without routing the API to it. Clear only after the sidecar revision is ready and serving (docs/operations/search-serving.md, "Searcher app").')
 param searcherAppRetain bool = false
 
-@description('Create an Entra-only Quickwit account, without versioning or blob soft delete (#283), and stage full rebuilds there. Off preserves the lake index. Keep on after cutover: turning off would delete the account and its data (docs/operations.md, "Index storage cutover").')
+@description('Create an Entra-only Quickwit account, without versioning or blob soft delete (#283), and stage full rebuilds there. Off preserves the lake index. Keep on after cutover: turning off would delete the account and its data (docs/operations/rebuild-and-index-storage.md, "Index storage cutover").')
 param indexStorage bool = false
 @description('Serve the separate index account instead of the lake. Requires indexStorage. Enable only after the staged rebuild is verified and its pending pointer is promoted.')
 param indexStorageServe bool = false
@@ -74,7 +74,7 @@ param scheduledIngestImageTag string = imageTag
 @description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment of the same name may use the CI identity.')
 param githubRepo string = 'tgoodyear/usnewsmap.com'
 
-@description('The same repository as `owner@ownerId/name@repoId` (GitHub\'s immutable-ID OIDC subject format); scripts/bootstrap.sh looks it up.')
+@description('The same repository as `owner@ownerId/name@repoId` (GitHub\'s immutable-ID OIDC subject format); scripts/azure/bootstrap.sh looks it up.')
 param githubRepoIds string = 'tgoodyear@116683/usnewsmap.com@1389862972'
 
 @description('Create the ingest and backfill jobs (needs useAcr: the ingest image is only in the private registry).')
@@ -89,10 +89,10 @@ param backfillWorkers int = 4
 @description('Make every ingest run a full release (a new, merged base). For a one-off rebuild; clear it afterwards.')
 param ingestFull bool = false
 
-@description('Index American Stories\' text with LoC\'s (#218): the first ingest run with it builds a full base. Keep it on afterwards; turning it off makes the next release publish a version whose searches leave the text out (docs/operations.md, "American Stories\' text").')
+@description('Index American Stories\' text with LoC\'s (#218): the first ingest run with it builds a full base. Keep it on afterwards; turning it off makes the next release publish a version whose searches leave the text out (docs/operations/american-stories.md, "American Stories\' text").')
 param americanStories bool = false
 
-@description('Search American Stories\' text on a version built with it (05 §5.5.4). False makes the API search LoC\'s text alone, whatever current.json says, without a release; the provision restarts the API, which warms up again (docs/operations.md, "American Stories\' text").')
+@description('Search American Stories\' text on a version built with it (05 §5.5.4). False makes the API search LoC\'s text alone, whatever current.json says, without a release; the provision restarts the API, which warms up again (docs/operations/american-stories.md, "American Stories\' text").')
 param americanStoriesSearch bool = true
 
 @description('Search the Congress pages (#229) on a version whose current.json names a Congress index set. False makes the API leave them unloaded and answer source=congress with 422, without a release; the provision restarts the API (docs/configuration.md, USNM_CONGRESS_SEARCH).')
@@ -105,22 +105,22 @@ param pageLanguageFilter string = ''
 @description('List a newspaper\'s pages without a search word (#274): /v1/hits with lccn and no q, and the site\'s "Browse pages". Off until its cost on the full index is measured: a list with no word reads every split for the title\'s pages (docs/configuration.md, USNM_BROWSE_PAGES).')
 param browsePages bool = false
 
-@description('Give each ingest release the Congress pages curated under curated/congress/ (#229, the ingest job\'s --congress): an index set of their own, rebuilt when the curated pages change and kept otherwise. Clearing it makes the next release publish a version without them (docs/operations.md, "Congress pages").')
+@description('Give each ingest release the Congress pages curated under curated/congress/ (#229, the ingest job\'s --congress): an index set of their own, rebuilt when the curated pages change and kept otherwise. Clearing it makes the next release publish a version without them (docs/operations/congress-pages.md, "Congress pages").')
 param congress bool = false
 
-@description('Deploy the Congress fetch job, usnm-cong-caj-<env> (#229): manual, one replica of `usnm-ingest congress-globe`, which fetches the Congressional Globe from UNT at its crawl delay into curated/congress/. Set archiveAccountId first so every response is kept (docs/operations.md, "Congress pages").')
+@description('Deploy the Congress fetch job, usnm-cong-caj-<env> (#229): manual, one replica of `usnm-ingest congress-globe`, which fetches the Congressional Globe from UNT at its crawl delay into curated/congress/. Set archiveAccountId first so every response is kept (docs/operations/congress-pages.md, "Congress pages").')
 param congressJob bool = false
 
-@description('Deploy the Serial Set fetch job, usnm-sset-caj-<env> (#229 phase 2): manual, one replica of `usnm-ingest congress-serialset`, which fetches the Serial Set from GovInfo (MODS and PDFs, about a request a second; the PDFs are read and deleted) into curated/congress/. Set archiveAccountId first so the MODS and page texts are kept (docs/operations.md, "Congress pages").')
+@description('Deploy the Serial Set fetch job, usnm-sset-caj-<env> (#229 phase 2): manual, one replica of `usnm-ingest congress-serialset`, which fetches the Serial Set from GovInfo (MODS and PDFs, about a request a second; the PDFs are read and deleted) into curated/congress/. Set archiveAccountId first so the MODS and page texts are kept (docs/operations/congress-pages.md, "Congress pages").')
 param serialSetJob bool = false
 
-@description('Run the Serial Set fetch on-prem instead of as the Azure job (#229; ADR-0008, amendment of October 2026): the data lake allows public network access from ocrNodeIps only (its firewall denies everything else; the private endpoint stays), the public-network policy exempts it, and serialSetRunner gets a grant on curated/congress/serialset/ alone. Off closes the lake again and removes the grant (docs/operations.md, "The Serial Set on-prem").')
+@description('Run the Serial Set fetch on-prem instead of as the Azure job (#229; ADR-0008, amendment of October 2026): the data lake allows public network access from ocrNodeIps only (its firewall denies everything else; the private endpoint stays), the public-network policy exempts it, and serialSetRunner gets a grant on curated/congress/serialset/ alone. Off closes the lake again and removes the grant (docs/operations/congress-pages.md, "The Serial Set on-prem").')
 param serialSetOnPrem bool = false
 
 @description('Object id of the on-prem Serial Set runner\'s identity: the OCR node\'s Arc machine identity (with serialSetOnPrem). Settings only, never in the repository.')
 param serialSetRunner string = ''
 
-@description('Build full releases on the on-prem release container and copy them into Azure (#283, #917; docs/operations.md, "Full rebuild on-prem"): onPremReleaseHost gets read on curated, writes to reference under pages-v*/ and index-storage-pending.json, writes to the index account\'s qw-index and AcrPull (modules/onprem-release.bicep); the data lake and, with indexStorage, the index account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay). Turn it off after a publish: the index account closes again.')
+@description('Build full releases on the on-prem release container and copy them into Azure (#283, #917; docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"): onPremReleaseHost gets read on curated, writes to reference under pages-v*/ and index-storage-pending.json, writes to the index account\'s qw-index and AcrPull (modules/onprem-release.bicep); the data lake and, with indexStorage, the index account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay). Turn it off after a publish: the index account closes again.')
 param onPremRelease bool = false
 
 @description('Object id of the on-prem release container\'s Arc machine identity (usnm-release-arcs-<env>, with onPremRelease). Settings only, never in the repository.')
@@ -137,36 +137,36 @@ param boincServerOnPrem bool = false
 @description('The BOINC hand-off job\'s image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json, <registry>.azurecr.io/usnm-boinc-bridge@sha256:<digest>. Empty: no hand-off job. Needs the exchange account (ocrNodes), the registry (useAcr) and the BOINC group (deployBoincGroup).')
 param boincHandoffImage string = ''
 
-@description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
+@description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations/japanese-ocr.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
 
-@description('Weigh our own OCR from curated/ocr-local (the on-prem nodes\' output, #296) against LoC\'s text: on the pages of the batches a release indexes, ours replaces LoC\'s where rule v1 prefers it (12 §12.5 Step 9). Published batches take it at the next full release (docs/operations.md, "Our OCR in releases").')
+@description('Weigh our own OCR from curated/ocr-local (the on-prem nodes\' output, #296) against LoC\'s text: on the pages of the batches a release indexes, ours replaces LoC\'s where rule v1 prefers it (12 §12.5 Step 9). Published batches take it at the next full release (docs/operations/onprem-ocr.md, "Our OCR in releases").')
 param ocrLocal bool = false
-@description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations.md, "Full rebuild").')
+@description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations/rebuild-and-index-storage.md, "Full rebuild").')
 param partitionDecade bool = false
 
-@description('Search the next full rebuild\'s texts, LoC\'s and American Stories\', in one field (#283, 05 §5.5.7), so a search looks each word up once. Only a full base takes it; deltas follow the published version, and a full rebuild without it searches a field per text again (docs/operations.md, "Full rebuild").')
+@description('Search the next full rebuild\'s texts, LoC\'s and American Stories\', in one field (#283, 05 §5.5.7), so a search looks each word up once. Only a full base takes it; deltas follow the published version, and a full rebuild without it searches a field per text again (docs/operations/rebuild-and-index-storage.md, "Full rebuild").')
 param singleTextField bool = false
 
-@description('Give the next full rebuild\'s pages their own languages, found from their words (#289, 05 §5.5.8): lang= then filters by page language and the counts by language count pages. Only a full base takes it; deltas follow the published version, and a full rebuild without it filters by title language again (docs/operations.md, "Full rebuild").')
+@description('Give the next full rebuild\'s pages their own languages, found from their words (#289, 05 §5.5.8): lang= then filters by page language and the counts by language count pages. Only a full base takes it; deltas follow the published version, and a full rebuild without it filters by title language again (docs/operations/rebuild-and-index-storage.md, "Full rebuild").')
 param pageLanguage bool = false
 
-@description('Pages per split of the next full rebuild\'s base, in place of the 30,000 in pages-index.yaml (#283): fewer, larger splits for a cold search to open. 0: the template\'s. Only a full base takes it; deltas keep the template\'s. A larger target needs the E4 profile\'s memory for the split uploads (08 §8.4; docs/operations.md, "Full rebuild").')
+@description('Pages per split of the next full rebuild\'s base, in place of the 30,000 in pages-index.yaml (#283): fewer, larger splits for a cold search to open. 0: the template\'s. Only a full base takes it; deltas keep the template\'s. A larger target needs the E4 profile\'s memory for the split uploads (08 §8.4; docs/operations/rebuild-and-index-storage.md, "Full rebuild").')
 @minValue(0)
 @maxValue(999999)
 param splitDocs int = 0
 
-@description('The Quickwit writer\'s ingest API (#283). v2, Quickwit\'s default, is at least once: a persist it timed out and retried can be kept twice, and the release\'s count then refuses the index. v1 keeps each accepted page once, and the release restarts the writer for its final merges (docs/operations.md, "Duplicate-safe ingest").')
+@description('The Quickwit writer\'s ingest API (#283). v2, Quickwit\'s default, is at least once: a persist it timed out and retried can be kept twice, and the release\'s count then refuses the index. v1 keeps each accepted page once, and the release restarts the writer for its final merges (docs/operations/rebuild-and-index-storage.md, "Duplicate-safe ingest").')
 @allowed(['v1', 'v2'])
 param writerIngest string = 'v2'
 
-@description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations.md, "Full rebuild").')
+@description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations/rebuild-and-index-storage.md, "Full rebuild").')
 param dedicatedProfile bool = false
 
 @description('Run the ingest job on the E4 profile (needs dedicatedProfile). Turn this off and provision before turning dedicatedProfile off: a profile in use can\'t be removed.')
 param ingestOnDedicated bool = false
 
-@description('Deploy the experimental Quickwit search cluster (#239): node apps usnm-qw-{i}-ca-{env}, the bench job usnm-qw-bench-caj-{env} and their containers qw-cluster and qw-bench (docs/operations.md, "Search cluster experiment"). Needs useAcr; ignored in prod. Turning it off deletes all of it, the two containers included.')
+@description('Deploy the experimental Quickwit search cluster (#239): node apps usnm-qw-{i}-ca-{env}, the bench job usnm-qw-bench-caj-{env} and their containers qw-cluster and qw-bench (docs/operations/environments-and-deploys.md, "Search cluster experiment"). Needs useAcr; ignored in prod. Turning it off deletes all of it, the two containers included.')
 param searchCluster bool = false
 
 @description('Search cluster members (0 to 4). 0 keeps the cluster\'s containers and bench job but runs no node.')
@@ -195,10 +195,10 @@ param searchClusterRuntimeThreads int = 0
 @minValue(0)
 param searchClusterSearchThreads int = 0
 
-@description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher usnm-qw-cmp-{i}-ca-{env} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
+@description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher usnm-qw-cmp-{i}-ca-{env} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations/environments-and-deploys.md, "Quickwit version comparison"). Empty: none.')
 param searchCompareTags string = ''
 
-@description('Local-disk test (#251): a standalone 0.9.1 searcher, usnm-qw-local-ca-{env}, reading the search cluster\'s indexes from Blob (blob) or a copy of searchLocalIndex on an NFS share (nfs), on Consumption at the API sidecar\'s 3.75 vCPU / 7.5 GiB, or through a split cache (cache) or from a copy (copy) on its own disk, on the E4 profile (needs dedicatedProfile) for the disk (docs/operations.md, "Local-disk test"). Empty: none.')
+@description('Local-disk test (#251): a standalone 0.9.1 searcher, usnm-qw-local-ca-{env}, reading the search cluster\'s indexes from Blob (blob) or a copy of searchLocalIndex on an NFS share (nfs), on Consumption at the API sidecar\'s 3.75 vCPU / 7.5 GiB, or through a split cache (cache) or from a copy (copy) on its own disk, on the E4 profile (needs dedicatedProfile) for the disk (docs/operations/environments-and-deploys.md, "Local-disk test"). Empty: none.')
 @allowed(['', 'blob', 'cache', 'copy', 'nfs'])
 param searchLocalMode string = ''
 
@@ -216,13 +216,13 @@ param searchNfsGiB int = 64
 @description('Retain every batch archive curation downloads, byte for byte, in a `raw` container of this environment\'s own data account (Cold tier), and curate from it instead of LoC when it holds the listed archive. It goes with the environment: turning it off deletes the container. For a set that outlives environments use archiveAccountId. Production keeps none (ADR-0006).')
 param retainRaw bool = false
 
-@description('The archival account (infra/archive/, scripts/archive-store.sh), as a resource id: curation keeps every LoC archive and listing it downloads in its `raw` container and reads archives back from it instead of LoC, through a private endpoint of this environment; the search cluster bench job reads `raw` and writes `sets`. Takes precedence over retainRaw. Empty: not used. Clearing it removes only this environment\'s endpoint and roles, never the account or its data.')
+@description('The archival account (infra/archive/, scripts/azure/archive-store.sh), as a resource id: curation keeps every LoC archive and listing it downloads in its `raw` container and reads archives back from it instead of LoC, through a private endpoint of this environment; the search cluster bench job reads `raw` and writes `sets`. Takes precedence over retainRaw. Empty: not used. Clearing it removes only this environment\'s endpoint and roles, never the account or its data.')
 param archiveAccountId string = ''
 
 @description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
 param backfillCron string = ''
 
-@description('Size in GiB of the NFS share the ingest job\'s Quickwit writer works on (08 §8.4), with its account, private endpoint and DNS zone: 128 or more for a full rebuild, set for the rebuild and cleared afterwards (docs/operations.md, "Full rebuild"); 0 (the default): none, and the writer works on the replica\'s own disk, which holds a weekly delta but not a full base.')
+@description('Size in GiB of the NFS share the ingest job\'s Quickwit writer works on (08 §8.4), with its account, private endpoint and DNS zone: 128 or more for a full rebuild, set for the rebuild and cleared afterwards (docs/operations/rebuild-and-index-storage.md, "Full rebuild"); 0 (the default): none, and the writer works on the replica\'s own disk, which holds a weekly delta but not a full base.')
 param ingestScratchGiB int = 0
 
 @description('Seconds an ingest release waits for its new index\'s merges before failing without publishing (08 §8.4).')
@@ -242,7 +242,7 @@ param alertEmails string = ''
 param budgetStartDate string = ''
 
 
-@description('Comma-separated Entra object ids (people or groups) that may read the search log in the searches container (scripts/searches.sh).')
+@description('Comma-separated Entra object ids (people or groups) that may read the search log in the searches container (scripts/azure/searches.sh).')
 param searchLogReaders string = ''
 
 @description('Deploy Azure AI Document Intelligence for OCR of Japanese pages (#128).')
@@ -289,7 +289,7 @@ param ocrSyncCron string = '17 * * * *'
 @maxValue(10000)
 param ocrUserDailyMax int = 1000
 
-@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name (USNM_OCR_SEED_* and USNM_OCR_BULK_*; docs/operations.md). Seeding stays off while USNM_OCR_SEED_PLAN is empty (ADR-0015 decision 7).')
+@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name (USNM_OCR_SEED_* and USNM_OCR_BULK_*; docs/operations/onprem-ocr.md). Seeding stays off while USNM_OCR_SEED_PLAN is empty (ADR-0015 decision 7).')
 param ocrSeed object = {}
 
 @description('Entra object ids (people or groups), comma separated, given Key Vault Secrets Officer on the OCR nodes\' Key Vault, usnmocrkv<env><suffix> (with ocrNodes): the operators who set and read the fleet\'s secrets, such as the Red Hat activation key. Settings only, never in the repository (#295).')
@@ -310,16 +310,16 @@ param dnsZoneName string = ''
 @description('More TXT values at the zone apex, keyed by zone name (site-verification tokens). They are public, so they live in git.')
 param dnsApexTxtValues object = {}
 
-@description('Managed certificate for api.{dnsZoneName}, recorded by scripts/bootstrap.sh after it issues one.')
+@description('Managed certificate for api.{dnsZoneName}, recorded by scripts/azure/bootstrap.sh after it issues one.')
 param apiCertificateId string = ''
 
-@description('Managed certificate for {dnsZoneName} itself (the site), recorded by scripts/bootstrap.sh.')
+@description('Managed certificate for {dnsZoneName} itself (the site), recorded by scripts/azure/bootstrap.sh.')
 param siteCertificateId string = ''
 
-@description('Managed certificate for www.{dnsZoneName}, recorded by scripts/bootstrap.sh.')
+@description('Managed certificate for www.{dnsZoneName}, recorded by scripts/azure/bootstrap.sh.')
 param wwwCertificateId string = ''
 
-@description('The issue number of the experiment this environment is up for (#275; docs/operations.md, "Dev environment lifecycle"). Tags the project resource group with `experiment` and `started`. scripts/lib/env.sh requires it for dev. Empty: no tags.')
+@description('The issue number of the experiment this environment is up for (#275; docs/operations/environments-and-deploys.md, "Dev environment lifecycle"). Tags the project resource group with `experiment` and `started`. scripts/lib/env.sh requires it for dev. Empty: no tags.')
 param experiment string = ''
 
 @description('When the experiment started, UTC (ISO 8601), set by scripts/lib/env.sh.')
@@ -342,7 +342,7 @@ var pinnedNames = suffix == legacyProdSuffix
 var n = names(env, suffix, pinnedNames)
 // The Quickwit image (ADR-0013, 08 §8.6). An environment listed in
 // quickwit-image.json runs our build of Quickwit from its own registry,
-// pushed there by scripts/build-quickwit.sh; any other runs upstream
+// pushed there by scripts/azure/build-quickwit.sh; any other runs upstream
 // v0.9.1, which CI copies into the registry with its digest unchanged. CI
 // reads the same file for the ingest image's base.
 var quickwitPins = loadJsonContent('quickwit-image.json')
@@ -364,7 +364,7 @@ var customDomains = empty(dnsZoneName)
       { name: 'api.${dnsZoneName}', certificateId: apiCertificateId }
     ]
 
-// The experiment marker is on the project group alone: scripts/dev-status.sh
+// The experiment marker is on the project group alone: scripts/azure/dev-status.sh
 // reads it there, and a new `started` doesn't touch every resource.
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: n.rg
@@ -560,7 +560,7 @@ module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincH
   }
 }
 
-// The workspace comes from the BOINC stack (scripts/provision-boinc.sh), a
+// The workspace comes from the BOINC stack (scripts/boinc/provision-boinc.sh), a
 // later deployment than boincRg: set boincHandoffRunner only once that stack
 // is deployed, or this assignment fails on a missing workspace.
 module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGroup && !boincServerOnPrem && !empty(trim(boincHandoffRunner))) {
@@ -990,7 +990,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
 }
 
 // The experimental search cluster (#239), off unless asked for, and never in
-// prod: it is for a dev environment (docs/operations.md, "Search cluster
+// prod: it is for a dev environment (docs/operations/environments-and-deploys.md, "Search cluster
 // experiment").
 var searchClusterOn = searchCluster && useAcr && env != 'prod'
 
@@ -1230,21 +1230,21 @@ output JA_OCR_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaOcrJobName :
 output JA_AUDIT_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaAuditJobName : ''
 // The BOINC hand-off job runs in the main environment.
 output BOINC_HANDOFF_JOB string = boincHandoff ? boincHandoffJob!.outputs.name : ''
-// The OCR pickup job (12 §12.5 Step 8); scripts/start-job.sh --job OCR_SYNC_JOB
+// The OCR pickup job (12 §12.5 Step 8); scripts/azure/start-job.sh --job OCR_SYNC_JOB
 // runs ocr-enqueue and ocr-requeue as executions of it.
 output OCR_SYNC_JOB string = ingestJobs && useAcr ? ingest!.outputs.ocrSyncJobName : ''
-// The Congress fetch job (#229); scripts/start-job.sh --job CONGRESS_JOB.
+// The Congress fetch job (#229); scripts/azure/start-job.sh --job CONGRESS_JOB.
 output CONGRESS_JOB string = ingestJobs && useAcr ? ingest!.outputs.congressJobName : ''
-// The Serial Set fetch job (#229 phase 2); scripts/start-job.sh --job SERIALSET_JOB.
+// The Serial Set fetch job (#229 phase 2); scripts/azure/start-job.sh --job SERIALSET_JOB.
 output SERIALSET_JOB string = ingestJobs && useAcr ? ingest!.outputs.serialSetJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
-// For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).
+// For the GitHub Environment variables CI signs in with (not secrets; scripts/azure/bootstrap.sh writes them).
 output CI_CLIENT_ID string = identities.outputs.ciClientId
 output AZURE_TENANT_ID string = tenant().tenantId
 output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
-// The workspace's customer id, for the Log Analytics query API (scripts/logs.sh).
+// The workspace's customer id, for the Log Analytics query API (scripts/azure/logs.sh).
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceCustomerId
 output LOG_ANALYTICS_QUERY_HOST string = monitoring.outputs.logAnalyticsQueryHost
 output LOG_ANALYTICS_QUERY_HOSTS string = join(monitoring.outputs.logAnalyticsQueryHosts, ',')
@@ -1272,6 +1272,6 @@ output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.ruleId : '
 // ingestion settings (not a credential: local auth is off) to the worker.
 output OCR_NODE_APPINSIGHTS string = ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsConnectionString : ''
 output OCR_NODE_APPINSIGHTS_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsId : ''
-// The nodes' workspace's customer id: scripts/logs.sh runs the ocr-node-*
+// The nodes' workspace's customer id: scripts/azure/logs.sh runs the ocr-node-*
 // queries there.
 output OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.workspaceCustomerId : ''

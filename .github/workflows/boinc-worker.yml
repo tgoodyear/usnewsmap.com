@@ -27,6 +27,7 @@ on:
       - "infra/quickwit/**"
       - "ocr/boinc/qwen/disk-policy.json"
       - "ocr/boinc/qwen/weights.lock"
+      - "ocr/boinc/surya/engine.lock"
       - "ocr/boinc/usnm_qwen_benchmark_in"
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/routing/routes.toml"

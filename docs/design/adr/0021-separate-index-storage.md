@@ -60,7 +60,7 @@ stack cleanup, never a rollback mechanism. The old empty container and
 roles can be removed separately after retirement. The defaults and shared
 searcher YAML stay unchanged, so merge alone moves no production data.
 
-See [operations](../../operations.md#index-storage-cutover) for the exact
+See [operations](../../operations/rebuild-and-index-storage.md#index-storage-cutover) for the exact
 rebuild, cutover, rollback and account-specific prune procedure.
 
 ## Amendment, October 2026: staged builds from on-prem (#283, #917)

@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use usnm_state::docs::{DocStore, FileDocs};
@@ -48,7 +49,7 @@ pub enum PipelineSource {
     File(PathBuf),
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Pipeline {
     pub available: bool,
     /// When the pipeline state in this document was read.
@@ -58,7 +59,7 @@ pub struct Pipeline {
 }
 
 /// The document `/v1/status` returns.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Status {
     pub schema: u32,
     pub generated_at: DateTime<Utc>,
@@ -77,6 +78,11 @@ pub struct Status {
     pub ocr_ja: Section<ocr_ja::OcrJa>,
     /// The OCR quality audit's progress and, once finished, its summary.
     pub ocr_quality: Section<ocr_quality::OcrQuality>,
+}
+
+/// The schema of the document, for `/v1/openapi.json`.
+pub(crate) fn schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<Status>()
 }
 
 struct Entry {
