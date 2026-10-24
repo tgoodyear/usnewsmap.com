@@ -63,6 +63,7 @@ use crate::batch::{self, BagIndex, Md5Sum};
 use crate::telemetry::Metrics;
 
 pub mod global;
+pub mod mirror;
 mod pacer;
 mod types;
 

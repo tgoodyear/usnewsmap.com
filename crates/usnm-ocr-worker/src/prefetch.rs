@@ -17,6 +17,19 @@
 //! [`Options::stop_min_titles`] titles fail in a row the run stops.
 //! A lock file in the output directory keeps it to one fetching process.
 //!
+//! **Mirrors** ([`Options::mirrors`], off unless named): a full-size JP2
+//! the batch route has placed (LoC's METS gave its frame and the bag its
+//! md5) is asked of a copy of LoC's files first: the state partner that
+//! serves its awardee's batches, then the Wayback Machine
+//! ([`crate::loc::mirror`]). Bytes that match the bag's md5 are taken with
+//! LoC's URL and IIIF base, as LoC's own would be; anything else (a miss,
+//! another file, a hold) goes on to LoC. Each mirror is paced and held on
+//! its own, never in LoC's budget. A page a mirror served says nothing
+//! about LoC, so it neither ends a run of failures nor clears a cool-off.
+//! Where each mirrored page's bytes came from is in
+//! `<out>/sources-<tag>.jsonl` ([`SourceLine`]); the sidecar is the same as
+//! for LoC's.
+//!
 //! **Item errors** (#414): when loc.gov answers 503 for one issue's item
 //! while serving others ([`FetchError::Item`], the client's notes say when;
 //! on the storage service, the issue's METS or a JP2), the issue's pages
@@ -81,6 +94,7 @@ use usnm_ocr_contract::prefetch::{self, ManifestRow};
 pub use usnm_ocr_contract::prefetch::{priority, set_of, Set, WORST_ENGLISH};
 
 use crate::batch;
+use crate::loc::mirror::{self, Mirrors};
 use crate::loc::{issue_id, FetchError, ImageSize, LocClient, Scan, ScanFormat, USER_AGENT};
 
 /// How often a fetcher waiting at the buffer cap counts the buffer again.
@@ -127,6 +141,9 @@ pub struct Options {
     /// `<out>/.prefetch.lock`. Runs into different directories that must
     /// not overlap (a sample beside the bulk fetch) share one.
     pub lock_file: Option<PathBuf>,
+    /// Copies of LoC's JP2s to ask before LoC (the module notes); none by
+    /// default.
+    pub mirrors: Option<Arc<Mirrors>>,
 }
 
 /// Which sets a run fetches.
@@ -175,6 +192,7 @@ impl Default for Options {
             order: Order::Priority,
             max_total_bytes: None,
             lock_file: None,
+            mirrors: None,
         }
     }
 }
@@ -360,6 +378,13 @@ pub struct Status {
     pub fetched_jp2: u64,
     #[serde(default)]
     pub fetched_item_api: u64,
+    /// Of `fetched_jp2`: JP2s whose bytes came from a mirror of LoC's
+    /// files, matching the bag's md5.
+    #[serde(default)]
+    pub fetched_mirror: u64,
+    /// Each mirror's counts and hold, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mirrors: BTreeMap<String, mirror::MirrorStatus>,
     pub bytes_fetched: u64,
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
@@ -568,6 +593,7 @@ struct Counts {
     bytes_fetched: AtomicU64,
     fetched_jp2: AtomicU64,
     fetched_item_api: AtomicU64,
+    fetched_mirror: AtomicU64,
     /// The keep set's scans of this run on disk: found there or fetched.
     keep_bytes: AtomicU64,
     /// The buffer set's scans on disk, all of them: the last count plus
@@ -735,6 +761,9 @@ struct Run {
     /// resolution.
     index: BTreeMap<String, Lines>,
     failures: BTreeMap<String, Lines>,
+    /// Where mirrored pages' bytes came from, by resolution tag (only
+    /// with mirrors).
+    sources: BTreeMap<String, Lines>,
     stop_rx: watch::Receiver<bool>,
     started: Instant,
     /// Set when the run must stop taking pages: (state, error).
@@ -761,6 +790,10 @@ impl Run {
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
         s.fetched_jp2 = c.fetched_jp2.load(Ordering::SeqCst);
         s.fetched_item_api = c.fetched_item_api.load(Ordering::SeqCst);
+        s.fetched_mirror = c.fetched_mirror.load(Ordering::SeqCst);
+        if let Some(m) = &self.opts.mirrors {
+            s.mirrors = m.status();
+        }
         s.buffer_bytes = c.buffer_bytes.load(Ordering::SeqCst);
         s.bytes_on_disk = self.on_disk();
         let secs = self.started.elapsed().as_secs_f64();
@@ -980,12 +1013,21 @@ impl Run {
             );
         }
         let resolved = match self.loc.resolve(key, &row.batch, row.batch_version).await {
-            Ok(Some(p)) => self.loc.scan_resolved(key, &p, size).await,
+            Ok(Some(p)) => {
+                // LoC placed the page; a mirror's copy of the JP2, if it is
+                // the bag's, saves LoC the image.
+                if let (ImageSize::Full, Some(m)) = (size, &self.opts.mirrors) {
+                    if let Some((scan, hit)) = m.jp2(&row.batch, key, &p).await {
+                        return Fetched::Scan(scan, storage_issue, Via::Mirror(hit));
+                    }
+                }
+                self.loc.scan_resolved(key, &p, size).await
+            }
             Ok(None) => Ok(None),
             Err(e) => Err(e),
         };
         match resolved {
-            Ok(Some(scan)) => return Fetched::Scan(scan, storage_issue, false),
+            Ok(Some(scan)) => return Fetched::Scan(scan, storage_issue, Via::Storage),
             Ok(None) => {}
             Err(e) => return Fetched::Failed(e, storage_issue),
         }
@@ -996,7 +1038,7 @@ impl Run {
             );
         }
         match self.loc.scan_at(key, size).await {
-            Ok(scan) => Fetched::Scan(scan, issue, true),
+            Ok(scan) => Fetched::Scan(scan, issue, Via::ItemApi),
             Err(e) => Fetched::Failed(e, issue),
         }
     }
@@ -1040,7 +1082,7 @@ impl Run {
             // An issue cooling off says nothing new about loc.gov, so the
             // run of failures is left as is.
             Fetched::Skip(check, why) => self.skip(row, &t, check, why),
-            Fetched::Scan(scan, route, via_api) => {
+            Fetched::Scan(scan, route, via) => {
                 let path = scan_path(&self.opts.out, &row, size, scan.format);
                 let side = Sidecar {
                     doc_id: row.doc_id.clone(),
@@ -1065,8 +1107,25 @@ impl Run {
                 if scan.format == ScanFormat::Jp2 {
                     c.fetched_jp2.fetch_add(1, Ordering::SeqCst);
                 }
-                if via_api {
-                    c.fetched_item_api.fetch_add(1, Ordering::SeqCst);
+                match &via {
+                    Via::Storage => {}
+                    Via::ItemApi => {
+                        c.fetched_item_api.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Via::Mirror(hit) => {
+                        c.fetched_mirror.fetch_add(1, Ordering::SeqCst);
+                        if let Some(lines) = self.sources.get(&t) {
+                            lines.push(&SourceLine {
+                                doc_id: side.doc_id.clone(),
+                                source: hit.source.into(),
+                                url: hit.url.clone(),
+                                md5: side.md5.clone().unwrap_or_default(),
+                                bytes: side.bytes,
+                                download_ms: side.download_ms,
+                                at: now_rfc3339(),
+                            })?;
+                        }
+                    }
                 }
                 match set {
                     Set::Keep => c.keep_bytes.fetch_add(side.bytes, Ordering::SeqCst),
@@ -1075,8 +1134,12 @@ impl Run {
                         c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst)
                     }
                 };
-                self.streak_ok();
-                self.cooling.clear(&route)?;
+                // A mirror's page says nothing about LoC: the run of
+                // failures and the route's cool-off are LoC's to end.
+                if !matches!(via, Via::Mirror(_)) {
+                    self.streak_ok();
+                    self.cooling.clear(&route)?;
+                }
                 Ok(Outcome::Done)
             }
             Fetched::Failed(FetchError::Item(msg), route) => {
@@ -1119,13 +1182,38 @@ impl Run {
 
 /// What [`Run::fetch`] got for a page.
 enum Fetched {
-    /// The scan, the cooling key of the route it came by, and whether that
-    /// was the item API.
-    Scan(Scan, String, bool),
+    /// The scan, the cooling key of the route it came by, and how it came.
+    Scan(Scan, String, Via),
     /// Failed on the route with this cooling key.
     Failed(FetchError, String),
     /// Its issue is cooling off on the route the page would take.
     Skip(Check, &'static str),
+}
+
+/// How a scan was fetched.
+enum Via {
+    /// The JP2 from its batch on LoC's storage service.
+    Storage,
+    /// The IIIF JPEG, through the item API.
+    ItemApi,
+    /// The JP2 from a mirror, matching the bag's md5.
+    Mirror(mirror::Hit),
+}
+
+/// A line of `sources-<tag>.jsonl`: where a mirrored page's bytes came
+/// from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceLine {
+    pub doc_id: String,
+    /// The mirror's name ([`mirror::Partner::name`] or [`mirror::WAYBACK`]).
+    pub source: String,
+    /// The URL the bytes were read from.
+    pub url: String,
+    /// The bag's md5, which they matched.
+    pub md5: String,
+    pub bytes: u64,
+    pub download_ms: u64,
+    pub at: String,
 }
 
 /// Hold the lock file for the life of the process, so only one prefetch
@@ -1221,6 +1309,7 @@ pub async fn run(
     });
     let mut index = BTreeMap::new();
     let mut failures = BTreeMap::new();
+    let mut sources = BTreeMap::new();
     for size in [opts.size, opts.buffer_size] {
         let t = tag(size);
         if !index.contains_key(&t) {
@@ -1232,6 +1321,13 @@ pub async fn run(
                 t.clone(),
                 Lines::open(&opts.out.join(format!("failures-{t}.jsonl")))?,
             );
+            // Only full-size pages are asked of a mirror.
+            if opts.mirrors.is_some() && size == ImageSize::Full {
+                sources.insert(
+                    t.clone(),
+                    Lines::open(&opts.out.join(format!("sources-{t}.jsonl")))?,
+                );
+            }
         }
     }
     let cooling = Cooling::load(
@@ -1296,6 +1392,7 @@ pub async fn run(
         state: Mutex::new("running".into()),
         index,
         failures,
+        sources,
         stop_rx: stop,
         started: Instant::now(),
         stop: Mutex::new(None),
@@ -2573,5 +2670,176 @@ mod tests {
         // Nothing went round the item API.
         assert_eq!(s.hits("/ed-1/"), 0);
         assert_eq!(st.loc_hold_secs, None);
+    }
+
+    fn partner_mirrors(partner: &StandIn) -> Arc<Mirrors> {
+        Arc::new(
+            Mirrors::new(mirror::MirrorConfig {
+                partners: vec![mirror::Partner {
+                    awardee: "xx",
+                    name: "partner",
+                    root: partner.root.clone(),
+                    json_names_file: false,
+                }],
+                partner_gap: Duration::from_millis(10),
+                ..mirror::MirrorConfig::default()
+            })
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_mirrors_jp2_that_is_the_bags_saves_loc_the_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = StandIn::start().await;
+        s.add_issue(
+            BATCH,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &[
+                Page {
+                    seq: 1,
+                    frame: "0011",
+                    jp2: b"jp2 one",
+                },
+                Page {
+                    seq: 2,
+                    frame: "0010",
+                    jp2: b"jp2 two",
+                },
+            ],
+        );
+        // The partner has page 1 as LoC does, and something else for page 2.
+        let partner = StandIn::start().await;
+        partner.put("/lccn/sn1/1890-05-03/ed-1/seq-1.jp2", b"jp2 one".to_vec());
+        partner.put(
+            "/lccn/sn1/1890-05-03/ed-1/seq-2.jp2",
+            b"not the bag's".to_vec(),
+        );
+        let rows: Vec<ManifestRow> = (1..=2).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows.clone()),
+            out: out.clone(),
+            concurrency: 1,
+            mirrors: Some(partner_mirrors(&partner)),
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let st = run(opts, batch_loc(&s, &dir.path().join("batches")), rx)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                st.fetched,
+                st.fetched_jp2,
+                st.fetched_mirror,
+                st.fetched_item_api
+            ),
+            (2, 2, 1, 0)
+        );
+        let m = &st.mirrors["partner"];
+        assert_eq!((m.hits, m.md5_mismatches), (1, 1));
+        // LoC placed both pages and sent only page 2's JP2.
+        assert_eq!(
+            (
+                s.hits(&format!("{BATCH}manifest-md5.txt")),
+                s.hits(".xml"),
+                s.hits("/0011.jp2"),
+                s.hits("/0010.jp2")
+            ),
+            (1, 1, 0, 1)
+        );
+        // Page 1 is recorded as LoC's file, as if LoC had sent it.
+        let jp2 = scan_path(&out, &rows[0], ImageSize::Full, ScanFormat::Jp2);
+        assert_eq!(std::fs::read(&jp2).unwrap(), b"jp2 one");
+        let side: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&jp2)).unwrap()).unwrap();
+        assert_eq!(
+            side.loc_url,
+            format!("{}{BATCH}data/sn1/0001A/1890050301/0011.jp2", s.root)
+        );
+        assert_eq!(
+            side.md5.as_deref(),
+            Some(batch::md5_hex(b"jp2 one").as_str())
+        );
+        // Page 2 is LoC's own.
+        let jp2 = scan_path(&out, &rows[1], ImageSize::Full, ScanFormat::Jp2);
+        assert_eq!(std::fs::read(&jp2).unwrap(), b"jp2 two");
+        // Where page 1's bytes came from.
+        let lines = std::fs::read_to_string(out.join("sources-full.jsonl")).unwrap();
+        let got: Vec<SourceLine> = lines
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (got[0].doc_id.as_str(), got[0].source.as_str()),
+            (rows[0].doc_id.as_str(), "partner")
+        );
+        assert_eq!(
+            got[0].url,
+            format!("{}/lccn/sn1/1890-05-03/ed-1/seq-1.jp2", partner.root)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mirrors_pages_dont_end_a_run_of_loc_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = StandIn::start().await;
+        let pages: Vec<(u16, String, Vec<u8>)> = (1..=3)
+            .map(|q| (q, format!("{:04}", 10 + q), format!("jp2 {q}").into_bytes()))
+            .collect();
+        s.add_issue(
+            BATCH,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &pages
+                .iter()
+                .map(|(q, f, b)| Page {
+                    seq: *q,
+                    frame: f,
+                    jp2: b,
+                })
+                .collect::<Vec<_>>(),
+        );
+        // LoC's JP2s for pages 1 and 3 don't match their bag md5 (each a
+        // failure); the partner has page 2.
+        for f in ["0011", "0013"] {
+            s.put(
+                &format!("{BATCH}data/sn1/0001A/1890050301/{f}.jp2"),
+                b"damaged".to_vec(),
+            );
+        }
+        let partner = StandIn::start().await;
+        partner.put("/lccn/sn1/1890-05-03/ed-1/seq-2.jp2", b"jp2 2".to_vec());
+        let rows: Vec<ManifestRow> = (1..=3).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows),
+            out: out.clone(),
+            concurrency: 1,
+            order: Order::Issue,
+            max_failures_in_a_row: 2,
+            stop_min_titles: 1,
+            mirrors: Some(partner_mirrors(&partner)),
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        // Page 2 came from the partner, and the two LoC failures still
+        // count as two in a row.
+        let err = run(opts, batch_loc(&s, &dir.path().join("batches")), rx)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("2 pages from 1 titles failed in a row"),
+            "{err}"
+        );
+        let st: Status =
+            serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
+        assert_eq!((st.state.as_str(), st.fetched_mirror), ("failed", 1));
     }
 }
