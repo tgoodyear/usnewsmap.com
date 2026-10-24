@@ -144,6 +144,9 @@ pub struct Options {
     /// Copies of LoC's JP2s to ask before LoC (the module notes); none by
     /// default.
     pub mirrors: Option<Arc<Mirrors>>,
+    /// Only pages of these awardees' batches (the batch name's first part,
+    /// e.g. `nbu`), such as those a mirror serves; all when empty.
+    pub awardees: Vec<String>,
 }
 
 /// Which sets a run fetches.
@@ -193,6 +196,7 @@ impl Default for Options {
             max_total_bytes: None,
             lock_file: None,
             mirrors: None,
+            awardees: Vec::new(),
         }
     }
 }
@@ -1240,9 +1244,11 @@ fn lock(path: &Path) -> anyhow::Result<std::fs::File> {
 /// together and its item JSON is asked for once (even when they came from
 /// different batches); buffer pages stay in issue order either way.
 pub fn select(rows: Vec<ManifestRow>, opts: &Options) -> Vec<ManifestRow> {
+    let awardee = |r: &ManifestRow| r.batch.split('_').next().unwrap_or_default().to_owned();
     let rows: Vec<ManifestRow> = rows
         .into_iter()
         .filter(|r| opts.sets.has(set_of(r)))
+        .filter(|r| opts.awardees.is_empty() || opts.awardees.contains(&awardee(r)))
         .collect();
     let mut rows = match opts.sample {
         Some(n) => sample(&rows, n),
@@ -1763,6 +1769,28 @@ mod tests {
                 "sn3_1890-05-03_ed-1_seq-1"
             ]
         );
+    }
+
+    #[test]
+    fn only_the_awardees_asked_for() {
+        let mut rows = vec![
+            row("sn1", 1890, 1, "deu"),
+            row("sn2", 1890, 1, "deu"),
+            row("sn3", 1890, 1, "eng"),
+        ];
+        rows[0].batch = "nbu_irons".into();
+        rows[1].batch = "nbuu_other".into();
+        rows[2].batch = "scu_jinx".into();
+        let o = Options {
+            awardees: vec!["nbu".into(), "scu".into()],
+            ..Options::default()
+        };
+        let ids: Vec<String> = select(rows.clone(), &o)
+            .into_iter()
+            .map(|r| r.lccn)
+            .collect();
+        assert_eq!(ids, ["sn1", "sn3"], "the awardee is the whole first part");
+        assert_eq!(select(rows, &Options::default()).len(), 3);
     }
 
     fn n2(s: &[ManifestRow], l: &str) -> usize {

@@ -453,6 +453,10 @@ enum Command {
         /// Between requests to the Wayback Machine.
         #[arg(long, env = "USNM_PREFETCH_WAYBACK_GAP_MS", default_value_t = 5000)]
         wayback_gap_ms: u64,
+        /// Only pages of these awardees' batches, comma-separated (the
+        /// batch name's first part, e.g. `nbu`); all by default.
+        #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
+        awardees: Vec<String>,
     },
     /// Chronicling America's bulk OCR archives (ALTO with word confidence),
     /// one at a time, inside the host's global LoC budget (#962).
@@ -1012,6 +1016,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             mirrors,
             partner_gap_ms,
             wayback_gap_ms,
+            awardees,
         } => {
             let mirrors = {
                 let cfg = usnm_ocr_worker::loc::mirror::MirrorConfig {
@@ -1061,6 +1066,11 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 item_cooloff: Duration::from_secs(item_cooloff_secs),
                 item_max_cooloffs,
                 mirrors,
+                awardees: awardees
+                    .into_iter()
+                    .map(|a| a.trim().to_owned())
+                    .filter(|a| !a.is_empty())
+                    .collect(),
             };
             let status = prefetch::run(opts, loc, stop_signal()).await?;
             println!("{}", serde_json::to_string(&status)?);
