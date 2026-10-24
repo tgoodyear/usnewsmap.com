@@ -598,6 +598,8 @@ pub struct BatchSummary {
     pub skipped: u64,
     /// The American Stories parts the batch read, with their sha256.
     pub as_parts: Vec<PartDigest>,
+    /// The catalog languages each of the batch's titles was scored against.
+    pub languages: BTreeMap<String, Vec<String>>,
     /// `cer_sym` by decade, over the pages `hists` counts.
     pub cer_sym_by_decade: BTreeMap<u16, Hist>,
     /// `local_cer_sym` by decade.
@@ -617,6 +619,7 @@ pub fn summarize(
     version: u16,
     rows: &[PageRow],
     as_parts: Vec<PartDigest>,
+    languages: BTreeMap<String, Vec<String>>,
 ) -> BatchSummary {
     let mut out = BatchSummary {
         metric_version: agreement::VERSION,
@@ -626,6 +629,7 @@ pub fn summarize(
         loc_ok: 0,
         skipped: 0,
         as_parts,
+        languages,
         cer_sym_by_decade: BTreeMap::new(),
         local_cer_sym_by_decade: BTreeMap::new(),
         hists: Hists::default(),
@@ -709,12 +713,26 @@ async fn score_batch(
     Ok((rows, parts))
 }
 
+/// The catalog languages each of a batch's titles is scored against.
+pub fn batch_languages(
+    titles: &HashMap<String, Vec<String>>,
+    b: &RunBatch,
+) -> BTreeMap<String, Vec<String>> {
+    b.curated
+        .lccns
+        .iter()
+        .map(|l| (l.clone(), titles.get(l).cloned().unwrap_or_default()))
+        .collect()
+}
+
 /// A batch already scored is kept only if it was scored with this metric
-/// version from the American Stories parts the batch would read now; else
-/// the run stops and says which files to delete.
+/// version, from the American Stories parts the batch would read now and
+/// against the same title languages; else the run stops and says which
+/// files to delete.
 async fn check_kept(
     curated: &dyn ObjectStore,
     source: &american_stories::Source,
+    titles: &HashMap<String, Vec<String>>,
     b: &RunBatch,
     cut: Option<u64>,
     body: &[u8],
@@ -736,6 +754,13 @@ async fn check_kept(
             then.len(),
             agreement::VERSION,
             now.len(),
+            table_path(cut, name, v)
+        );
+    }
+    if kept.languages != batch_languages(titles, b) {
+        bail!(
+            "{path} was scored against other title languages than this version's \
+             titles have. Delete it and {} to score the batch again",
             table_path(cut, name, v)
         );
     }
@@ -898,7 +923,7 @@ pub async fn run(
             async move {
                 let (name, v) = (b.batch.as_str(), b.curated.version);
                 if let Some(body) = out.get(&summary_path(cut, name, v)).await? {
-                    check_kept(curated.as_ref(), &source, b, cut, &body).await?;
+                    check_kept(curated.as_ref(), &source, &titles, b, cut, &body).await?;
                     report.lock().await.skipped += 1;
                     return Ok::<(), anyhow::Error>(());
                 }
@@ -909,10 +934,11 @@ pub async fn run(
                 let (rows, parts) = score_batch(curated.as_ref(), &source, b, &titles, cut).await?;
                 let pages = rows.len() as u64;
                 let batch = name.to_owned();
+                let languages = batch_languages(&titles, b);
                 let (table, summary) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                     Ok((
                         encode_table(&rows)?,
-                        serde_json::to_vec(&summarize(&batch, v, &rows, parts))?,
+                        serde_json::to_vec(&summarize(&batch, v, &rows, parts, languages))?,
                     ))
                 })
                 .await??;
@@ -924,10 +950,12 @@ pub async fn run(
                     )
                     .await?
                 {
-                    tracing::warn!(
-                        batch = name,
-                        version = v,
-                        "ocr agreement table kept from an earlier run"
+                    // A table without its summary: an earlier run stopped
+                    // between the two, possibly from other inputs.
+                    bail!(
+                        "{} is there without its summary (an earlier run stopped between \
+                         the two): delete it to score the batch again",
+                        table_path(cut, name, v)
                     );
                 }
                 out.put_new(&summary_path(cut, name, v), summary, "application/json")
@@ -1161,7 +1189,7 @@ mod tests {
             score_page(&row(Some(LOC), TextStatus::Ok), AS, &["eng"]),
             score_page(&row(None, TextStatus::Empty), AS, &["eng"]),
         ];
-        let s = summarize("dlc_abc", 1, &rows, vec![]);
+        let s = summarize("dlc_abc", 1, &rows, vec![], BTreeMap::new());
         assert_eq!((s.pages, s.loc_ok, s.skipped), (2, 1, 0));
         assert_eq!(s.cer_sym_by_decade[&1890].total(), 1);
         let v = sum_summaries("pages-v1", None, &[s.clone(), s]);
@@ -1278,6 +1306,26 @@ mod tests {
             e.contains("from 1 American Stories parts") && e.contains("2 parts"),
             "{e}"
         );
+        std::fs::remove_file(
+            c.path()
+                .join("american-stories/pages/sn83045462/1890-001.parquet"),
+        )
+        .unwrap();
+        // Other title languages: refused too.
+        reference
+            .put(
+                "pages-v1/titles.json",
+                br#"[{"lccn":"sn83045462","languages":["ger"]}]"#.to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let e = go().await.unwrap_err().to_string();
+        assert!(e.contains("other title languages"), "{e}");
+        // A table without its summary is not kept.
+        std::fs::remove_file(o.path().join(summary_path(None, "dlc_abc", 1))).unwrap();
+        let e = go().await.unwrap_err().to_string();
+        assert!(e.contains("without its summary"), "{e}");
     }
 
     #[test]
