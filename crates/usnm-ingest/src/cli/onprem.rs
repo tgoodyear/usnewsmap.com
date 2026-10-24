@@ -181,13 +181,15 @@ pub(crate) async fn import_staged_run_command(
         let recorded = usnm_ingest::onprem::record_current(&state, reference.as_ref(), &run).await;
         let unlocked = release::unlock_writer(&state, &owner, lease).await;
         let recorded = recorded?;
-        unlocked?;
+        // Logged before the unlock's error, so a failed unlock doesn't hide
+        // a write that happened.
         let previous = recorded.previous.as_deref().unwrap_or("");
         if recorded.changed() {
             tracing::warn!(version, previous, "ops/current set to the promoted version");
         } else {
             tracing::info!(version, "ops/current already names the promoted version");
         }
+        unlocked.context("releasing the writer lock after recording ops/current")?;
     }
     Ok(None)
 }
@@ -222,25 +224,25 @@ mod tests {
     use usnm_store::ObjectStore;
 
     /// A lake `reference` holding `v2`'s staged run record and a
-    /// `current.json` naming `live`, and a state whose `ops/current` names `v1`.
+    /// `current.json` naming `live`, and a state whose `ops/current` names
+    /// `v1`. `v1` was built in Azure: its published run is only in the state.
     struct Lake {
         tmp: tempfile::TempDir,
         docs: Arc<MemoryDocs>,
         state: State,
     }
 
-    async fn lake(live: &str) -> Lake {
-        let tmp = tempfile::tempdir().unwrap();
-        let reference = usnm_store::LocalStore::new(tmp.path());
+    /// A published run of `version`, with one index.
+    fn published(version: &str, previous: Option<&str>) -> IndexRun {
         let now = chrono::Utc::now();
-        let run = IndexRun {
-            id: "v2".into(),
-            index_version: "v2".into(),
+        IndexRun {
+            id: version.into(),
+            index_version: version.into(),
             full: true,
-            indexes: vec!["base2".into()],
-            new_index: "base2".into(),
+            indexes: vec![format!("base-{version}")],
+            new_index: format!("base-{version}"),
             batch_count: Some(1),
-            batch_list: Some("v2/batches.json".into()),
+            batch_list: Some(format!("{version}/batches.json")),
             batches: None,
             status: RunStatus::Published,
             docs: 5,
@@ -248,35 +250,44 @@ mod tests {
             duplicate_pages: 0,
             started_at: now,
             published_at: Some(now),
-            previous_version: Some("v1".into()),
+            previous_version: previous.map(str::to_owned),
             last_error: None,
             failed_at: None,
             build: None,
-        };
+        }
+    }
+
+    async fn lake(live: &str) -> Lake {
+        let tmp = tempfile::tempdir().unwrap();
+        let reference = usnm_store::LocalStore::new(tmp.path());
         reference
             .put(
                 "v2/index_run.json",
-                serde_json::to_vec(&run).unwrap(),
-                "application/json",
-            )
-            .await
-            .unwrap();
-        reference
-            .put(
-                "current.json",
-                serde_json::to_vec(&serde_json::json!({"index_version": live})).unwrap(),
+                serde_json::to_vec(&published("v2", Some("v1"))).unwrap(),
                 "application/json",
             )
             .await
             .unwrap();
         let docs = Arc::new(MemoryDocs::default());
         let state = State::new(docs.clone());
+        assert!(state.create_run(&published("v1", None)).await.unwrap());
         state.set_current_version("v1").await.unwrap();
-        Lake { tmp, docs, state }
+        let l = Lake { tmp, docs, state };
+        l.promote(live).await;
+        l
     }
 
     impl Lake {
+        /// `import-staged-run --version v2` with `extra`.
         async fn import(&self, extra: &[&str]) -> anyhow::Result<Option<Published>> {
+            self.import_version("v2", extra).await
+        }
+
+        async fn import_version(
+            &self,
+            version: &str,
+            extra: &[&str],
+        ) -> anyhow::Result<Option<Published>> {
             let reference = self.tmp.path().to_str().unwrap();
             let mut args = vec![
                 "usnm-ingest",
@@ -286,7 +297,7 @@ mod tests {
                 reference,
                 "import-staged-run",
                 "--version",
-                "v2",
+                version,
             ];
             args.extend_from_slice(extra);
             let cli = Cli::try_parse_from(args).unwrap();
@@ -294,6 +305,18 @@ mod tests {
                 panic!("not import-staged-run");
             };
             import_staged_run_command(&cli, self.state.clone(), a).await
+        }
+
+        /// Make `current.json` name `version`, as the operator's upload does.
+        async fn promote(&self, version: &str) {
+            usnm_store::LocalStore::new(self.tmp.path())
+                .put(
+                    "current.json",
+                    serde_json::to_vec(&serde_json::json!({"index_version": version})).unwrap(),
+                    "application/json",
+                )
+                .await
+                .unwrap();
         }
 
         async fn current(&self) -> Option<String> {
@@ -362,5 +385,51 @@ mod tests {
         release::lock_writer(&l.state, "next-release")
             .await
             .unwrap();
+    }
+
+    /// While a release holds the writer lock, `--current` is refused
+    /// before it reads `current.json`: the run is still recorded and
+    /// `ops/current` isn't written. Once the lock is free, it goes through.
+    #[tokio::test]
+    async fn current_is_refused_while_the_writer_lock_is_held() {
+        let l = lake("v2").await;
+        let etag = l.current_etag().await;
+        let lease = release::lock_writer(&l.state, "release").await.unwrap();
+        let e = l.import(&["--current"]).await.unwrap_err();
+        assert!(
+            format!("{e:#}").contains("lock `quickwit-writer` is held"),
+            "{e:#}"
+        );
+        assert!(l.state.run("v2").await.unwrap().is_some());
+        assert_eq!(l.current().await.as_deref(), Some("v1"));
+        assert_eq!(l.current_etag().await, etag);
+        release::unlock_writer(&l.state, "release", lease)
+            .await
+            .unwrap();
+        l.import(&["--current"]).await.unwrap();
+        assert_eq!(l.current().await.as_deref(), Some("v2"));
+    }
+
+    /// A rollback (cutover step 6): once `current.json` names the rollback
+    /// version again, `--current` on it moves `ops/current` back, from the
+    /// run already in the state. Rolling forward moves it on again.
+    #[tokio::test]
+    async fn current_follows_a_rollback_and_a_roll_forward() {
+        let l = lake("v2").await;
+        l.import(&["--current"]).await.unwrap();
+        assert_eq!(l.current().await.as_deref(), Some("v2"));
+        // Not before the pointer is restored.
+        let e = l.import_version("v1", &["--current"]).await.unwrap_err();
+        assert!(
+            format!("{e:#}").contains("current.json names `v2`, not `v1`"),
+            "{e:#}"
+        );
+        assert_eq!(l.current().await.as_deref(), Some("v2"));
+        l.promote("v1").await;
+        l.import_version("v1", &["--current"]).await.unwrap();
+        assert_eq!(l.current().await.as_deref(), Some("v1"));
+        l.promote("v2").await;
+        l.import(&["--current"]).await.unwrap();
+        assert_eq!(l.current().await.as_deref(), Some("v2"));
     }
 }
