@@ -21,8 +21,8 @@ pub fn bundle_dir(root: &Path, id: &str) -> anyhow::Result<PathBuf> {
 /// What one call submitted.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Submitted {
-    /// The bundle's id, when one was made.
-    pub bundle: Option<String>,
+    /// The bundles made: usually one, more when the pages' scans pass the bundle's byte limit.
+    pub bundles: Vec<String>,
     /// Pages submitted as single-page units: those taken out of an earlier bundle, or a lone
     /// page left over.
     pub alone: Vec<String>,
@@ -77,6 +77,25 @@ pub fn create_work_args(bundle: &Bundle, app_version: u32) -> Vec<String> {
     args
 }
 
+/// `pages` (id, scan bytes) in order, cut into groups whose scans total at most `limit`.
+fn by_bytes(pages: Vec<(String, u64)>, limit: u64) -> Vec<Vec<String>> {
+    let mut groups: Vec<Vec<String>> = vec![];
+    let mut size = 0u64;
+    for (id, bytes) in pages {
+        match groups.last_mut() {
+            Some(group) if size + bytes <= limit => {
+                group.push(id);
+                size += bytes;
+            }
+            _ => {
+                groups.push(vec![id]);
+                size = bytes;
+            }
+        }
+    }
+    groups
+}
+
 /// Submit reserved pages `ids` as one unit (2 to 32 pages, one image and one queue). A page
 /// taken out of an earlier bundle, and a page left alone, go as single-page units.
 pub async fn submit(
@@ -91,36 +110,45 @@ pub async fn submit(
         boinc::bundle::MAX_PAGES
     );
     let mut out = Submitted::default();
-    let (alone, together): (Vec<String>, Vec<String>) = {
+    let (mut alone, together): (Vec<String>, Vec<(String, u64)>) = {
         let _lock = Lock::take(root)?;
         let mut alone = vec![];
         let mut together = vec![];
         for id in ids {
-            if load(root, id)?.unbundled.is_some() {
+            let record = load(root, id)?;
+            if record.unbundled.is_some() {
                 alone.push(id.clone());
             } else {
-                together.push(id.clone());
+                together.push((id.clone(), record.job.scan.bytes));
             }
         }
         (alone, together)
     };
-    let (alone, together) = if together.len() == 1 {
-        ([alone, together].concat(), vec![])
-    } else {
-        (alone, together)
+    // Split by the bundle's byte limit as well as its page count, in order; a page left on
+    // its own goes alone.
+    let mut bundles = vec![];
+    for group in by_bytes(together, boinc::bundle::MAX_PAGES_BYTES as u64) {
+        if group.len() == 1 {
+            alone.extend(group);
+        } else {
+            bundles.push(group);
+        }
+    }
+    // An unpinned bundle could go to an older worker that can't read it.
+    let app_version = match bundles.is_empty() {
+        true => 0,
+        false => app_version.filter(|v| *v > 0).context(
+            "a bundle needs --app-version-num, the usnm_ocr version whose worker reads bundles",
+        )?,
     };
     for id in &alone {
         crate::submit::submit(root, project, id).await?;
         out.alone.push(id.clone());
     }
-    if together.is_empty() {
-        return Ok(out);
+    for group in bundles {
+        out.bundles
+            .push(submit_bundle(root, project, &group, app_version).await?);
     }
-    // An unpinned bundle could go to an older worker that can't read it.
-    let app_version = app_version.filter(|v| *v > 0).context(
-        "a bundle needs --app-version-num, the usnm_ocr version whose worker reads bundles",
-    )?;
-    out.bundle = Some(submit_bundle(root, project, &together, app_version).await?);
     Ok(out)
 }
 
@@ -311,7 +339,8 @@ pub(crate) mod tests {
     async fn one_workunit_carries_the_pages_and_each_record_names_it() {
         let (s, ids) = Server::new(&[1, 2, 3]);
         let out = submit(&s.root, &s.project, &ids, Some(106)).await.unwrap();
-        let bundle_id = out.bundle.clone().unwrap();
+        let bundle_id = out.bundles[0].clone();
+        assert_eq!(out.bundles.len(), 1);
         assert!(out.alone.is_empty());
         let calls = s.calls();
         assert_eq!(calls.len(), 1);
@@ -366,7 +395,7 @@ pub(crate) mod tests {
         assert!(s.calls().is_empty());
         let out = submit(&s.root, &s.project, &ids, Some(106)).await.unwrap();
         assert_eq!(out.alone, vec![ids[0].clone()]);
-        assert!(out.bundle.is_some());
+        assert_eq!(out.bundles.len(), 1);
         let calls = s.calls();
         assert_eq!(calls.len(), 2);
         assert!(calls[0].contains(&format!("--wu_name usnm_{}", ids[0])));
@@ -375,7 +404,7 @@ pub(crate) mod tests {
         // One page alone is a single-page unit.
         let (s, ids) = Server::new(&[4]);
         let out = submit(&s.root, &s.project, &ids, Some(106)).await.unwrap();
-        assert_eq!((out.bundle, out.alone), (None, ids.clone()));
+        assert_eq!((out.bundles, out.alone), (vec![], ids.clone()));
         assert!(s.calls()[0].contains("templates/usnm_ocr_in"));
     }
 
@@ -413,7 +442,29 @@ pub(crate) mod tests {
         }
         // Once all are submitted there is nothing left to reconcile.
         assert!(crate::submit::reconcile(&s2.root, &ids2[0], true).is_err());
-        assert!(out.bundle.is_some());
+        assert_eq!(out.bundles.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn scans_over_the_byte_limit_are_split_into_more_bundles() {
+        let pages = |sizes: &[u64]| -> Vec<(String, u64)> {
+            sizes
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (i.to_string(), *b))
+                .collect()
+        };
+        let lens = |g: Vec<Vec<String>>| g.iter().map(Vec::len).collect::<Vec<_>>();
+        // Ten 64 MiB scans are two bundles under 512 MiB, not one of 640 MiB.
+        assert_eq!(
+            lens(by_bytes(pages(&[64 << 20; 10]), 512 << 20)),
+            vec![8, 2]
+        );
+        assert_eq!(lens(by_bytes(pages(&[5, 5, 1, 9, 2]), 10)), vec![2, 2, 1]);
+        // In submit, a group of one goes alone and the rest are bundled.
+        let (s, ids) = Server::new(&[1, 2, 3]);
+        let out = submit(&s.root, &s.project, &ids, Some(106)).await.unwrap();
+        assert_eq!((out.bundles.len(), out.alone.len()), (1, 0));
     }
 
     #[test]

@@ -188,7 +188,7 @@ pub async fn submit_bundle(args: SubmitBundleArgs) -> anyhow::Result<()> {
         app_version_num,
     } = args;
     let out = crate::bundle::submit::submit(&root, &project, &jobs, app_version_num).await?;
-    if let Some(bundle) = out.bundle {
+    for bundle in out.bundles {
         println!("bundle {bundle}");
     }
     for id in out.alone {

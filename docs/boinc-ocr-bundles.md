@@ -68,14 +68,16 @@ unit fails the whole task: a missing or short `pages`, an invalid manifest, or n
   member to `submitting` with `bundle` set on its server record, then runs stock `create_work`
   with `--app_version_num` set to the version whose worker reads bundles, so an older worker
   never gets one. Delay bound and priority come from the queue as for a single page;
-  `rsc_fpops_est`, `rsc_fpops_bound` and `rsc_disk_bound` scale with the bundle. A group of
-  one, and a page taken out of an earlier bundle (`unbundled`), go as single-page units.
+  `rsc_fpops_est`, `rsc_fpops_bound` and `rsc_disk_bound` scale with the bundle. A group whose
+  scans pass 512 MiB is cut into more bundles. A group of one, and a page taken out of an
+  earlier bundle (`unbundled`), go as single-page units.
 - **Inventory.** `batch-inventory` also reads `usnm_ocrb_` workunits and spools and reports
   them as their pages. A bundle workunit's pending and existing state, and its spool once it
   is assimilated, go to each page whose server record names it. So the controller's counts,
   holds and checks still work page by page.
 - **Spool-out.** For a bundled page (`put-spool --root`), `spool-out` reads that page's entry
-  from the bundle's assimilated files, checks it against the page's job, and writes the
+  from the bundle's assimilated files, reading only that page's ranges of `texts` and `layouts`, checks it against the page's
+  job, and writes the
   standard `spool/<id>/usnm_<id>__file_{result.json,text.txt,layout.xml}`, with the bundle's
   canonical host as the page's host. The hand-off `collect`, the trust and gold checks, and
   publication don't change.

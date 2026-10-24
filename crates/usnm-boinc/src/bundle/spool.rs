@@ -10,7 +10,7 @@ use crate::{load, read, save, Lock, Stage};
 use anyhow::{ensure, Context};
 use std::path::Path;
 use usnm_ocr_contract::boinc::bundle::{
-    workunit, Bundle, PageOutput, Results, JOB_FILE, LAYOUTS_FILE, MAX_JSON, MAX_LAYOUTS,
+    workunit, Bundle, PageOutput, Results, Slice, JOB_FILE, LAYOUTS_FILE, MAX_JSON, MAX_LAYOUTS,
     MAX_TEXTS, RESULTS_FILE, TEXTS_FILE,
 };
 
@@ -52,25 +52,47 @@ pub fn split(root: &Path, spool: &Path, id: &str) -> anyhow::Result<PageOutput> 
         "no assimilated result for bundle {bundle_id} under {} (not assimilated yet?)",
         spool.display()
     );
-    let parsed = (|| -> anyhow::Result<(Results, Vec<u8>, Vec<u8>)> {
-        Ok((
-            serde_json::from_slice(&read(&results, MAX_JSON)?)?,
-            read(&texts, MAX_TEXTS)?,
-            read(&layouts, MAX_LAYOUTS)?,
-        ))
-    })();
-    match parsed {
-        // A result for another bundle, another version or too many pages fails every page
-        // alone (and so requeues it), as an unreadable one does: the bundle won't get better.
-        Ok((results, texts, layouts)) => Ok(results
-            .page(&bundle, &record.job, &texts, &layouts)
-            .unwrap_or_else(|e| {
-                PageOutput::Failed(format!("the bundle's result is rejected: {e:#}"))
-            })),
-        Err(e) => Ok(PageOutput::Failed(format!(
-            "the bundle's result is unreadable: {e:#}"
-        ))),
-    }
+    let results: Results =
+        match read(&results, MAX_JSON).and_then(|b| Ok(serde_json::from_slice(&b)?)) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(PageOutput::Failed(format!(
+                    "the bundle's result is unreadable: {e:#}"
+                )))
+            }
+        };
+    // Only this page's ranges are read: each page's spool-out runs on its own.
+    let output = results.page_by(
+        &bundle,
+        &record.job,
+        |s| read_range(&texts, MAX_TEXTS, s),
+        |s| read_range(&layouts, MAX_LAYOUTS, s),
+    );
+    // A result for another bundle, another version or too many pages fails every page
+    // alone (and so requeues it), as an unreadable one does: the bundle won't get better.
+    Ok(output
+        .unwrap_or_else(|e| PageOutput::Failed(format!("the bundle's result is rejected: {e:#}"))))
+}
+
+/// `slice` of the regular file at `path` (at most `max` bytes in all), without reading the rest.
+fn read_range(path: &Path, max: usize, slice: Slice) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    ensure!(
+        std::fs::symlink_metadata(path)?.file_type().is_file(),
+        "not a regular file"
+    );
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    ensure!(len <= max as u64, "file over size limit");
+    let end = slice
+        .offset
+        .checked_add(slice.bytes)
+        .context("slice range overflow")?;
+    ensure!(end <= len, "slice out of bounds");
+    f.seek(SeekFrom::Start(slice.offset))?;
+    let mut out = vec![0; usize::try_from(slice.bytes)?];
+    f.read_exact(&mut out)?;
+    Ok(out)
 }
 
 /// Puts bundled page `id` back to `reserved`, out of its bundle and marked so it is only ever
@@ -136,8 +158,8 @@ mod tests {
         let bundle_id = submit(&s.root, &s.project, &ids, Some(106))
             .await
             .unwrap()
-            .bundle
-            .unwrap();
+            .bundles
+            .remove(0);
         let spool = returned(&s, &bundle_id, vec![2]).await;
         let PageOutput::Ok { result, text, .. } = split(&s.root, &spool, &ids[0]).unwrap() else {
             panic!("page 1 should be ok")
@@ -170,8 +192,8 @@ mod tests {
         let bundle_id = submit(&s.root, &s.project, &ids, Some(106))
             .await
             .unwrap()
-            .bundle
-            .unwrap();
+            .bundles
+            .remove(0);
         let spool = s.project.join("results/1");
         std::fs::create_dir_all(&spool).unwrap();
         // Not assimilated yet: an error, nothing changes.
@@ -218,8 +240,8 @@ mod tests {
         let bundle_id = submit(&s.root, &s.project, &ids, Some(106))
             .await
             .unwrap()
-            .bundle
-            .unwrap();
+            .bundles
+            .remove(0);
         let spool = returned(&s, &bundle_id, vec![2]).await;
         let container = usnm_store::open(s.project.join("container").to_str().unwrap()).unwrap();
         let store = container.as_ref();

@@ -452,6 +452,24 @@ pub mod bundle {
             texts: &[u8],
             layouts: &[u8],
         ) -> anyhow::Result<PageOutput> {
+            self.page_by(
+                bundle,
+                job,
+                |s| Ok(s.of(texts)?.to_vec()),
+                |s| Ok(s.of(layouts)?.to_vec()),
+            )
+        }
+
+        /// [`Results::page`], reading only the page's own ranges of `texts` and `layouts`
+        /// through `text` and `alto`, so one page's spool-out needn't load the whole bundle's.
+        /// A range over the per-page limit is refused before it is read.
+        pub fn page_by(
+            &self,
+            bundle: &Bundle,
+            job: &Job,
+            mut text: impl FnMut(Slice) -> anyhow::Result<Vec<u8>>,
+            mut alto: impl FnMut(Slice) -> anyhow::Result<Vec<u8>>,
+        ) -> anyhow::Result<PageOutput> {
             ensure!(
                 self.v == VERSION && self.bundle_id == bundle.id,
                 "bundle result is for another bundle"
@@ -479,16 +497,19 @@ pub mod bundle {
                 }
                 return Ok(PageOutput::Failed(why));
             }
-            let checked = || -> anyhow::Result<(ResultManifest, Vec<u8>, Vec<u8>)> {
+            let mut checked = || -> anyhow::Result<(ResultManifest, Vec<u8>, Vec<u8>)> {
                 let result = entry.result.clone().context("ok entry without a result")?;
-                let text = entry.text.context("ok entry without text")?.of(texts)?;
-                let alto = entry.alto.context("ok entry without ALTO")?.of(layouts)?;
+                let (t, a) = (
+                    entry.text.context("ok entry without text")?,
+                    entry.alto.context("ok entry without ALTO")?,
+                );
                 ensure!(
-                    text.len() <= MAX_TEXT && alto.len() <= MAX_ALTO,
+                    t.bytes <= MAX_TEXT as u64 && a.bytes <= MAX_ALTO as u64,
                     "result over size limit"
                 );
-                result.matches(job, text, alto)?;
-                Ok((result, text.to_vec(), alto.to_vec()))
+                let (t, a) = (text(t)?, alto(a)?);
+                result.matches(job, &t, &a)?;
+                Ok((result, t, a))
             };
             match checked() {
                 Ok((result, text, alto)) => Ok(PageOutput::Ok {
