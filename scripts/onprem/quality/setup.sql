@@ -147,6 +147,15 @@ ALTER TABLE quality.reader_scores
   -- Version 2: the mean share of this reader's characters placed in the other readers'.
   ADD COLUMN IF NOT EXISTS matched        real;
 
+-- Rows loaded before these columns are version 1: their _v1 values are the unit's.
+UPDATE quality.unit_pages SET hat_determined_v1 = hat_determined, hat_residual_v1 = hat_residual,
+  legibility_ceiling_v1 = legibility_ceiling
+WHERE hat_version = 1 AND hat_determined_v1 IS NULL AND hat_determined IS NOT NULL;
+UPDATE quality.reader_scores r SET est_cer_v1 = r.est_cer, est_cer_raw_v1 = r.est_cer_raw
+FROM quality.unit_pages u
+WHERE u.campaign = r.campaign AND u.doc_id = r.doc_id AND u.hat_version = 1
+  AND r.est_cer_v1 IS NULL AND r.est_cer IS NOT NULL;
+
 -- Campaigns whose hat estimates are wrong and stay out of ranking until fixed; their scan
 -- features still count. v1-wave6 staged loc-hist as the literal "bulk" on 2,256 pages
 -- (#962, 24 October 2026), so every estimate of its hat is off.
