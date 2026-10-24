@@ -183,6 +183,12 @@ pub async fn pull(store: &dyn ObjectStore, root: &Path, id: &str) -> anyhow::Res
     );
     let mut record = incoming;
     record.error = None;
+    // A page taken out of an OCR bundle (#1059) stays marked, so it is only submitted alone.
+    if target.join("record.json").exists() {
+        let old = load(root, id)?;
+        record.unbundled = old.unbundled;
+        record.error = old.error;
+    }
     crate::atomic(&target.join("page"), page)?;
     crate::atomic(&target.join("request.json"), &got[1].1)?;
     crate::save(root, &record)?;
@@ -200,30 +206,90 @@ pub fn spool_names(workunit: &str) -> [(String, usize); 5] {
     ]
 }
 
+/// The marker `spool-out` leaves for a page that failed in its OCR bundle and went back to
+/// `reserved` on the server (#1059): the hand-off `collect` has nothing to do for it.
+pub const REQUEUED: &str = "requeued";
+
+/// What `put_spool` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Spooled {
+    /// It wrote this many spool files.
+    Files(usize),
+    /// The page failed in its bundle and was put back to `reserved` on the server, to be
+    /// submitted alone; it wrote the `requeued` marker.
+    Requeued(String),
+}
+
 /// Server side: writes job `id`'s spool files from `spool` to `spool/<id>/`, the canonical
 /// result's host id (when known) to `spool/<id>/host_id`, and `trust` (when given) to
-/// `gold/trust.json`. Returns how many spool files it wrote.
+/// `gold/trust.json`. With the server's hand-off `root`, a page submitted in an OCR bundle
+/// (#1059) gets its own share of the bundle's result, under the names a single-page unit's
+/// would have; or, if it failed in the bundle, it is requeued.
 pub async fn put_spool(
     store: &dyn ObjectStore,
+    root: Option<&Path>,
     spool: &Path,
     id: &str,
     host_id: Option<u64>,
     trust: Option<&Path>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<Spooled> {
     ensure!(boinc::is_sha256(id), "invalid job id");
+    let bundled = match root {
+        // A job with no server journal here was never bundled.
+        Some(root) if dir(root, id)?.join("record.json").exists() => {
+            load(root, id)?.bundle.is_some()
+        }
+        Some(_) => false,
+        None => false,
+    };
     let mut n = 0;
-    for (name, max) in spool_names(&format!("usnm_{id}")) {
-        let path = spool.join(&name);
-        if path.exists() {
-            let bytes = read(&path, max).with_context(|| path.display().to_string())?;
-            store
-                .put(
-                    &format!("spool/{id}/{name}"),
-                    bytes,
-                    "application/octet-stream",
-                )
-                .await?;
-            n += 1;
+    if let (true, Some(root)) = (bundled, root) {
+        use usnm_ocr_contract::boinc::bundle::PageOutput;
+        match crate::bundle::spool::split(root, spool, id)? {
+            PageOutput::Ok { result, text, alto } => {
+                let wu = format!("usnm_{id}");
+                for (name, bytes) in [
+                    (format!("{wu}__file_result.json"), result),
+                    (format!("{wu}__file_text.txt"), text),
+                    (format!("{wu}__file_layout.xml"), alto),
+                ] {
+                    store
+                        .put(
+                            &format!("spool/{id}/{name}"),
+                            bytes,
+                            "application/octet-stream",
+                        )
+                        .await?;
+                    n += 1;
+                }
+            }
+            PageOutput::Failed(why) => {
+                let bundle = crate::bundle::spool::requeue(root, id, &why)?;
+                let note = format!("{bundle}\n{why}\n");
+                store
+                    .put(
+                        &format!("spool/{id}/{REQUEUED}"),
+                        note.into_bytes(),
+                        "text/plain",
+                    )
+                    .await?;
+                return Ok(Spooled::Requeued(why));
+            }
+        }
+    } else {
+        for (name, max) in spool_names(&format!("usnm_{id}")) {
+            let path = spool.join(&name);
+            if path.exists() {
+                let bytes = read(&path, max).with_context(|| path.display().to_string())?;
+                store
+                    .put(
+                        &format!("spool/{id}/{name}"),
+                        bytes,
+                        "application/octet-stream",
+                    )
+                    .await?;
+                n += 1;
+            }
         }
     }
     ensure!(
@@ -246,16 +312,23 @@ pub async fn put_spool(
             .put("gold/trust.json", read(t, MAX_TRUST)?, "application/json")
             .await?;
     }
-    Ok(n)
+    Ok(Spooled::Files(n))
+}
+
+/// What the hand-off container holds for one job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Spool {
+    /// Its spool files (now in `spool`) and the host id the server recorded, if any.
+    Files(Option<u64>),
+    /// Only the `requeued` marker: the page failed in its OCR bundle and goes to BOINC again
+    /// alone, so there is nothing to collect yet.
+    Requeued,
 }
 
 /// Hand-off job side: copies job `id`'s spool into `spool` (only the job's own spool names)
-/// and returns the host id the server recorded, if any.
-pub async fn get_spool(
-    store: &dyn ObjectStore,
-    id: &str,
-    spool: &Path,
-) -> anyhow::Result<Option<u64>> {
+/// and returns the host id the server recorded, if any. Spool files win over a `requeued`
+/// marker: a requeued page's own result arrives later under the same prefix.
+pub async fn get_spool(store: &dyn ObjectStore, id: &str, spool: &Path) -> anyhow::Result<Spool> {
     ensure!(boinc::is_sha256(id), "invalid job id");
     let mut n = 0;
     for (name, max) in spool_names(&format!("usnm_{id}")) {
@@ -265,15 +338,18 @@ pub async fn get_spool(
             n += 1;
         }
     }
+    if n == 0 && store.exists(&format!("spool/{id}/{REQUEUED}")).await? {
+        return Ok(Spool::Requeued);
+    }
     ensure!(n > 0, "no spool for job {id} in the hand-off container");
     match store.get(&format!("spool/{id}/host_id")).await? {
-        Some(b) => Ok(Some(
+        Some(b) => Ok(Spool::Files(Some(
             std::str::from_utf8(&b)?
                 .trim()
                 .parse()
                 .context("bad host_id")?,
-        )),
-        None => Ok(None),
+        ))),
+        None => Ok(Spool::Files(None)),
     }
 }
 

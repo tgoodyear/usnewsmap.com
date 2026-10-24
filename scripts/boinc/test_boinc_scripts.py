@@ -1289,6 +1289,16 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(r.returncode, 4)
         self.assertFalse([c for c in self.calls() if c.startswith("claim finish")])
 
+    def test_handoff_collect_of_a_requeued_page_changes_nothing(self):
+        # #1059: the page failed in its OCR bundle and goes to BOINC again alone.
+        job = "a" * 64
+        self.stub(self.COPY_STUB + "\n" + '[ "$1 $2" = "handoff get-spool" ] && echo requeued')
+        r = self.handoff("collect", JOB_ID=job, QUEUE_URL="https://usnmst.queue.core.windows.net")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("requeued from its bundle", r.stderr)
+        self.assertFalse([c for c in self.calls()
+                          if c.startswith(("collect ", "claim finish", "handoff put "))])
+
     def test_handoff_release(self):
         r = self.handoff(
             "release",
@@ -1431,6 +1441,43 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         # Spool-out needs only the database password, read once for the batch.
         stubs = [c for c in self.calls() if c.startswith("stub ")]
         self.assertEqual(stubs, ["stub kv_get mysql-runtime-password"])
+
+    def test_bridge_submit_remote_units_bundle_each_group(self):
+        # #1059: JOB_UNITS submits each +-joined group as one OCR bundle; pages the server already
+        # has past reserved are left out, and a failed unit stops the ones after it.
+        j1, j2, j3, j4 = "1" * 64, "2" * 64, "3" * 64, "4" * 64
+        bridge, env = self.bridge_batch_copy("none")
+        templates = os.path.join(self.tmp, "templates")
+        os.makedirs(templates)
+        for name in ("usnm_ocr_bundle_in", "usnm_ocr_bundle_out"):
+            shutil.copy(os.path.join(ROOT, "ocr/boinc", name), templates)
+        os.makedirs(os.path.join(env["PROJECT_DIR"], "usnmocr/templates"))
+        with open(bridge) as f:
+            text = f.read()
+        with open(bridge, "w") as f:
+            f.write(text.replace('SECRETS="$STUB_SECRETS"\n',
+                                 f'SECRETS="$STUB_SECRETS"\nTEMPLATES={templates}\n', 1))
+        self.stub(f'[ "$1 $2" = "handoff pull" ] && {{ case "$*" in *{j2}*) echo submitted ;; *) echo reserved ;; esac; }}\n'
+                  f'[ "$1" = submit-bundle ] && [[ "$*" == *{j4}* ]] && exit 5')
+        units = {"BRIDGE_STEP": "submit-remote", "JOB_UNITS": f"{j1}+{j2}+{j3},{j4}", "BUNDLE_APP_VERSION": "106"}
+        r = subprocess.run([bridge], cwd=ROOT, env={**env, **units}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"stopped at unit {j4}", r.stderr)
+        bundles = [c for c in self.calls() if c.startswith("submit-bundle ")]
+        self.assertEqual(len(bundles), 2)
+        self.assertIn(f"--app-version-num 106 --job {j1} --job {j3}", bundles[0])
+        self.assertNotIn(j2, bundles[0])
+        self.assertTrue(os.path.exists(os.path.join(env["PROJECT_DIR"], "usnmocr/templates/usnm_ocr_bundle_in")))
+        stubs = [c for c in self.calls() if c.startswith("stub ")]
+        self.assertEqual(stubs, ["stub fetch_secrets", "stub render_config"])
+        for extra in ({"JOB_UNITS": f"{j1}+{j2}", "JOB_ID": j1}, {"JOB_UNITS": "x"},
+                      {"JOB_UNITS": "+".join([j1] * 33)}, {"BUNDLE_APP_VERSION": ""}):
+            with self.subTest(extra=extra):
+                os.remove(self.log)
+                r = subprocess.run([bridge], cwd=ROOT, env={**env, **units, **extra},
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith(("submit-bundle", "handoff pull"))])
 
     def test_bridge_batches_reject_mixed_or_malformed_input(self):
         j1 = "1" * 64

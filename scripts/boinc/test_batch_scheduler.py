@@ -1049,6 +1049,98 @@ class QueueModeTests(unittest.TestCase):
             directory.rmdir()
 
 
+class BundleTests(unittest.TestCase):
+    """#1059: several pages of one queue in one usnm_ocr workunit, when a plan asks for it."""
+
+    def ids(self, n):
+        return [f"{i:064x}" for i in range(1, n + 1)]
+
+    def records(self, reasons):
+        out = []
+        for i, reason in enumerate(reasons, 1):
+            r = record(f"sn12345678/1900-01-01/ed-1/seq-{i}", i)
+            r["job"]["message"]["reason"] = reason
+            out.append(r)
+        return out
+
+    def test_config_knob_is_optional_bounded_and_needs_an_app_version(self):
+        directory = Path(tempfile.mkdtemp())
+        try:
+            path = directory / "config.json"
+            base = queue_config()
+            del base["pages"]
+            path.write_text(json.dumps(base))
+            plain = batch.load_config(path)
+            self.assertNotIn("pages_per_unit", plain)
+            good = dict(base, pages_per_unit={"ocr-bulk": 10, "ocr-priority": 1},
+                        bundle_app_version=106)
+            path.write_text(json.dumps(good))
+            loaded = batch.load_config(path)
+            self.assertNotEqual(batch.digest(loaded), batch.digest(plain))
+            for bad in ({"ocr-bulk": 33}, {"ocr-bulk": 0}, {"elsewhere": 2}, {}, [10]):
+                path.write_text(json.dumps(dict(good, pages_per_unit=bad)))
+                with self.assertRaises(ValueError):
+                    batch.load_config(path)
+            missing = dict(good)
+            del missing["bundle_app_version"]
+            path.write_text(json.dumps(missing))
+            with self.assertRaisesRegex(ValueError, "bundle_app_version"):
+                batch.load_config(path)
+            # All ones: nothing is bundled, so no app version is needed.
+            path.write_text(json.dumps(dict(base, pages_per_unit={"ocr-bulk": 1})))
+            batch.load_config(path)
+        finally:
+            import shutil
+            shutil.rmtree(directory)
+
+    def test_units_split_by_queue_into_groups_of_at_most_the_size(self):
+        records = self.records(["bulk", "user", "bulk", "bulk", "user", "bulk"])
+        ids = [r["job"]["id"] for r in records]
+        units = batch.units_of({"pages_per_unit": {"ocr-bulk": 3}}, records)
+        self.assertEqual(units, [[ids[0], ids[2], ids[3]], [ids[5]], [ids[1]], [ids[4]]])
+        self.assertEqual(batch.units_of({}, records), [[i] for i in [ids[0], ids[2], ids[3], ids[5], ids[1], ids[4]]])
+
+    def test_bundled_units_go_as_job_units(self):
+        cfg = dict(queue_config(), pages_per_unit={"ocr-bulk": 2}, bundle_app_version=106)
+        a, b, c = self.ids(3)
+        for flag, expected in ((False, [f"{a}+{b}", c]), (True, [f"{a}+{b},{c}"])):
+            t = batch.Transport(cfg, Path("."), batch_submit=flag)
+            sent = []
+            with patch.object(t, "step", side_effect=lambda tg, n, **v: sent.append((tg, n, v))):
+                t.submit_batch([a, b, c], [[a, b], [c]])
+            self.assertEqual([x[2]["JOB_UNITS"] for x in sent], expected)
+            self.assertTrue(all(x[:2] == ("bridge", "submit-remote") and
+                                x[2]["BUNDLE_APP_VERSION"] == 106 and "JOB_IDS" not in x[2]
+                                for x in sent))
+        # Units of one page each: exactly today's path.
+        t = batch.Transport(cfg, Path("."))
+        sent = []
+        with patch.object(t, "step", side_effect=lambda tg, n, **v: sent.append(v)):
+            t.submit_batch([a, b], [[a], [b]])
+        self.assertEqual([v["JOB_ID"] for v in sent], [a, b])
+
+    def test_a_tick_hands_its_submissions_over_as_units(self):
+        class Bundling(QueueFake):
+            def submit_batch(self, job_ids, units=None):
+                self.units = units
+                for job_id in job_ids:
+                    self.submit(job_id)
+
+        cfg = dict(queue_config(), pages_per_unit={"ocr-bulk": 2}, bundle_app_version=106,
+                   batch_size=4, max_pending=8, pages_per_host=4)
+        fake = Bundling([message(n) for n in range(1, 8)])
+        fake.assertions = []
+        batch.tick(cfg, {}, fake, lambda: None, NOW)
+        self.assertEqual([len(u) for u in fake.units], [2, 2])
+        self.assertEqual(len(fake.jobs), 4)
+        # Without the knob the transport gets no units.
+        plain = Bundling([message(n) for n in range(1, 4)])
+        plain.assertions = []
+        plain.units = "unset"
+        batch.tick(queue_config(), {}, plain, lambda: None, NOW)
+        self.assertEqual(plain.units, None)
+
+
 class BatchedStepsTests(unittest.TestCase):
     """#932: a tick's submissions, spool-outs and collects in one execution each, when on."""
 
@@ -1595,6 +1687,35 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
             self.config, self.state, self.fake,
             lambda: self.saved.append(copy.deepcopy(self.state)), NOW, **kwargs,
         )
+
+    def test_bundled_pages_count_as_pages_for_ocr_and_as_workunits_globally(self):
+        # #1059: four 10-page bundles and 20 other-app workunits are 24 workunits on the
+        # server (under a global cap of 30) and 40 OCR pages in flight.
+        self.fake.other = 20
+        self.fake.extra_pending = {f"{n:064x}" for n in range(1000, 1040)}
+        base = self.fake.inventory
+
+        def inventory():
+            snap = base()
+            snap["pending_workunits"] = 24
+            snap["pending_ocr_workunits"] = 4
+            return snap
+
+        self.fake.inventory = inventory
+        xml = status_xml(ocr_unsent=4, qwen_unsent=20, quality_unsent=0,
+                         quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=1, high_watermark=100, max_global_pending=30,
+                          server_status=xml)
+        self.assertEqual(event["global_pending"], 24)
+        self.assertEqual(event["other_app_pending"], 20)
+        self.assertEqual(event["cohort_pending"], 40)
+        self.assertNotEqual(event["backpressure_reason"], "global_safety_cap")
+        # An inventory from before bundles (no pending_ocr_workunits) counts as before.
+        self.fake.inventory = base
+        self.fake.extra_pending = set()
+        self.assertEqual(batch.ocr_workunit_counts({}, {"a", "b"}), (2, 0))
+        with self.assertRaises(ValueError):
+            batch.ocr_workunit_counts({"pending_ocr_workunits": 3}, {"a", "b"})
 
     def test_456_unsent_qwen_tasks_do_not_block_ocr_refill_below_low_watermark(self):
         # Reproduce the 2026-10-17 live starvation state: 456 unsent usnm_qwen tasks (plus

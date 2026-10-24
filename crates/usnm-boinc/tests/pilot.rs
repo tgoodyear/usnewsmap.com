@@ -1578,10 +1578,17 @@ async fn remote_handoff_round_trip_through_the_container() {
     let trust_path = fx.tmp.path().join("gold/trust.json");
     usnm_boinc::atomic(&trust_path, &serde_json::to_vec_pretty(&trust).unwrap()).unwrap();
     assert_eq!(
-        handoff::put_spool(container.as_ref(), &spool, &id, Some(42), Some(&trust_path))
-            .await
-            .unwrap(),
-        3
+        handoff::put_spool(
+            container.as_ref(),
+            None,
+            &spool,
+            &id,
+            Some(42),
+            Some(&trust_path)
+        )
+        .await
+        .unwrap(),
+        handoff::Spooled::Files(3)
     );
 
     // Collection needs only this journal, never retained scans or unrelated jobs.
@@ -1594,9 +1601,13 @@ async fn remote_handoff_round_trip_through_the_container() {
     .await
     .unwrap();
     assert!(!collect.join(format!("dispatch/jobs/{id}/page")).exists());
-    let host = handoff::get_spool(container.as_ref(), &id, &collect.join("spool"))
-        .await
-        .unwrap();
+    let handoff::Spool::Files(host) =
+        handoff::get_spool(container.as_ref(), &id, &collect.join("spool"))
+            .await
+            .unwrap()
+    else {
+        panic!("expected spool files")
+    };
     assert_eq!(host, Some(42));
     assert!(
         handoff::get_trust(container.as_ref(), &collect.join("trust.json"))

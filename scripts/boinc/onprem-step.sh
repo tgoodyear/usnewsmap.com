@@ -39,7 +39,8 @@ die() { echo "error: $*" >&2; exit 1; }
 # Over ssh the controller's key may set only the inputs the controller's bridge steps take
 # (scripts/boinc/batch_scheduler.py). Run as root on the host, any step input is allowed, but
 # never a variable that steers the shell, the loader or an interpreter in the container.
-SSH_VARS=" BATCH_NONCE HANDOFF_SPOOL HANDOFF_SPOOLS HANDOFF_URL JOB_ID JOB_IDS "
+# JOB_UNITS and BUNDLE_APP_VERSION: OCR bundles (#1059), checked by bridge-job.sh.
+SSH_VARS=" BATCH_NONCE BUNDLE_APP_VERSION HANDOFF_SPOOL HANDOFF_SPOOLS HANDOFF_URL JOB_ID JOB_IDS JOB_UNITS "
 # The Surya steps of the controller's Surya plan (#968) take their own, and only these.
 SSH_SURYA_CROPS_VARS=" SURYA_CAMPAIGN QUALITY_CAMPAIGN SURYA_ENGINE_IMAGE SURYA_ENGINE_LLAMA SURYA_ENGINE_WEIGHTS SURYA_MAX SURYA_TIMEOUT_SECS "
 SSH_SURYA_SUBMIT_VARS=" SURYA_CAMPAIGN SURYA_MAX "

@@ -38,6 +38,8 @@ COPY contrib-compute/images/bridge/usnm_assess_check contrib-compute/images/brid
 COPY ocr/boinc/train/worker.py ocr/boinc/train/campaign.py ocr/boinc/train/check.py \
      /usr/local/lib/usnm-boinc/train/
 COPY ocr/boinc/usnm_ndlocr_in ocr/boinc/usnm_ndlocr_out /usr/local/lib/usnm-boinc/
+# OCR bundles (#1059): several usnm_ocr pages in one workunit; submit-remote installs these.
+COPY ocr/boinc/usnm_ocr_bundle_in ocr/boinc/usnm_ocr_bundle_out /usr/local/lib/usnm-boinc/
 COPY ocr/boinc/usnm_qwen_train_in ocr/boinc/usnm_qwen_train_out /usr/local/lib/usnm-boinc/
 COPY ocr/boinc/usnm_iris_in ocr/boinc/usnm_iris_out ocr/boinc/usnm_iris_bundle_in ocr/boinc/usnm_iris_bundle_out contrib-compute/images/bridge/usnm_iris_check /usr/local/lib/usnm-boinc/
 COPY ocr/boinc/iris/contract.py ocr/boinc/iris/bundle.py scripts/boinc/iris-campaign.py scripts/boinc/iris-bundle-campaign.py scripts/boinc/iris-check.py /usr/local/lib/usnm-boinc/iris/

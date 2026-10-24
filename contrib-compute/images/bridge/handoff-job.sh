@@ -40,7 +40,9 @@
 #                         collect without a host or trust list, which marks the job failed) and
 #                         writes back that job's entry; a job that came off the work queues
 #                         then has its queue message deleted (a failure there only warns: the
-#                         message comes back and the ledger makes the page's second read a no-op)
+#                         message comes back and the ledger makes the page's second read a no-op).
+#                         A page requeued from its OCR bundle (#1059) has only spool/<id>/requeued:
+#                         nothing is collected and nothing changes
 #   HANDOFF_STEP=texts-export
 #                         [HANDOFF_PAGES=<doc_id>[,<doc_id>...]]
 #                         [HANDOFF_SAMPLE=<file name under quality-samples/>]
@@ -215,6 +217,12 @@ case "${HANDOFF_STEP:-}" in
       --to "$root/jobs/$JOB_ID/accepted"
     host=$(usnm-boinc handoff get-spool --from-url "$HANDOFF_URL" --job "$JOB_ID" \
       --spool "$work/spool" --trust-out "$work/trust.json")
+    if [ "$host" = requeued ]; then
+      # The page failed in its OCR bundle (#1059) and went back to reserved on the server; the
+      # next tick submits it alone. Its entry and its queue message stay as they are.
+      log "job $JOB_ID was requeued from its bundle; nothing to collect yet"
+      exit 0
+    fi
     rc=0
     if [ -e "$work/spool/usnm_${JOB_ID}_error" ] || [ -e "$work/spool/usnm_${JOB_ID}_no_output_files" ]; then
       # A terminal BOINC failure has no canonical host; collect marks the job failed.
