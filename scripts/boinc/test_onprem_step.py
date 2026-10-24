@@ -232,6 +232,43 @@ class OnpremStep(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn(message, done.stderr)
 
+    def run_for_real(self, *args):
+        # A fake podman copies the env file it is given; flock always gets the lock.
+        bin_dir = Path(self.conf.name, "bin")
+        bin_dir.mkdir(exist_ok=True)
+        run_dir = Path(self.conf.name, "run")
+        run_dir.mkdir(exist_ok=True)
+        captured = Path(self.conf.name, "envfile")
+        (bin_dir / "podman").write_text(
+            "#!/usr/bin/env bash\n"
+            "while [ $# -gt 0 ]; do [ \"$1\" = --env-file ] && cp \"$2\" " + str(captured) + "; shift; done\n")
+        (bin_dir / "flock").write_text("#!/usr/bin/env bash\nexit 0\n")
+        for tool in ("podman", "flock"):
+            (bin_dir / tool).chmod(0o755)
+        env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "USNM_BOINC_CONF": self.conf.name,
+               "USNM_BOINC_STEP_RUN": str(run_dir)}
+        done = subprocess.run(["bash", str(SCRIPT), *args], env=env, capture_output=True, text=True, timeout=30)
+        return done, captured.read_text() if captured.exists() else None
+
+    def test_handoff_env_without_a_final_newline(self):
+        # The last setting still counts, and it doesn't run into HANDOFF_STEP.
+        Path(self.conf.name, "handoff.env").write_text(
+            "\n".join(f"{k}={v}" for k, v in HANDOFF_SETTINGS.items()))
+        done, envfile = self.run_for_real("--env", "prod", "--target", "handoff", "--step", "collect",
+                                          "--var", "JOB_ID=" + "a" * 64, "--wait-mins", "1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = envfile.splitlines()
+        self.assertEqual(lines, [f"{k}={v}" for k, v in HANDOFF_SETTINGS.items()] +
+                         ["HANDOFF_STEP=collect", "JOB_ID=" + "a" * 64])
+
+    def test_bridge_env_without_a_final_newline(self):
+        Path(self.conf.name, "bridge.env").write_text("# comment\nKEY_VAULT_NAME=kv\nDB_HOST=usnm-boinc-mysql")
+        done, envfile = self.run_for_real("--env", "prod", "--step", "submit", "--var", "JOB_ID=x",
+                                          "--wait-mins", "1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(envfile.splitlines(),
+                         ["KEY_VAULT_NAME=kv", "DB_HOST=usnm-boinc-mysql", "BRIDGE_STEP=submit", "JOB_ID=x"])
+
     def test_handoff_settings_match_the_azure_job(self):
         # The Azure job's env, less Container Apps' AZURE_CLIENT_ID, plus the Arc endpoints.
         bicep = (SCRIPT.parents[2] / "infra/modules/boinc-handoff-job.bicep").read_text()

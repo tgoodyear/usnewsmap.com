@@ -57,6 +57,8 @@ HANDOFF_HOST_VARS=" HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_UR
 CONTROL_VARS='^(BASH.*|ENV|SHELLOPTS|BASHOPTS|PS[0-9]|PROMPT_COMMAND|IFS|PATH|CDPATH|GLOBIGNORE|HOME|TMPDIR|LD_.*|PYTHON.*|PERL.*|RUBY.*|NODE_.*|LANG|LC_.*|TZ|HOSTALIASES|SSL_.*|CURL_.*|HTTPS?_PROXY|NO_PROXY|ALL_PROXY|IDENTITY_.*|IMDS_.*|AZURE_.*|MYSQL.*|RCLONE_.*)$'
 
 CONF=${USNM_BOINC_CONF:-/etc/usnm-boinc}
+# Where the step lock and the step's env file go (a scratch directory in the tests).
+RUN_DIR=${USNM_BOINC_STEP_RUN:-/run}
 ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge FROM_SSH=false NARGS=$# APPVER_IMAGE=""
 VARS=()
 while [ $# -gt 0 ]; do
@@ -114,10 +116,13 @@ fi
 IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/server.env")
 [ -n "$IMAGE" ] || die "$CONF/server.env names no SERVER_IMAGE"
 BASE=()
-while IFS= read -r line; do
+LINES=()
+# The last line counts even without a newline after it.
+while IFS= read -r line || [ -n "$line" ]; do
   case $line in '' | '#'*) continue ;; esac
   [[ $line =~ ^([A-Z][A-Z0-9_]{0,63})=(.*)$ ]] || die "bad line in $SETTINGS"
   BASE+=("${BASH_REMATCH[1]}")
+  LINES+=("$line")
   if [ "$TARGET" = handoff ]; then
     [[ $HANDOFF_HOST_VARS == *" ${BASH_REMATCH[1]} "* ]] || die "$SETTINGS sets ${BASH_REMATCH[1]}; it takes only$HANDOFF_HOST_VARS"
     [ -n "${BASH_REMATCH[2]}" ] || die "$SETTINGS has an empty ${BASH_REMATCH[1]}"
@@ -178,16 +183,18 @@ if $WHAT_IF; then
 fi
 
 [ -n "$WAIT_MINS" ] || die "--wait-mins is required on-prem"
-exec 9> /run/usnm-boinc-step.lock
+exec 9> "$RUN_DIR/usnm-boinc-step.lock"
 flock -n 9 || die "another bridge step is running on this host - wait for it to end first"
-envfile=$(mktemp /run/usnm-boinc-step.XXXXXX)
+envfile=$(mktemp "$RUN_DIR/usnm-boinc-step.XXXXXX")
 trap 'rm -f "$envfile"' EXIT
+# The settings as parsed above, one per line, so a file without a final newline can't run its
+# last setting into the step's own.
 if [ "$TARGET" = publish ]; then
-  { cat "$CONF/bridge.env"; echo "APPVER_REUSE_PROJECT=$REUSE"; } > "$envfile"
+  { printf '%s\n' ${LINES[@]+"${LINES[@]}"}; echo "APPVER_REUSE_PROJECT=$REUSE"; } > "$envfile"
 elif [ "$TARGET" = handoff ]; then
-  { cat "$SETTINGS"; echo "HANDOFF_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
+  { printf '%s\n' ${LINES[@]+"${LINES[@]}"}; echo "HANDOFF_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
 else
-  { cat "$CONF/bridge.env"; echo "BRIDGE_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
+  { printf '%s\n' ${LINES[@]+"${LINES[@]}"}; echo "BRIDGE_STEP=$STEP"; for v in ${VARS[@]+"${VARS[@]}"}; do echo "$v"; done; } > "$envfile"
 fi
 
 run=(podman run --rm --name "$name" --network host
