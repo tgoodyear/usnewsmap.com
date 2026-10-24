@@ -424,7 +424,9 @@ async fn push_backs_slow_the_global_pacer_and_503s_do_not() {
         (Scripted::Status(429), true),
         (Scripted::Challenge(200), true),
     ] {
-        let file = dir.path().join(format!("pacer-{slows}-{}.json", rand_tag()));
+        let file = dir
+            .path()
+            .join(format!("pacer-{slows}-{}.json", rand_tag()));
         let loc = LocClient::new(LocConfig {
             html_is_block: true,
             attempts: 1,

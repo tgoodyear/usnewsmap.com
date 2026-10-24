@@ -314,6 +314,15 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         },
     )?;
     let global = Arc::new(GlobalPacer::new(opts.global_pacer.clone()));
+    // After a push-back the budget is at the slow rate for every process; the bulk
+    // archives can wait for an operator's reset rather than add to it.
+    if let Some(slowed) = global.state()?.slowed {
+        bail!(
+            "the global LoC pacer has been slowed since {} ({}); bulk OCR waits for `loc-pacer --reset`",
+            slowed.at,
+            slowed.why
+        );
+    }
     let f = Fetcher {
         http: reqwest::Client::builder()
             .user_agent(USER_AGENT)
