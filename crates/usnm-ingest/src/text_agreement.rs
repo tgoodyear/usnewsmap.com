@@ -275,6 +275,13 @@ pub fn schema() -> SchemaRef {
         f("cover_loc"),
         f("cover_as"),
         f("len_ratio"),
+        f("local_cer_sym"),
+        f("local_cer_loc"),
+        f("local_cer_as"),
+        f("matched_loc"),
+        f("matched_as"),
+        i("chunks_loc", true),
+        i("chunks_as", true),
         s("skipped", true),
     ]);
     Arc::new(Schema::new(fields))
@@ -353,6 +360,9 @@ pub fn encode_table(rows: &[PageRow]) -> anyhow::Result<Vec<u8>> {
         let mut cover_loc = Float64Builder::new();
         let mut cover_as = Float64Builder::new();
         let mut len_ratio = Float64Builder::new();
+        let mut local: Vec<Float64Builder> = (0..5).map(|_| Float64Builder::new()).collect();
+        let mut chunks_loc = Int32Builder::new();
+        let mut chunks_as = Int32Builder::new();
         let mut skipped = StringBuilder::new();
         for r in chunk {
             doc_id.append_value(&r.doc_id);
@@ -386,6 +396,17 @@ pub fn encode_table(rows: &[PageRow]) -> anyhow::Result<Vec<u8>> {
             cover_loc.append_option(g.and_then(|g| g.cover_a));
             cover_as.append_option(g.and_then(|g| g.cover_b));
             len_ratio.append_option(g.and_then(|g| g.len_ratio));
+            for (b, v) in local.iter_mut().zip([
+                g.and_then(|g| g.local_cer_sym),
+                g.and_then(|g| g.local_cer_a),
+                g.and_then(|g| g.local_cer_b),
+                g.and_then(|g| g.matched_a),
+                g.and_then(|g| g.matched_b),
+            ]) {
+                b.append_option(v);
+            }
+            chunks_loc.append_option(g.map(|g| int(g.local_a.chunks)));
+            chunks_as.append_option(g.map(|g| int(g.local_b.chunks)));
             skipped.append_option(r.skipped);
         }
         let mut cols: Vec<ArrayRef> = vec![
@@ -411,6 +432,11 @@ pub fn encode_table(rows: &[PageRow]) -> anyhow::Result<Vec<u8>> {
         cols.push(Arc::new(cover_loc.finish()));
         cols.push(Arc::new(cover_as.finish()));
         cols.push(Arc::new(len_ratio.finish()));
+        for mut b in local {
+            cols.push(Arc::new(b.finish()));
+        }
+        cols.push(Arc::new(chunks_loc.finish()));
+        cols.push(Arc::new(chunks_as.finish()));
         cols.push(Arc::new(skipped.finish()));
         w.write(&RecordBatch::try_new(schema(), cols)?)?;
     }
@@ -481,6 +507,9 @@ pub struct Hists {
     pub cover_loc: Hist,
     pub cover_as: Hist,
     pub len_ratio: Hist,
+    pub local_cer_sym: Hist,
+    pub matched_loc: Hist,
+    pub matched_as: Hist,
     pub loc_known_rate: Hist,
     pub as_known_rate: Hist,
     pub loc_damage_rate: Hist,
@@ -495,6 +524,9 @@ impl Default for Hists {
             cover_loc: Hist::new(0.01),
             cover_as: Hist::new(0.01),
             len_ratio: Hist::new(0.03),
+            local_cer_sym: Hist::new(0.005),
+            matched_loc: Hist::new(0.01),
+            matched_as: Hist::new(0.01),
             loc_known_rate: Hist::new(0.01),
             as_known_rate: Hist::new(0.01),
             loc_damage_rate: Hist::new(0.01),
@@ -511,6 +543,9 @@ impl Hists {
         self.cover_loc.add(g.cover_a);
         self.cover_as.add(g.cover_b);
         self.len_ratio.add(g.len_ratio);
+        self.local_cer_sym.add(g.local_cer_sym);
+        self.matched_loc.add(g.matched_a);
+        self.matched_as.add(g.matched_b);
         self.loc_known_rate.add(r.loc.known_rate);
         self.as_known_rate.add(r.as_.known_rate);
         self.loc_damage_rate.add(r.loc.damage_rate);
@@ -523,6 +558,9 @@ impl Hists {
         self.cover_loc.merge(&o.cover_loc);
         self.cover_as.merge(&o.cover_as);
         self.len_ratio.merge(&o.len_ratio);
+        self.local_cer_sym.merge(&o.local_cer_sym);
+        self.matched_loc.merge(&o.matched_loc);
+        self.matched_as.merge(&o.matched_as);
         self.loc_known_rate.merge(&o.loc_known_rate);
         self.as_known_rate.merge(&o.as_known_rate);
         self.loc_damage_rate.merge(&o.loc_damage_rate);
@@ -545,6 +583,8 @@ pub struct BatchSummary {
     pub as_parts: Vec<PartDigest>,
     /// `cer_sym` by decade, over the pages `hists` counts.
     pub cer_sym_by_decade: BTreeMap<u16, Hist>,
+    /// `local_cer_sym` by decade.
+    pub local_cer_sym_by_decade: BTreeMap<u16, Hist>,
     pub hists: Hists,
 }
 
@@ -570,6 +610,7 @@ pub fn summarize(
         skipped: 0,
         as_parts,
         cer_sym_by_decade: BTreeMap::new(),
+        local_cer_sym_by_decade: BTreeMap::new(),
         hists: Hists::default(),
     };
     for r in rows {
@@ -580,10 +621,15 @@ pub fn summarize(
         out.loc_ok += 1;
         out.hists.add(r);
         if let Some(g) = &r.agreement {
+            let decade = usnm_core::decade::of_year(r.date.year());
             out.cer_sym_by_decade
-                .entry(usnm_core::decade::of_year(r.date.year()))
+                .entry(decade)
                 .or_insert_with(|| Hist::new(0.01))
                 .add(Some(g.pair.cer_sym));
+            out.local_cer_sym_by_decade
+                .entry(decade)
+                .or_insert_with(|| Hist::new(0.005))
+                .add(g.local_cer_sym);
         }
     }
     out
@@ -687,6 +733,7 @@ pub struct VersionSummary {
     /// p10, p25, p50, p75 and p90 of each histogram (bin upper edges).
     pub quantiles: BTreeMap<String, Vec<Option<f64>>>,
     pub cer_sym_median_by_decade: BTreeMap<u16, Option<f64>>,
+    pub local_cer_sym_median_by_decade: BTreeMap<u16, Option<f64>>,
     pub hists: Hists,
 }
 
@@ -700,6 +747,7 @@ pub fn sum_summaries(
 ) -> VersionSummary {
     let mut hists = Hists::default();
     let mut by_decade: BTreeMap<u16, Hist> = BTreeMap::new();
+    let mut local_by_decade: BTreeMap<u16, Hist> = BTreeMap::new();
     let (mut pages, mut loc_ok, mut skipped) = (0, 0, 0);
     for s in summaries {
         pages += s.pages;
@@ -708,6 +756,12 @@ pub fn sum_summaries(
         hists.merge(&s.hists);
         for (d, h) in &s.cer_sym_by_decade {
             by_decade
+                .entry(*d)
+                .or_insert_with(|| Hist::new(h.width))
+                .merge(h);
+        }
+        for (d, h) in &s.local_cer_sym_by_decade {
+            local_by_decade
                 .entry(*d)
                 .or_insert_with(|| Hist::new(h.width))
                 .merge(h);
@@ -722,6 +776,9 @@ pub fn sum_summaries(
         ("cover_loc".to_owned(), q(&hists.cover_loc)),
         ("dice".to_owned(), q(&hists.dice)),
         ("len_ratio".to_owned(), q(&hists.len_ratio)),
+        ("local_cer_sym".to_owned(), q(&hists.local_cer_sym)),
+        ("matched_as".to_owned(), q(&hists.matched_as)),
+        ("matched_loc".to_owned(), q(&hists.matched_loc)),
         ("loc_damage_rate".to_owned(), q(&hists.loc_damage_rate)),
         ("loc_known_rate".to_owned(), q(&hists.loc_known_rate)),
     ]);
@@ -735,6 +792,10 @@ pub fn sum_summaries(
         skipped,
         quantiles,
         cer_sym_median_by_decade: by_decade
+            .iter()
+            .map(|(d, h)| (*d, h.quantile(0.5)))
+            .collect(),
+        local_cer_sym_median_by_decade: local_by_decade
             .iter()
             .map(|(d, h)| (*d, h.quantile(0.5)))
             .collect(),
@@ -883,6 +944,7 @@ pub async fn run(
             pages = summed.pages,
             loc_ok = summed.loc_ok,
             cer_sym = ?summed.quantiles.get("cer_sym"),
+            local_cer_sym = ?summed.quantiles.get("local_cer_sym"),
             dice = ?summed.quantiles.get("dice"),
             "ocr agreement summary"
         );
