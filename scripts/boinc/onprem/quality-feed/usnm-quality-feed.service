@@ -1,0 +1,28 @@
+# The quality feeder in the batch container CT215 on pve-laptop (#962): quality_feed.py run
+# over one campaign's page list. It makes no LoC request (scans from pve-big's scan server,
+# texts from the read-only curated copy) and waits while the host's shipper is behind.
+# Settings in /etc/usnm/quality-feed.env (quality-feed-install.sh writes it).
+[Unit]
+Description=usnewsmap quality feeder (#962)
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/curated /var/lib/usnm-quality-feed/outbox
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/usnm/quality-feed.env
+ExecStart=/opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/quality_feed.py run \
+  --campaign ${CAMPAIGN} --pages /var/lib/usnm-quality-feed/${CAMPAIGN}/pages.jsonl \
+  --curated /srv/curated --scan-server ${SCAN_SERVER} \
+  --outbox /var/lib/usnm-quality-feed/outbox --state /var/lib/usnm-quality-feed \
+  --chunk-pages ${CHUNK_PAGES} --max-pending ${MAX_PENDING} --workers ${WORKERS}
+Restart=on-failure
+RestartSec=300
+# Behind the Serial Set fetch, which shares the container.
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/usnm-quality-feed
+PrivateTmp=yes

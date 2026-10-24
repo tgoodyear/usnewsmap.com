@@ -410,6 +410,46 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scr
    python3 scripts/boinc/boinc-quality-campaign.py restore --env prod
    ```
 
+### On-prem feeder (v1-wave10 on)
+
+The wave runner (`scripts/boinc/quality_corpus_runner.py`) read the scan archive and curated
+in Azure. On-prem, quality units are fed from pve-laptop instead (#962), with no Azure call and
+no LoC request:
+
+1. **Feeder, CT215 `usnm-batch` on pve-laptop** (`scripts/boinc/onprem/quality-feed/quality_feed.py`,
+   `usnm-quality-feed.service`). `select` picks pages from the scan server's index
+   (`/index/full.jsonl` on pve-big's CT211) that no campaign has staged, worst damage first.
+   `run` reads each scan from the scan server (checked against its index line's size and
+   sha256), makes the worker's grey q75 `page.jpg` as the runner does, writes an empty ALTO
+   (LoC's would be a LoC request; CT211's fetcher is the only LoC client), and takes LoC's text,
+   American Stories and `ocr-local` from the curated copy, mounted read-only at `/srv/curated`
+   (home-infra `scripts/lab/batch-ct-quality.sh --mounts`). It writes chunks of 200 pages to
+   its outbox and waits while five are unshipped.
+2. **Shipper, pve-laptop itself** (`quality-ship.sh`, `usnm-quality-ship.timer`, every 15
+   minutes). Over the host trust pve-laptop → pve (home-infra `scripts/host-ssh-trust.sh`) it
+   copies a chunk into CT230's `/project/quality/<campaign>/incoming/`, runs
+   `quality_receive.py` there (every file against `SHA256SUMS`, and every page's scan present,
+   so `quality stage` never falls back to tile.loc.gov from the server), then runs
+   `usnm-boinc-step` `quality-stage` with `QUALITY_SCANS_DIR` and `quality-submit`. It ships
+   nothing while the server has more than 300 results unsent, and waits its turn on the step
+   lock.
+3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
+
+```sh
+# On pve-laptop, once: the trust and the mounts (home-infra).
+scripts/host-ssh-trust.sh --from pve-laptop.tjg.fyi --to pve.tjg.fyi
+bash scripts/lab/batch-ct-quality.sh --mounts
+# From a checkout: the code and units.
+scripts/boinc/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
+  --engine-image sha256:<worker digest>
+# In CT215: the campaign's page list (the staged list: every doc_id in the share's
+# quality/*/units/*/quality.json), then start.
+quality_feed.py select --index index-full.jsonl --staged staged-docs.txt --curated /srv/curated \
+  --count 500 --out /var/lib/usnm-quality-feed/v1-wave10/pages.jsonl
+scripts/boinc/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
+  --engine-image sha256:<worker digest> --enable
+```
+
 ## Calibration
 
 `usnm-boinc quality calibrate` runs the three-cornered hat per gold crop over `--crops <crops.jsonl>` (gold crops with human transcriptions), two or more `--hyp ENGINE=FILE.jsonl` OCR hypothesis files, and optional `--readings <readings.jsonl>` vision-language readings, and writes `calibration.csv`, `calibration.md` and `by-crop.csv` to `--out`: per reader, true CER, estimated CER, bias, MAE, Pearson and Spearman, both without (`three-ocr`) and with (`three-ocr+vlm`) the vision-language reader. UNVERIFIED on the full multi-engine gold crop campaign.

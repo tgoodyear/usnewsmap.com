@@ -197,6 +197,8 @@ image="$rust_files|^(web/|ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
 # The queue job (usnm-store against PostgreSQL + pgmq) also runs for its schema and fixture (#967).
 rust="$rust|^scripts/onprem/queue/"
+# The OCR-quality results database (#962): its schema and loader, checked in the queue job.
+rust="$rust|^scripts/onprem/quality/"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 # The OCR worker's EL9 build, RHEL 10 check and release, and the LAN dashboard's
