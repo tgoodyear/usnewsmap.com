@@ -231,7 +231,7 @@ Before promotion ([Index storage cutover](#index-storage-cutover) step 4), recor
 scripts/azure/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
 ```
 
-Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none.
+Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none. After the switch, the same command with `--current` makes `ops/current` name the version ([Index storage cutover](#index-storage-cutover) step 5).
 
 **Through Kafka (faster).** One writer node's v1 ingest API takes about 130 pages/s, however many requests are in flight. With `USNM_WRITER_KAFKA=127.0.0.1:9092` and `USNM_WRITER_INGEST=v1` (required: the release refuses Kafka with v2 before its writer starts), a decade-partitioned main index's decade files go to a Kafka topic instead, `usnm-<index id>`, with `USNM_WRITER_KAFKA_PARTITIONS` partitions (default 8). The index gets a Kafka source with one pipeline per partition, and the writer node gets the indexer capacity for them. Each file goes to one partition, the next file to the next, so splits stay one decade each. On pve-big, 1, 2 and 4 pipelines indexed 341, 509 and 754 pages/s of build pages. Everything else stays on v1: the last pages and the forced commit, the Japanese and Congress indexes, the exact count, the restart-based final merges. The source records its position in the metastore with each split, so the restart doesn't index anything twice. A produce whose answer was lost is worked out from the partition's end: the release is the topic's only producer, so the end shows whether the batch was written (go on), wasn't (send it again) or neither (fail). The topic's retention (3 hours) deletes records whether or not the index read them, so the producer keeps within reach of the index. Before a produce, at most every 10 s, it reads the index's Kafka checkpoint from the writer node:
 
@@ -293,8 +293,9 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    Congress indexes are rebuilt, including an unchanged Congress set.
    Reference snapshots stay in the lake. The run publishes
    `reference/index-storage-pending.json`, **not** `current.json`, and leaves
-   `ops/current` unchanged. The run record is `published` (to the pending
-   pointer); its `previous_version` retains the lake version for rollback.
+   `ops/current` unchanged (step 5 records it). The run record is
+   `published` (to the pending pointer); its `previous_version` retains the
+   lake version for rollback.
    A retry stages another fresh full base. Keep schedules off and do not
    start an ordinary release with hand-written arguments during migration.
 3. **Verify before promotion.** Check the release's counts, manifest and
@@ -338,12 +339,34 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    switch. The cutover is controlled, but it doesn't rule out cold starts
    between promoting the pointer and switching the readers.
 
-5. **Check and retain rollback.** Verify `/readyz`, `/v1/meta`, counts,
-   representative main, JA and Congress queries, and the index version on
-   every ready API replica. Restore the weekly schedule and clear the one-off
-   rebuild, scratch and E4 settings as above, but **keep both index settings
-   true**. The next ordinary release repairs `ops/current` from the live
-   pointer before it runs. Do not prune the lake's rollback yet.
+5. **Check, record and retain rollback.** Verify `/readyz`, `/v1/meta`,
+   counts, representative main, JA and Congress queries, and the index
+   version on every ready API replica. Then record the version as the
+   pipeline's current one (`ops/current`). The staged release left
+   `ops/current` naming the old version, and `/v1/status`
+   (`indexing.current_version`) and the BOINC export (which takes the
+   published batch list by it) read it:
+
+   ```sh
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB --image-tag <ingest image tag> --wait-mins 20 \
+     -- import-staged-run --version pages-v<date>-<n> --current
+   ```
+
+   `--image-tag` names an ingest image that has `--current`
+   (`usnewsmap-ingest:<commit sha>`, which CI pushes for each commit on
+   main) for as long as the job's pinned image
+   (`USNM_SCHEDULED_INGEST_IMAGE_TAG`) predates it. The command refuses
+   unless `current.json` already names the version and its run is
+   published, so `ops/current` never names a version ahead of the live
+   pointer, and it takes the writer lock like a release. A rerun changes
+   nothing. Run it after the switch, not between promotion and the switch:
+   until the new API serves the version, `/v1/status` would announce it
+   early. This step records it at once; the next ordinary release would
+   also repair `ops/current` from the live pointer before it runs. Check
+   `indexing.current_version` in `/v1/status`. Restore the weekly schedule
+   and clear the one-off rebuild, scratch and E4 settings as above, but
+   **keep both index settings true**. Do not prune the lake's rollback yet.
+
 6. **Rollback across accounts, if needed.** Pause the writers and prune,
    restore `serving-before.json` to `reference/current.json` with the same
    Entra upload command, then set only `USNM_INDEX_STORAGE_SERVE=false` and
