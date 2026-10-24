@@ -139,6 +139,23 @@ struct Fetcher {
     /// When the last request went: checked again before each send and logged, so the
     /// journal shows every request's spacing.
     last_sent: std::sync::Mutex<Option<Instant>>,
+    /// `<out>/.last-request`: the last send's time (ms since the epoch), so a restarted run
+    /// keeps the gap from the previous run's last request too.
+    stamp: PathBuf,
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The previous run's last request, as an `Instant`, if its stamp is readable and recent.
+fn last_from_stamp(stamp: &Path) -> Option<Instant> {
+    let ms: u64 = std::fs::read_to_string(stamp).ok()?.trim().parse().ok()?;
+    // A stamp from the future (the clock moved back) counts as now: a full gap.
+    let ago = Duration::from_millis(epoch_ms().saturating_sub(ms));
+    Instant::now().checked_sub(ago)
 }
 
 enum Fail {
@@ -207,6 +224,9 @@ impl Fetcher {
             let now = Instant::now();
             let since = prev.map(|p| (now - p).as_secs_f64());
             *self.last_sent.lock().expect("last_sent lock") = Some(now);
+            if let Err(e) = std::fs::write(&self.stamp, epoch_ms().to_string()) {
+                tracing::warn!(path = %self.stamp.display(), error = %e, "can't record the bulk request's time");
+            }
             tracing::info!(url = %at, since_last_request_secs = since, "bulk OCR request");
             let resp = self
                 .http
@@ -372,6 +392,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
             slowed.why
         );
     }
+    let last = last_from_stamp(&opts.out.join(".last-request"));
     let f = Fetcher {
         http: reqwest::Client::builder()
             .user_agent(USER_AGENT)
@@ -382,8 +403,14 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         pacer: Pacer::with_global(opts.gap, Some(Arc::clone(&global))),
         global: Arc::clone(&global),
         gap: opts.gap,
-        last_sent: std::sync::Mutex::new(None),
+        last_sent: std::sync::Mutex::new(last),
+        stamp: opts.out.join(".last-request"),
     };
+    // The previous run's remainder of the gap goes on the pacer first, so the first request
+    // waits it out before it takes a slot in the host's budget.
+    if let Some(left) = last.and_then(|l| opts.gap.checked_sub(l.elapsed())) {
+        f.pacer.hold(left);
+    }
     let list_path = opts.out.join("datasets.json");
     if !list_path.exists() {
         let far = Instant::now() + Duration::from_secs(24 * 3600);
@@ -535,6 +562,27 @@ mod tests {
         assert_eq!(l[0].archive_name, "a_y_ver01.tar.bz2");
         let bad = serde_json::json!({"datasets": [{"archive_name": "../x.tar.bz2", "batch": "x", "url": "https://loc.gov/x", "size": 1, "sha256": "a".repeat(64)}]});
         assert!(parse_list(&bad).is_err());
+    }
+
+    #[test]
+    fn a_restart_keeps_the_last_requests_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let stamp = dir.path().join(".last-request");
+        assert!(last_from_stamp(&stamp).is_none());
+        std::fs::write(&stamp, (epoch_ms() - 30_000).to_string()).unwrap();
+        let at = last_from_stamp(&stamp).unwrap();
+        let ago = at.elapsed();
+        assert!(
+            ago >= Duration::from_secs(29) && ago <= Duration::from_secs(31),
+            "{ago:?}"
+        );
+        std::fs::write(&stamp, (epoch_ms() + 600_000).to_string()).unwrap();
+        assert!(
+            last_from_stamp(&stamp).unwrap().elapsed() < Duration::from_secs(1),
+            "the future is now"
+        );
+        std::fs::write(&stamp, "garbage").unwrap();
+        assert!(last_from_stamp(&stamp).is_none());
     }
 
     #[test]
