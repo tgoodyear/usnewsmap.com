@@ -114,17 +114,7 @@ pub struct Local {
 
 /// The smallest edit distance between `p` and any substring of `t`.
 fn infix_distance(p: &[char], t: &[char]) -> usize {
-    let mut prev = vec![0u32; t.len() + 1];
-    let mut cur = vec![0u32; t.len() + 1];
-    for (i, &pc) in p.iter().enumerate() {
-        cur[0] = i as u32 + 1;
-        for j in 1..=t.len() {
-            let sub = prev[j - 1] + u32::from(pc != t[j - 1]);
-            cur[j] = sub.min(prev[j] + 1).min(cur[j - 1] + 1);
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev.into_iter().min().unwrap_or(0) as usize
+    crate::distance::infix(p, t)
 }
 
 fn chars_of(words: &[&str]) -> Vec<char> {

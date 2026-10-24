@@ -61,6 +61,60 @@ pub fn levenshtein<T: Eq + Hash + Copy>(a: &[T], b: &[T]) -> usize {
     usize::try_from(score).unwrap_or(0)
 }
 
+/// The smallest edit distance between `p` and any substring of `t`: the same bit-parallel
+/// recurrence with a free start and end in `t` (the top row is all zeros, so no horizontal
+/// delta enters the first block, and the answer is the least score over the columns).
+pub fn infix<T: Eq + Hash + Copy>(p: &[T], t: &[T]) -> usize {
+    let m = p.len();
+    if m == 0 {
+        return 0;
+    }
+    let blocks = m.div_ceil(W);
+    let mut peq: HashMap<T, Vec<u64>> = HashMap::new();
+    for (i, &c) in p.iter().enumerate() {
+        peq.entry(c).or_insert_with(|| vec![0; blocks])[i / W] |= 1 << (i % W);
+    }
+    let zero = vec![0u64; blocks];
+    let last_bit = 1u64 << ((m - 1) % W);
+    let mut pv = vec![!0u64; blocks];
+    let mut mv = vec![0u64; blocks];
+    let mut score = m as i64;
+    let mut best = score;
+    for c in t {
+        let eq = peq.get(c).unwrap_or(&zero);
+        let mut h = 0;
+        for k in 0..blocks {
+            let out_bit = if k + 1 == blocks {
+                last_bit
+            } else {
+                1 << (W - 1)
+            };
+            h = block(&mut pv[k], &mut mv[k], eq[k], h, out_bit);
+        }
+        score += i64::from(h);
+        best = best.min(score);
+    }
+    usize::try_from(best).unwrap_or(0)
+}
+
+/// The quadratic infix distance, for tests.
+#[doc(hidden)]
+pub fn infix_reference<T: Eq>(p: &[T], t: &[T]) -> usize {
+    let mut prev = vec![0usize; t.len() + 1];
+    for (i, x) in p.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, y) in t.iter().enumerate() {
+            cur.push(
+                (prev[j] + usize::from(x != y))
+                    .min(prev[j + 1] + 1)
+                    .min(cur[j] + 1),
+            );
+        }
+        prev = cur;
+    }
+    prev.into_iter().min().unwrap_or(0)
+}
+
 /// The edit distance between two strings, over Unicode scalar values (Python's `str` indexing).
 pub fn chars(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
@@ -127,6 +181,32 @@ mod tests {
         assert_eq!(chars("flaw", "lawn"), 2);
         assert_eq!(chars("é", "e"), 1);
         assert_eq!(words(&["a", "b", "c"], &["a", "c"]), 1);
+    }
+
+    #[test]
+    fn infix_matches_the_quadratic_loop() {
+        let mut r = Lcg(962);
+        assert_eq!(infix(&[1u64, 2, 3], &[9, 9, 1, 2, 3, 9]), 0);
+        assert_eq!(infix(&[1u64, 2, 3], &[]), 3);
+        assert_eq!(infix::<u64>(&[], &[1, 2]), 0);
+        for round in 0..3000 {
+            let lp = 1 + r.below(if round % 10 == 0 { 300 } else { 140 }) as usize;
+            let lt = r.below(if round % 10 == 0 { 400 } else { 200 }) as usize;
+            let k = 2 + r.below(39);
+            let p: Vec<u64> = (0..lp).map(|_| r.below(k)).collect();
+            let mut t: Vec<u64> = (0..lt).map(|_| r.below(k)).collect();
+            if round % 2 == 1 && !t.is_empty() {
+                // Plant an edited copy of the pattern inside the text.
+                let at = r.below(t.len() as u64) as usize;
+                let mut q = p.clone();
+                for _ in 0..r.below(10) {
+                    let i = r.below(q.len() as u64) as usize;
+                    q[i] = r.below(k);
+                }
+                t.splice(at..at, q);
+            }
+            assert_eq!(infix(&p, &t), infix_reference(&p, &t), "{p:?} {t:?}");
+        }
     }
 
     #[test]
