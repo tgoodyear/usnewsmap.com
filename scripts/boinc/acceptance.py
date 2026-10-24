@@ -218,7 +218,7 @@ class Runner:
             provision_dir = ROOT / ('.boinc-provision-' + self.run_id)
             provision_dir.mkdir(mode=0o700)
             self.provision_dir = provision_dir
-            self.call([str(ROOT / 'scripts/boinc-test-client.sh'), '--env', self.args.env,
+            self.call([str(ROOT / 'scripts/boinc/boinc-test-client.sh'), '--env', self.args.env,
                        '--create', '--sku', self.config['client']['sku'],
                        '--resource-suffix', self.run_id, '--authenticator-file', str(self.auth_path),
                        '--work-dir', str(self.provision_dir)])

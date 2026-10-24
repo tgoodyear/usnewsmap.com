@@ -20,6 +20,10 @@ Base URL `https://api.usnewsmap.com/v1`. The same routes answer at `https://usne
 - `/v1/places`: every place as GeoJSON, with its name, state, how precisely it is located (`precision`: `city`, `county` or `state`), its number of newspapers and their languages. Place ids such as `P00001` are what `place` takes.
 - `/v1/coverage?from=...&to=...&bucket=...`: pages published in each place per bucket, whether or not they match a search, for turning counts into rates by place. It also takes `state`.
 - `/v1/status`: the ingest pipeline's progress.
+- `/v1/titles`: every newspaper in the index, with its `lccn`, title, `place_id`, place, state, first and last year, page count and languages. `/v1/titles/<lccn>` returns one. Before searching, check here that the papers you need are in the collection. A town with no title has no local coverage, however you search.
+- `/v1/days?q=...&place=<id>[,<id>...]`: matching pages per day for 1 to 20 places.
+- `/v1/versions`: every index version that was built, and which one is being served.
+- `/v1/openapi.json`: an OpenAPI 3.1 description of every route above, with each route's parameters and response schemas.
 
 Search parameters, shared by `/v1/aggregate` and `/v1/hits`:
 
@@ -33,6 +37,28 @@ Search parameters, shared by `/v1/aggregate` and `/v1/hits`:
 - `bucket`: `auto`, `year`, `month`, `week` or `day`.
 - `fuzzy`: `1` or `2` matches single words within that many letter edits, for OCR errors. It does not apply to phrases (so not to `mode=phrase` or `mode=near`) or to `word*`; those stay exact. It only works when `capabilities.fuzzy` in `/v1/meta` is `true`; otherwise the API answers `422` (`/errors/unsupported`).
 - `v`: an `index_version`. If it is not the one being served, the API redirects (307) to the current one.
+
+## Response shapes
+
+- `/v1/aggregate`: `total` has the counts (`hits` pages, `papers`, `places`, `days`) and the `first` and `last` matching pages, each with `doc_id`, `date`, `title`, `lccn`, `place_id` and `snippets`. `places` and `papers` hold parallel arrays: `places.id[i]` goes with `places.hits[i]`, and `papers.lccn[i]` with `papers.title[i]` and `papers.hits[i]`. `series` has `hits` and `baseline` per time bucket, and `bucket` says which buckets they are.
+- `/v1/hits`: the pages are in `items`, each with `doc_id`, `date`, `title`, `lccn`, `place_id`, `edition`, `seq`, `front_page`, `snippets` (matches wrapped in `<mark>`, HTML-escaped) and `links.viewer`, the page on loc.gov. `total` counts every match for this place or newspaper, and `next_cursor` continues the list.
+- A `doc_id` such as `sn83045462_1865-03-21_ed-1_seq-2` is the newspaper's `lccn`, the date, the edition and the page.
+
+## Research recipe
+
+To find every page about a subject:
+
+1. Run one `/v1/aggregate` with the widest sensible dates and `bucket=year`. `total.hits` says how many pages match, and `total.first` is the earliest matching page.
+2. For each id in `places.id` (or each `lccn` in `papers.lccn`), call `/v1/hits` with the same `q`, dates and filters, and follow `next_cursor` until it is `null`.
+3. Keep the requests sequential and handle `429`, `202` and `503` as described below. Don't send them in parallel.
+
+Searching for a person:
+
+- Search the surname with one context word, such as a regiment, battle, town or office (`Kuder Waynesboro`, `Kuder "Livingston county"`), rather than the full name in quotes. OCR often misreads initials and ordinals: "Lieut. A. Kuder, 8th N. Y. cavalry" can come out as "Lieut. S. Kuder. Sth N. Y. cavalry", which `"Andrew Kuder"` or `"8th New York"` won't find.
+- Try the titles and spellings papers used: `"Lieutenant Kuder"`, `"Lieut. Kuder"`, `"Capt. Kuder"`.
+- `word~ocr` and `fuzzy` widen a search for OCR errors, but they are slower than a plain search. Use them on a narrow date range or with a filter.
+- Read the snippets before counting a page. A common surname also matches other people with that name, and a search for a name and a town finds every page where both appear, even when they are unrelated.
+- Check `/v1/titles` for the person's hometown papers. Chronicling America covers only some of each state's papers, so an obituary or a hometown report may not be in the collection.
 
 ## API usage guidelines
 

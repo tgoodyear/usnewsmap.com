@@ -2,7 +2,7 @@
  "$schema": "http://json-schema.org/draft-07/schema#",
  "$id": "https://github.com/tgoodyear/usnewsmap.com/ops/version-snapshots/schema.json",
  "title": "Index version snapshot",
- "description": "What a fixed set of searches returned on one live index version: scripts/compare-versions.py capture (06 §6.5). Checked in CI by scripts/check-version-snapshots.py, which also checks what a schema can't (the file name, series lengths and sums).",
+ "description": "What a fixed set of searches returned on one live index version: scripts/ops/compare-versions.py capture (06 §6.5). Checked in CI by scripts/ops/check-version-snapshots.py, which also checks what a schema can't (the file name, series lengths and sums).",
  "type": "object",
  "additionalProperties": false,
  "required": ["base", "captured_at", "index_version", "searches"],
@@ -11,7 +11,7 @@
   "captured_at": {"description": "When the capture started, UTC.", "type": "string", "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$"},
   "index_version": {"description": "The version /v1/meta named; every search was pinned to it.", "type": "string", "pattern": "^pages-v\\d{8}-\\d+$"},
   "searches": {
-   "description": "By search name: \"bench: ...\" (scripts/load-cold-searches.py), \"example: <id>\" (web/src/examples.json) or \"ja: ...\".",
+   "description": "By search name: \"bench: ...\" (scripts/ops/load-cold-searches.py), \"example: <id>\" (web/src/examples.json) or \"ja: ...\".",
    "type": "object",
    "minProperties": 1,
    "propertyNames": {"pattern": "^(bench|example|ja): \\S"},

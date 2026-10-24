@@ -7,7 +7,7 @@
 //! scored crop's reference counts equal the ones `prepare` computed from the transcription,
 //! the edit counts and times are in range, and the summary adds up. A host that reads the wrong
 //! transcriptions, runs a partial bundle, or edits the numbers by hand fails here. It does not
-//! prove which engine ran; that is the trusted-volunteer rule in docs/boinc.md.
+//! prove which engine ran; that is the trusted-volunteer rule in docs/boinc/gold-check.md.
 use super::{prepare, Report, REPORT_VERSION};
 use crate::gold::job::{Engine, Job, MAX_RESULT};
 use crate::{atomic, read};

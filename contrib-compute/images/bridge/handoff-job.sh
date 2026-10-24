@@ -6,7 +6,7 @@
 # lives in the container under dispatch/.
 #
 # The job's own settings: HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL
-# QUEUE_URL AZURE_CLIENT_ID. Each run's (scripts/start-boinc-bridge.sh --target handoff):
+# QUEUE_URL AZURE_CLIENT_ID. Each run's (scripts/boinc/start-boinc-bridge.sh --target handoff):
 #   HANDOFF_STEP=export   HANDOFF_PAGES=<page key>[,<page key>...] HANDOFF_BATCH=<batch>
 #                         HANDOFF_PLAN=<plan id> HANDOFF_MANIFEST=<path under manifests/, as
 #                         push-boinc-scan.sh names it: <version>/manifest.parquet>
@@ -49,7 +49,7 @@
 #                         directory to HANDOFF_URL under texts/ (#522)
 #
 # Only the entries a run touched go back, so runs for different jobs don't undo each other.
-# Run one execution at a time all the same (scripts/start-boinc-bridge.sh refuses to start
+# Run one execution at a time all the same (scripts/boinc/start-boinc-bridge.sh refuses to start
 # while one runs). If writing an entry back keeps failing, its record is printed to the log
 # (USNM-HANDOFF-RECORD lines) so it can be restored by hand: a lost reservation's record
 # can't be made again (its queued_at is in the ledger).

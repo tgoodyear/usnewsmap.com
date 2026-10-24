@@ -6,11 +6,11 @@
 //
 // Deployed as the deployment stack usnm-boinc-<env> into the group usnm-boinc-rg-<env>, which
 // infra/main.bicep creates (deployBoincGroup) with the guardrails and two waivers (ADR-0019,
-// decision 5). Settings: env/<env>.json. Deployment: scripts/provision-boinc.sh.
+// decision 5). Settings: env/<env>.json. Deployment: scripts/boinc/provision-boinc.sh.
 //
 // Two phases. Until the settings name the server image, only the base resources are deployed
 // (registry, network, vault, storage, database, monitoring), so the images can be built into
-// the registry (scripts/build-boinc-images.sh); with the images set, the app and the jobs too.
+// the registry (scripts/boinc/build-boinc-images.sh); with the images set, the app and the jobs too.
 targetScope = 'resourceGroup'
 
 import { checkedEnvName, usnmName, usnmCompactName, usnmGlobalName } from '../../../infra/naming.bicep'
@@ -41,13 +41,13 @@ param bridgeImage string = ''
 @description('Optional web/daemon image override, independent of lifecycle pins. Empty uses assessment selection. Preserves additive production releases.')
 param webImage string = ''
 
-@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc-app-release.sh; empty: no publish job.')
+@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc/boinc-app-release.sh; empty: no publish job.')
 param publishImage string = ''
 
 @description('Run the server from the bridge image (the server image plus usnm-boinc), so the usnm_assess validator (#456) can run. Off by default.')
 param assessment bool = false
 
-@description('Deploy the gold bundle job (docs/boinc.md#build-the-gold-bundle): the bridge image running the gold-bundle step, which builds the gold bundle v1 from its publishers onto the share. Off by default.')
+@description('Deploy the gold bundle job (docs/boinc/gold-check.md#build-the-gold-bundle): the bridge image running the gold-bundle step, which builds the gold bundle v1 from its publishers onto the share. Off by default.')
 param goldBundle bool = false
 
 @description('The usnm_quality wave runner script\'s blob URL (qualityWave.script in env/<env>.json); empty: no quality wave job.')
@@ -84,7 +84,7 @@ param operatorPrincipalIds array
 @description('The PUBLIC half of the offline code-signing key (code_sign_public). Empty until it is made offline.')
 param codeSignPublicKey string = ''
 
-@description('The project share\'s billing (#917): standard, the pay-as-you-go StorageV2 share; copy, the provisioned v2 SSD share is created and the server also mounts it at /project-v2 to fill it; provisioned, /project is the provisioned share everywhere and the old account is kept for rollback; provisioned-final, the old account is removed. docs/boinc.md, "Moving the project share".')
+@description('The project share\'s billing (#917): standard, the pay-as-you-go StorageV2 share; copy, the provisioned v2 SSD share is created and the server also mounts it at /project-v2 to fill it; provisioned, /project is the provisioned share everywhere and the old account is kept for rollback; provisioned-final, the old account is removed. docs/boinc/server-and-apps.md, "Moving the project share".')
 @allowed([ 'standard', 'copy', 'provisioned', 'provisioned-final' ])
 param projectShare string = 'standard'
 @description('Public IPv4 addresses the BOINC Key Vault admits on its public endpoint (the home network); empty keeps it private-only. modules/keyvault.bicep.')
@@ -395,7 +395,7 @@ module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
 // The usnm_quality wave (scripts/boinc/quality_corpus_runner.py, uploaded by boinc-quality-campaign.py launch-corpus): eight shards
 // that stage page bundles onto the share and collect results. The script is fetched with the
 // BOINC identity and run only if its sha256 is the committed one. 4 vCPUs: the runner converts
-// any page the on-prem JPEG cache (docs/boinc.md) hasn't; more cache, not more vCPUs, is the
+// any page the on-prem JPEG cache (docs/boinc/scan-cache-handoff.md) hasn't; more cache, not more vCPUs, is the
 // way to speed it up. A day per run; it is started by hand (az containerapp job start).
 // It stages only pages the scan archive holds and then ends: the LoC fallback pass, one
 // 5-second pacer across every shard, is off unless QUALITY_LOC_FALLBACK=1 (#914).
@@ -431,7 +431,7 @@ module qualityWaveJob 'modules/bridge-job.bicep' = if (withApp && !empty(quality
   }
 }
 
-// The share copy job (projectShare copy; docs/boinc.md, "Moving the project share"): AzCopy,
+// The share copy job (projectShare copy; docs/boinc/server-and-apps.md, "Moving the project share"): AzCopy,
 // pinned by version and sha256, syncs the old share to the provisioned one, both over REST
 // through their private endpoints, as the job's identity. Over REST, BOINC's symlinks are the
 // mfsymlinks files that store them, so they copy byte for byte. Run it while live, then once more with the daemons

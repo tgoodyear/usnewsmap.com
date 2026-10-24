@@ -110,7 +110,7 @@ pub struct SearchRequest {
 }
 
 /// Keys common to all search endpoints; endpoints may accept extra keys.
-const COMMON_KEYS: &[&str] = &[
+pub const COMMON_KEYS: &[&str] = &[
     "q", "mode", "near", "fuzzy", "from", "to", "state", "lccn", "lang", "front", "bucket", "v",
     "source", "series",
 ];
@@ -416,6 +416,9 @@ fn parse_for(
     }
 }
 
+/// Most values a comma-separated list parameter takes.
+pub const MAX_LIST_VALUES: usize = 60;
+
 /// Parse a comma-separated list, validating and normalizing each item; sorted and deduplicated.
 fn list(
     value: Option<&str>,
@@ -429,7 +432,7 @@ fn list(
     for part in value.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         out.push(item(part).ok_or_else(|| invalid(name, format!("`{part}` is not valid")))?);
     }
-    if out.len() > 60 {
+    if out.len() > MAX_LIST_VALUES {
         return Err(invalid(name, "too many values"));
     }
     out.sort();

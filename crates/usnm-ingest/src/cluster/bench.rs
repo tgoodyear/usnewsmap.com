@@ -4,8 +4,8 @@
 //! large, as `crates/usnm-api/src/routes/aggregate.rs` does. The API, its
 //! caches and its slots are left out: what is timed is the search engine.
 //!
-//! The searches are those of `scripts/bench-cold-searches.py` (three whole
-//! corpus searches by month) and `scripts/load-cold-searches.py` (ten, the
+//! The searches are those of `scripts/ops/bench-cold-searches.py` (three whole
+//! corpus searches by month) and `scripts/ops/load-cold-searches.py` (ten, the
 //! benchmark classes of 05 §5.8). Passes:
 //!
 //! - `first`: every search once, one at a time. On nodes that just started,
@@ -48,7 +48,7 @@ pub type Window = Option<(&'static str, &'static str)>;
 
 /// The benchmark searches: name, query string and date window.
 pub const SEARCHES: &[(&str, &str, Window)] = &[
-    // scripts/bench-cold-searches.py
+    // scripts/ops/bench-cold-searches.py
     ("radio (month)", "q=radio&mode=phrase&bucket=month", None),
     (
         "television (month)",
@@ -60,7 +60,7 @@ pub const SEARCHES: &[(&str, &str, Window)] = &[
         "q=yellow+fever&mode=phrase&bucket=month",
         None,
     ),
-    // scripts/load-cold-searches.py
+    // scripts/ops/load-cold-searches.py
     (
         "cross of gold (1896)",
         "q=cross+of+gold&mode=phrase",
@@ -552,7 +552,7 @@ impl Report {
 /// - `bench_probe`: `{label, probe}`, when there is one;
 /// - `bench_profile`: `{label, profile}`, when there is one.
 ///
-/// scripts/qwcluster-report.py puts them back together by label.
+/// scripts/azure/qwcluster-report.py puts them back together by label.
 pub fn log_parts(full: &serde_json::Value) -> Vec<(&'static str, serde_json::Value)> {
     let mut head = full.clone();
     let label = full["label"].clone();

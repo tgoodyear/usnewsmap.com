@@ -46,7 +46,7 @@ RUN mv /usr/local/lib/usnm-boinc/iris/iris-check.py /usr/local/lib/usnm-boinc/ir
 RUN chmod 0755 /usr/local/lib/usnm-boinc/usnm_qwen_train_check
 COPY docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py \
      /usr/local/lib/usnm-boinc/assess/
-# The gold-bundle step (docs/boinc.md#build-the-gold-bundle): gold.py with Pillow and bsdtar
+# The gold-bundle step (docs/boinc/gold-check.md#build-the-gold-bundle): gold.py with Pillow and bsdtar
 # (BLN600's zip is AES encrypted), usnm-ocr-survey, and the committed lock it must reproduce.
 # Pillow is the CI's version (ci.yml), from its manylinux wheel, checked by sha256: the crops
 # are JPEG re-encodes, so the tar's bytes depend on it.

@@ -11,7 +11,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderValue, Method};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, MethodRouter};
 use axum::Router;
 use moka::future::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
@@ -25,6 +25,7 @@ pub mod config;
 pub mod error;
 pub mod flights;
 pub mod ocr_requests;
+pub mod openapi;
 pub mod prewarm;
 pub mod ratelimit;
 pub mod refdata;
@@ -236,6 +237,8 @@ pub struct AppState {
     /// Page ids from qualifying hit responses, for on-prem OCR. `None`
     /// disables the request path.
     pub ocr_requests: Option<Arc<ocr_requests::OcrRequests>>,
+    /// `/v1/openapi.json`'s body, built on its first request.
+    pub(crate) openapi: std::sync::OnceLock<Arc<Vec<u8>>>,
 }
 
 impl AppState {
@@ -279,6 +282,7 @@ impl AppState {
             warm_ups: WarmUps::default(),
             search_log: None,
             ocr_requests: None,
+            openapi: std::sync::OnceLock::new(),
         }
     }
 
@@ -317,6 +321,25 @@ impl AppState {
     }
 }
 
+/// The routes under `/v1` (and `/api/v1`). `/v1/openapi.json` describes
+/// each, except [`openapi::INTERNAL`]'s.
+pub fn v1_routes() -> Vec<(&'static str, MethodRouter<Arc<AppState>>)> {
+    vec![
+        ("/meta", get(routes::meta)),
+        ("/places", get(routes::places)),
+        ("/titles", get(routes::titles)),
+        ("/titles/{lccn}", get(routes::title)),
+        ("/aggregate", get(routes::aggregate)),
+        ("/hits", get(routes::hits)),
+        ("/days", get(routes::days)),
+        ("/coverage", get(routes::coverage)),
+        ("/status", get(routes::status)),
+        ("/versions", get(routes::versions)),
+        ("/openapi.json", get(openapi::openapi)),
+        ("/beacon", post(routes::beacon)),
+    ]
+}
+
 pub fn app(state: Arc<AppState>) -> Router {
     let origins: Vec<HeaderValue> = state
         .config
@@ -328,18 +351,9 @@ pub fn app(state: Arc<AppState>) -> Router {
         .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET]);
 
-    let v1 = Router::new()
-        .route("/meta", get(routes::meta))
-        .route("/places", get(routes::places))
-        .route("/titles", get(routes::titles))
-        .route("/titles/{lccn}", get(routes::title))
-        .route("/aggregate", get(routes::aggregate))
-        .route("/hits", get(routes::hits))
-        .route("/days", get(routes::days))
-        .route("/coverage", get(routes::coverage))
-        .route("/status", get(routes::status))
-        .route("/versions", get(routes::versions))
-        .route("/beacon", post(routes::beacon))
+    let v1 = v1_routes()
+        .into_iter()
+        .fold(Router::new(), |r, (path, method)| r.route(path, method))
         .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         // Unknown API paths are problem details, never the site's index.
         .fallback(|| async { ApiError::NotFound("no such endpoint".to_owned()) });

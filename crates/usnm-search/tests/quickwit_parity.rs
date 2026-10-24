@@ -2,7 +2,7 @@
 //! reference backend returns on the fixture corpus.
 //!
 //! Runs only when `QUICKWIT_URL` points at a Quickwit 0.9 node that has the
-//! fixture indexes loaded (`scripts/quickwit-fixtures.sh` does both); otherwise
+//! fixture indexes loaded (`scripts/dev/quickwit-fixtures.sh` does both); otherwise
 //! every test returns early. CI runs it in the `quickwit` job.
 
 use std::io::BufRead;
@@ -25,7 +25,7 @@ use usnm_search::{
 const INDEXES: [&str; 2] = ["pages-base-fixture", "pages-delta-fixture-1"];
 /// The same pages with their common-word pairs at version 1
 /// (`Analyzer::V1`), as the indexes built before #168 have them; the ones
-/// above have the latest (`scripts/quickwit-fixtures.sh`).
+/// above have the latest (`scripts/dev/quickwit-fixtures.sh`).
 const INDEXES_V1: [&str; 2] = ["pages-base-fixture-cg1", "pages-delta-fixture-1-cg1"];
 /// The same pages with one searched field for both texts (05 §5.5.7,
 /// #283): `text_all` and `text_all_cg`, `text` and `text_as` stored only.
@@ -1332,7 +1332,7 @@ mod decades;
 /// The fixture base and delta laid out by decade (05 §5.5.5), their pages
 /// moved over the 1830s, 1840s, 1860s and 1890s (`fixtures/decades.rs`):
 /// the base partitioned by decade, the delta with decade tags, as a release
-/// builds them (scripts/quickwit-fixtures.sh loads them).
+/// builds them (scripts/dev/quickwit-fixtures.sh loads them).
 const DECADE_INDEXES: [&str; 2] = [
     "pages-base-fixture-decades",
     "pages-delta-fixture-1-decades",
@@ -1696,7 +1696,7 @@ mod page_language;
 
 /// The fixture base and delta with page languages (05 §5.5.8,
 /// `fixtures/page_language.rs`), as a release writes them
-/// (scripts/quickwit-fixtures.sh loads them).
+/// (scripts/dev/quickwit-fixtures.sh loads them).
 const PAGE_LANGUAGE_INDEXES: [&str; 2] = [
     "pages-base-fixture-page-language",
     "pages-delta-fixture-1-page-language",

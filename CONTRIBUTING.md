@@ -29,19 +29,22 @@ The infrastructure checks, and the scan for shared keys, run on every pull reque
 scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh
 scripts/ci/no-positional-args.py
-python3 -m unittest scripts/ci/test_no_positional_args.py
-scripts/ci/check-workbooks.py
-python3 -m unittest scripts/ci/test_check_workbooks.py
-python3 -m unittest scripts/test_env_scripts.py
+scripts/ci/check-engine-pins.py
+scripts/ci/run-unit-tests.py
+python3 -m unittest scripts/ocr-survey/test_gold.py
+python3 -m unittest discover -s scripts/ocr-survey -p test_transcription.py
+python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
+python3 -m unittest scripts/ocr-node/test_quality_jpeg_cache.py scripts/ocr-node/test_quality_jpeg_list.py
+shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh
 scripts/lib/env_settings.py --check
 scripts/ci/check-names.py --base origin/main
-python3 -m unittest scripts/ci/test_check_names.py
-scripts/ci/lint-bicep.sh
+scripts/ci/check-workbooks.py
+scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
 scripts/ci/build-bicep.sh
 AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
-`scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included.
+`scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included. The gold set and OCR node tests need `pillow`; the `infra` job also runs shellcheck over the OCR node install scripts (see [the CI map](docs/development.md#what-ci-runs)).
 
 Use Bicep CLI v0.48.1, the single version pinned in `scripts/ci/bicep-version`; CI installs that release. The lint and build helpers above verify the pinned compiler and cover every tracked `.bicep` template. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
@@ -54,10 +57,10 @@ seed regeneration, memory budgets and bounded smoke runs.
 - **Entra ID only.** Every service signs in with a managed identity. Don't add account keys, SAS tokens, connection strings with keys or instrumentation keys ([ADR-0009](docs/design/adr/0009-entra-identity-only.md)). `scripts/ci/no-shared-keys.sh` fails the build if one appears.
 - **No real data from production.** Never commit search log content or real search queries ([ADR-0012](docs/design/adr/0012-anonymous-search-log.md)), production logs, traces or data dumps. Tests use the synthetic corpus in `fixtures/`. `python3 fixtures/generate.py` rebuilds it, and CI checks that the result matches what is committed.
 - **No secrets.** The repository holds none, and pull requests never get Azure access. Only `main` deploys, through its GitHub Environment.
-- **Settings through pull requests.** An environment's public settings are committed in `infra/env/<env>.json`. Change them with `scripts/settings.sh` and a pull request, like any other change. Add a new setting to `infra/env/schema.json`, marked public or private, with the line in `infra/main.bicepparam` that reads it. Nothing that identifies a subscription, tenant, identity or person (ids, addresses, resource ids) goes in the repository. The settings the schema marks private (principals, addresses, resource ids) are in the settings store, under the environment's label ([operations](docs/operations.md#settings)). The subscription and tenant ids (`AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`), which the scripts need before they can reach the store, stay in the local settings file with the stack's outputs. `scripts/lib/env_settings.py --check` fails the build on a private or unknown setting in a committed file.
+- **Settings through pull requests.** An environment's public settings are committed in `infra/env/<env>.json`. Change them with `scripts/azure/settings.sh` and a pull request, like any other change. Add a new setting to `infra/env/schema.json`, marked public or private, with the line in `infra/main.bicepparam` that reads it. Nothing that identifies a subscription, tenant, identity or person (ids, addresses, resource ids) goes in the repository. The settings the schema marks private (principals, addresses, resource ids) are in the settings store, under the environment's label ([operations](docs/operations/environments-and-deploys.md#settings)). The subscription and tenant ids (`AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`), which the scripts need before they can reach the store, stay in the local settings file with the stack's outputs. `scripts/lib/env_settings.py --check` fails the build on a private or unknown setting in a committed file.
 - **No private addresses.** Never commit an RFC 1918 address (the 10/8, 172.16/12 and 192.168/16 blocks), in code, scripts, Bicep, docs or tests. Refer to a private host by its host name, by a constant or environment variable, or, best, by a constant that holds the host name, resolved at run time. Tests use the RFC 5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), or build a private address from its octets when the test is about private addresses. A private value an environment needs, such as its VNet block, is a setting. `scripts/ci/no-private-addresses.sh` fails the build on one, with no exceptions.
-- **Named arguments only.** Scripts and command-line tools take named arguments (`scripts/settings.sh --env prod --key USNM_X --value true`), never positional ones: a positional interface breaks silently when its order changes, while a named one fails loudly. Each parses its flags, fails on an unknown or missing one and prints its usage. A subcommand (`usnm-ingest enqueue`, `jaocr.py run`) is a name too. `scripts/ci/no-positional-args.py` fails the build on a script that reads `$1` or `sys.argv` outside its flag parser, a positional argparse argument, or a clap field that isn't `long` (#277).
+- **Named arguments only.** Scripts and command-line tools take named arguments (`scripts/azure/settings.sh --env prod --key USNM_X --value true`), never positional ones: a positional interface breaks silently when its order changes, while a named one fails loudly. Each parses its flags, fails on an unknown or missing one and prints its usage. A subcommand (`usnm-ingest enqueue`, `jaocr.py run`) is a name too. `scripts/ci/no-positional-args.py` fails the build on a script that reads `$1` or `sys.argv` outside its flag parser, a positional argparse argument, or a clap field that isn't `long` (#277).
 
 ## Pull requests
 
-Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds.
+Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds. [What CI runs](docs/development.md#what-ci-runs) lists each job, when it runs, which ones the repository requires, and the local commands that match.

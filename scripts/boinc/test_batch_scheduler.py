@@ -1454,7 +1454,7 @@ class QueueTransportTests(unittest.TestCase):
         with patch.object(self.transport, "run", return_value="") as run:
             self.transport.step("bridge", "submit", JOB_ID="a" * 64)
         argv = run.call_args.args[0]
-        self.assertEqual(argv[:2], ["bash", str(batch.REPO / "scripts/start-boinc-bridge.sh")])
+        self.assertEqual(argv[:2], ["bash", str(batch.REPO / "scripts/boinc/start-boinc-bridge.sh")])
         self.assertEqual(argv[2:], ["--env", "dev", "--target", "bridge", "--step", "submit",
                                     "--wait-mins", "30", "--var", "JOB_ID=" + "a" * 64])
 
@@ -1477,7 +1477,7 @@ class QueueTransportTests(unittest.TestCase):
             transport.release(["a_b"])
         for call in run.call_args_list:
             argv = call.args[0]
-            self.assertEqual(argv[:2], ["bash", str(batch.REPO / "scripts/start-boinc-bridge.sh")])
+            self.assertEqual(argv[:2], ["bash", str(batch.REPO / "scripts/boinc/start-boinc-bridge.sh")])
             self.assertIn("handoff", argv)
 
     def test_step_command_must_be_literal(self):

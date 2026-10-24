@@ -9,7 +9,7 @@
 //   before it binds each custom domain.
 //
 // Binding the names on the app (and their managed certificates) needs the
-// delegation to be live, so it is a separate step (scripts/bootstrap.sh).
+// delegation to be live, so it is a separate step (scripts/azure/bootstrap.sh).
 
 param tags object
 param zoneName string

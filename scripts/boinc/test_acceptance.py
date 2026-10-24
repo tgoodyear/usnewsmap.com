@@ -443,10 +443,10 @@ else: print(json.dumps(dict(released=True,dispatched=True)))
 
 class ReleaseIntegration(Workspace):
     def test_release_ready_is_gated_on_acceptance_exit_status(self):
-        text = (ROOT / 'scripts/boinc-app-release.sh').read_text()
+        text = (ROOT / 'scripts/boinc/boinc-app-release.sh').read_text()
         tail = text.partition('echo "   $appver_image"\n')[2]
-        scripts = self.root / 'scripts'
-        scripts.mkdir()
+        scripts = self.root / 'scripts' / 'boinc'
+        scripts.mkdir(parents=True)
         provision = scripts / 'provision-boinc.sh'
         provision.write_text('#!/bin/sh\nexit 0\n')
         provision.chmod(0o700)
@@ -472,7 +472,7 @@ class ReleaseIntegration(Workspace):
                 self.assertIn('NOT release-ready', result.stderr)
 
     def test_prepare_only_rejects_acceptance_before_any_signing_or_azure(self):
-        result = subprocess.run([str(ROOT / 'scripts/boinc-app-release.sh'), '--env', 'prod', '--app', 'usnm_ocr',
+        result = subprocess.run([str(ROOT / 'scripts/boinc/boinc-app-release.sh'), '--env', 'prod', '--app', 'usnm_ocr',
                                  '--version', '1.0', '--signing-host', 'unused', '--prepare-only',
                                  '--acceptance-config', 'unused.json', '--acceptance-evidence', 'unused-receipt.json'],
                                 cwd=ROOT, capture_output=True, text=True)
@@ -483,7 +483,7 @@ class ReleaseIntegration(Workspace):
 class ProvisioningHelper(Workspace):
     def helper(self, *args):
         with patch.dict(os.environ, self.mock_az()):
-            return subprocess.run([str(ROOT / 'scripts/boinc-test-client.sh'), '--env', 'prod',
+            return subprocess.run([str(ROOT / 'scripts/boinc/boinc-test-client.sh'), '--env', 'prod',
                                    '--resource-suffix', 'b' * 32, *args], cwd=ROOT, capture_output=True, text=True)
 
     def test_recovery_deletion_does_not_require_authenticator(self):
