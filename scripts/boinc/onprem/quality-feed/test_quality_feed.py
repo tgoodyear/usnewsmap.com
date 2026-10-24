@@ -151,6 +151,22 @@ class LoadTest(unittest.TestCase):
         self.assertEqual((r["cer_a"], r["cer_b"], r["local_cer_sym"]), (0.7, 0.6, 0.06))
         self.assertEqual((r["matched_a"], r["words_b"]), (0.9, 90))
 
+    def test_hat_v2_tables_keep_both_versions_and_v1_tables_fill_v1(self):
+        base = {"doc_id": "sn1_1900-01-01_ed-1_seq-1", "reader": "loc-hist", "outcome": "ok", "job_id": "j",
+                "blocks": 1, "pairs_json": None}
+        v2 = dict(base, hat_version=2, est_cer="0.1", est_cer_v1="0.4", matched="0.7",
+                  hat_determined=True, hat_determined_v1=False, hat_pairs_json='{"b": 1, "a": 2}')
+        units, scores = loader.result_rows([v2], "v1-test")
+        u = dict(zip(loader.UNIT_COLS, units[0]))
+        r = dict(zip(loader.SCORE_COLS, scores[0]))
+        self.assertEqual((u["hat_version"], u["hat_determined_v1"], u["hat_pairs"]), (2, False, '{"a": 2, "b": 1}'))
+        self.assertEqual((r["est_cer"], r["est_cer_v1"], r["matched"]), (0.1, 0.4, 0.7))
+        units, scores = loader.result_rows([dict(base, est_cer="0.3", hat_determined=True)], "v1-old")
+        u = dict(zip(loader.UNIT_COLS, units[0]))
+        r = dict(zip(loader.SCORE_COLS, scores[0]))
+        self.assertEqual((u["hat_version"], u["hat_determined_v1"]), (1, True))
+        self.assertEqual((r["est_cer"], r["est_cer_v1"], r["matched"]), (0.3, 0.3, None))
+
     def test_damage_keeps_one_row_a_page(self):
         import datetime
 

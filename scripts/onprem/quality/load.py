@@ -49,11 +49,12 @@ UNIT_COLS = [
     "skew_deg", "blur", "contrast", "noise", "bleed_through", "ink_density", "blocks", "lines",
     "line_words", "columns", "line_height_px", "mean_word_conf", "consensus_words",
     "hat_determined", "hat_residual", "legibility_ceiling", "readers", "has_alto", "total_ms",
+    "hat_version", "hat_determined_v1", "hat_residual_v1", "legibility_ceiling_v1", "hat_pairs",
 ]
 SCORE_COLS = [
     "campaign", "doc_id", "reader", "source", "chars", "words", "est_cer", "est_cer_raw",
     "completeness", "precision", "findable_content", "findable_places", "cer_vs_loc",
-    "wer_vs_loc", "dice_vs_loc", "pairs",
+    "wer_vs_loc", "dice_vs_loc", "pairs", "est_cer_v1", "est_cer_raw_v1", "matched",
 ]
 PAGE_COLS = ["doc_id", "batch", "batch_version", "lccn", "date", "edition", "seq", "lang"]
 DAMAGE_COLS = [
@@ -184,12 +185,20 @@ def cmd_damage(a):
 # --- results --------------------------------------------------------------------------
 
 
+def jsonb(v):
+    """A JSON text as stored (keys sorted), or None."""
+    if not v:
+        return None
+    return json.dumps(json.loads(v), sort_keys=True)
+
+
 def result_rows(table, campaign):
     """unit_pages and reader_scores rows from one file's (page, reader) rows."""
     by_doc = {}
     for x in table:
         by_doc.setdefault(x["doc_id"], []).append(x)
     units, scores = [], []
+    v2 = bool(table) and "hat_version" in table[0]
     for d, rows in by_doc.items():
         if not DOC_RE.match(d or ""):
             continue
@@ -203,6 +212,12 @@ def result_rows(table, campaign):
             num(x.get("line_height_px")), num(x.get("mean_word_conf")), integer(x.get("consensus_words")),
             x.get("hat_determined"), num(x.get("hat_residual")), num(x.get("legibility_ceiling")),
             len({r.get("reader") for r in rows}), bool(blocks), integer(x.get("total_ms")),
+            # A table without hat_version is version 1: its _v1 columns repeat the unit's.
+            v2 and integer(x.get("hat_version")) or 1,
+            x.get("hat_determined_v1") if v2 else x.get("hat_determined"),
+            num(x.get("hat_residual_v1") if v2 else x.get("hat_residual")),
+            num(x.get("legibility_ceiling_v1") if v2 else x.get("legibility_ceiling")),
+            jsonb(x.get("hat_pairs_json")),
         ))
         seen = set()
         for r in rows:
@@ -217,6 +232,9 @@ def result_rows(table, campaign):
                 num(r.get("precision")), num(r.get("findable_content")), num(r.get("findable_places")),
                 num(r.get("cer_vs_loc")), num(r.get("wer_vs_loc")), num(r.get("dice_vs_loc")),
                 json.dumps(json.loads(pairs), sort_keys=True) if pairs else None,
+                num(r.get("est_cer_v1") if v2 else r.get("est_cer")),
+                num(r.get("est_cer_raw_v1") if v2 else r.get("est_cer_raw")),
+                num(r.get("matched")),
             ))
     return units, scores
 

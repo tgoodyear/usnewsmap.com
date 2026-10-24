@@ -108,6 +108,16 @@ CREATE TABLE IF NOT EXISTS quality.unit_pages (
   PRIMARY KEY (campaign, doc_id)
 );
 CREATE INDEX IF NOT EXISTS unit_pages_doc ON quality.unit_pages (doc_id);
+-- Page hat version 2 (#1078, solved in collect on the passage-matched disagreement):
+-- hat_version says which hat est_cer, hat_determined, hat_residual and legibility_ceiling
+-- are; the unit's own (version 1) values stay in the _v1 columns. A table without
+-- hat_version is version 1, and its _v1 columns repeat the unit's values.
+ALTER TABLE quality.unit_pages
+  ADD COLUMN IF NOT EXISTS hat_version           smallint NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS hat_determined_v1     boolean,
+  ADD COLUMN IF NOT EXISTS hat_residual_v1       real,
+  ADD COLUMN IF NOT EXISTS legibility_ceiling_v1 real,
+  ADD COLUMN IF NOT EXISTS hat_pairs             jsonb;
 
 -- Per reader on that page: the hat's estimate and the consensus measures, and the raw
 -- pairwise agreement with every other reader.
@@ -131,6 +141,24 @@ CREATE TABLE IF NOT EXISTS quality.reader_scores (
   PRIMARY KEY (campaign, doc_id, reader)
 );
 CREATE INDEX IF NOT EXISTS reader_scores_doc ON quality.reader_scores (doc_id);
+ALTER TABLE quality.reader_scores
+  ADD COLUMN IF NOT EXISTS est_cer_v1     real,
+  ADD COLUMN IF NOT EXISTS est_cer_raw_v1 real,
+  -- Version 2: the mean share of this reader's characters placed in the other readers'.
+  ADD COLUMN IF NOT EXISTS matched        real;
+
+-- Campaigns whose hat estimates are wrong and stay out of ranking until fixed; their scan
+-- features still count. v1-wave6 staged loc-hist as the literal "bulk" on 2,256 pages
+-- (#962, 24 October 2026), so every estimate of its hat is off.
+CREATE TABLE IF NOT EXISTS quality.excluded_estimates (
+  campaign text PRIMARY KEY REFERENCES quality.campaigns,
+  why      text NOT NULL,
+  since    date NOT NULL DEFAULT current_date
+);
+INSERT INTO quality.excluded_estimates (campaign, why)
+SELECT 'v1-wave6', 'loc-hist staged as the literal "bulk" on 2,256 three-reader pages'
+WHERE EXISTS (SELECT FROM quality.campaigns WHERE campaign = 'v1-wave6')
+ON CONFLICT (campaign) DO NOTHING;
 
 -- A text-only comparison of two readers of a page (no image): LoC against American Stories
 -- over the corpus, and any later reader pair. Rates as quality::Pair: a is the hypothesis.
@@ -209,24 +237,33 @@ BEGIN
   IF EXISTS (SELECT FROM pg_views WHERE schemaname = 'quality' AND viewname = 'page_summary') THEN
     DROP VIEW quality.page_summary;
   END IF;
+  -- A stored copy from before hat version 2 has the old columns: rebuilt (empty) below.
+  IF EXISTS (SELECT FROM pg_matviews WHERE schemaname = 'quality' AND matviewname = 'page_summary')
+     AND NOT EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('quality.page_summary')
+                     AND attname = 'hat_version' AND NOT attisdropped) THEN
+    DROP MATERIALIZED VIEW quality.page_summary;
+    DROP VIEW IF EXISTS quality.page_signals;
+  END IF;
 END $$;
 CREATE OR REPLACE VIEW quality.page_signals AS
 WITH unit AS (
-  SELECT DISTINCT ON (u.doc_id) u.*
+  -- A page in several campaigns: its hat version 2 row first, then the newest.
+  SELECT DISTINCT ON (u.doc_id) u.*, (x.campaign IS NOT NULL) AS estimates_excluded
   FROM quality.unit_pages u JOIN quality.campaigns c USING (campaign)
+  LEFT JOIN quality.excluded_estimates x USING (campaign)
   WHERE u.outcome = 'ok'
-  ORDER BY u.doc_id, c.loaded_at DESC
+  ORDER BY u.doc_id, u.hat_version DESC, c.loaded_at DESC
 ), loc AS (
   -- A unit can name both loc (from its ALTO) and loc-hist (the curated text): one row a
   -- page, loc-hist first, as the waves have read LoC.
-  SELECT DISTINCT ON (r.doc_id) r.doc_id, r.est_cer, r.completeness
+  SELECT DISTINCT ON (r.doc_id) r.doc_id, r.est_cer, r.est_cer_v1, r.completeness, r.matched
   FROM unit JOIN quality.reader_scores r USING (campaign, doc_id)
-  WHERE r.reader IN ('loc', 'loc-hist')
+  WHERE r.reader IN ('loc', 'loc-hist') AND NOT unit.estimates_excluded
   ORDER BY r.doc_id, (r.reader = 'loc-hist') DESC
 ), ours AS (
   SELECT r.doc_id, min(r.est_cer) AS best_ours_est_cer
   FROM unit JOIN quality.reader_scores r USING (campaign, doc_id)
-  WHERE r.reader LIKE 'ours-%'
+  WHERE r.reader LIKE 'ours-%' AND NOT unit.estimates_excluded
   GROUP BY r.doc_id
 ), las AS (
   SELECT DISTINCT ON (t.doc_id) t.doc_id, t.cer_sym, t.local_cer_sym, t.matched_a, t.dice
@@ -241,7 +278,9 @@ SELECT p.doc_id, p.batch, p.batch_version, p.lccn, p.date, p.decade, p.lang,
        unit.campaign AS unit_campaign, unit.readers AS unit_readers,
        unit.skew_deg, unit.blur, unit.contrast, unit.noise, unit.bleed_through, unit.ink_density,
        unit.mean_word_conf, unit.hat_determined, unit.legibility_ceiling,
-       loc.est_cer AS loc_est_cer, loc.completeness AS loc_completeness,
+       unit.hat_version, unit.estimates_excluded,
+       loc.est_cer AS loc_est_cer, loc.est_cer_v1 AS loc_est_cer_v1, loc.matched AS loc_matched,
+       loc.completeness AS loc_completeness,
        ours.best_ours_est_cer,
        las.cer_sym AS loc_as_cer_sym, las.local_cer_sym AS loc_as_local_cer_sym,
        las.matched_a AS loc_as_matched_loc, las.dice AS loc_as_dice,
