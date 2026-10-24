@@ -7,6 +7,7 @@
 #   scripts/azure/start-job.sh --env dev --job BACKFILL_JOB -- curate --max-runtime-secs 14400
 #   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1
 #   scripts/azure/start-job.sh --env dev --job INGEST_JOB --wait-mins 20 -- titles-archive
+#   scripts/azure/start-job.sh --env prod --job INGEST_JOB --image-tag <commit sha> -- import-staged-run --version pages-v20261022-1 --current
 #
 # --job names the setting that names the job (INGEST_JOB, BACKFILL_JOB,
 # ...: the stack's outputs). Everything after `--` replaces the first
@@ -21,6 +22,12 @@
 # archive-copy or ocr-damage. Needs az signed in to the environment's
 # subscription and jq.
 #
+# --image-tag TAG runs this one execution's first container from another
+# tag of the same image (registry and repository kept, only the tag
+# replaced), such as a commit's ingest image for a command the job's pinned
+# image doesn't have yet. The job's saved template is unchanged. Without it
+# the execution runs the job's image.
+#
 # It returns once Azure accepts the execution, not when the command is done.
 # --wait-mins N waits up to N minutes for the execution to succeed, printing
 # its name only then, and exits 1 if it ends Failed, Stopped or Degraded or
@@ -31,6 +38,7 @@ usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" 
 ENV_NAME=""
 SETTING=""
 WAIT_MINS=""
+IMAGE_TAG=""
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
@@ -42,6 +50,11 @@ while [ $# -gt 0 ]; do
       [[ $2 =~ ^[0-9]+$ ]] || { echo "error: --wait-mins is a number of minutes" >&2; exit 2; }
       # In decimal: Bash arithmetic reads a leading zero (`08`) as octal.
       WAIT_MINS=$((10#$2)); shift 2 ;;
+    --image-tag)
+      [ $# -ge 2 ] || usage
+      [[ $2 =~ ^[A-Za-z0-9._-]{1,128}$ ]] ||
+        { echo "error: --image-tag is an image tag: 1 to 128 letters, digits, '.', '_' or '-'" >&2; exit 2; }
+      IMAGE_TAG=$2; shift 2 ;;
     --) shift; break ;;
     -h|--help) usage ;;
     *) echo "error: unexpected \"$1\" (the job's arguments go after --)" >&2; usage ;;
@@ -64,10 +77,18 @@ volumes=$(jq -r '[.volumes[]?.name] | join(", ")' <<< "$template")
 [ -z "$volumes" ] ||
   echo "note: $job mounts $volumes, which an execution can't name; don't rely on them in this one" >&2
 # Every container as the API takes it for an execution, the first with the
-# new arguments. `--args --`: they are positional strings, not jq options.
-body=$(jq -c 'def exec: {name, image, command, args, env, resources} | with_entries(select(.value != null));
-  {containers: ([.containers[0] | .args = $ARGS.positional] + .containers[1:] | map(exec)),
+# new arguments (and with --image-tag, its image at that tag: a digest or
+# tag after the image's last `/` goes, a registry's port stays). `--args
+# --`: they are positional strings, not jq options.
+body=$(jq -c --arg tag "$IMAGE_TAG" '
+  def exec: {name, image, command, args, env, resources} | with_entries(select(.value != null));
+  def retag: if $tag == "" then . else
+    (.image // error("the first container has no image")) as $image
+    | .image = ($image | sub("@[^/]*$"; "") | sub(":[^/]*$"; "")) + ":" + $tag end;
+  {containers: ([.containers[0] | .args = $ARGS.positional | retag] + .containers[1:] | map(exec)),
    initContainers: ((.initContainers // []) | map(exec))}' --args -- "$@" <<< "$template")
+[ -z "$IMAGE_TAG" ] ||
+  echo "note: this execution runs $(jq -r '.containers[0].image' <<< "$body"), not the job's image" >&2
 execution=$(az rest --method post \
   --url "https://management.azure.com/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.App/jobs/$job/start?api-version=2025-01-01" \
   --body "$body" --query name -o tsv)

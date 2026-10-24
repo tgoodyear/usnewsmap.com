@@ -13,7 +13,8 @@ STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
 message, for STUB_COST_FAILS calls when set; then STUB_COST_NEXT_ERROR
 if set, otherwise success). Cost calls are counted in STUB_LOG.cost. For a job execution (scripts/azure/start-job.sh, and
 scripts/azure/titles-seed.sh through it): STUB_EXECUTION (the started execution's name) and
-STUB_EXEC_STATUS (its status). For the settings store (#295): STUB_KEYS
+STUB_EXEC_STATUS (its status); STUB_JOB_TEMPLATE (the job's template, JSON; unset: one
+container, cr/usnewsmap-ingest:exp-1). For the settings store (#295): STUB_KEYS
 (the keys under the label, one per line), STUB_KV_<KEY> (a key's value),
 STUB_STORE_ERROR (every App Configuration call fails with that message),
 STUB_STORE_FAILS (the first that many are refused); STUB_LIVE_VAULT (the
@@ -170,7 +171,8 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
   "containerapp job")
     case "$*" in
       *"execution show"*) echo "${STUB_EXEC_STATUS:-Succeeded}" ;;
-      *"job show"*) echo '{"containers":[{"name":"ingest","image":"cr/usnewsmap-ingest:exp-1","args":["run"],"env":[]}]}' ;;
+      *"job show"*) if [ -n "${STUB_JOB_TEMPLATE:-}" ]; then printf '%s\n' "$STUB_JOB_TEMPLATE"
+        else echo '{"containers":[{"name":"ingest","image":"cr/usnewsmap-ingest:exp-1","args":["run"],"env":[]}]}'; fi ;;
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
   "rest --method")
@@ -947,6 +949,65 @@ class StartJobWait(Stubbed):
             self.assertEqual(r.returncode, 2, repr(value))
             self.assertIn("--wait-mins is a number of minutes", r.stderr)
             self.assertFalse(os.path.exists(self.log))
+
+
+class StartJobImageTag(Stubbed):
+    """scripts/azure/start-job.sh --image-tag: one execution from another tag of the
+    job's image, such as import-staged-run --current from a newer ingest image."""
+    SETTINGS = StartJobWait.SETTINGS
+
+    def start(self, *args, **extra):
+        self.settings_file(self.SETTINGS)
+        return subprocess.run([os.path.join(HERE, "start-job.sh"), "--env", "dev", "--job", "INGEST_JOB",
+                               *args, "--", "import-staged-run", "--version", "pages-v20261022-1", "--current"],
+                              cwd=ROOT, env={**self.env, "STUB_EXECUTION": "caj-usnm-ingest-dev-xyz34", **extra},
+                              capture_output=True, text=True)
+
+    def body(self):
+        """The latest execution's body."""
+        return json.loads([c for c in self.calls() if c.startswith("rest --method post")][-1]
+                          .split("--body ", 1)[1].split(" --query", 1)[0])
+
+    def test_without_it_the_job_s_image_runs(self):
+        r = self.start()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.body()["containers"][0]["image"], "cr/usnewsmap-ingest:exp-1")
+        self.assertNotIn("not the job's image", r.stderr)
+
+    def test_only_the_first_container_s_tag_changes(self):
+        sha = "4b7405f115cca3712b1376e3801e026751a418c3"
+        r = self.start("--image-tag", sha)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        first = self.body()["containers"][0]
+        self.assertEqual(first["image"], f"cr/usnewsmap-ingest:{sha}")
+        self.assertEqual(first["args"], ["import-staged-run", "--version", "pages-v20261022-1", "--current"])
+        self.assertIn(f"runs cr/usnewsmap-ingest:{sha}, not the job's image", r.stderr)
+        # The job itself is only read.
+        self.assertFalse(any(c.startswith("containerapp job update") for c in self.calls()))
+
+    def test_a_digest_goes_a_registry_port_stays(self):
+        template = {"containers": [
+            {"name": "ingest", "image": "cr.example:5000/usnewsmap-ingest:old@sha256:abc", "args": ["run"]},
+            {"name": "side", "image": "cr.example:5000/side:1"}],
+            "initContainers": [{"name": "init", "image": "cr.example:5000/init:1"}]}
+        r = self.start("--image-tag", "v2.1_rc-1", STUB_JOB_TEMPLATE=json.dumps(template))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        body = self.body()
+        self.assertEqual([c["image"] for c in body["containers"]],
+                         ["cr.example:5000/usnewsmap-ingest:v2.1_rc-1", "cr.example:5000/side:1"])
+        self.assertEqual(body["initContainers"][0]["image"], "cr.example:5000/init:1")
+        template["containers"][0]["image"] = "cr.example:5000/usnewsmap-ingest"
+        r = self.start("--image-tag", "abc", STUB_JOB_TEMPLATE=json.dumps(template))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.body()["containers"][0]["image"], "cr.example:5000/usnewsmap-ingest:abc")
+
+    def test_the_tag_is_checked_before_azure(self):
+        for value in ("", "a/b", "a:b", "a@b", "a b", "x" * 129, "$(id)"):
+            r = self.start("--image-tag", value)
+            self.assertEqual(r.returncode, 2, repr(value))
+            self.assertIn("--image-tag is an image tag", r.stderr)
+            self.assertFalse(os.path.exists(self.log))
+        self.assertEqual(self.start("--image-tag", "x" * 128).returncode, 0)
 
 
 class TitlesSeed(Stubbed):
