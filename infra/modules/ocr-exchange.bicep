@@ -23,7 +23,7 @@ param boincSubnetId string = ''
 param handoffWriterIds array = []
 @description('Object id of the on-prem hosts\' Entra group (usnm-onprem-grp-<env>, scripts/ocr-node/group.sh --kind onprem): the node writer role on `boinc-handoff`, as the handoffWriterIds have. Empty grants none.')
 param onPremGroupId string = ''
-@description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296): Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`. Sender, so a page BOINC can\'t use goes back to the queue for the nodes. Nothing on `ocr-deadletter`, and no Update Message.')
+@description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296, and the on-prem BOINC host\'s Arc machine identity, #967), all service principals: Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`. Sender, so a page BOINC can\'t use goes back to the queue for the nodes. Nothing on `ocr-deadletter`, and no Update Message.')
 param handoffQueueIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
 param nodeGroupId string = ''
@@ -318,8 +318,9 @@ resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (n
 }
 
 // BOINC takes pages off the work queues beside the nodes (#296, docs/boinc-batch-scheduler.md):
-// the hand-off job's identity gets the nodes' queue roles, Message Processor to take and delete
-// a message and Message Sender to put one back. Per queue, so nothing else in the account.
+// the hand-off job's identity and the on-prem BOINC host's (#967) get the nodes' queue roles,
+// Message Processor to take and delete a message and Message Sender to put one back. Per
+// queue, so nothing else in the account.
 resource handoffQueueTake 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for (p, i) in flatten(map(handoffQueueIds, id => map(range(0, length(workQueues)), j => { id: id, queue: j }))): {
     scope: queues[p.queue]

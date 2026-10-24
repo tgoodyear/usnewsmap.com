@@ -140,6 +140,13 @@ param boincControllerOnPrem bool = false
 
 @description('The BOINC server runs on-prem (#942): its Azure stack keeps no Log Analytics workspace, so the scan fetcher gets no reader grant there (modules/boinc-handoff-logs.bicep). Set with "server": "onprem" in contrib-compute/infra/boinc/env/<env>.json.')
 param boincServerOnPrem bool = false
+
+@description('Let boincOnPremHost run `usnm-boinc claim` and `collect` on-prem (#967 phase 3): it gets the hand-off job\'s grants, Cosmos `ops`, the ledger writer on curated, reader on reference and the node writer role on ocr-out (modules/boinc-handoff-runner.bicep), and Message Processor and Sender on ocr-priority and ocr-bulk (modules/ocr-exchange.bicep). Needs ocrNodes and, for the Cosmos steps, cosmosOnPremAccess. Off removes the grants.')
+param boincHandoffOnPrem bool = false
+
+@description('Object id of the on-prem BOINC host\'s own Arc machine identity (usnm-boinc-arcs-<env>, with boincHandoffOnPrem), not the on-prem hosts\' group. Settings only, never in the repository.')
+param boincOnPremHost string = ''
+
 @description('The BOINC hand-off job\'s image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json, <registry>.azurecr.io/usnm-boinc-bridge@sha256:<digest>. Empty: no hand-off job. Needs the exchange account (ocrNodes), the registry (useAcr) and the BOINC group (deployBoincGroup).')
 param boincHandoffImage string = ''
 
@@ -236,6 +243,9 @@ param ingestMergeTimeoutSecs int = 14400
 
 @description('Cosmos DB free tier (one per subscription). False makes the account serverless.')
 param cosmosFreeTier bool = true
+
+@description('Open Cosmos DB to ocrNodeIps (#967): public network access on, behind an IP firewall that allows those addresses only (requests from anywhere else get 403); the private endpoint stays for the Azure apps, and local auth stays off, so Entra RBAC is the only way in. The public-network policy exempts the account while it is open. No effect without ocrNodeIps. Off closes it again.')
+param cosmosOnPremAccess bool = false
 
 @description('Log Analytics daily cap in GB; empty: 1 in prod, 0.15 elsewhere. Raise it for bulk work in a non-prod environment (the search cluster experiment writes thousands of blobs, each a log record), and clear it afterwards.')
 param logDailyCapGb string = ''
@@ -456,7 +466,9 @@ module identities 'modules/identities.bicep' = {
 // (policy-exemptions.bicep, #336).
 var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing, ocrNodeIps)
 var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
-var stateOpen = cosmosOpen(onPremServing, ocrNodeIps)
+// Cosmos opens to the node IPs for the serving container (#955) or the
+// on-prem BOINC host's claim and collect (#967).
+var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess, ocrNodeIps)
 
 module storage 'modules/storage.bicep' = {
   scope: rg
@@ -537,6 +549,9 @@ module serialSetRunnerGrant 'modules/serialset-runner.bicep' = if (serialSetOnPr
 // (boinc-handoff-runner.bicep, which reuses the exchange account's node writer role on
 // ocr-out) and boinc-handoff (ocr-exchange.bicep).
 var boincHandoff = ocrNodes && useAcr && deployBoincGroup && !empty(trim(boincHandoffImage))
+// The on-prem BOINC host runs claim and collect as its own Arc identity (#967), with the
+// same grants as the hand-off job, from the same modules.
+var boincOnPrem = ocrNodes && boincHandoffOnPrem && !empty(trim(boincOnPremHost))
 
 module boincHandoffJob 'modules/boinc-handoff-job.bicep' = if (boincHandoff) {
   scope: rg
@@ -568,7 +583,7 @@ resource boincBridgeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2
   name: n.boincBridgeIdentity
 }
 
-module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincHandoff) {
+module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincHandoff || boincOnPrem) {
   scope: rg
   name: 'boinc-handoff-runner'
   dependsOn: [ocrExchange]
@@ -576,7 +591,10 @@ module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincH
     storageName: storage.outputs.name
     exchangeName: exchangeName
     cosmosName: cosmos.outputs.name
-    principalIds: [boincHandoffJob!.outputs.principalId]
+    principalIds: concat(
+      boincHandoff ? [boincHandoffJob!.outputs.principalId] : [],
+      boincOnPrem ? [trim(boincOnPremHost)] : []
+    )
     roleLabel: n.boincLedgerRole
   }
 }
@@ -632,8 +650,12 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
     // Every on-prem host, so any of them can run the quality-wave JPEG cache
     // (scripts/ocr-node/quality-jpeg-cache.py) against the hand-off container.
     onPremGroupId: trim(onPremGroupId)
-    // The hand-off job takes pages off the work queues beside the nodes (#296).
-    handoffQueueIds: boincHandoff ? [boincHandoffJob!.outputs.principalId] : []
+    // The hand-off job takes pages off the work queues beside the nodes (#296), and the
+    // on-prem BOINC host does the same for its claim (#967).
+    handoffQueueIds: concat(
+      boincHandoff ? [boincHandoffJob!.outputs.principalId] : [],
+      boincOnPrem ? [trim(boincOnPremHost)] : []
+    )
     nodeGroupId: trim(ocrNodeGroupId)
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     nodeWriterRoleLabel: n.ocrNodeWriterRole
@@ -718,6 +740,9 @@ module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
   }
 }
 
+// With onPremServing or cosmosOnPremAccess the account allows public network access behind its
+// IP firewall, so the public-network policy exempts it by resource id, and the
+// assignment goes first, as for the storage accounts.
 module cosmos 'modules/cosmos.bicep' = {
   scope: rg
   name: 'cosmos'
