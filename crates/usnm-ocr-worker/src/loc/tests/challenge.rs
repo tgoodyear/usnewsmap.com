@@ -412,3 +412,40 @@ async fn the_batch_lookup_holds_on_a_challenge_or_server_error_when_asked() {
     // A plain 404 is still an absent batch.
     assert!(staging(&s).bag("zz_none", 1).await.unwrap().is_none());
 }
+
+/// A 429 or a challenge drops the host's global budget to the slow rate
+/// (#962); a 503 holds only its server.
+#[tokio::test]
+async fn push_backs_slow_the_global_pacer_and_503s_do_not() {
+    let s = StandIn::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    for (script, slows) in [
+        (Scripted::Status(503), false),
+        (Scripted::Status(429), true),
+        (Scripted::Challenge(200), true),
+    ] {
+        let file = dir.path().join(format!("pacer-{slows}-{}.json", rand_tag()));
+        let loc = LocClient::new(LocConfig {
+            html_is_block: true,
+            attempts: 1,
+            backoff: Duration::from_millis(20),
+            global_pacer: Some(file.clone()),
+            ..batch_client(&s, Duration::ZERO, None, true).cfg
+        })
+        .unwrap();
+        let path = "/busy.jp2";
+        s.script(path, script);
+        let url = format!("{}{path}", s.root);
+        let _ = loc.get(&url, Server::Storage, MAX_IMAGE_BYTES, None).await;
+        let st = global::GlobalPacer::new(file).state().unwrap();
+        assert_eq!(st.slowed.is_some(), slows, "{st:?}");
+        assert!(st.sent >= 1, "every request passes the global pacer");
+    }
+}
+
+fn rand_tag() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}

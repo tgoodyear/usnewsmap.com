@@ -436,6 +436,45 @@ enum Command {
             default_value = "/tank/ocr/manifests/batches"
         )]
         batch_cache: PathBuf,
+        /// The host's global LoC budget (#962): a state file every LoC client
+        /// on the host shares, 45 requests a minute in all, 10 once LoC pushes
+        /// back. Without it, only this process's own gaps apply.
+        #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
+        loc_global_pacer: Option<PathBuf>,
+    },
+    /// Chronicling America's bulk OCR archives (ALTO with word confidence),
+    /// one at a time, inside the host's global LoC budget (#962).
+    BulkOcr {
+        /// Where the archives go.
+        #[arg(long, env = "USNM_BULK_OUT")]
+        out: PathBuf,
+        /// The host's global LoC budget (required: bulk never runs outside it).
+        #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
+        loc_global_pacer: PathBuf,
+        /// LoC's datasets table.
+        #[arg(long, default_value = usnm_ocr_worker::bulk::LIST_URL)]
+        list_url: String,
+        /// Seconds between archive requests (LoC: 10 bulk requests in 10 minutes).
+        #[arg(long, env = "USNM_BULK_GAP_SECS", default_value_t = 60)]
+        gap_secs: u64,
+        /// Stop starting archives after this many hours (LoC may stop programs
+        /// that run past 24).
+        #[arg(long, env = "USNM_BULK_MAX_HOURS", default_value_t = 20.0)]
+        max_hours: f64,
+        /// Keep at least this many GB free on the output's filesystem.
+        #[arg(long, env = "USNM_BULK_MIN_FREE_GB", default_value_t = 200)]
+        min_free_gb: u64,
+        /// At most this many archives this run.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// The host's global LoC budget: print it, or reset it to the normal rate
+    /// after LoC pushed back (an operator's decision).
+    LocPacer {
+        #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
+        file: PathBuf,
+        #[arg(long)]
+        reset: bool,
     },
     /// Serve the prefetched scans to the OCR nodes over HTTP (#368): GET
     /// scans and sidecars, DELETE buffer-set scans, PUT manifests, from the
@@ -957,8 +996,10 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             storage_gap_ms,
             storage_own_budget,
             batch_cache,
+            loc_global_pacer,
         } => {
             let loc = Arc::new(LocClient::new(LocConfig {
+                global_pacer: loc_global_pacer,
                 api_gap: Duration::from_millis(api_gap_ms),
                 tile_gap: Duration::from_millis(tile_gap_ms),
                 storage_gap: Duration::from_millis(storage_gap_ms),
@@ -995,6 +1036,39 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             };
             let status = prefetch::run(opts, loc, stop_signal()).await?;
             println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::BulkOcr {
+            out,
+            loc_global_pacer,
+            list_url,
+            gap_secs,
+            max_hours,
+            min_free_gb,
+            limit,
+        } => {
+            let status = usnm_ocr_worker::bulk::run(
+                usnm_ocr_worker::bulk::Options {
+                    out,
+                    list_url,
+                    gap: Duration::from_secs(gap_secs.max(60)),
+                    max_hours: max_hours.clamp(0.0, 23.0),
+                    min_free_bytes: min_free_gb.saturating_mul(1_000_000_000),
+                    limit,
+                    global_pacer: loc_global_pacer,
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::LocPacer { file, reset } => {
+            let g = usnm_ocr_worker::loc::global::GlobalPacer::new(file);
+            if reset {
+                g.reset()?;
+            }
+            println!("{}", serde_json::to_string(&g.state()?)?);
             Ok(())
         }
         Command::ServeScans {

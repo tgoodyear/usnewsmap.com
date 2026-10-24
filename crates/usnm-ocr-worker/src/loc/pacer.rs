@@ -1,9 +1,11 @@
 //! The pacer: a minimum gap between requests to one of LoC's servers.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::time::Instant;
+
+use super::global::GlobalPacer;
 
 /// A minimum gap between requests, shared by every task holding it. Each
 /// caller reserves the next free slot, so N concurrent callers are spaced
@@ -14,6 +16,9 @@ pub struct Pacer {
     next: Mutex<Option<Instant>>,
     /// Set by [`Pacer::hold`]: no request before this.
     held: Mutex<Option<Instant>>,
+    /// The host's budget across every LoC server and process, waited for
+    /// after this pacer's own slot (#962).
+    global: Option<Arc<GlobalPacer>>,
 }
 
 impl Pacer {
@@ -22,6 +27,15 @@ impl Pacer {
             gap,
             next: Mutex::new(None),
             held: Mutex::new(None),
+            global: None,
+        }
+    }
+
+    /// The same, inside the host's global budget.
+    pub fn with_global(gap: Duration, global: Option<Arc<GlobalPacer>>) -> Self {
+        Self {
+            global,
+            ..Self::new(gap)
         }
     }
 
@@ -40,6 +54,9 @@ impl Pacer {
             tokio::time::sleep_until(self.reserve()).await;
             let held = *self.held.lock().expect("pacer lock");
             if held.is_none_or(|h| h <= Instant::now()) {
+                if let Some(g) = &self.global {
+                    g.wait().await;
+                }
                 return;
             }
         }

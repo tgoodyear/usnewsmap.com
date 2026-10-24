@@ -62,6 +62,7 @@ use usnm_core::ids::PageKey;
 use crate::batch::{self, BagIndex, Md5Sum};
 use crate::telemetry::Metrics;
 
+pub mod global;
 mod pacer;
 mod types;
 
@@ -157,6 +158,8 @@ pub struct LocClient {
     api: Pacer,
     tile: Arc<Pacer>,
     storage: Arc<Pacer>,
+    /// The host's budget (#962), also held and slowed by LoC's push-backs.
+    global: Option<Arc<global::GlobalPacer>>,
     items: moka::future::Cache<String, Pages>,
     /// By batch directory; `None` for a batch LoC doesn't have.
     bags: moka::future::Cache<String, Option<Arc<Bag>>>,
@@ -226,17 +229,25 @@ impl LocClient {
                 }
             }))
             .build()?;
+        let global = cfg
+            .global_pacer
+            .clone()
+            .map(|p| Arc::new(global::GlobalPacer::new(p)));
         let (tile, storage) = if cfg.storage_own_budget {
             (
-                Arc::new(Pacer::new(cfg.tile_gap)),
-                Arc::new(Pacer::new(cfg.storage_gap)),
+                Arc::new(Pacer::with_global(cfg.tile_gap, global.clone())),
+                Arc::new(Pacer::with_global(cfg.storage_gap, global.clone())),
             )
         } else {
-            let shared = Arc::new(Pacer::new(cfg.tile_gap.max(cfg.storage_gap)));
+            let shared = Arc::new(Pacer::with_global(
+                cfg.tile_gap.max(cfg.storage_gap),
+                global.clone(),
+            ));
             (Arc::clone(&shared), shared)
         };
         Ok(Self {
-            api: Pacer::new(cfg.api_gap),
+            api: Pacer::with_global(cfg.api_gap, global.clone()),
+            global,
             tile,
             storage,
             items: moka::future::Cache::builder()
@@ -258,6 +269,28 @@ impl LocClient {
             http_here,
             metrics: Metrics::global(),
         })
+    }
+
+    /// LoC pushed back with a 429, a 403 or a challenge page: hold the
+    /// host's whole budget for `d`, and drop it to the slow rate for good
+    /// (the maintainer's rule of 24 October 2026: 45 a minute, 10 if LoC
+    /// objects). A 503 or an unreadable body holds only its server.
+    fn push_back(&self, status: StatusCode, challenged: bool, d: Duration) {
+        if let Some(g) = &self.global {
+            if challenged
+                || matches!(
+                    status,
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
+                )
+            {
+                g.hold(d);
+                g.slow_down(&format!(
+                    "HTTP {}{}",
+                    status.as_u16(),
+                    if challenged { " (challenge page)" } else { "" }
+                ));
+            }
+        }
     }
 
     fn pacer(&self, server: Server) -> &Pacer {
@@ -441,8 +474,11 @@ impl LocClient {
         reason: &'static str,
         asked: Option<(Duration, bool)>,
     ) {
-        self.pacer(server)
-            .hold(asked.map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff)));
+        let d = asked.map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff));
+        self.pacer(server).hold(d);
+        if reason == "html_challenge" {
+            self.push_back(status, true, d);
+        }
         self.metrics.loc_slowdowns.add(
             1,
             &[
@@ -569,6 +605,11 @@ impl LocClient {
                         let d = checked.map_or(d, |c| c.min(MAX_RETRY_AFTER).max(d));
                         // Everyone waits, not just this request.
                         pacer.hold(d);
+                        self.push_back(
+                            status,
+                            self.cfg.html_is_block && challenge(&resp).is_some(),
+                            d,
+                        );
                         self.metrics.loc_slowdowns.add(
                             1,
                             &[
@@ -767,6 +808,7 @@ impl LocClient {
                 let d = retry_after(&resp).map_or(wait, |(r, _)| r.max(wait));
                 self.storage.hold(d);
                 let why = self.cfg.html_is_block.then(|| challenge(&resp)).flatten();
+                self.push_back(status, why.is_some(), d);
                 self.metrics.loc_slowdowns.add(
                     1,
                     &[
