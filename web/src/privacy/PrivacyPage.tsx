@@ -58,14 +58,15 @@ export default function PrivacyPage() {
         </p>
 
         <h2>Searches</h2>
-        {/* Before Phase 3: this first sentence holds only if Cloudflare keeps no search words with IP addresses
-            (ADR-0027 open decision 1). If the maintainer accepts that it does, say so here. */}
+        {/* Before Phase 3: ADR-0027 settled decision 1 accepts that Cloudflare may keep search words with IP
+            addresses. If Phase 2 shows its sample keeps no query string, drop the second sentence. */}
         <p>
-          The words you search for are never stored with your IP address or anything else about you. The server keeps a
-          record of each request it answers: the kind of request (such as search results or map places), its status and
-          how long it took. These records leave out the page address, your search and your IP address. So that a
-          repeated search is fast, the server caches search results for up to 14 days. A cached result includes the
-          search words but nothing about who searched.
+          The site's own server never stores the words you search for with your IP address or anything else about you.
+          Cloudflare, which carries every request, may keep them with your IP address for up to 31 days, as described
+          below. The server keeps a record of each request it answers: the kind of request (such as search results or
+          map places), its status and how long it took. These records leave out the page address, your search and your
+          IP address. So that a repeated search is fast, the server caches search results for up to 14 days. A cached
+          result includes the search words but nothing about who searched.
         </p>
         <p>
           The site keeps the words of every search indefinitely, to understand what people look for. Each search is
@@ -94,14 +95,16 @@ export default function PrivacyPage() {
           your browser sends, such as its user agent. It sees all of this even when your browser sends Do Not Track or
           Global Privacy Control.
         </p>
-        {/* Before Phase 3: the 31-day sample is what Security Analytics shows on the Free plan. Whether it keeps
-            the query string is measured in Phase 2; add the answer here (ADR-0027 open decision 1). "Sets no
-            cookies" holds while Bot Fight Mode is off and no Cloudflare rule challenges visitors. */}
+        {/* Before Phase 3: the 31-day sample is what Security Analytics shows on the Free plan. Phase 2 measures
+            whether it keeps the query string; if it doesn't, drop "which may include the words of a search". "Sets
+            no cookies" holds while Bot Fight Mode is off and the flood rule's action stays Block (ADR-0027 settled
+            decision 9). */}
         <p>
-          Cloudflare shows the site's maintainer a sample of recent requests, each with its IP address and page address,
-          going back 31 days. For this sample and for the content that passes through its network, Cloudflare is a
-          processor: it handles them on the site's behalf and follows the site's instructions. For other information
-          about your traffic, Cloudflare is a controller, which means it decides how that information is used. The{" "}
+          Cloudflare shows the site's maintainer a sample of recent requests going back 31 days. Each one shows the IP
+          address it came from and the web address it asked for, which may include the words of a search. For this
+          sample and for the content that passes through its network, Cloudflare is a processor: it handles them on the
+          site's behalf and follows the site's instructions. For other information about your traffic, Cloudflare is a
+          controller, which means it decides how that information is used. The{" "}
           <a href="https://www.cloudflare.com/privacypolicy/" {...ext}>
             Cloudflare privacy policy
           </a>{" "}

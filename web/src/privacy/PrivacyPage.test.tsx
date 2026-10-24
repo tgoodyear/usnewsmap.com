@@ -35,6 +35,8 @@ describe("PrivacyPage", () => {
     expect(text).toContain("Cloudflare is a processor");
     expect(text).toContain("Cloudflare is a controller");
     expect(text).toContain("going back 31 days");
+    expect(text).toContain("may keep them with your IP address for up to 31 days");
+    expect(text).toContain("which may include the words of a search");
     expect(text).toContain("never keeps copies of search results");
     expect(screen.getByRole("link", { name: "Cloudflare privacy policy" })).toHaveProperty(
       "href",
