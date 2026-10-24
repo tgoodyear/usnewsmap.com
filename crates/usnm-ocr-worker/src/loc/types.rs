@@ -208,6 +208,10 @@ pub struct LocConfig {
     /// with no retry. Enabled by the worker, prefetch and BOINC staging;
     /// none of their LoC routes expects HTML.
     pub html_is_block: bool,
+    /// The host's global LoC budget (#962): a state file every LoC client on
+    /// the host shares ([`super::global::GlobalPacer`]). None: this process's
+    /// own pacers only.
+    pub global_pacer: Option<PathBuf>,
 }
 
 impl Default for LocConfig {
@@ -226,6 +230,7 @@ impl Default for LocConfig {
             batch_cache: None,
             item_probes: true,
             html_is_block: false,
+            global_pacer: None,
         }
     }
 }

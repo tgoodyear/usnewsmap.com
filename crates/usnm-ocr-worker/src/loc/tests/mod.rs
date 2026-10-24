@@ -31,6 +31,7 @@ pub(super) fn batch_client(
         batch_cache: cache,
         item_probes: true,
         html_is_block: false,
+        global_pacer: None,
     })
     .unwrap()
 }

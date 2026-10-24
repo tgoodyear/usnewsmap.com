@@ -62,6 +62,7 @@ use usnm_core::ids::PageKey;
 use crate::batch::{self, BagIndex, Md5Sum};
 use crate::telemetry::Metrics;
 
+pub mod global;
 mod pacer;
 mod types;
 
@@ -157,6 +158,8 @@ pub struct LocClient {
     api: Pacer,
     tile: Arc<Pacer>,
     storage: Arc<Pacer>,
+    /// The host's budget (#962), also held and slowed by LoC's push-backs.
+    global: Option<Arc<global::GlobalPacer>>,
     items: moka::future::Cache<String, Pages>,
     /// By batch directory; `None` for a batch LoC doesn't have.
     bags: moka::future::Cache<String, Option<Arc<Bag>>>,
@@ -226,17 +229,25 @@ impl LocClient {
                 }
             }))
             .build()?;
+        let global = cfg
+            .global_pacer
+            .clone()
+            .map(|p| Arc::new(global::GlobalPacer::new(p)));
         let (tile, storage) = if cfg.storage_own_budget {
             (
-                Arc::new(Pacer::new(cfg.tile_gap)),
-                Arc::new(Pacer::new(cfg.storage_gap)),
+                Arc::new(Pacer::with_global(cfg.tile_gap, global.clone())),
+                Arc::new(Pacer::with_global(cfg.storage_gap, global.clone())),
             )
         } else {
-            let shared = Arc::new(Pacer::new(cfg.tile_gap.max(cfg.storage_gap)));
+            let shared = Arc::new(Pacer::with_global(
+                cfg.tile_gap.max(cfg.storage_gap),
+                global.clone(),
+            ));
             (Arc::clone(&shared), shared)
         };
         Ok(Self {
-            api: Pacer::new(cfg.api_gap),
+            api: Pacer::with_global(cfg.api_gap, global.clone()),
+            global,
             tile,
             storage,
             items: moka::future::Cache::builder()
@@ -258,6 +269,44 @@ impl LocClient {
             http_here,
             metrics: Metrics::global(),
         })
+    }
+
+    /// LoC pushed back with a 429, a 403 or a challenge page: hold the
+    /// host's whole budget for `d`, and drop it to the slow rate for good
+    /// (the maintainer's rule of 24 October 2026: 45 a minute, 10 if LoC
+    /// objects). A 503 or an unreadable body holds only its server.
+    fn push_back(&self, status: StatusCode, challenged: bool, d: Duration) {
+        if let Some(g) = &self.global {
+            if challenged
+                || matches!(
+                    status,
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
+                )
+            {
+                g.hold(d);
+                g.slow_down(&format!(
+                    "HTTP {}{}",
+                    status.as_u16(),
+                    if challenged { " (challenge page)" } else { "" }
+                ));
+            }
+        }
+    }
+
+    /// The main client follows same-host redirects on its own; each hop it
+    /// followed is another LoC request, so it is charged to the global budget
+    /// after the fact (the next slots move on).
+    fn charged(
+        &self,
+        res: reqwest::Result<reqwest::Response>,
+        asked: &str,
+    ) -> reqwest::Result<reqwest::Response> {
+        if let (Ok(r), Some(g)) = (&res, &self.global) {
+            if r.url().as_str() != asked {
+                g.charge(1);
+            }
+        }
+        res
     }
 
     fn pacer(&self, server: Server) -> &Pacer {
@@ -361,7 +410,7 @@ impl LocClient {
     /// One paced request for the known-good item, outside the caches.
     async fn probe(&self, server: Server, url: &str) -> Result<(), ProbeFailure> {
         self.pacer(server).wait().await;
-        match self.http.get(url).send().await {
+        match self.charged(self.http.get(url).send().await, url) {
             Ok(resp) if self.cfg.html_is_block && html_page(&resp).is_some() => {
                 self.block_hold(server, resp.status(), "html_challenge", retry_after(&resp));
                 Err(ProbeFailure::Blocked(FetchError::Transient(format!(
@@ -397,6 +446,16 @@ impl LocClient {
                     server = server.name(),
                     "the known-good item failed too"
                 );
+                // A 429 or 403 here is LoC pushing back, as on any request.
+                if matches!(
+                    resp.status(),
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
+                ) {
+                    let d = retry_after(&resp)
+                        .map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff));
+                    self.pacer(server).hold(d);
+                    self.push_back(resp.status(), false, d);
+                }
                 Err(ProbeFailure::Failed(retry_after(&resp).map(|(d, _)| d)))
             }
             Err(e) => {
@@ -441,8 +500,11 @@ impl LocClient {
         reason: &'static str,
         asked: Option<(Duration, bool)>,
     ) {
-        self.pacer(server)
-            .hold(asked.map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff)));
+        let d = asked.map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff));
+        self.pacer(server).hold(d);
+        if reason == "html_challenge" {
+            self.push_back(status, true, d);
+        }
         self.metrics.loc_slowdowns.add(
             1,
             &[
@@ -475,7 +537,7 @@ impl LocClient {
             pacer.wait().await;
             let wait = self.cfg.backoff * attempt;
             let sent = Instant::now();
-            match self.http.get(url).send().await {
+            match self.charged(self.http.get(url).send().await, url) {
                 Ok(resp) if resp.status().is_success() => {
                     if self.cfg.html_is_block {
                         if let Some(why) = html_page(&resp) {
@@ -569,6 +631,11 @@ impl LocClient {
                         let d = checked.map_or(d, |c| c.min(MAX_RETRY_AFTER).max(d));
                         // Everyone waits, not just this request.
                         pacer.hold(d);
+                        self.push_back(
+                            status,
+                            self.cfg.html_is_block && challenge(&resp).is_some(),
+                            d,
+                        );
                         self.metrics.loc_slowdowns.add(
                             1,
                             &[
@@ -767,6 +834,7 @@ impl LocClient {
                 let d = retry_after(&resp).map_or(wait, |(r, _)| r.max(wait));
                 self.storage.hold(d);
                 let why = self.cfg.html_is_block.then(|| challenge(&resp)).flatten();
+                self.push_back(status, why.is_some(), d);
                 self.metrics.loc_slowdowns.add(
                     1,
                     &[

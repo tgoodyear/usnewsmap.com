@@ -270,3 +270,26 @@ async fn concurrent_item_errors_after_a_restart_still_count_titles() {
     assert_eq!(items, ITEM_ERROR_TITLES - 1);
     assert!(loc.held_until().is_some());
 }
+
+/// A known-good item that answers 429 while checking an item error is LoC
+/// pushing back: it slows the host's global budget like any 429 (#962).
+#[tokio::test]
+async fn a_429_from_the_known_good_check_slows_the_global_budget() {
+    let (root, _) = items_loc(vec![
+        ("sn9/1904-07-29", Answer::Too429),
+        ("sn9/1904-07-30", Answer::Bare503),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("pacer.json");
+    let loc = LocClient::new(LocConfig {
+        global_pacer: Some(file.clone()),
+        ..items_client(&root, 1).cfg
+    })
+    .unwrap();
+    loc.set_known_good(loc.item_url(&page("sn9", "1904-07-29")));
+    let e = item(&loc, &page("sn9", "1904-07-30")).await.unwrap_err();
+    assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+    let st = global::GlobalPacer::new(file).state().unwrap();
+    assert!(st.slowed.is_some(), "{st:?}");
+}
