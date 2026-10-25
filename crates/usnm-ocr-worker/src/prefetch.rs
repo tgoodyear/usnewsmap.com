@@ -37,7 +37,10 @@
 //! counted as a mirror is (`sources-<tag>.jsonl` with source
 //! `ndnp-batches`, `fetched_bucket` and the status's `bucket`), and like a
 //! mirror's, a page it served neither ends a run of failures nor clears a
-//! cool-off: it says nothing about `tile.loc.gov`.
+//! cool-off: it says nothing about `tile.loc.gov`. Its sidecar has the
+//! URL and IIIF base the client placed the page under: for a batch whose
+//! manifest came from the bucket, the guess its name gives until LoC
+//! confirms or moves it ([`crate::loc::Bag::guessed`]).
 //!
 //! **Item errors** (#414): when loc.gov answers 503 for one issue's item
 //! while serving others ([`FetchError::Item`], the client's notes say when;
@@ -2948,6 +2951,15 @@ mod tests {
         );
     }
 
+    /// The two pages in LoC's bucket, whose manifest carries its md5 as S3
+    /// does.
+    fn in_bucket(b: &StandIn) {
+        two_pages(b, IN_BUCKET);
+        let manifest = format!("{IN_BUCKET}manifest-md5.txt");
+        let md5 = batch::md5_hex(&b.file(&manifest).unwrap());
+        b.header(&manifest, "x-amz-meta-md5", &md5);
+    }
+
     fn sources(out: &Path) -> Vec<SourceLine> {
         std::fs::read_to_string(out.join("sources-full.jsonl"))
             .unwrap()
@@ -2961,7 +2973,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (s, b) = (StandIn::start().await, StandIn::start().await);
         two_pages(&s, BATCH);
-        two_pages(&b, IN_BUCKET);
+        in_bucket(&b);
         // A partner has page 1 too: the bucket is asked first.
         let partner = StandIn::start().await;
         partner.put("/lccn/sn1/1890-05-03/ed-1/seq-1.jp2", b"jp2 one".to_vec());
@@ -3030,7 +3042,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (s, b) = (StandIn::start().await, StandIn::start().await);
         two_pages(&s, BATCH);
-        two_pages(&b, IN_BUCKET);
+        in_bucket(&b);
         b.put(
             &format!("{IN_BUCKET}data/sn1/0001A/1890050301/0010.jp2"),
             b"cut short".to_vec(),
@@ -3097,5 +3109,88 @@ mod tests {
         let got = sources(&out);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].source, "partner");
+    }
+
+    #[tokio::test]
+    async fn a_batch_loc_keeps_elsewhere_has_the_redirects_urls_in_its_sidecars() {
+        // LoC keeps the batch under another awardee's directory than its
+        // name's first part; Chronicling America's redirect says where.
+        const ELSEWHERE: &str = "/storage-services/service/ndnp/yy/batch_xx_test_ver01/";
+        const REDIRECT: &str = "/data/batches/xx_test_ver01/manifest-md5.txt";
+        let issue = |at: &str, f: &str| format!("{at}data/sn1/0001A/1890050301/{f}");
+        // LoC is asked under the guessed URL for the METS (not in the
+        // bucket) or for the JP2s (the bucket's aren't the bag's).
+        for case in ["mets", "jp2"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (s, b) = (StandIn::start().await, StandIn::start().await);
+            two_pages(&s, ELSEWHERE);
+            s.redirect(REDIRECT, &format!("{ELSEWHERE}manifest-md5.txt"));
+            in_bucket(&b);
+            if case == "mets" {
+                b.script(&issue(IN_BUCKET, "1890050301.xml"), Scripted::Status(404));
+            } else {
+                for f in ["0010.jp2", "0011.jp2"] {
+                    b.put(&issue(IN_BUCKET, f), b"cut short".to_vec());
+                }
+            }
+            let rows: Vec<ManifestRow> =
+                (1..=2).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+            let out = dir.path().join("scans");
+            let opts = Options {
+                manifest: write_manifest(dir.path(), rows.clone()),
+                out: out.clone(),
+                concurrency: 1,
+                ..Options::default()
+            };
+            let (_tx, rx) = watch::channel(false);
+            let cache = dir.path().join("batches");
+            let st = run(opts, bucket_loc(&s, &b, &cache), rx).await.unwrap();
+            let from_bucket = if case == "mets" { 2 } else { 0 };
+            assert_eq!(
+                (
+                    st.fetched,
+                    st.fetched_jp2,
+                    st.fetched_bucket,
+                    st.fetched_item_api
+                ),
+                (2, 2, from_bucket, 0),
+                "{case}"
+            );
+            // Every sidecar names the batch where it is.
+            for (row, frame) in rows.iter().zip(["0011", "0010"]) {
+                let jp2 = scan_path(&out, row, ImageSize::Full, ScanFormat::Jp2);
+                let side: Sidecar =
+                    serde_json::from_slice(&std::fs::read(sidecar_path(&jp2)).unwrap()).unwrap();
+                assert_eq!(
+                    side.loc_url,
+                    format!("{}{}", s.root, issue(ELSEWHERE, &format!("{frame}.jp2"))),
+                    "{case}"
+                );
+                assert_eq!(
+                    side.iiif_base,
+                    format!(
+                        "{}service:ndnp:yy:batch_xx_test_ver01:data:sn1:0001A:1890050301:{frame}",
+                        s.iiif_root()
+                    ),
+                    "{case}"
+                );
+            }
+            // One lookup; the manifest never from LoC; the checked URL kept.
+            assert_eq!(
+                (
+                    s.hits(REDIRECT),
+                    s.hits(&format!("{ELSEWHERE}manifest-md5.txt")),
+                    s.hits(&format!("{BATCH}manifest-md5.txt"))
+                ),
+                (1, 0, 0),
+                "{case}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(cache.join("xx_test_ver01/url")).unwrap(),
+                format!("{}{ELSEWHERE}", s.root),
+                "{case}"
+            );
+            assert!(!cache.join("xx_test_ver01/url.guessed").exists(), "{case}");
+        }
     }
 }

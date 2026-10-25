@@ -13,30 +13,41 @@
 //! public (38.1% of the pages); every object of the others answers 403
 //! AccessDenied.
 //!
-//! **What is taken.** A bag manifest whose body doesn't match the object's
-//! `x-amz-meta-md5` (the uploader's md5), when it has one, is refused. A
-//! METS or JP2 must match the bag's md5, as LoC's must. What the bucket
-//! serves is recorded as LoC's: the bag's URL is the storage path its name
-//! gives on LoC (the fetcher's first guess there), and a scan keeps LoC's
-//! URL and IIIF base. Where a JP2's bytes came from is the caller's to
+//! **What is taken.** A bag manifest is taken only if its body matches the
+//! object's `x-amz-meta-md5` (the uploader's md5) or, without that header,
+//! its ETag when that is a single-part one (32 hex digits, which S3 makes
+//! the md5); one with neither is refused and counted. A METS or JP2 must
+//! match the bag's md5, as LoC's must. A scan keeps LoC's URL and IIIF
+//! base. The bucket's keys don't name the awardee, so the URL a bucket
+//! manifest is kept under on LoC is only the guess the batch's name gives
+//! (unless a URL LoC served is already on disk): the caller marks it as a
+//! guess and checks it with LoC when LoC answers 404 under it
+//! ([`super::LocClient`]). Where a JP2's bytes came from is the caller's to
 //! record ([`NAME`] and the bucket's URL).
 //!
 //! **Which batches.** The first answer for a batch says whether the bucket
-//! serves it: a file it sends is public; a 403, or a 404 for its manifest,
-//! is not, and nothing more of that batch is asked of the bucket in this
-//! process. A 404 for a METS or JP2 of a public batch is that file only.
+//! serves it: a file it sends makes the batch public; a 403, or a 404 for
+//! its manifest, while nothing is known of the batch makes it private, and
+//! nothing more of that batch is asked of the bucket in this process. Once
+//! a batch is public, a 403 or 404 for one of its files is that file only
+//! (a restrictive ACL on one object, or S3's 403 for a missing key where
+//! listing isn't allowed): it counts as a miss and the batch stays public.
 //!
 //! **Pacing.** As for a mirror ([`super::mirror`]): one request at a time,
-//! the next at least [`BucketConfig::gap`] (6 s) after the last one ended,
-//! never through LoC's pacers or the host's LoC budget. A request waits at
-//! most [`BucketConfig::max_wait`] for its turn and then goes to LoC. A 429
-//! or 503 (S3's SlowDown) holds the bucket for `Retry-After` (at least
-//! [`BucketConfig::backoff`], at most an hour), a challenge or an HTML page
-//! for [`BucketConfig::block_hold`], and a 5xx, a network error or a body
-//! that can't be read for the backoff. A held bucket is skipped, never
-//! waited out, and nothing the bucket answers holds or slows LoC. A 403
-//! holds nothing: it means the batch is private. No redirect is followed
-//! (S3 sends one only towards another endpoint, which is another host).
+//! the next at least [`BucketConfig::gap`] (6 s, never less from the flag:
+//! [`MIN_GAP`]) after the last one ended, never through LoC's pacers or the
+//! host's LoC budget. A request waits at most [`BucketConfig::max_wait`]
+//! for its turn and then goes to LoC. A 429 or 503 (S3's SlowDown) holds
+//! the bucket for `Retry-After` (at least [`BucketConfig::backoff`], at
+//! most an hour); a challenge, an HTML page or a redirect for
+//! [`BucketConfig::block_hold`]; and a 5xx, a timeout, a network error or
+//! a body that can't be read for the backoff. A held bucket is skipped,
+//! never waited out, and nothing the bucket answers holds or slows LoC. A
+//! 403 holds nothing: it means the batch is private. No redirect is
+//! followed (S3 sends one only towards another endpoint, which is another
+//! host, so a redirect means the root is wrong). The flag takes only an
+//! `amazonaws.com` host, so it can't point the bucket's client at a LoC
+//! host outside LoC's pacers.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,48 +72,55 @@ pub const NAME: &str = "ndnp-batches";
 /// The bucket's root.
 pub const ROOT: &str = "https://ndnp-batches.s3.amazonaws.com/";
 
-/// How long a bag manifest may take (a 10,000-page batch's is about 3 MB).
-const MANIFEST_TIMEOUT: Duration = Duration::from_secs(120);
-/// How long an issue METS may take.
+/// The longest an issue METS may take (a manifest or a JP2 may take
+/// [`BucketConfig::timeout`]).
 const METS_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a JP2 may take.
-const IMAGE_TIMEOUT: Duration = Duration::from_secs(120);
 /// The uploader's md5 of an object.
 const META_MD5: &str = "x-amz-meta-md5";
+/// The shortest gap between requests to the bucket `--loc-bucket-gap-ms`
+/// may set: 6 s, the maintainer's of 24 October 2026.
+pub const MIN_GAP: Duration = Duration::from_secs(6);
 
 #[derive(Debug, Clone)]
 pub struct BucketConfig {
     /// The bucket's root, ending in `/` ([`ROOT`]; a stand-in in tests).
     pub root: String,
     /// From the end of one request to the start of the next (6 s, the
-    /// maintainer's).
+    /// maintainer's; [`BucketConfig::at`] takes nothing under [`MIN_GAP`]).
     pub gap: Duration,
     /// A 5xx, a timeout, a network error or a body that can't be read
     /// holds the bucket this long, and a 429 or 503 at least this long.
     pub backoff: Duration,
-    /// A challenge or an HTML page holds the bucket this long.
+    /// A challenge, an HTML page or a redirect holds the bucket this long.
     pub block_hold: Duration,
     /// The longest a request waits for the bucket's turn before going to
     /// LoC without it.
     pub max_wait: Duration,
+    /// The longest one request may take (120 s: a 10,000-page batch's
+    /// manifest is about 3 MB); an issue METS at most 30 s.
+    pub timeout: Duration,
 }
 
 impl Default for BucketConfig {
     fn default() -> Self {
         Self {
             root: ROOT.into(),
-            gap: Duration::from_secs(6),
+            gap: MIN_GAP,
             backoff: Duration::from_secs(60),
             block_hold: Duration::from_secs(3600),
             max_wait: Duration::from_secs(30),
+            timeout: Duration::from_secs(120),
         }
     }
 }
 
 impl BucketConfig {
-    /// The bucket at `root` (`--loc-bucket`), with the default pacing;
-    /// `None` for an empty `root`: off.
-    pub fn at(root: &str) -> anyhow::Result<Option<Self>> {
+    /// The bucket at `root` (`--loc-bucket`), `gap` apart
+    /// (`--loc-bucket-gap-ms`, at least [`MIN_GAP`]), with the default
+    /// holds; `None` for an empty `root`: off. Only an `amazonaws.com` host
+    /// is taken: a loc.gov one would be asked outside LoC's pacers and the
+    /// host's LoC budget.
+    pub fn at(root: &str, gap: Duration) -> anyhow::Result<Option<Self>> {
         let root = root.trim();
         if root.is_empty() {
             return Ok(None);
@@ -117,12 +135,23 @@ impl BucketConfig {
                 && u.password().is_none(),
             "--loc-bucket {root:?} isn't a plain http(s) URL"
         );
+        let host = u.host_str().unwrap_or_default().to_ascii_lowercase();
+        anyhow::ensure!(
+            host.ends_with(".amazonaws.com"),
+            "--loc-bucket {root:?}: LoC's bucket is on S3, an amazonaws.com host; {host} isn't"
+        );
+        anyhow::ensure!(
+            gap >= MIN_GAP,
+            "--loc-bucket-gap-ms must be at least {}",
+            MIN_GAP.as_millis()
+        );
         let mut root = u.to_string();
         if !root.ends_with('/') {
             root.push('/');
         }
         Ok(Some(Self {
             root,
+            gap,
             ..Self::default()
         }))
     }
@@ -130,6 +159,7 @@ impl BucketConfig {
 
 /// The bucket's counts, for the fetcher's status.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BucketStatus {
     /// Requests sent.
     pub requests: u64,
@@ -141,14 +171,18 @@ pub struct BucketStatus {
     /// as learnt in this process.
     pub public_batches: u64,
     pub private_batches: u64,
-    /// Files of a public batch it doesn't have (404), and other refusals.
+    /// Files of a public batch it doesn't have or refuses (404, 403), and
+    /// other refusals.
     pub misses: u64,
     /// Files that didn't match their md5 (the bag's, or a manifest's
-    /// `x-amz-meta-md5`).
+    /// `x-amz-meta-md5` or ETag).
     pub md5_mismatches: u64,
+    /// Manifests refused for want of an md5 to check them against: no
+    /// `x-amz-meta-md5`, and no ETag or a multipart one.
+    pub no_md5: u64,
     /// Requests it was skipped for: held, or busy past the wait.
     pub skipped_held: u64,
-    /// Holds it set (429, 503, a challenge, an error).
+    /// Holds it set (429, 503, a challenge, a redirect, an error).
     pub holds: u64,
     /// Seconds it is still held for, if it is.
     pub held_secs: Option<u64>,
@@ -162,14 +196,39 @@ struct Counts {
     jp2s: AtomicU64,
     misses: AtomicU64,
     md5_mismatches: AtomicU64,
+    no_md5: AtomicU64,
     skipped_held: AtomicU64,
     holds: AtomicU64,
 }
 
+/// What an object's headers say its md5 is.
+#[derive(Debug, Clone, PartialEq)]
+enum Declared {
+    /// `x-amz-meta-md5`, the uploader's, as sent.
+    Meta(String),
+    /// A single-part ETag (no `x-amz-meta-md5`), which S3 makes the md5.
+    ETag(Md5Sum),
+    /// Neither: no `x-amz-meta-md5`, and no ETag or a multipart one.
+    Unknown,
+}
+
+impl Declared {
+    fn of(resp: &reqwest::Response) -> Self {
+        let h = resp.headers();
+        if let Some(v) = h.get(META_MD5) {
+            return Self::Meta(v.to_str().unwrap_or_default().to_owned());
+        }
+        h.get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .and_then(etag_md5)
+            .map_or(Self::Unknown, Self::ETag)
+    }
+}
+
 /// What one request got.
 enum Tried {
-    /// The body, how long it took, and the object's `x-amz-meta-md5`.
-    Body(Bytes, Duration, Option<String>),
+    /// The body, how long it took, and what the headers say its md5 is.
+    Body(Bytes, Duration, Declared),
     /// 403: the batch isn't public.
     Private,
     /// 404 or 410: it isn't there.
@@ -230,38 +289,66 @@ impl Bucket {
         }
     }
 
+    /// A 403 or 404 for a file of batch `dir`: of a batch it has served,
+    /// that file only (a miss); otherwise the batch isn't public.
+    fn refused(&self, dir: &str, url: &str, why: &str) {
+        if self.serves(dir) == Some(true) {
+            self.counts.misses.fetch_add(1, Ordering::SeqCst);
+            tracing::debug!(
+                bucket = NAME,
+                url,
+                why,
+                "LoC's bucket refused one file of a batch it serves"
+            );
+        } else {
+            self.learn(dir, false);
+        }
+    }
+
     /// Batch `dir`'s bag manifest, if the bucket serves it and the body
-    /// matches the object's `x-amz-meta-md5` (when it has one); `None`
-    /// sends the caller to LoC.
+    /// matches the object's `x-amz-meta-md5` or, without one, its
+    /// single-part ETag; `None` sends the caller to LoC.
     pub(super) async fn manifest(&self, dir: &str) -> Option<Bytes> {
         let url = format!("{}{dir}/manifest-md5.txt", self.cfg.root);
-        match self.get(dir, &url, MAX_BAG_BYTES, MANIFEST_TIMEOUT).await {
-            Tried::Body(body, _, meta) => {
-                if let Some(meta) = meta {
-                    let got = batch::md5(&body);
-                    if meta_md5(&meta) != Some(got) {
-                        self.counts.md5_mismatches.fetch_add(1, Ordering::SeqCst);
+        match self
+            .get(dir, &url, MAX_BAG_BYTES, self.cfg.timeout, true)
+            .await
+        {
+            Tried::Body(body, _, declared) => {
+                let got = batch::md5(&body);
+                let want = match &declared {
+                    Declared::Meta(v) => meta_md5(v),
+                    Declared::ETag(m) => Some(*m),
+                    Declared::Unknown => {
+                        self.counts.no_md5.fetch_add(1, Ordering::SeqCst);
                         tracing::warn!(
                             bucket = NAME,
                             url,
                             bytes = body.len(),
-                            md5 = batch::hex(&got),
-                            meta,
-                            "a manifest from LoC's bucket isn't its x-amz-meta-md5; refused"
+                            "a manifest from LoC's bucket with neither x-amz-meta-md5 nor a single-part ETag; refused"
                         );
                         return None;
                     }
+                };
+                if want != Some(got) {
+                    self.counts.md5_mismatches.fetch_add(1, Ordering::SeqCst);
+                    tracing::warn!(
+                        bucket = NAME,
+                        url,
+                        bytes = body.len(),
+                        md5 = batch::hex(&got),
+                        declared = ?declared,
+                        "a manifest from LoC's bucket isn't the md5 its headers give; refused"
+                    );
+                    return None;
                 }
                 self.learn(dir, true);
                 self.counts.manifests.fetch_add(1, Ordering::SeqCst);
                 Some(body)
             }
-            // No manifest: the bucket doesn't serve the batch.
-            Tried::Private | Tried::Missing => {
-                self.learn(dir, false);
-                None
-            }
-            Tried::Skipped | Tried::Failed => None,
+            // No manifest: the bucket doesn't serve the batch (learnt in
+            // its turn).
+            Tried::Private | Tried::Missing | Tried::Skipped | Tried::Failed => None,
         }
     }
 
@@ -269,7 +356,13 @@ impl Bucket {
     /// bucket serves it and it matches the bag's `md5`.
     pub(super) async fn mets(&self, dir: &str, rel: &str, md5: &Md5Sum) -> Option<Bytes> {
         let (body, _, _) = self
-            .checked(dir, rel, md5, MAX_METS_BYTES, METS_TIMEOUT)
+            .checked(
+                dir,
+                rel,
+                md5,
+                MAX_METS_BYTES,
+                METS_TIMEOUT.min(self.cfg.timeout),
+            )
             .await?;
         self.counts.mets.fetch_add(1, Ordering::SeqCst);
         Some(body)
@@ -281,7 +374,7 @@ impl Bucket {
     pub(super) async fn jp2(&self, page: &BatchPage, storage_root: &str) -> Option<(Scan, Hit)> {
         let (dir, rel) = key(storage_root, &page.url)?;
         let (body, took, url) = self
-            .checked(dir, rel, &page.md5, MAX_IMAGE_BYTES, IMAGE_TIMEOUT)
+            .checked(dir, rel, &page.md5, MAX_IMAGE_BYTES, self.cfg.timeout)
             .await?;
         self.counts.jp2s.fetch_add(1, Ordering::SeqCst);
         Some((
@@ -317,6 +410,7 @@ impl Bucket {
             private_batches: private,
             misses: get(&c.misses),
             md5_mismatches: get(&c.md5_mismatches),
+            no_md5: get(&c.no_md5),
             skipped_held: get(&c.skipped_held),
             holds: get(&c.holds),
             held_secs: self
@@ -337,7 +431,7 @@ impl Bucket {
         timeout: Duration,
     ) -> Option<(Bytes, Duration, String)> {
         let url = format!("{}{dir}/{rel}", self.cfg.root);
-        match self.get(dir, &url, max, timeout).await {
+        match self.get(dir, &url, max, timeout, false).await {
             Tried::Body(body, took, _) => {
                 let got = batch::md5(&body);
                 if &got != md5 {
@@ -355,21 +449,27 @@ impl Bucket {
                 self.learn(dir, true);
                 Some((body, took, url))
             }
-            Tried::Private => {
-                self.learn(dir, false);
-                None
-            }
+            // A METS or JP2 it doesn't have says nothing of the batch.
             Tried::Missing => {
                 self.counts.misses.fetch_add(1, Ordering::SeqCst);
                 None
             }
-            Tried::Skipped | Tried::Failed => None,
+            Tried::Private | Tried::Skipped | Tried::Failed => None,
         }
     }
 
     /// One GET in the bucket's turn, with no retry. A held or busy bucket,
-    /// or a batch it is known not to serve, isn't asked.
-    async fn get(&self, dir: &str, url: &str, max: usize, timeout: Duration) -> Tried {
+    /// or a batch it is known not to serve, isn't asked. A 403, or a 404
+    /// for a `manifest`, is learnt ([`Self::refused`]) before the turn
+    /// ends, so a request of that batch waiting for the turn sees it.
+    async fn get(
+        &self,
+        dir: &str,
+        url: &str,
+        max: usize,
+        timeout: Duration,
+        manifest: bool,
+    ) -> Tried {
         if self.serves(dir) == Some(false) {
             return Tried::Skipped;
         }
@@ -382,6 +482,11 @@ impl Bucket {
             return Tried::Skipped;
         }
         let tried = self.send(url, max, timeout).await;
+        match &tried {
+            Tried::Private => self.refused(dir, url, "403"),
+            Tried::Missing if manifest => self.refused(dir, url, "404"),
+            _ => {}
+        }
         self.gate.done();
         tried
     }
@@ -411,12 +516,9 @@ impl Bucket {
             if let Some(why) = html_page(&resp) {
                 return hold(self.cfg.block_hold, why);
             }
-            let meta = resp
-                .headers()
-                .get(META_MD5)
-                .map(|v| v.to_str().unwrap_or_default().to_owned());
+            let declared = Declared::of(&resp);
             return match read_limited(resp, max).await {
-                Ok(body) => Tried::Body(body, sent.elapsed(), meta),
+                Ok(body) => Tried::Body(body, sent.elapsed(), declared),
                 Err(e) => hold(self.cfg.backoff, e),
             };
         }
@@ -433,8 +535,22 @@ impl Bucket {
                     retry_after(&resp).map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff));
                 hold(d, format!("HTTP {status}"))
             }
-            300..=499 => {
-                tracing::debug!(bucket = NAME, url, %status, "LoC's bucket refused or redirected; not followed");
+            // S3 redirects only towards another endpoint (a 301
+            // PermanentRedirect when the root names the wrong one): every
+            // request would wait its turn for nothing.
+            300..=399 => {
+                let to = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|l| l.to_str().ok())
+                    .unwrap_or("no Location");
+                hold(
+                    self.cfg.block_hold,
+                    format!("HTTP {status} to {to}, not followed: is --loc-bucket the bucket's endpoint?"),
+                )
+            }
+            400..=499 => {
+                tracing::debug!(bucket = NAME, url, %status, "LoC's bucket refused");
                 c.misses.fetch_add(1, Ordering::SeqCst);
                 Tried::Failed
             }
@@ -446,7 +562,7 @@ impl Bucket {
 /// The bucket's batch directory and path for a file on LoC's storage
 /// service: `<storage root><aw>/batch_<b>_verNN/<path>` is
 /// `(<b>_verNN, <path>)`.
-fn key<'a>(storage_root: &str, url: &'a str) -> Option<(&'a str, &'a str)> {
+pub(super) fn key<'a>(storage_root: &str, url: &'a str) -> Option<(&'a str, &'a str)> {
     let (_awardee, rest) = url.strip_prefix(storage_root)?.split_once('/')?;
     let (dir, path) = rest.split_once('/')?;
     let dir = dir.strip_prefix("batch_")?;
@@ -463,6 +579,19 @@ fn meta_md5(v: &str) -> Option<Md5Sum> {
             .try_into()
             .ok()
     })
+}
+
+/// The md5 a single-part ETag gives: S3 makes the ETag of an object put in
+/// one part its md5 (32 hex digits, quoted); a multipart one ends in
+/// `-<parts>` and isn't one. An ETag that is no md5 (S3 encrypting with
+/// KMS) only fails the check.
+fn etag_md5(v: &str) -> Option<Md5Sum> {
+    let v = v.trim();
+    let v = v
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(v);
+    batch::parse_md5(v)
 }
 
 #[cfg(test)]
@@ -509,16 +638,61 @@ mod tests {
     }
 
     #[test]
-    fn a_bucket_flag_is_a_plain_url_or_nothing() {
-        assert!(BucketConfig::at("").unwrap().is_none());
-        assert!(BucketConfig::at("  ").unwrap().is_none());
-        let c = BucketConfig::at("https://ndnp-batches.s3.amazonaws.com")
+    fn only_a_single_part_etag_is_an_md5() {
+        let hex = batch::md5_hex(b"x");
+        assert_eq!(etag_md5(&format!("\"{hex}\"")), Some(batch::md5(b"x")));
+        assert_eq!(etag_md5(&hex), Some(batch::md5(b"x")));
+        // Multipart: the md5 of the parts' md5s, and their count.
+        assert_eq!(etag_md5(&format!("\"{hex}-3\"")), None);
+        assert_eq!(etag_md5(&format!("W/\"{hex}\"")), None);
+        assert_eq!(etag_md5("\"\""), None);
+    }
+
+    #[test]
+    fn a_bucket_flag_is_an_s3_url_or_nothing() {
+        let gap = MIN_GAP;
+        assert!(BucketConfig::at("", gap).unwrap().is_none());
+        assert!(BucketConfig::at("  ", Duration::ZERO).unwrap().is_none());
+        let c = BucketConfig::at("https://ndnp-batches.s3.amazonaws.com", gap)
             .unwrap()
             .unwrap();
         assert_eq!(c.root, ROOT);
         assert_eq!(c.gap, Duration::from_secs(6));
-        assert!(BucketConfig::at("ftp://x/").is_err());
-        assert!(BucketConfig::at("https://x/?list-type=2").is_err());
-        assert!(BucketConfig::at("not a url").is_err());
+        // Path-style, and a longer gap.
+        let c = BucketConfig::at(
+            "https://s3.us-east-1.amazonaws.com/ndnp-batches",
+            Duration::from_secs(10),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (c.root.as_str(), c.gap),
+            (
+                "https://s3.us-east-1.amazonaws.com/ndnp-batches/",
+                Duration::from_secs(10)
+            )
+        );
+        assert!(BucketConfig::at("ftp://x.s3.amazonaws.com/", gap).is_err());
+        assert!(BucketConfig::at("https://x.s3.amazonaws.com/?list-type=2", gap).is_err());
+        assert!(BucketConfig::at("not a url", gap).is_err());
+        // Never a LoC host, nor anything but S3.
+        for root in [
+            "https://tile.loc.gov/storage-services/service/ndnp/",
+            "https://www.loc.gov/",
+            "https://chroniclingamerica.loc.gov/data/batches/",
+            "https://loc.gov/",
+            "https://example.com/",
+            "https://amazonaws.com.example.com/",
+            "https://amazonaws.com/",
+        ] {
+            assert!(BucketConfig::at(root, gap).is_err(), "{root}");
+        }
+        // Nothing under 6 s apart.
+        for ms in [0, 10, 5_999] {
+            assert!(
+                BucketConfig::at(ROOT, Duration::from_millis(ms)).is_err(),
+                "{ms}"
+            );
+        }
     }
 }
