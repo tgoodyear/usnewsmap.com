@@ -796,12 +796,23 @@ impl Fetch {
             }
             // Rows are cached a window at a time; once every cached row is
             // fetched and the manifest has more, it is read again for the next.
-            let window_done = state != "fetched"
-                && (entry.rows.len() as u64) < entry.info.pages
-                && entry
+            // Refilled when fewer than half a window of cached rows are
+            // still pending and pending pages remain outside the window (a
+            // page that keeps failing doesn't pin it, and a manifest whose
+            // pending pages are all cached isn't read again).
+            let window_done = state != "fetched" && {
+                let cached = entry
                     .rows
                     .iter()
-                    .all(|(d, _)| self.all.contains_key(&doc_hash(d)));
+                    .filter(|(d, _)| !self.all.contains_key(&doc_hash(d)))
+                    .count();
+                let pending = entry
+                    .hashes
+                    .iter()
+                    .filter(|h| !self.all.contains_key(h))
+                    .count();
+                cached < QUEUE_ROWS / 2 && pending > cached
+            };
             if entry.stamp == stamp && entry.info.error.is_none() && !window_done {
                 if state == "fetched" {
                     entry.rows = Vec::new();

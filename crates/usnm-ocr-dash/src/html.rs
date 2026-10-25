@@ -966,7 +966,14 @@ pub fn render(v: &View) -> String {
             fetch_badge(f),
             int(f.total.pages)
         );
-        if f.queue_configured {
+        if let Some(e) = f.queue_error.as_deref().filter(|_| f.queue_configured) {
+            let _ = write!(
+                o,
+                "<tr><td>Fetch queue</td><td>{}</td><td class=\"err\">{}</td><td class=\"r\">-</td><td class=\"r\">-</td></tr>",
+                badge("critical", "unknown"),
+                esc(e)
+            );
+        } else if f.queue_configured {
             let qs = &f.queue_summary;
             let _ = write!(
                 o,
