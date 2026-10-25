@@ -16,15 +16,14 @@
 # lock is held for exactly the step's run. --what-if prints the settings and runs nothing.
 # --target is bridge, publish or handoff.
 #
-# --target handoff --step claim|release|collect runs the hand-off job's command (#967 phase 3),
+# --target handoff --step claim|release|collect|export runs the hand-off job's command (#967 phase 3),
 # contrib-compute/images/bridge/handoff-job.sh from the same bridge image, in place of the
 # Azure hand-off job (infra/modules/boinc-handoff-job.bicep). Its settings are the job's own,
 # in $CONF/handoff.env: HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL
 # QUEUE_URL, plus the Arc identity endpoints IDENTITY_ENDPOINT and IMDS_ENDPOINT (the host's
 # own Arc machine identity holds the job's grants, boinc-handoff-runner.bicep). It gets
 # HANDOFF_STEP and only the step's own inputs, mounts only the Arc agent's challenge
-# directory: no project tree, no database, no Key Vault. The other hand-off steps (export,
-# texts-export) still run in Azure.
+# directory: no project tree, no database, no Key Vault. texts-export still runs in Azure.
 #
 # --target publish --step publish --image <appver image or sha256:<id>> publishes an app version (#961), as the
 # Azure publish job did: the image's own publish-appver.sh runs with the host's settings and
@@ -48,10 +47,11 @@ SSH_SURYA_SUBMIT_VARS=" SURYA_CAMPAIGN SURYA_MAX "
 # ones that pass. Never a threshold, a challenge hash, a target host or a spool.
 SSH_GOLD_ONBOARD_VARS=" GOLD_CAMPAIGN GOLD_LANGUAGE GOLD_PROFILE GOLD_ENGINE_IMAGE GOLD_ENGINE_BASE GOLD_ENGINE_VERSION GOLD_MAX_HOSTS "
 # The hand-off steps take the inputs the controller gives them (batch_scheduler.py's claim,
-# release and collect), over ssh or not.
+# release, collect and export), over ssh or not.
 HANDOFF_CLAIM_VARS=" HANDOFF_MANIFEST CLAIM_NONCE CLAIM_MAX CLAIM_QUEUES CLAIM_LEASE_HOURS CLAIM_LANGUAGES "
 HANDOFF_RELEASE_VARS=" HANDOFF_DOCS "
 HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID "
+HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS "
 # handoff.env must set these, as the Azure job sets them (its AZURE_CLIENT_ID is Container
 # Apps' identity; the Arc identity needs none).
 HANDOFF_HOST_VARS=" HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL QUEUE_URL IDENTITY_ENDPOINT IMDS_ENDPOINT "
@@ -102,7 +102,7 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | collect) ;; *) die "--target handoff runs claim, release or collect on-prem; $STEP stays in Azure" ;; esac ;;
+    case $STEP in claim | release | collect | export) ;; *) die "--target handoff runs claim, release, collect or export on-prem; $STEP stays in Azure" ;; esac ;;
   *) die "--target $TARGET does not run on-prem; only bridge, publish and handoff steps do" ;;
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
@@ -147,6 +147,7 @@ if [ "$TARGET" = handoff ]; then
     claim) SSH_ALLOWED=$HANDOFF_CLAIM_VARS ;;
     release) SSH_ALLOWED=$HANDOFF_RELEASE_VARS ;;
     collect) SSH_ALLOWED=$HANDOFF_COLLECT_VARS ;;
+    export) SSH_ALLOWED=$HANDOFF_EXPORT_VARS ;;
   esac
 fi
 for v in ${VARS[@]+"${VARS[@]}"}; do
