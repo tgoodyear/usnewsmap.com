@@ -1552,6 +1552,26 @@ async fn an_onprem_export_leaves_the_page_out_of_the_container() {
         std::fs::read(server.join("jobs").join(&id).join("page")).unwrap(),
         page
     );
+
+    // After the staged scan is pruned: a retry of the reserved job uses the server's own
+    // copy, and a job past reservation needs no page at all.
+    std::fs::remove_dir_all(&pushed).unwrap();
+    assert_eq!(
+        handoff::pull_with(container.as_ref(), &server, &id, Some(&pushed))
+            .await
+            .unwrap(),
+        Pulled::Reserved
+    );
+    let mut submitted = usnm_boinc::load(&server, &id).unwrap();
+    submitted.stage = Stage::Submitted;
+    usnm_boinc::save(&server, &submitted).unwrap();
+    std::fs::remove_file(server.join("jobs").join(&id).join("page")).unwrap();
+    assert_eq!(
+        handoff::pull_with(container.as_ref(), &server, &id, Some(&pushed))
+            .await
+            .unwrap(),
+        Pulled::Already(Stage::Submitted)
+    );
 }
 
 /// The #469 route on synthetic data, with a local directory standing in for the hand-off

@@ -131,12 +131,24 @@ if [ "$TARGET" = scans ]; then
   python3 -c '
 import fcntl, os, re, signal, sys, tarfile, time
 stage, lock_path, wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+
+class Member(tarfile.TarInfo):
+    # tarfile reads a PAX or GNU long-name record into memory before it yields the member:
+    # refuse any but a short one, so a stream cannot make it allocate more.
+    def _proc_member(self, tarfile_):
+        if self.type in tarfile.GNU_TYPES + (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE) \
+                and self.size > 4096:
+            raise tarfile.HeaderError(f"a {self.size}-byte tar extension record")
+        return super()._proc_member(tarfile_)
+
+
 signal.alarm(wait * 60)
 lock = open(lock_path, "w")
 fcntl.flock(lock, fcntl.LOCK_EX)
 name_re = re.compile(r"keep/[a-z]{2,10}_[A-Za-z0-9_]+/[A-Za-z0-9_-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{1,4}/[0-9]{1,5}\.(jp2|jpg)(\.json)?")
 count = total = 0
-with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as tar:
+with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
     for m in tar:
         if m.isdir():
             continue
@@ -150,15 +162,19 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as tar:
         dest = os.path.join(stage, m.name)
         os.makedirs(os.path.dirname(dest), mode=0o755, exist_ok=True)
         tmp = f"{dest}.tmp-{os.getpid()}"
-        src = tar.extractfile(m)
-        with open(tmp, "wb") as out:
-            while chunk := src.read(1 << 20):
-                out.write(chunk)
-        if os.path.getsize(tmp) != m.size:
-            os.unlink(tmp)
-            sys.exit(f"error: {m.name} came short")
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, dest)
+        try:
+            src = tar.extractfile(m)
+            with open(tmp, "wb") as out:
+                while chunk := src.read(1 << 20):
+                    out.write(chunk)
+            if os.path.getsize(tmp) != m.size:
+                sys.exit(f"error: {m.name} came short")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, dest)
+        finally:
+            # A short or broken stream leaves no partial file behind.
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 # Prune what no job needs any more: a lease is at most seven days.
 cutoff = time.time() - 10 * 86400
 pruned = 0
@@ -279,7 +295,8 @@ rc=0
 if [ "$TARGET" = handoff ]; then
   # export takes the scans the controller pushed here (#1116), read-only, instead of the
   # container's copies.
-  if [ "$STEP" = export ] && [ -d "$STAGE" ]; then
+  # Queue-fed exports only: a cohort export's scans still go to the container.
+  if [ "$STEP" = export ] && [ -d "$STAGE" ] && [[ " ${VARS[*]-} " == *" HANDOFF_CLAIMS=1 "* ]]; then
     echo "HANDOFF_LOCAL_SCANS=1" >> "$envfile"
     run+=(-v "$STAGE:/scans:ro")
   fi

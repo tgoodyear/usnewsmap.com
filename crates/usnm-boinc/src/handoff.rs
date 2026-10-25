@@ -189,11 +189,40 @@ pub async fn pull_with(
         got.push((name, bytes));
     }
     let request: boinc::Job = serde_json::from_slice(&got[1].1)?;
-    let staged = match scans {
+    let incoming: crate::Record = serde_json::from_slice(&got[2].1)?;
+    incoming.job.validate()?;
+    ensure!(
+        incoming.job.id == id && incoming.job.identity()? == id,
+        "the container's record is not job {id}"
+    );
+    ensure!(
+        request == incoming.job,
+        "the container's request and record differ"
+    );
+    // The journals first: a job the server has past reservation needs no page at all.
+    if target.join("record.json").exists() {
+        let old = load(root, id)?;
+        ensure!(
+            old.job == incoming.job && old.plan == incoming.plan && old.stamp == incoming.stamp,
+            "the server's journal holds a different entry for this job"
+        );
+        if old.stage != Stage::Reserved {
+            return Ok(Pulled::Already(old.stage));
+        }
+    }
+    let is_page = |bytes: &[u8]| {
+        bytes.len() as u64 == request.scan.bytes && boinc::sha256(bytes) == request.scan.sha256
+    };
+    // The page: the staged scan, else the copy the server already holds for this job (a
+    // retry after the staged scan was pruned), else the container's.
+    let mut page = match scans {
         Some(dir) => staged_page(dir, &request)?,
         None => None,
     };
-    got[0].1 = match staged {
+    if page.is_none() && target.join("page").is_file() {
+        page = Some(read(&target.join("page"), boinc::MAX_SCAN)?).filter(|b| is_page(b));
+    }
+    let page = match page {
         Some(bytes) => bytes,
         None => {
             let bytes = store
@@ -207,31 +236,10 @@ pub async fn pull_with(
             bytes
         }
     };
-    let incoming: crate::Record = serde_json::from_slice(&got[2].1)?;
-    incoming.job.validate()?;
     ensure!(
-        incoming.job.id == id && incoming.job.identity()? == id,
-        "the container's record is not job {id}"
-    );
-    ensure!(
-        request == incoming.job,
-        "the container's request and record differ"
-    );
-    let page = &got[0].1;
-    ensure!(
-        page.len() as u64 == request.scan.bytes && boinc::sha256(page) == request.scan.sha256,
+        is_page(&page),
         "the container's page is not the one exported (size or sha256 differ)"
     );
-    if target.join("record.json").exists() {
-        let old = load(root, id)?;
-        ensure!(
-            old.job == incoming.job && old.plan == incoming.plan && old.stamp == incoming.stamp,
-            "the server's journal holds a different entry for this job"
-        );
-        if old.stage != Stage::Reserved {
-            return Ok(Pulled::Already(old.stage));
-        }
-    }
     // Only a reservation that export completed can be submitted: a prepared entry's ledger
     // reservation may have been refused.
     ensure!(
@@ -247,7 +255,7 @@ pub async fn pull_with(
         record.unbundled = old.unbundled;
         record.error = old.error;
     }
-    crate::atomic(&target.join("page"), page)?;
+    crate::atomic(&target.join("page"), &page)?;
     crate::atomic(&target.join("request.json"), &got[1].1)?;
     crate::save(root, &record)?;
     Ok(Pulled::Reserved)

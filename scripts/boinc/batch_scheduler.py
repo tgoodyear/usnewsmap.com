@@ -685,13 +685,19 @@ class Transport:
             records.append(record)
         return records
 
+    @property
+    def push_destination(self):
+        """Where a queue-fed page's scan goes: the BOINC host when export runs there (#1116),
+        else the hand-off container."""
+        return "onprem" if "export" in self.onprem_steps else "container"
+
     def push_args(self):
         argv = self.config["push_command"] + [
             "--account", self.config["account"], "--scans-root", self.config["scans_root"],
             "--manifests-root", self.config["manifests_root"],
             "--manifest", self.config["manifests_root"].rstrip("/") + "/" + self.config["manifest"],
         ]
-        if "export" in self.onprem_steps and self.config.get("source") == "queue":
+        if self.push_destination == "onprem" and self.config.get("source") == "queue":
             # Export runs on the BOINC host, so the scans go there over the step command
             # (onprem-step.sh --target scans), not to the hand-off container (#1116).
             argv += ["--to-onprem", "--onprem-env", self.config["env"]]
@@ -702,6 +708,15 @@ class Transport:
     @timed("export")
     def export(self, pages, job_ids=()):
         queue = self.config.get("source") == "queue"
+        if queue:
+            # A page whose scan went to another destination (the export moved on-prem, or back,
+            # after it was pushed) is pushed again where this export reads it.
+            dest = self.push_destination
+            stale = sorted({page["scan_base"] for page in pages
+                            if page.get("scan_base") and page.get("pushed_to", "container") != dest})
+            if stale:
+                _, missing = self.push_pages(stale)
+                require(not missing, "a claimed page's scan is gone from the scan server; release it")
         if not queue:
             argv = self.push_args()
             for page in pages:
@@ -959,7 +974,8 @@ class QueueFeed:
 
     def restore(self):
         self.config["pages"] = [
-            {"page": page, "batch": claim["batch"], "scan": claim["scan"]}
+            {"page": page, "batch": claim["batch"], "scan": claim["scan"],
+             "scan_base": claim["scan_base"], "pushed_to": claim.get("pushed_to", "container")}
             for page, claim in sorted(self.claims.items()) if claim.get("scan")]
 
     @staticmethod
@@ -1001,6 +1017,7 @@ class QueueFeed:
             for page, claim in unpushed.items():
                 if claim["scan_base"] in found:
                     claim["scan"] = f"{root}/{found[claim['scan_base']]}"
+                    claim["pushed_to"] = getattr(self.transport, "push_destination", "container")
                 else:
                     claim["release"] = True
             self.persist()
