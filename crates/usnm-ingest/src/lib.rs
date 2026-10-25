@@ -23,6 +23,7 @@ pub mod merges;
 pub mod ocr_ja;
 pub mod onprem;
 pub mod page_language;
+pub mod pictures;
 pub mod places;
 pub mod progress;
 pub mod prune;
