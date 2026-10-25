@@ -14,6 +14,12 @@ import xml.etree.ElementTree as ET
 
 MAX_BYTES = 1024 * 1024
 MAX_COUNT = 10**12
+# The dashboard rejects a whole snapshot that lists more issues than this (pipeline.rs).
+MAX_ISSUES = 128
+# A catalog snapshot generated, or whose newest evidence was observed, longer ago than this is still
+# joined but flagged `catalog-frozen`. Keep it above the day or two a snapshot routinely trails its
+# newest evidence; --catalog-max-age-days overrides it.
+CATALOG_MAX_AGE_DAYS = 3
 
 
 def timestamp(value):
@@ -57,6 +63,33 @@ def observed(value, now):
     if result > now + timedelta(seconds=60):
         raise ValueError("Future source timestamp")
     return utc(result)
+
+
+def day_limit(text):
+    try:
+        days = int(text)
+    except ValueError:
+        days = 0
+    if not 1 <= days <= 365:
+        raise argparse.ArgumentTypeError("expected a whole number of days from 1 to 365")
+    return days
+
+
+def day_count(age):
+    days = max(age.days, 0)
+    return f"{days} day" if days == 1 else f"{days} days"
+
+
+def frozen_catalog_issue(generated_at, observed_at, now, max_age_days):
+    """Flag a snapshot that has stopped moving; the join would otherwise report it as current."""
+    stamps = [("generated", generated_at), ("newest evidence observed", observed_at)]
+    ages = [(label, value, now - timestamp(value)) for label, value in stamps if value is not None]
+    if not any(age > timedelta(days=max_age_days) for _, _, age in ages):
+        return None
+    described = "; ".join(f"{label} {value} ({day_count(age)} old)" for label, value, age in ages)
+    return {"code": "catalog-frozen",
+            "detail": f"Catalog snapshot {described}. The limit is {day_count(timedelta(days=max_age_days))}, "
+                      "so its counts describe past evidence, not current work."}
 
 
 def stage(identifier, label, amount, at, detail):
@@ -265,7 +298,7 @@ def snapshot(events, failures, now=None):
     }
 
 
-def add_catalog(value, path, now=None):
+def add_catalog(value, path, now=None, max_age_days=CATALOG_MAX_AGE_DAYS):
     """Join cataloged evidence counts without claiming a complete corpus inventory."""
     now = now or datetime.now(timezone.utc)
     with Path(path).open("rb") as stream:
@@ -275,8 +308,9 @@ def add_catalog(value, path, now=None):
     catalog = json.loads(body)
     if type(catalog["schema_version"]) is not int or catalog["schema_version"] != 1 or catalog["producer"] != "corpus-catalog":
         raise ValueError("Unsupported catalog snapshot")
-    observed(catalog["generated_at"], now)
+    generated = observed(catalog["generated_at"], now)
     at = observed(catalog["observed_at"], now) if catalog["observed_at"] is not None else None
+    frozen = frozen_catalog_issue(generated, at, now, max_age_days)
     runs = {key: count(catalog["runs"][key]) for key in ("total", "pages")}
     artifacts = {key: count(catalog["artifacts"][key])
                  for key in ("locations", "verified", "missing")}
@@ -342,7 +376,10 @@ def add_catalog(value, path, now=None):
     value["issues"] = [issue for issue in value["issues"] if issue["code"] != "partial-coverage"]
     value["issues"].append({"code": "partial-catalog",
                             "detail": "Catalog counts cover retained evidence only, not the corpus. Missing acceptance/import/index sources remain unknown."})
-    room = 128 - len(value["issues"])
+    if frozen:
+        # Before the catalog's own issues, which are cut to fit, so a full list cannot push it out.
+        value["issues"].append(frozen)
+    room = MAX_ISSUES - len(value["issues"])
     value["issues"].extend(issues[:room] if len(issues) <= room else
                            issues[:room - 1] + [{"code": "catalog-issues-truncated",
                                                 "detail": "Additional catalog issues omitted; query the catalog directly."}])
@@ -376,12 +413,15 @@ def main():
     parser.add_argument("--snapshot", required=True, type=Path)
     parser.add_argument("--catalog-snapshot", type=Path,
                         help="Optional bounded snapshot of the separate page-evidence catalog")
+    parser.add_argument("--catalog-max-age-days", type=day_limit, default=CATALOG_MAX_AGE_DAYS,
+                        help="Flag the catalog snapshot as frozen when it was generated, or its newest "
+                             f"evidence observed, more than this many days ago (default {CATALOG_MAX_AGE_DAYS})")
     args = parser.parse_args()
     events, failures = collect(args.ocr_url, args.boinc_url)
     value = snapshot(events, failures)
     if args.catalog_snapshot:
         try:
-            add_catalog(value, args.catalog_snapshot)
+            add_catalog(value, args.catalog_snapshot, max_age_days=args.catalog_max_age_days)
         except (OSError, ValueError, KeyError, TypeError, RecursionError):
             failures.append({"code": "catalog-unavailable",
                              "detail": "Page-evidence catalog snapshot could not be read or validated."})
