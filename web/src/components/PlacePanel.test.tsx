@@ -115,6 +115,42 @@ describe("Hit", () => {
     expect(screen.getByText(/^Demo page/).textContent).toBe("Demo page: not a real Library of Congress page.");
   });
 
+  it("marks a page that matched only in the Library of Congress text our OCR replaced, beside the OCR badge", () => {
+    render(
+      <ul>
+        <Hit
+          h={{
+            ...page,
+            ocr: { source: "usnm-tesseract", engine: "tesseract 5.5.1 deu" },
+            matched_in: ["loc_original"],
+            snippet_source: "loc_original",
+          }}
+          synthetic={false}
+        />
+      </ul>,
+    );
+    expect(screen.getByText(/^Our OCR/)).toBeTruthy();
+    const badge = screen.getByText(/^Library of Congress OCR/);
+    expect(badge.closest(".hit__meta")).not.toBeNull();
+    expect(badge.getAttribute("title")).toMatch(/^Our OCR text for this page doesn't contain the match\./);
+    expect(badge.getAttribute("title")).toMatch(/The snippet comes from that text\./);
+    expect(badge.textContent).toBe(`Library of Congress OCR. ${badge.getAttribute("title")}`);
+    expect(document.querySelectorAll(".badge")).toHaveLength(2);
+    expect(screen.queryByText(/^American Stories OCR/)).toBeNull();
+  });
+
+  it("adds no Library of Congress badge when our text matched, alone or with the original", () => {
+    for (const matched_in of [["loc"], ["loc", "loc_original"], ["loc", "american_stories", "loc_original"]] as const) {
+      render(
+        <ul>
+          <Hit h={{ ...page, matched_in: [...matched_in] }} synthetic={false} />
+        </ul>,
+      );
+      expect(screen.queryByText(/^Library of Congress OCR/)).toBeNull();
+      cleanup();
+    }
+  });
+
   it("adds nothing when the page matched in LoC's text, alone or with American Stories'", () => {
     for (const matched_in of [["loc"], ["loc", "american_stories"]] as const) {
       render(

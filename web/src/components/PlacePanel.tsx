@@ -3,7 +3,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { ApiError, type SearchParams } from "../api/client";
 import type { HitItem, HitSort } from "../api/types";
 import { CONGRESS_SITES, hitTitle } from "../lib/congress";
-import { AMERICAN_STORIES_BADGE, americanStoriesNote } from "../lib/matchSource";
+import { AMERICAN_STORIES_BADGE, LOC_ORIGINAL_BADGE, americanStoriesNote, locOriginalNote } from "../lib/matchSource";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
 import { placeHitsQuery } from "./placeHits";
@@ -101,6 +101,7 @@ export function PlacePanel({
 /** One page in the list: date, newspaper (or Congress document), snippets and the viewer link. */
 export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
   const asNote = americanStoriesNote(h);
+  const locNote = locOriginalNote(h);
   // A Congress page opens in its series' viewer, not LoC's, and the badge's
   // note is about LoC's newspapers (#229).
   const site = h.congress ? (CONGRESS_SITES[h.congress.series] ?? "its source") : null;
@@ -125,6 +126,15 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
             <span className="badge badge--ocr" title={asNote}>
               {AMERICAN_STORIES_BADGE}
               <span className="visually-hidden">. {asNote}</span>
+            </span>
+          </>
+        )}
+        {locNote && (
+          <>
+            {" "}
+            <span className="badge badge--ocr" title={locNote}>
+              {LOC_ORIGINAL_BADGE}
+              <span className="visually-hidden">. {locNote}</span>
             </span>
           </>
         )}
