@@ -330,6 +330,9 @@ def cmd_build(a):
         json.dump({"name": name, "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                    "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
+    # Every page OCR asked for: the quality feeder never deletes these scans.
+    with open(os.path.join(a.state, "ocr-docs.txt"), "a") as f:
+        f.write("".join(f"{r['doc_id']}\n" for r in rows))
     stamp = now.isoformat()
     for r in rows:
         t = tries.get(r["doc_id"])
@@ -367,7 +370,9 @@ def cmd_build_quality(a):
     damage and LoC's own doubt, round-robin over title and decade, the first --strata ranks),
     as a queue-quality-<stamp> manifest behind OCR's. Every row's lang is `eng`, so the fetcher
     files the scan in its buffer set, which the quality feeder empties once the page's unit has
-    shipped; the page's own language stays in usnm_quality."""
+    shipped; the page's own language stays in usnm_quality. Pages already in the scan
+    server's index are left out even if their scan is gone: the fetcher's `.done` markers keep
+    it from fetching a consumed buffer page again, so queueing one would only stall the pass."""
     import csv
     import subprocess
 
@@ -386,9 +391,10 @@ def cmd_build_quality(a):
                 on_server=on, pages=len(pairs))
             return
     queued = set()
-    if os.path.exists(docs_path):
-        with open(docs_path) as f:
-            queued = {line.strip() for line in f if line.strip()}
+    for path in (docs_path, os.path.join(a.state, "ocr-docs.txt")):
+        if os.path.exists(path):
+            with open(path) as f:
+                queued |= {line.strip() for line in f if line.strip()}
     p = subprocess.run(["psql", a.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
                         QUALITY_SQL.format(strata=int(a.strata))],
                        capture_output=True, text=True, timeout=3600)

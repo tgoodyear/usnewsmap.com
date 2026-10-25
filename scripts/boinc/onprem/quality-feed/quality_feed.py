@@ -473,7 +473,8 @@ def page_of(row, set_name, damage):
 def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path):
     """DELETE the buffer scans of the quality pass's pages whose chunks have shipped (the
     shipper removed the chunk from the outbox after submitting it). Only pages the quality
-    pass fetched; OCR's pages and the keep set are never touched. Returns how many."""
+    pass asked for and OCR didn't (the caller leaves OCR's manifests' pages out of
+    `quality_docs`); OCR's pages and the keep set are never touched. Returns how many."""
     deleted = read_lines(deleted_path)
     n = 0
     with open(done_path) as f:
@@ -503,6 +504,18 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path):
     return n
 
 
+def staged_from_db(dsn):
+    """doc_ids that already have a unit or a staging record in usnm_quality."""
+    import subprocess
+
+    p = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-At", "-c",
+                        "SELECT doc_id FROM quality.unit_pages UNION SELECT doc_id FROM quality.staging"],
+                       capture_output=True, text=True, timeout=1800)
+    if p.returncode:
+        raise RuntimeError(f"usnm_quality's staged pages: {p.stderr.strip()[-300:]}")
+    return {line for line in p.stdout.split("\n") if line}
+
+
 def cmd_follow(a):
     """The piggyback and the quality pass, as a loop: every page the fetcher writes
     (OCR's and the quality pass's) that no campaign has staged gets a unit, in fetch order;
@@ -521,15 +534,32 @@ def cmd_follow(a):
     skip_path = os.path.join(state, "skipped.txt")
     deleted_path = os.path.join(state, "deleted.txt")
     texts = Texts(a.curated)
+    absent_path = os.path.join(state, "absent.txt")
     while True:
+        # Pages with a unit or a staging record anywhere (usnm_quality), plus a static list of
+        # older campaigns' pages; with neither, stop rather than stage pages twice.
         staged = read_lines(a.staged) if a.staged else set()
+        if a.staged_dsn:
+            staged |= staged_from_db(a.staged_dsn)
+        elif not a.staged or not os.path.exists(a.staged):
+            sys.exit("follow needs --staged-dsn or an existing --staged list")
+        # Index lines whose scan was gone when last looked at, by fetch time: skipped until
+        # the page is fetched again.
+        absent = {}
+        if os.path.exists(absent_path):
+            with open(absent_path) as f:
+                for line in f:
+                    d, _, at = line.rstrip("\n").partition("\t")
+                    absent[d] = at
+        ocr_docs = read_lines(a.ocr_docs) if a.ocr_docs else set()
         done = read_lines(done_path) | read_lines(skip_path)
         quality_docs = read_lines(a.quality_docs) if a.quality_docs else set()
         if os.path.exists(done_path):
-            gone = delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path)
+            gone = delete_shipped(a, camp_dir, done_path, quality_docs - ocr_docs, deleted_path)
             if gone:
                 log("buffer scans deleted after shipping", pages=gone)
-        rows = [r for d, r in index_rows(a.scan_server).items() if d not in staged and d not in done]
+        rows = [r for d, r in index_rows(a.scan_server).items()
+                if d not in staged and d not in done and absent.get(d) != r.get("fetched_at", "")]
         rows.sort(key=lambda r: (r.get("fetched_at", ""), r["doc_id"]))
         room = max(0, a.max_pending - len(pending_chunks(camp_dir))) * a.chunk_pages
         todo = []
@@ -539,6 +569,9 @@ def cmd_follow(a):
             st = scan_set(a.scan_server, r)
             if st:
                 todo.append((r, st))
+            else:
+                with open(absent_path, "a") as f:
+                    f.write(f"{r['doc_id']}\t{r.get('fetched_at', '')}\n")
         if todo:
             damage = {}
             for (batch, bv) in sorted({(r["batch"], int(r.get("batch_version") or 1)) for r, _ in todo}):
@@ -586,7 +619,9 @@ def main(argv=None):
     w.add_argument("--scan-server", required=True)
     w.add_argument("--outbox", required=True)
     w.add_argument("--state", required=True)
-    w.add_argument("--staged", help="doc_ids other campaigns staged, one a line")
+    w.add_argument("--staged", help="doc_ids older campaigns staged, one a line")
+    w.add_argument("--staged-dsn", help="usnm_quality: pages with a unit or a staging record are left out")
+    w.add_argument("--ocr-docs", help="doc_ids OCR's manifests asked for (ocr_manifest.py): never deleted")
     w.add_argument("--quality-docs", help="doc_ids the quality pass fetched (ocr_manifest.py build-quality)")
     w.add_argument("--chunk-pages", type=int, default=200)
     w.add_argument("--max-pending", type=int, default=5)
