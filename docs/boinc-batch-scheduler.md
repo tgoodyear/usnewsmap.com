@@ -109,7 +109,7 @@ By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff c
 `--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through
 `step_command` instead, to `usnm-boinc-step --target handoff` on the on-prem BOINC host
 ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). `claim` takes its `release`
-with it. `texts-export` stays in Azure. With `--onprem-handoff export`, the controller's push
+with it. `texts-export` runs with `scripts/boinc/texts-export-onprem.sh` on the host with a local copy of curated. With `--onprem-handoff export`, the controller's push
 sends the claimed pages' scans straight to the BOINC host (`usnm-boinc-step --target scans
 --step receive`, a tar over the step key into `/srv/usnm-boinc/project/handoff-scans`), not to
 the hand-off container. Export reads them there, and the bridge's `submit-remote` takes each

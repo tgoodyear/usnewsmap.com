@@ -31,6 +31,11 @@ pub enum QualityCommands {
     TextsExport {
         #[arg(long)]
         curated_url: String,
+        /// Read the American Stories page shards from here (a local copy of `curated`, or
+        /// another store URL) instead of --curated-url; the ocr-local overlays still come from
+        /// --curated-url.
+        #[arg(long)]
+        american_stories_url: Option<String>,
         #[arg(long)]
         out_dir: PathBuf,
         #[arg(long)]
@@ -282,12 +287,14 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
         }
         QualityCommands::TextsExport {
             curated_url,
+            american_stories_url,
             out_dir,
             sample,
             doc_ids,
         } => {
             let s = x::stage::texts_export(&x::stage::TextsExportOptions {
                 curated_url,
+                american_stories_url,
                 out_dir,
                 sample,
                 doc_ids,
