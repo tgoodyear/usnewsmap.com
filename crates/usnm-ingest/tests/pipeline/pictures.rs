@@ -687,6 +687,78 @@ async fn writes_a_table_per_kind_and_marks_the_attempt_finished_last() {
     assert_eq!(p.quality.without_crop_by_batch.len(), 3);
 }
 
+/// The LCCNs of the real data that are not `sn` and eight digits (ten digits,
+/// eight digits, `sn` and ten digits) are placed, with their crop URLs, so the
+/// default limit on unplaced rows does not stop a run on them.
+#[tokio::test]
+async fn numeric_lccns_are_placed_under_the_default_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    dataset(&source);
+    // (batch, LCCN as the path spells it, frame)
+    let cases = [
+        ("nbu_harrison_ver01", "2010270504", "0176"),
+        ("nbu_carson_ver02", "46032385", "0021"),
+        ("sdhi_eagle_ver01", "sn2001063133", "0003"),
+        ("sdhi_eagle_ver01", "SN2001063133", "0004"),
+    ];
+    let rows: Vec<Src> = cases
+        .iter()
+        .map(|(batch, lccn, frame)| scan(batch, lccn, "00211102548", "1901122401", frame))
+        .collect();
+    put_file(
+        &source,
+        "cartoons",
+        "train-00000-of-00001.parquet",
+        &rows,
+        SNAPPY_DECIMAL,
+    );
+    let store = LocalStore::new(dir.path().join("curated"));
+    let opts = Options {
+        max_unplaced_pct: pictures::MAX_UNPLACED_PCT,
+        ..options(Source::Dir(source))
+    };
+    pictures::run(&store, &opts, at()).await.unwrap();
+
+    let p = finished(&store, REVISION).await.unwrap().unwrap();
+    let q = &p.kinds["cartoon"].quality;
+    assert_eq!(
+        (
+            q.rows,
+            q.unplaced_rows,
+            q.page_url_unplaced,
+            q.crop_url_unplaced
+        ),
+        (4, 0, 0, 0)
+    );
+    assert!(p.quality.without_crop_by_batch.is_empty());
+
+    let got = part(&store, &p.kinds["cartoon"].parts[0].path).await;
+    assert_eq!(got.len(), cases.len());
+    for (row, (batch, lccn, frame)) in got.iter().zip(cases) {
+        // Joined on in lower case, the crop with the path's spelling.
+        assert_eq!(
+            row.lccn.as_deref(),
+            Some(lccn.to_ascii_lowercase().as_str())
+        );
+        assert_eq!(row.date, Some(date(1901, 12, 24)));
+        assert_eq!(row.edition, Some(1));
+        assert_eq!(row.batch.as_deref(), Some(batch));
+        assert_eq!(row.reel.as_deref(), Some("00211102548"));
+        assert_eq!(row.frame.as_deref(), Some(frame));
+        let awardee = batch.split('_').next().unwrap();
+        assert_eq!(
+            row.crop_url.as_deref(),
+            Some(
+                format!(
+                    "https://tile.loc.gov/image-services/iiif/service:ndnp:{awardee}:batch_{batch}:data:{lccn}:00211102548:1901122401:{frame}/pct:10,20,30,40/pct:100/0/default.jpg"
+                )
+                .as_str()
+            )
+        );
+    }
+}
+
 /// The fixtures are what they claim: the cartoons and photos are Snappy, the
 /// comics are not, and `box` is a decimal of a different precision in each
 /// per-kind file and a double in the combined layout.

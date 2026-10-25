@@ -33,7 +33,8 @@ const MAX_BATCH_LEN: usize = 128;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scan {
     /// The title's LCCN as the path spells it (`sn85026051`; some paths have
-    /// `SN85038614`). [`Scan::lccn_key`] is the lower-case form to join on.
+    /// `SN85038614`, `2010270504` or `sn2001063133`). [`Scan::lccn_key`] is the
+    /// lower-case form to join on.
     pub lccn: String,
     /// The reel directory: digits (`00296027029`), `print`, or two segments
     /// (`no/reel`), joined with `/`.
@@ -187,12 +188,14 @@ fn issue_of(issue: &str) -> Option<(NaiveDate, u32)> {
     Some((date, edition))
 }
 
-/// Two letters and eight digits (`sn85026051`), in either case.
+/// An LCCN as the paths spell it: a prefix of up to three letters, then eight
+/// digits (`sn85026051`, `46032385`) or ten (`sn2001063133`, `2010270504`), in
+/// either case. The dataset has all four; `sn` and eight digits is by far the
+/// most common.
 fn is_lccn(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 10
-        && b[..2].iter().all(u8::is_ascii_alphabetic)
-        && b[2..].iter().all(u8::is_ascii_digit)
+    let letters = s.bytes().take_while(u8::is_ascii_alphabetic).count();
+    let digits = &s.as_bytes()[letters..];
+    letters <= 3 && matches!(digits.len(), 8 | 10) && digits.iter().all(u8::is_ascii_digit)
 }
 
 /// A directory name that cannot change the path it is put into.
@@ -334,6 +337,94 @@ mod tests {
         assert_eq!(darwin.scan.lccn, "SN85038614");
         assert_eq!(darwin.scan.lccn_key(), "sn85038614");
         assert!(darwin.tile_url().contains(":data:SN85038614:"));
+    }
+
+    #[test]
+    fn places_the_lccns_that_are_not_sn_and_eight_digits() {
+        // The shapes the dataset has besides `sn` and eight digits: ten digits
+        // (`nbu_harrison_ver01`), eight digits (`nbu_carson_ver02`), `sn` and
+        // ten digits (`sdhi_eagle_ver01`), each with the spelling the path has.
+        for (batch, lccn) in [
+            ("nbu_harrison_ver01", "2010270504"),
+            ("nbu_carson_ver02", "46032385"),
+            ("sdhi_eagle_ver01", "sn2001063133"),
+            ("sdhi_eagle_ver01", "SN2001063133"),
+            // Three letters are within the form, though no batch is known to use them.
+            ("dlc_abc_ver01", "agr12345678"),
+        ] {
+            let crop = OldCrop::parse(&old(
+                &format!("{batch}%2Fdata%2F{lccn}%2F00211102548%2F1901122401%2F0176.jp2"),
+                TAIL,
+            ))
+            .unwrap_or_else(|| panic!("{lccn}"));
+            assert_eq!(crop.scan.lccn, lccn);
+            assert_eq!(crop.scan.lccn_key(), lccn.to_ascii_lowercase());
+            let awardee = batch.split('_').next().unwrap();
+            assert_eq!(
+                crop.tile_url(),
+                format!(
+                    "{TILE_IIIF}service:ndnp:{awardee}:batch_{batch}:data:{lccn}:00211102548:1901122401:0176/{TAIL}"
+                )
+            );
+
+            let page = scan_of_page_url(&format!(
+                "https://chroniclingamerica.loc.gov/data/batches/{batch}/data/{lccn}/00211102548/1901122401/0176.jp2"
+            ))
+            .unwrap_or_else(|| panic!("{lccn}"));
+            assert_eq!(page, crop.scan);
+            assert_eq!(page.date, NaiveDate::from_ymd_opt(1901, 12, 24).unwrap());
+            assert!(crop.is_of(Some(batch), Some(&page)));
+        }
+
+        // A two-directory reel after a numeric LCCN: the LCCN is still the one
+        // before the reel.
+        let s =
+            scan_of_page_url("https://example.test/data/2010270504/no/reel/1901122401/0176.jp2")
+                .unwrap();
+        assert_eq!(
+            (s.lccn.as_str(), s.reel.as_str()),
+            ("2010270504", "no/reel")
+        );
+    }
+
+    #[test]
+    fn only_the_forms_of_an_lccn_are_one() {
+        for ok in [
+            "sn85026051",
+            "SN85038614",
+            "sn2001063133",
+            "2010270504",
+            "46032385",
+            "n78890351",
+            "agr12345678",
+        ] {
+            assert!(is_lccn(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "sn",
+            "xx",
+            "ab",
+            "no",
+            "print",
+            // Seven, nine and eleven digits (a reel is eleven), a fourth
+            // letter, letters or a space among the digits.
+            "sn8502605",
+            "sn850260511",
+            "00296027029",
+            "1234567",
+            "123456789",
+            "abcd85026051",
+            "sn8502605a",
+            "s85026051n",
+            "sn 85026051",
+            "sn-85026051",
+            "sn85026051.jp2",
+            // Not ASCII.
+            "sn850260\u{0661}",
+        ] {
+            assert!(!is_lccn(bad), "{bad}");
+        }
     }
 
     #[test]
