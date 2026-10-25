@@ -111,6 +111,28 @@ class HeadOfMain(unittest.TestCase):
         self.assertTrue(self.current(sha, main, "--unless-changed", "image"))
         self.assertFalse(self.current(sha, main, "--unless-changed", "image,ocr_worker"))
 
+    @unittest.skipUnless(CARGO, "no cargo")
+    def test_an_older_worker_commit_releases_when_main_s_newer_commits_change_neither_build(self):
+        # The worker release (#1074): the same race as the images', for the worker and the dashboard.
+        sha = self.touch("crates/usnm-ocr-worker/src/main.rs")
+        self.touch("docs/notes.md")
+        main = self.touch("crates/usnm-api/src/main.rs")
+        self.assertTrue(self.current(sha, main, "--unless-changed", "ocr_worker,ocr_dash"))
+
+    @unittest.skipUnless(CARGO, "no cargo")
+    def test_a_newer_dashboard_change_releases_itself(self):
+        sha = self.touch("crates/usnm-ocr-worker/src/main.rs")
+        main = self.touch("crates/usnm-ocr-dash/src/main.rs")
+        self.assertFalse(self.current(sha, main, "--unless-changed", "ocr_worker,ocr_dash"))
+        # The dashboard alone starts the release job, so its flag has to be listed.
+        self.assertTrue(self.current(sha, main, "--unless-changed", "ocr_worker"))
+
+    @unittest.skipUnless(CARGO, "no cargo")
+    def test_a_newer_tesseract_image_change_releases_itself(self):
+        sha = self.touch("crates/usnm-ocr-worker/src/main.rs")
+        main = self.touch("ocr/engines/tesseract/notes.txt")
+        self.assertFalse(self.current(sha, main, "--unless-changed", "ocr_worker,ocr_dash"))
+
     def test_a_commit_main_does_not_descend_from_is_not_current(self):
         sha = self.touch("crates/usnm-api/src/main.rs")
         git(self.repo, "reset", "-q", "--hard", self.base)
