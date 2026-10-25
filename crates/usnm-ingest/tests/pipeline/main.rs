@@ -15,6 +15,7 @@ mod finish;
 mod latin;
 mod layout;
 mod overlay;
+mod pictures;
 mod release;
 mod versions;
 mod writer;
