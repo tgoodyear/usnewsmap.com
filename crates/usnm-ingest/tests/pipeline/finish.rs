@@ -590,27 +590,34 @@ fn place_periods(spec: &[(&str, Option<&str>, Option<&str>)]) -> Vec<PlacePeriod
 
 /// The titles the real-writer finish moves between places (#1066), by the
 /// dates of their pages as the test lays them out. sn99000002's pages are
-/// dated 1839 to 1841: they are in Illinois's place (P00001) for the first
-/// and last half-years and in the title's own, New York's, between, so P00001
-/// has two periods and the search has a range with both a start and an end.
-/// sn99000003's pages are dated 1895 to 1897: in Georgia's place (P00004) up
-/// to the middle of 1896 and then in its own, one cut, as a title that moved
-/// once has.
+/// dated 1839 to 1841: they are in Illinois's place (P00001) before the first
+/// page of July 1839 and from the first page of July 1841, and in the title's
+/// own, New York's, between, so P00001 has two periods and the search has a
+/// range with both a start and an end. sn99000003's pages are dated 1895 to
+/// 1897: in Georgia's place (P00004) up to its first page of July 1896 and
+/// then in its own, one cut, as a title that moved once has.
+///
+/// The pages are weekly and the cuts are put against them. The second and
+/// third periods of sn99000002 start on the day of a page, so a range that
+/// began a day late, or that counted its last day in the next range too,
+/// would put a page in the wrong period. sn99000003's starts the day after a
+/// page, so a range that began a day early would. A cut in the middle of a
+/// week, as a half-year's first day is, shows none of these.
 fn moved() -> [(&'static str, Vec<PlacePeriod>); 2] {
     [
         (
             "sn99000002",
             place_periods(&[
-                ("P00001", None, Some("1839-06-30")),
-                ("P00002", Some("1839-07-01"), Some("1841-06-30")),
-                ("P00001", Some("1841-07-01"), None),
+                ("P00001", None, Some("1839-07-05")),
+                ("P00002", Some("1839-07-06"), Some("1841-07-02")),
+                ("P00001", Some("1841-07-03"), None),
             ]),
         ),
         (
             "sn99000003",
             place_periods(&[
-                ("P00004", None, Some("1896-06-30")),
-                ("P00003", Some("1896-07-01"), None),
+                ("P00004", None, Some("1896-07-04")),
+                ("P00003", Some("1896-07-05"), None),
             ]),
         ),
     ]
