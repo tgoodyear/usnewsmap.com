@@ -97,7 +97,7 @@ pub(crate) struct PublishStagedArgs {
     #[arg(long)]
     dry_run: bool,
     /// Copy the version the lake's `current.json` already names, instead of
-    /// a release the lake still has the rollback of. Refuses unless
+    /// a release the lake hasn't promoted. Refuses unless
     /// `current.json` names this release's own version and indexes; writes
     /// neither the pending pointer nor `current.json`.
     #[arg(long)]

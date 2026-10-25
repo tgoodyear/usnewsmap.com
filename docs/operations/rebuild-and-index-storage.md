@@ -260,7 +260,7 @@ Meanwhile the finish rebuilds every document the release sent, without sending i
 
 #### Restoring serving to Azure
 
-After Phase 4 of [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) nothing in Azure serves. The index account, its endpoint and the API and searcher apps are deleted, and the lake's `current.json` names the version that serves on-prem. A disaster recovery ([09 §9.6](../design/09-operations-security-cost.md#96-backup-and-disaster-recovery)) provisions them again and copies that version back. `publish` can't do the copy: it refuses unless `current.json` names the release's rollback, and `current.json` now names the release's own version. `restore` is the same copy for that case (#1061). Run it as `publish` is run, as `usnm` in the release container, with `DIR` the run directory that built the version: its `state.json`, `reference/index-storage-pending.json` and `qw/`, which are kept on `tank` for this. As for `publish`, the copy needs the container's grants and the index account open to the node IPs (`USNM_ONPREM_RELEASE` with `USNM_INDEX_STORAGE`), so provision with both set.
+After Phase 4 of [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) nothing in Azure serves. The index account, its endpoint and the API and searcher apps are deleted, and the lake's `current.json` names the version that serves on-prem. A disaster recovery ([09 §9.6](../design/09-operations-security-cost.md#96-backup-and-disaster-recovery)) provisions them again and copies that version back. `publish` can't do the copy: it refuses unless `current.json` names the release's rollback, and after Phase 4 `current.json` names the release's own version. `restore` is the same copy for that case (#1061). Run it as `publish` is run, as `usnm` in the release container, with `DIR` the run directory that built the version: its `state.json`, `reference/index-storage-pending.json` and `qw/`, which must be kept on `tank` for this. As for `publish`, the copy needs the container's grants and the index account open to the node IPs (`USNM_ONPREM_RELEASE` with `USNM_INDEX_STORAGE`), so provision with both set.
 
 ```sh
 scripts/onprem/release.sh --run-dir "$R" --step restore --dry-run
@@ -278,7 +278,7 @@ scripts/onprem/release.sh --run-dir "$R" --step ready --app-url "$APP_URL" --ind
 
 Limits:
 
-- The restore reads the indexes only from `DIR/qw`, so a version whose indexes sit in several run directories can't be restored from one. That matters once releases have a delta mode (ADR-0027 decision 8): the restore then needs every index its pointer names under the one `--local-index-root`, and refuses, naming the missing metastore, if one isn't there.
+- The restore reads the indexes only from `DIR/qw`, so a version whose indexes sit in several run directories can't be restored from one. Once releases have a delta mode (ADR-0027 decision 8), the restore needs every index its pointer names under the one `--local-index-root`, and refuses, naming the missing metastore, if one isn't there.
 - It copies the version's index and its own reference snapshot, nothing else. The lake's `current.json`, catalog and other snapshots must still be in Azure. Once Phase 5 moves reference on-prem, the Azure lake no longer has a `current.json` that names the serving version, so Phase 5's restore point has to cover reference too.
 - It doesn't write Cosmos. The release host records each run in `index_runs` when it releases (ADR-0027 settled decision 5).
 

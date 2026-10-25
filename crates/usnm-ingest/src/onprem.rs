@@ -628,7 +628,7 @@ fn ensure_restorable(
     if name != version {
         if serving["index_version"] == pointer["previous_version"] {
             bail!(
-                "the lake serves {name}, this release's rollback, not {version}: a restore copies the version the lake serves; publish the release without --restore to move the lake to {version}"
+                "the lake serves {name}, this release's rollback, not {version}: a restore copies the version the lake serves; publish the release without --restore to copy {version} to Azure"
             );
         }
         bail!(
