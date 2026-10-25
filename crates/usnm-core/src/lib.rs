@@ -12,6 +12,7 @@
 //! - [`digest`]: lowercase hex and sha256 of bytes and files
 //! - [`ja`]: Japanese tokens and folding for our own OCR (04 §4.8, #139)
 //! - [`ocr_variants`]: the spellings OCR commonly gives a word, for `word~ocr` (06 §6.4, #124)
+//! - [`fractions`]: a number and a fraction glyph, also searched as OCR reads them with a slash (06 §6.4, #1067)
 //! - [`lang`]: MARC, ISO 639-3 and word-list language codes; with feature `damage`, the word lists (12 §12.5, #296)
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`query_language`]: the language of a query's words, for its baseline (06 §6.3.3, #237)
@@ -31,6 +32,7 @@ pub mod cube;
 pub mod damage;
 pub mod decade;
 pub mod digest;
+pub mod fractions;
 pub mod ids;
 pub mod ja;
 pub mod lang;
