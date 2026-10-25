@@ -12,7 +12,7 @@ import re
 import sys
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[4] / "ja-ocr"))
+sys.path.insert(0, str(HERE.parents[4] / "ocr" / "ja-ocr"))
 import american_stories as ams  # noqa: E402
 import quality  # noqa: E402
 

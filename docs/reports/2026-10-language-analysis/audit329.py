@@ -173,7 +173,7 @@ def summarize(pages, flags):
 
 
 def score(source):
-    sys.path.insert(0, str(ROOT / "ja-ocr"))
+    sys.path.insert(0, str(ROOT / "ocr" / "ja-ocr"))
     import damage_v2 as metric
 
     selected, populations = selection(source)
