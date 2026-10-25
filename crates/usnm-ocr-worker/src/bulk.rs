@@ -17,7 +17,9 @@
 //! written to `<name>.part`, checked against the listed size and sha256, and
 //! renamed; a finished archive is skipped next time. A 429, a 403 or an HTML
 //! page instead of the archive drops the global budget to the slow rate and
-//! ends the run with an error, so a block is reported, never pressed on.
+//! ends the run with an error, so a block is reported, never pressed on. A
+//! run doesn't start, and starts no further archive, while the global budget
+//! is slowed, whichever process LoC pushed back on.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -366,6 +368,19 @@ async fn write_status(out: &Path, s: &Status) {
     }
 }
 
+/// An error once the host's global LoC pacer has been slowed (a push-back to any
+/// process): bulk OCR starts no archive until an operator's `loc-pacer --reset`.
+fn not_slowed(global: &GlobalPacer) -> anyhow::Result<()> {
+    if let Some(slowed) = global.state()?.slowed {
+        bail!(
+            "the global LoC pacer has been slowed since {} ({}); bulk OCR waits for `loc-pacer --reset`",
+            slowed.at,
+            slowed.why
+        );
+    }
+    Ok(())
+}
+
 pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<Status> {
     tokio::fs::create_dir_all(&opts.out).await?;
     // One bulk process at a time.
@@ -385,13 +400,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
     let global = Arc::new(GlobalPacer::new(opts.global_pacer.clone()));
     // After a push-back the budget is at the slow rate for every process; the bulk
     // archives can wait for an operator's reset rather than add to it.
-    if let Some(slowed) = global.state()?.slowed {
-        bail!(
-            "the global LoC pacer has been slowed since {} ({}); bulk OCR waits for `loc-pacer --reset`",
-            slowed.at,
-            slowed.why
-        );
-    }
+    not_slowed(&global)?;
     let last = last_from_stamp(&opts.out.join(".last-request"));
     let f = Fetcher {
         http: reqwest::Client::builder()
@@ -476,6 +485,13 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         }
         if opts.limit.is_some_and(|l| s.fetched_this_run >= l) {
             s.state = "limit".into();
+            break;
+        }
+        // A push-back to any process (the scan fetcher's, say) ends the run before its
+        // next archive, as one to this run's own requests does.
+        if let Err(e) = not_slowed(&global) {
+            s.state = "slowed".into();
+            result = Err(e);
             break;
         }
         // Downloads restart rather than resume: a partial from an earlier run
@@ -583,6 +599,18 @@ mod tests {
         );
         std::fs::write(&stamp, "garbage").unwrap();
         assert!(last_from_stamp(&stamp).is_none());
+    }
+
+    #[test]
+    fn a_slowed_pacer_stops_the_next_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = GlobalPacer::new(dir.path().join("pacer.json"));
+        assert!(not_slowed(&g).is_ok());
+        g.slow_down("HTTP 503 (challenge page)");
+        let e = not_slowed(&g).unwrap_err().to_string();
+        assert!(e.contains("HTTP 503 (challenge page)"), "{e}");
+        g.reset().unwrap();
+        assert!(not_slowed(&g).is_ok());
     }
 
     #[test]

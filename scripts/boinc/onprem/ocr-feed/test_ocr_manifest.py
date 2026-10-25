@@ -55,5 +55,58 @@ class PendingTest(unittest.TestCase):
         self.assertEqual((r["lang"], r["decision"], r["damage_rate"]), ("eng", "detected", 0.0))
 
 
+def ranked(doc, batch, lccn, decade, rank):
+    return [doc, batch, "1", "detected", "0.5", lccn, decade, str(rank)]
+
+
+class PickIssuesTest(unittest.TestCase):
+    rows = [
+        # Rank 1 of each stratum, worst first: an issue of title a (two pages), one of b.
+        ranked("a_1900-01-01_ed-1_seq-1", "x_a_ver01", "a", "1900", 1),
+        ranked("a_1900-01-01_ed-1_seq-2", "x_a_ver01", "a", "1900", 1),
+        ranked("b_1910-05-01_ed-1_seq-1", "x_b_ver01", "b", "1910", 1),
+        # Rank 2: the next issue of each.
+        ranked("a_1901-02-02_ed-1_seq-1", "x_a_ver01", "a", "1900", 2),
+        ranked("b_1911-05-01_ed-2_seq-1", "x_b_ver01", "b", "1910", 2),
+        ranked("b_1911-05-01_ed-2_seq-2", "x_b_ver01", "b", "1910", 2),
+    ]
+
+    def docs(self, picked):
+        return [r[0] for r in picked]
+
+    def test_whole_issues_round_robin(self):
+        got = m.pick_issues(self.rows, set(), set(), strata=1, max_pages=100)
+        self.assertEqual(self.docs(got), ["a_1900-01-01_ed-1_seq-1", "a_1900-01-01_ed-1_seq-2",
+                                          "b_1910-05-01_ed-1_seq-1"])
+        got = m.pick_issues(self.rows, set(), set(), strata=2, max_pages=100)
+        self.assertEqual(len(got), 6)
+
+    def test_a_done_issue_gives_way_and_done_pages_are_left_out(self):
+        queued = {"b_1910-05-01_ed-1_seq-1"}
+        index = {("x_a_ver01", "a_1900-01-01_ed-1_seq-2")}
+        got = m.pick_issues(self.rows, queued, index, strata=1, max_pages=100)
+        self.assertEqual(self.docs(got), ["a_1900-01-01_ed-1_seq-1", "b_1911-05-01_ed-2_seq-1",
+                                          "b_1911-05-01_ed-2_seq-2"])
+
+    def test_an_issue_is_never_split_by_the_cap(self):
+        got = m.pick_issues(self.rows, set(), set(), strata=2, max_pages=4)
+        # a's first issue (2), b's first (1), then a's second (1) fits; b's second (2) doesn't.
+        self.assertEqual(len(got), 4)
+        self.assertNotIn("b_1911-05-01_ed-2_seq-1", self.docs(got))
+        got = m.pick_issues(self.rows, set(), set(), strata=1, max_pages=1)
+        self.assertEqual(self.docs(got), ["a_1900-01-01_ed-1_seq-1", "a_1900-01-01_ed-1_seq-2"])
+
+    def test_batches_file(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
+            f.write("# probe\nak_goat_ver01\t200\t2026-10-25T20:51:39Z\nak_albatross_ver01\t403\tt\n"
+                    "curiv_joshuaTree_ver01\n")
+        self.assertEqual(m.read_batches(f.name), {"ak_goat_ver01", "curiv_joshuaTree_ver01"})
+        with open(f.name, "w") as g:
+            g.write("x'; drop table y; --\n")
+        with self.assertRaises(SystemExit):
+            m.read_batches(f.name)
+
+
 if __name__ == "__main__":
     unittest.main()
