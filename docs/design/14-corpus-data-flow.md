@@ -206,10 +206,12 @@ only loopback queries; use an administrative SSH tunnel rather than opening a
 public port.
 
 `data_flow_observer.py` joins the catalog snapshot to local OCR and public BOINC
-counters. Its optional five-minute timer writes
-`/var/lib/usnm-data-flow/pipeline.json`; the dashboard reads that file and serves
-`/api/pipeline.json`. A fresh aggregate refresh does not refresh old page
-observations. The timer does not ingest page records or allocate work.
+counters. `usnm-data-flow-observer.timer` (in `scripts/ocr-node/`) runs it every
+five minutes and writes `/var/lib/usnm-data-flow/pipeline.json`; the dashboard
+reads that file and serves `/api/pipeline.json`. Nothing else refreshes the file,
+so a host installed without the timer shows a stale panel. A fresh aggregate
+refresh does not refresh old page observations. The timer does not ingest page
+records or allocate work.
 
 The existing Cold-tier scan archive is a separate recovery copy, not the public
 BOINC input mirror. Its documented complete verification at
