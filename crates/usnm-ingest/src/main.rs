@@ -7,7 +7,9 @@ mod cli;
 
 use clap::{Parser, Subcommand};
 use cli::common::{state, Stores};
-use cli::{batches, congress, curate, ocr, onprem, pictures, prune, release, run, searchlog_copy, titles};
+use cli::{
+    batches, congress, curate, ocr, onprem, pictures, prune, release, run, searchlog_copy, titles,
+};
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::owner_id;
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
