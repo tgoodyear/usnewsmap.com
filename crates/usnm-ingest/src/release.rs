@@ -1088,7 +1088,10 @@ impl Release {
             }
             // The catalog the finish plans with must be the one the index's
             // documents were written from.
-            match sink.title_fields(&r.run.new_index).await? {
+            match sink
+                .title_fields(&r.run.new_index, &catalog.period_cuts())
+                .await?
+            {
                 Some(held) => finish::check_titles(&catalog, &r.run.new_index, &held)?,
                 None => tracing::warn!(
                     "this sink can't say what the index's documents carry from the catalog; not \
@@ -2017,7 +2020,7 @@ impl Release {
             for (p, text) in latin {
                 lease.check()?;
                 let title = catalog.title(&p.key.lccn).context("title")?;
-                let place = catalog.place(&title.place_id).context("place")?;
+                let place = catalog.place_on(title, p.key.date).context("place")?;
                 // With the version's decade field, and a decade at a time
                 // in a partitioned base, like LoC's pages.
                 let mut d = ocr_ja::latin_doc(p, text, title, place, format);
@@ -2366,7 +2369,7 @@ impl Release {
         let mut docs = Vec::new();
         for p in overlay.pages.iter().filter(|p| p.indexable()) {
             let title = catalog.title(&p.key.lccn).context("title")?;
-            let place = catalog.place(&title.place_id).context("place")?;
+            let place = catalog.place_on(title, p.key.date).context("place")?;
             let mut doc = ocr_ja::ja_doc(p, title, place, analyzer);
             if let Some(by_page) = &by_page {
                 Moves::annotate_as_counted(&mut doc, title, by_page);
@@ -2431,26 +2434,29 @@ impl Release {
                 let title = catalog
                     .title(&lccn)
                     .with_context(|| format!("title `{lccn}` is missing from the catalog"))?;
-                let series = baselines.entry(title.place_id.clone()).or_default();
-                let mut language_series = language_set(title).map(|set| {
-                    by_language
-                        .entry(set)
-                        .or_default()
-                        .entry(title.place_id.clone())
-                        .or_default()
-                });
                 let total = title_pages.entry(lccn.clone()).or_default();
-                for (day, pages) in days {
-                    if pages > 0 {
-                        title_days.add(&lccn, day);
+                // A title that moved has its days in more than one place.
+                for (place_id, days) in by_place(title, days) {
+                    let series = baselines.entry(place_id.to_owned()).or_default();
+                    let mut language_series = language_set(title).map(|set| {
+                        by_language
+                            .entry(set)
+                            .or_default()
+                            .entry(place_id.to_owned())
+                            .or_default()
+                    });
+                    for (day, pages) in days {
+                        if pages > 0 {
+                            title_days.add(&lccn, day);
+                        }
+                        *series.entry(day).or_default() += pages;
+                        if let Some(s) = language_series.as_mut() {
+                            *s.entry(day).or_default() += pages;
+                        }
+                        *total += u64::from(pages);
+                        first = first.min(day);
+                        last = last.max(day);
                     }
-                    *series.entry(day).or_default() += pages;
-                    if let Some(s) = language_series.as_mut() {
-                        *s.entry(day).or_default() += pages;
-                    }
-                    *total += u64::from(pages);
-                    first = first.min(day);
-                    last = last.max(day);
                 }
             }
         }
@@ -2459,8 +2465,9 @@ impl Release {
         }
         for (lccn, day, extra) in dedup.excess() {
             let title = catalog.title(lccn).context("title")?;
+            let place_id = title.place_id_on(date_from_day(day));
             let pages = baselines
-                .get_mut(&title.place_id)
+                .get_mut(place_id)
                 .and_then(|s| s.get_mut(&day))
                 .context("a duplicated page outside the baselines")?;
             *pages -= extra;
@@ -2468,7 +2475,7 @@ impl Release {
             if let Some(set) = language_set(title) {
                 *by_language
                     .get_mut(&set)
-                    .and_then(|places| places.get_mut(&title.place_id))
+                    .and_then(|places| places.get_mut(place_id))
                     .and_then(|s| s.get_mut(&day))
                     .context("a duplicated page outside the language baselines")? -= extra;
             }
@@ -2485,8 +2492,9 @@ impl Release {
         }) {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let day = day_number(p.key.date);
+            let place_id = title.place_id_on(p.key.date);
             *baselines
-                .entry(title.place_id.clone())
+                .entry(place_id.to_owned())
                 .or_default()
                 .entry(day)
                 .or_default() += 1;
@@ -2496,7 +2504,7 @@ impl Release {
                 *by_language
                     .entry(set)
                     .or_default()
-                    .entry(title.place_id.clone())
+                    .entry(place_id.to_owned())
                     .or_default()
                     .entry(day)
                     .or_default() += 1;
@@ -2511,7 +2519,8 @@ impl Release {
             .iter()
             .filter(|t| title_pages.contains_key(&t.lccn))
             .collect();
-        let place_ids: BTreeSet<&str> = titles.iter().map(|t| t.place_id.as_str()).collect();
+        // A title that moved has each of its places in the snapshot.
+        let place_ids: BTreeSet<&str> = titles.iter().flat_map(|t| t.place_ids()).collect();
         let places: Vec<&Place> = catalog
             .places
             .iter()
@@ -2950,6 +2959,21 @@ impl TitleDays {
     }
 }
 
+/// A title's days with pages, split by the place the pages of each day are
+/// in (`Title::place_id_on`): one place, its own, unless the title moved.
+fn by_place(title: &Title, days: BTreeMap<u32, u32>) -> Vec<(&str, BTreeMap<u32, u32>)> {
+    if title.place_periods.is_empty() {
+        return vec![(title.place_id.as_str(), days)];
+    }
+    let mut by: BTreeMap<&str, BTreeMap<u32, u32>> = BTreeMap::new();
+    for (day, pages) in days {
+        by.entry(title.place_id_on(date_from_day(day)))
+            .or_default()
+            .insert(day, pages);
+    }
+    by.into_iter().collect()
+}
+
 /// The languages a title lists, sorted and without repeats; `None` when it
 /// lists none (no language filter matches its pages).
 fn language_set(title: &Title) -> Option<Vec<String>> {
@@ -2987,6 +3011,7 @@ mod tests {
             place_id: "P1".into(),
             state: "IL".into(),
             languages: vec!["ger".into(), "eng".into(), "ger".into(), String::new()],
+            place_periods: vec![],
             extra: BTreeMap::new(),
         };
         assert_eq!(
@@ -2995,6 +3020,128 @@ mod tests {
         );
         t.languages = vec![];
         assert_eq!(language_set(&t), None);
+    }
+
+    /// sn1 was in P1 (Maine) up to 1833-11-13 and is in P2 (New Hampshire).
+    fn moved() -> (Title, Catalog) {
+        let place = |id: &str, ordinal, state: &str| Place {
+            id: id.into(),
+            ordinal,
+            name: id.into(),
+            state: state.into(),
+            lat: 43.0,
+            lon: -71.0,
+            precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
+        };
+        let title: Title = serde_json::from_value(json!({
+            "lccn": "sn1", "name": "sn1", "ordinal": 1, "place_id": "P2", "state": "NH",
+            "languages": ["eng"],
+            "place_periods": [
+                {"place_id": "P1", "to": "1833-11-13"},
+                {"place_id": "P2", "from": "1833-11-14"},
+            ],
+        }))
+        .unwrap();
+        let catalog = Catalog::new(
+            vec![title.clone()],
+            vec![place("P1", 3, "ME"), place("P2", 4, "NH")],
+        )
+        .unwrap();
+        (title, catalog)
+    }
+
+    #[test]
+    fn a_titles_days_are_split_by_the_place_they_are_in() {
+        let (title, _) = moved();
+        let day = |d: &str| day_number(d.parse().unwrap());
+        let days = BTreeMap::from([
+            (day("1828-05-14"), 4),
+            (day("1833-11-13"), 8),
+            (day("1833-11-14"), 5),
+            (day("1857-04-01"), 2),
+        ]);
+        let got = by_place(&title, days.clone());
+        assert_eq!(
+            got,
+            [
+                (
+                    "P1",
+                    BTreeMap::from([(day("1828-05-14"), 4), (day("1833-11-13"), 8)])
+                ),
+                (
+                    "P2",
+                    BTreeMap::from([(day("1833-11-14"), 5), (day("1857-04-01"), 2)])
+                ),
+            ]
+        );
+        // A title in one place has its days there, as they are.
+        let mut one = title;
+        one.place_periods.clear();
+        assert_eq!(by_place(&one, days.clone()), [("P2", days)]);
+    }
+
+    #[test]
+    fn a_pages_document_has_the_place_and_state_of_its_date() {
+        let (title, catalog) = moved();
+        let format = DocFormat {
+            decade: false,
+            analyzer: Analyzer::LATEST,
+            text: TextLayout::Separate,
+        };
+        let doc = |date: &str| {
+            let key = usnm_core::ids::PageKey::new("sn1", date.parse().unwrap(), 1, 2).unwrap();
+            let place = catalog.place_on(&title, key.date).unwrap();
+            let main = main_doc(
+                &key,
+                "b",
+                "the text",
+                &title,
+                place,
+                SideTexts::default(),
+                format,
+            );
+            let ja_page = ocr_ja::JaPage::for_test(key, "b", "empty", "日本語");
+            let ja = ocr_ja::ja_doc(&ja_page, &title, place, Analyzer::LATEST);
+            (main, ja)
+        };
+        for (date, id, shard, state) in [
+            ("1828-05-14", "P1", 3, "ME"),
+            ("1833-11-13", "P1", 3, "ME"),
+            ("1833-11-14", "P2", 4, "NH"),
+            ("1857-04-01", "P2", 4, "NH"),
+        ] {
+            let (main, ja) = doc(date);
+            for d in [main, ja] {
+                assert_eq!(
+                    (
+                        d["place_id"].as_str(),
+                        d["place_shard"].as_u64(),
+                        d["state"].as_str()
+                    ),
+                    (Some(id), Some(shard), Some(state)),
+                    "{date}"
+                );
+                // Only the place and state: the sort key is the title's.
+                assert_eq!(d["sort_key"].as_u64().unwrap() >> 32, 1);
+            }
+        }
+        // A title in one place is in its own state, as before.
+        let mut one = title.clone();
+        one.place_periods.clear();
+        let key = usnm_core::ids::PageKey::new("sn1", "1828-05-14".parse().unwrap(), 1, 2).unwrap();
+        let place = catalog.place("P1").unwrap();
+        let d = main_doc(
+            &key,
+            "b",
+            "the text",
+            &one,
+            place,
+            SideTexts::default(),
+            format,
+        );
+        assert_eq!(d["state"], "NH");
     }
 
     #[test]

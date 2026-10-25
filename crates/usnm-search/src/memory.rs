@@ -5,12 +5,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
-use usnm_core::ocr_variants;
 use usnm_core::params::Filters;
 use usnm_core::query::{wildcard_matches, Node, Term};
 use usnm_core::text::{fold, index_tokens, tokenize, Analyzer, MAX_TOKEN_CHARS, USNM_TEXT};
 use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
+use usnm_core::{fractions, ocr_variants};
 
 use crate::snippet::{matched_in, opening_snippet, page_snippets};
 
@@ -572,15 +572,24 @@ pub fn eval_texts<T: Position>(node: &Node, texts: &[&[T]]) -> bool {
 }
 
 /// [`eval_texts`] as the engine runs it with `scoring`, which decides how a
-/// NEAR search of three or more words matches (05 §5.6).
+/// NEAR search of three or more words matches (05 §5.6). A term or exact
+/// phrase with a fraction joined to a number (`61½`) also matches where the
+/// text has it with a slash (`611/2`), as the engine is sent the phrases
+/// `OR`ed with the glyph (#1067).
 pub fn eval_scored<T: Position>(node: &Node, texts: &[&[T]], scoring: Scoring) -> bool {
     match node {
-        Node::Term(t) => texts
-            .iter()
-            .any(|tokens| tokens.iter().any(|tok| term_at(t, tok))),
-        Node::Phrase { terms, slop } => texts
-            .iter()
-            .any(|tokens| phrase_count(terms, *slop, tokens, scoring) > 0),
+        Node::Term(t) => {
+            texts
+                .iter()
+                .any(|tokens| tokens.iter().any(|tok| term_at(t, tok)))
+                || slash_matches(node, texts, scoring)
+        }
+        Node::Phrase { terms, slop } => {
+            texts
+                .iter()
+                .any(|tokens| phrase_count(terms, *slop, tokens, scoring) > 0)
+                || slash_matches(node, texts, scoring)
+        }
         Node::And(c) => c.iter().all(|n| eval_scored(n, texts, scoring)),
         Node::Or(c) => c.iter().any(|n| eval_scored(n, texts, scoring)),
         // Each item may match in a different text, as in the engine's
@@ -590,6 +599,18 @@ pub fn eval_scored<T: Position>(node: &Node, texts: &[&[T]], scoring: Scoring) -
         }
         Node::Not(n) => !eval_scored(n, texts, scoring),
     }
+}
+
+/// Whether a term or phrase matches in any text as OCR reads a fraction in
+/// it with a slash ([`fractions::slash_phrases`], #1067): `61½` as the
+/// phrases "61 1 2" and "611 2", which the engine is sent `OR`ed with the
+/// glyph. These are exact phrases of digits, so they match as they are.
+fn slash_matches<T: Position>(node: &Node, texts: &[&[T]], scoring: Scoring) -> bool {
+    fractions::slash_phrases(node).iter().any(|phrase| {
+        texts
+            .iter()
+            .any(|tokens| phrase_count(phrase, 0, tokens, scoring) > 0)
+    })
 }
 
 /// Whether a term matches the word at a position: never where it was dropped.
@@ -690,9 +711,19 @@ fn counts(m: BTreeMap<&str, u64>) -> Vec<KeyCount> {
 /// as the engine's scorer counts a phrase ([`Scoring::On`]). The reference
 /// for "most mentions first" (`HitSort::Relevant`).
 fn mentions<T: Position>(node: &Node, tokens: &[T]) -> usize {
+    // A fraction read with a slash counts as its own mentions (#1067), as
+    // the engine scores the `OR`ed phrases.
+    let slash = || -> usize {
+        fractions::slash_phrases(node)
+            .iter()
+            .map(|phrase| phrase_count(phrase, 0, tokens, Scoring::On) as usize)
+            .sum()
+    };
     match node {
-        Node::Term(t) => tokens.iter().filter(|tok| term_at(t, *tok)).count(),
-        Node::Phrase { terms, slop } => phrase_count(terms, *slop, tokens, Scoring::On) as usize,
+        Node::Term(t) => tokens.iter().filter(|tok| term_at(t, *tok)).count() + slash(),
+        Node::Phrase { terms, slop } => {
+            phrase_count(terms, *slop, tokens, Scoring::On) as usize + slash()
+        }
         Node::And(c) | Node::Or(c) | Node::AtLeast { of: c, .. } => {
             c.iter().map(|n| mentions(n, tokens)).sum()
         }
@@ -1224,6 +1255,204 @@ mod shard_tests {
         assert_eq!(
             hits.hits[0].snippets,
             ["Wheat closed <mark>½</mark> higher"]
+        );
+    }
+
+    /// A fraction joined to a number is also found as OCR prints it with a
+    /// slash (#1067): `61½` finds `61 1/2` and `611/2`, as the engine does
+    /// with the phrases "61 1 2" and "611 2" `OR`ed with the glyph. A bare
+    /// `½` stays the glyph, and so does a NEAR search.
+    #[tokio::test]
+    async fn a_fraction_in_a_number_is_also_found_with_a_slash() {
+        use usnm_core::text::Analyzer;
+        let texts = [
+            "Wheat closed at 61½ higher",            // 1: the glyph
+            "Wheat closed at 611/2 higher",          // 2: joined
+            "Wheat closed at 61 1/2 higher",         // 3: spaced
+            "Wheat closed at 61 higher by 1/2",      // 4: the digits apart
+            "Wheat closed at 62½ higher",            // 5: another number
+            "Wheat closed ½ higher at 61",           // 6: a bare fraction
+            "Wheat closed at 61 1/2 and 611/2 high", // 7: both spellings
+            "Oats closed at 611/4 lower",            // 8: another fraction
+        ];
+        let docs: Vec<PageDoc> = (1..)
+            .zip(texts)
+            .map(|(i, t)| PageDoc {
+                text: t.into(),
+                ..doc(i, 1)
+            })
+            .collect();
+        let id = |i: u32| doc(i, 1).doc_id;
+        let ids = |pages: &[u32]| pages.iter().map(|&i| id(i)).collect::<Vec<_>>();
+        let mut stories = doc(9, 1);
+        stories.text = "Corn steady".into();
+        stories.text_as = Some("Wheat closed at 611/2 higher".into());
+        let mut b = MemoryBackend::new();
+        b.add_index("i", docs.into_iter().chain([stories]));
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_300),
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+            series: Vec::new(),
+        };
+        let page = HitsQuery {
+            limit: 20,
+            ..HitsQuery::default()
+        };
+        let found = |set: IndexSet, q: &str| {
+            let (b, f, page) = (&b, &f, &page);
+            let q = usnm_core::query::parse(q).unwrap();
+            async move {
+                let hits = b.hits(&set, &q, f, page).await.unwrap();
+                let total = b
+                    .summary(
+                        &set,
+                        &q,
+                        f,
+                        &BucketSpec::new(BucketUnit::Year, f.from, f.to),
+                    )
+                    .await
+                    .unwrap()
+                    .total_hits;
+                assert_eq!(total, hits.total, "{q}");
+                hits.hits.into_iter().map(|h| h.doc_id).collect::<Vec<_>>()
+            }
+        };
+        let loc = IndexSet::new(vec!["i".into()]);
+        // The glyph, either spelling, and both: pages 1, 2, 3 and 7.
+        assert_eq!(found(loc.clone(), "61½").await, ids(&[1, 2, 3, 7]));
+        // `61¼` has the one page that prints `611/4`.
+        assert_eq!(found(loc.clone(), "61¼").await, ids(&[8]));
+        // A bare fraction is the glyph.
+        assert_eq!(found(loc.clone(), "½").await, ids(&[6]));
+        // A phrase, from the query or from `mode=phrase`, is read word by word.
+        assert_eq!(
+            found(loc.clone(), r#""closed at 61½""#).await,
+            ids(&[1, 2, 3, 7])
+        );
+        let phrase = usnm_core::query::build(
+            "wheat closed at 61½",
+            Some(usnm_core::query::Mode::Phrase),
+            0,
+            0,
+            Analyzer::V2,
+        )
+        .unwrap();
+        let hits = b.hits(&loc, &phrase, &f, &page).await.unwrap();
+        assert_eq!(
+            hits.hits
+                .iter()
+                .map(|h| h.doc_id.clone())
+                .collect::<Vec<_>>(),
+            ids(&[1, 2, 3, 7])
+        );
+        // The operators hold for either spelling.
+        assert_eq!(found(loc.clone(), "wheat -61½").await, ids(&[4, 5, 6]));
+        assert_eq!(
+            found(loc.clone(), "61½ OR oats").await,
+            ids(&[1, 2, 3, 7, 8])
+        );
+        assert_eq!(
+            found(loc.clone(), "2 OF (61½ lower closed)").await,
+            ids(&[1, 2, 3, 7, 8])
+        );
+        // A NEAR search leaves the slash spellings out.
+        assert_eq!(found(loc.clone(), r#""wheat 61½"~3"#).await, ids(&[1]));
+        assert_eq!(found(loc.clone(), r#""wheat 62½"~3"#).await, ids(&[5]));
+        // American Stories' text, once the search covers it, and one field
+        // for both.
+        let both = loc.clone().with_american_stories(true);
+        assert_eq!(found(both.clone(), "61½").await, ids(&[1, 2, 3, 7, 9]));
+        let single = both
+            .clone()
+            .with_text_layout(usnm_core::text_layout::TextLayout::Single);
+        assert_eq!(found(single, "61½").await, ids(&[1, 2, 3, 7, 9]));
+        let q = usnm_core::query::parse("61½").unwrap();
+        assert_eq!(b.american_stories_only(&both, &q, &f).await.unwrap(), 1);
+        // Most mentions first: page 7 prints it twice, once of each kind.
+        let relevant = HitsQuery {
+            sort: HitSort::Relevant,
+            ..page.clone()
+        };
+        let hits = b.hits(&loc, &q, &f, &relevant).await.unwrap();
+        assert_eq!(hits.hits[0].doc_id, id(7));
+        // The snippet marks each spelling whole.
+        let by_id = |n: u32| hits.hits.iter().find(|h| h.doc_id == id(n)).unwrap();
+        assert_eq!(
+            by_id(1).snippets,
+            ["Wheat closed at <mark>61½</mark> higher"]
+        );
+        assert_eq!(
+            by_id(2).snippets,
+            ["Wheat closed at <mark>611/2</mark> higher"]
+        );
+        assert_eq!(
+            by_id(3).snippets,
+            ["Wheat closed at <mark>61 1/2</mark> higher"]
+        );
+        assert_eq!(
+            by_id(7).snippets,
+            ["Wheat closed at <mark>61 1/2</mark> and <mark>611/2</mark> high"]
+        );
+        // With analyzer version 1 the engine already reads `61½` as the
+        // phrase "611 2": the page that prints `611/2`, and no other.
+        let v1 = IndexSet::new(vec!["i".into()]).with_analyzer(Analyzer::V1);
+        let q = usnm_core::query::parse_with("61½", Analyzer::V1).unwrap();
+        let hits = b.hits(&v1, &q, &f, &page).await.unwrap();
+        assert_eq!(
+            hits.hits
+                .iter()
+                .map(|h| h.doc_id.clone())
+                .collect::<Vec<_>>(),
+            ids(&[2, 7])
+        );
+    }
+
+    /// A Japanese page's Latin runs are tokens as they are written, so a
+    /// fraction printed with a slash there is found and marked too (#1067).
+    #[tokio::test]
+    async fn a_japanese_page_reads_a_fraction_with_a_slash_too() {
+        use usnm_core::text::Analyzer;
+        let printed = [
+            "東京 wheat 61½ 日本",
+            "東京 wheat 611/2 日本",
+            "東京 wheat 62½ 日本",
+        ];
+        let docs: Vec<PageDoc> = (1..)
+            .zip(printed)
+            .map(|(i, p)| PageDoc {
+                text: usnm_core::ja::index_text(p, Analyzer::V2),
+                printed: Some(p.into()),
+                ..doc(i, 1)
+            })
+            .collect();
+        let mut b = MemoryBackend::new();
+        b.add_index("ja", docs);
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_300),
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+            series: Vec::new(),
+        };
+        let page = HitsQuery {
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        let set = IndexSet::new(vec!["ja".into()]).with_analyzer(Analyzer::V2);
+        let q = usnm_core::query::parse("61½").unwrap();
+        let hits = b.hits(&set, &q, &f, &page).await.unwrap();
+        assert_eq!(
+            hits.hits.iter().map(|h| &h.snippets[0]).collect::<Vec<_>>(),
+            [
+                "東京 wheat <mark>61½</mark> 日本",
+                "東京 wheat <mark>611/2</mark> 日本"
+            ]
         );
     }
 

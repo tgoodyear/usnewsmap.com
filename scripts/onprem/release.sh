@@ -8,6 +8,8 @@
 #   scripts/onprem/release.sh --run-dir DIR --step release [--split-docs N]
 #   scripts/onprem/release.sh --run-dir DIR --step finish --index-version V [--split-docs N]
 #   scripts/onprem/release.sh --run-dir DIR --step publish [--dry-run]
+#   scripts/onprem/release.sh --run-dir DIR --step restore [--dry-run]
+#   scripts/onprem/release.sh --run-dir DIR --step ready --app-url URL --index-version V
 #
 # mirror   copies the lake's current.json, catalog/ and the serving
 #          version's snapshot into DIR/reference.
@@ -30,6 +32,18 @@
 #          and --split-docs, and log it to another file than release.log.
 # publish  copies the staged version into the index account and the lake
 #          (usnm-ingest publish-staged). Promotion is a separate operator step.
+# restore  copies the version the lake already serves back to Azure, to serve
+#          from there again after Azure serving was retired (usnm-ingest
+#          publish-staged --restore; the disaster recovery runbook, 09 §9.6).
+#          DIR is the run directory that built that version, with its
+#          state.json, reference/index-storage-pending.json and qw/. It
+#          refuses unless the lake's current.json names that version and its
+#          indexes, and it writes neither current.json nor the pending pointer.
+# ready    waits until the app at --app-url answers /readyz and /v1/meta
+#          names --index-version, in USNM_READY_TRIES tries (default 60)
+#          USNM_READY_WAIT_SECS apart (default 10), and exits 1 if it never
+#          does. Run it before pointing a Worker at the app. It needs only
+#          curl and jq.
 #
 # Settings come from the environment, with prod's defaults: USNM_LAKE
 # (stusnmdffapzy), USNM_INDEX_ACCOUNT (usnmqwstprodffapzy), USNM_INGEST
@@ -37,8 +51,8 @@
 # identity: usnm must be in the himds group.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,37s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION=""
+usage() { sed -n '2,51s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir) RUN=${2:-}; shift 2 ;;
@@ -46,6 +60,7 @@ while [ $# -gt 0 ]; do
     --sample) SAMPLE=${2:-}; shift 2 ;;
     --split-docs) SPLIT_DOCS=${2:-}; shift 2 ;;
     --index-version) VERSION=${2:-}; shift 2 ;;
+    --app-url) APP_URL=${2:-}; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
@@ -56,15 +71,22 @@ done
 [ -z "$SAMPLE" ] || [ "$SAMPLE" = 1pct ] || die "--sample: 1pct"
 [[ $SPLIT_DOCS =~ ^[0-9]+$ ]] || die "--split-docs: a number"
 [ -z "$VERSION" ] || [[ $VERSION =~ ^pages-v[0-9]{8}-[0-9]+$ ]] || die "--index-version: pages-vYYYYMMDD-N"
+APP_URL_PATTERN='^(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1))(:[0-9]+)?/?$'
+[ -z "$APP_URL" ] || [[ $APP_URL =~ $APP_URL_PATTERN ]] || die "--app-url: https://HOST (http only for localhost)"
+APP_URL=${APP_URL%/}
 MERGE_TIMEOUT=${USNM_MERGE_TIMEOUT_SECS:-14400}
 FINISH_TIMEOUT=${USNM_FINISH_MERGE_TIMEOUT_SECS:-86400}
 [[ $MERGE_TIMEOUT =~ ^[0-9]+$ ]] || die "USNM_MERGE_TIMEOUT_SECS: a number of seconds"
 [[ $FINISH_TIMEOUT =~ ^[0-9]+$ ]] || die "USNM_FINISH_MERGE_TIMEOUT_SECS: a number of seconds"
+READY_TRIES=${USNM_READY_TRIES:-60}
+READY_WAIT=${USNM_READY_WAIT_SECS:-10}
+[[ $READY_TRIES =~ ^[1-9][0-9]*$ ]] || die "USNM_READY_TRIES: a number of tries, at least 1"
+[[ $READY_WAIT =~ ^[0-9]+$ ]] || die "USNM_READY_WAIT_SECS: a number of seconds"
 LAKE=${USNM_LAKE:-stusnmdffapzy}
 INDEX_ACCOUNT=${USNM_INDEX_ACCOUNT:-usnmqwstprodffapzy}
 INGEST=${USNM_INGEST:-/srv/usnm/target/release/usnm-ingest}
 QUICKWIT=${USNM_QUICKWIT_BIN:-/srv/usnm/bin/quickwit}
-[ -x "$INGEST" ] || die "no usnm-ingest at $INGEST"
+[ "$STEP" = ready ] || [ -x "$INGEST" ] || die "no usnm-ingest at $INGEST"
 LAKE_URL=https://$LAKE.blob.core.windows.net
 export IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 export IMDS_ENDPOINT=http://localhost:40342
@@ -116,13 +138,44 @@ case "$STEP" in
       release-finish --run "$VERSION" --release-log "$RUN/release.log" \
       --merge-timeout-secs "$FINISH_TIMEOUT" "${SETTINGS[@]}"
     ;;
-  publish)
+  publish|restore)
+    mode=()
+    if [ "$STEP" = restore ]; then
+      [ -s "$RUN/reference/index-storage-pending.json" ] ||
+        die "no $RUN/reference/index-storage-pending.json: restore from the run directory that built the version"
+      mode=(--restore)
+    fi
     dry=()
     ! $DRY_RUN || dry=(--dry-run)
     "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
       publish-staged --local-index-root "$RUN/qw" \
       --to-reference "$LAKE_URL/reference" \
-      --to-index "https://$INDEX_ACCOUNT.blob.core.windows.net/qw-index" "${dry[@]}"
+      --to-index "https://$INDEX_ACCOUNT.blob.core.windows.net/qw-index" \
+      ${dry[@]+"${dry[@]}"} ${mode[@]+"${mode[@]}"}
     ;;
-  *) die "--step: mirror, seed, release, finish or publish" ;;
+  ready)
+    [ -n "$APP_URL" ] || die "--step ready needs --app-url (the app's base URL)"
+    [ -n "$VERSION" ] || die "--step ready needs --index-version (the version the app should serve)"
+    last="no try yet"
+    for ((try = 1; try <= READY_TRIES; try++)); do
+      if curl -fsS --max-time 10 -o /dev/null "$APP_URL/readyz"; then
+        # In the if, a failure of either command (pipefail) is a failed fetch, not a version.
+        if seen=$(curl -fsS --max-time 10 "$APP_URL/v1/meta" | jq -r '.index_version // empty'); then
+          if [ "$seen" = "$VERSION" ]; then
+            echo "ready: $APP_URL answers /readyz and serves $VERSION"
+            exit 0
+          fi
+          last="/readyz passes, and /v1/meta names ${seen:-no version}"
+        else
+          last="/readyz passes, and /v1/meta doesn't answer in full with JSON"
+        fi
+      else
+        last="/readyz doesn't pass"
+      fi
+      echo "try $try of $READY_TRIES: $last" >&2
+      [ "$try" -ge "$READY_TRIES" ] || sleep "$READY_WAIT"
+    done
+    die "$APP_URL isn't ready on $VERSION after $READY_TRIES tries: $last"
+    ;;
+  *) die "--step: mirror, seed, release, finish, publish, restore or ready" ;;
 esac

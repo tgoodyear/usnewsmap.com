@@ -227,8 +227,10 @@ impl Fixture {
         self.result_in(&self.options.root, id)
     }
     fn result_in(&self, root: &Path, id: &str) -> (PathBuf, PathBuf, PathBuf) {
+        self.result_with_text(root, id, b"HELLO WORLD")
+    }
+    fn result_with_text(&self, root: &Path, id: &str, text: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
         let job = usnm_boinc::load(root, id).unwrap().job;
-        let text = b"HELLO WORLD";
         let result = ResultManifest {
             v: 1,
             job_id: id.into(),
@@ -295,6 +297,45 @@ async fn round_trip_through_native_ocr_sync_and_duplicate_import() {
             .outcomes[&r.job.message.key().unwrap().doc_id()]
             .outcome,
         ledger::IMPORTED
+    );
+}
+/// The text `import` published for the job, from its `ocr-out` part.
+async fn imported_text(fx: &Fixture) -> String {
+    let parts = fx.stores.out.list("pages").await.unwrap();
+    assert_eq!(parts.len(), 1);
+    let bytes = fx.stores.out.get(&parts[0]).await.unwrap().unwrap();
+    let mut rows = usnm_overlay::read_part(bytes::Bytes::from(bytes)).unwrap();
+    assert_eq!(rows.len(), 1);
+    rows.remove(0).text.unwrap()
+}
+
+/// A word broken at a line end with an em dash is rejoined for a German job
+/// (frak2021) only; one broken with a `⸗` is rejoined for any job (#1065).
+#[tokio::test]
+async fn import_rejoins_words_broken_with_a_dash_for_german_jobs_only() {
+    let broken = "durch den engen Haus\u{2014}\ngang schritt, wei\u{2E17}\nter ausbaut";
+    let german = Fixture::new("ger").await;
+    let id = german.export().await;
+    let job = usnm_boinc::load(&german.options.root, &id).unwrap().job;
+    assert_eq!(job.message.language, "deu");
+    assert_eq!(job.engine.profile, "frak2021");
+    let files = german.result_with_text(&german.options.root, &id, broken.as_bytes());
+    german.import(&id, &files).await.unwrap();
+    assert_eq!(
+        imported_text(&german).await,
+        "durch den engen Hausgang schritt, weiter ausbaut"
+    );
+
+    let english = Fixture::new("eng").await;
+    let id = english.export().await;
+    let job = usnm_boinc::load(&english.options.root, &id).unwrap().job;
+    assert_eq!(job.message.language, "eng");
+    assert_eq!(job.engine.profile, "eng");
+    let files = english.result_with_text(&english.options.root, &id, broken.as_bytes());
+    english.import(&id, &files).await.unwrap();
+    assert_eq!(
+        imported_text(&english).await,
+        "durch den engen Haus\u{2014}\ngang schritt, weiter ausbaut"
     );
 }
 #[tokio::test]

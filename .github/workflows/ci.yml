@@ -621,13 +621,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      # A slower run for an older commit doesn't publish after a newer one.
+      # A slower run for an older commit doesn't publish after a newer one: only
+      # the commit main points at publishes, or an older one when none of main's
+      # newer commits change the worker or the dashboard build (their runs
+      # publish no release).
       - name: Is this still the head of main?
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/ci/head-of-main.sh
+        run: scripts/ci/head-of-main.sh --unless-changed ocr_worker,ocr_dash
       - if: steps.head.outputs.current == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -723,7 +727,8 @@ jobs:
       - name: The BOINC scripts pass shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
-          shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh
+          shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh \
+            scripts/boinc/onprem/image-security-check.sh
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
       - name: Each environment's committed settings match infra/env/schema.json

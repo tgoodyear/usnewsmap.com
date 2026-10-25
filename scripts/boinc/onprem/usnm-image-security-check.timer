@@ -1,0 +1,10 @@
+[Unit]
+Description=usnm BOINC image security check, daily (#969)
+
+[Timer]
+OnCalendar=*-*-* 06:23:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

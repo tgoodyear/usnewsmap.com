@@ -142,8 +142,32 @@ const BOTH: TextFields = TextFields {
     pairs: usnm_core::text_layout::PAIRS_FIELD,
 };
 
-/// A term or phrase in one text's fields.
+/// A term or phrase in one text's fields. One with a fraction joined to a
+/// number (`61½`) is also looked for as OCR reads it with a slash (#1067): in
+/// an `OR` with the phrases of its digits, `(text:61½ OR text:"61 1 2" OR
+/// text:"611 2")`, each in the text's fields like any phrase, and never as a
+/// term set (`IN [...]`, see `~ocr` below). The glyph's own clause comes
+/// first, as it is the search as typed. These are in the string only: the
+/// AST, its canonical form and the limits on what is typed are the query's
+/// as the visitor wrote it.
 fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, SearchError> {
+    let slash = usnm_core::fractions::slash_phrases(node);
+    if slash.is_empty() {
+        return plain_leaf_string(node, grams, f);
+    }
+    let mut parts = vec![plain_leaf_string(node, grams, f)?];
+    for terms in slash {
+        parts.push(plain_leaf_string(
+            &Node::Phrase { terms, slop: 0 },
+            grams,
+            f,
+        )?);
+    }
+    Ok(format!("({})", parts.join(" OR ")))
+}
+
+/// A term or phrase in one text's fields, as it is.
+fn plain_leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, SearchError> {
     let text = f.text;
     Ok(match node {
         Node::Term(t) if t.fuzzy > 0 => {
@@ -497,9 +521,15 @@ mod tests {
             query_string(&parse("\"of \u{fdfa} gold\"").unwrap(), true, false).unwrap(),
             "(text_cg:\"of_\u{fdfa} \u{fdfa} gold\" AND text:\u{fdfa} AND text:gold)"
         );
+        // `61¼` is also read as OCR prints it with a slash (#1067), each
+        // spelling its own phrase through the pairs; `½` stays the glyph.
         assert_eq!(
             query_string(&parse(r#""½ higher at 61¼""#).unwrap(), true, false).unwrap(),
-            "(text_cg:\"½ higher at_61¼ 61¼\" AND text:½ AND text:higher AND text:61¼)"
+            "((text_cg:\"½ higher at_61¼ 61¼\" AND text:½ AND text:higher AND text:61¼) \
+             OR (text_cg:\"½ higher at_61 61 1 4\" AND text:½ AND text:higher \
+             AND text:61 AND text:1 AND text:4) \
+             OR (text_cg:\"½ higher at_611 611 4\" AND text:½ AND text:higher \
+             AND text:611 AND text:4))"
         );
         // On an index built with version 1 the query folds them as its pairs
         // have them: `ﷺ` as its words run together, required only through
@@ -532,6 +562,92 @@ mod tests {
         )
         .unwrap();
         assert!(r["query"].as_str().unwrap().starts_with("(text_cg:"), "{r}");
+    }
+
+    /// A fraction joined to a number is also looked for as OCR reads it with
+    /// a slash (#1067): the glyph and the phrases of its digits, `OR`ed
+    /// within each text's fields, and never a term set.
+    #[test]
+    fn a_fraction_in_a_number_is_also_searched_with_a_slash() {
+        let qs =
+            |q: &str, grams, stories| query_string(&parse(q).unwrap(), grams, stories).unwrap();
+        let both = r#"(text:61½ OR text:"61 1 2" OR text:"611 2")"#;
+        for grams in [false, true] {
+            assert_eq!(qs("61½", grams, false), both);
+            assert_eq!(
+                qs("61½", grams, true),
+                r#"((text:61½ OR text:"61 1 2" OR text:"611 2") OR (text_as:61½ OR text_as:"61 1 2" OR text_as:"611 2"))"#
+            );
+            // The exclusion holds for either spelling.
+            assert_eq!(
+                qs("gold -61½", grams, false),
+                format!("(NOT {both} AND text:gold)")
+            );
+        }
+        // One field for both texts: once, in `text_all`.
+        let single = |grams: bool| {
+            none()
+                .with_american_stories(true)
+                .with_common_grams(grams)
+                .with_text_layout(TextLayout::Single)
+        };
+        assert_eq!(
+            query_for(&parse("61½").unwrap(), &single(true)).unwrap(),
+            r#"(text_all:61½ OR text_all:"61 1 2" OR text_all:"611 2")"#
+        );
+        // The count of pages only American Stories' text matches.
+        assert_eq!(
+            american_stories_only_string(&parse("61½").unwrap(), true).unwrap(),
+            format!(
+                "(({both} OR {as_text})) AND NOT ({both}) AND ({as_text})",
+                as_text = r#"(text_as:61½ OR text_as:"61 1 2" OR text_as:"611 2")"#
+            )
+        );
+        // At least N of them: the group is one item.
+        assert_eq!(
+            qs("2 OF (61½ gold silver)", false, false),
+            format!(
+                "(({both} AND text:gold) OR ({both} AND text:silver) \
+                 OR (text:gold AND text:silver))"
+            )
+        );
+        // A number and its fraction in a phrase: the phrase as typed, then
+        // each other way to spell its fraction. The spellings are digits,
+        // so a common word before them reads its pair as the index has it
+        // and they never need the pairs themselves.
+        assert_eq!(
+            qs(r#""wheat 61½""#, false, false),
+            r#"(text:"wheat 61½" OR text:"wheat 61 1 2" OR text:"wheat 611 2")"#
+        );
+        assert_eq!(
+            qs(r#""wheat 61½""#, true, false),
+            r#"(text:"wheat 61½" OR text:"wheat 61 1 2" OR text:"wheat 611 2")"#
+        );
+        assert_eq!(qs(r#""61 1 2""#, true, false), r#"text:"61 1 2""#);
+        // Not a bare fraction, a word that isn't a number and a fraction,
+        // a term that isn't exact, or a NEAR search.
+        for (q, plain) in [
+            ("½", "text:½"),
+            ("a½", "text:a½"),
+            ("12345½*", "text:12345½*"),
+            ("61½~ocr", "text:61½"),
+            (r#""wheat 61½"~3"#, r#"text:"wheat 61½"~3"#),
+            (r#""61½ 62¼ 63¾""#, r#"text:"61½ 62¼ 63¾""#),
+        ] {
+            assert_eq!(qs(q, false, false), plain, "{q}");
+        }
+        // Version 1 folded `61½` to `611⁄2`, which the engine reads as the
+        // phrase "611 2" already.
+        let v1 = usnm_core::query::parse_with("61½", Analyzer::V1).unwrap();
+        assert_eq!(
+            query_string(&v1, false, false).unwrap(),
+            "text:611\u{2044}2"
+        );
+        // Never a term set, on any field.
+        for set in [&none(), &stories(true), &single(true)] {
+            let s = query_for(&parse(r#"61½ "wheat 20¾" gold~ocr"#).unwrap(), set).unwrap();
+            assert!(!s.contains(":IN ["), "{s}");
+        }
     }
 
     #[test]

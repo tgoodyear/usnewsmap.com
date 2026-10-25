@@ -287,12 +287,15 @@ pub(crate) async fn places_in(
         let mut languages =
             std::collections::HashMap::<&str, std::collections::BTreeMap<&str, usize>>::new();
         for t in rd.titles.values() {
-            *title_counts.entry(t.place_id.as_str()).or_default() += 1;
-            let place = languages.entry(t.place_id.as_str()).or_default();
             let own: std::collections::BTreeSet<&str> =
                 t.languages.iter().map(String::as_str).collect();
-            for l in own {
-                *place.entry(l).or_default() += 1;
+            // A title that moved counts in each of its places.
+            for id in t.place_ids() {
+                *title_counts.entry(id).or_default() += 1;
+                let place = languages.entry(id).or_default();
+                for l in &own {
+                    *place.entry(l).or_default() += 1;
+                }
             }
         }
         let features: Vec<_> = rd

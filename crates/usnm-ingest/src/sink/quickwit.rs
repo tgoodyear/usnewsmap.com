@@ -16,6 +16,7 @@ use super::{
     main_template, Decades, IndexSink, MainLayout, QuickwitNode, SinkStats, TitleFieldsByLccn,
     WriterProcess, WriterTuning,
 };
+use crate::catalog::PeriodCuts;
 use crate::merges::{self, IndexLayout, MergeWait, NodeEvents};
 
 /// Titles a `title_fields` search can tell apart: more than LoC has.
@@ -62,10 +63,72 @@ fn title_fields_of(v: &Value) -> anyhow::Result<TitleFieldsByLccn> {
                 places: keys(b, "places"),
                 shards,
                 states: keys(b, "states"),
+                by_period: std::collections::BTreeMap::new(),
                 languages: keys(b, "languages"),
                 ordinals: (ordinal("first")?, ordinal("last")?),
             },
         );
+    }
+    Ok(out)
+}
+
+/// The range aggregation of `day` that cuts a title's days into its periods
+/// at `cuts` (`crate::catalog::Title::period_cuts`): one range from the start
+/// to the first cut, one between each two cuts, one from the last cut on.
+fn period_ranges(cuts: &[u32]) -> Value {
+    let mut ranges = vec![serde_json::json!({"to": cuts[0]})];
+    ranges.extend(
+        cuts.windows(2)
+            .map(|w| serde_json::json!({"from": w[0], "to": w[1]})),
+    );
+    ranges.push(serde_json::json!({"from": cuts[cuts.len() - 1]}));
+    Value::Array(ranges)
+}
+
+/// A by-period search's answer: the title's documents in each place, by
+/// period. A range is told by its start (none for the first, else a cut), not
+/// by its position or key. Each place's counts must add up to its documents,
+/// so an answer that doesn't carry the ranges isn't taken for no documents.
+fn period_docs_of(
+    v: &Value,
+    lccn: &str,
+    cuts: &[u32],
+) -> anyhow::Result<std::collections::BTreeMap<String, Vec<u64>>> {
+    let places = v["aggregations"]["places"]["buckets"]
+        .as_array()
+        .with_context(|| format!("the search answered no place buckets for {lccn}"))?;
+    let mut out = std::collections::BTreeMap::new();
+    for p in places {
+        let Some(place) = p["key"].as_str().filter(|k| !k.is_empty()) else {
+            continue;
+        };
+        let ranges = p["periods"]["buckets"]
+            .as_array()
+            .with_context(|| format!("the search answered no periods for {lccn} in {place}"))?;
+        let mut counts = vec![0u64; cuts.len() + 1];
+        for r in ranges {
+            let i = match r["from"].as_f64().filter(|f| f.is_finite() && *f >= 0.0) {
+                None => 0,
+                Some(from) => cuts
+                    .iter()
+                    .position(|&c| f64::from(c) == from)
+                    .map(|i| i + 1)
+                    .with_context(|| {
+                        format!("{lccn} in {place}: a range from {from}, not a cut")
+                    })?,
+            };
+            counts[i] = r["doc_count"]
+                .as_u64()
+                .with_context(|| format!("{lccn} in {place}: a range without `doc_count`"))?;
+        }
+        let docs = p["doc_count"]
+            .as_u64()
+            .with_context(|| format!("{lccn} has no `doc_count` in {place}"))?;
+        anyhow::ensure!(
+            counts.iter().sum::<u64>() == docs,
+            "{lccn} has {docs} documents in {place}; its periods hold {counts:?}"
+        );
+        out.insert(place.to_owned(), counts);
     }
     Ok(out)
 }
@@ -343,6 +406,26 @@ impl LineSender {
 }
 
 impl QuickwitSink {
+    /// Search `index_id` with `body`; the answer, or why there is none.
+    async fn search(&self, index_id: &str, body: &Value) -> anyhow::Result<Value> {
+        let resp = self
+            .http
+            .post(format!("{}/api/v1/{index_id}/search", self.base))
+            .json(body)
+            .send()
+            .await;
+        let resp = merges::explained(self.events.as_deref(), resp.map_err(Into::into)).await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!(
+                "reading the titles of `{index_id}` returned {status}: {}",
+                text.chars().take(500).collect::<String>()
+            );
+        }
+        serde_json::from_str(&text).context("search response")
+    }
+
     /// `index_root` is where new indexes live (`azure://qw-index` or `file:///…`).
     pub fn new(base_url: &str, index_root: &str) -> anyhow::Result<Self> {
         Ok(Self {
@@ -876,8 +959,15 @@ impl IndexSink for QuickwitSink {
     }
 
     /// One search of the published splits: each title's terms and its
-    /// documents' lowest and highest `sort_key`.
-    async fn title_fields(&mut self, index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+    /// documents' lowest and highest `sort_key`. Then, for each title in
+    /// `cuts` that has documents, one search of its documents by place and
+    /// period: a range of `day` for each period, so every document is
+    /// counted in the period its date falls in.
+    async fn title_fields(
+        &mut self,
+        index_id: &str,
+        cuts: &PeriodCuts,
+    ) -> anyhow::Result<Option<TitleFieldsByLccn>> {
         let terms = |field: &str| serde_json::json!({"terms": {"field": field, "size": 64}});
         let body = serde_json::json!({
             "query": "*",
@@ -894,23 +984,27 @@ impl IndexSink for QuickwitSink {
                 },
             }},
         });
-        let resp = self
-            .http
-            .post(format!("{}/api/v1/{index_id}/search", self.base))
-            .json(&body)
-            .send()
-            .await;
-        let resp = merges::explained(self.events.as_deref(), resp.map_err(Into::into)).await?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!(
-                "reading the titles of `{index_id}` returned {status}: {}",
-                text.chars().take(500).collect::<String>()
+        let mut out = title_fields_of(&self.search(index_id, &body).await?)?;
+        for (lccn, cuts) in cuts {
+            let Some(fields) = out.get_mut(lccn) else {
+                continue;
+            };
+            anyhow::ensure!(
+                !cuts.is_empty() && lccn.bytes().all(|b| b.is_ascii_alphanumeric()),
+                "can't count the documents of `{lccn}` by period"
             );
+            let mut places = terms("place_id");
+            places["aggs"] = serde_json::json!({
+                "periods": {"range": {"field": "day", "ranges": period_ranges(cuts)}},
+            });
+            let body = serde_json::json!({
+                "query": format!("lccn:IN [{lccn}]"),
+                "max_hits": 0,
+                "aggs": {"places": places},
+            });
+            fields.by_period = period_docs_of(&self.search(index_id, &body).await?, lccn, cuts)?;
         }
-        let v: Value = serde_json::from_str(&text).context("search response")?;
-        title_fields_of(&v).map(Some)
+        Ok(Some(out))
     }
 
     fn backend(&self) -> &'static str {
@@ -1121,6 +1215,7 @@ mod tests {
                 states: BTreeSet::from(["IL".to_owned()]),
                 languages: BTreeSet::from(["eng".to_owned()]),
                 ordinals: (7, 7),
+                ..Default::default()
             }
         );
         // A document's own fields fold the same way.
@@ -1132,11 +1227,105 @@ mod tests {
                     "doc_id": "d", "lccn": "sn1", "place_id": "P1", "place_shard": 3,
                     "state": "IL", "language": ["eng", ""], "sort_key": (7u64 << 32) | (1 << 16) | seq,
                 }),
+                &PeriodCuts::new(),
             )
             .unwrap();
         }
         assert_eq!(by, got);
         assert!(title_fields_of(&serde_json::json!({"num_hits": 0})).is_err());
+    }
+
+    /// A title that left P1 for P2 on day 100 and came back on day 200.
+    const CUTS: [u32; 2] = [100, 200];
+
+    #[test]
+    fn the_search_by_period_has_a_range_for_each_period() {
+        assert_eq!(
+            period_ranges(&CUTS),
+            serde_json::json!([{"to": 100}, {"from": 100, "to": 200}, {"from": 200}])
+        );
+        assert_eq!(
+            period_ranges(&CUTS[..1]),
+            serde_json::json!([{"to": 100}, {"from": 100}])
+        );
+    }
+
+    #[test]
+    fn reads_a_titles_documents_by_place_and_period() {
+        // As Quickwit 0.9.1 answers a range aggregation: the first range
+        // has no `from`, the last no `to`, and empty ranges are listed.
+        let answer = |p1: Value, p2: Value| {
+            serde_json::json!({"num_hits": 5, "aggregations": {"places": {"buckets": [
+                {"key": "P1", "doc_count": 3, "periods": {"buckets": p1}},
+                {"key": "P2", "doc_count": 2, "periods": {"buckets": p2}},
+            ]}}})
+        };
+        let v = answer(
+            serde_json::json!([
+                {"key": "*-100", "to": 100.0, "doc_count": 1},
+                {"key": "100-200", "from": 100.0, "to": 200.0, "doc_count": 0},
+                {"key": "200-*", "from": 200.0, "doc_count": 2},
+            ]),
+            serde_json::json!([
+                {"key": "*-100", "to": 100.0, "doc_count": 0},
+                {"key": "100-200", "from": 100.0, "to": 200.0, "doc_count": 2},
+                {"key": "200-*", "from": 200.0, "doc_count": 0},
+            ]),
+        );
+        let got = period_docs_of(&v, "sn1", &CUTS).unwrap();
+        assert_eq!(got["P1"], [1, 0, 2]);
+        assert_eq!(got["P2"], [0, 2, 0]);
+        // The same as the documents' own fold counts them.
+        let mut by = TitleFieldsByLccn::new();
+        let cuts = PeriodCuts::from([("sn1".to_owned(), CUTS.to_vec())]);
+        for (place, day) in [
+            ("P1", 40),
+            ("P2", 100),
+            ("P2", 150),
+            ("P1", 200),
+            ("P1", 300),
+        ] {
+            add_title_fields(
+                &mut by,
+                &serde_json::json!({
+                    "doc_id": "d", "lccn": "sn1", "place_id": place, "place_shard": 3,
+                    "state": "IL", "sort_key": 7u64 << 32, "day": day,
+                }),
+                &cuts,
+            )
+            .unwrap();
+        }
+        assert_eq!(by["sn1"].by_period, got);
+        // A range that is listed out of order, or left out, is told by its start.
+        let v = answer(
+            serde_json::json!([
+                {"key": "200-*", "from": 200.0, "doc_count": 2},
+                {"key": "*-100", "to": 100.0, "doc_count": 1},
+            ]),
+            serde_json::json!([{"key": "100-200", "from": 100.0, "to": 200.0, "doc_count": 2}]),
+        );
+        assert_eq!(period_docs_of(&v, "sn1", &CUTS).unwrap()["P1"], [1, 0, 2]);
+        // An answer without the ranges, or that doesn't add up to the
+        // place's documents, is an error, not a place with no documents.
+        let none = serde_json::json!({"num_hits": 5, "aggregations": {"places": {"buckets": [
+            {"key": "P1", "doc_count": 3},
+        ]}}});
+        assert!(period_docs_of(&none, "sn1", &CUTS).is_err());
+        let short = answer(
+            serde_json::json!([{"key": "*-100", "to": 100.0, "doc_count": 1}]),
+            serde_json::json!([]),
+        );
+        assert!(period_docs_of(&short, "sn1", &CUTS).is_err());
+        // A range from a day that isn't one of the cuts.
+        let other = answer(
+            serde_json::json!([{"key": "150-*", "from": 150.0, "doc_count": 3}]),
+            serde_json::json!([]),
+        );
+        let err = period_docs_of(&other, "sn1", &CUTS)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a cut"), "{err}");
+        assert!(period_docs_of(&serde_json::json!({}), "sn1", &CUTS).is_err());
     }
 
     #[test]
