@@ -1,0 +1,19 @@
+# The full image pass's next manifest (#962), in the batch container CT215: ocr_manifest.py
+# build-quality takes the next pages from usnm_quality's ranking (worst first, round-robin
+# over title and decade) and queues them behind OCR's as queue-quality-<stamp>, once the last
+# one is mostly fetched. Settings in /etc/usnm/quality-build.env (STRATA, MAX_PAGES).
+[Unit]
+Description=usnewsmap full image pass manifests (#962)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-db/dsn
+
+[Service]
+Type=oneshot
+Environment=LC_ALL=C.UTF-8
+EnvironmentFile=/etc/usnm/quality-build.env
+ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/ocr_manifest.py build-quality \
+  --state /var/lib/usnm-ocr-manifest --dsn "$(cat /etc/usnm/quality-db/dsn)" --strata "$STRATA" \
+  --max-pages "$MAX_PAGES" --scan-server "$SCAN_SERVER"'
+Nice=10
+TimeoutStartSec=2h

@@ -37,6 +37,7 @@ import re
 import shutil
 import sys
 import time
+import urllib.error
 import urllib.request
 
 ALL_LANGS = {
@@ -323,6 +324,60 @@ def prepare_page(server, texts, p, loc_text, as_text, ours):
     return jpg, empty_alto(w, h), {"page": None, "readers": readers}, texts.ours_alto(p["doc_id"])
 
 
+def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
+    """Prepare one chunk of pages and write it to the outbox; returns (pages written, the
+    number left for a retry, the next chunk number)."""
+    retry = 0
+    docs = {p["doc_id"] for p in chunk}
+    loc, as_map, ours = {}, {}, {}
+    complete = True
+    for (batch, bv) in sorted({(p["batch"], p["batch_version"]) for p in chunk}):
+        got, any_files = texts.loc(batch, bv, docs)
+        loc.update(got)
+        complete = complete and any_files
+    for lccn in sorted({p["lccn"] for p in chunk}):
+        years = {p["date"][:4] for p in chunk if p["lccn"] == lccn}
+        as_map.update(texts.american_stories(lccn, years, docs))
+        ours.update(texts.ours(lccn, docs))
+    skipped = []
+    prepared = {}
+    usable = []
+    for p in chunk:
+        if p["doc_id"] not in loc:
+            if complete:
+                skipped.append((p["doc_id"], "no LoC text in the curated copy"))
+            continue
+        usable.append(p)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as ex:
+        futs = {ex.submit(prepare_page, a.scan_server, texts, p, loc[p["doc_id"]],
+                          as_map.get(p["doc_id"]), ours.get(p["doc_id"])): p for p in usable}
+        for fut in concurrent.futures.as_completed(futs):
+            p = futs[fut]
+            try:
+                prepared[p["doc_id"]] = fut.result()
+            except ValueError as e:
+                skipped.append((p["doc_id"], str(e)))
+            except Exception as e:  # a transient read: left for the next run
+                retry += 1
+                log("page failed; will retry", doc_id=p["doc_id"], error=str(e)[:200])
+    ok = [p for p in usable if p["doc_id"] in prepared]
+    if ok:
+        name = f"c{seq:05d}"
+        write_chunk(camp_dir, name, ok, prepared)
+        with open(os.path.join(state, "chunks.txt"), "a") as f:
+            f.write(f"{seq}\n")
+        seq += 1
+        with open(done_path, "a") as f:
+            f.write("".join(f"{p['doc_id']}\t{name}\t{p['scan']}\n" for p in ok))
+        log("chunk ready", chunk=name, pages=len(ok), with_as=sum(1 for p in ok if p["doc_id"] in as_map),
+            with_ours=sum(1 for p in ok if p["doc_id"] in ours))
+    if skipped:
+        with open(skip_path, "a") as f:
+            f.write("".join(f"{d}\t{why}\n" for d, why in skipped))
+        log("skipped", pages=len(skipped))
+    return len(ok), retry, seq
+
+
 def cmd_run(a):
     if not CAMPAIGN_RE.match(a.campaign):
         sys.exit("--campaign: 1-41 of [a-z0-9-]")
@@ -351,59 +406,157 @@ def cmd_run(a):
             time.sleep(60)
         chunk = todo[pos : pos + a.chunk_pages]
         pos += len(chunk)
-        docs = {p["doc_id"] for p in chunk}
-        loc, as_map, ours = {}, {}, {}
-        complete = True
-        for (batch, bv) in sorted({(p["batch"], p["batch_version"]) for p in chunk}):
-            got, any_files = texts.loc(batch, bv, docs)
-            loc.update(got)
-            complete = complete and any_files
-        for lccn in sorted({p["lccn"] for p in chunk}):
-            years = {p["date"][:4] for p in chunk if p["lccn"] == lccn}
-            as_map.update(texts.american_stories(lccn, years, docs))
-            ours.update(texts.ours(lccn, docs))
-        skipped = []
-        prepared = {}
-        usable = []
-        for p in chunk:
-            if p["doc_id"] not in loc:
-                if complete:
-                    skipped.append((p["doc_id"], "no LoC text in the curated copy"))
-                continue
-            usable.append(p)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as ex:
-            futs = {ex.submit(prepare_page, a.scan_server, texts, p, loc[p["doc_id"]],
-                              as_map.get(p["doc_id"]), ours.get(p["doc_id"])): p for p in usable}
-            for fut in concurrent.futures.as_completed(futs):
-                p = futs[fut]
-                try:
-                    prepared[p["doc_id"]] = fut.result()
-                except ValueError as e:
-                    skipped.append((p["doc_id"], str(e)))
-                except Exception as e:  # a transient read: left for the next run
-                    retry += 1
-                    log("page failed; will retry", doc_id=p["doc_id"], error=str(e)[:200])
-        ok = [p for p in usable if p["doc_id"] in prepared]
-        if ok:
-            name = f"c{seq:05d}"
-            write_chunk(camp_dir, name, ok, prepared)
-            with open(os.path.join(state, "chunks.txt"), "a") as f:
-                f.write(f"{seq}\n")
-            seq += 1
-            with open(done_path, "a") as f:
-                f.write("".join(f"{p['doc_id']}\t{name}\n" for p in ok))
-            log("chunk ready", chunk=name, pages=len(ok), with_as=sum(1 for p in ok if p["doc_id"] in as_map),
-                with_ours=sum(1 for p in ok if p["doc_id"] in ours))
-        if skipped:
-            with open(skip_path, "a") as f:
-                f.write("".join(f"{d}\t{why}\n" for d, why in skipped))
-            log("skipped", pages=len(skipped))
+        _, r, seq = process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path)
+        retry += r
     if retry:
         # Pages in neither done.txt nor skipped.txt: fail, so systemd's Restart=on-failure
         # runs the list again, which takes only those pages.
         log("pages left to retry", campaign=a.campaign, pages=retry)
         sys.exit(1)
     log("done", campaign=a.campaign)
+
+
+def scan_set(server, row):
+    """`keep` or `buffer`: which set the scan an index line names is in now, from its sidecar
+    (a few hundred bytes; the scan itself isn't read). None when neither has it (a buffer
+    scan already read and deleted)."""
+    m = DOC_RE.match(row["doc_id"])
+    ext = "jp2" if row.get("format") == "jp2" else "jpg"
+    rel = f"{row['batch']}/{m['lccn']}/{m['date']}/{int(m['ed'])}/{int(m['seq'])}.{ext}.json"
+    for st in ("keep", "buffer"):
+        req = urllib.request.Request(f"{server.rstrip('/')}/scans/{st}/{rel}", headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                r.read(1 << 16)
+                return st
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+    return None
+
+
+def index_rows(server):
+    req = urllib.request.Request(f"{server.rstrip('/')}/index/full.jsonl", headers={"User-Agent": USER_AGENT})
+    out = {}
+    with urllib.request.urlopen(req, timeout=300) as r:
+        for line in io.TextIOWrapper(r, encoding="utf-8"):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("resolution", "full") == "full" and DOC_RE.match(row.get("doc_id") or ""):
+                out[row["doc_id"]] = row
+    return out
+
+
+def page_of(row, set_name, damage):
+    m = DOC_RE.match(row["doc_id"])
+    d = damage.get(row["doc_id"], {})
+    ext = "jp2" if row.get("format") == "jp2" else "jpg"
+    return {
+        "batch": row["batch"],
+        "batch_version": int(row.get("batch_version") or 1),
+        "bytes": int(row["bytes"]),
+        "damage_rate": d.get("damage_rate"),
+        "date": m["date"],
+        "doc_id": row["doc_id"],
+        "edition": int(m["ed"]),
+        "fetched_at": row.get("fetched_at", ""),
+        "lang": lang_of(d.get("lang")),
+        "lccn": m["lccn"],
+        "scan": f"{set_name}/{row['batch']}/{m['lccn']}/{m['date']}/{int(m['ed'])}/{int(m['seq'])}.{ext}",
+        "seq": int(m["seq"]),
+        "sha256": row["sha256"],
+    }
+
+
+def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path):
+    """DELETE the buffer scans of the quality pass's pages whose chunks have shipped (the
+    shipper removed the chunk from the outbox after submitting it). Only pages the quality
+    pass fetched; OCR's pages and the keep set are never touched. Returns how many."""
+    deleted = read_lines(deleted_path)
+    n = 0
+    with open(done_path) as f:
+        rows = [line.rstrip("\n").split("\t") for line in f if "\t" in line]
+    pending = {os.path.basename(d) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))}
+    out = []
+    for doc, chunk, *rest in rows:
+        if doc in deleted or doc not in quality_docs or chunk in pending or not rest:
+            continue
+        scan = rest[0]
+        if not scan.startswith("buffer/"):
+            continue
+        req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{scan}", method="DELETE",
+                                     headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=60):
+                pass
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                log("buffer delete failed", doc_id=doc, status=e.code)
+                continue
+        out.append(doc)
+        n += 1
+    if out:
+        with open(deleted_path, "a") as f:
+            f.write("".join(f"{d}\n" for d in out))
+    return n
+
+
+def cmd_follow(a):
+    """The piggyback and the quality pass, as a loop: every page the fetcher writes
+    (OCR's and the quality pass's) that no campaign has staged gets a unit, in fetch order;
+    the quality pass's buffer scans are deleted once their chunk has shipped."""
+    import pyarrow.parquet as pq
+
+    if not CAMPAIGN_RE.match(a.campaign):
+        sys.exit("--campaign: 1-41 of [a-z0-9-]")
+    if not os.path.isdir(os.path.join(a.curated, "pages")):
+        sys.exit(f"{a.curated} has no pages/: the curated copy isn't mounted")
+    state = os.path.join(a.state, a.campaign)
+    camp_dir = os.path.join(a.outbox, a.campaign)
+    os.makedirs(state, exist_ok=True)
+    os.makedirs(camp_dir, exist_ok=True)
+    done_path = os.path.join(state, "done.txt")
+    skip_path = os.path.join(state, "skipped.txt")
+    deleted_path = os.path.join(state, "deleted.txt")
+    texts = Texts(a.curated)
+    while True:
+        staged = read_lines(a.staged) if a.staged else set()
+        done = read_lines(done_path) | read_lines(skip_path)
+        quality_docs = read_lines(a.quality_docs) if a.quality_docs else set()
+        if os.path.exists(done_path):
+            gone = delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path)
+            if gone:
+                log("buffer scans deleted after shipping", pages=gone)
+        rows = [r for d, r in index_rows(a.scan_server).items() if d not in staged and d not in done]
+        rows.sort(key=lambda r: (r.get("fetched_at", ""), r["doc_id"]))
+        room = max(0, a.max_pending - len(pending_chunks(camp_dir))) * a.chunk_pages
+        todo = []
+        for r in rows:
+            if len(todo) >= room:
+                break
+            st = scan_set(a.scan_server, r)
+            if st:
+                todo.append((r, st))
+        if todo:
+            damage = {}
+            for (batch, bv) in sorted({(r["batch"], int(r.get("batch_version") or 1)) for r, _ in todo}):
+                path = os.path.join(a.curated, "audit/damage/v2", f"{batch}_ver{bv:02d}.parquet")
+                if os.path.exists(path):
+                    want = {r["doc_id"] for r, _ in todo}
+                    for x in pq.read_table(path, columns=["doc_id", "lang", "damage_rate"]).to_pylist():
+                        if x["doc_id"] in want:
+                            damage[x["doc_id"]] = x
+            pages = [page_of(r, st, damage) for r, st in todo]
+            seq = 1 + max([int(os.path.basename(d)[1:]) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))]
+                          + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
+            for i in range(0, len(pages), a.chunk_pages):
+                _, _, seq = process_chunk(a, texts, pages[i : i + a.chunk_pages], camp_dir, state, seq,
+                                          done_path, skip_path)
+        if a.once:
+            return
+        time.sleep(a.every_secs)
 
 
 def main(argv=None):
@@ -427,13 +580,26 @@ def main(argv=None):
     r.add_argument("--max-pending", type=int, default=5)
     r.add_argument("--workers", type=int, default=4)
     r.add_argument("--once", action="store_true", help="stop instead of waiting at --max-pending")
+    w = sub.add_parser("follow")
+    w.add_argument("--campaign", required=True)
+    w.add_argument("--curated", required=True)
+    w.add_argument("--scan-server", required=True)
+    w.add_argument("--outbox", required=True)
+    w.add_argument("--state", required=True)
+    w.add_argument("--staged", help="doc_ids other campaigns staged, one a line")
+    w.add_argument("--quality-docs", help="doc_ids the quality pass fetched (ocr_manifest.py build-quality)")
+    w.add_argument("--chunk-pages", type=int, default=200)
+    w.add_argument("--max-pending", type=int, default=5)
+    w.add_argument("--workers", type=int, default=4)
+    w.add_argument("--every-secs", type=int, default=600)
+    w.add_argument("--once", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "select":
         cmd_select(a)
     else:
         if not 1 <= a.chunk_pages <= 500:
             sys.exit("--chunk-pages: 1 to 500")
-        cmd_run(a)
+        cmd_follow(a) if a.cmd == "follow" else cmd_run(a)
 
 
 if __name__ == "__main__":

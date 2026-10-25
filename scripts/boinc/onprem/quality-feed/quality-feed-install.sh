@@ -7,6 +7,7 @@
 #     [--host pve-laptop.tjg.fyi] [--ctid 215] [--scan-server http://usnm-scanfetch.tjg.fyi:8380]
 #     [--chunk-pages 200] [--max-pending 5] [--workers 4]
 #     [--max-unsent 300] [--max-chunks 1] [--bundle-size 200] [--enable]
+#     [--follow [--strata 1] [--pass-pages 2000]]
 #
 # Before it: home-infra's scripts/host-ssh-trust.sh --from pve-laptop.tjg.fyi --to pve.tjg.fyi
 # and scripts/lab/batch-ct-quality.sh --mounts on pve-laptop (the curated copy at /srv/curated
@@ -23,6 +24,10 @@
 # usnm-quality-ship.{service,timer} and /etc/usnm/quality-ship.env. The campaign's page list
 # (/var/lib/usnm-quality-feed/<campaign>/pages.jsonl in the container, from
 # quality_feed.py select) must be there before --enable starts the feeder and the timer.
+# --follow runs the piggyback and the full image pass instead: usnm-quality-follow (every
+# page the fetcher writes gets a unit, in fetch order; the pass's buffer scans are deleted
+# once shipped), usnm-quality-build.timer (the pass's next manifest from usnm_quality's
+# ranking, --strata ranks per title and decade, --pass-pages a manifest) and the shipper.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -30,6 +35,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 CAMPAIGN="" ENGINE="" HOST=pve-laptop.tjg.fyi CTID=215 SCAN_SERVER=http://usnm-scanfetch.tjg.fyi:8380
 CHUNK=200 PENDING=5 WORKERS=4 MAX_UNSENT=300 MAX_CHUNKS=1 BUNDLE=200 ENABLE=false
+FOLLOW=false STRATA=1 PASS_PAGES=2000
 while [ $# -gt 0 ]; do
   case $1 in
     --campaign) CAMPAIGN=${2:-}; shift 2 ;;
@@ -44,6 +50,9 @@ while [ $# -gt 0 ]; do
     --max-chunks) MAX_CHUNKS=${2:-}; shift 2 ;;
     --bundle-size) BUNDLE=${2:-}; shift 2 ;;
     --enable) ENABLE=true; shift ;;
+    --follow) FOLLOW=true; shift ;;
+    --strata) STRATA=${2:-}; shift 2 ;;
+    --pass-pages) PASS_PAGES=${2:-}; shift 2 ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -52,7 +61,7 @@ done
 [[ $ENGINE =~ ^sha256:[0-9a-f]{64}$ ]] || die "--engine-image: sha256:<64 hex>"
 [[ $HOST =~ ^[a-z0-9][a-z0-9.-]*$ ]] || die "--host: a host name"
 [[ $SCAN_SERVER =~ ^http://[a-z0-9][a-z0-9.-]*:[0-9]+$ ]] || die "--scan-server: http://<host>:<port>"
-for n in "$CTID" "$CHUNK" "$PENDING" "$WORKERS" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE"; do
+for n in "$CTID" "$CHUNK" "$PENDING" "$WORKERS" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$STRATA" "$PASS_PAGES"; do
   [[ $n =~ ^[0-9]+$ ]] || die "numbers only: $n"
 done
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$HOST")
@@ -67,12 +76,14 @@ scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed
   "$HERE/usnm-quality-refresh.service" "$HERE/usnm-quality-refresh.timer" \
   "$HERE/../ocr-feed/ocr_manifest.py" "$HERE/../ocr-feed/usnm-ocr-manifest.service" \
   "$HERE/../ocr-feed/usnm-ocr-manifest.timer" "$HERE/usnm-quality-locwc-load.service" \
-  "$HERE/usnm-quality-locwc-load.timer" "root@$HOST:$stage/"
+  "$HERE/usnm-quality-locwc-load.timer" "$HERE/usnm-quality-follow.service" \
+  "$HERE/../ocr-feed/usnm-quality-build.service" "$HERE/../ocr-feed/usnm-quality-build.timer" "root@$HOST:$stage/"
 
 "${SSH[@]}" bash -s -- "$CTID" "$stage" "$CAMPAIGN" "$SCAN_SERVER" "$CHUNK" "$PENDING" "$WORKERS" \
-  "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" <<'REMOTE'
+  "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" "$FOLLOW" "$STRATA" "$PASS_PAGES" <<'REMOTE'
 set -euo pipefail
 ct=$1 stage=$2 campaign=$3 scan=$4 chunk=$5 pending=$6 workers=$7 engine=$8 unsent=$9 chunks=${10} bundle=${11} enable=${12}
+follow=${13} strata=${14} pass_pages=${15}
 in_ct() { pct exec "$ct" -- "$@"; }
 in_ct test -d /srv/curated/pages || { echo "error: no curated copy in CT $ct: run batch-ct-quality.sh --mounts" >&2; exit 1; }
 in_ct bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get install -y -q python3-venv postgresql-client > /dev/null'
@@ -85,6 +96,11 @@ pct push "$ct" "$stage/usnm-ocr-manifest.service" /etc/systemd/system/usnm-ocr-m
 pct push "$ct" "$stage/usnm-ocr-manifest.timer" /etc/systemd/system/usnm-ocr-manifest.timer
 pct push "$ct" "$stage/usnm-quality-locwc-load.service" /etc/systemd/system/usnm-quality-locwc-load.service
 pct push "$ct" "$stage/usnm-quality-locwc-load.timer" /etc/systemd/system/usnm-quality-locwc-load.timer
+for u in usnm-quality-follow.service usnm-quality-build.service usnm-quality-build.timer; do
+  pct push "$ct" "$stage/$u" "/etc/systemd/system/$u"
+done
+printf 'CAMPAIGN=%s\nSCAN_SERVER=%s\n' "$campaign" "$scan" | in_ct sh -c 'cat > /etc/usnm/quality-follow.env'
+printf 'STRATA=%s\nMAX_PAGES=%s\nSCAN_SERVER=%s\n' "$strata" "$pass_pages" "$scan" | in_ct sh -c 'cat > /etc/usnm/quality-build.env'
 pct push "$ct" "$stage/usnm-quality-feed.service" /etc/systemd/system/usnm-quality-feed.service
 pct push "$ct" "$stage/usnm-quality-agree-load.service" /etc/systemd/system/usnm-quality-agree-load.service
 pct push "$ct" "$stage/usnm-quality-agree-load.timer" /etc/systemd/system/usnm-quality-agree-load.timer
@@ -123,7 +139,14 @@ printf 'CAMPAIGN=%s\nENGINE_IMAGE=%s\nMAX_UNSENT=%s\nMAX_CHUNKS=%s\nBUNDLE_SIZE=
   "$campaign" "$engine" "$unsent" "$chunks" "$bundle" > /etc/usnm/quality-ship.env
 systemctl daemon-reload
 rm -rf "$stage"
-if [ "$enable" = true ]; then
+if [ "$follow" = true ]; then
+  # The piggyback and the image pass: the follow feeder and the pass's manifests, with the
+  # shipper; the one-list feeder stays off.
+  in_ct systemctl disable --now usnm-quality-feed.service 2> /dev/null || true
+  in_ct systemctl enable --now usnm-quality-follow.service
+  in_ct systemctl enable --now usnm-quality-build.timer
+  systemctl enable --now usnm-quality-ship.timer
+elif [ "$enable" = true ]; then
   in_ct test -s "/var/lib/usnm-quality-feed/$campaign/pages.jsonl" ||
     { echo "error: no page list for $campaign in CT $ct" >&2; exit 1; }
   in_ct systemctl restart usnm-quality-feed.service
