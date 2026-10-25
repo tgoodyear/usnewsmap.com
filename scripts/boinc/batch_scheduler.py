@@ -927,17 +927,20 @@ def ocr_workunit_counts(snapshot, pending_jobs):
 
 
 def units_of(config, records):
-    """Split the records to submit into workunits (#1059): by queue, in their order, into groups
-    of at most that queue's pages_per_unit (1, a page alone, by default)."""
+    """Split the records to submit into workunits (#1059): by queue and page deadline (a bundle's
+    pages share one, #1159), in their order, into groups of at most that queue's pages_per_unit
+    (1, a page alone, by default)."""
     sizes = config.get("pages_per_unit", {})
-    queues = {}
+    groups = {}
     for record in records:
         queue = QUEUE_OF_REASON.get(record["job"]["message"].get("reason"), "ocr-bulk")
-        queues.setdefault(queue, []).append(record["job"]["id"])
+        deadline = record["job"].get("engine", {}).get("timeout_secs")
+        groups.setdefault(queue, {}).setdefault(deadline, []).append(record["job"]["id"])
     units = []
     for queue in QUEUES:
-        ids, size = queues.get(queue, []), sizes.get(queue, 1)
-        units += [ids[i:i + size] for i in range(0, len(ids), size)]
+        size = sizes.get(queue, 1)
+        for ids in groups.get(queue, {}).values():
+            units += [ids[i:i + size] for i in range(0, len(ids), size)]
     return units
 
 
