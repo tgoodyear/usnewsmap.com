@@ -272,71 +272,57 @@ integration, stop its query service and restore the saved `aggregate-only.conf`
 to the observer's service drop-in directory, then reload systemd and rerun the
 observer. This does not stop OCR or BOINC work.
 
-Corpus-wide inventory, automatic worker transport/retention, BOINC and
-`ocr-file` capture, and authoritative validation/import/index exporters remain
-separate rollout steps. Do not enable an uncalibrated corpus-wide job merely
-because the control plane is online.
+Corpus-wide inventory, BOINC and `ocr-file` capture, and authoritative
+validation/import/index exporters remain separate rollout steps. Do not enable
+an uncalibrated corpus-wide job merely because the control plane is online.
 
-## Live worker evidence transport
+## Retired worker evidence transport
 
-`scripts/corpus/worker_evidence_sync.py` adds an administrative, bounded transport for
-the existing opt-in captures. It does not read queues, upload OCR output or grant
-acceptance. A restricted SSH key on the catalog host may run only the root-owned
-exporter on the worker:
+The direct OCR worker is retired (#966, #1053) and local OCR runs through BOINC
+only, so no host writes run-metadata captures any more. The SSH receiver that
+collected them (`worker_evidence_sync.py`, `usnm-worker-evidence-sync.service`
+and its timer) and its tests are removed from the repository; the history keeps
+them. `data_catalog.py ingest-worker` still imports a single capture by hand.
 
-```text
-restrict,command="/usr/sbin/runuser -u usnm -- /usr/bin/python3 /usr/local/lib/usnm-data-flow/worker_evidence_sync.py export --root /var/lib/usnm-ocr/run-metadata" <dedicated-public-key>
+A catalog host that still runs the receiver should retire it. Once the worker's
+host is gone, the unit fails on every tick and `systemctl is-system-running`
+reports `degraded`:
+
+```bash
+systemctl disable --now usnm-worker-evidence-sync.timer
+systemctl reset-failed usnm-worker-evidence-sync.service
 ```
 
-Install `data_catalog.py` beside that helper. Keep both files and their parent
-directory root-owned and not writable by the worker. The forced command accepts
-only a bounded export or checksum-matched acknowledgements; it cannot run a
-shell, choose a directory or forward connections. Drop to the worker's unprivileged
-account before reading its files, even when the SSH entry point is root. Pin the worker's already
-verified SSH host key in the receiver's `known_hosts`; do not disable host checks.
-Never publish deployment hostnames, keys or local connection settings.
+Then remove the two unit files, `/etc/usnm/worker-evidence-sync.env`,
+`worker_evidence_sync.py` from `/usr/local/lib/usnm-data-flow`, and the receiver's
+key pair and `known_hosts` under `/var/lib/usnm-data-flow/worker-sync`. Keep
+`worker-sync/retained/`: its captures and derived JSONL (source
+`worker-node3-live`) are what the catalog is rebuilt from, by replaying them with
+`ingest --batch`.
 
-The receiver's `usnm-worker-evidence-sync.service` and timer run as `ocrdash`.
-Its required `/etc/usnm/worker-evidence-sync.env` supplies
-`USNM_WORKER_EVIDENCE_HOST=<ssh-user>@<worker-host>` and
-`USNM_WORKER_EVIDENCE_SOURCE=worker-node3-live`. Its dedicated private key and
-`known_hosts` live under `/var/lib/usnm-data-flow/worker-sync` (directory 0700,
-private key 0600, owned by `ocrdash`). Do not copy an administrator's private key.
+The receiver was the only scheduled writer of `catalog.json`, so without it the
+snapshot stops changing while the observer keeps joining it. The observer
+therefore adds a `catalog-frozen` issue when the snapshot's `generated_at` or its
+newest evidence (`observed_at`) is more than three days old;
+`--catalog-max-age-days` changes the limit, and the issue text gives both ages.
+The counts stay in the snapshot as history and the observer run still succeeds,
+so a frozen catalog does not fail its unit.
 
-Each tick imports at most 100 captures, each at most 64 KiB, with a 10 MiB
-transport limit, strict schema/checksum/identity checks and a single-writer lock.
-The collector permits half a CPU for short bursts. At 112,640 inventory rows,
-snapshot generation measured about 0.35 seconds without throttling; a 10% CPU
-quota caused its unchanged two-second wall-clock query deadline to expire.
-The 50% quota restored successful scheduled import and acknowledgement. Keep the
-query deadline, bounded batches and 128 MiB memory limit; measure snapshot cost
-again before growing the inventory beyond the deployed size.
-Incomplete worker `.pending-*` files are ignored. Each received capture and its
-derived JSONL are retained durably under
-`worker-sync/retained/<source>/`; retry replays the same immutable evidence.
-Only after catalog commit and snapshot publication does the receiver acknowledge
-the exact capture checksums. The worker moves those files into `acknowledged/`,
-retaining the originals without re-exporting old runs forever. An interrupted
-acknowledgement is safely replayed. Nothing is automatically deleted.
+Regenerating the snapshot with
+`data_catalog.py --db catalog.sqlite snapshot --out catalog.json` moves only
+`generated_at`. The flag stays until new evidence moves `observed_at`, and BOINC
+results are not cataloged until an adapter for them exists under
+[#704](https://github.com/tgoodyear/usnewsmap.com/issues/704). Drop
+`--catalog-snapshot` from the observer's unit if the flag is unwanted. A unit that
+regenerates the snapshot needs about half a CPU: at 112,640 inventory rows it took
+about 0.35 seconds unthrottled but exceeded its two-second query deadline under a
+10% quota, the observer unit's current limit.
 
-Retain both copies during this initial rollout. Inspect disk growth and collector
-failures with `systemctl status usnm-worker-evidence-sync.timer` and
-`journalctl -u usnm-worker-evidence-sync.service`; failed schema, oversized records,
-SSH, checksum or database operations exit nonzero rather than silently skipping
-evidence. Disk retention is deliberately conservative, not a claimed corpus-scale
-compaction policy. Before pruning either copy, produce and verify a durable
-checksummed archive and rebuild the catalog from retained JSONL. Snapshot counters
-remain partial. The observer joins explicit catalog acceptance/import/index
-observations with their original source timestamps; it does not infer those stages
-from successful execution. A one-page import proof is one observed import, not the
-total imported corpus. Unconnected stages remain unknown.
-
-Enable capture by adding only `USNM_OCR_RUN_METADATA_DIR` at a planned worker
-deployment boundary. Preserve the binary, routes, models, queue and timeout
-configuration. Verify drain-on-stop and sufficient systemd stop timeout first;
-let the existing worker drain its in-flight pages rather than killing engines.
-Rollback removes only the capture setting at another graceful boundary; retained
-evidence and its read-only query service remain intact.
+Snapshot counters remain partial. The observer joins explicit catalog
+acceptance, import and index observations with their original source timestamps
+and does not infer those stages from successful execution. A one-page import
+proof is one observed import, not the total imported corpus. Unconnected stages
+remain unknown.
 
 ## Release selection and search provenance
 
