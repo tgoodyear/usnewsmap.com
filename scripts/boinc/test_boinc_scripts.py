@@ -1496,7 +1496,9 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         calls = self.calls()
         self.assertFalse([c for c in calls if "--path scans/" in c or "--path manifests/" in c], calls)
         (export,) = [c for c in calls if c.startswith("export ")]
-        self.assertIn(f"--scans {mount} ", export)
+        # Only the listed files, copied out of the staging tree, which may hold other formats.
+        self.assertNotIn(f"--scans {mount} ", export)
+        self.assertIn("--scans ", export)
         self.assertIn("record.json", calls)
         self.assertIn("request.json", calls)
         self.assertNotIn("page", calls)

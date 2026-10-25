@@ -156,8 +156,13 @@ case "${HANDOFF_STEP:-}" in
         [[ "$scan" =~ ^keep/[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && [[ "$scan" != *..* ]] ||
           fail "HANDOFF_SCANS must name cached scans under keep/"
         if [ "$scans_dir" = "$local_scans" ]; then
+          # Exactly the listed files, copied out of the staging tree: an older scan of the page
+          # in another format there must not stand in for the one just pushed.
           for suffix in "" .json; do
-            [ -f "$local_scans/$scan$suffix" ] || fail "no $scan$suffix among the scans pushed to this host"
+            [ -f "$local_scans/$scan$suffix" ] && [ ! -L "$local_scans/$scan$suffix" ] ||
+              fail "no $scan$suffix among the scans pushed to this host"
+            mkdir -p "$(dirname "$work/scans/$scan")"
+            cp "$local_scans/$scan$suffix" "$work/scans/$scan$suffix"
           done
           continue
         fi
@@ -205,7 +210,7 @@ case "${HANDOFF_STEP:-}" in
     sleep 1
     rc=0
     usnm-boinc export --manifest "$work/manifests/$HANDOFF_MANIFEST" --pages "$work/pages.txt" \
-      --batch "$HANDOFF_BATCH" --scans "$scans_dir" --root "$root" --plan "$HANDOFF_PLAN" \
+      --batch "$HANDOFF_BATCH" --scans "$work/scans" --root "$root" --plan "$HANDOFF_PLAN" \
       --image "$ENGINE_IMAGE" --curated-url "$CURATED_URL" --reference-url "$REFERENCE_URL" \
       --cosmos "$COSMOS_ENDPOINT" ${claim_args[@]+"${claim_args[@]}"} || rc=$?
     # Whatever export got to (it journals each entry before it reserves) goes back.
