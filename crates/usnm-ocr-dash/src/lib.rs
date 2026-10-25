@@ -712,6 +712,15 @@ mod tests {
             },
             now,
         );
+        let mut snap = pipeline::tests::fixture(now);
+        snap["stages"][0]["id"] = "local_usnm-ocr-node3_completed_hour".into();
+        snap["stages"][0]["detail"] = "read /data/scans/status-full.json on pve-big".into();
+        snap["issues"][0]["code"] = "usnm-ocr-node3-stale".into();
+        snap["issues"][0]["detail"] =
+            "tank/ocr/scans/index-full.jsonl from [2001:db8::7]:8381".into();
+        let snap_path = dir.join("pipeline.json");
+        std::fs::write(&snap_path, serde_json::to_vec(&snap).unwrap()).unwrap();
+        *a.pipeline.lock().unwrap() = pipeline::Pipeline::new(Some(snap_path), 900);
         a.poll_files();
         a
     }
@@ -796,6 +805,15 @@ mod tests {
         assert!(page.contains("scan server"));
         assert!(page.contains("queue-ocr-20261025t015125"));
         assert!(page.contains("OCR node 1"));
+        let ((_, p), _) = call_on(
+            public_router(a.clone()),
+            "203.0.113.3",
+            "GET",
+            "/api/pipeline.json",
+            "",
+        )
+        .await;
+        assert!(p.contains("local_worker1_completed_hour"), "{p}");
     }
 
     #[tokio::test]

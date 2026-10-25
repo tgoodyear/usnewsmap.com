@@ -20,10 +20,18 @@ fn word_char(c: char) -> bool {
 
 /// One word of free text, or `None` to keep it.
 fn label_for(word: &str) -> Option<&'static str> {
-    let w = word.trim_end_matches(['.', '-']);
-    let lower = w.to_ascii_lowercase();
+    let lower = word.trim_end_matches(['.', '-']).to_ascii_lowercase();
     if PATH_ROOTS.iter().any(|r| lower.starts_with(r)) {
         return Some("a local path");
+    }
+    // Any other path, absolute or relative (`/data/scans/x.json`,
+    // `tank/ocr/scans/…`), but not a URL's remainder (`//host/…`).
+    if !lower.starts_with("//") && lower.contains('/') {
+        let last = lower.rsplit('/').next().unwrap_or_default();
+        let absolute = lower.starts_with('/') && lower.len() > 1;
+        if absolute || lower.starts_with("tank/") || last.contains('.') {
+            return Some("a local path");
+        }
     }
     // A host, alone or at the start of a URL's remainder (`//host/…`).
     let host = lower
@@ -34,7 +42,7 @@ fn label_for(word: &str) -> Option<&'static str> {
     if host.contains("tjg.fyi") || host == "pve" || host.starts_with("pve-") {
         return Some("a lab host");
     }
-    if host.starts_with("usnm-ocr-node") || host.starts_with("ocr-node") {
+    if host.contains("ocr-node") {
         return Some("an OCR node");
     }
     let quad = host.split('.').count() == 4 && host.split('.').all(|p| p.parse::<u8>().is_ok());
@@ -51,6 +59,27 @@ pub fn scrub(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
     while i < chars.len() {
+        // An IPv6 literal, alone or in brackets, before sentence punctuation.
+        let at_start = i == 0 || !chars[i - 1].is_ascii_alphanumeric();
+        if at_start && (chars[i].is_ascii_hexdigit() || chars[i] == ':') {
+            let mut j = i;
+            while j < chars.len() && (chars[j].is_ascii_hexdigit() || matches!(chars[j], ':' | '.'))
+            {
+                j += 1;
+            }
+            let run: String = chars[i..j].iter().collect();
+            let lit = run.trim_end_matches('.');
+            let next_word = chars.get(j).is_some_and(|c| c.is_ascii_alphanumeric());
+            if !next_word
+                && lit.matches(':').count() >= 2
+                && lit.parse::<std::net::Ipv6Addr>().is_ok()
+            {
+                out.push_str("an address");
+                out.push_str(&run[lit.len()..]);
+                i = j;
+                continue;
+            }
+        }
         if !word_char(chars[i]) {
             out.push(chars[i]);
             i += 1;
@@ -82,8 +111,10 @@ pub fn scrub(s: &str) -> String {
             i = j;
             continue;
         }
-        if let Some(label) = numbered(&word) {
+        let core = word.trim_end_matches(['.', '-']);
+        if let Some(label) = numbered(core) {
             out.push_str(label);
+            out.push_str(&word[core.len()..]);
             continue;
         }
         // An IPv6 address or `host:port` spans colons: look at the whole run.
@@ -101,8 +132,11 @@ pub fn scrub(s: &str) -> String {
                 }
             }
         }
-        match label_for(&word) {
-            Some(l) => out.push_str(l),
+        match label_for(core) {
+            Some(l) => {
+                out.push_str(l);
+                out.push_str(&word[core.len()..]);
+            }
             None => out.push_str(&word),
         }
     }
@@ -177,16 +211,21 @@ pub fn redact(v: &mut View) {
             f.queue = scrub(&f.queue);
         }
     }
-    let mut label_of = |name: &str| -> String {
+    let label_of = |names: &mut BTreeMap<String, String>, name: &str| -> String {
         let next = names.len() + 1;
         names
             .entry(name.to_owned())
             .or_insert_with(|| format!("OCR node {next}"))
             .clone()
     };
-    v.ocred.journals = v.ocred.journals.iter().map(|j| label_of(j)).collect();
+    v.ocred.journals = v
+        .ocred
+        .journals
+        .iter()
+        .map(|j| label_of(&mut names, j))
+        .collect();
     for l in &mut v.ocred.latest {
-        l.node = label_of(&l.node);
+        l.node = label_of(&mut names, &l.node);
         for c in &mut l.rows {
             c.scan = scrub(&c.scan);
             c.reason = scrub(&c.reason);
@@ -195,11 +234,15 @@ pub fn redact(v: &mut View) {
     }
     v.ocred.workbook_url = None;
     v.azure.workbook_url = None;
-    v.azure.queues_from = v.azure.queues_from.as_deref().map(&mut label_of);
+    v.azure.queues_from = v
+        .azure
+        .queues_from
+        .as_deref()
+        .map(|n| label_of(&mut names, n));
     if let Some(q) = &mut v.azure.queues {
         scrub_opt(&mut q.error);
         for d in &mut q.dead_letters {
-            d.node = label_of(&d.node);
+            d.node = label_of(&mut names, &d.node);
             d.from = scrub(&d.from);
             d.cause = scrub(&d.cause);
             d.error = scrub(&d.error);
@@ -253,19 +296,49 @@ pub fn redact(v: &mut View) {
 
     let p = &mut v.pipeline;
     scrub_opt(&mut p.last_error);
+    for f in &mut p.stage_freshness {
+        f.id = scrub_id(&f.id, &mut names);
+    }
     if let Some(s) = &mut p.snapshot {
         s.producer = scrub(&s.producer);
         for c in &mut s.coverage {
             *c = scrub(c);
         }
         for st in &mut s.stages {
+            st.id = scrub_id(&st.id, &mut names);
             st.label = scrub(&st.label);
             st.detail = scrub(&st.detail);
         }
         for i in &mut s.issues {
+            i.code = scrub_id(&i.code, &mut names);
             i.detail = scrub(&i.detail);
         }
     }
+}
+
+/// An identifier (`local_usnm-ocr-node3_completed_hour`) with each worker
+/// name in it replaced by the same number the page gives that worker
+/// (`local_worker1_completed_hour`), so ids stay distinct, then scrubbed.
+fn scrub_id(id: &str, names: &mut BTreeMap<String, String>) -> String {
+    const NODE: &str = "usnm-ocr-node";
+    let mut out = String::new();
+    let mut rest = id;
+    while let Some(at) = rest.find(NODE) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + NODE.len()..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        let name = &rest[at..at + NODE.len() + digits];
+        let next = names.len() + 1;
+        let label = names
+            .entry(name.to_owned())
+            .or_insert_with(|| format!("OCR node {next}"));
+        out.push_str("worker");
+        out.push_str(label.trim_start_matches("OCR node "));
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    // `_` joins words in an id: scrub each part.
+    out.split('_').map(scrub).collect::<Vec<_>>().join("_")
 }
 
 #[cfg(test)]
@@ -285,6 +358,28 @@ mod tests {
         }
         assert!(s.starts_with("can't read a local path on a lab host (a container)"));
         assert!(s.ends_with("a VM down"), "{s}");
+        for leak in [
+            "could not start VM205.",
+            "CT212.",
+            "at [::1]:8381 and [2001:db8::]:8381, or 2001:db8::7.",
+            "missing /data/scans/status-full.json, tank/ocr/scans/status-full.json",
+        ] {
+            let s = scrub(leak);
+            for bad in ["205", "212", "::", "db8", "/data", "tank/", "status-full"] {
+                assert!(!s.contains(bad), "{bad} in {s}");
+            }
+        }
+        assert_eq!(scrub("could not start VM205."), "could not start a VM.");
+        assert_eq!(
+            scrub("at 19:24:44 runs:observed"),
+            "at 19:24:44 runs:observed"
+        );
+        let mut names = BTreeMap::new();
+        assert_eq!(
+            scrub_id("local_usnm-ocr-node3_completed_hour", &mut names),
+            "local_worker1_completed_hour"
+        );
+        assert_eq!(scrub_id("usnm-ocr-node4", &mut names), "worker2");
         let keep = "https://tile.loc.gov/storage-services/x/0746.jp2: holding, v1.2.3";
         assert_eq!(scrub(keep), keep);
     }
