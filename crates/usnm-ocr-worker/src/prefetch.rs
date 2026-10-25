@@ -160,6 +160,29 @@ pub struct Options {
     /// Only pages of these awardees' batches (the batch name's first part,
     /// e.g. `nbu`), such as those a mirror serves; all when empty.
     pub awardees: Vec<String>,
+    /// Manifest directory-name prefixes (e.g. `queue-quality-`) whose
+    /// manifests take pages' JP2s only from LoC's bucket or a mirror: a page
+    /// neither has is deferred (`deferred_needs_loc`), never asked of LoC's
+    /// storage service, item API or IIIF, and left for a later run. Batch
+    /// manifests and METS still come from LoC when the bucket can't serve
+    /// them. None by default.
+    pub no_loc_prefixes: Vec<String>,
+}
+
+/// Whether `manifest` lives in a directory whose name starts with one of
+/// `prefixes` (empty ones ignored).
+pub fn no_loc_for(manifest: &Path, prefixes: &[String]) -> bool {
+    let Some(dir) = manifest
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|d| d.to_str())
+    else {
+        return false;
+    };
+    prefixes
+        .iter()
+        .map(|p| p.trim())
+        .any(|p| !p.is_empty() && dir.starts_with(p))
 }
 
 /// Which sets a run fetches.
@@ -210,6 +233,7 @@ impl Default for Options {
             lock_file: None,
             mirrors: None,
             awardees: Vec::new(),
+            no_loc_prefixes: Vec::new(),
         }
     }
 }
@@ -409,6 +433,14 @@ pub struct Status {
     /// LoC's bucket's counts and hold, when it is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bucket: Option<BucketStatus>,
+    /// Whether this run's manifest takes JP2s only from LoC's bucket and
+    /// the mirrors ([`Options::no_loc_prefixes`]).
+    #[serde(default)]
+    pub no_loc: bool,
+    /// Pages neither LoC's bucket nor a mirror had, left for a run that
+    /// may ask LoC. Counted in `finished`, not as failures.
+    #[serde(default)]
+    pub deferred_needs_loc: u64,
     pub bytes_fetched: u64,
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
@@ -629,6 +661,7 @@ struct Counts {
     /// `--max-total-bytes`; consumed scans aren't taken off).
     run_buffer_bytes: AtomicU64,
     failed_item_error: AtomicU64,
+    deferred_needs_loc: AtomicU64,
 }
 
 /// The failures since the last page that was done, and their titles.
@@ -797,6 +830,8 @@ struct Run {
     cooling: Cooling,
     /// Pages whose issue is cooling off, and when it can be asked again.
     deferred: Mutex<Vec<(DateTime<Utc>, ManifestRow)>>,
+    /// JP2s only from LoC's bucket or a mirror ([`Options::no_loc_prefixes`]).
+    no_loc: bool,
 }
 
 impl Run {
@@ -811,6 +846,7 @@ impl Run {
         s.failed_permanent = c.failed_permanent.load(Ordering::SeqCst);
         s.failed_transient = c.failed_transient.load(Ordering::SeqCst);
         s.failed_item_error = c.failed_item_error.load(Ordering::SeqCst);
+        s.deferred_needs_loc = c.deferred_needs_loc.load(Ordering::SeqCst);
         (s.issues_cooling, s.issues_item_permanent) = self.cooling.counts();
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
         s.fetched_jp2 = c.fetched_jp2.load(Ordering::SeqCst);
@@ -883,6 +919,7 @@ impl Run {
             failed_permanent = s.failed_permanent,
             failed_transient = s.failed_transient,
             failed_item_error = s.failed_item_error,
+            deferred_needs_loc = s.deferred_needs_loc,
             issues_cooling = s.issues_cooling,
             bytes_fetched = s.bytes_fetched,
             bytes_on_disk = s.bytes_on_disk,
@@ -1031,6 +1068,10 @@ impl Run {
     /// the batch route can't place it. An issue cooling off on the route
     /// the page would take is skipped without asking LoC.
     async fn fetch(&self, row: &ManifestRow, key: &PageKey, size: ImageSize) -> Fetched {
+        // Only a full-size JP2 is asked of LoC's bucket or a mirror.
+        if self.no_loc && size != ImageSize::Full {
+            return Fetched::NeedsLoc("only a full-size JP2 comes from LoC's bucket or a mirror");
+        }
         let issue = issue_id(key);
         let storage_issue = format!("storage:{issue}");
         if let c @ (Check::Cooling(_) | Check::Permanent) = self.cooling.check(&storage_issue) {
@@ -1054,7 +1095,13 @@ impl Run {
                         }
                     }
                 }
+                if self.no_loc {
+                    return Fetched::NeedsLoc("neither LoC's bucket nor a mirror has its JP2");
+                }
                 self.loc.scan_resolved(key, &p, size).await
+            }
+            Ok(None) if self.no_loc => {
+                return Fetched::NeedsLoc("its batch can't place it, and the item API is LoC's");
             }
             Ok(None) => Ok(None),
             Err(e) => Err(e),
@@ -1115,6 +1162,14 @@ impl Run {
             // An issue cooling off says nothing new about loc.gov, so the
             // run of failures is left as is.
             Fetched::Skip(check, why) => self.skip(row, &t, check, why),
+            // Not a failure and nothing about LoC: no failure line, no
+            // cool-off, and the run of failures is left as is. With no scan
+            // on disk, a later run takes it again.
+            Fetched::NeedsLoc(why) => {
+                c.deferred_needs_loc.fetch_add(1, Ordering::SeqCst);
+                tracing::info!(doc_id = row.doc_id, why, "deferred: needs LoC");
+                Ok(Outcome::Done)
+            }
             Fetched::Scan(scan, route, via) => {
                 let path = scan_path(&self.opts.out, &row, size, scan.format);
                 let side = Sidecar {
@@ -1227,6 +1282,8 @@ enum Fetched {
     Failed(FetchError, String),
     /// Its issue is cooling off on the route the page would take.
     Skip(Check, &'static str),
+    /// Only LoC has it, and this run doesn't ask LoC for JP2s.
+    NeedsLoc(&'static str),
 }
 
 /// How a scan was fetched.
@@ -1410,6 +1467,7 @@ pub async fn run(
     {
         loc.seed_storage_known_good(&jp2.loc_url);
     }
+    let no_loc = no_loc_for(&opts.manifest, &opts.no_loc_prefixes);
     let run = Arc::new(Run {
         loc,
         counts: Counts::default(),
@@ -1427,6 +1485,7 @@ pub async fn run(
             buffer_resolution: opts.buffer_size.to_string(),
             keep_pages: rows.iter().filter(|r| set_of(r) == Set::Keep).count() as u64,
             buffer_pages: rows.iter().filter(|r| set_of(r) == Set::Buffer).count() as u64,
+            no_loc,
             ..Status::default()
         }),
         status_path: opts.out.join(format!("status-{status_tag}.json")),
@@ -1441,6 +1500,7 @@ pub async fn run(
         streak: Mutex::new(Streak::default()),
         cooling,
         deferred: Mutex::new(Vec::new()),
+        no_loc,
         opts,
     });
     tracing::info!(
@@ -1451,6 +1511,7 @@ pub async fn run(
         buffer_cap = run.opts.buffer_cap,
         concurrency = run.opts.concurrency,
         out = %run.opts.out.display(),
+        no_loc = run.no_loc,
         "prefetch starting"
     );
     run.count_buffer().await;
@@ -2539,6 +2600,134 @@ mod tests {
 
     fn batch_loc(s: &StandIn, cache: &Path) -> Arc<LocClient> {
         Arc::new(LocClient::new(batch_cfg(s, cache)).unwrap())
+    }
+
+    #[test]
+    fn no_loc_goes_by_the_manifests_directory_name() {
+        let p = |s: &str| Path::new(s).to_path_buf();
+        let pre = vec!["queue-quality-".to_owned(), " ".to_owned()];
+        assert!(no_loc_for(&p("/m/queue-quality-20261025/manifest.parquet"), &pre));
+        assert!(!no_loc_for(&p("/m/queue-ocr-20261025/manifest.parquet"), &pre));
+        // The directory's name, not the file's or a parent's further up.
+        assert!(!no_loc_for(&p("/queue-quality-x/m/manifest.parquet"), &pre));
+        assert!(!no_loc_for(&p("manifest.parquet"), &pre));
+        // Off by default; a blank prefix matches nothing.
+        assert!(!no_loc_for(&p("/m/queue-quality-1/manifest.parquet"), &[]));
+        assert!(!no_loc_for(&p("/m/x/manifest.parquet"), &[" ".into()]));
+    }
+
+    #[tokio::test]
+    async fn a_no_loc_manifest_defers_what_only_loc_has_and_a_later_run_fetches_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = StandIn::start().await;
+        s.add_issue(
+            BATCH,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &[Page {
+                seq: 1,
+                frame: "0011",
+                jp2: b"jp2 one",
+            }],
+        );
+        let item = serde_json::json!({"resources": [{"files": [
+            [],
+            [{"mimetype": "image/jp2", "url": format!("{}{BATCH}data/sn1/0001A/1890050301/0012.jp2", s.root)}],
+        ]}]});
+        s.put(
+            "/item/sn1/1890-05-03/ed-1/",
+            serde_json::to_vec(&item).unwrap(),
+        );
+        s.put(
+            "/iiif/service:ndnp:xx:batch_xx_test_ver01:data:sn1:0001A:1890050301:0012/full/full/0/default.jpg",
+            b"iiif jpeg two".to_vec(),
+        );
+        // Page 1 is in the batch, page 2 only through the item API.
+        let rows: Vec<ManifestRow> = (1..=2).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+        let qdir = dir.path().join("queue-quality-20261025");
+        std::fs::create_dir_all(&qdir).unwrap();
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(&qdir, rows.clone()),
+            out: out.clone(),
+            concurrency: 1,
+            // One failure would stop it, if deferring were a failure.
+            max_failures_in_a_row: 1,
+            stop_min_titles: 1,
+            no_loc_prefixes: vec!["queue-quality-".into()],
+            ..Options::default()
+        };
+        let cache = dir.path().join("batches");
+        let (_tx, rx) = watch::channel(false);
+        let st = run(opts.clone(), batch_loc(&s, &cache), rx.clone())
+            .await
+            .unwrap();
+        assert_eq!(st.state, "done");
+        assert!(st.no_loc);
+        assert_eq!(
+            (
+                st.finished,
+                st.fetched,
+                st.deferred_needs_loc,
+                st.failed_transient,
+                st.failed_permanent,
+                st.issues_cooling
+            ),
+            (2, 0, 2, 0, 0, 0)
+        );
+        // The batch manifest and METS came from LoC; no JP2, item or IIIF.
+        assert_eq!(s.hits(&format!("{BATCH}manifest-md5.txt")), 1);
+        assert_eq!(s.hits(".xml"), 1);
+        assert_eq!(
+            (s.hits(".jp2"), s.hits("/ed-1/"), s.hits(".jpg")),
+            (0, 0, 0)
+        );
+        // Nothing on disk, no failure lines, no cool-off for either.
+        let failures = std::fs::read_to_string(out.join("failures-full.jsonl")).unwrap();
+        assert!(failures.is_empty(), "{failures}");
+        for r in &rows {
+            assert_eq!(there(&out, r, ImageSize::Full).await, None);
+        }
+        let json = serde_json::to_value(&st).unwrap();
+        assert_eq!(json["deferred_needs_loc"], 2);
+
+        // A run that may ask LoC takes both.
+        let st = run(
+            Options {
+                no_loc_prefixes: Vec::new(),
+                ..opts
+            },
+            batch_loc(&s, &cache),
+            rx,
+        )
+        .await
+        .unwrap();
+        assert_eq!((st.fetched, st.deferred_needs_loc, st.no_loc), (2, 0, false));
+    }
+
+    #[tokio::test]
+    async fn a_no_loc_manifest_asks_loc_for_no_scaled_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = StandIn::start().await;
+        let rows = vec![batch_row("sn1", "1890-05-03", 1)];
+        let qdir = dir.path().join("queue-quality-1");
+        std::fs::create_dir_all(&qdir).unwrap();
+        let opts = Options {
+            manifest: write_manifest(&qdir, rows),
+            out: dir.path().join("scans"),
+            size: ImageSize::Pct(50),
+            buffer_size: ImageSize::Pct(50),
+            concurrency: 1,
+            no_loc_prefixes: vec!["queue-quality-".into()],
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let st = run(opts, batch_loc(&s, &dir.path().join("batches")), rx)
+            .await
+            .unwrap();
+        assert_eq!((st.deferred_needs_loc, st.fetched), (1, 0));
+        assert_eq!(s.hits(""), 0, "nothing asked of LoC");
     }
 
     #[tokio::test]

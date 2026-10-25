@@ -27,7 +27,12 @@
 //! then goes on without the mirror. A 429 or 503 holds the mirror for
 //! `Retry-After` (at least [`MirrorConfig::backoff`], at most an hour), a
 //! 403, a challenge or an HTML page for [`MirrorConfig::block_hold`], and
-//! a held mirror is skipped, never waited out. Nothing a mirror answers
+//! a held mirror is skipped, never waited out. The Wayback Machine is
+//! slower and less steady than the partners, so it is held less: a
+//! timeout or a connection error there is only a miss for that page (the
+//! next page asks again, after the gap), and a 503 without `Retry-After`
+//! holds it for [`MirrorConfig::wayback_unavailable_hold`]; its CDX
+//! lookups get [`MirrorConfig::cdx_timeout`]. Nothing a mirror answers
 //! holds or slows LoC. A redirect is followed only within the mirror's
 //! host, by hand, as a request of its own (a mirror sending us to loc.gov
 //! would be a LoC request outside its pacing). Wayback's Save Page Now is
@@ -60,7 +65,7 @@ const CDX_LIMIT: usize = 2000;
 const CAPTURES_TRIED: usize = 2;
 /// The most redirects within a mirror's host followed for one request.
 const MAX_REDIRECTS: usize = 2;
-/// How long a page JSON or a CDX lookup may take.
+/// How long a partner's page JSON may take.
 const META_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a JP2 may take.
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -132,6 +137,16 @@ pub struct MirrorConfig {
     /// The longest a page waits for a mirror's turn before going on
     /// without it.
     pub max_wait: Duration,
+    /// How long a Wayback CDX lookup may take. A prefix query over an
+    /// issue's directory is an index scan on the Internet Archive's side
+    /// and often takes tens of seconds when it is busy; 30 s cut most of
+    /// them off on 25 October 2026.
+    pub cdx_timeout: Duration,
+    /// A Wayback 503 without `Retry-After` holds it this long (a 503 with
+    /// one holds it for that, at least this). Its 503s are load shedding
+    /// that clears in seconds; the 429 is its rate limit, and keeps
+    /// [`Self::backoff`].
+    pub wayback_unavailable_hold: Duration,
 }
 
 impl Default for MirrorConfig {
@@ -144,6 +159,8 @@ impl Default for MirrorConfig {
             backoff: Duration::from_secs(60),
             block_hold: Duration::from_secs(3600),
             max_wait: Duration::from_secs(30),
+            cdx_timeout: Duration::from_secs(60),
+            wayback_unavailable_hold: Duration::from_secs(15),
         }
     }
 }
@@ -211,6 +228,10 @@ pub struct MirrorStatus {
     pub skipped_held: u64,
     /// Holds it set (429, 503, 403, a challenge, an error).
     pub holds: u64,
+    /// Requests that timed out or couldn't connect and didn't hold it (the
+    /// Wayback Machine's; a partner holds on them).
+    #[serde(default)]
+    pub errors: u64,
     /// Seconds it is still held for, if it is.
     pub held_secs: Option<u64>,
 }
@@ -224,6 +245,7 @@ struct Counts {
     md5_mismatches: AtomicU64,
     skipped_held: AtomicU64,
     holds: AtomicU64,
+    errors: AtomicU64,
 }
 
 /// One request at a time to a mirror host, each at least `gap` after the
@@ -314,6 +336,11 @@ struct Host {
     name: &'static str,
     gate: Gate,
     counts: Counts,
+    /// Whether a timeout or a connection error holds it (a partner), or
+    /// is only a miss (the Wayback Machine).
+    errors_hold: bool,
+    /// The least a 503 holds it for.
+    unavailable_hold: Duration,
 }
 
 /// What one request got.
@@ -381,20 +408,30 @@ impl Mirrors {
             // Followed by hand, within the host, each paced and counted.
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        let host = |name, gap| Host {
-            name,
-            gate: Gate::new(gap),
-            counts: Counts::default(),
-        };
         let partners = cfg
             .partners
             .iter()
-            .map(|p| (p.awardee, (p.clone(), host(p.name, cfg.partner_gap))))
+            .map(|p| {
+                let host = Host {
+                    name: p.name,
+                    gate: Gate::new(cfg.partner_gap),
+                    counts: Counts::default(),
+                    errors_hold: true,
+                    unavailable_hold: cfg.backoff,
+                };
+                (p.awardee, (p.clone(), host))
+            })
             .collect();
-        let wayback = cfg
-            .wayback
-            .clone()
-            .map(|root| (root, host(WAYBACK, cfg.wayback_gap)));
+        let wayback = cfg.wayback.clone().map(|root| {
+            let host = Host {
+                name: WAYBACK,
+                gate: Gate::new(cfg.wayback_gap),
+                counts: Counts::default(),
+                errors_hold: false,
+                unavailable_hold: cfg.wayback_unavailable_hold,
+            };
+            (root, host)
+        });
         Ok(Self {
             http,
             partners,
@@ -445,6 +482,7 @@ impl Mirrors {
                         md5_mismatches: get(&c.md5_mismatches),
                         skipped_held: get(&c.skipped_held),
                         holds: get(&c.holds),
+                        errors: get(&c.errors),
                         held_secs: h
                             .gate
                             .held_until()
@@ -557,7 +595,7 @@ impl Mirrors {
         )
         .ok()?;
         let body = match self
-            .get(host, url.as_str(), MAX_META_BYTES, META_TIMEOUT)
+            .get(host, url.as_str(), MAX_META_BYTES, self.cfg.cdx_timeout)
             .await
         {
             Tried::Body(b, _, _) => b,
@@ -646,6 +684,16 @@ impl Mirrors {
             );
             Tried::Failed
         };
+        // A timeout or a connection error: a hold for a partner, only a
+        // miss for this page on the Wayback Machine.
+        let error = |url: &str, why: String| {
+            if host.errors_hold {
+                return hold(self.cfg.backoff, url, why);
+            }
+            c.errors.fetch_add(1, Ordering::SeqCst);
+            tracing::info!(mirror = host.name, url, why, "a mirror request failed; not held");
+            Tried::Failed
+        };
         let mut url = first.to_owned();
         for hop in 0..=MAX_REDIRECTS {
             if hop > 0 {
@@ -656,9 +704,7 @@ impl Mirrors {
             let sent = Instant::now();
             let resp = match self.http.get(&url).timeout(timeout).send().await {
                 Ok(r) => r,
-                Err(e) => {
-                    return hold(self.cfg.backoff, &url, super::error_chain(&e.without_url()))
-                }
+                Err(e) => return error(&url, super::error_chain(&e.without_url())),
             };
             let status = resp.status();
             if status.is_success() {
@@ -667,7 +713,9 @@ impl Mirrors {
                 }
                 return match read_limited(resp, max).await {
                     Ok(body) => Tried::Body(body, sent.elapsed(), url),
-                    Err(e) => hold(self.cfg.backoff, &url, e),
+                    // Cut off midway is an error; too big is the mirror's doing.
+                    Err(e) if e.starts_with("response over") => hold(self.cfg.backoff, &url, e),
+                    Err(e) => error(&url, e),
                 };
             }
             // A challenge is a block whatever its status.
@@ -677,8 +725,12 @@ impl Mirrors {
             match status.as_u16() {
                 404 | 410 => return Tried::Missing,
                 429 | 503 => {
-                    let d = retry_after(&resp)
-                        .map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff));
+                    let least = if status.as_u16() == 503 {
+                        host.unavailable_hold
+                    } else {
+                        self.cfg.backoff
+                    };
+                    let d = retry_after(&resp).map_or(least, |(d, _)| d.max(least));
                     return hold(d, &url, format!("HTTP {status}"));
                 }
                 403 => return hold(self.cfg.block_hold, &url, format!("HTTP {status}")),

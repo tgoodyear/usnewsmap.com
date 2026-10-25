@@ -472,6 +472,15 @@ enum Command {
         /// batch name's first part, e.g. `nbu`); all by default.
         #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
         awardees: Vec<String>,
+        /// Manifest directory-name prefixes, comma-separated (e.g.
+        /// `queue-quality-`): a manifest in a directory whose name starts
+        /// with one takes pages' JP2s only from LoC's bucket or the
+        /// mirrors. A page neither has is deferred (`deferred_needs_loc` in
+        /// the status), not fetched from LoC, not a failure, and left for a
+        /// later run. Batch manifests and METS still come from LoC when
+        /// the bucket can't serve them. None by default.
+        #[arg(long, env = "USNM_PREFETCH_NO_LOC_PREFIXES", value_delimiter = ',')]
+        no_loc_prefixes: Vec<String>,
     },
     /// Chronicling America's bulk OCR archives (ALTO with word confidence),
     /// one at a time, inside the host's global LoC budget (#962).
@@ -1138,6 +1147,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             loc_bucket,
             loc_bucket_gap_ms,
             awardees,
+            no_loc_prefixes,
         } => {
             let mirrors = {
                 let cfg = usnm_ocr_worker::loc::mirror::MirrorConfig {
@@ -1190,6 +1200,11 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 item_max_cooloffs,
                 mirrors,
                 awardees: awardees
+                    .into_iter()
+                    .map(|a| a.trim().to_owned())
+                    .filter(|a| !a.is_empty())
+                    .collect(),
+                no_loc_prefixes: no_loc_prefixes
                     .into_iter()
                     .map(|a| a.trim().to_owned())
                     .filter(|a| !a.is_empty())
