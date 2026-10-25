@@ -52,8 +52,8 @@
 # from a local copy instead of the lake (#308). The copy must keep each
 # blob's last-modified time as its file's (`azcopy copy
 # --preserve-last-modified-time`): a finish lists curated as of the run's
-# start by those times. Azure access is the host's Arc identity: usnm must
-# be in the himds group.
+# start by those times. Azure access is the host's Arc
+# identity: usnm must be in the himds group.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '2,56s/^# \{0,1\}//p' "$0" >&2; exit 2; }
