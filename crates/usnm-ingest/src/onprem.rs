@@ -56,7 +56,8 @@ pub const PENDING_POINTER: &str = "index-storage-pending.json";
 /// The file-backed metastore's list of indexes, at the metastore's root.
 pub const METASTORE_MANIFEST: &str = "manifest.json";
 /// The staged run's record in its version's snapshot (`{version}/index_run.json`),
-/// for [`import_staged_run`]: the on-prem host has no Cosmos access.
+/// for [`import_staged_run`]: the host's state is a local file, so this is how
+/// its run reaches Cosmos (the release script's publish step, or the ingest job).
 pub const RUN_FILE: &str = "index_run.json";
 /// Days from today whose version names `seed_state` reserves.
 const RESERVE_DAYS: i64 = 3;

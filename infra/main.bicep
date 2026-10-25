@@ -120,7 +120,7 @@ param serialSetOnPrem bool = false
 @description('Object id of the on-prem Serial Set runner\'s identity: the OCR node\'s Arc machine identity (with serialSetOnPrem). Settings only, never in the repository.')
 param serialSetRunner string = ''
 
-@description('Build full releases on the on-prem release container and copy them into Azure (#283, #917; docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"): onPremReleaseHost gets read on curated, writes to reference under pages-v*/ and index-storage-pending.json, writes to the index account\'s qw-index and AcrPull (modules/onprem-release.bicep); the data lake and, with indexStorage, the index account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay). Turn it off after a publish: the index account closes again.')
+@description('Build full releases on the on-prem release container and copy them into Azure (#283, #917; docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"): onPremReleaseHost gets read on curated, writes to reference under pages-v*/ and index-storage-pending.json, writes to the index account\'s qw-index, Cosmos Data Contributor on index_runs only (the publish records the version\'s run, #1096; the Cosmos firewall must be open to ocrNodeIps, with onPremServing or cosmosOnPremAccess) and AcrPull (modules/onprem-release.bicep); the data lake and, with indexStorage, the index account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay). Turn it off after a publish: the index account closes again.')
 param onPremRelease bool = false
 
 @description('Object id of the on-prem release container\'s Arc machine identity (usnm-release-arcs-<env>, with onPremRelease). Settings only, never in the repository.')
@@ -507,7 +507,8 @@ var dataLakeOpen = lakeOpen(
 var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 // Cosmos opens to the node IPs for the serving container (#955) or the
 // on-prem BOINC host's claim and collect (#967), and for the on-prem OCR pickup (#917),
-// which also uses the lake.
+// which also uses the lake. The on-prem release host's index_runs write (#1096) needs one of
+// these three; onPremRelease doesn't open it.
 var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
 
 module storage 'modules/storage.bicep' = {
@@ -553,6 +554,7 @@ module onPremReleaseGrant 'modules/onprem-release.bicep' = if (onPremRelease && 
     storageName: storage.outputs.name
     indexAccountName: indexStore!.outputs.name
     registryName: registry.outputs.name
+    cosmosName: cosmos.outputs.name
     principalId: trim(onPremReleaseHost)
     writerRoleName: releaseWriterRole!.outputs.name
   }

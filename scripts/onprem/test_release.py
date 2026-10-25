@@ -16,9 +16,14 @@ RELEASE = os.path.join(HERE, "release.sh")
 VERSION = "pages-v20261024-1"
 OTHER = "pages-v20261023-1"
 
+# A publish also records its run (import-staged-run, #1096): that call's arguments go to
+# "$STUB_ARGS.record", so "$STUB_ARGS" keeps the arguments of the copy or the restore.
 STUB_INGEST = """#!/bin/sh
-for arg in "$@"; do printf '%s\\n' "$arg"; done > "$STUB_ARGS"
+out="$STUB_ARGS"
+for arg in "$@"; do [ "$arg" != import-staged-run ] || out="$STUB_ARGS.record"; done
+for arg in "$@"; do printf '%s\\n' "$arg"; done > "$out"
 """
+COSMOS_ENDPOINT = "https://cosmosexample.documents.azure.com/"
 
 
 class ReleaseScript(unittest.TestCase):
@@ -67,8 +72,9 @@ class ReleaseScript(unittest.TestCase):
 class PublishAndRestore(ReleaseScript):
     def test_publish_passes_no_restore(self):
         self.stage()
-        for extra in ([], ["--dry-run"]):
-            p = self.release("--step", "publish", *extra)
+        # A publish needs the Cosmos endpoint for its record; a dry run records nothing.
+        for extra, options in (([], ["--cosmos-endpoint", COSMOS_ENDPOINT]), (["--dry-run"], [])):
+            p = self.release("--step", "publish", *extra, *options)
             self.assertEqual(p.returncode, 0, p.stderr)
             args = self.ingest_args()
             self.assertEqual(args[args.index("publish-staged") + 1 :], [
