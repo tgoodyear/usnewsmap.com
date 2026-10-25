@@ -4,7 +4,7 @@
 //! `catalog/titles.json` and `catalog/places.json` in the reference store. Each published reference snapshot carries its own copy,
 //! so a published version never changes when the catalog does.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{bail, Context};
 use chrono::NaiveDate;
@@ -65,9 +65,11 @@ pub struct Title {
     #[serde(default)]
     pub languages: Vec<String>,
     /// The places of a title that moved, by the dates of its pages
-    /// (`catalog/overrides/title-places.json`, #1066), oldest first. Empty
-    /// for a title in one place, and in catalogs written before they were
-    /// recorded: every page is then in `place_id`.
+    /// (`catalog/overrides/title-places.json`, #1066), oldest first: at least
+    /// two, the first without `from`, the last without `to`, each starting
+    /// the day after the one before ends ([`Catalog::new`] checks), so every
+    /// date has a place. Empty for a title in one place, and in catalogs
+    /// written before they were recorded: every page is then in `place_id`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub place_periods: Vec<PlacePeriod>,
     /// Anything else the catalog records (dates, ethnicity, …), passed through.
@@ -104,11 +106,22 @@ impl Title {
             .map_or(self.place_id.as_str(), |p| p.place_id.as_str())
     }
 
-    /// Every place a page of this title can be in: its own and its periods'.
-    pub fn place_ids(&self) -> BTreeSet<&str> {
-        std::iter::once(self.place_id.as_str())
-            .chain(self.place_periods.iter().map(|p| p.place_id.as_str()))
-            .collect()
+    /// Every place a page of this title can be in, each once: its periods'
+    /// places, oldest first (two periods in one place list it once), then
+    /// its own place if no period is there. Allocates nothing, which matters
+    /// in loops over every title; the few periods of a title that moved are
+    /// compared with each other instead.
+    pub fn place_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        let periods = &self.place_periods;
+        periods
+            .iter()
+            .enumerate()
+            .filter(move |&(i, p)| !periods[..i].iter().any(|q| q.place_id == p.place_id))
+            .map(|(_, p)| p.place_id.as_str())
+            .chain(
+                Some(self.place_id.as_str())
+                    .filter(move |own| !periods.iter().any(|q| q.place_id == *own)),
+            )
     }
 
     /// The state of a page of this title that is in `place`: the title's
@@ -120,6 +133,45 @@ impl Title {
             &place.state
         }
     }
+}
+
+/// A title's `place_periods` as `catalog/overrides/README.md` has them: none,
+/// or at least two, oldest first, the first without `from`, the last without
+/// `to`, and each starting the day after the one before ends. A date in no
+/// period would fall back to the title's own place, putting its pages in a
+/// place the source doesn't give them, so a gap or an open end where another
+/// period follows is refused.
+fn check_periods(lccn: &str, periods: &[PlacePeriod]) -> anyhow::Result<()> {
+    if periods.is_empty() {
+        return Ok(());
+    }
+    if periods.len() < 2 {
+        bail!("title `{lccn}`: fewer than two place periods: a title in one place has none");
+    }
+    for (i, p) in periods.iter().enumerate() {
+        let n = i + 1;
+        let (first, last) = (i == 0, n == periods.len());
+        match (first, p.from, last, p.to) {
+            (true, Some(_), _, _) => {
+                bail!("title `{lccn}`: place period {n}, the first, has a `from`")
+            }
+            (false, None, _, _) => bail!("title `{lccn}`: place period {n} has no `from`"),
+            (_, _, true, Some(_)) => {
+                bail!("title `{lccn}`: place period {n}, the last, has a `to`")
+            }
+            (_, _, false, None) => bail!("title `{lccn}`: place period {n} has no `to`"),
+            _ => {}
+        }
+        if p.from.zip(p.to).is_some_and(|(from, to)| from > to) {
+            bail!("title `{lccn}`: place period {n} ends before it starts");
+        }
+        if i > 0 && periods[i - 1].to.and_then(|to| to.succ_opt()) != p.from {
+            bail!(
+                "title `{lccn}`: place period {n} doesn't start the day after the one before it ends"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Title ordinals fill bits 32 and up of `sort_key` (edition and seq take 16
@@ -162,26 +214,12 @@ impl Catalog {
             if !place_index.contains_key(&t.place_id) {
                 bail!("title `{}` names unknown place `{}`", t.lccn, t.place_id);
             }
-            for (i, p) in t.place_periods.iter().enumerate() {
+            for p in &t.place_periods {
                 if !place_index.contains_key(&p.place_id) {
                     bail!("title `{}` names unknown place `{}`", t.lccn, p.place_id);
                 }
-                // In date order, none overlapping another or itself backwards.
-                let before = i.checked_sub(1).map(|j| &t.place_periods[j]);
-                let ordered = match (before.map(|b| b.to), p.from, p.to) {
-                    (_, Some(from), Some(to)) if from > to => false,
-                    (Some(Some(end)), Some(from), _) => end < from,
-                    (Some(_), _, _) => false,
-                    (None, _, _) => true,
-                };
-                if !ordered {
-                    bail!(
-                        "title `{}`: place period {} isn't after the one before it",
-                        t.lccn,
-                        i + 1
-                    );
-                }
             }
+            check_periods(&t.lccn, &t.place_periods)?;
         }
         Ok(Self {
             titles,
@@ -496,15 +534,16 @@ mod tests {
             "the first day is in"
         );
         assert_eq!(t.place_id_on(day("1857-04-01")), "P2");
-        assert_eq!(t.place_ids().into_iter().collect::<Vec<_>>(), ["P1", "P2"]);
-        // A date in no period is in the title's own place.
+        assert_eq!(t.place_ids().collect::<Vec<_>>(), ["P1", "P2"]);
+        // A date in no period is in the title's own place. (`Catalog::new`
+        // refuses periods with such a date; this is a title it hasn't seen.)
         let mut gap = moved();
         gap.place_periods[0].from = Some(day("1830-01-01"));
         assert_eq!(gap.place_id_on(day("1826-05-01")), "P2");
         // A title in one place is there whatever the date.
         let one = title("sn2", 2, "P1");
         assert_eq!(one.place_id_on(day("1826-05-01")), "P1");
-        assert_eq!(one.place_ids().into_iter().collect::<Vec<_>>(), ["P1"]);
+        assert_eq!(one.place_ids().collect::<Vec<_>>(), ["P1"]);
         // And the page's state is its place's, for a title that moved.
         let c = Catalog::new(vec![t.clone()], vec![place("P1", 1), place("P2", 2)]).unwrap();
         let mut maine = place("P1", 1);
@@ -520,24 +559,130 @@ mod tests {
     }
 
     #[test]
-    fn periods_name_known_places_in_date_order() {
+    fn a_titles_places_are_each_listed_once() {
+        let period = |id: &str, from: Option<&str>, to: Option<&str>| PlacePeriod {
+            place_id: id.into(),
+            from: from.map(day),
+            to: to.map(day),
+        };
+        // It left P1 and came back, and is in P2 for most of its pages.
+        let mut t = title("sn1", 1, "P2");
+        t.place_periods = vec![
+            period("P1", None, Some("1850-12-31")),
+            period("P2", Some("1851-01-01"), Some("1860-12-31")),
+            period("P1", Some("1861-01-01"), None),
+        ];
+        assert_eq!(t.place_ids().collect::<Vec<_>>(), ["P1", "P2"]);
+        // A title's own place that no period names is listed too, after them.
+        t.place_id = "P3".into();
+        assert_eq!(t.place_ids().collect::<Vec<_>>(), ["P1", "P2", "P3"]);
+    }
+
+    #[test]
+    fn periods_name_known_places() {
         let places = vec![place("P1", 1), place("P2", 2)];
         assert!(Catalog::new(vec![moved()], places.clone()).is_ok());
-        let with = |f: &dyn Fn(&mut Title)| {
-            let mut t = moved();
-            f(&mut t);
-            Catalog::new(vec![t], places.clone()).is_err()
+        let mut t = moved();
+        t.place_periods[0].place_id = "P9".into();
+        let err = Catalog::new(vec![t], places).unwrap_err().to_string();
+        assert!(err.contains("unknown place `P9`"), "{err}");
+    }
+
+    /// `catalog/overrides/README.md`: at least two periods, oldest first, the
+    /// first without `from`, the last without `to`, each starting the day
+    /// after the one before ends, so every date has a place.
+    #[test]
+    fn periods_cover_every_date_without_a_gap() {
+        let places = vec![place("P1", 1), place("P2", 2), place("P3", 3)];
+        let period = |id: &str, from: Option<&str>, to: Option<&str>| PlacePeriod {
+            place_id: id.into(),
+            from: from.map(day),
+            to: to.map(day),
         };
-        assert!(with(&|t| t.place_periods[0].place_id = "P9".into()));
-        // Overlapping, out of order, ending before they start, or open
-        // where another follows.
-        assert!(with(&|t| t.place_periods[1].from = Some(day("1833-11-13"))));
-        assert!(with(&|t| t.place_periods.reverse()));
-        assert!(with(&|t| t.place_periods[0].to = None));
-        assert!(with(&|t| t.place_periods[1].from = None));
-        assert!(with(&|t| {
-            t.place_periods[0].from = Some(day("1834-01-01"));
-        }));
+        let refused = |periods: Vec<PlacePeriod>| {
+            let mut t = moved();
+            t.place_periods = periods;
+            Catalog::new(vec![t], places.clone())
+                .unwrap_err()
+                .to_string()
+        };
+        // Three periods, each the day after the one before.
+        let mut three = moved();
+        three.place_periods = vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), Some("1850-12-31")),
+            period("P3", Some("1851-01-01"), None),
+        ];
+        assert!(Catalog::new(vec![three], places.clone()).is_ok());
+        // A period with one day is fine.
+        let mut one_day = moved();
+        one_day.place_periods = vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), Some("1833-11-14")),
+            period("P3", Some("1833-11-15"), None),
+        ];
+        assert!(Catalog::new(vec![one_day], places.clone()).is_ok());
+
+        // One period is a title in one place, which has none.
+        let err = refused(vec![period("P1", None, None)]);
+        assert!(err.contains("fewer than two"), "{err}");
+        // A gap of a day, as the second starting two days after the first.
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-15"), None),
+        ]);
+        assert!(
+            err.contains("period 2 doesn't start the day after"),
+            "{err}"
+        );
+        // Overlapping, on the same day or earlier, and out of order.
+        for from in ["1833-11-13", "1833-01-01"] {
+            let err = refused(vec![
+                period("P1", None, Some("1833-11-13")),
+                period("P2", Some(from), None),
+            ]);
+            assert!(
+                err.contains("period 2 doesn't start the day after"),
+                "{err}"
+            );
+        }
+        let err = refused(vec![
+            period("P2", Some("1833-11-14"), None),
+            period("P1", None, Some("1833-11-13")),
+        ]);
+        assert!(err.contains("period 1, the first, has a `from`"), "{err}");
+        // The first starts with the title, the last runs to its end: a date
+        // before or after them would be in no period.
+        let err = refused(vec![
+            period("P1", Some("1830-01-01"), Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), None),
+        ]);
+        assert!(err.contains("period 1, the first, has a `from`"), "{err}");
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), Some("1857-12-31")),
+        ]);
+        assert!(err.contains("period 2, the last, has a `to`"), "{err}");
+        // Every other period has both ends.
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), None),
+            period("P3", Some("1851-01-01"), None),
+        ]);
+        assert!(err.contains("period 2 has no `to`"), "{err}");
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", None, Some("1850-12-31")),
+            period("P3", Some("1851-01-01"), None),
+        ]);
+        assert!(err.contains("period 2 has no `from`"), "{err}");
+        // A period that ends before it starts.
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), Some("1833-11-01")),
+            period("P3", Some("1833-11-02"), None),
+        ]);
+        assert!(err.contains("period 2 ends before it starts"), "{err}");
     }
 
     #[test]

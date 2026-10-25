@@ -76,9 +76,10 @@ struct TitleOut {
 #[schemars(rename = "TitlePlacePeriod")]
 struct PlacePeriodOut {
     place_id: String,
-    /// The place's name, as `/v1/places` has it.
+    /// The place's name, as `/v1/places` has it; `null` if the snapshot lacks
+    /// the place, as for the title's own.
     place: Option<String>,
-    /// The place's state.
+    /// The place's state; `null` if the snapshot lacks the place.
     state: Option<String>,
     /// The first and last days of the pages in the place, both included;
     /// `null` for no start (the first place) or no end (the last).

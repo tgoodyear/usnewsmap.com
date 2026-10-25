@@ -650,14 +650,13 @@ pub fn check_titles(
         // A title in one place has all its documents there. One that moved
         // has them in its places by the dates of its pages: in each of its
         // places, or in only some when the version has pages of some dates.
-        let own = title.place_ids();
         let ids: BTreeSet<&str> = if title.place_periods.is_empty() {
             BTreeSet::from([title.place_id.as_str()])
         } else {
             got.places
                 .iter()
                 .map(String::as_str)
-                .filter(|id| own.contains(id))
+                .filter(|id| title.place_ids().any(|own| own == *id))
                 .collect()
         };
         let ordinal = u64::from(title.ordinal);

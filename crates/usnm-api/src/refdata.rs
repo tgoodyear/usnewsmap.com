@@ -181,12 +181,20 @@ pub struct PlacePeriod {
 }
 
 impl Title {
-    /// Every place a page of the title can be in: its own place and its
-    /// periods', in id order and without repeats.
-    pub fn place_ids(&self) -> std::collections::BTreeSet<&str> {
-        std::iter::once(self.place_id.as_str())
-            .chain(self.place_periods.iter().map(|p| p.place_id.as_str()))
-            .collect()
+    /// Every place a page of the title can be in, each once: its periods'
+    /// places, oldest first, then its own place if no period is there.
+    /// Allocates nothing, for loops over every title.
+    pub fn place_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        let periods = &self.place_periods;
+        periods
+            .iter()
+            .enumerate()
+            .filter(move |&(i, p)| !periods[..i].iter().any(|q| q.place_id == p.place_id))
+            .map(|(_, p)| p.place_id.as_str())
+            .chain(
+                Some(self.place_id.as_str())
+                    .filter(move |own| !periods.iter().any(|q| q.place_id == *own)),
+            )
     }
 }
 

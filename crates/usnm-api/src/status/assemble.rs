@@ -234,7 +234,6 @@ pub fn by_state(rd: &RefData) -> Vec<StatePages> {
         // A title that moved counts once in each state it was in.
         let in_states: BTreeSet<&str> = t
             .place_ids()
-            .into_iter()
             .filter_map(|id| rd.place(id))
             .map(|p| p.state.as_str())
             .collect();

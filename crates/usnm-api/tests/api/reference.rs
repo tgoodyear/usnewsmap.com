@@ -172,6 +172,36 @@ async fn a_paper_that_moved_lists_its_places_by_date() {
     assert_eq!(titles_in("P00002"), plain_in("P00002"));
 }
 
+/// A release writes every place a title's periods name into the snapshot, but
+/// the API doesn't check that when it loads one: a period in a place the
+/// snapshot lacks has `place` and `state` `null`, as the title's own `place`
+/// is (06 §6.3.11).
+#[tokio::test]
+async fn a_period_in_a_place_the_snapshot_lacks_has_no_name_or_state() {
+    let mut rd = refdata().await;
+    rd.titles.get_mut("sn99000002").unwrap().place_periods = serde_json::from_value(json!([
+        {"place_id": "P00001", "to": "1896-06-30"},
+        {"place_id": "P99999", "from": "1896-07-01"},
+    ]))
+    .unwrap();
+    let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+    let (status, _, one) = get(&s, "/v1/titles/sn99000002").await;
+    assert_eq!(status, StatusCode::OK, "{one}");
+    assert_eq!(
+        one["place_periods"],
+        json!([
+            {
+                "place_id": "P00001", "place": "Fixture City A (Chicago area)",
+                "state": "IL", "from": null, "to": "1896-06-30",
+            },
+            {
+                "place_id": "P99999", "place": null,
+                "state": null, "from": "1896-07-01", "to": null,
+            },
+        ])
+    );
+}
+
 /// One newspaper: the list's entry with its page at the Library of
 /// Congress; 404 for a title the version doesn't have, after a stale
 /// version is redirected.
