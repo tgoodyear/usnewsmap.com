@@ -1799,6 +1799,28 @@ mod queue_feed {
         languages: Option<&BTreeSet<String>>,
         opts: &claim::Options,
     ) -> claim::Report {
+        pull_manifest(f, dir, languages, opts, None).await
+    }
+
+    /// The fixture's prefetch manifest, narrowed to the fetched list as `claim pull` reads it.
+    async fn fixture_manifest(f: &Fed) -> claim::ManifestPages {
+        let (_, list) = newest_fetched(f.fx.stores.out.as_ref(), "v1")
+            .await
+            .unwrap();
+        claim::manifest_pages(
+            bytes::Bytes::from(std::fs::read(&f.fx.options.manifest).unwrap()),
+            &list,
+        )
+        .unwrap()
+    }
+
+    async fn pull_manifest(
+        f: &Fed,
+        dir: &Path,
+        languages: Option<&BTreeSet<String>>,
+        opts: &claim::Options,
+        manifest: Option<&claim::ManifestPages>,
+    ) -> claim::Report {
         let snapshot = Snapshot::load(&f.fx.state, f.fx.stores.reference.as_ref())
             .await
             .unwrap();
@@ -1813,6 +1835,7 @@ mod queue_feed {
                 snapshot: &snapshot,
                 ledger: &ledger,
                 fetched: &list,
+                manifest,
                 installed: &usnm_boinc::installed_models(),
                 languages,
             },
@@ -2225,6 +2248,71 @@ mod queue_feed {
             (1, 1)
         );
         assert_eq!(report.claims.len(), 1);
+    }
+
+    fn bulk_only() -> claim::Options {
+        claim::Options {
+            queues: vec![BULK.into()],
+            max: 5,
+            max_receives: 10,
+            lease: Duration::from_secs(3600),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_page_in_the_manifest_is_claimed() {
+        let f = fed(true).await;
+        let manifest = fixture_manifest(&f).await;
+        assert_eq!(manifest.len(), 1);
+        let dir = f.fx.tmp.path().join("claims");
+        let report = pull_manifest(&f, &dir, None, &bulk_only(), Some(&manifest)).await;
+        assert_eq!((report.claims.len(), report.released), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_fetched_page_outside_the_manifest_goes_back() {
+        // #1055: queued user requests are fetched from their own manifests, so the fetched
+        // list has them, but export builds jobs from the cohort's manifest only. Claiming
+        // one failed every export after it.
+        let f = fed(true).await;
+        let mut listed: HashSet<Fetched> = [Fetched {
+            batch: "test_pilot".into(),
+            doc_id: DOC.into(),
+        }]
+        .into();
+        queue_many(&f, &mut listed, PRIORITY, Reason::User, 1000..=1002, true).await;
+        let manifest = fixture_manifest(&f).await;
+        // The list has four pages; the manifest only the fixture's.
+        assert_eq!(manifest.len(), 1);
+        let opts = claim::Options {
+            queues: vec![PRIORITY.into(), BULK.into()],
+            max: 5,
+            max_receives: 10,
+            lease: Duration::from_secs(3600),
+        };
+        let dir = f.fx.tmp.path().join("claims");
+        let report = pull_manifest(&f, &dir, None, &opts, Some(&manifest)).await;
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].queue, BULK);
+        assert_eq!(
+            (report.queues[0].received, report.queues[0].released),
+            (4, 4)
+        );
+        let queue = f.fx.stores.queue.as_ref();
+        assert_eq!(queue.peek(PRIORITY, 32).await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_manifest_row_at_another_batch_version_goes_back() {
+        let f = fed(true).await;
+        let mut manifest = fixture_manifest(&f).await;
+        for version in manifest.values_mut() {
+            *version += 1;
+        }
+        let dir = f.fx.tmp.path().join("claims");
+        let report = pull_manifest(&f, &dir, None, &bulk_only(), Some(&manifest)).await;
+        // Bulk is peeked first: nothing usable at the front, so nothing is received.
+        assert_eq!((report.claims.len(), report.received), (0, 0));
     }
 
     #[tokio::test]

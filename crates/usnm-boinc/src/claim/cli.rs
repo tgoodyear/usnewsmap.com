@@ -144,6 +144,17 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                     &manifest_version,
                 )
                 .await?;
+                // export builds jobs from this manifest's rows only (#1055).
+                let path = format!(
+                    "{}/manifest.parquet",
+                    usnm_ingest::ocr_local::ocr_prefetch::dir(&manifest_version, None)
+                );
+                let bytes = curated
+                    .get(&path)
+                    .await?
+                    .with_context(|| format!("no prefetch manifest at {path}"))?;
+                let manifest = x::manifest_pages(bytes::Bytes::from(bytes), &fetched)
+                    .with_context(|| format!("reading {path}"))?;
                 let installed = crate::installed_models();
                 x::pull(
                     &x::Sources {
@@ -151,6 +162,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                         snapshot: &snapshot,
                         ledger: &ledger,
                         fetched: &fetched,
+                        manifest: Some(&manifest),
                         installed: &installed,
                         languages: (!languages.is_empty()).then_some(&languages),
                     },
