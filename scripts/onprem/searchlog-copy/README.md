@@ -1,0 +1,79 @@
+# Search log copy on tank
+
+These files copy the search log's day files (`searches/days/{day}.jsonl`) from the lake to a restricted dataset on `tank` every day ([#1097](https://github.com/tgoodyear/usnewsmap.com/issues/1097), part of [#955](https://github.com/tgoodyear/usnewsmap.com/issues/955); [ADR-0027](../../../docs/design/adr/0027-onprem-serving-behind-cloudflare.md) settled decision 3, [ADR-0022](../../../docs/design/adr/0022-onprem-cold-storage.md) decision 5). The day files can't be rebuilt and the lake holds the only copy. How the copy works, the dataset, the alert and the restore steps are in [Search serving](../../../docs/operations/search-serving.md#search-log-the-copy-on-tank); this page has the files, the choices ADR-0027 left open and the install steps.
+
+The code and the units are written and tested. Nothing runs them yet. Creating the dataset, the copy host and its Arc identity, granting that identity and enabling the timer are the operator steps under Setup below, and nothing in this repository does them.
+
+## Choices
+
+ADR-0027 left the identity and the place the copy runs to be decided when it was built. This is what the files assume.
+
+- **Where it runs.** On a machine of its own that is enrolled in Azure Arc and can write the dataset, with nothing else running on it. The recommendation is a small unprivileged container on the host that holds `tank`, with only the dataset bind-mounted in. Any Arc host that can write the dataset works, though; no host is named in a unit. The Arc agent hands its token to every process in the `himds` group, so whatever runs on the machine can use the grant, and the grant belongs on a machine that runs nothing else. That rules out the serving container, which mounts nothing from `tank`, and the existing hosts' identities, whose other jobs would then be able to read the search log. A machine that doesn't hold `tank` would write the search text onto its own disk, or over a share, outside the dataset's restrictions. The tool refuses a destination that is not a mount point, and its partial file is in the dataset.
+- **The identity.** The copy host's own Arc machine identity, with Storage Blob Data Reader on the `searches` container: Entra only, no SAS, no key. With `USNM_SEARCH_LOG_COPY` and `USNM_SEARCH_LOG_COPY_HOST` set, `infra/modules/searchlog-copy.bicep` grants it, and the lake opens to the node IPs (`USNM_OCR_NODE_IPS`) as it does for the other on-prem hosts. Adding the object id to `USNM_SEARCH_LOG_READERS` gives the same role, and the lake must then already be open. The role covers the whole container, `staging/` included. The tool reads only `days/`. A condition that limits the role to `days/` needs the list operation's prefix attribute, which can't be tried without a deployment, so it is left for later.
+- **Rust, as a `usnm-ingest` subcommand.** `usnm-ingest searchlog-copy` uses the Blob store and the Arc credential code the pipeline already has, streams each file instead of holding it, and is tested with the store's local double. `usnm-ingest` is already built from source and installed on on-prem hosts ([Serial Set on an OCR node](../../../docs/operations/congress-pages.md#the-serial-set-on-prem)). A shell script would have needed `az`, a login and shell hashing on a machine that otherwise needs none of them. `usnm-ingest` takes `--curated`, `--reference` and a state file on every command, so the unit sets inert values for them.
+- **The alert.** The command fails, and so does the unit, when a day file is still missing from the copy, or the copy differs, more than 24 hours after the lake wrote it. A status file (`/var/lib/usnm-searchlog-copy/status.json`: day names, counts, `ok` and `last_success`) carries the same for a watcher. Wiring that file to the data-flow observer, which [the cold-storage note](../../../docs/notes/2026-10-18-onprem-cold-storage.md) names as the place for on-prem alerts, is a separate change; until then the failed unit and the journal are the alert.
+
+## Files
+
+| File                          | Runs where                    | What it does                                                                                                                                                                               |
+| ----------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `usnm-searchlog-copy.service` | The copy host, from the timer | Runs `usnm-ingest searchlog-copy` as the host's Arc identity, with write access to the dataset only. Fails if the dataset isn't mounted.                                                   |
+| `usnm-searchlog-copy.timer`   | The copy host                 | Starts the service at 02:30 UTC every day, with up to 20 minutes' delay, and after a missed run when the host is back.                                                                     |
+| `test_units.py`               | CI and locally                | Checks that the units name flags and settings the command has, write only the dataset, keep a private `/tmp`, and run after the day file is written, and that this table lists every file. |
+
+The command is `crates/usnm-ingest/src/cli/searchlog_copy.rs` and the copy logic `crates/usnm-ingest/src/searchlog_copy.rs`. Both take named flags only; `usnm-ingest searchlog-copy --help` lists them.
+
+## Setup
+
+1. **The dataset.** Create `tank/azure/search-log` with the properties, quota, permissions and snapshots in [Search serving](../../../docs/operations/search-serving.md#search-log-the-copy-on-tank). The `zfs` commands live in home-infra, as for the other datasets.
+2. **The host.** Create the machine and bind-mount only that dataset at `/tank/azure/search-log`. Check that the machine's backup job doesn't include the mount: a backup would carry the search text away. Install the Arc agent and enroll it under its own identity, outside the on-prem group (`USNM_ONPREM_GROUP`). Create the service user and the readers' group:
+
+   ```sh
+   sudo groupadd --system searchlog-readers
+   sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin --groups himds usnm-searchlog
+   sudo chown usnm-searchlog:searchlog-readers /tank/azure/search-log
+   sudo chmod 2750 /tank/azure/search-log
+   ```
+
+   Put the operators who may read the `searches` container (`USNM_SEARCH_LOG_READERS`) in `searchlog-readers`, and nobody else.
+
+3. **The binary.** Build `usnm-ingest` from a reviewed commit in a container, as for the Serial Set, and install it:
+
+   ```sh
+   nice -n 19 podman run --rm --cpus 3 -v "$PWD/src:/src:Z" -w /src docker.io/library/rust:1-bookworm \
+     cargo build --release --locked -p usnm-ingest --bin usnm-ingest
+   sudo install -m 0755 src/target/release/usnm-ingest /usr/local/bin/
+   ```
+
+4. **The grant.** Look up the host's Arc object id, save it as a private setting and provision. Preview first:
+
+   ```sh
+   az resource show -g <Arc resource group> -n <Arc machine name> --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
+   scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_COPY_HOST --value <that object id>
+   scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_COPY --value true
+   scripts/azure/provision.sh --env prod --what-if
+   scripts/azure/provision.sh --env prod
+   ```
+
+   A role assignment can take a few minutes to apply.
+
+5. **The units.** The lake's URL is the only setting:
+
+   ```sh
+   sudo install -m 0644 scripts/onprem/searchlog-copy/usnm-searchlog-copy.service scripts/onprem/searchlog-copy/usnm-searchlog-copy.timer /etc/systemd/system/
+   sudo install -d -m 0755 /etc/usnm
+   printf 'USNM_SEARCH_LOG_URL=%s\n' "https://<data account>.blob.core.windows.net/searches" | sudo tee /etc/usnm/searchlog-copy.env
+   sudo systemctl daemon-reload
+   ```
+
+6. **The first run, by hand.** `sudo systemctl start usnm-searchlog-copy` copies every day file in the lake. Watch it with `journalctl -u usnm-searchlog-copy` (day names and sizes only), then check `/var/lib/usnm-searchlog-copy/status.json`: `ok` is true, `missing_days` and `mismatched_days` are empty, and `copied_days` equals `source_days`. Then compare every copy with the lake's bytes once, with `--verify` added to the command in a drop-in:
+
+   ```sh
+   sudo systemctl edit usnm-searchlog-copy.service   # [Service], an empty ExecStart=, then the unit's ExecStart line with --verify
+   sudo systemctl start usnm-searchlog-copy.service
+   sudo systemctl revert usnm-searchlog-copy.service
+   ```
+
+7. **The timer.** `sudo systemctl enable --now usnm-searchlog-copy.timer`. Watch the first few days' runs.
+
+Once it has run, [ADR-0012](../../../docs/design/adr/0012-anonymous-search-log.md) and 09 §9.6 name the second copy (the last item of #1097). They are not edited ahead of that.

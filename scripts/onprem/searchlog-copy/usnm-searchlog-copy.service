@@ -1,0 +1,65 @@
+# The search log's copy on tank (#1097; ADR-0027 settled decision 3):
+# `usnm-ingest searchlog-copy` lists searches/days/ in the lake as this
+# host's Arc identity (Storage Blob Data Reader on `searches`, Entra only)
+# and copies the day files the dataset lacks into /tank/azure/search-log,
+# each checked by size and sha256 and linked into place read-only. It never
+# replaces, overwrites or deletes a day file, and fails the unit when a day
+# file is still missing, or different, more than 24 hours after it was
+# written. Search text rests only in that dataset: no temporary directory
+# (PrivateTmp, and the partial copy is a file in the dataset).
+#
+# Not enabled by anything in this repository: README.md here.
+#
+# Settings in /etc/usnm/searchlog-copy.env (never committed):
+#   USNM_SEARCH_LOG_URL   https://<account>.blob.core.windows.net/searches
+[Unit]
+Description=usnewsmap search log copy to tank
+Wants=network-online.target himdsd.service
+After=network-online.target himdsd.service
+ConditionFileIsExecutable=/usr/local/bin/usnm-ingest
+RequiresMountsFor=/tank/azure/search-log
+# Fails the unit, not skips it, if the dataset is not mounted: the copy would
+# otherwise write search text to the host's own disk.
+AssertPathIsMountPoint=/tank/azure/search-log
+
+[Service]
+Type=oneshot
+User=usnm-searchlog
+Group=usnm-searchlog
+# himds: the Arc agent's token challenge.
+SupplementaryGroups=himds
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+Environment=IMDS_ENDPOINT=http://localhost:40342
+# usnm-ingest takes these on every command (a store for curated pages, one for
+# reference data, and a local state file); searchlog-copy reads none of them.
+Environment=USNM_CURATED_URL=/var/empty
+Environment=USNM_REFERENCE_URL=/var/empty
+Environment=USNM_STATE_FILE=/var/lib/usnm-searchlog-copy/unused-state.json
+EnvironmentFile=/etc/usnm/searchlog-copy.env
+# The status file (day names, counts, the last success) is the one file written
+# outside the dataset.
+StateDirectory=usnm-searchlog-copy
+StateDirectoryMode=0755
+ExecStart=/usr/local/bin/usnm-ingest searchlog-copy --to /tank/azure/search-log --status /var/lib/usnm-searchlog-copy/status.json
+# A run that cannot finish is stopped, not left holding the dataset's lock.
+TimeoutStartSec=2h
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Nice=10
+IOSchedulingClass=idle
+SyslogIdentifier=usnm-searchlog-copy
+UMask=0027
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+# Writes: the dataset. The state directory is writable already.
+ReadWritePaths=/tank/azure/search-log
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
