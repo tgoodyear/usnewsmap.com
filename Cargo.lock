@@ -3365,6 +3365,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tracing-subscriber",
  "usnm-alto",
  "usnm-core",
  "usnm-ingest",

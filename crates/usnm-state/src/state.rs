@@ -31,6 +31,28 @@ pub const ACTIVITY: &str = "activity";
 /// heartbeat every minute).
 pub const ACTIVITY_STALE_SECS: i64 = 600;
 
+/// [`State::lock`]'s error when another live holder has the lock. Callers
+/// that can wait for it find it with `anyhow::Error::downcast_ref`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockHeld {
+    pub name: String,
+    pub holder: String,
+    /// When the holder's lease ends unless it renews it.
+    pub until: DateTime<Utc>,
+}
+
+impl std::fmt::Display for LockHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "lock `{}` is held by `{}` until {}",
+            self.name, self.holder, self.until
+        )
+    }
+}
+
+impl std::error::Error for LockHeld {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BatchStatus {
@@ -546,10 +568,12 @@ impl State {
             let holder = held.doc["owner"].as_str().unwrap_or("?");
             let live = holder != owner && until.is_some_and(|u| u > Utc::now());
             if live && !gone(holder) {
-                bail!(
-                    "lock `{name}` is held by `{holder}` until {}",
-                    until.expect("checked")
-                );
+                return Err(LockHeld {
+                    name: name.to_owned(),
+                    holder: holder.to_owned(),
+                    until: until.expect("checked"),
+                }
+                .into());
             }
             let taken = live.then(|| holder.to_owned());
             if self
@@ -848,10 +872,20 @@ mod tests {
         s.lock("quickwit-writer", "a", Duration::hours(2))
             .await
             .unwrap();
-        assert!(s
+        let err = s
             .lock("quickwit-writer", "b", Duration::hours(2))
             .await
-            .is_err());
+            .unwrap_err();
+        // Typed, for callers that wait, with the message it always had.
+        let held = err.downcast_ref::<LockHeld>().expect("a LockHeld error");
+        assert_eq!(
+            (held.name.as_str(), held.holder.as_str()),
+            ("quickwit-writer", "a")
+        );
+        assert!(held.until > Utc::now());
+        assert!(err
+            .to_string()
+            .starts_with("lock `quickwit-writer` is held by `a` until "));
         s.unlock("quickwit-writer", "b").await.unwrap();
         assert!(s
             .lock("quickwit-writer", "b", Duration::hours(2))
