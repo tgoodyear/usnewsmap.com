@@ -286,16 +286,23 @@ them. `data_catalog.py ingest-worker` still imports a single capture by hand.
 
 A catalog host that still runs the receiver should retire it. Once the worker's
 host is gone, the unit fails on every tick and `systemctl is-system-running`
-reports `degraded`:
+reports `degraded`. Run these as root, in this order:
 
 ```bash
 systemctl disable --now usnm-worker-evidence-sync.timer
+systemctl stop usnm-worker-evidence-sync.service
 systemctl reset-failed usnm-worker-evidence-sync.service
 ```
 
+Stopping the timer keeps it from starting another tick, but does not stop a tick
+it already started. That tick can fail after `reset-failed` and leave the host
+degraded again, and would fail the same way on a file removed under it, so stop
+the service before clearing its failed state and before removing anything.
+
 Then remove the two unit files, `/etc/usnm/worker-evidence-sync.env`,
 `worker_evidence_sync.py` from `/usr/local/lib/usnm-data-flow`, and the receiver's
-key pair and `known_hosts` under `/var/lib/usnm-data-flow/worker-sync`. Keep
+key pair, `known_hosts` and `sync.lock` under `/var/lib/usnm-data-flow/worker-sync`,
+and run `systemctl daemon-reload`. Keep
 `worker-sync/retained/`: its captures and derived JSONL (source
 `worker-node3-live`) are what the catalog is rebuilt from, by replaying them with
 `ingest --batch`.

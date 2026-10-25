@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -383,6 +384,31 @@ class Observer(unittest.TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     observer.main()
             self.assertEqual(raised.exception.code, 2)
+
+
+class RetirementProcedure(unittest.TestCase):
+    """The retired receiver's shutdown steps in design 14 are commands an operator pastes as root."""
+
+    def section(self):
+        text = Path(__file__).resolve().parents[2].joinpath("docs/design/14-corpus-data-flow.md").read_text()
+        return text.split("## Retired worker evidence transport\n")[1].split("\n## ")[0]
+
+    def test_service_is_stopped_after_its_timer_and_before_its_failed_state_is_reset(self):
+        # Disabling the timer does not stop a tick it already started. Left running, that tick can
+        # fail after reset-failed (degraded again) or find its files removed.
+        section = self.section()
+        (block,) = re.findall(r"```bash\n(.*?)```", section, re.S)
+        timer, service = "usnm-worker-evidence-sync.timer", "usnm-worker-evidence-sync.service"
+        self.assertEqual(block.splitlines(), [
+            f"systemctl disable --now {timer}",
+            f"systemctl stop {service}",
+            f"systemctl reset-failed {service}",
+        ])
+        # The files are removed only after those commands, and systemd is then told they are gone.
+        after = section.split(block + "```\n")[1]
+        self.assertIn("remove the two unit files", after)
+        self.assertIn("systemctl daemon-reload", after)
+        self.assertLess(after.index("remove the two unit files"), after.index("systemctl daemon-reload"))
 
 
 if __name__ == "__main__":
