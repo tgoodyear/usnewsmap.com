@@ -40,7 +40,7 @@ Two more facts shaped the design. Quickwit 0.9.1's `remove_long` filter in our `
 
 ## Amendment, October 2026: LoC's original text beside our OCR's (#925)
 
-**Context.** With `--ocr-local` (12 §12.5 Step 9, #296) rule v1 gives a page our OCR's text in place of LoC's where it prefers it, and LoC's text is then in no field. In `pages-v20261022-1` that is 19,762 pages (19,374 of them frak2021) of 23.7 million. Where our text has a line of the next column inside a sentence, a phrase that LoC's text has whole finds nothing on that page, a loss against the version before it (#925). Fixing the reading order of our OCR's own text is separate work that stays open on #925: it needs LoC's ALTO and scans and experiments on real pages.
+**Context.** With `--ocr-local` (12 §12.5 Step 9, #296) rule v1 gives a page our OCR's text in place of LoC's where it prefers it, and LoC's text is then in no field. In `pages-v20261022-1` that is 19,762 pages (19,374 of them frak2021) of 23.7 million. Where our text has a line of the next column inside a sentence, a phrase that LoC's text has whole finds nothing on that page (#925). Fixing the reading order of our OCR's own text is separate work that stays open on #925. Its to-do starts with comparing the block order in our ALTO with LoC's.
 
 **Decision.** Keep both texts (decided 24 October 2026, #925, its option 1).
 
@@ -55,7 +55,7 @@ Two more facts shaped the design. Quickwit 0.9.1's `remove_long` filter in our `
 | Option                                                      | Why not                                                                                                                                                        |
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Edit layout 2 to carry the third text                       | Published layout-2 indexes and their deltas would no longer match what the code writes, and an API from before the change would read a layout it can't explain |
-| Fix the reading order first and replace only agreeing pages | Needs experiments on real pages and a re-OCR; it leaves phrases broken on every page it doesn't fix in the meantime (#925's option 2)                          |
+| Fix the reading order first and replace only agreeing pages | Waits on the reading-order fix, which is still open; until it lands, phrases stay broken on the replaced pages (#925's option 2)                               |
 
 **Consequences.**
 
