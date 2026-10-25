@@ -1,14 +1,16 @@
 import type { ReactNode } from "react";
-import type { OcrJa, Sources, Status, Versions, YearPages } from "../api/types";
+import type { Meta, OcrJa, Sources, Status, Versions, YearPages } from "../api/types";
 import { languageName } from "../lib/languages";
+import { AMERICAN_STORIES_BADGE } from "../lib/matchSource";
 import { count, when } from "./format";
-import { auditRate, lastUpdate, localDate, longDate, ocrAudit, ocrExperiment } from "./now";
-import { LanguagesSection, SortableTable, StatesSection, type Column } from "./PagesTables";
+import { auditRate, japaneseOcr, lastUpdate, localDate, longDate, ocrAudit } from "./now";
+import { LanguagesSection, PageLanguagesSection, SortableTable, StatesSection, type Column } from "./PagesTables";
 import { Bar, Ext, Table, Time, Unavailable } from "./parts";
 import {
   byDecade,
   dayDate,
   featureChanges,
+  mainIndexPages,
   pagesChange,
   publishedVersions,
   reasonLabel,
@@ -20,10 +22,12 @@ import {
  * The sections of the dataset details page that say what the site searches
  * (07 §7.10): what's in the index, each dataset, the pages we read
  * ourselves, languages, places and versions. Every number comes from
- * `/v1/status` or `/v1/versions`; the rest is fixed text.
+ * `/v1/status`, `/v1/meta` or `/v1/versions`; the rest is fixed text. The
+ * `meta` given here is for the version `/v1/status` describes, or undefined.
  */
 
 const REPO = "https://github.com/tgoodyear/usnewsmap.com";
+export const CHRONICLING_AMERICA = "https://www.loc.gov/collections/chronicling-america/";
 const LANGUAGE_REPORT = `${REPO}/tree/main/docs/reports/2026-10-language-analysis`;
 const OVERRIDES = `${REPO}/tree/main/catalog/overrides`;
 const issue = (n: number) => `${REPO}/issues/${n}`;
@@ -35,19 +39,28 @@ export function InTheIndex({ s }: { s: Status }) {
   const p = s.published;
   const states = statesWithPages(s);
   const years = p.by_year;
+  const main = mainIndexPages(s);
   return (
     <section aria-labelledby="in-the-index" className="status-section">
       <h2 id="in-the-index">What&apos;s in the index</h2>
       <p className="status-lead">
-        The site searches {plural(p.pages, "newspaper page", "newspaper pages")} from{" "}
+        The site covers {plural(p.pages, "newspaper page", "newspaper pages")} from{" "}
         {plural(p.titles, "newspaper", "newspapers")} published in {plural(p.places, "place", "places")}
         {states !== null && <> in {plural(states, "state or territory", "states and territories")}</>}, dated{" "}
         {longDate(p.bounds.from)} to {longDate(p.bounds.to)}
         {years && years.length > 0 && <>, with pages from {plural(years.length, "year", "different years")}</>}.
+        {main !== null && (
+          <>
+            {" "}
+            The main index has text for {count(main)} of these pages
+            {p.ja ? `, and the Japanese index for ${count(p.ja.pages)}` : ""}. A page with no text at all can&apos;t
+            come up in a search.
+          </>
+        )}
       </p>
       <p className="status-meta">
-        This is the version of the search index that went live {localDate(lastUpdate(s))} (
-        <code>{p.index_version}</code>).
+        This is the version of the search index the site searches now (<code>{p.index_version}</code>), whose build
+        finished {localDate(lastUpdate(s))}.
       </p>
       {years && years.length > 0 && <Coverage years={years} />}
     </section>
@@ -144,17 +157,19 @@ function Facts({ items }: { items: [string, ReactNode][] }) {
 }
 
 /** 2. The datasets, one subsection each. */
-export function TheDatasets({ s, now }: { s: Status; now: number }) {
+export function TheDatasets({ s, meta, now }: { s: Status; meta: Meta | undefined; now: number }) {
   const sources = s.published.sources;
+  const as = sources?.american_stories ?? null;
   return (
     <section aria-labelledby="datasets" className="status-section">
       <h2 id="datasets">The datasets</h2>
       <p>
-        Newspaper scans come from Chronicling America. Search combines the Library of Congress text, American Stories
-        where enabled, and selected replacement OCR described below.
+        Newspaper scans come from Chronicling America. Search combines the Library of Congress text,{" "}
+        {as?.searched ? "American Stories' text" : "American Stories where enabled"}, and selected replacement OCR
+        described below.
       </p>
       <ChroniclingAmerica s={s} />
-      <AmericanStories as={sources?.american_stories ?? null} known={sources !== undefined} />
+      <AmericanStories as={as} known={sources !== undefined} layout={meta?.text_layout} />
       <JapanesePages s={s} now={now} />
       <section aria-labelledby="ds-later" className="status-subsection">
         <h3 id="ds-later">More to come</h3>
@@ -170,6 +185,7 @@ export function TheDatasets({ s, now }: { s: Status; now: number }) {
 
 function ChroniclingAmerica({ s }: { s: Status }) {
   const p = s.published;
+  const main = mainIndexPages(s);
   return (
     <section aria-labelledby="ds-loc" className="status-subsection">
       <h3 id="ds-loc">Chronicling America</h3>
@@ -185,7 +201,7 @@ function ChroniclingAmerica({ s }: { s: Status }) {
           [
             "Source",
             <>
-              <Ext href="https://chroniclingamerica.loc.gov/">Chronicling America</Ext>, at the Library of Congress
+              <Ext href={CHRONICLING_AMERICA}>Chronicling America</Ext>, at the Library of Congress
             </>,
           ],
           [
@@ -202,6 +218,7 @@ function ChroniclingAmerica({ s }: { s: Status }) {
             <>
               {plural(p.pages, "page", "pages")} from {plural(p.titles, "newspaper", "newspapers")}, dated{" "}
               {longDate(p.bounds.from)} to {longDate(p.bounds.to)}
+              {main !== null && <>, {count(main)} of them with text in the main index</>}
             </>,
           ],
           [
@@ -218,7 +235,21 @@ function ChroniclingAmerica({ s }: { s: Status }) {
   );
 }
 
-function AmericanStories({ as, known }: { as: Sources["american_stories"]; known: boolean }) {
+/**
+ * American Stories' facts. `layout` is the served version's `text_layout`
+ * (`/v1/meta`): with one field for both texts (2) its text is always
+ * searched, and the search's count has no American Stories-only pages;
+ * undefined when the API doesn't say.
+ */
+function AmericanStories({
+  as,
+  known,
+  layout,
+}: {
+  as: Sources["american_stories"];
+  known: boolean;
+  layout: Meta["text_layout"];
+}) {
   return (
     <section aria-labelledby="ds-american-stories" className="status-subsection">
       <h3 id="ds-american-stories">American Stories</h3>
@@ -247,22 +278,23 @@ function AmericanStories({ as, known }: { as: Sources["american_stories"]; known
             </Ext>,
           ],
           ["In the index", americanStoriesPages(as, known)],
-          [
-            "How it's searched",
-            as && !as.searched ? (
-              "This server has its text switched off, so searches read the Library of Congress text alone."
-            ) : (
-              <>
-                {as ? "A search finds" : "Once its text is in the index, a search will find"} a page when either text
-                has the words. When a page matched only in American Stories&apos; text, the result says so with an
-                &quot;American Stories OCR&quot; badge, and the search&apos;s page count says how many pages that is.
-              </>
-            ),
-          ],
+          ["How it's searched", americanStoriesSearch(as, layout)],
         ]}
       />
     </section>
   );
+}
+
+function americanStoriesSearch(as: Sources["american_stories"], layout: Meta["text_layout"]): ReactNode {
+  if (as && !as.searched && layout !== 2) {
+    return "This server has its text switched off, so searches read the Library of Congress text alone.";
+  }
+  const match = "a page when its Library of Congress and American Stories texts together have the words";
+  const badge = `When a page matched only in American Stories' text, the result says so with an "${AMERICAN_STORIES_BADGE}" badge`;
+  // One field for both texts: always searched, and no count of the pages only American Stories matched.
+  if (as && layout === 2) return `Every search reads both texts: it finds ${match}. ${badge}.`;
+  const finds = as ? "A search finds" : "Once its text is in the index, a search will find";
+  return `${finds} ${match}. ${badge}${layout === 1 ? ", and the search's page count says how many pages that is" : ""}.`;
 }
 
 function americanStoriesPages(as: Sources["american_stories"], known: boolean): ReactNode {
@@ -284,11 +316,14 @@ function americanStoriesPages(as: Sources["american_stories"], known: boolean): 
 }
 
 function JapanesePages({ s, now }: { s: Status; now: number }) {
-  const line = ocrExperiment(s, now);
+  const line = japaneseOcr(s, now);
   const o = s.ocr_ja?.available ? s.ocr_ja : null;
   const ja = s.published.ja;
   const latin = s.published.sources?.ja_latin ?? null;
   const mixed = latin?.by_reason.find((r) => r.reason === "mixed")?.pages ?? 0;
+  // Pages of the newspapers that list Japanese, and of those the ones our OCR reads.
+  const titlePages = s.published.by_language?.rows.find((r) => r.code === "jpn")?.pages ?? null;
+  const targets = o && o.targets.pages > 0 ? o.targets.pages : null;
   return (
     <section aria-labelledby="ds-japanese" className="status-subsection">
       <h3 id="ds-japanese">Our OCR of the Japanese-language pages</h3>
@@ -297,9 +332,15 @@ function JapanesePages({ s, now }: { s: Status; now: number }) {
           [
             "What it is",
             <>
-              The Library of Congress has no searchable text for most pages of its Japanese-language newspapers, mostly
-              those of the World War II incarceration camps. We read those page images ourselves with NDLOCR-Lite,
-              text-recognition software from Japan&apos;s National Diet Library.
+              The Library of Congress has little or no searchable text for the pages printed in Japanese in its
+              Japanese-language newspapers, mostly those of the World War II incarceration camps
+              {targets !== null && titlePages !== null && targets <= titlePages && (
+                <>
+                  : {count(targets)} of their {count(titlePages)} pages
+                </>
+              )}
+              . We read those page images ourselves with NDLOCR-Lite, text-recognition software from Japan&apos;s
+              National Diet Library.
             </>,
           ],
           [
@@ -359,7 +400,7 @@ function JapaneseProgress({
   o,
   now,
 }: {
-  line: NonNullable<ReturnType<typeof ocrExperiment>>;
+  line: NonNullable<ReturnType<typeof japaneseOcr>>;
   o: OcrJa | null;
   now: number;
 }) {
@@ -503,20 +544,43 @@ function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>
   );
 }
 
-/** 4. Languages: by catalog language now, by page language later. */
-export function Languages({ s }: { s: Status }) {
+/**
+ * 4. Languages: by each page's own language when the version has it (the
+ * language filter's counts, `/v1/meta`), then by catalog language
+ * (`/v1/status`); by catalog language alone on a version without.
+ */
+export function Languages({ s, meta }: { s: Status; meta: Meta | undefined }) {
   const l = s.published.by_language;
+  const byPage =
+    meta?.language_filter === "page" && meta.languages?.every((r) => r.pages !== null) ? meta.languages : null;
+  const report = (
+    <>
+      The <Ext href={LANGUAGE_REPORT}>language report</Ext> describes each language&apos;s pages, where their text comes
+      from and how well it reads.
+    </>
+  );
   return (
     <section aria-labelledby="languages" className="status-section">
       <h2 id="languages">Languages</h2>
-      <p>
-        Pages are counted by the languages the Library of Congress catalogs for their newspaper, so every page of a
-        newspaper has its languages. The next full rebuild of the index detects each page&apos;s own language, and this
-        section will count pages by it then (<Ext href={issue(283)}>#283</Ext>). The{" "}
-        <Ext href={LANGUAGE_REPORT}>language report</Ext> describes each language&apos;s pages, where their text comes
-        from and how well it reads.
-      </p>
-      {l ? <LanguagesSection data={l} /> : <p className="status-empty">This server doesn&apos;t list languages.</p>}
+      {byPage ? (
+        <p>
+          Pages are counted by their own language, found from the words on each page, which is what the search&apos;s
+          language filter matches. A page that mixes two languages counts in each. A page too short or too garbled to
+          tell counts in the languages the Library of Congress catalogs for its newspaper. A page of a newspaper
+          cataloged in a language we have no word list for, such as Japanese, also counts in that language. {report}
+        </p>
+      ) : (
+        <p>
+          Pages are counted by the languages the Library of Congress catalogs for their newspaper, so every page of a
+          newspaper has its languages. {report}
+        </p>
+      )}
+      {byPage && <PageLanguagesSection rows={byPage} total={s.published.pages} />}
+      {l ? (
+        <LanguagesSection data={l} byCatalog={byPage !== null} />
+      ) : (
+        !byPage && <p className="status-empty">This server doesn&apos;t list languages.</p>
+      )}
     </section>
   );
 }
@@ -539,9 +603,9 @@ export function Places({ s }: { s: Status }) {
         earlier values when it changes.
       </p>
       <p>
-        Known gaps: a few towns couldn&apos;t be placed from the sources we checked, and some newspapers that moved are
-        still shown at the town in their title rather than where most of their pages were printed, until the next full
-        rebuild. The checks and their sources are on <Ext href={issue(235)}>#235</Ext>.
+        Known gaps: a few towns couldn&apos;t be placed from the sources we checked. A correction that moves a newspaper
+        to another town takes effect at the next full rebuild; a corrected point or name for a town takes effect at the
+        next update. The checks and their sources are on <Ext href={issue(235)}>#235</Ext>.
       </p>
       {p.by_state && <StatesSection rows={p.by_state} pages={p.pages} />}
     </section>
@@ -589,7 +653,7 @@ function VersionsTable({ versions, now }: { versions: Versions; now: number }) {
       </p>
       <Table
         caption="Published versions, newest first"
-        head={["Version", "Went live", "Kind", "Pages", "Change in pages", "What changed"]}
+        head={["Version", "Built", "Kind", "Pages", "Change in pages", "What changed"]}
         numeric={[3, 4]}
         empty="No version has been published yet."
         rows={list.map(({ v, before }) => {
@@ -613,7 +677,10 @@ function VersionsTable({ versions, now }: { versions: Versions; now: number }) {
   );
 }
 
-/** "The last update went live …": the newest published version and what it added. */
+/**
+ * "The last update, …, was built on …": the newest published version and
+ * what it added. Its `published_at` is when its build finished (`lastUpdate`).
+ */
 export function lastPublished(versions: Versions | undefined): string | null {
   if (!versions?.available) return null;
   const [newest] = publishedVersions(versions.versions);
@@ -630,7 +697,7 @@ export function lastPublished(versions: Versions | undefined): string | null {
           ? `, with ${plural(-change, "page", "pages")} fewer`
           : ", with the same number of pages";
   const features = featureChanges(v, before);
-  return `The last ${kind}, ${v.index_version}, went live on ${dayDate(v.published_at!)}: ${plural(v.pages, "page", "pages")}${added}.${
+  return `The last ${kind}, ${v.index_version}, was built on ${dayDate(v.published_at!)}: ${plural(v.pages, "page", "pages")}${added}.${
     features.length > 0 ? ` ${features.join("; ")}.` : ""
   }`;
 }
