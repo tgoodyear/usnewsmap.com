@@ -14,6 +14,7 @@ The scripts are in `scripts/boinc/onprem/`, and the step runner is `scripts/boin
 | `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job             | Root on the host only; `scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
 | `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release`, `collect` and `export`, in place of the Azure hand-off job | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
 | `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`                    | Public ingress with no inbound port                                                                                       |
+| `usnm-image-security-check.timer`  | A daily check of the server image against `bookworm-security`, and of the MySQL pin               | A failed `usnm-image-security-check.service` is the alert ([Security updates](#security-updates), #969)                   |
 
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.
@@ -37,19 +38,82 @@ The images start from pinned digests, so their Debian packages don't change afte
 the host's own automatic updates never reach them. Each image that serves Apache and PHP takes
 Debian's security updates when it is built: the server and bridge Containerfiles, the overlays
 and `security-overlay.Containerfile` run `apt-get upgrade` from the image's sources, which
-include `bookworm-security`. The build then fails if `php8.2-common` is older than `PHP_FLOOR`,
-now 8.2.35-1~deb12u1 from DSA-6255-1 (21 October 2026). `test_security_updates.py` in
-`contrib-compute/images/server` checks that every one of them does both.
+include `bookworm-security`. The build then fails if `php8.2-common` or `apache2` is older than
+`PHP_FLOOR` or `APACHE_FLOOR`, now 8.2.35-1~deb12u1 from DLA-4848-1 (21 October 2026) and
+2.4.67-1~deb12u3 from DSA-6323-1 (6 June 2026). Each floor is the version of bookworm's last
+advisory for that package, so a newer build from bookworm's own suite passes it too.
+`test_security_updates.py` in `contrib-compute/images/server` checks that every one of them
+upgrades and enforces both floors.
 
 After a Debian security advisory for a package in the image (PHP, Apache, OpenSSL, curl):
 
-1. For PHP, raise `PHP_FLOOR` in all of those Containerfiles to the fixed version, through a pull request.
+1. For PHP or Apache, raise `PHP_FLOOR` or `APACHE_FLOOR` in all of those Containerfiles to the fixed version, and `--php-floor` or `--apache-floor` in `usnm-image-security-check.service`, through a pull request. `test_image_security_check.py` fails when the unit and the Containerfiles disagree.
 2. On the on-prem BOINC host, build `security-overlay.Containerfile` on the running image: `RUNTIME_IMAGE` is `SERVER_IMAGE` from `/etc/usnm-boinc/server.env`, and `SECURITY_REFRESH` is today's date, so a cached build runs the upgrade again. The file's header has the command. Only packages change; the project's code stays as it was.
 3. Set `SERVER_IMAGE` in `server.env` to the new image and restart `usnm-boinc-server.service`. The step runner reads the same file, so the next step uses it too.
-4. Check the running image: `podman exec usnm-boinc-server php -v`, and `podman exec usnm-boinc-server dpkg-query -W php8.2-common apache2 openssl libcurl3-gnutls` against the advisory's fixed versions.
+4. Check the running image: `podman exec usnm-boinc-server php -v`, and `podman exec usnm-boinc-server dpkg-query -W php8.2-common apache2 openssl libcurl3-gnutls` against the advisory's fixed versions. `systemctl start usnm-image-security-check.service` runs the scheduled check now and exits clean when nothing is pending. It reads `SERVER_IMAGE`, not the container, so it only vouches for what runs after step 3's restart.
 
 A full rebuild from `main` (base, then server, then bridge, as `scripts/boinc/build-boinc-images.sh`
 orders them) also takes the updates, since the server and bridge stages upgrade.
+
+### Scheduled check
+
+`usnm-image-security-check.timer` runs `image-security-check.sh` on the host once a day (about 06:23
+host time, with up to 15 minutes of random delay; `Persistent=true` makes up for a missed run). It
+starts a throwaway container from `SERVER_IMAGE` (`podman run --rm --pull=never`, host network, so
+`apt-get update` works) and runs `apt-get update` and a simulated `apt-get upgrade` in it, then
+compares `php8.2-common` and `apache2` with the two floors, which the unit passes as `--php-floor`
+and `--apache-floor`. Nothing in the image changes and nothing restarts. It fails the unit (exit 1) for:
+
+- An upgrade the image's own apt sources offer. The journal line says `SECURITY` when it comes from the security archive and `UPDATE` otherwise: a security fix can also arrive in a point release, so both fail. Building `security-overlay.Containerfile` on the image clears them.
+- `KEPT-BACK`: a package that `apt-get upgrade` leaves alone because upgrading it needs a new package or a removal. apt prints no upgrade line for it, so the check reads the "not upgraded" count. The overlay and the Containerfiles run the same `apt-get upgrade`, so building the overlay does not clear it; install the package by name in their upgrade step, through a pull request.
+- `BELOW-FLOOR`: `php8.2-common` or `apache2` older than its floor.
+- `MYSQL-DRIFT`, below.
+
+It exits 3, which also fails the unit, when it can't answer. Examples are a failed `apt-get update`, no security archive in the image's apt
+sources, no digest in the MySQL unit, and a failed `podman pull` or `podman image inspect` of the MySQL image. A check that couldn't run never
+reads as clean. The alert is the failed unit, in `systemctl --failed` and in
+`journalctl -u usnm-image-security-check.service`; nothing routes it anywhere else yet. The check
+sees what bookworm publishes: a CVE the Debian security tracker still lists as open for bookworm has
+no package to take, in the build or here.
+
+Install, as root on the host, from a checkout of `main`. The floors are in the unit, so run the
+same lines again after a floor changes:
+
+```sh
+install -m 0755 scripts/boinc/onprem/image-security-check.sh /usr/local/bin/usnm-image-security-check
+install -m 0644 scripts/boinc/onprem/usnm-image-security-check.service scripts/boinc/onprem/usnm-image-security-check.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now usnm-image-security-check.timer
+```
+
+Uninstall:
+
+```sh
+systemctl disable --now usnm-image-security-check.timer
+rm /etc/systemd/system/usnm-image-security-check.service /etc/systemd/system/usnm-image-security-check.timer /usr/local/bin/usnm-image-security-check
+systemctl daemon-reload
+```
+
+Run by hand with `usnm-image-security-check --php-floor <version> --apache-floor <version>`; add
+`--image <image>` to check another image (for example the overlay before step 3) and `--skip-mysql`
+to leave the MySQL part out.
+
+### The MySQL image
+
+The official MySQL image is Oracle Linux based, so `bookworm-security` doesn't apply to it. Its only
+signal is a new digest for the `8.4` tag. `mysql-setup.sh` resolves `docker.io/library/mysql:8.4` to a
+digest once and writes it into `usnm-boinc-mysql.service`, so the database stays on that image until
+someone moves it. The check pulls the tag (`podman pull -q`, then `podman image inspect` for its
+`.Digest`, as `mysql-setup.sh` does) and reports `MYSQL-DRIFT` when the digest differs from the
+unit's. It only reports, and a new digest is not always a security fix, so read the 8.4 release
+notes first.
+
+To roll the database onto the new digest, when no bridge step is running (the restart takes
+`usnm-boinc-server.service` down with it, because the server requires the database):
+
+1. Run `mysql-setup.sh` again on the host. It is safe to re-run: it keeps the CA, certificates, data and secrets, pulls the tag, and writes the new digest into the unit.
+2. `systemctl restart usnm-boinc-mysql.service`. MySQL gets up to 110 seconds to stop cleanly (`--stop-timeout 110`).
+3. `systemctl start usnm-image-security-check.service` no longer reports drift.
 
 ## Moving the data
 
