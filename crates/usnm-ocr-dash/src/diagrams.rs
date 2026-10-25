@@ -358,7 +358,8 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
         let class = match b.state.as_str() {
             "running" => "running",
             "done" | "finished" => "done",
-            "failed" => "failed",
+            // The downloader stops with an error on these.
+            "failed" | "disk" | "blocked" => "failed",
             _ => "waiting",
         };
         m.insert(
@@ -1031,6 +1032,10 @@ mod tests {
         assert_eq!(st["bulk"].class, "running");
         assert_eq!(st["bulk"].text, "120 of 3,011 archives");
         assert!(fill(DIAGRAMS[5].svg, &st).contains("120 of 3,011 archives"));
+        for state in ["disk", "blocked"] {
+            v.fetch.bulk.value.as_mut().unwrap().state = state.into();
+            assert_eq!(steps(&v)["bulk"].class, "failed", "{state}");
+        }
         v.fetch.bulk.modified = Some(v.generated_at - chrono::Duration::hours(2));
         assert!(!steps(&v).contains_key("bulk"));
     }
